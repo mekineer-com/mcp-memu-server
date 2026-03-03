@@ -1,0 +1,47 @@
+{
+  "llm": {
+    "provider": "openai",
+    "api_key": "",
+    "base_url": "https://api.openai.com/v1",
+    "chat_model": "gpt-4o-mini",
+    "embed_model": "text-embedding-3-small",
+    "client_backend": "httpx",
+    "endpoint_overrides": {}
+  },
+  "storage": {
+    "resources_dir": "/home/marcos/apps-codex/memu-1.4.0/resources",
+    "metadata_store": {
+      "provider": "sqlite",
+      "dsn": "sqlite:////home/marcos/apps-codex/memu-1.4.0/sqlite/memu.db",
+      "ddl_mode": "create"
+    },
+    "sqlite_mode": "per_agent",
+    "sqlite_dir": "/home/marcos/apps-codex/memu-1.4.0/sqlite"
+  },
+  "mcp": {
+    "http_path": "/mcp",
+    "sse_path": "/sse"
+  },
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 8099
+  },
+  "memu": {
+    "path": ""
+  },
+  "python": {
+    "executable": "/home/marcos/apps-codex/memu-1.4.0/.venv/bin/python",
+    "force_venv": false
+  },
+  "pid_file": "/home/marcos/apps-codex/mcp-memu-server/.memu-server.pid",
+  "categories": {
+    "defaults": [
+      "personal_info",
+      "preferences",
+      "relationships",
+      "goals"
+    ],
+    "max_total": 12,
+    "allow_dynamic": true
+  }
+}
