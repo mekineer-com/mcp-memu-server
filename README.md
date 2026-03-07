@@ -149,7 +149,7 @@ Its core architecture consists of three layers: **Resource Layer → Memory Item
 
 ## 📄 License
 
-By contributing to memU-server, you agree that your contributions will be licensed under the **AGPL-3.0 License**.
+By contributing to memU-server, you agree that your contributions will be licensed under the **GPLv3 License**.
 
 ---
 

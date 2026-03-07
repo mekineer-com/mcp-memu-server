@@ -3,7 +3,11 @@ name = "memu-server"
 version = "0.1.0"
 description = "backend wrapper for memU"
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.12"
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+]
 
 dependencies = [
     # Web Framework
