@@ -303,7 +303,6 @@ def _default_config() -> dict[str, Any]:
                 "ddl_mode": "create",
             },
             "sqlite_dir": str(sqlite_path.parent),
-            "shared_sqlite_path": str(sqlite_path.parent / "shared.db"),
         },
         "categories": {
             "defaults": ["personal_info", "preferences", "relationships", "goals"],
@@ -365,7 +364,6 @@ _STORAGE_STATUS: dict[str, Any] = {
     "sqlite_open_ok": None,
     "sqlite_mode": "per_agent_only",
     "sqlite_dir": None,
-    "shared_db_path": None,
     "error": None,
 }
 
@@ -640,22 +638,22 @@ def _sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, A
     """Resolve the sqlite DSN for this request.
 
     Policy (minimal):
-      - Per-character DBs for SillyTavern traffic (agent_id == character name).
+      - Per-character DBs for SillyTavern traffic (soul_id / agent_id scope key).
     """
     if not isinstance(scope, dict):
         scope = {}
 
-    agent_id = str(scope.get('agent_id') or '').strip()
+    soul_id = str(scope.get('soul_id') or scope.get('agent_id') or '').strip()
 
     sqlite_dir = _sqlite_dir_from_cfg(cfg, fallback_dsn=base_dsn)
     sqlite_dir.mkdir(parents=True, exist_ok=True)
 
     # No scope provided: keep the base DSN (typically :memory:).
-    if not agent_id:
+    if not soul_id:
         return base_dsn
 
-    # KISS: agent_id *is* the character name (provided by the extension/plugin).
-    basename = _sanitize_db_filename(agent_id)
+    # KISS: soul_id (fallback: agent_id) is the character scope key.
+    basename = _sanitize_db_filename(soul_id)
     db_path = (sqlite_dir / f"{basename}.db").resolve()
     _sqlite_ensure_nonempty(db_path)
     return f"sqlite:////{db_path.as_posix().lstrip('/')}"
@@ -804,11 +802,14 @@ def _get_service_from_payload(payload: dict[str, Any]) -> MemoryService:
             ms = database_config.get('metadata_store')
             if isinstance(ms, dict) and str(ms.get('provider') or '').lower() == 'sqlite':
                 scope_hint2 = _extract_scope(payload)
-                agent_id2 = str((scope_hint2 or {}).get('agent_id') or '').strip()
-                if not agent_id2:
-                    raise HTTPException(status_code=400, detail='agent_id required for sqlite (use character name)')
+                soul_id2 = str((scope_hint2 or {}).get('soul_id') or (scope_hint2 or {}).get('agent_id') or '').strip()
+                if not soul_id2:
+                    raise HTTPException(status_code=400, detail='soul_id (or agent_id) required for sqlite scope')
                 base = _normalize_sqlite_dsn(str(ms.get('dsn') or ''))
-                ms['dsn'] = _sqlite_dsn_for_scope(_CONFIG, base, scope_hint2)
+                scope_for_dsn = dict(scope_hint2 or {})
+                scope_for_dsn['soul_id'] = soul_id2
+                scope_for_dsn['agent_id'] = soul_id2
+                ms['dsn'] = _sqlite_dsn_for_scope(_CONFIG, base, scope_for_dsn)
     except HTTPException:
         raise
     except Exception:
@@ -899,6 +900,7 @@ def _pick_str(payload: dict[str, Any], *keys: str) -> str | None:
 
 def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
     user_id = _pick_str(payload, "user_id", "userId", "userID", "userid")
+    soul_id = _pick_str(payload, "soul_id", "soulId", "soulID", "soulid")
     agent_id = _pick_str(payload, "agent_id", "agentId", "agentID", "agentid")
     agent_name = _pick_str(payload, "agent_name", "agentName", "character_name", "characterName", "character")
     session_id = _pick_str(payload, "session_id", "sessionId", "sessionID", "sessionid", "session_date", "sessionDate", "sessiondate")
@@ -908,6 +910,8 @@ def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(user_obj, dict):
         if not user_id:
             user_id = _pick_str(user_obj, "user_id", "userId", "userID", "userid")
+        if not soul_id:
+            soul_id = _pick_str(user_obj, "soul_id", "soulId", "soulID", "soulid")
         if not agent_id:
             agent_id = _pick_str(user_obj, "agent_id", "agentId", "agentID", "agentid")
         if not agent_name:
@@ -924,8 +928,14 @@ def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
                 "sessiondate",
             )
 
-    # Fallback: if an explicit agent_id was not provided, use agent_name for scoping.
-    # This keeps per-agent SQLite practical for SillyTavern where the stable ID may be absent.
+    # Prefer soul_id lexicon, keep agent_id for compatibility/storage.
+    if not soul_id and agent_id:
+        soul_id = agent_id
+    if not agent_id and soul_id:
+        agent_id = soul_id
+    # Final fallback: use character name when explicit IDs are absent.
+    if not soul_id and agent_name:
+        soul_id = agent_name
     if not agent_id and agent_name:
         agent_id = agent_name
 
@@ -937,6 +947,44 @@ def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
     if session_id:
         scope["session_id"] = session_id
     return scope
+
+
+def _extract_conversation_id(payload: dict[str, Any]) -> str | None:
+    conversation_id = _pick_str(payload, "conversation_id", "conversationId", "conversationID", "conversationid")
+    if not conversation_id:
+        conversation_id = _pick_str(
+            payload,
+            "session_id",
+            "sessionId",
+            "sessionID",
+            "sessionid",
+            "session_date",
+            "sessionDate",
+            "sessiondate",
+        )
+
+    user_obj = payload.get("user")
+    if isinstance(user_obj, dict):
+        if not conversation_id:
+            conversation_id = _pick_str(
+                user_obj,
+                "conversation_id",
+                "conversationId",
+                "conversationID",
+                "conversationid",
+            )
+        if not conversation_id:
+            conversation_id = _pick_str(
+                user_obj,
+                "session_id",
+                "sessionId",
+                "sessionID",
+                "sessionid",
+                "session_date",
+                "sessionDate",
+                "sessiondate",
+            )
+    return conversation_id
 
 
 def _normalize_conversation(conv: Any) -> Any:
@@ -1002,12 +1050,17 @@ def _record_call(op: str, payload: dict[str, Any] | None, *, ok: bool, info: Any
         pass
 
 
-def _sqlite_current_path(user_id: str | None = None, agent_id: str | None = None) -> Path | None:
+def _sqlite_current_path(
+    user_id: str | None = None,
+    soul_id: str | None = None,
+    agent_id: str | None = None,
+) -> Path | None:
     try:
         base_dsn = str(_STORAGE_STATUS.get('dsn') or '')
-        if not agent_id:
+        scoped_soul = str(soul_id or agent_id or "").strip()
+        if not scoped_soul:
             return None
-        scope = {'agent_id': agent_id}
+        scope = {'soul_id': scoped_soul, 'agent_id': scoped_soul}
         dsn = _sqlite_dsn_for_scope(_CONFIG, base_dsn, scope)
         f = _sqlite_file_from_dsn(dsn)
         return f.expanduser().resolve() if f is not None else None
@@ -1093,6 +1146,118 @@ def _sqlite_pragmas(con: sqlite3.Connection) -> dict[str, Any]:
         except Exception:
             out[k] = None
     return out
+
+
+def _sqlite_ensure_conversation_state_schema(con: sqlite3.Connection) -> None:
+    con.execute(
+        """
+CREATE TABLE IF NOT EXISTS memu_conversation_state (
+    conversation_id VARCHAR PRIMARY KEY,
+    agent_id VARCHAR,
+    user_id VARCHAR,
+    digest_cursor INTEGER DEFAULT 0,
+    working_note TEXT,
+    active_intentions JSON,
+    last_retrieval_ids JSON,
+    last_memorize_at DATETIME,
+    updated_at DATETIME
+)
+"""
+    )
+    cols = set(_sqlite_table_columns(con, "memu_conversation_state"))
+    alters: list[str] = []
+    if "agent_id" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN agent_id VARCHAR")
+    if "user_id" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN user_id VARCHAR")
+    if "digest_cursor" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN digest_cursor INTEGER DEFAULT 0")
+    if "working_note" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN working_note TEXT")
+    if "active_intentions" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN active_intentions JSON")
+    if "last_retrieval_ids" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_retrieval_ids JSON")
+    if "last_memorize_at" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_memorize_at DATETIME")
+    if "updated_at" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN updated_at DATETIME")
+    for stmt in alters:
+        con.execute(stmt)
+    con.commit()
+
+
+def _json_to_db(value: Any) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _json_from_db(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return json.loads(s)
+        except Exception:
+            return value
+    return value
+
+
+def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    digest_raw = row["digest_cursor"] if "digest_cursor" in row.keys() else 0
+    try:
+        digest_cursor = int(digest_raw) if digest_raw is not None else 0
+    except Exception:
+        digest_cursor = 0
+    return {
+        "conversation_id": row["conversation_id"],
+        "agent_id": row["agent_id"] if "agent_id" in row.keys() else None,
+        "user_id": row["user_id"] if "user_id" in row.keys() else None,
+        "digest_cursor": max(0, digest_cursor),
+        "working_note": row["working_note"] if "working_note" in row.keys() else None,
+        "active_intentions": _json_from_db(row["active_intentions"] if "active_intentions" in row.keys() else None),
+        "last_retrieval_ids": _json_from_db(row["last_retrieval_ids"] if "last_retrieval_ids" in row.keys() else None),
+        "last_memorize_at": row["last_memorize_at"] if "last_memorize_at" in row.keys() else None,
+        "updated_at": row["updated_at"] if "updated_at" in row.keys() else None,
+    }
+
+
+def _conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
+    return con.execute(
+        "SELECT conversation_id, agent_id, user_id, digest_cursor, working_note, "
+        "active_intentions, last_retrieval_ids, last_memorize_at, updated_at "
+        "FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
+        (conversation_id,),
+    ).fetchone()
+
+
+def _sqlite_agent_db_paths() -> list[Path]:
+    sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, str(_STORAGE_STATUS.get("dsn") or ""))
+    if not sqlite_dir.exists():
+        return []
+    return sorted([p.resolve() for p in sqlite_dir.glob("*.db") if p.is_file()])
+
+
+def _find_conversation_state_across_dbs(conversation_id: str) -> tuple[Path | None, dict[str, Any] | None]:
+    for db_path in _sqlite_agent_db_paths():
+        con = _sqlite_connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            _sqlite_ensure_conversation_state_schema(con)
+            row = _conversation_state_row(con, conversation_id)
+            if row is not None:
+                return db_path, _conversation_state_from_row(row)
+        except Exception:
+            continue
+        finally:
+            con.close()
+    return None, None
 
 
 
@@ -1217,7 +1382,7 @@ async def diag_http():
 
 @app.get(f"{_DIAG_PREFIX}/diag/sqlite")
 @app.get("/diag/sqlite", operation_id="diag_sqlite")
-async def diag_sqlite(user_id: str = "", agent_id: str = ""):
+async def diag_sqlite(user_id: str = "", soul_id: str = "", agent_id: str = ""):
     try:
         storage = _CONFIG.get('storage') if isinstance(_CONFIG.get('storage'), dict) else {}
         meta = storage.get('metadata_store') if isinstance(storage.get('metadata_store'), dict) else {}
@@ -1225,9 +1390,10 @@ async def diag_sqlite(user_id: str = "", agent_id: str = ""):
         if provider not in ('sqlite', 'sqlite3'):
             return {"ok": False, "reason": "provider_not_sqlite", "provider": provider, "storage": _STORAGE_STATUS}
 
-        p = _sqlite_current_path(user_id or None, agent_id or None)
+        scoped_soul = (soul_id or agent_id).strip()
+        p = _sqlite_current_path(user_id or None, scoped_soul or None, scoped_soul or None)
         if p is None:
-            return {"ok": False, "reason": "no_sqlite_path", "storage": _STORAGE_STATUS}
+            return {"ok": False, "reason": "soul_id_required", "storage": _STORAGE_STATUS}
 
         info = _sqlite_file_info(p)
         if not p.exists():
@@ -1251,21 +1417,39 @@ async def diag_sqlite(user_id: str = "", agent_id: str = ""):
 
 @app.get(f"{_DIAG_PREFIX}/diag/sqlite/counts")
 @app.get("/diag/sqlite/counts", operation_id="diag_sqlite_counts")
-async def diag_sqlite_counts(user_id: str | None = None, agent_id: str | None = None, session_id: str | None = None):
-    p = _sqlite_current_path(user_id or None, agent_id or None)
+async def diag_sqlite_counts(
+    user_id: str | None = None,
+    soul_id: str | None = None,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+):
+    scoped_soul = (str(soul_id or "").strip() or str(agent_id or "").strip() or None)
+    p = _sqlite_current_path(user_id or None, scoped_soul, scoped_soul)
     if p is None or not p.exists():
-        return {"ok": False, "reason": "sqlite_file_missing", "path": str(p) if p else None, "storage": _STORAGE_STATUS}
+        reason = "soul_id_required" if p is None else "sqlite_file_missing"
+        return {"ok": False, "reason": reason, "path": str(p) if p else None, "storage": _STORAGE_STATUS}
 
-    allowed = ["memu_resources", "memu_memory_categories", "memu_memory_items", "memu_category_items"]
+    allowed = [
+        "memu_resources",
+        "memu_memory_categories",
+        "memu_memory_items",
+        "memu_category_items",
+        "memu_conversation_state",
+    ]
     con = _sqlite_connect(p)
     try:
-        out: dict[str, Any] = {"ok": True, "path": str(p), "scope": {"user_id": user_id, "agent_id": agent_id, "session_id": session_id}, "tables": {}}
+        _sqlite_ensure_conversation_state_schema(con)
+        out: dict[str, Any] = {"ok": True, "path": str(p), "scope": {"user_id": user_id, "soul_id": scoped_soul, "agent_id": scoped_soul, "session_id": session_id}, "tables": {}}
         for t in allowed:
             cols = _sqlite_table_columns(con, t)
-            where, params = _sqlite_build_scope_where(cols, user_id, agent_id, session_id)
+            where, params = _sqlite_build_scope_where(cols, user_id, scoped_soul, session_id)
             total = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
             scoped = con.execute(f"SELECT COUNT(*) FROM {t}{where}", params).fetchone()[0] if where else total
-            out["tables"][t] = {"total": int(total), "scoped": int(scoped), "scope_cols": [c for c in ('user_id','agent_id','session_id') if c in cols]}
+            out["tables"][t] = {
+                "total": int(total),
+                "scoped": int(scoped),
+                "scope_cols": [c for c in ("user_id", "agent_id", "session_id", "conversation_id") if c in cols],
+            }
         return out
     finally:
         con.close()
@@ -1273,23 +1457,59 @@ async def diag_sqlite_counts(user_id: str | None = None, agent_id: str | None = 
 
 @app.get(f"{_DIAG_PREFIX}/diag/sqlite/recent")
 @app.get("/diag/sqlite/recent", operation_id="diag_sqlite_recent")
-async def diag_sqlite_recent(table: str = 'memu_memory_items', limit: int = 20, user_id: str | None = None, agent_id: str | None = None, session_id: str | None = None):
-    allowed = {"memu_resources", "memu_memory_categories", "memu_memory_items", "memu_category_items"}
+async def diag_sqlite_recent(
+    table: str = 'memu_memory_items',
+    limit: int = 20,
+    user_id: str | None = None,
+    soul_id: str | None = None,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+):
+    allowed = {"memu_resources", "memu_memory_categories", "memu_memory_items", "memu_category_items", "memu_conversation_state"}
     if table not in allowed:
         raise HTTPException(status_code=400, detail=f"table must be one of: {sorted(allowed)}")
     limit = max(1, min(int(limit or 20), 200))
 
-    p = _sqlite_current_path(user_id or None, agent_id or None)
+    scoped_soul = (str(soul_id or "").strip() or str(agent_id or "").strip() or None)
+    p = _sqlite_current_path(user_id or None, scoped_soul, scoped_soul)
     if p is None or not p.exists():
-        return {"ok": False, "reason": "sqlite_file_missing", "path": str(p) if p else None, "storage": _STORAGE_STATUS}
+        reason = "soul_id_required" if p is None else "sqlite_file_missing"
+        return {"ok": False, "reason": reason, "path": str(p) if p else None, "storage": _STORAGE_STATUS}
 
     con = _sqlite_connect(p)
     try:
+        if table == "memu_conversation_state":
+            _sqlite_ensure_conversation_state_schema(con)
         cols = _sqlite_table_columns(con, table)
-        scope_where, params = _sqlite_build_scope_where(cols, user_id, agent_id, session_id)
+        scope_where, params = _sqlite_build_scope_where(cols, user_id, scoped_soul, session_id)
 
         # Avoid dumping big JSON embeddings/extras by default.
-        prefer = ["id","created_at","updated_at","user_id","agent_id","session_id","name","description","summary","memory_type","happened_at","resource_id","url","modality","local_path","caption","item_id","category_id"]
+        prefer = [
+            "id",
+            "created_at",
+            "updated_at",
+            "user_id",
+            "agent_id",
+            "session_id",
+            "conversation_id",
+            "name",
+            "description",
+            "summary",
+            "memory_type",
+            "source_role",
+            "confidence",
+            "happened_at",
+            "digest_cursor",
+            "working_note",
+            "last_memorize_at",
+            "resource_id",
+            "url",
+            "modality",
+            "local_path",
+            "caption",
+            "item_id",
+            "category_id",
+        ]
         ban = {"embedding", "extra"}
         sel = [c for c in prefer if c in cols and c not in ban]
         if not sel:
@@ -1396,6 +1616,47 @@ def _write_list_if_changed(p: Path, old: list[dict[str, Any]], new: list[dict[st
     if new == old:
         return
     p.write_text(json.dumps(new, ensure_ascii=False), encoding='utf-8')
+
+
+def _chat_storage_hash(uid: str, aid: str, key: str) -> str:
+    raw = f"{uid}|{aid}|{key}".encode("utf-8", "ignore")
+    return hashlib.sha1(raw).hexdigest()[:16]
+
+
+def _resolve_chat_storage_dir(
+    chats_dir: Path,
+    uid: str,
+    aid: str,
+    conversation_id: str | None,
+    chat_file: str | None,
+    resource_url_in: str | None,
+) -> tuple[Path, str, str]:
+    agent_slug = _sanitize_db_filename(aid)
+    primary_value = str(conversation_id or resource_url_in or chat_file or "").strip()
+    if conversation_id:
+        primary_source = "conversation_id"
+    elif resource_url_in:
+        primary_source = "resource_url"
+    elif chat_file:
+        primary_source = "chat_file"
+    else:
+        primary_source = "empty"
+
+    primary_key = _chat_storage_hash(uid, aid, primary_value)
+    primary_path = (chats_dir / f"{agent_slug}_{primary_key}").resolve()
+
+    # Single legacy reuse path: if we are upgrading to conversation_id keying,
+    # keep using the prior resource_url/chat_file keyed folder when it already exists.
+    if conversation_id and not primary_path.exists():
+        legacy_value = str(resource_url_in or chat_file or "").strip()
+        if legacy_value:
+            legacy_source = "resource_url" if resource_url_in else "chat_file"
+            legacy_key = _chat_storage_hash(uid, aid, legacy_value)
+            legacy_path = (chats_dir / f"{agent_slug}_{legacy_key}").resolve()
+            if legacy_path.exists():
+                return legacy_path, legacy_key, legacy_source
+
+    return primary_path, primary_key, primary_source
 
 
 def _merge_conv(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1574,11 +1835,18 @@ async def memorize(payload: dict[str, Any]):
         user_scope = safe.get("user")
         if not isinstance(user_scope, dict):
             user_scope = _extract_scope(safe) or None
+        conversation_id = _extract_conversation_id(safe)
+        if conversation_id and isinstance(user_scope, dict):
+            user_scope = {**user_scope, "conversation_id": conversation_id}
 
 
-        # Per-agent-only: SillyTavern traffic must include user.agent_id (or agent_name).
-        if not isinstance(user_scope, dict) or not str(user_scope.get('agent_id') or '').strip():
-            raise HTTPException(status_code=400, detail='Missing user.agent_id (per-agent DBs required)')
+        # Per-soul-only: SillyTavern traffic must include user.soul_id (or user.agent_id for compatibility).
+        if not isinstance(user_scope, dict):
+            raise HTTPException(status_code=400, detail='Missing user scope (user.soul_id required)')
+        scoped_soul = str(user_scope.get('soul_id') or user_scope.get('agent_id') or '').strip()
+        if not scoped_soul:
+            raise HTTPException(status_code=400, detail='Missing user.soul_id (or user.agent_id) for per-soul DBs')
+        user_scope = {**user_scope, "agent_id": scoped_soul}
 
         conversation = safe.get("conversation")
         if conversation is None:
@@ -1599,15 +1867,18 @@ async def memorize(payload: dict[str, Any]):
         uid = str((user_scope or {}).get('user_id') or 'user') if isinstance(user_scope, dict) else 'user'
         aid = str((user_scope or {}).get('agent_id') or 'agent') if isinstance(user_scope, dict) else 'agent'
 
-        chat_file = _pick_str(safe, 'chatFileName', 'chat_file_name', 'chat_filename', 'chatFile')
-        hint = chat_file or _pick_str(safe, 'resource_url') or ''
-        chat_key_src = f"{uid}|{aid}|{hint}".encode('utf-8', 'ignore')
-        chat_key = hashlib.sha1(chat_key_src).hexdigest()[:16]
-        agent_slug = _sanitize_db_filename(aid)
-
         storage_dir = _get_storage_dir(_CONFIG)
         chats_dir = (storage_dir / 'st_chats').resolve()
-        chat_dir = (chats_dir / f"{agent_slug}_{chat_key}").resolve()
+        chat_file = _pick_str(safe, 'chatFileName', 'chat_file_name', 'chat_filename', 'chatFile')
+        resource_url_in = _pick_str(safe, 'resource_url')
+        chat_dir, chat_key, chat_key_source = _resolve_chat_storage_dir(
+            chats_dir,
+            uid,
+            aid,
+            conversation_id,
+            chat_file,
+            resource_url_in,
+        )
         days_dir = (chat_dir / 'days').resolve()
         chat_dir.mkdir(parents=True, exist_ok=True)
         days_dir.mkdir(parents=True, exist_ok=True)
@@ -1728,7 +1999,23 @@ async def memorize(payload: dict[str, Any]):
 
             segments = keep_segments + new_segments
             try:
-                manifest_out = {"v": 1, "tz": str(tz_name or ''), "segments": segments, "split": {"min_lull_seconds": _SLEEP_SPLIT_MIN_LULL_SECONDS, "max_span_days": _SLEEP_SPLIT_MAX_SPAN_DAYS}, "source": {"chatFileName": chat_file or '', "resource_url_in": _pick_str(safe, 'resource_url') or '', "timeZoneOffsetMin": tz_off_min if tz_off_min is not None else None}}
+                manifest_out = {
+                    "v": 1,
+                    "tz": str(tz_name or ''),
+                    "segments": segments,
+                    "split": {
+                        "min_lull_seconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
+                        "max_span_days": _SLEEP_SPLIT_MAX_SPAN_DAYS,
+                    },
+                    "source": {
+                        "conversationId": conversation_id or '',
+                        "chatFileName": chat_file or '',
+                        "resource_url_in": resource_url_in or '',
+                        "timeZoneOffsetMin": tz_off_min if tz_off_min is not None else None,
+                        "chatKey": chat_key,
+                        "chatKeySource": chat_key_source or '',
+                    },
+                }
                 manifest_path.write_text(json.dumps(manifest_out, ensure_ascii=False, indent=2), encoding='utf-8')
             except Exception:
                 pass
@@ -1742,7 +2029,11 @@ async def memorize(payload: dict[str, Any]):
 
         _record_call('memorize', safe, ok=True, info={
             'resource_url': resource_url,
+            'conversationId': conversation_id,
             'chatFileName': chat_file,
+            'resourceUrlIn': resource_url_in,
+            'chatKey': chat_key,
+            'chatKeySource': chat_key_source,
             'timeZone': tz_name,
             'messages_prev': prev_len,
             'messages_in': len(conv_norm) if isinstance(conv_norm, list) else None,
@@ -1807,11 +2098,12 @@ async def default_categories():
     return {"ok": True, "categories": out, "allow_dynamic": allow_dynamic, "max_total": max_total}
 
 @app.get("/categories", operation_id="list_memory_categories")
-async def list_memory_categories(user_id: str = "", agent_id: str = "", include_empty: bool = False):
+async def list_memory_categories(user_id: str = "", soul_id: str = "", agent_id: str = "", include_empty: bool = False):
     # Scope is required: this server runs per-agent SQLite databases (no shared DB by default).
-    if not agent_id.strip():
-        raise HTTPException(status_code=400, detail="agent_id required")
-    where: dict[str, Any] = {"agent_id": agent_id.strip()}
+    scoped_soul = (soul_id or agent_id).strip()
+    if not scoped_soul:
+        raise HTTPException(status_code=400, detail="soul_id (or agent_id) required")
+    where: dict[str, Any] = {"agent_id": scoped_soul}
     if user_id.strip():
         where["user_id"] = user_id.strip()
 
@@ -1893,12 +2185,174 @@ async def search_memory_categories(payload: dict[str, Any]):
         _record_call('categories.search', payload if isinstance(payload, dict) else None, ok=False, error=f"{type(exc).__name__}: {exc}")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+
+@app.get("/conversation/{conversation_id}/state", operation_id="get_conversation_state")
+async def get_conversation_state(
+    conversation_id: str,
+    soul_id: str | None = None,
+    agent_id: str | None = None,
+    user_id: str | None = None,
+):
+    cid = str(conversation_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+
+    db_path: Path | None = None
+    state_out: dict[str, Any] | None = None
+    scoped_agent = str(soul_id or agent_id or "").strip() or None
+    scoped_user = str(user_id or "").strip() or None
+
+    if scoped_agent:
+        db_path = _sqlite_current_path(scoped_user, scoped_agent, scoped_agent)
+        if db_path is None:
+            raise HTTPException(status_code=400, detail="soul_id (or agent_id) required for sqlite scope resolution")
+        if not db_path.exists():
+            return {"ok": True, "state": None, "path": str(db_path)}
+        con = _sqlite_connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            _sqlite_ensure_conversation_state_schema(con)
+            state_out = _conversation_state_from_row(_conversation_state_row(con, cid))
+        finally:
+            con.close()
+    else:
+        db_path, state_out = _find_conversation_state_across_dbs(cid)
+
+    return {"ok": True, "state": state_out, "path": str(db_path) if db_path else None}
+
+
+@app.patch("/conversation/{conversation_id}/state", operation_id="patch_conversation_state")
+async def patch_conversation_state(
+    conversation_id: str,
+    payload: dict[str, Any] | None = Body(default=None),
+    soul_id: str | None = None,
+    agent_id: str | None = None,
+    user_id: str | None = None,
+):
+    cid = str(conversation_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+    body = payload if isinstance(payload, dict) else {}
+
+    body_agent_id = _pick_str(body, "soul_id", "soulId", "agent_id", "agentId")
+    body_user_id = _pick_str(body, "user_id", "userId")
+    scoped_agent = body_agent_id or (str(soul_id or agent_id or "").strip() or None)
+    scoped_user = body_user_id or (str(user_id or "").strip() or None)
+
+    db_path: Path | None = _sqlite_current_path(scoped_user, scoped_agent, scoped_agent) if scoped_agent else None
+    existing_state: dict[str, Any] | None = None
+    if db_path is None:
+        db_path, existing_state = _find_conversation_state_across_dbs(cid)
+        if db_path is None:
+            raise HTTPException(status_code=400, detail="soul_id (or agent_id) is required when creating new conversation state")
+
+    _sqlite_ensure_nonempty(db_path)
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
+
+        if existing_state is None:
+            existing_state = _conversation_state_from_row(_conversation_state_row(con, cid))
+        if existing_state is None:
+            existing_state = {
+                "conversation_id": cid,
+                "agent_id": scoped_agent,
+                "user_id": scoped_user,
+                "digest_cursor": 0,
+                "working_note": None,
+                "active_intentions": None,
+                "last_retrieval_ids": None,
+                "last_memorize_at": None,
+                "updated_at": None,
+            }
+
+        merged = dict(existing_state)
+        merged["conversation_id"] = cid
+        if scoped_agent:
+            merged["agent_id"] = scoped_agent
+        if scoped_user:
+            merged["user_id"] = scoped_user
+
+        if "agent_id" in body or "agentId" in body:
+            merged["agent_id"] = body_agent_id
+        if "user_id" in body or "userId" in body:
+            merged["user_id"] = body_user_id
+
+        if "digest_cursor" in body or "digestCursor" in body:
+            raw_cursor = body.get("digest_cursor", body.get("digestCursor"))
+            if raw_cursor is None:
+                merged["digest_cursor"] = 0
+            else:
+                try:
+                    merged["digest_cursor"] = max(0, int(raw_cursor))
+                except Exception as exc:
+                    raise HTTPException(status_code=400, detail="digest_cursor must be an integer") from exc
+
+        if "working_note" in body or "workingNote" in body:
+            raw_note = body.get("working_note", body.get("workingNote"))
+            merged["working_note"] = None if raw_note is None else str(raw_note)
+
+        if "active_intentions" in body or "activeIntentions" in body:
+            merged["active_intentions"] = body.get("active_intentions", body.get("activeIntentions"))
+
+        if "last_retrieval_ids" in body or "lastRetrievalIds" in body:
+            merged["last_retrieval_ids"] = body.get("last_retrieval_ids", body.get("lastRetrievalIds"))
+
+        if "last_memorize_at" in body or "lastMemorizeAt" in body:
+            raw_last = body.get("last_memorize_at", body.get("lastMemorizeAt"))
+            merged["last_memorize_at"] = None if raw_last is None else (str(raw_last).strip() or None)
+
+        merged["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        con.execute(
+            """
+INSERT INTO memu_conversation_state (
+    conversation_id,
+    agent_id,
+    user_id,
+    digest_cursor,
+    working_note,
+    active_intentions,
+    last_retrieval_ids,
+    last_memorize_at,
+    updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(conversation_id) DO UPDATE SET
+    agent_id = excluded.agent_id,
+    user_id = excluded.user_id,
+    digest_cursor = excluded.digest_cursor,
+    working_note = excluded.working_note,
+    active_intentions = excluded.active_intentions,
+    last_retrieval_ids = excluded.last_retrieval_ids,
+    last_memorize_at = excluded.last_memorize_at,
+    updated_at = excluded.updated_at
+""",
+            (
+                merged["conversation_id"],
+                merged.get("agent_id"),
+                merged.get("user_id"),
+                int(merged.get("digest_cursor") or 0),
+                merged.get("working_note"),
+                _json_to_db(merged.get("active_intentions")),
+                _json_to_db(merged.get("last_retrieval_ids")),
+                merged.get("last_memorize_at"),
+                merged.get("updated_at"),
+            ),
+        )
+        con.commit()
+
+        state_out = _conversation_state_from_row(_conversation_state_row(con, cid))
+        return {"ok": True, "state": state_out, "path": str(db_path)}
+    finally:
+        con.close()
+
 @app.post("/clear", operation_id="clear_memory")
 async def clear_memory(payload: dict[str, Any]):
     """Clear stored memory for a single scoped relationship.
 
     Safety default:
-      - requires both user_id and agent_id
+      - requires both user_id and soul_id (agent_id accepted as compatibility alias)
       - does not allow unscoped/global clear
     """
     try:
@@ -1914,10 +2368,10 @@ async def clear_memory(payload: dict[str, Any]):
                 where = _extract_scope(safe) or {}
 
         uid = str((where or {}).get("user_id") or "").strip()
-        aid = str((where or {}).get("agent_id") or "").strip()
-        if not uid or not aid:
-            raise HTTPException(status_code=400, detail="user_id and agent_id required")
-        where = {"user_id": uid, "agent_id": aid}
+        sid = str((where or {}).get("soul_id") or (where or {}).get("agent_id") or "").strip()
+        if not uid or not sid:
+            raise HTTPException(status_code=400, detail="user_id and soul_id (or agent_id) required")
+        where = {"user_id": uid, "agent_id": sid}
 
         llm = _CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}
         api_key = str(os.getenv("OPENAI_API_KEY") or os.getenv("NANOGPT_API_KEY") or llm.get("api_key") or "")
