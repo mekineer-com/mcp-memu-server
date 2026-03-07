@@ -13,7 +13,7 @@ import sys
 import threading
 from datetime import datetime, timezone, timedelta, time as dtime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 try:
     from zoneinfo import ZoneInfo
@@ -243,11 +243,11 @@ def _is_ephemeral_db(cfg: dict[str, Any]) -> bool:
 # -------------------------
 # User scoping (SillyTavern)
 # -------------------------
-# memU 1.4's DefaultUserModel includes user_id only. For SillyTavern we want per-user + per-character
+# memU 1.4's DefaultUserModel includes user_id only. For SillyTavern we want per-user + per-soul
 # (+ optional session) isolation without patching memU itself.
 class STUserModel(BaseModel):
     user_id: str | None = None
-    agent_id: str | None = None
+    soul_id: str | None = None
     session_id: str | None = None
 
 
@@ -270,7 +270,7 @@ def _default_config() -> dict[str, Any]:
             memu_guess = cand
             break
 
-    sqlite_path = Path(":memory:")  # placeholder; per-agent dbs resolved per-request
+    sqlite_path = Path(":memory:")  # placeholder; per-soul dbs resolved per-request
     resources_dir = home / "apps" / "memu" / "resources"
 
     return {
@@ -638,12 +638,12 @@ def _sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, A
     """Resolve the sqlite DSN for this request.
 
     Policy (minimal):
-      - Per-character DBs for SillyTavern traffic (soul_id / agent_id scope key).
+      - Per-character DBs for SillyTavern traffic (soul_id scope key).
     """
     if not isinstance(scope, dict):
         scope = {}
 
-    soul_id = str(scope.get('soul_id') or scope.get('agent_id') or '').strip()
+    soul_id = str(scope.get('soul_id') or '').strip()
 
     sqlite_dir = _sqlite_dir_from_cfg(cfg, fallback_dsn=base_dsn)
     sqlite_dir.mkdir(parents=True, exist_ok=True)
@@ -652,7 +652,7 @@ def _sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, A
     if not soul_id:
         return base_dsn
 
-    # KISS: soul_id (fallback: agent_id) is the character scope key.
+    # KISS: soul_id is the character scope key.
     basename = _sanitize_db_filename(soul_id)
     db_path = (sqlite_dir / f"{basename}.db").resolve()
     _sqlite_ensure_nonempty(db_path)
@@ -802,19 +802,18 @@ def _get_service_from_payload(
         blob_config = _blob_config_from_cfg(_CONFIG)
         payload["blob_config"] = blob_config
 
-    # Enforce per-agent sqlite isolation even if the payload provided a database_config.
+    # Enforce per-soul sqlite isolation even if the payload provided a database_config.
     # This prevents cross-character memory mixing at the storage boundary.
     if isinstance(database_config, dict):
         ms = database_config.get('metadata_store')
         if isinstance(ms, dict) and str(ms.get('provider') or '').lower() == 'sqlite':
             scope_hint2 = _extract_scope(payload)
-            soul_id2 = str((scope_hint2 or {}).get('soul_id') or (scope_hint2 or {}).get('agent_id') or '').strip()
+            soul_id2 = str((scope_hint2 or {}).get('soul_id') or '').strip()
             if not soul_id2:
-                raise HTTPException(status_code=400, detail='soul_id (or agent_id) required for sqlite scope')
+                raise HTTPException(status_code=400, detail='soul_id required for sqlite scope')
             base = _normalize_sqlite_dsn(str(ms.get('dsn') or ''))
             scope_for_dsn = dict(scope_hint2 or {})
             scope_for_dsn['soul_id'] = soul_id2
-            scope_for_dsn['agent_id'] = soul_id2
             ms['dsn'] = _sqlite_dsn_for_scope(_CONFIG, base, scope_for_dsn)
 
     sig = _payload_signature(payload)
@@ -851,7 +850,7 @@ def _get_service_from_payload(
     retrieve_config = payload.get("retrieve_config") or {}
     user_config = payload.get("user_config") or {}
 
-    # Force STUserModel so agent_id/session_id filters are accepted.
+    # Force STUserModel so soul_id/session_id filters are accepted.
     user_config = {**(user_config if isinstance(user_config, dict) else {}), "model": STUserModel}
 
     # Small UX: disable conversation preprocess prompt unless explicitly set.
@@ -903,8 +902,7 @@ def _pick_str(payload: dict[str, Any], *keys: str) -> str | None:
 def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
     user_id = _pick_str(payload, "user_id", "userId", "userID", "userid")
     soul_id = _pick_str(payload, "soul_id", "soulId", "soulID", "soulid")
-    agent_id = _pick_str(payload, "agent_id", "agentId", "agentID", "agentid")
-    agent_name = _pick_str(payload, "agent_name", "agentName", "character_name", "characterName", "character")
+    soul_name = _pick_str(payload, "soul_name", "soulName", "character_name", "characterName", "character")
     session_id = _pick_str(payload, "session_id", "sessionId", "sessionID", "sessionid", "session_date", "sessionDate", "sessiondate")
 
     # SillyTavern local plugin sends scope primarily under payload.user.
@@ -914,10 +912,8 @@ def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
             user_id = _pick_str(user_obj, "user_id", "userId", "userID", "userid")
         if not soul_id:
             soul_id = _pick_str(user_obj, "soul_id", "soulId", "soulID", "soulid")
-        if not agent_id:
-            agent_id = _pick_str(user_obj, "agent_id", "agentId", "agentID", "agentid")
-        if not agent_name:
-            agent_name = _pick_str(user_obj, "agent_name", "agentName", "character_name", "characterName", "character")
+        if not soul_name:
+            soul_name = _pick_str(user_obj, "soul_name", "soulName", "character_name", "characterName", "character")
         if not session_id:
             session_id = _pick_str(
                 user_obj,
@@ -930,25 +926,76 @@ def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
                 "sessiondate",
             )
 
-    # Prefer soul_id lexicon, keep agent_id for compatibility/storage.
-    if not soul_id and agent_id:
-        soul_id = agent_id
-    if not agent_id and soul_id:
-        agent_id = soul_id
-    # Final fallback: use character name when explicit IDs are absent.
-    if not soul_id and agent_name:
-        soul_id = agent_name
-    if not agent_id and agent_name:
-        agent_id = agent_name
+    # Final fallback: use character/soul name when explicit IDs are absent.
+    if not soul_id and soul_name:
+        soul_id = soul_name
 
     scope: dict[str, Any] = {}
     if user_id:
         scope["user_id"] = user_id
-    if agent_id:
-        scope["agent_id"] = agent_id
+    if soul_id:
+        scope["soul_id"] = soul_id
     if session_id:
         scope["session_id"] = session_id
     return scope
+
+
+def _canonicalize_scope_where(where: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Normalize scope aliases before handing filters to memU.
+
+    memU's current ST user model accepts `user_id`, `soul_id`, and
+    `session_id`. The server accepts `soul_id` as the preferred public lexicon,
+    so payload-driven endpoints need to translate that alias at the boundary.
+    """
+    if where is None:
+        return None
+
+    out = dict(where)
+    user_id = _pick_str(out, "user_id", "userId", "userID", "userid")
+    scoped_soul = _pick_str(
+        out,
+        "soul_id",
+        "soulId",
+        "soulID",
+        "soulid",
+    )
+    session_id = _pick_str(
+        out,
+        "session_id",
+        "sessionId",
+        "sessionID",
+        "sessionid",
+        "session_date",
+        "sessionDate",
+        "sessiondate",
+    )
+
+    for key in (
+        "user_id",
+        "userId",
+        "userID",
+        "userid",
+        "soul_id",
+        "soulId",
+        "soulID",
+        "soulid",
+        "session_id",
+        "sessionId",
+        "sessionID",
+        "sessionid",
+        "session_date",
+        "sessionDate",
+        "sessiondate",
+    ):
+        out.pop(key, None)
+
+    if user_id:
+        out["user_id"] = user_id
+    if scoped_soul:
+        out["soul_id"] = scoped_soul
+    if session_id:
+        out["session_id"] = session_id
+    return out
 
 
 def _extract_conversation_id(payload: dict[str, Any]) -> str | None:
@@ -1055,14 +1102,13 @@ def _record_call(op: str, payload: dict[str, Any] | None, *, ok: bool, info: Any
 def _sqlite_current_path(
     user_id: str | None = None,
     soul_id: str | None = None,
-    agent_id: str | None = None,
 ) -> Path | None:
     try:
         base_dsn = str(_STORAGE_STATUS.get('dsn') or '')
-        scoped_soul = str(soul_id or agent_id or "").strip()
+        scoped_soul = str(soul_id or "").strip()
         if not scoped_soul:
             return None
-        scope = {'soul_id': scoped_soul, 'agent_id': scoped_soul}
+        scope = {'soul_id': scoped_soul}
         dsn = _sqlite_dsn_for_scope(_CONFIG, base_dsn, scope)
         f = _sqlite_file_from_dsn(dsn)
         return f.expanduser().resolve() if f is not None else None
@@ -1109,15 +1155,21 @@ def _sqlite_table_columns(con: sqlite3.Connection, table: str) -> list[str]:
     return [c for c in cols if isinstance(c, str)]
 
 
-def _sqlite_build_scope_where(cols: list[str], user_id: str | None, agent_id: str | None, session_id: str | None) -> tuple[str, list[Any]]:
+def _sqlite_build_scope_where(
+    cols: list[str],
+    user_id: str | None,
+    soul_id: str | None,
+    session_id: str | None,
+) -> tuple[str, list[Any]]:
     where = []
     params: list[Any] = []
     if user_id and 'user_id' in cols:
         where.append('user_id = ?')
         params.append(user_id)
-    if agent_id and 'agent_id' in cols:
-        where.append('agent_id = ?')
-        params.append(agent_id)
+    if soul_id:
+        if 'soul_id' in cols:
+            where.append('soul_id = ?')
+            params.append(soul_id)
     if session_id and 'session_id' in cols:
         where.append('session_id = ?')
         params.append(session_id)
@@ -1155,7 +1207,7 @@ def _sqlite_ensure_conversation_state_schema(con: sqlite3.Connection) -> None:
         """
 CREATE TABLE IF NOT EXISTS memu_conversation_state (
     conversation_id VARCHAR PRIMARY KEY,
-    agent_id VARCHAR,
+    soul_id VARCHAR,
     user_id VARCHAR,
     digest_cursor INTEGER DEFAULT 0,
     working_note TEXT,
@@ -1168,8 +1220,8 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
     )
     cols = set(_sqlite_table_columns(con, "memu_conversation_state"))
     alters: list[str] = []
-    if "agent_id" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN agent_id VARCHAR")
+    if "soul_id" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN soul_id VARCHAR")
     if "user_id" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN user_id VARCHAR")
     if "digest_cursor" not in cols:
@@ -1219,7 +1271,7 @@ def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | No
         digest_cursor = 0
     return {
         "conversation_id": row["conversation_id"],
-        "agent_id": row["agent_id"] if "agent_id" in row.keys() else None,
+        "soul_id": row["soul_id"] if "soul_id" in row.keys() else None,
         "user_id": row["user_id"] if "user_id" in row.keys() else None,
         "digest_cursor": max(0, digest_cursor),
         "working_note": row["working_note"] if "working_note" in row.keys() else None,
@@ -1231,9 +1283,20 @@ def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | No
 
 
 def _conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
+    cols = set(_sqlite_table_columns(con, "memu_conversation_state"))
+    select_cols = [
+        "conversation_id",
+        *([ "soul_id" ] if "soul_id" in cols else []),
+        "user_id",
+        "digest_cursor",
+        "working_note",
+        "active_intentions",
+        "last_retrieval_ids",
+        "last_memorize_at",
+        "updated_at",
+    ]
     return con.execute(
-        "SELECT conversation_id, agent_id, user_id, digest_cursor, working_note, "
-        "active_intentions, last_retrieval_ids, last_memorize_at, updated_at "
+        f"SELECT {', '.join(select_cols)} "
         "FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
         (conversation_id,),
     ).fetchone()
@@ -1363,10 +1426,10 @@ async def diag_page():
 <li><a href='/diag/http'>/diag/http</a> <small>(last 200 HTTP requests seen by this server)</small></li>
 <li><a href='/diag/calls'>/diag/calls</a> <small>(last 50 memorize/retrieve calls)</small></li>
 <li><a href='/diag/sqlite'>/diag/sqlite</a></li>
-<li><a href='/diag/sqlite/counts'>/diag/sqlite/counts</a> <small>(add ?user_id=...&agent_id=...)</small></li>
+<li><a href='/diag/sqlite/counts'>/diag/sqlite/counts</a> <small>(add ?user_id=...&soul_id=...)</small></li>
 <li><a href='/diag/sqlite/recent?table=memu_memory_items&limit=10'>/diag/sqlite/recent</a> <small>(add scope params)</small></li>
 </ul>
-<p><b>Scope tip:</b> if your ST extension uses <code>user_id</code> + <code>agent_id</code>, but your tests omit one, retrieval can look empty. Use the same scope in <code>/diag/sqlite/*</code>.</p>
+<p><b>Scope tip:</b> if your ST extension uses <code>user_id</code> + <code>soul_id</code>, but your tests omit one, retrieval can look empty. Use the same scope in <code>/diag/sqlite/*</code>.</p>
 </body></html>""")
 
 
@@ -1384,7 +1447,7 @@ async def diag_http():
 
 @app.get(f"{_DIAG_PREFIX}/diag/sqlite")
 @app.get("/diag/sqlite", operation_id="diag_sqlite")
-async def diag_sqlite(user_id: str = "", soul_id: str = "", agent_id: str = ""):
+async def diag_sqlite(user_id: str = "", soul_id: str = ""):
     try:
         storage = _CONFIG.get('storage') if isinstance(_CONFIG.get('storage'), dict) else {}
         meta = storage.get('metadata_store') if isinstance(storage.get('metadata_store'), dict) else {}
@@ -1392,8 +1455,8 @@ async def diag_sqlite(user_id: str = "", soul_id: str = "", agent_id: str = ""):
         if provider not in ('sqlite', 'sqlite3'):
             return {"ok": False, "reason": "provider_not_sqlite", "provider": provider, "storage": _STORAGE_STATUS}
 
-        scoped_soul = (soul_id or agent_id).strip()
-        p = _sqlite_current_path(user_id or None, scoped_soul or None, scoped_soul or None)
+        scoped_soul = soul_id.strip()
+        p = _sqlite_current_path(user_id or None, scoped_soul or None)
         if p is None:
             return {"ok": False, "reason": "soul_id_required", "storage": _STORAGE_STATUS}
 
@@ -1422,11 +1485,10 @@ async def diag_sqlite(user_id: str = "", soul_id: str = "", agent_id: str = ""):
 async def diag_sqlite_counts(
     user_id: str | None = None,
     soul_id: str | None = None,
-    agent_id: str | None = None,
     session_id: str | None = None,
 ):
-    scoped_soul = (str(soul_id or "").strip() or str(agent_id or "").strip() or None)
-    p = _sqlite_current_path(user_id or None, scoped_soul, scoped_soul)
+    scoped_soul = str(soul_id or "").strip() or None
+    p = _sqlite_current_path(user_id or None, scoped_soul)
     if p is None or not p.exists():
         reason = "soul_id_required" if p is None else "sqlite_file_missing"
         return {"ok": False, "reason": reason, "path": str(p) if p else None, "storage": _STORAGE_STATUS}
@@ -1441,7 +1503,7 @@ async def diag_sqlite_counts(
     con = _sqlite_connect(p)
     try:
         _sqlite_ensure_conversation_state_schema(con)
-        out: dict[str, Any] = {"ok": True, "path": str(p), "scope": {"user_id": user_id, "soul_id": scoped_soul, "agent_id": scoped_soul, "session_id": session_id}, "tables": {}}
+        out: dict[str, Any] = {"ok": True, "path": str(p), "scope": {"user_id": user_id, "soul_id": scoped_soul, "session_id": session_id}, "tables": {}}
         for t in allowed:
             cols = _sqlite_table_columns(con, t)
             where, params = _sqlite_build_scope_where(cols, user_id, scoped_soul, session_id)
@@ -1450,7 +1512,7 @@ async def diag_sqlite_counts(
             out["tables"][t] = {
                 "total": int(total),
                 "scoped": int(scoped),
-                "scope_cols": [c for c in ("user_id", "agent_id", "session_id", "conversation_id") if c in cols],
+                "scope_cols": [c for c in ("user_id", "soul_id", "session_id", "conversation_id") if c in cols],
             }
         return out
     finally:
@@ -1464,7 +1526,6 @@ async def diag_sqlite_recent(
     limit: int = 20,
     user_id: str | None = None,
     soul_id: str | None = None,
-    agent_id: str | None = None,
     session_id: str | None = None,
 ):
     allowed = {"memu_resources", "memu_memory_categories", "memu_memory_items", "memu_category_items", "memu_conversation_state"}
@@ -1472,8 +1533,8 @@ async def diag_sqlite_recent(
         raise HTTPException(status_code=400, detail=f"table must be one of: {sorted(allowed)}")
     limit = max(1, min(int(limit or 20), 200))
 
-    scoped_soul = (str(soul_id or "").strip() or str(agent_id or "").strip() or None)
-    p = _sqlite_current_path(user_id or None, scoped_soul, scoped_soul)
+    scoped_soul = str(soul_id or "").strip() or None
+    p = _sqlite_current_path(user_id or None, scoped_soul)
     if p is None or not p.exists():
         reason = "soul_id_required" if p is None else "sqlite_file_missing"
         return {"ok": False, "reason": reason, "path": str(p) if p else None, "storage": _STORAGE_STATUS}
@@ -1491,7 +1552,7 @@ async def diag_sqlite_recent(
             "created_at",
             "updated_at",
             "user_id",
-            "agent_id",
+            "soul_id",
             "session_id",
             "conversation_id",
             "name",
@@ -1842,13 +1903,13 @@ async def memorize(payload: dict[str, Any]):
             user_scope = {**user_scope, "conversation_id": conversation_id}
 
 
-        # Per-soul-only: SillyTavern traffic must include user.soul_id (or user.agent_id for compatibility).
+        # Per-soul-only: SillyTavern traffic must include user.soul_id.
         if not isinstance(user_scope, dict):
             raise HTTPException(status_code=400, detail='Missing user scope (user.soul_id required)')
-        scoped_soul = str(user_scope.get('soul_id') or user_scope.get('agent_id') or '').strip()
+        scoped_soul = str(user_scope.get('soul_id') or '').strip()
         if not scoped_soul:
-            raise HTTPException(status_code=400, detail='Missing user.soul_id (or user.agent_id) for per-soul DBs')
-        user_scope = {**user_scope, "agent_id": scoped_soul}
+            raise HTTPException(status_code=400, detail='Missing user.soul_id for per-soul DBs')
+        user_scope = {**user_scope, "soul_id": scoped_soul}
 
         conversation = safe.get("conversation")
         if conversation is None:
@@ -1867,7 +1928,7 @@ async def memorize(payload: dict[str, Any]):
 
 
         uid = str((user_scope or {}).get('user_id') or 'user') if isinstance(user_scope, dict) else 'user'
-        aid = str((user_scope or {}).get('agent_id') or 'agent') if isinstance(user_scope, dict) else 'agent'
+        soul = str((user_scope or {}).get('soul_id') or 'soul') if isinstance(user_scope, dict) else 'soul'
 
         storage_dir = _get_storage_dir(_CONFIG)
         chats_dir = (storage_dir / 'st_chats').resolve()
@@ -1876,7 +1937,7 @@ async def memorize(payload: dict[str, Any]):
         chat_dir, chat_key, chat_key_source = _resolve_chat_storage_dir(
             chats_dir,
             uid,
-            aid,
+            soul,
             conversation_id,
             chat_file,
             resource_url_in,
@@ -2064,7 +2125,7 @@ async def memorize(payload: dict[str, Any]):
 async def default_categories():
     """Return default category policy from server config.json.
 
-    This endpoint is intentionally scope-free (no user_id/agent_id required).
+    This endpoint is intentionally scope-free (no user_id/soul_id required).
     """
     cats_cfg = _CONFIG.get('categories') if isinstance(_CONFIG, dict) else None
     cats_cfg = cats_cfg if isinstance(cats_cfg, dict) else {}
@@ -2100,12 +2161,12 @@ async def default_categories():
     return {"ok": True, "categories": out, "allow_dynamic": allow_dynamic, "max_total": max_total}
 
 @app.get("/categories", operation_id="list_memory_categories")
-async def list_memory_categories(user_id: str = "", soul_id: str = "", agent_id: str = "", include_empty: bool = False):
-    # Scope is required: this server runs per-agent SQLite databases (no shared DB by default).
-    scoped_soul = (soul_id or agent_id).strip()
+async def list_memory_categories(user_id: str = "", soul_id: str = "", include_empty: bool = False):
+    # Scope is required: this server runs per-soul SQLite databases (no shared DB by default).
+    scoped_soul = soul_id.strip()
     if not scoped_soul:
-        raise HTTPException(status_code=400, detail="soul_id (or agent_id) required")
-    where: dict[str, Any] = {"agent_id": scoped_soul}
+        raise HTTPException(status_code=400, detail="soul_id required")
+    where: dict[str, Any] = {"soul_id": scoped_soul}
     if user_id.strip():
         where["user_id"] = user_id.strip()
 
@@ -2162,6 +2223,7 @@ async def search_memory_categories(payload: dict[str, Any]):
             raise HTTPException(status_code=400, detail="'where' must be an object")
         if where is None:
             where = safe.get("user") if isinstance(safe.get("user"), dict) else (_extract_scope(safe) or None)
+        where = _canonicalize_scope_where(where)
 
         include_empty = bool(safe.get("include_empty"))
 
@@ -2192,7 +2254,6 @@ async def search_memory_categories(payload: dict[str, Any]):
 async def get_conversation_state(
     conversation_id: str,
     soul_id: str | None = None,
-    agent_id: str | None = None,
     user_id: str | None = None,
 ):
     cid = str(conversation_id or "").strip()
@@ -2201,13 +2262,13 @@ async def get_conversation_state(
 
     db_path: Path | None = None
     state_out: dict[str, Any] | None = None
-    scoped_agent = str(soul_id or agent_id or "").strip() or None
+    scoped_soul = str(soul_id or "").strip() or None
     scoped_user = str(user_id or "").strip() or None
 
-    if scoped_agent:
-        db_path = _sqlite_current_path(scoped_user, scoped_agent, scoped_agent)
+    if scoped_soul:
+        db_path = _sqlite_current_path(scoped_user, scoped_soul)
         if db_path is None:
-            raise HTTPException(status_code=400, detail="soul_id (or agent_id) required for sqlite scope resolution")
+            raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
         if not db_path.exists():
             return {"ok": True, "state": None, "path": str(db_path)}
         con = _sqlite_connect(db_path)
@@ -2228,7 +2289,6 @@ async def patch_conversation_state(
     conversation_id: str,
     payload: dict[str, Any] | None = Body(default=None),
     soul_id: str | None = None,
-    agent_id: str | None = None,
     user_id: str | None = None,
 ):
     cid = str(conversation_id or "").strip()
@@ -2236,17 +2296,17 @@ async def patch_conversation_state(
         raise HTTPException(status_code=400, detail="conversation_id is required")
     body = payload if isinstance(payload, dict) else {}
 
-    body_agent_id = _pick_str(body, "soul_id", "soulId", "agent_id", "agentId")
+    body_soul_id = _pick_str(body, "soul_id", "soulId")
     body_user_id = _pick_str(body, "user_id", "userId")
-    scoped_agent = body_agent_id or (str(soul_id or agent_id or "").strip() or None)
+    scoped_soul = body_soul_id or (str(soul_id or "").strip() or None)
     scoped_user = body_user_id or (str(user_id or "").strip() or None)
 
-    db_path: Path | None = _sqlite_current_path(scoped_user, scoped_agent, scoped_agent) if scoped_agent else None
+    db_path: Path | None = _sqlite_current_path(scoped_user, scoped_soul) if scoped_soul else None
     existing_state: dict[str, Any] | None = None
     if db_path is None:
         db_path, existing_state = _find_conversation_state_across_dbs(cid)
         if db_path is None:
-            raise HTTPException(status_code=400, detail="soul_id (or agent_id) is required when creating new conversation state")
+            raise HTTPException(status_code=400, detail="soul_id is required when creating new conversation state")
 
     _sqlite_ensure_nonempty(db_path)
     con = _sqlite_connect(db_path)
@@ -2259,7 +2319,7 @@ async def patch_conversation_state(
         if existing_state is None:
             existing_state = {
                 "conversation_id": cid,
-                "agent_id": scoped_agent,
+                "soul_id": scoped_soul,
                 "user_id": scoped_user,
                 "digest_cursor": 0,
                 "working_note": None,
@@ -2271,13 +2331,13 @@ async def patch_conversation_state(
 
         merged = dict(existing_state)
         merged["conversation_id"] = cid
-        if scoped_agent:
-            merged["agent_id"] = scoped_agent
+        if scoped_soul:
+            merged["soul_id"] = scoped_soul
         if scoped_user:
             merged["user_id"] = scoped_user
 
-        if "agent_id" in body or "agentId" in body:
-            merged["agent_id"] = body_agent_id
+        if "soul_id" in body or "soulId" in body:
+            merged["soul_id"] = body_soul_id
         if "user_id" in body or "userId" in body:
             merged["user_id"] = body_user_id
 
@@ -2311,7 +2371,7 @@ async def patch_conversation_state(
             """
 INSERT INTO memu_conversation_state (
     conversation_id,
-    agent_id,
+    soul_id,
     user_id,
     digest_cursor,
     working_note,
@@ -2321,7 +2381,7 @@ INSERT INTO memu_conversation_state (
     updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(conversation_id) DO UPDATE SET
-    agent_id = excluded.agent_id,
+    soul_id = excluded.soul_id,
     user_id = excluded.user_id,
     digest_cursor = excluded.digest_cursor,
     working_note = excluded.working_note,
@@ -2332,7 +2392,7 @@ ON CONFLICT(conversation_id) DO UPDATE SET
 """,
             (
                 merged["conversation_id"],
-                merged.get("agent_id"),
+                merged.get("soul_id"),
                 merged.get("user_id"),
                 int(merged.get("digest_cursor") or 0),
                 merged.get("working_note"),
@@ -2354,7 +2414,7 @@ async def clear_memory(payload: dict[str, Any]):
     """Clear stored memory for a single scoped relationship.
 
     Safety default:
-      - requires both user_id and soul_id (agent_id accepted as compatibility alias)
+      - requires both user_id and soul_id
       - does not allow unscoped/global clear
     """
     try:
@@ -2370,10 +2430,10 @@ async def clear_memory(payload: dict[str, Any]):
                 where = _extract_scope(safe) or {}
 
         uid = str((where or {}).get("user_id") or "").strip()
-        sid = str((where or {}).get("soul_id") or (where or {}).get("agent_id") or "").strip()
+        sid = str((where or {}).get("soul_id") or "").strip()
         if not uid or not sid:
-            raise HTTPException(status_code=400, detail="user_id and soul_id (or agent_id) required")
-        where = {"user_id": uid, "agent_id": sid}
+            raise HTTPException(status_code=400, detail="user_id and soul_id required")
+        where = {"user_id": uid, "soul_id": sid}
 
         safe["user"] = where
 
@@ -2416,6 +2476,7 @@ async def retrieve(payload: dict[str, Any]):
             raise HTTPException(status_code=400, detail="'where' must be an object")
         if where is None:
             where = safe.get("user") if isinstance(safe.get("user"), dict) else (_extract_scope(safe) or None)
+        where = _canonicalize_scope_where(where)
 
         queries = safe.get("queries")
         if queries is not None:
