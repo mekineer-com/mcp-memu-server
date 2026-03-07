@@ -775,7 +775,11 @@ def _payload_signature(payload: dict[str, Any]) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
-def _get_service_from_payload(payload: dict[str, Any]) -> MemoryService:
+def _get_service_from_payload(
+    payload: dict[str, Any],
+    *,
+    allow_missing_llm_profiles: bool = False,
+) -> MemoryService:
     service_key_raw = str(payload.get("service_key") or "default")
 
     llm_profiles = payload.get("llm_profiles")
@@ -784,7 +788,10 @@ def _get_service_from_payload(payload: dict[str, Any]) -> MemoryService:
 
     # Local-first UX: plugin sends llm_profiles + step routing, while storage paths live in server config.json.
     if not isinstance(llm_profiles, dict):
-        raise HTTPException(status_code=400, detail='llm_profiles required')
+        if not allow_missing_llm_profiles:
+            raise HTTPException(status_code=400, detail='llm_profiles required')
+        llm_profiles = {}
+        payload["llm_profiles"] = llm_profiles
 
     if not isinstance(database_config, dict):
         scope_hint = _extract_scope(payload) if isinstance(payload, dict) else None
@@ -797,23 +804,18 @@ def _get_service_from_payload(payload: dict[str, Any]) -> MemoryService:
 
     # Enforce per-agent sqlite isolation even if the payload provided a database_config.
     # This prevents cross-character memory mixing at the storage boundary.
-    try:
-        if isinstance(database_config, dict):
-            ms = database_config.get('metadata_store')
-            if isinstance(ms, dict) and str(ms.get('provider') or '').lower() == 'sqlite':
-                scope_hint2 = _extract_scope(payload)
-                soul_id2 = str((scope_hint2 or {}).get('soul_id') or (scope_hint2 or {}).get('agent_id') or '').strip()
-                if not soul_id2:
-                    raise HTTPException(status_code=400, detail='soul_id (or agent_id) required for sqlite scope')
-                base = _normalize_sqlite_dsn(str(ms.get('dsn') or ''))
-                scope_for_dsn = dict(scope_hint2 or {})
-                scope_for_dsn['soul_id'] = soul_id2
-                scope_for_dsn['agent_id'] = soul_id2
-                ms['dsn'] = _sqlite_dsn_for_scope(_CONFIG, base, scope_for_dsn)
-    except HTTPException:
-        raise
-    except Exception:
-        pass
+    if isinstance(database_config, dict):
+        ms = database_config.get('metadata_store')
+        if isinstance(ms, dict) and str(ms.get('provider') or '').lower() == 'sqlite':
+            scope_hint2 = _extract_scope(payload)
+            soul_id2 = str((scope_hint2 or {}).get('soul_id') or (scope_hint2 or {}).get('agent_id') or '').strip()
+            if not soul_id2:
+                raise HTTPException(status_code=400, detail='soul_id (or agent_id) required for sqlite scope')
+            base = _normalize_sqlite_dsn(str(ms.get('dsn') or ''))
+            scope_for_dsn = dict(scope_hint2 or {})
+            scope_for_dsn['soul_id'] = soul_id2
+            scope_for_dsn['agent_id'] = soul_id2
+            ms['dsn'] = _sqlite_dsn_for_scope(_CONFIG, base, scope_for_dsn)
 
     sig = _payload_signature(payload)
     service_key = f"{service_key_raw}__{sig}"
@@ -2373,29 +2375,9 @@ async def clear_memory(payload: dict[str, Any]):
             raise HTTPException(status_code=400, detail="user_id and soul_id (or agent_id) required")
         where = {"user_id": uid, "agent_id": sid}
 
-        llm = _CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}
-        api_key = str(os.getenv("OPENAI_API_KEY") or os.getenv("NANOGPT_API_KEY") or llm.get("api_key") or "")
-        base_url = str(os.getenv("OPENAI_BASE_URL") or llm.get("base_url") or "https://api.openai.com/v1")
-        chat_model = str(os.getenv("DEFAULT_CHAT_MODEL") or llm.get("chat_model") or "gpt-4o-mini")
-        embed_model = str(os.getenv("DEFAULT_EMBED_MODEL") or llm.get("embed_model") or "text-embedding-3-small")
-
-        # If caller doesn't provide llm_profiles, synthesize a minimal default
-        # profile from server config so /clear can be called from any client.
-        if not isinstance(safe.get("llm_profiles"), dict):
-            safe["llm_profiles"] = {
-                "default": {
-                    "provider": str(os.getenv("LLM_PROVIDER") or llm.get("provider") or "openai"),
-                    "api_key": api_key,
-                    "base_url": base_url,
-                    "chat_model": chat_model,
-                    "embed_model": embed_model,
-                    "client_backend": str(os.getenv("LLM_CLIENT_BACKEND") or llm.get("client_backend") or "httpx"),
-                    "endpoint_overrides": llm.get("endpoint_overrides") or {},
-                }
-            }
         safe["user"] = where
 
-        svc = _get_service_from_payload(safe)
+        svc = _get_service_from_payload(safe, allow_missing_llm_profiles=True)
         result = await svc.clear_memory(where=where)
 
         deleted_categories = result.get("deleted_categories") if isinstance(result, dict) else []
