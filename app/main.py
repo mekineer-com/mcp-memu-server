@@ -1,6 +1,8 @@
 import hashlib
+import asyncio
 import json
 import os
+import signal
 import traceback
 import time
 import uuid
@@ -8,6 +10,7 @@ import sqlite3
 import re
 import math
 import sys
+import threading
 from datetime import datetime, timezone, timedelta, time as dtime
 from pathlib import Path
 from typing import Any, Optional
@@ -71,21 +74,146 @@ _LAST_CALLS: list[dict[str, Any]] = []
 _LAST_HTTP: list[dict[str, Any]] = []
 
 
+# -------------------------
+# Graceful shutdown state
+# -------------------------
+
+_STATE_LOCK = threading.Lock()
+_ACTIVE_HTTP_REQUESTS: int = 0
+_ACTIVE_WORK_REQUESTS: int = 0
+_SHUTDOWN_TASK: asyncio.Task | None = None
+_SHUTDOWN_STATE: dict[str, Any] = {
+    "draining": False,
+    "stopping": False,
+    "requestedAtUnix": None,
+    "requestedBy": None,
+    "reason": None,
+    "maxWaitSec": 0,
+    "timedOut": False,
+}
+
+
+def _is_control_path(path: str) -> bool:
+    p = str(path or "")
+    if p in ("/health", "/version", "/admin/shutdown", "/admin/shutdown/status", "/diag"):
+        return True
+    if p.startswith("/diag/"):
+        return True
+    try:
+        pref = str(_DIAG_PREFIX or "").rstrip("/")
+        if pref:
+            if p == f"{pref}/diag" or p.startswith(f"{pref}/diag/"):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _shutdown_snapshot() -> dict[str, Any]:
+    with _STATE_LOCK:
+        return {
+            "draining": bool(_SHUTDOWN_STATE.get("draining")),
+            "stopping": bool(_SHUTDOWN_STATE.get("stopping")),
+            "requestedAtUnix": _SHUTDOWN_STATE.get("requestedAtUnix"),
+            "requestedBy": _SHUTDOWN_STATE.get("requestedBy"),
+            "reason": _SHUTDOWN_STATE.get("reason"),
+            "maxWaitSec": int(_SHUTDOWN_STATE.get("maxWaitSec") or 0),
+            "timedOut": bool(_SHUTDOWN_STATE.get("timedOut")),
+            "activeHttpRequests": int(_ACTIVE_HTTP_REQUESTS),
+            "activeWorkRequests": int(_ACTIVE_WORK_REQUESTS),
+        }
+
+
+def _begin_shutdown_drain(requested_by: str | None, reason: str | None, max_wait_sec: int) -> bool:
+    """Return True when this call transitioned the server into draining mode."""
+    with _STATE_LOCK:
+        already = bool(_SHUTDOWN_STATE.get("draining"))
+        if already:
+            return False
+        _SHUTDOWN_STATE["draining"] = True
+        _SHUTDOWN_STATE["stopping"] = False
+        _SHUTDOWN_STATE["requestedAtUnix"] = time.time()
+        _SHUTDOWN_STATE["requestedBy"] = str(requested_by or "").strip() or "local"
+        _SHUTDOWN_STATE["reason"] = str(reason or "").strip() or "shutdown requested"
+        _SHUTDOWN_STATE["maxWaitSec"] = max(0, int(max_wait_sec or 0))
+        _SHUTDOWN_STATE["timedOut"] = False
+        return True
+
+
+async def _shutdown_when_idle(max_wait_sec: int) -> None:
+    """Drain in-flight work and then terminate this process."""
+    global _SHUTDOWN_TASK
+
+    deadline = (time.time() + max_wait_sec) if max_wait_sec > 0 else None
+    timed_out = False
+
+    while True:
+        with _STATE_LOCK:
+            active_work = int(_ACTIVE_WORK_REQUESTS)
+        if active_work <= 0:
+            break
+        if deadline is not None and time.time() >= deadline:
+            timed_out = True
+            break
+        await asyncio.sleep(0.2)
+
+    with _STATE_LOCK:
+        _SHUTDOWN_STATE["stopping"] = True
+        _SHUTDOWN_STATE["timedOut"] = timed_out
+
+    # Let the shutdown endpoint return before signalling the process.
+    await asyncio.sleep(0.05)
+    try:
+        os.kill(os.getpid(), signal.SIGTERM)
+    except Exception:
+        os._exit(0)
+
+    _SHUTDOWN_TASK = None
+
+
 @app.middleware("http")
 async def _trace_requests(request: Request, call_next):
+    global _ACTIVE_HTTP_REQUESTS, _ACTIVE_WORK_REQUESTS
     t0 = time.time()
+    path = request.url.path
+    is_control = _is_control_path(path)
     status = 500
+
+    with _STATE_LOCK:
+        draining = bool(_SHUTDOWN_STATE.get("draining"))
+        _ACTIVE_HTTP_REQUESTS += 1
+        if not is_control:
+            _ACTIVE_WORK_REQUESTS += 1
+
     try:
+        # During drain, reject all new non-control requests.
+        if draining and not is_control:
+            status = 503
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "ok": False,
+                    "error": "server_draining",
+                    "message": "Server is draining and not accepting new work requests.",
+                    "shutdown": _shutdown_snapshot(),
+                },
+            )
+
         resp = await call_next(request)
         status = getattr(resp, "status_code", 200)
         return resp
     finally:
+        with _STATE_LOCK:
+            _ACTIVE_HTTP_REQUESTS = max(0, _ACTIVE_HTTP_REQUESTS - 1)
+            if not is_control:
+                _ACTIVE_WORK_REQUESTS = max(0, _ACTIVE_WORK_REQUESTS - 1)
+
         try:
             dt_ms = int((time.time() - t0) * 1000)
             _LAST_HTTP.append({
                 "t": time.time(),
                 "method": request.method,
-                "path": request.url.path,
+                "path": path,
                 "status": status,
                 "ms": dt_ms,
             })
@@ -400,10 +528,12 @@ if _DIAG_PREFIX == "":
 # -------------------------
 
 _DEFAULT_CATEGORY_DESCRIPTIONS: dict[str, str] = {
-    "personal_info": "Personal information about the user",
-    "preferences": "User likes/dislikes and stable choices",
-    "relationships": "Relationships with others (including the assistant)",
-    "goals": "Goals, plans, and objectives",
+    "Profiles":      "Who the participants are as people — their identity, traits, and inner life",
+    "Preferences":   "What the participants value, enjoy, dislike, or are drawn toward",
+    "Relationships": "The bonds between participants — their texture, history, and dynamics",
+    "Goals":         "What the participants are working toward, hoping for, or committed to",
+    "Experiences":   "Events and moments that shaped or involved the participants",
+    "Habits":        "Recurring patterns in how the participants act or express themselves",
 }
 
 
@@ -435,10 +565,10 @@ def _categories_from_cfg(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     # If user didn't define anything, fall back to a small sane default.
     if not out:
         out = [
-            {"name": "personal_info", "description": _DEFAULT_CATEGORY_DESCRIPTIONS["personal_info"]},
-            {"name": "preferences", "description": _DEFAULT_CATEGORY_DESCRIPTIONS["preferences"]},
-            {"name": "relationships", "description": _DEFAULT_CATEGORY_DESCRIPTIONS["relationships"]},
-            {"name": "goals", "description": _DEFAULT_CATEGORY_DESCRIPTIONS["goals"]},
+            {"name": "Profiles",      "description": _DEFAULT_CATEGORY_DESCRIPTIONS["Profiles"]},
+            {"name": "Preferences",   "description": _DEFAULT_CATEGORY_DESCRIPTIONS["Preferences"]},
+            {"name": "Relationships", "description": _DEFAULT_CATEGORY_DESCRIPTIONS["Relationships"]},
+            {"name": "Goals",         "description": _DEFAULT_CATEGORY_DESCRIPTIONS["Goals"]},
         ]
     return out
 
@@ -910,7 +1040,12 @@ def _sqlite_ensure_nonempty(path: Path) -> None:
 
 def _sqlite_connect(path: Path) -> sqlite3.Connection:
     # timeout helps with transient lock contention
-    return sqlite3.connect(str(path), timeout=5.0)
+    con = sqlite3.connect(str(path), timeout=5.0)
+    # WAL mode: readers never block writers and writers never block readers.
+    # Safe for multi-client use (openclaw/picoclaw + SillyTavern sharing one server).
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=3000")  # ms; retry on lock before raising
+    return con
 
 
 def _sqlite_table_columns(con: sqlite3.Connection, table: str) -> list[str]:
@@ -989,6 +1124,7 @@ async def health():
         "storage": _STORAGE_STATUS,
         "services_cached": len(_SERVICES),
         "startup_warnings": _STARTUP_WARNINGS,
+        "shutdown": _shutdown_snapshot(),
         "mcp": {
             "enabled": _has_mcp,
             "http_path": str(_CONFIG.get("mcp", {}).get("http_path") or os.getenv("MCP_HTTP_PATH") or "/mcp"),
@@ -1000,6 +1136,50 @@ async def health():
 @app.get("/version", operation_id="version")
 async def version():
     return {"ok": True, "buildId": _BUILD_ID, "serverInstanceId": _SERVER_INSTANCE_ID, "startedAtUnix": _SERVER_STARTED_AT_UNIX}
+
+
+@app.get("/admin/shutdown/status", operation_id="shutdown_status")
+async def shutdown_status():
+    return {"ok": True, "shutdown": _shutdown_snapshot()}
+
+
+@app.post("/admin/shutdown", operation_id="shutdown")
+async def shutdown_server(payload: dict[str, Any] | None = Body(default=None)):
+    """Request local graceful shutdown.
+
+    Behavior:
+    - enter draining mode (reject new non-control requests),
+    - wait for active work requests to finish,
+    - then terminate this process.
+
+    Optional body fields:
+    - requested_by: free-form caller id
+    - reason: free-form reason
+    - max_wait_sec: 0 means wait indefinitely; otherwise timeout before forced stop
+    """
+    global _SHUTDOWN_TASK
+
+    body = payload if isinstance(payload, dict) else {}
+    requested_by = str(body.get("requested_by") or body.get("requestedBy") or "").strip() or None
+    reason = str(body.get("reason") or "").strip() or None
+
+    max_wait_raw = body.get("max_wait_sec", body.get("maxWaitSec", 0))
+    try:
+        max_wait_sec = int(max_wait_raw)
+    except Exception:
+        max_wait_sec = 0
+    max_wait_sec = max(0, min(max_wait_sec, 3600))
+
+    started = _begin_shutdown_drain(requested_by=requested_by, reason=reason, max_wait_sec=max_wait_sec)
+    if started:
+        _SHUTDOWN_TASK = asyncio.create_task(_shutdown_when_idle(max_wait_sec))
+
+    return {
+        "ok": True,
+        "accepted": True,
+        "already_draining": not started,
+        "shutdown": _shutdown_snapshot(),
+    }
 
 
 @app.get(f"{_DIAG_PREFIX}/diag")
@@ -1713,6 +1893,80 @@ async def search_memory_categories(payload: dict[str, Any]):
         _record_call('categories.search', payload if isinstance(payload, dict) else None, ok=False, error=f"{type(exc).__name__}: {exc}")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+@app.post("/clear", operation_id="clear_memory")
+async def clear_memory(payload: dict[str, Any]):
+    """Clear stored memory for a single scoped relationship.
+
+    Safety default:
+      - requires both user_id and agent_id
+      - does not allow unscoped/global clear
+    """
+    try:
+        safe = _safe_payload(payload)
+
+        where = safe.get("where")
+        if where is not None and not isinstance(where, dict):
+            raise HTTPException(status_code=400, detail="'where' must be an object")
+        if where is None:
+            if isinstance(safe.get("user"), dict):
+                where = dict(safe.get("user") or {})
+            else:
+                where = _extract_scope(safe) or {}
+
+        uid = str((where or {}).get("user_id") or "").strip()
+        aid = str((where or {}).get("agent_id") or "").strip()
+        if not uid or not aid:
+            raise HTTPException(status_code=400, detail="user_id and agent_id required")
+        where = {"user_id": uid, "agent_id": aid}
+
+        llm = _CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}
+        api_key = str(os.getenv("OPENAI_API_KEY") or os.getenv("NANOGPT_API_KEY") or llm.get("api_key") or "")
+        base_url = str(os.getenv("OPENAI_BASE_URL") or llm.get("base_url") or "https://api.openai.com/v1")
+        chat_model = str(os.getenv("DEFAULT_CHAT_MODEL") or llm.get("chat_model") or "gpt-4o-mini")
+        embed_model = str(os.getenv("DEFAULT_EMBED_MODEL") or llm.get("embed_model") or "text-embedding-3-small")
+
+        # If caller doesn't provide llm_profiles, synthesize a minimal default
+        # profile from server config so /clear can be called from any client.
+        if not isinstance(safe.get("llm_profiles"), dict):
+            safe["llm_profiles"] = {
+                "default": {
+                    "provider": str(os.getenv("LLM_PROVIDER") or llm.get("provider") or "openai"),
+                    "api_key": api_key,
+                    "base_url": base_url,
+                    "chat_model": chat_model,
+                    "embed_model": embed_model,
+                    "client_backend": str(os.getenv("LLM_CLIENT_BACKEND") or llm.get("client_backend") or "httpx"),
+                    "endpoint_overrides": llm.get("endpoint_overrides") or {},
+                }
+            }
+        safe["user"] = where
+
+        svc = _get_service_from_payload(safe)
+        result = await svc.clear_memory(where=where)
+
+        deleted_categories = result.get("deleted_categories") if isinstance(result, dict) else []
+        deleted_items = result.get("deleted_items") if isinstance(result, dict) else []
+        deleted_resources = result.get("deleted_resources") if isinstance(result, dict) else []
+
+        out = {
+            "ok": True,
+            "result": result,
+            "purged": {
+                "categories": len(deleted_categories) if isinstance(deleted_categories, list) else 0,
+                "items": len(deleted_items) if isinstance(deleted_items, list) else 0,
+                "resources": len(deleted_resources) if isinstance(deleted_resources, list) else 0,
+            },
+            "where": where,
+        }
+        _record_call("clear", safe, ok=True, info={"where": where, "purged": out["purged"]})
+        return out
+    except HTTPException:
+        _record_call("clear", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException")
+        raise
+    except Exception as exc:
+        _record_call("clear", payload if isinstance(payload, dict) else None, ok=False, error=f"{type(exc).__name__}: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 @app.post("/retrieve", operation_id="retrieve")
 async def retrieve(payload: dict[str, Any]):
     if "query" not in payload and "queries" not in payload:
@@ -1774,6 +2028,11 @@ async def api_memorize(payload: dict[str, Any] = Body(...)):
 @app.post("/api/retrieve", operation_id="api_retrieve")
 async def api_retrieve(payload: dict[str, Any] = Body(...)):
     return await retrieve(payload)
+
+
+@app.post("/api/clear", operation_id="api_clear")
+async def api_clear(payload: dict[str, Any] = Body(...)):
+    return await clear_memory(payload)
 
 
 # -------------------------
