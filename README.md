@@ -17,6 +17,20 @@ Star memU-server to get notified about new releases and join our growing communi
 
 ## 🚀 Get Started
 
+### Config file example
+This repo now includes a user-editable example config at `config.example.json`.
+
+Copy it to `config.json` in the `mcp-memu-server` folder, then edit the paths and API key:
+
+```bash
+cp config.example.json config.json
+```
+
+Notes:
+- `memu.path` should point to your local memU source tree (repo root or `src` path both work).
+- Relative paths in the example are resolved from the `mcp-memu-server` folder.
+- The example uses port `8098`, which is the normal default port for non-dev installs.
+
 ### Run from source
 1. Ensure you have Python 3.12+ and [uv](https://docs.astral.sh/uv/) installed.
 2. Clone the repository and enter it:

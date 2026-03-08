@@ -1,0 +1,62 @@
+{
+  "llm": {
+    "provider": "openai",
+    "api_key": "YOUR_API_KEY_HERE",
+    "base_url": "https://api.openai.com/v1",
+    "chat_model": "gpt-4o-mini",
+    "embed_model": "text-embedding-3-small",
+    "client_backend": "httpx",
+    "endpoint_overrides": {}
+  },
+  "storage": {
+    "resources_dir": "./resources",
+    "metadata_store": {
+      "provider": "sqlite",
+      "dsn": "./sqlite/memu.db",
+      "ddl_mode": "create"
+    },
+    "sqlite_mode": "per_agent",
+    "sqlite_dir": "./sqlite"
+  },
+  "mcp": {
+    "http_path": "/mcp",
+    "sse_path": "/sse"
+  },
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 8098
+  },
+  "memu": {
+    "path": "/path/to/memU/src"
+  },
+  "python": {
+    "executable": "",
+    "force_venv": false
+  },
+  "pid_file": "./.memu-server.pid",
+  "categories": {
+    "defaults": [
+      {
+        "name": "Profiles",
+        "description": "Who the participants are as people — their identity, traits, and inner life"
+      },
+      {
+        "name": "Preferences",
+        "description": "What the participants value, enjoy, dislike, or are drawn toward"
+      },
+      {
+        "name": "Relationships",
+        "description": "The bonds between participants — their texture, history, and dynamics"
+      },
+      {
+        "name": "Goals",
+        "description": "What the participants are working toward, hoping for, or committed to"
+      }
+    ],
+    "max_total": 12,
+    "allow_dynamic": true
+  },
+  "retrieve": {
+    "method": "rag"
+  }
+}
