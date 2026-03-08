@@ -309,6 +309,9 @@ def _default_config() -> dict[str, Any]:
             "max_total": 12,
             "allow_dynamic": True,
         },
+        "retrieve": {
+            "method": "rag",
+        },
         "mcp": {"http_path": "/mcp", "sse_path": "/sse"},
     }
 
@@ -521,20 +524,6 @@ if _DIAG_PREFIX == "":
     _DIAG_PREFIX = "/mcp"
 
 
-# -------------------------
-# Category policy (server config.json)
-# -------------------------
-
-_DEFAULT_CATEGORY_DESCRIPTIONS: dict[str, str] = {
-    "Profiles":      "Who the participants are as people — their identity, traits, and inner life",
-    "Preferences":   "What the participants value, enjoy, dislike, or are drawn toward",
-    "Relationships": "The bonds between participants — their texture, history, and dynamics",
-    "Goals":         "What the participants are working toward, hoping for, or committed to",
-    "Experiences":   "Events and moments that shaped or involved the participants",
-    "Habits":        "Recurring patterns in how the participants act or express themselves",
-}
-
-
 def _categories_from_cfg(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     cats_cfg = cfg.get("categories") if isinstance(cfg.get("categories"), dict) else {}
     raw = cats_cfg.get("defaults") if isinstance(cats_cfg.get("defaults"), list) else []
@@ -546,12 +535,9 @@ def _categories_from_cfg(cfg: dict[str, Any]) -> list[dict[str, Any]]:
         desc = ""
         if isinstance(c, str):
             name = c.strip()
-            desc = _DEFAULT_CATEGORY_DESCRIPTIONS.get(name, "")
         elif isinstance(c, dict):
             name = str(c.get("name") or "").strip()
             desc = str(c.get("description") or "").strip()
-            if not desc:
-                desc = _DEFAULT_CATEGORY_DESCRIPTIONS.get(name, "")
         if not name:
             continue
         key = name.lower()
@@ -559,56 +545,6 @@ def _categories_from_cfg(cfg: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         seen.add(key)
         out.append({"name": name, "description": desc})
-
-    # If user didn't define anything, fall back to a small sane default.
-    if not out:
-        out = [
-            {"name": "Profiles",      "description": _DEFAULT_CATEGORY_DESCRIPTIONS["Profiles"]},
-            {"name": "Preferences",   "description": _DEFAULT_CATEGORY_DESCRIPTIONS["Preferences"]},
-            {"name": "Relationships", "description": _DEFAULT_CATEGORY_DESCRIPTIONS["Relationships"]},
-            {"name": "Goals",         "description": _DEFAULT_CATEGORY_DESCRIPTIONS["Goals"]},
-        ]
-    return out
-
-
-def _category_policy_from_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
-    cats_cfg = cfg.get("categories") if isinstance(cfg.get("categories"), dict) else {}
-    allow_dynamic = bool(cats_cfg.get("allow_dynamic", True))
-    max_total = cats_cfg.get("max_total", 12)
-    try:
-        max_total = int(max_total) if max_total is not None else 0
-    except Exception:
-        max_total = 12
-    return {
-        "memory_categories": _categories_from_cfg(cfg),
-        "allow_dynamic_categories": allow_dynamic,
-        "max_categories_total": max_total,
-    }
-
-
-def _merge_memory_categories(fixed: list[dict[str, Any]], user_list: Any) -> list[dict[str, Any]]:
-    # Keep fixed categories first, then append user categories by name.
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    def add(name: str, desc: str = ""):
-        key = (name or "").strip().lower()
-        if not key or key in seen:
-            return
-        seen.add(key)
-        out.append({"name": name.strip(), "description": (desc or "").strip()})
-
-    for c in fixed:
-        if isinstance(c, dict):
-            add(str(c.get("name") or ""), str(c.get("description") or ""))
-
-    if isinstance(user_list, list):
-        for c in user_list:
-            if isinstance(c, str):
-                add(c, _DEFAULT_CATEGORY_DESCRIPTIONS.get(c.strip(), ""))
-            elif isinstance(c, dict):
-                add(str(c.get("name") or ""), str(c.get("description") or ""))
-
     return out
 
 
@@ -775,12 +711,31 @@ def _payload_signature(payload: dict[str, Any]) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
+def _derive_service_key(payload: dict[str, Any]) -> str:
+    scope = _extract_scope(payload) if isinstance(payload, dict) else {}
+    user_id = str((scope or {}).get("user_id") or "").strip()
+    soul_id = str((scope or {}).get("soul_id") or "").strip()
+    session_id = str((scope or {}).get("session_id") or "").strip()
+    parts = [p for p in (user_id, soul_id, session_id) if p]
+    return "__".join(parts) if parts else "default"
+
+
+def _retrieve_method_from_cfg(cfg: Mapping[str, Any] | None) -> str:
+    if not isinstance(cfg, Mapping):
+        return "rag"
+    retrieve = cfg.get("retrieve")
+    if not isinstance(retrieve, Mapping):
+        return "rag"
+    method = str(retrieve.get("method") or "").strip().lower()
+    return method if method in {"rag", "llm"} else "rag"
+
+
 def _get_service_from_payload(
     payload: dict[str, Any],
     *,
     allow_missing_llm_profiles: bool = False,
 ) -> MemoryService:
-    service_key_raw = str(payload.get("service_key") or "default")
+    service_key_raw = _derive_service_key(payload)
 
     llm_profiles = payload.get("llm_profiles")
     database_config = payload.get("database_config")
@@ -835,19 +790,19 @@ def _get_service_from_payload(
     blob_config = payload.get("blob_config") or {}
     memorize_config = payload.get("memorize_config") or {}
 
-    # Enforce fixed categories + dynamic policy from server config.json unless the payload overrides.
+    # Enforce categories + dynamic policy from server config.json.
     try:
         fixed_cats = _categories_from_cfg(_CONFIG)
         if isinstance(memorize_config, dict):
-            user_cats = memorize_config.get("memory_categories")
-            memorize_config["memory_categories"] = _merge_memory_categories(fixed_cats, user_cats)
-            if "allow_dynamic_categories" not in memorize_config:
-                memorize_config["allow_dynamic_categories"] = bool((_CONFIG.get("categories") or {}).get("allow_dynamic", True))
-            if "max_categories_total" not in memorize_config:
-                memorize_config["max_categories_total"] = int(((_CONFIG.get("categories") or {}).get("max_total", 12)) or 0)
+            if fixed_cats:
+                memorize_config["memory_categories"] = fixed_cats
+            memorize_config["allow_dynamic_categories"] = bool((_CONFIG.get("categories") or {}).get("allow_dynamic", True))
+            memorize_config["max_categories_total"] = int(((_CONFIG.get("categories") or {}).get("max_total", 12)) or 0)
     except Exception:
         pass
     retrieve_config = payload.get("retrieve_config") or {}
+    if isinstance(retrieve_config, dict):
+        retrieve_config["method"] = _retrieve_method_from_cfg(_CONFIG)
     user_config = payload.get("user_config") or {}
 
     # Force STUserModel so soul_id/session_id filters are accepted.
@@ -2117,49 +2072,6 @@ async def memorize(payload: dict[str, Any]):
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-
-
-@app.get("/default-categories", operation_id="default_categories")
-async def default_categories():
-    """Return default category policy from server config.json.
-
-    This endpoint is intentionally scope-free (no user_id/soul_id required).
-    """
-    cats_cfg = _CONFIG.get('categories') if isinstance(_CONFIG, dict) else None
-    cats_cfg = cats_cfg if isinstance(cats_cfg, dict) else {}
-
-    defaults_in = cats_cfg.get('defaults')
-    defaults_in = defaults_in if isinstance(defaults_in, list) else []
-
-    out: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for c in defaults_in:
-        name = ''
-        desc = ''
-        if isinstance(c, str):
-            name = c.strip()
-        elif isinstance(c, dict):
-            name = str(c.get('name') or '').strip()
-            desc = str(c.get('description') or '').strip()
-        if not name:
-            continue
-        key = name.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({'name': name, 'description': desc})
-
-    allow_dynamic = bool(cats_cfg.get('allow_dynamic') if 'allow_dynamic' in cats_cfg else True)
-    max_total_raw = cats_cfg.get('max_total', 12)
-    try:
-        max_total = int(max_total_raw)
-    except Exception:
-        max_total = 12
-
-    return {"ok": True, "categories": out, "allow_dynamic": allow_dynamic, "max_total": max_total}
-
 @app.get("/categories", operation_id="list_memory_categories")
 async def list_memory_categories(user_id: str = "", soul_id: str = "", include_empty: bool = False):
     # Scope is required: this server runs per-soul SQLite databases (no shared DB by default).
