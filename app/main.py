@@ -720,20 +720,25 @@ def _derive_service_key(payload: dict[str, Any]) -> str:
     return "__".join(parts) if parts else "default"
 
 
+def _normalize_retrieve_method(value: Any, default: str = "rag") -> str:
+    method = str(value or "").strip().lower()
+    return method if method in {"rag", "llm"} else default
+
+
 def _retrieve_method_from_cfg(cfg: Mapping[str, Any] | None) -> str:
     if not isinstance(cfg, Mapping):
         return "rag"
     retrieve = cfg.get("retrieve")
     if not isinstance(retrieve, Mapping):
         return "rag"
-    method = str(retrieve.get("method") or "").strip().lower()
-    return method if method in {"rag", "llm"} else "rag"
+    return _normalize_retrieve_method(retrieve.get("method"), "rag")
 
 
 def _get_service_from_payload(
     payload: dict[str, Any],
     *,
     allow_missing_llm_profiles: bool = False,
+    retrieve_method_override: str | None = None,
 ) -> MemoryService:
     service_key_raw = _derive_service_key(payload)
 
@@ -771,6 +776,29 @@ def _get_service_from_payload(
             scope_for_dsn['soul_id'] = soul_id2
             ms['dsn'] = _sqlite_dsn_for_scope(_CONFIG, base, scope_for_dsn)
 
+    blob_config = payload.get("blob_config") or {}
+    memorize_config = payload.get("memorize_config") or {}
+
+    # Enforce categories + dynamic policy from server config.json.
+    try:
+        fixed_cats = _categories_from_cfg(_CONFIG)
+        if isinstance(memorize_config, dict):
+            if fixed_cats:
+                memorize_config["memory_categories"] = fixed_cats
+            memorize_config["allow_dynamic_categories"] = bool((_CONFIG.get("categories") or {}).get("allow_dynamic", True))
+            memorize_config["max_categories_total"] = int(((_CONFIG.get("categories") or {}).get("max_total", 12)) or 0)
+    except Exception:
+        pass
+    retrieve_config = payload.get("retrieve_config")
+    if not isinstance(retrieve_config, dict):
+        retrieve_config = {}
+        payload["retrieve_config"] = retrieve_config
+    retrieve_config["method"] = _normalize_retrieve_method(
+        retrieve_method_override,
+        _retrieve_method_from_cfg(_CONFIG),
+    )
+    user_config = payload.get("user_config") or {}
+
     sig = _payload_signature(payload)
     service_key = f"{service_key_raw}__{sig}"
     storage_fp = _service_storage_fingerprint(database_config if isinstance(database_config, dict) else None)
@@ -786,24 +814,6 @@ def _get_service_from_payload(
         _close_service_quiet(svc)
         _SERVICES.pop(service_key, None)
         _SERVICE_STORAGE_FP.pop(service_key, None)
-
-    blob_config = payload.get("blob_config") or {}
-    memorize_config = payload.get("memorize_config") or {}
-
-    # Enforce categories + dynamic policy from server config.json.
-    try:
-        fixed_cats = _categories_from_cfg(_CONFIG)
-        if isinstance(memorize_config, dict):
-            if fixed_cats:
-                memorize_config["memory_categories"] = fixed_cats
-            memorize_config["allow_dynamic_categories"] = bool((_CONFIG.get("categories") or {}).get("allow_dynamic", True))
-            memorize_config["max_categories_total"] = int(((_CONFIG.get("categories") or {}).get("max_total", 12)) or 0)
-    except Exception:
-        pass
-    retrieve_config = payload.get("retrieve_config") or {}
-    if isinstance(retrieve_config, dict):
-        retrieve_config["method"] = _retrieve_method_from_cfg(_CONFIG)
-    user_config = payload.get("user_config") or {}
 
     # Force STUserModel so soul_id/session_id filters are accepted.
     user_config = {**(user_config if isinstance(user_config, dict) else {}), "model": STUserModel}
@@ -941,6 +951,10 @@ def _canonicalize_scope_where(where: Mapping[str, Any] | None) -> dict[str, Any]
         "session_date",
         "sessionDate",
         "sessiondate",
+        "conversation_id",
+        "conversationId",
+        "conversationID",
+        "conversationid",
     ):
         out.pop(key, None)
 
@@ -1257,6 +1271,123 @@ def _conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sq
     ).fetchone()
 
 
+def _conversation_state_empty(
+    conversation_id: str,
+    soul_id: str | None = None,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "conversation_id": conversation_id,
+        "soul_id": soul_id,
+        "user_id": user_id,
+        "digest_cursor": 0,
+        "working_note": None,
+        "active_intentions": None,
+        "last_retrieval_ids": None,
+        "last_memorize_at": None,
+        "updated_at": None,
+    }
+
+
+def _write_conversation_state(
+    conversation_id: str,
+    *,
+    soul_id: str | None = None,
+    user_id: str | None = None,
+    updates: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], Path]:
+    cid = str(conversation_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+
+    scoped_soul = str(soul_id or "").strip() or None
+    scoped_user = str(user_id or "").strip() or None
+
+    db_path: Path | None = _sqlite_current_path(scoped_user, scoped_soul) if scoped_soul else None
+    existing_state: dict[str, Any] | None = None
+    if db_path is None:
+        db_path, existing_state = _find_conversation_state_across_dbs(cid)
+        if db_path is None:
+            raise HTTPException(status_code=400, detail="soul_id is required when creating new conversation state")
+
+    _sqlite_ensure_nonempty(db_path)
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
+
+        if existing_state is None:
+            existing_state = _conversation_state_from_row(_conversation_state_row(con, cid))
+        merged = dict(existing_state or _conversation_state_empty(cid, scoped_soul, scoped_user))
+        merged["conversation_id"] = cid
+        if scoped_soul is not None:
+            merged["soul_id"] = scoped_soul
+        if scoped_user is not None:
+            merged["user_id"] = scoped_user
+
+        for key, value in dict(updates or {}).items():
+            if key in {
+                "digest_cursor",
+                "working_note",
+                "active_intentions",
+                "last_retrieval_ids",
+                "last_memorize_at",
+            }:
+                merged[key] = value
+
+        try:
+            merged["digest_cursor"] = max(0, int(merged.get("digest_cursor") or 0))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="digest_cursor must be an integer") from exc
+
+        raw_last = merged.get("last_memorize_at")
+        merged["last_memorize_at"] = None if raw_last is None else (str(raw_last).strip() or None)
+        raw_note = merged.get("working_note")
+        merged["working_note"] = None if raw_note is None else str(raw_note)
+        merged["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        con.execute(
+            """
+INSERT INTO memu_conversation_state (
+    conversation_id,
+    soul_id,
+    user_id,
+    digest_cursor,
+    working_note,
+    active_intentions,
+    last_retrieval_ids,
+    last_memorize_at,
+    updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(conversation_id) DO UPDATE SET
+    soul_id = excluded.soul_id,
+    user_id = excluded.user_id,
+    digest_cursor = excluded.digest_cursor,
+    working_note = excluded.working_note,
+    active_intentions = excluded.active_intentions,
+    last_retrieval_ids = excluded.last_retrieval_ids,
+    last_memorize_at = excluded.last_memorize_at,
+    updated_at = excluded.updated_at
+""",
+            (
+                merged["conversation_id"],
+                merged.get("soul_id"),
+                merged.get("user_id"),
+                int(merged.get("digest_cursor") or 0),
+                merged.get("working_note"),
+                _json_to_db(merged.get("active_intentions")),
+                _json_to_db(merged.get("last_retrieval_ids")),
+                merged.get("last_memorize_at"),
+                merged.get("updated_at"),
+            ),
+        )
+        con.commit()
+        state_out = _conversation_state_from_row(_conversation_state_row(con, cid))
+        return state_out or _conversation_state_empty(cid, scoped_soul, scoped_user), db_path
+    finally:
+        con.close()
+
+
 def _sqlite_agent_db_paths() -> list[Path]:
     sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, str(_STORAGE_STATUS.get("dsn") or ""))
     if not sqlite_dir.exists():
@@ -1278,6 +1409,96 @@ def _find_conversation_state_across_dbs(conversation_id: str) -> tuple[Path | No
         finally:
             con.close()
     return None, None
+
+
+def _extract_retrieve_where(payload: dict[str, Any]) -> dict[str, Any] | None:
+    where = payload.get("where")
+    if where is not None and not isinstance(where, dict):
+        raise HTTPException(status_code=400, detail="'where' must be an object")
+    if where is None:
+        where = payload.get("user") if isinstance(payload.get("user"), dict) else (_extract_scope(payload) or None)
+    return _canonicalize_scope_where(where)
+
+
+def _extract_retrieve_queries(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    queries = payload.get("queries")
+    if queries is not None:
+        if not isinstance(queries, list) or not queries:
+            raise HTTPException(status_code=400, detail="'queries' must be a non-empty list")
+        memu_queries: list[dict[str, Any]] = []
+        for q in queries:
+            if isinstance(q, str):
+                memu_queries.append({"role": "user", "content": {"text": q}})
+            elif isinstance(q, dict):
+                if "content" in q:
+                    memu_queries.append(q)
+                elif "query" in q:
+                    memu_queries.append({"role": q.get("role", "user"), "content": {"text": str(q.get("query"))}})
+                else:
+                    raise HTTPException(status_code=400, detail="Each query object must have 'content' or 'query'")
+            else:
+                raise HTTPException(status_code=400, detail="Each query must be a string or object")
+        return memu_queries
+
+    if "query" not in payload:
+        raise HTTPException(status_code=400, detail="Missing 'query' or 'queries' in request body")
+    return [{"role": "user", "content": {"text": str(payload.get("query", ""))}}]
+
+
+def _extract_result_item_ids(result: Any) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    items = result.get("items") if isinstance(result, dict) else None
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or "").strip()
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+        out.append(item_id)
+    return out
+
+
+async def _run_retrieve(
+    payload: dict[str, Any],
+    *,
+    conversation_id: str | None = None,
+    persist_llm_state: bool = False,
+) -> dict[str, Any]:
+    safe = _safe_payload(payload)
+    scoped_conversation_id = str(conversation_id or _extract_conversation_id(safe) or "").strip() or None
+    if scoped_conversation_id:
+        safe["conversation_id"] = scoped_conversation_id
+        safe["conversationId"] = scoped_conversation_id
+
+    method = _normalize_retrieve_method(safe.get("method"), _retrieve_method_from_cfg(_CONFIG))
+    svc = _get_service_from_payload(safe, retrieve_method_override=method)
+    where = _extract_retrieve_where(safe)
+    memu_queries = _extract_retrieve_queries(safe)
+
+    result = await svc.retrieve(memu_queries, where=where)
+    out: dict[str, Any] = {"ok": True, "result": result}
+
+    if persist_llm_state and method == "llm" and scoped_conversation_id:
+        state_out, db_path = _write_conversation_state(
+            scoped_conversation_id,
+            soul_id=str((where or {}).get("soul_id") or "").strip() or None,
+            user_id=str((where or {}).get("user_id") or "").strip() or None,
+            updates={
+                "working_note": json.dumps(result, ensure_ascii=False, default=str),
+                "last_retrieval_ids": _extract_result_item_ids(result),
+            },
+        )
+        out["state"] = state_out
+        out["path"] = str(db_path)
+
+    out["method"] = method
+    out["conversation_id"] = scoped_conversation_id
+    out["queries"] = len(memu_queries)
+    return out
 
 
 
@@ -2043,7 +2264,30 @@ async def memorize(payload: dict[str, Any]):
                 if isinstance(last_file, str) and last_file:
                     resource_url = str((days_dir / last_file).resolve())
 
-        result = await svc.memorize(resource_url=resource_url, modality="conversation", user=user_scope)
+        delta_conv = conv_norm if isinstance(conv_norm, list) else []
+        if prev_len and isinstance(merged, list) and merged[:prev_len] == prev_full:
+            delta_conv = merged[prev_len:]
+        memorize_raw_text = json.dumps(delta_conv, ensure_ascii=False) if delta_conv else None
+
+        result = await svc.memorize(
+            resource_url=resource_url,
+            modality="conversation",
+            user=user_scope,
+            raw_text=memorize_raw_text,
+            local_path=resource_url,
+        )
+
+        if conversation_id:
+            processed_count = len(merged) if isinstance(merged, list) else (len(conv_norm) if isinstance(conv_norm, list) else 0)
+            _write_conversation_state(
+                conversation_id,
+                soul_id=scoped_soul,
+                user_id=uid,
+                updates={
+                    "digest_cursor": max(0, processed_count - 1),
+                    "last_memorize_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
 
         _record_call('memorize', safe, ok=True, info={
             'resource_url': resource_url,
@@ -2213,113 +2457,36 @@ async def patch_conversation_state(
     scoped_soul = body_soul_id or (str(soul_id or "").strip() or None)
     scoped_user = body_user_id or (str(user_id or "").strip() or None)
 
-    db_path: Path | None = _sqlite_current_path(scoped_user, scoped_soul) if scoped_soul else None
-    existing_state: dict[str, Any] | None = None
-    if db_path is None:
-        db_path, existing_state = _find_conversation_state_across_dbs(cid)
-        if db_path is None:
-            raise HTTPException(status_code=400, detail="soul_id is required when creating new conversation state")
+    updates: dict[str, Any] = {}
 
-    _sqlite_ensure_nonempty(db_path)
-    con = _sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        _sqlite_ensure_conversation_state_schema(con)
+    if "soul_id" in body or "soulId" in body:
+        scoped_soul = body_soul_id
+    if "user_id" in body or "userId" in body:
+        scoped_user = body_user_id
 
-        if existing_state is None:
-            existing_state = _conversation_state_from_row(_conversation_state_row(con, cid))
-        if existing_state is None:
-            existing_state = {
-                "conversation_id": cid,
-                "soul_id": scoped_soul,
-                "user_id": scoped_user,
-                "digest_cursor": 0,
-                "working_note": None,
-                "active_intentions": None,
-                "last_retrieval_ids": None,
-                "last_memorize_at": None,
-                "updated_at": None,
-            }
+    if "digest_cursor" in body or "digestCursor" in body:
+        raw_cursor = body.get("digest_cursor", body.get("digestCursor"))
+        updates["digest_cursor"] = 0 if raw_cursor is None else raw_cursor
 
-        merged = dict(existing_state)
-        merged["conversation_id"] = cid
-        if scoped_soul:
-            merged["soul_id"] = scoped_soul
-        if scoped_user:
-            merged["user_id"] = scoped_user
+    if "working_note" in body or "workingNote" in body:
+        updates["working_note"] = body.get("working_note", body.get("workingNote"))
 
-        if "soul_id" in body or "soulId" in body:
-            merged["soul_id"] = body_soul_id
-        if "user_id" in body or "userId" in body:
-            merged["user_id"] = body_user_id
+    if "active_intentions" in body or "activeIntentions" in body:
+        updates["active_intentions"] = body.get("active_intentions", body.get("activeIntentions"))
 
-        if "digest_cursor" in body or "digestCursor" in body:
-            raw_cursor = body.get("digest_cursor", body.get("digestCursor"))
-            if raw_cursor is None:
-                merged["digest_cursor"] = 0
-            else:
-                try:
-                    merged["digest_cursor"] = max(0, int(raw_cursor))
-                except Exception as exc:
-                    raise HTTPException(status_code=400, detail="digest_cursor must be an integer") from exc
+    if "last_retrieval_ids" in body or "lastRetrievalIds" in body:
+        updates["last_retrieval_ids"] = body.get("last_retrieval_ids", body.get("lastRetrievalIds"))
 
-        if "working_note" in body or "workingNote" in body:
-            raw_note = body.get("working_note", body.get("workingNote"))
-            merged["working_note"] = None if raw_note is None else str(raw_note)
+    if "last_memorize_at" in body or "lastMemorizeAt" in body:
+        updates["last_memorize_at"] = body.get("last_memorize_at", body.get("lastMemorizeAt"))
 
-        if "active_intentions" in body or "activeIntentions" in body:
-            merged["active_intentions"] = body.get("active_intentions", body.get("activeIntentions"))
-
-        if "last_retrieval_ids" in body or "lastRetrievalIds" in body:
-            merged["last_retrieval_ids"] = body.get("last_retrieval_ids", body.get("lastRetrievalIds"))
-
-        if "last_memorize_at" in body or "lastMemorizeAt" in body:
-            raw_last = body.get("last_memorize_at", body.get("lastMemorizeAt"))
-            merged["last_memorize_at"] = None if raw_last is None else (str(raw_last).strip() or None)
-
-        merged["updated_at"] = datetime.now(timezone.utc).isoformat()
-
-        con.execute(
-            """
-INSERT INTO memu_conversation_state (
-    conversation_id,
-    soul_id,
-    user_id,
-    digest_cursor,
-    working_note,
-    active_intentions,
-    last_retrieval_ids,
-    last_memorize_at,
-    updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(conversation_id) DO UPDATE SET
-    soul_id = excluded.soul_id,
-    user_id = excluded.user_id,
-    digest_cursor = excluded.digest_cursor,
-    working_note = excluded.working_note,
-    active_intentions = excluded.active_intentions,
-    last_retrieval_ids = excluded.last_retrieval_ids,
-    last_memorize_at = excluded.last_memorize_at,
-    updated_at = excluded.updated_at
-""",
-            (
-                merged["conversation_id"],
-                merged.get("soul_id"),
-                merged.get("user_id"),
-                int(merged.get("digest_cursor") or 0),
-                merged.get("working_note"),
-                _json_to_db(merged.get("active_intentions")),
-                _json_to_db(merged.get("last_retrieval_ids")),
-                merged.get("last_memorize_at"),
-                merged.get("updated_at"),
-            ),
-        )
-        con.commit()
-
-        state_out = _conversation_state_from_row(_conversation_state_row(con, cid))
-        return {"ok": True, "state": state_out, "path": str(db_path)}
-    finally:
-        con.close()
+    state_out, db_path = _write_conversation_state(
+        cid,
+        soul_id=scoped_soul,
+        user_id=scoped_user,
+        updates=updates,
+    )
+    return {"ok": True, "state": state_out, "path": str(db_path)}
 
 @app.post("/clear", operation_id="clear_memory")
 async def clear_memory(payload: dict[str, Any]):
@@ -2377,43 +2544,20 @@ async def clear_memory(payload: dict[str, Any]):
 
 @app.post("/retrieve", operation_id="retrieve")
 async def retrieve(payload: dict[str, Any]):
-    if "query" not in payload and "queries" not in payload:
-        raise HTTPException(status_code=400, detail="Missing 'query' or 'queries' in request body")
     try:
-        safe = _safe_payload(payload)
-        svc = _get_service_from_payload(safe)
-
-        where = safe.get("where")
-        if where is not None and not isinstance(where, dict):
-            raise HTTPException(status_code=400, detail="'where' must be an object")
-        if where is None:
-            where = safe.get("user") if isinstance(safe.get("user"), dict) else (_extract_scope(safe) or None)
-        where = _canonicalize_scope_where(where)
-
-        queries = safe.get("queries")
-        if queries is not None:
-            if not isinstance(queries, list) or not queries:
-                raise HTTPException(status_code=400, detail="'queries' must be a non-empty list")
-            memu_queries: list[dict[str, Any]] = []
-            for q in queries:
-                if isinstance(q, str):
-                    memu_queries.append({"role": "user", "content": {"text": q}})
-                elif isinstance(q, dict):
-                    if "content" in q:
-                        memu_queries.append(q)
-                    elif "query" in q:
-                        memu_queries.append({"role": q.get("role", "user"), "content": {"text": str(q.get("query"))}})
-                    else:
-                        raise HTTPException(status_code=400, detail="Each query object must have 'content' or 'query'")
-                else:
-                    raise HTTPException(status_code=400, detail="Each query must be a string or object")
-        else:
-            memu_queries = [{"role": "user", "content": {"text": str(safe.get("query", ""))}}]
-
-        result = await svc.retrieve(memu_queries, where=where)
-        _record_call('retrieve', safe, ok=True, info={'queries': len(memu_queries) if isinstance(memu_queries, list) else None, 'where': where})
-        # Return plain dict so FastAPI can encode datetime/UUID safely.
-        return {"ok": True, "result": result}
+        out = await _run_retrieve(payload)
+        _record_call(
+            'retrieve',
+            _safe_payload(payload),
+            ok=True,
+            info={
+                'queries': out.get('queries'),
+                'where': _extract_retrieve_where(_safe_payload(payload)),
+                'method': out.get('method'),
+                'conversationId': out.get('conversation_id'),
+            },
+        )
+        return out
     except HTTPException as he:
         try:
             _record_call('retrieve', payload if isinstance(payload, dict) else None, ok=False, error=str(getattr(he, 'detail', he)))
@@ -2428,6 +2572,37 @@ async def retrieve(payload: dict[str, Any]):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.post("/conversation/{conversation_id}/retrieve", operation_id="conversation_retrieve")
+async def conversation_retrieve(
+    conversation_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    cid = str(conversation_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+    try:
+        out = await _run_retrieve(payload, conversation_id=cid, persist_llm_state=True)
+        _record_call(
+            'conversation.retrieve',
+            _safe_payload(payload),
+            ok=True,
+            info={
+                'queries': out.get('queries'),
+                'where': _extract_retrieve_where({**_safe_payload(payload), "conversation_id": cid}),
+                'method': out.get('method'),
+                'conversationId': cid,
+                'persistedState': bool(out.get('state')),
+            },
+        )
+        return out
+    except HTTPException:
+        _record_call('conversation.retrieve', payload if isinstance(payload, dict) else None, ok=False, error='HTTPException')
+        raise
+    except Exception as exc:
+        _record_call('conversation.retrieve', payload if isinstance(payload, dict) else None, ok=False, error=f"{type(exc).__name__}: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 # memU-ui compatibility: it calls /api/*
 @app.post("/api/memorize", operation_id="api_memorize")
 async def api_memorize(payload: dict[str, Any] = Body(...)):
@@ -2437,6 +2612,14 @@ async def api_memorize(payload: dict[str, Any] = Body(...)):
 @app.post("/api/retrieve", operation_id="api_retrieve")
 async def api_retrieve(payload: dict[str, Any] = Body(...)):
     return await retrieve(payload)
+
+
+@app.post("/api/conversation/{conversation_id}/retrieve", operation_id="api_conversation_retrieve")
+async def api_conversation_retrieve(
+    conversation_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    return await conversation_retrieve(conversation_id, payload)
 
 
 @app.post("/api/clear", operation_id="api_clear")
