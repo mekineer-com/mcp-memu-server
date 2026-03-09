@@ -1490,21 +1490,40 @@ async def _run_retrieve(
     where = _extract_retrieve_where(safe)
     memu_queries = _extract_retrieve_queries(safe)
 
-    result = await svc.retrieve(memu_queries, where=where)
-    out: dict[str, Any] = {"ok": True, "result": result}
-
-    if persist_llm_state and method == "llm" and scoped_conversation_id:
-        state_out, db_path = _write_conversation_state(
-            scoped_conversation_id,
-            soul_id=str((where or {}).get("soul_id") or "").strip() or None,
-            user_id=str((where or {}).get("user_id") or "").strip() or None,
-            updates={
-                "working_note": json.dumps(result, ensure_ascii=False, default=str),
-                "last_retrieval_ids": _extract_result_item_ids(result),
-            },
-        )
-        out["state"] = state_out
-        out["path"] = str(db_path)
+    out: dict[str, Any]
+    scoped_soul = str((where or {}).get("soul_id") or "").strip()
+    scoped_user = str((where or {}).get("user_id") or "user").strip() or "user"
+    if scoped_soul:
+        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(scoped_user, scoped_soul), asyncio.Lock()):
+            result = await svc.retrieve(memu_queries, where=where)
+            out = {"ok": True, "result": result}
+            if persist_llm_state and method == "llm" and scoped_conversation_id:
+                state_out, db_path = _write_conversation_state(
+                    scoped_conversation_id,
+                    soul_id=scoped_soul or None,
+                    user_id=scoped_user or None,
+                    updates={
+                        "working_note": json.dumps(result, ensure_ascii=False, default=str),
+                        "last_retrieval_ids": _extract_result_item_ids(result),
+                    },
+                )
+                out["state"] = state_out
+                out["path"] = str(db_path)
+    else:
+        result = await svc.retrieve(memu_queries, where=where)
+        out = {"ok": True, "result": result}
+        if persist_llm_state and method == "llm" and scoped_conversation_id:
+            state_out, db_path = _write_conversation_state(
+                scoped_conversation_id,
+                soul_id=None,
+                user_id=scoped_user or None,
+                updates={
+                    "working_note": json.dumps(result, ensure_ascii=False, default=str),
+                    "last_retrieval_ids": _extract_result_item_ids(result),
+                },
+            )
+            out["state"] = state_out
+            out["path"] = str(db_path)
 
     out["method"] = method
     out["conversation_id"] = scoped_conversation_id
