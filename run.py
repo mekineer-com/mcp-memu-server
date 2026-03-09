@@ -20,6 +20,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 
+def _config_path() -> Path:
+    p = os.getenv("MEMU_SERVER_CONFIG") or os.getenv("MCP_MEMU_CONFIG") or str(ROOT / "config.json")
+    return Path(p).expanduser().resolve()
+
+
+def _config_dir() -> Path:
+    return _config_path().parent
+
+
+def _resolve_cfg_path(raw: str) -> Path:
+    p = Path(str(raw or "")).expanduser()
+    if p.is_absolute():
+        return p.resolve()
+    return (_config_dir() / p).resolve()
+
+
 def _read_json(path: Path) -> dict:
     try:
         if not path.exists():
@@ -39,7 +55,7 @@ def _write_text(path: Path, text: str) -> None:
 def _pidfile_path(cfg: dict) -> Path:
     pf = cfg.get("pid_file") if isinstance(cfg.get("pid_file"), str) else None
     if pf and pf.strip():
-        return Path(pf).expanduser().resolve()
+        return _resolve_cfg_path(pf)
     return (ROOT / ".memu-server.pid").resolve()
 
 
@@ -62,7 +78,7 @@ def _maybe_add_memu_to_syspath(cfg: dict) -> None:
     memu_path = memu_obj.get("path") if isinstance(memu_obj.get("path"), str) else ""
     if not memu_path.strip():
         return
-    p = Path(memu_path).expanduser().resolve()
+    p = _resolve_cfg_path(memu_path)
     # Accept either a repo root (contains pyproject.toml) or the package dir.
     if p.exists() and str(p) not in sys.path:
         sys.path.insert(0, str(p))
@@ -121,7 +137,7 @@ def _listen(cfg: dict) -> tuple[str, int]:
 def main() -> None:
     os.chdir(str(ROOT))
 
-    cfg_path = ROOT / "config.json"
+    cfg_path = _config_path()
     cfg = _read_json(cfg_path)
 
     # Optional: force server-local venv.

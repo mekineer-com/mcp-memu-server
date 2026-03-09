@@ -319,6 +319,10 @@ def _default_config() -> dict[str, Any]:
             "defaults": ["personal_info", "preferences", "relationships", "goals"],
             "max_total": 12,
             "allow_dynamic": True,
+            "allow_dynamic_categories": True,
+            "dynamic_category_min_mentions": 10,
+            "category_centroid_threshold": 0.65,
+            "homeless_trigger_count": 20,
         },
         "retrieve": {
             "method": "rag",
@@ -337,6 +341,13 @@ def _config_dir() -> Path:
         return _config_path().parent
     except Exception:
         return Path.cwd()
+
+
+def _resolve_cfg_path(raw: str) -> Path:
+    p = Path(str(raw or "")).expanduser()
+    if p.is_absolute():
+        return p.resolve()
+    return (_config_dir() / p).resolve()
 
 
 def _load_config() -> dict[str, Any]:
@@ -415,14 +426,20 @@ def _normalize_sqlite_dsn(dsn_or_path: str) -> str:
     raw = str(dsn_or_path or "").strip()
     if not raw:
         return raw
-    if raw.startswith("sqlite:"):
-        return raw
     if raw == ":memory:" or raw.lower() == "memory":
         return "sqlite:///:memory:"
+    if raw.startswith("sqlite:"):
+        f = _sqlite_file_from_dsn(raw)
+        if f is None:
+            return raw
+        p = f.expanduser()
+        if not p.is_absolute():
+            p = (_config_dir() / p).resolve()
+        else:
+            p = p.resolve()
+        return f"sqlite:////{p.as_posix().lstrip('/')}"
 
-    p = Path(raw).expanduser()
-    if not p.is_absolute():
-        p = (_config_dir() / p).resolve()
+    p = _resolve_cfg_path(raw)
     # sqlite absolute path DSN needs 4 slashes after the scheme.
     return f"sqlite:////{p.as_posix().lstrip('/')}"
 
@@ -435,7 +452,7 @@ def _sqlite_dir_from_cfg(cfg: dict[str, Any], fallback_dsn: str | None = None) -
     storage = cfg.get('storage') if isinstance(cfg.get('storage'), dict) else {}
     d = storage.get('sqlite_dir')
     if isinstance(d, str) and d.strip():
-        return Path(d).expanduser().resolve()
+        return _resolve_cfg_path(d)
 
     if fallback_dsn:
         f = _sqlite_file_from_dsn(str(fallback_dsn))
@@ -458,7 +475,7 @@ def _ensure_storage_paths(cfg: dict[str, Any]) -> None:
         # resources_dir
         resources_dir = storage.get('resources_dir')
         if isinstance(resources_dir, str) and resources_dir.strip():
-            Path(resources_dir).expanduser().mkdir(parents=True, exist_ok=True)
+            _resolve_cfg_path(resources_dir).mkdir(parents=True, exist_ok=True)
 
         # sqlite db file parent + file
         ms = storage.get('metadata_store') if isinstance(storage.get('metadata_store'), dict) else {}
@@ -564,7 +581,7 @@ def _get_storage_dir(cfg: dict[str, Any]) -> Path:
     if env:
         d = Path(env).expanduser().resolve()
     else:
-        d = Path(cfg.get("storage", {}).get("resources_dir") or "./storage").expanduser().resolve()
+        d = _resolve_cfg_path(str(cfg.get("storage", {}).get("resources_dir") or "./storage"))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -794,10 +811,20 @@ def _get_service_from_payload(
     try:
         fixed_cats = _categories_from_cfg(_CONFIG)
         if isinstance(memorize_config, dict):
+            cats_cfg = (_CONFIG.get("categories") or {}) if isinstance(_CONFIG.get("categories"), dict) else {}
             if fixed_cats:
                 memorize_config["memory_categories"] = fixed_cats
-            memorize_config["allow_dynamic_categories"] = bool((_CONFIG.get("categories") or {}).get("allow_dynamic", True))
-            memorize_config["max_categories_total"] = int(((_CONFIG.get("categories") or {}).get("max_total", 12)) or 0)
+            memorize_config["allow_dynamic_categories"] = bool(
+                cats_cfg.get("allow_dynamic_categories", cats_cfg.get("allow_dynamic", True))
+            )
+            memorize_config["dynamic_category_min_mentions"] = int(
+                cats_cfg.get("dynamic_category_min_mentions", 10) or 10
+            )
+            memorize_config["category_centroid_threshold"] = float(
+                cats_cfg.get("category_centroid_threshold", 0.65) or 0.65
+            )
+            memorize_config["homeless_trigger_count"] = int(cats_cfg.get("homeless_trigger_count", 20) or 20)
+            memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
     except Exception:
         pass
     retrieve_config = payload.get("retrieve_config")

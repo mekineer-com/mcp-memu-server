@@ -15,7 +15,6 @@
       "dsn": "./sqlite/memu.db",
       "ddl_mode": "create"
     },
-    "sqlite_mode": "per_agent",
     "sqlite_dir": "./sqlite"
   },
   "mcp": {
@@ -54,7 +53,11 @@
       }
     ],
     "max_total": 12,
-    "allow_dynamic": true
+    "allow_dynamic": true,
+    "allow_dynamic_categories": true,
+    "dynamic_category_min_mentions": 10,
+    "category_centroid_threshold": 0.65,
+    "homeless_trigger_count": 20
   },
   "retrieve": {
     "method": "rag"

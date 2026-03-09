@@ -1,5 +1,8 @@
 /_local/
 /data
+config.json
+resources/
+sqlite/
 docs/source
 config/secrets
 .secrets/
