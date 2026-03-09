@@ -72,6 +72,7 @@ _LAST_CALLS: list[dict[str, Any]] = []
 # Full HTTP trace (method/path/status/elapsed). This answers:
 # "Is anything reaching the server from the plugin?"
 _LAST_HTTP: list[dict[str, Any]] = []
+_MEMORIZE_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 # -------------------------
@@ -122,6 +123,16 @@ def _shutdown_snapshot() -> dict[str, Any]:
             "activeHttpRequests": int(_ACTIVE_HTTP_REQUESTS),
             "activeWorkRequests": int(_ACTIVE_WORK_REQUESTS),
         }
+
+
+def _memorize_lock_key(user_id: str, soul_id: str) -> str:
+    try:
+        p = _sqlite_current_path(user_id, soul_id)
+        if p is not None:
+            return str(p)
+    except Exception:
+        pass
+    return f"{user_id}::{soul_id}"
 
 
 def _begin_shutdown_drain(requested_by: str | None, reason: str | None, max_wait_sec: int) -> bool:
@@ -2105,208 +2116,203 @@ async def memorize(payload: dict[str, Any]):
 
         uid = str((user_scope or {}).get('user_id') or 'user') if isinstance(user_scope, dict) else 'user'
         soul = str((user_scope or {}).get('soul_id') or 'soul') if isinstance(user_scope, dict) else 'soul'
+        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul), asyncio.Lock()):
+            storage_dir = _get_storage_dir(_CONFIG)
+            chats_dir = (storage_dir / 'st_chats').resolve()
+            chat_file = _pick_str(safe, 'chatFileName', 'chat_file_name', 'chat_filename', 'chatFile')
+            resource_url_in = _pick_str(safe, 'resource_url')
+            chat_dir, chat_key, chat_key_source = _resolve_chat_storage_dir(
+                chats_dir,
+                uid,
+                soul,
+                conversation_id,
+                chat_file,
+                resource_url_in,
+            )
+            days_dir = (chat_dir / 'days').resolve()
+            chat_dir.mkdir(parents=True, exist_ok=True)
+            days_dir.mkdir(parents=True, exist_ok=True)
 
-        storage_dir = _get_storage_dir(_CONFIG)
-        chats_dir = (storage_dir / 'st_chats').resolve()
-        chat_file = _pick_str(safe, 'chatFileName', 'chat_file_name', 'chat_filename', 'chatFile')
-        resource_url_in = _pick_str(safe, 'resource_url')
-        chat_dir, chat_key, chat_key_source = _resolve_chat_storage_dir(
-            chats_dir,
-            uid,
-            soul,
-            conversation_id,
-            chat_file,
-            resource_url_in,
-        )
-        days_dir = (chat_dir / 'days').resolve()
-        chat_dir.mkdir(parents=True, exist_ok=True)
-        days_dir.mkdir(parents=True, exist_ok=True)
+            full_path = (chat_dir / 'full.json').resolve()
+            manifest_path = (chat_dir / 'manifest.json').resolve()
 
-        full_path = (chat_dir / 'full.json').resolve()
-        manifest_path = (chat_dir / 'manifest.json').resolve()
+            prev_full = _read_list(full_path)
+            prev_len = len(prev_full)
+            merged_len = len(conv_norm) if isinstance(conv_norm, list) else 0
+            merged = prev_full
+            if isinstance(conv_norm, list):
+                merged = _merge_conv(prev_full, conv_norm)
+                merged_len = len(merged)
+                _write_list_if_changed(full_path, prev_full, merged)
 
-        prev_full = _read_list(full_path)
-        prev_len = len(prev_full)
-        merged_len = len(conv_norm) if isinstance(conv_norm, list) else 0
-        merged = prev_full
-        if isinstance(conv_norm, list):
-            merged = _merge_conv(prev_full, conv_norm)
-            merged_len = len(merged)
-            _write_list_if_changed(full_path, prev_full, merged)
+            # Timezone hint (IANA) from client. Offset is only a fallback for logging.
+            tz_name = _pick_str(safe, 'timeZone', 'timezone', 'time_zone')
+            tz_off_raw = safe.get('timeZoneOffsetMin')
+            tz_off_min = int(tz_off_raw) if isinstance(tz_off_raw, (int, float)) and math.isfinite(tz_off_raw) else None
 
-        # Timezone hint (IANA) from client. Offset is only a fallback for logging.
-        tz_name = _pick_str(safe, 'timeZone', 'timezone', 'time_zone')
-        tz_off_raw = safe.get('timeZoneOffsetMin')
-        tz_off_min = int(tz_off_raw) if isinstance(tz_off_raw, (int, float)) and math.isfinite(tz_off_raw) else None
+            tz_ok = False
+            zi = None
+            if tz_name and ZoneInfo is not None:
+                try:
+                    zi = ZoneInfo(str(tz_name))
+                    tz_ok = True
+                except Exception:
+                    zi = None
+                    tz_ok = False
+            if not tz_ok and tz_off_min is not None:
+                try:
+                    zi = timezone(timedelta(minutes=-tz_off_min))
+                    tz_ok = True
+                    if not tz_name:
+                        tz_name = f"offset({tz_off_min})"
+                except Exception:
+                    zi = None
+                    tz_ok = False
 
-        tz_ok = False
-        zi = None
-        if tz_name and ZoneInfo is not None:
+            manifest: dict[str, Any] = {}
             try:
-                zi = ZoneInfo(str(tz_name))
-                tz_ok = True
+                rawm = manifest_path.read_text(encoding='utf-8') if manifest_path.exists() else ''
+                manifest = json.loads(rawm) if rawm.strip() else {}
             except Exception:
-                zi = None
-                tz_ok = False
-        # Fallback: fixed offset (no DST) when tzdata is missing or tz is invalid.
-        if not tz_ok and tz_off_min is not None:
-            try:
-                zi = timezone(timedelta(minutes=-tz_off_min))
-                tz_ok = True
-                if not tz_name:
-                    tz_name = f"offset({tz_off_min})"
-            except Exception:
-                zi = None
-                tz_ok = False
+                manifest = {}
+            segments: list[dict[str, Any]] = manifest.get('segments') if isinstance(manifest.get('segments'), list) else []
 
-        # Load manifest (segments for older days) so we only rebuild the tail.
-        manifest: dict[str, Any] = {}
-        try:
-            rawm = manifest_path.read_text(encoding='utf-8') if manifest_path.exists() else ''
-            manifest = json.loads(rawm) if rawm.strip() else {}
-        except Exception:
-            manifest = {}
-        segments: list[dict[str, Any]] = manifest.get('segments') if isinstance(manifest.get('segments'), list) else []
+            resource_url = str(full_path)
+            days_written = 0
+            forced_splits = 0
+            sleep_stats: Any | None = None
+            if tz_ok and isinstance(merged, list) and any(isinstance(m.get('ts_ms'), int) for m in merged):
+                tail_n = 2500
+                if not segments:
+                    rebuild_from = 0
+                    keep_segments: list[dict[str, Any]] = []
+                else:
+                    tail_start = max(0, len(merged) - tail_n)
+                    rebuild_from = tail_start
+                    keep_segments = []
+                    for s in segments:
+                        try:
+                            st_i = int(s.get('start'))
+                            en_i = int(s.get('end'))
+                            if st_i <= tail_start <= en_i:
+                                rebuild_from = st_i
+                            if st_i < rebuild_from:
+                                keep_segments.append(s)
+                        except Exception:
+                            continue
 
+                ctx_start = max(0, rebuild_from - 1)
+                splits_rel, sleep_stats = _split_indices_by_sleep(
+                    merged[ctx_start:], zi, tz_ok, _SLEEP_SPLIT_MIN_LULL_SECONDS
+                )
+                splits = [ctx_start + i for i in splits_rel if (ctx_start + i) > rebuild_from]
 
-        # Build/update daily files only when we have tz + timestamps.
-        resource_url = str(full_path)
-        days_written = 0
-        forced_splits = 0
-        sleep_stats: Any | None = None
-        if tz_ok and isinstance(merged, list) and any(isinstance(m.get('ts_ms'), int) for m in merged):
-            tail_n = 2500
-            if not segments:
-                rebuild_from = 0
-                keep_segments: list[dict[str, Any]] = []
-            else:
-                tail_start = max(0, len(merged) - tail_n)
-                rebuild_from = tail_start
-                keep_segments = []
-                for s in segments:
-                    try:
-                        st_i = int(s.get('start'))
-                        en_i = int(s.get('end'))
-                        if st_i <= tail_start <= en_i:
-                            rebuild_from = st_i
-                        if st_i < rebuild_from:
-                            keep_segments.append(s)
-                    except Exception:
+                try:
+                    if isinstance(sleep_stats, dict) and sleep_stats.get('nights_total') and not sleep_stats.get('nights_qual'):
+                        sys.stderr.write(
+                            f"memu-server: sleep-split: no qualifying lull >= {_SLEEP_SPLIT_MIN_LULL_SECONDS//3600}h found in night windows; allowing up to {_SLEEP_SPLIT_MAX_SPAN_DAYS} days per file\n"
+                        )
+                        sys.stderr.flush()
+                except Exception:
+                    pass
+
+                boundaries_raw = [rebuild_from] + splits + [len(merged)]
+                ts_list: list[int | None] = []
+                for m in merged:
+                    v = m.get('ts_ms') if isinstance(m, dict) else None
+                    ts_list.append(int(v) if isinstance(v, int) else None)
+                boundaries, forced_splits = _enforce_max_span(
+                    boundaries_raw, ts_list, zi, tz_ok, _SLEEP_SPLIT_MAX_SPAN_DAYS, _SLEEP_SPLIT_MIN_LULL_SECONDS
+                )
+                new_segments: list[dict[str, Any]] = []
+                for a_i, b_i in zip(boundaries, boundaries[1:]):
+                    if b_i <= a_i:
                         continue
+                    seg = merged[a_i:b_i]
+                    if not seg:
+                        continue
+                    first_ts = seg[0].get('ts_ms') if isinstance(seg[0], dict) else None
+                    last_ts = seg[-1].get('ts_ms') if isinstance(seg[-1], dict) else None
+                    date = _date_label(first_ts if isinstance(first_ts, int) else None, zi)
+                    end_date = _date_label(last_ts if isinstance(last_ts, int) else None, zi)
+                    fn = f"{date}.json" if end_date == date else f"{date}__{end_date}.json"
+                    fp = (days_dir / fn).resolve()
+                    old_seg = _read_list(fp)
+                    _write_list_if_changed(fp, old_seg, seg)
+                    days_written += 1 if seg != old_seg else 0
+                    new_segments.append({"date": date, "end_date": end_date, "start": a_i, "end": b_i - 1, "file": fn})
 
-            ctx_start = max(0, rebuild_from - 1)
-            # Split indices are only accepted when the best night-overlap gap is >= min lull.
-            splits_rel, sleep_stats = _split_indices_by_sleep(merged[ctx_start:], zi, tz_ok, _SLEEP_SPLIT_MIN_LULL_SECONDS)
-            splits = [ctx_start + i for i in splits_rel if (ctx_start + i) > rebuild_from]
-
-            # If we found no qualifying lull at all, emit a one-line notice.
-            try:
-                if isinstance(sleep_stats, dict) and sleep_stats.get('nights_total') and not sleep_stats.get('nights_qual'):
-                    sys.stderr.write(
-                        f"memu-server: sleep-split: no qualifying lull >= {_SLEEP_SPLIT_MIN_LULL_SECONDS//3600}h found in night windows; allowing up to {_SLEEP_SPLIT_MAX_SPAN_DAYS} days per file\n"
-                    )
-                    sys.stderr.flush()
-            except Exception:
-                pass
-
-            boundaries_raw = [rebuild_from] + splits + [len(merged)]
-
-            # Enforce max span so we don't get unbounded multi-day files.
-            # Build ts_list for the full merged list once.
-            ts_list: list[int | None] = []
-            for m in merged:
-                v = m.get('ts_ms') if isinstance(m, dict) else None
-                ts_list.append(int(v) if isinstance(v, int) else None)
-            boundaries, forced_splits = _enforce_max_span(boundaries_raw, ts_list, zi, tz_ok, _SLEEP_SPLIT_MAX_SPAN_DAYS, _SLEEP_SPLIT_MIN_LULL_SECONDS)
-            new_segments: list[dict[str, Any]] = []
-            for a_i, b_i in zip(boundaries, boundaries[1:]):
-                if b_i <= a_i:
-                    continue
-                seg = merged[a_i:b_i]
-                if not seg:
-                    continue
-                first_ts = seg[0].get('ts_ms') if isinstance(seg[0], dict) else None
-                last_ts = seg[-1].get('ts_ms') if isinstance(seg[-1], dict) else None
-                date = _date_label(first_ts if isinstance(first_ts, int) else None, zi)
-                end_date = _date_label(last_ts if isinstance(last_ts, int) else None, zi)
-                fn = f"{date}.json" if end_date == date else f"{date}__{end_date}.json"
-                fp = (days_dir / fn).resolve()
-                old_seg = _read_list(fp)
-                _write_list_if_changed(fp, old_seg, seg)
-                days_written += 1 if seg != old_seg else 0
-                new_segments.append({"date": date, "end_date": end_date, "start": a_i, "end": b_i - 1, "file": fn})
-
-            segments = keep_segments + new_segments
-            try:
-                manifest_out = {
-                    "v": 1,
-                    "tz": str(tz_name or ''),
-                    "segments": segments,
-                    "split": {
-                        "min_lull_seconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
-                        "max_span_days": _SLEEP_SPLIT_MAX_SPAN_DAYS,
-                    },
-                    "source": {
-                        "conversationId": conversation_id or '',
-                        "chatFileName": chat_file or '',
-                        "resource_url_in": resource_url_in or '',
-                        "timeZoneOffsetMin": tz_off_min if tz_off_min is not None else None,
-                        "chatKey": chat_key,
-                        "chatKeySource": chat_key_source or '',
-                    },
-                }
-                manifest_path.write_text(json.dumps(manifest_out, ensure_ascii=False, indent=2), encoding='utf-8')
-            except Exception:
-                pass
+                segments = keep_segments + new_segments
+                try:
+                    manifest_out = {
+                        "v": 1,
+                        "tz": str(tz_name or ''),
+                        "segments": segments,
+                        "split": {
+                            "min_lull_seconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
+                            "max_span_days": _SLEEP_SPLIT_MAX_SPAN_DAYS,
+                        },
+                        "source": {
+                            "conversationId": conversation_id or '',
+                            "chatFileName": chat_file or '',
+                            "resource_url_in": resource_url_in or '',
+                            "timeZoneOffsetMin": tz_off_min if tz_off_min is not None else None,
+                            "chatKey": chat_key,
+                            "chatKeySource": chat_key_source or '',
+                        },
+                    }
+                    manifest_path.write_text(json.dumps(manifest_out, ensure_ascii=False, indent=2), encoding='utf-8')
+                except Exception:
+                    pass
 
             if segments:
                 last_file = segments[-1].get('file')
                 if isinstance(last_file, str) and last_file:
                     resource_url = str((days_dir / last_file).resolve())
 
-        delta_conv = conv_norm if isinstance(conv_norm, list) else []
-        if prev_len and isinstance(merged, list) and merged[:prev_len] == prev_full:
-            delta_conv = merged[prev_len:]
-        memorize_raw_text = json.dumps(delta_conv, ensure_ascii=False) if delta_conv else None
+            delta_conv = conv_norm if isinstance(conv_norm, list) else []
+            if prev_len and isinstance(merged, list) and merged[:prev_len] == prev_full:
+                delta_conv = merged[prev_len:]
+            memorize_raw_text = json.dumps(delta_conv, ensure_ascii=False) if delta_conv else None
 
-        result = await svc.memorize(
-            resource_url=resource_url,
-            modality="conversation",
-            user=user_scope,
-            raw_text=memorize_raw_text,
-            local_path=resource_url,
-        )
-
-        if conversation_id:
-            processed_count = len(merged) if isinstance(merged, list) else (len(conv_norm) if isinstance(conv_norm, list) else 0)
-            _write_conversation_state(
-                conversation_id,
-                soul_id=scoped_soul,
-                user_id=uid,
-                updates={
-                    "digest_cursor": max(0, processed_count - 1),
-                    "last_memorize_at": datetime.now(timezone.utc).isoformat(),
-                },
+            result = await svc.memorize(
+                resource_url=resource_url,
+                modality="conversation",
+                user=user_scope,
+                raw_text=memorize_raw_text,
+                local_path=resource_url,
             )
 
-        _record_call('memorize', safe, ok=True, info={
-            'resource_url': resource_url,
-            'conversationId': conversation_id,
-            'chatFileName': chat_file,
-            'resourceUrlIn': resource_url_in,
-            'chatKey': chat_key,
-            'chatKeySource': chat_key_source,
-            'timeZone': tz_name,
-            'messages_prev': prev_len,
-            'messages_in': len(conv_norm) if isinstance(conv_norm, list) else None,
-            'messages_merged': len(merged) if isinstance(merged, list) else None,
-            'days_written': days_written,
-            'sleepSplitMinLullSeconds': _SLEEP_SPLIT_MIN_LULL_SECONDS,
-            'sleepSplitMaxSpanDays': _SLEEP_SPLIT_MAX_SPAN_DAYS,
-            'sleepSplitForcedSplits': forced_splits if 'forced_splits' in locals() else 0,
-            'sleepSplitStats': sleep_stats if 'sleep_stats' in locals() else None,
-        })
-        return {"ok": True, "result": result, "resource_url": resource_url}
+            if conversation_id:
+                processed_count = len(merged) if isinstance(merged, list) else (len(conv_norm) if isinstance(conv_norm, list) else 0)
+                _write_conversation_state(
+                    conversation_id,
+                    soul_id=scoped_soul,
+                    user_id=uid,
+                    updates={
+                        "digest_cursor": max(0, processed_count - 1),
+                        "last_memorize_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+
+            _record_call('memorize', safe, ok=True, info={
+                'resource_url': resource_url,
+                'conversationId': conversation_id,
+                'chatFileName': chat_file,
+                'resourceUrlIn': resource_url_in,
+                'chatKey': chat_key,
+                'chatKeySource': chat_key_source,
+                'timeZone': tz_name,
+                'messages_prev': prev_len,
+                'messages_in': len(conv_norm) if isinstance(conv_norm, list) else None,
+                'messages_merged': len(merged) if isinstance(merged, list) else None,
+                'days_written': days_written,
+                'sleepSplitMinLullSeconds': _SLEEP_SPLIT_MIN_LULL_SECONDS,
+                'sleepSplitMaxSpanDays': _SLEEP_SPLIT_MAX_SPAN_DAYS,
+                'sleepSplitForcedSplits': forced_splits if 'forced_splits' in locals() else 0,
+                'sleepSplitStats': sleep_stats if 'sleep_stats' in locals() else None,
+            })
+            return {"ok": True, "result": result, "resource_url": resource_url}
     except HTTPException:
         raise
     except Exception as exc:
