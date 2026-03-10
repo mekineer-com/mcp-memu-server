@@ -11,6 +11,7 @@ import re
 import math
 import sys
 import threading
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta, time as dtime
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -32,6 +33,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from memu.app import MemoryService
+from memu.prompts.diary import self_model_update as diary_self_model_update_prompt
+from memu.prompts.memory_type import diary as diary_memory_prompt
 
 app = FastAPI(title="mcp-memu-server", version="0.4.0")
 
@@ -658,6 +661,30 @@ def _blob_config_from_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
     return {"resources_dir": str(_get_storage_dir(cfg))}
 
 
+def _default_llm_profiles_from_server_config() -> dict[str, Any]:
+    llm = _CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}
+    api_key = str(os.getenv("OPENAI_API_KEY") or os.getenv("NANOGPT_API_KEY") or llm.get("api_key") or "")
+    base_url = str(os.getenv("OPENAI_BASE_URL") or llm.get("base_url") or "https://api.openai.com/v1")
+    chat_model = str(os.getenv("DEFAULT_CHAT_MODEL") or llm.get("chat_model") or "gpt-4o-mini")
+    embed_model = str(os.getenv("DEFAULT_EMBED_MODEL") or llm.get("embed_model") or "text-embedding-3-small")
+    provider = str(os.getenv("LLM_PROVIDER") or llm.get("provider") or "openai")
+    client_backend = str(os.getenv("LLM_CLIENT_BACKEND") or llm.get("client_backend") or "httpx")
+    endpoint_overrides = llm.get("endpoint_overrides") or {}
+    default_profile = {
+        "provider": provider,
+        "api_key": api_key,
+        "base_url": base_url,
+        "chat_model": chat_model,
+        "embed_model": embed_model,
+        "client_backend": client_backend,
+        "endpoint_overrides": endpoint_overrides,
+    }
+    return {
+        "default": default_profile,
+        "embedding": {**default_profile, "chat_model": chat_model, "embed_model": embed_model},
+    }
+
+
 # -------------------------
 # Payload-based services (SillyTavern plugin)
 # -------------------------
@@ -1219,6 +1246,8 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
     digest_cursor INTEGER DEFAULT 0,
     working_note TEXT,
     active_intentions JSON,
+    diary_worthy_ids JSON DEFAULT '[]',
+    self_model_id VARCHAR,
     last_retrieval_ids JSON,
     last_memorize_at DATETIME,
     updated_at DATETIME
@@ -1237,6 +1266,10 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN working_note TEXT")
     if "active_intentions" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN active_intentions JSON")
+    if "diary_worthy_ids" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN diary_worthy_ids JSON DEFAULT '[]'")
+    if "self_model_id" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN self_model_id VARCHAR")
     if "last_retrieval_ids" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_retrieval_ids JSON")
     if "last_memorize_at" not in cols:
@@ -1245,7 +1278,41 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN updated_at DATETIME")
     for stmt in alters:
         con.execute(stmt)
+    _sqlite_ensure_diary_tables(con)
     con.commit()
+
+
+def _sqlite_ensure_diary_tables(con: sqlite3.Connection) -> None:
+    con.execute(
+        """
+CREATE TABLE IF NOT EXISTS memu_self_model (
+    id TEXT PRIMARY KEY,
+    soul_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    trait_invariants TEXT,
+    narrative_self TEXT,
+    contextual_state TEXT,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+"""
+    )
+    con.execute(
+        """
+CREATE TABLE IF NOT EXISTS memu_intentions (
+    id TEXT PRIMARY KEY,
+    soul_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    description TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    source TEXT,
+    confidence REAL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    target_date TEXT,
+    related_memory_ids TEXT,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+"""
+    )
 
 
 def _json_to_db(value: Any) -> str | None:
@@ -1268,6 +1335,82 @@ def _json_from_db(value: Any) -> Any:
     return value
 
 
+_DEFAULT_TRAIT_INVARIANT_STRENGTH = 0.3
+
+
+def _normalize_trait_strength(value: Any, default: float = _DEFAULT_TRAIT_INVARIANT_STRENGTH) -> float:
+    try:
+        strength = float(value)
+    except (TypeError, ValueError):
+        strength = default
+    if math.isnan(strength) or math.isinf(strength):
+        strength = default
+    strength = max(0.1, min(0.9, strength))
+    return round(strength, 1)
+
+
+def _normalize_trait_invariants(value: Any) -> list[dict[str, Any]]:
+    parsed = _json_from_db(value)
+    if not isinstance(parsed, list):
+        return []
+    out: list[dict[str, Any]] = []
+    seen: dict[str, int] = {}
+    for item in parsed:
+        if isinstance(item, Mapping):
+            tendency = str(item.get("tendency") or "").strip()
+            strength = _normalize_trait_strength(item.get("strength"))
+        else:
+            tendency = str(item or "").strip()
+            strength = _DEFAULT_TRAIT_INVARIANT_STRENGTH
+        if not tendency:
+            continue
+        normalized = {"tendency": tendency, "strength": strength}
+        idx = seen.get(tendency)
+        if idx is None:
+            seen[tendency] = len(out)
+            out.append(normalized)
+        else:
+            out[idx] = normalized
+    return out
+
+
+def _normalize_int_list(value: Any) -> list[int]:
+    parsed = _json_from_db(value)
+    if not isinstance(parsed, list):
+        return []
+    out: list[int] = []
+    seen: set[int] = set()
+    for item in parsed:
+        try:
+            candidate = int(item)
+        except (TypeError, ValueError):
+            continue
+        if candidate < 0 or candidate in seen:
+            continue
+        seen.add(candidate)
+        out.append(candidate)
+    return out
+
+
+def _merge_unique_int_lists(left: Any, right: Any) -> list[int]:
+    return _normalize_int_list([*_normalize_int_list(left), *_normalize_int_list(right)])
+
+
+def _normalize_text_list(value: Any) -> list[str]:
+    parsed = _json_from_db(value)
+    if not isinstance(parsed, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in parsed:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
 def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
@@ -1283,6 +1426,8 @@ def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | No
         "digest_cursor": max(0, digest_cursor),
         "working_note": row["working_note"] if "working_note" in row.keys() else None,
         "active_intentions": _json_from_db(row["active_intentions"] if "active_intentions" in row.keys() else None),
+        "diary_worthy_ids": _normalize_int_list(row["diary_worthy_ids"] if "diary_worthy_ids" in row.keys() else None),
+        "self_model_id": row["self_model_id"] if "self_model_id" in row.keys() else None,
         "last_retrieval_ids": _json_from_db(row["last_retrieval_ids"] if "last_retrieval_ids" in row.keys() else None),
         "last_memorize_at": row["last_memorize_at"] if "last_memorize_at" in row.keys() else None,
         "updated_at": row["updated_at"] if "updated_at" in row.keys() else None,
@@ -1298,6 +1443,8 @@ def _conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sq
         "digest_cursor",
         "working_note",
         "active_intentions",
+        *([ "diary_worthy_ids" ] if "diary_worthy_ids" in cols else []),
+        *([ "self_model_id" ] if "self_model_id" in cols else []),
         "last_retrieval_ids",
         "last_memorize_at",
         "updated_at",
@@ -1321,6 +1468,8 @@ def _conversation_state_empty(
         "digest_cursor": 0,
         "working_note": None,
         "active_intentions": None,
+        "diary_worthy_ids": [],
+        "self_model_id": None,
         "last_retrieval_ids": None,
         "last_memorize_at": None,
         "updated_at": None,
@@ -1363,15 +1512,26 @@ def _write_conversation_state(
         if scoped_user is not None:
             merged["user_id"] = scoped_user
 
-        for key, value in dict(updates or {}).items():
+        raw_updates = dict(updates or {})
+        append_diary_worthy_ids = raw_updates.pop("append_diary_worthy_ids", None)
+
+        for key, value in raw_updates.items():
             if key in {
                 "digest_cursor",
                 "working_note",
                 "active_intentions",
+                "diary_worthy_ids",
+                "self_model_id",
                 "last_retrieval_ids",
                 "last_memorize_at",
             }:
                 merged[key] = value
+
+        if append_diary_worthy_ids is not None:
+            merged["diary_worthy_ids"] = _merge_unique_int_lists(
+                merged.get("diary_worthy_ids"),
+                append_diary_worthy_ids,
+            )
 
         try:
             merged["digest_cursor"] = max(0, int(merged.get("digest_cursor") or 0))
@@ -1382,6 +1542,9 @@ def _write_conversation_state(
         merged["last_memorize_at"] = None if raw_last is None else (str(raw_last).strip() or None)
         raw_note = merged.get("working_note")
         merged["working_note"] = None if raw_note is None else str(raw_note)
+        merged["diary_worthy_ids"] = _normalize_int_list(merged.get("diary_worthy_ids"))
+        raw_self_model_id = merged.get("self_model_id")
+        merged["self_model_id"] = None if raw_self_model_id is None else (str(raw_self_model_id).strip() or None)
         merged["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         con.execute(
@@ -1393,16 +1556,20 @@ INSERT INTO memu_conversation_state (
     digest_cursor,
     working_note,
     active_intentions,
+    diary_worthy_ids,
+    self_model_id,
     last_retrieval_ids,
     last_memorize_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(conversation_id) DO UPDATE SET
     soul_id = excluded.soul_id,
     user_id = excluded.user_id,
     digest_cursor = excluded.digest_cursor,
     working_note = excluded.working_note,
     active_intentions = excluded.active_intentions,
+    diary_worthy_ids = excluded.diary_worthy_ids,
+    self_model_id = excluded.self_model_id,
     last_retrieval_ids = excluded.last_retrieval_ids,
     last_memorize_at = excluded.last_memorize_at,
     updated_at = excluded.updated_at
@@ -1414,6 +1581,8 @@ ON CONFLICT(conversation_id) DO UPDATE SET
                 int(merged.get("digest_cursor") or 0),
                 merged.get("working_note"),
                 _json_to_db(merged.get("active_intentions")),
+                _json_to_db(merged.get("diary_worthy_ids") or []),
+                merged.get("self_model_id"),
                 _json_to_db(merged.get("last_retrieval_ids")),
                 merged.get("last_memorize_at"),
                 merged.get("updated_at"),
@@ -1732,6 +1901,8 @@ async def diag_sqlite_counts(
         "memu_memory_items",
         "memu_category_items",
         "memu_conversation_state",
+        "memu_self_model",
+        "memu_intentions",
     ]
     con = _sqlite_connect(p)
     try:
@@ -1761,7 +1932,15 @@ async def diag_sqlite_recent(
     soul_id: str | None = None,
     session_id: str | None = None,
 ):
-    allowed = {"memu_resources", "memu_memory_categories", "memu_memory_items", "memu_category_items", "memu_conversation_state"}
+    allowed = {
+        "memu_resources",
+        "memu_memory_categories",
+        "memu_memory_items",
+        "memu_category_items",
+        "memu_conversation_state",
+        "memu_self_model",
+        "memu_intentions",
+    }
     if table not in allowed:
         raise HTTPException(status_code=400, detail=f"table must be one of: {sorted(allowed)}")
     limit = max(1, min(int(limit or 20), 200))
@@ -1774,7 +1953,7 @@ async def diag_sqlite_recent(
 
     con = _sqlite_connect(p)
     try:
-        if table == "memu_conversation_state":
+        if table in {"memu_conversation_state", "memu_self_model", "memu_intentions"}:
             _sqlite_ensure_conversation_state_schema(con)
         cols = _sqlite_table_columns(con, table)
         scope_where, params = _sqlite_build_scope_where(cols, user_id, scoped_soul, session_id)
@@ -1797,7 +1976,12 @@ async def diag_sqlite_recent(
             "happened_at",
             "digest_cursor",
             "working_note",
+            "active_intentions",
+            "diary_worthy_ids",
+            "self_model_id",
             "last_memorize_at",
+            "affective_tags",
+            "unresolved",
             "resource_id",
             "url",
             "modality",
@@ -1805,6 +1989,12 @@ async def diag_sqlite_recent(
             "caption",
             "item_id",
             "category_id",
+            "trait_invariants",
+            "narrative_self",
+            "contextual_state",
+            "source",
+            "target_date",
+            "related_memory_ids",
         ]
         ban = {"embedding", "extra"}
         sel = [c for c in prefer if c in cols and c not in ban]
@@ -2118,6 +2308,404 @@ def _enforce_max_span(boundaries_in: list[int], ts_list: list[int | None], zi: A
             out2.append(x)
     return (out2, forced)
 
+
+def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, conversation_id: str) -> Path | None:
+    primary_dir, _chat_key, _chat_key_source = _resolve_chat_storage_dir(
+        chats_dir,
+        uid,
+        soul_id,
+        conversation_id,
+        None,
+        None,
+    )
+    if (primary_dir / 'full.json').exists():
+        return primary_dir
+
+    agent_slug = _sanitize_db_filename(soul_id)
+    for manifest_path in sorted(chats_dir.glob(f"{agent_slug}_*/manifest.json")):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        source = manifest.get('source') if isinstance(manifest, dict) else {}
+        if not isinstance(source, dict):
+            continue
+        if str(source.get('conversationId') or '').strip() == conversation_id:
+            return manifest_path.parent
+    return None
+
+
+def _format_messages_for_diary(messages: list[dict[str, Any]], message_indices: list[int]) -> str:
+    lines: list[str] = []
+    for idx in message_indices:
+        if idx < 0 or idx >= len(messages):
+            continue
+        msg = messages[idx]
+        if not isinstance(msg, dict):
+            continue
+        speaker = str(msg.get('name') or msg.get('role') or 'unknown').strip() or 'unknown'
+        content = ' '.join(str(msg.get('content') or '').splitlines()).strip()
+        if not content:
+            continue
+        lines.append(f"[{idx}] [{speaker}]: {content}")
+    return '\n'.join(lines)
+
+
+def _extract_xml_fragment(raw: str, root_tag: str) -> ET.Element:
+    text = str(raw or '').strip()
+    match = re.search(rf"<{root_tag}>(.*)</{root_tag}>", text, re.DOTALL)
+    if match is None:
+        raise ValueError(f"Missing <{root_tag}> root")
+    return ET.fromstring(f"<{root_tag}>{match.group(1)}</{root_tag}>")
+
+
+def _xml_text(element: ET.Element | None, path: str) -> str | None:
+    if element is None:
+        return None
+    node = element.find(path)
+    if node is None or node.text is None:
+        return None
+    text = str(node.text).strip()
+    return text or None
+
+
+def _xml_float(text: str | None) -> float | None:
+    if text is None:
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_diary_xml(raw: str) -> dict[str, Any]:
+    root = _extract_xml_fragment(raw, 'diary')
+    affect = root.find('affect')
+    intentions: list[str] = []
+    intentions_root = root.find('intentions')
+    if intentions_root is not None:
+        for item in intentions_root.findall('intention'):
+            text = str(item.text or '').strip()
+            if text:
+                intentions.append(text)
+    return {
+        'prose': _xml_text(root, 'prose'),
+        'affective_tags': {
+            'emotion': _xml_text(affect, 'emotion'),
+            'trigger': _xml_text(affect, 'trigger'),
+            'valence': _xml_float(_xml_text(affect, 'valence')),
+            'intensity': _xml_float(_xml_text(affect, 'intensity')),
+            'what_helped': _xml_text(affect, 'what_helped'),
+        },
+        'unresolved': _xml_text(root, 'unresolved'),
+        'intentions': intentions,
+        'companion_memory': _xml_text(root, 'companion_memory'),
+    }
+
+
+def _parse_self_model_update_xml(raw: str) -> dict[str, Any]:
+    root = _extract_xml_fragment(raw, 'self_model_update')
+    trait_root = root.find('trait_invariants')
+    adds: list[dict[str, Any]] = []
+    removes: list[str] = []
+    if trait_root is not None:
+        for item in trait_root.findall('add'):
+            tendency = _xml_text(item, 'tendency') or str(item.text or '').strip()
+            if tendency:
+                adds.append({
+                    'tendency': tendency,
+                    'strength': _normalize_trait_strength(_xml_text(item, 'strength')),
+                })
+        for item in trait_root.findall('remove'):
+            text = str(item.text or '').strip()
+            if text:
+                removes.append(text)
+    return {
+        'trait_add': adds,
+        'trait_remove': removes,
+        'narrative_self': _xml_text(root, 'narrative_self'),
+        'contextual_state': _xml_text(root, 'contextual_state'),
+    }
+
+
+def _load_current_self_model(
+    con: sqlite3.Connection,
+    *,
+    self_model_id: str | None,
+    soul_id: str,
+    user_id: str,
+) -> sqlite3.Row | None:
+    if self_model_id:
+        row = con.execute(
+            "SELECT * FROM memu_self_model WHERE id = ? LIMIT 1",
+            (self_model_id,),
+        ).fetchone()
+        if row is not None:
+            return row
+    return con.execute(
+        """
+SELECT * FROM memu_self_model
+WHERE soul_id = ? AND user_id = ?
+ORDER BY updated_at DESC, id DESC
+LIMIT 1
+""",
+        (soul_id, user_id),
+    ).fetchone()
+
+
+def _format_self_model_for_prompt(row: sqlite3.Row | None) -> str:
+    if row is None:
+        return ''
+    traits = _normalize_trait_invariants(row['trait_invariants'] if 'trait_invariants' in row.keys() else None)
+    lines = ['Trait invariants:']
+    if traits:
+        lines.extend(f"- {trait['tendency']} (strength: {trait['strength']:.1f})" for trait in traits)
+    else:
+        lines.append('-')
+    lines.append('')
+    lines.append('Narrative self:')
+    lines.append(str(row['narrative_self'] or '').strip() or '-')
+    lines.append('')
+    lines.append('Contextual state:')
+    lines.append(str(row['contextual_state'] or '').strip() or '-')
+    return '\n'.join(lines)
+
+
+async def _generate_diary(
+    *,
+    svc: MemoryService,
+    conversation_id: str,
+    soul_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    db_path = _sqlite_current_path(user_id, soul_id)
+    if db_path is None:
+        raise HTTPException(status_code=400, detail='soul_id required')
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail='conversation database not found')
+
+    _sqlite_ensure_nonempty(db_path)
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
+
+        state_row = _conversation_state_row(con, conversation_id)
+        state = _conversation_state_from_row(state_row)
+        if state is None:
+            raise HTTPException(status_code=404, detail='conversation state not found')
+
+        diary_worthy_ids = _normalize_int_list(state.get('diary_worthy_ids'))
+        if not diary_worthy_ids:
+            raise HTTPException(status_code=400, detail='no diary-worthy ids queued')
+
+        storage_dir = _get_storage_dir(_CONFIG)
+        chats_dir = (storage_dir / 'st_chats').resolve()
+        chat_dir = _find_chat_dir_for_conversation(chats_dir, user_id, soul_id, conversation_id)
+        if chat_dir is None:
+            raise HTTPException(status_code=404, detail='conversation resource not found')
+
+        full_messages = _read_list((chat_dir / 'full.json').resolve())
+        excerpt = _format_messages_for_diary(full_messages, diary_worthy_ids)
+        if not excerpt.strip():
+            raise HTTPException(status_code=400, detail='diary-worthy messages not found in resource')
+
+        previous_diary = con.execute(
+            """
+SELECT id, summary, unresolved
+FROM memu_memory_items
+WHERE memory_type = 'diary' AND soul_id = ? AND user_id = ?
+ORDER BY updated_at DESC, created_at DESC, id DESC
+LIMIT 1
+""",
+            (soul_id, user_id),
+        ).fetchone()
+
+        if previous_diary is not None:
+            context_parts = [f"Previous diary entry:\n{str(previous_diary['summary'] or '').strip()}"]
+            previous_unresolved = str(previous_diary['unresolved'] or '').strip()
+            if previous_unresolved:
+                context_parts.append(f"Previous unresolved thread:\n{previous_unresolved}")
+            diary_prompt = diary_memory_prompt.PROMPT_WITH_CONTEXT.format(
+                context=svc._escape_prompt_value('\n\n'.join(context_parts)),
+                conversation=svc._escape_prompt_value(excerpt),
+            )
+        else:
+            diary_prompt = diary_memory_prompt.PROMPT.format(
+                conversation=svc._escape_prompt_value(excerpt),
+            )
+
+        diary_raw = await svc._get_llm_client().chat(diary_prompt, temperature=0.2)
+        diary_data = _parse_diary_xml(diary_raw)
+        prose = str(diary_data.get('prose') or '').strip()
+        companion_memory = str(diary_data.get('companion_memory') or '').strip()
+        if not prose:
+            raise HTTPException(status_code=500, detail='diary generation returned empty prose')
+        if not companion_memory:
+            raise HTTPException(status_code=500, detail='diary generation returned empty companion_memory')
+
+        diary_embedding, companion_embedding = await svc._get_llm_client('embedding').embed([prose, companion_memory])
+        diary_item = svc.database.memory_item_repo.create_item(
+            resource_id=None,
+            memory_type='diary',
+            summary=prose,
+            embedding=diary_embedding,
+            user_data={'user_id': user_id, 'soul_id': soul_id, 'conversation_id': conversation_id},
+            conversation_id=conversation_id,
+            affective_tags=diary_data.get('affective_tags'),
+            unresolved=diary_data.get('unresolved'),
+        )
+        _companion_item = svc.database.memory_item_repo.create_item(
+            resource_id=None,
+            memory_type='event',
+            summary=companion_memory,
+            embedding=companion_embedding,
+            user_data={'user_id': user_id, 'soul_id': soul_id, 'conversation_id': conversation_id},
+            source_role='soul',
+            conversation_id=conversation_id,
+        )
+
+        current_self_model = _load_current_self_model(
+            con,
+            self_model_id=str(state.get('self_model_id') or '').strip() or None,
+            soul_id=soul_id,
+            user_id=user_id,
+        )
+        existing_self_model_text = _format_self_model_for_prompt(current_self_model)
+        if existing_self_model_text:
+            self_model_prompt = diary_self_model_update_prompt.PROMPT_WITH_EXISTING.format(
+                existing_self_model=svc._escape_prompt_value(existing_self_model_text),
+                diary_entry=svc._escape_prompt_value(prose),
+            )
+        else:
+            self_model_prompt = diary_self_model_update_prompt.PROMPT.format(
+                diary_entry=svc._escape_prompt_value(prose),
+            )
+
+        self_model_raw = await svc._get_llm_client().chat(self_model_prompt, temperature=0.2)
+        self_model_update = _parse_self_model_update_xml(self_model_raw)
+
+        existing_traits = _normalize_trait_invariants(
+            current_self_model['trait_invariants']
+            if current_self_model is not None and 'trait_invariants' in current_self_model.keys()
+            else None
+        )
+        for text in self_model_update['trait_remove']:
+            existing_traits = [item for item in existing_traits if item['tendency'] != text]
+        for trait in self_model_update['trait_add']:
+            tendency = str(trait.get('tendency') or '').strip()
+            if not tendency:
+                continue
+            for existing_trait in existing_traits:
+                if existing_trait['tendency'] == tendency:
+                    existing_trait['strength'] = _normalize_trait_strength(trait.get('strength'))
+                    break
+            else:
+                existing_traits.append({
+                    'tendency': tendency,
+                    'strength': _normalize_trait_strength(trait.get('strength')),
+                })
+
+        narrative_self = (
+            str(self_model_update.get('narrative_self') or '').strip()
+            or (
+                str(current_self_model['narrative_self'] or '').strip()
+                if current_self_model is not None and 'narrative_self' in current_self_model.keys()
+                else ''
+            )
+            or None
+        )
+        contextual_state = str(self_model_update.get('contextual_state') or '').strip() or None
+        self_model_id = (
+            str(current_self_model['id']).strip()
+            if current_self_model is not None and 'id' in current_self_model.keys()
+            else str(uuid.uuid4())
+        )
+        now_iso = datetime.now(timezone.utc).isoformat()
+        con.execute(
+            """
+INSERT INTO memu_self_model (
+    id,
+    soul_id,
+    user_id,
+    trait_invariants,
+    narrative_self,
+    contextual_state,
+    updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    soul_id = excluded.soul_id,
+    user_id = excluded.user_id,
+    trait_invariants = excluded.trait_invariants,
+    narrative_self = excluded.narrative_self,
+    contextual_state = excluded.contextual_state,
+    updated_at = excluded.updated_at
+""",
+            (
+                self_model_id,
+                soul_id,
+                user_id,
+                _json_to_db(existing_traits),
+                narrative_self,
+                contextual_state,
+                now_iso,
+            ),
+        )
+
+        intention_ids: list[str] = []
+        for description in diary_data.get('intentions') or []:
+            text = str(description or '').strip()
+            if not text:
+                continue
+            intention_id = str(uuid.uuid4())
+            con.execute(
+                """
+INSERT INTO memu_intentions (
+    id,
+    soul_id,
+    user_id,
+    description,
+    status,
+    source,
+    confidence,
+    target_date,
+    related_memory_ids,
+    updated_at
+) VALUES (?, ?, ?, ?, 'active', 'inferred', NULL, NULL, ?, ?)
+""",
+                (
+                    intention_id,
+                    soul_id,
+                    user_id,
+                    text,
+                    _json_to_db([diary_item.id]),
+                    now_iso,
+                ),
+            )
+            intention_ids.append(intention_id)
+
+        con.commit()
+    finally:
+        con.close()
+
+    updated_state, _db_path = _write_conversation_state(
+        conversation_id,
+        soul_id=soul_id,
+        user_id=user_id,
+        updates={
+            'self_model_id': self_model_id,
+            'diary_worthy_ids': [],
+        },
+    )
+    return {
+        'conversation_id': conversation_id,
+        'memory_id': diary_item.id,
+        'self_model_id': self_model_id,
+        'intention_ids': intention_ids,
+        'diary_worthy_ids_cleared': True,
+        'state': updated_state,
+    }
+
 @app.post("/memorize", operation_id="memorize")
 async def memorize(payload: dict[str, Any]):
     """Memorize a SillyTavern conversation.
@@ -2331,6 +2919,12 @@ async def memorize(payload: dict[str, Any]):
 
             if conversation_id:
                 processed_count = len(merged) if isinstance(merged, list) else (len(conv_norm) if isinstance(conv_norm, list) else 0)
+                diary_worthy_ids = []
+                if isinstance(result, dict):
+                    raw_diary_ids = result.get('diary_worthy_ids')
+                    diary_worthy_ids = _normalize_int_list(raw_diary_ids)
+                if diary_worthy_ids and prev_len and isinstance(merged, list) and merged[:prev_len] == prev_full:
+                    diary_worthy_ids = [prev_len + idx for idx in diary_worthy_ids]
                 _write_conversation_state(
                     conversation_id,
                     soul_id=scoped_soul,
@@ -2338,6 +2932,7 @@ async def memorize(payload: dict[str, Any]):
                     updates={
                         "digest_cursor": max(0, processed_count - 1),
                         "last_memorize_at": datetime.now(timezone.utc).isoformat(),
+                        "append_diary_worthy_ids": diary_worthy_ids,
                     },
                 )
 
@@ -2368,6 +2963,65 @@ async def memorize(payload: dict[str, Any]):
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/diary/generate", operation_id="generate_diary")
+async def generate_diary(payload: dict[str, Any] = Body(...)):
+    try:
+        safe = _safe_payload(payload)
+        if not isinstance(safe.get("llm_profiles"), dict):
+            safe["llm_profiles"] = _default_llm_profiles_from_server_config()
+
+        user_scope = safe.get("user")
+        if not isinstance(user_scope, dict):
+            user_scope = _extract_scope(safe) or None
+        if not isinstance(user_scope, dict):
+            raise HTTPException(status_code=400, detail="user scope required")
+
+        conversation_id = _extract_conversation_id(safe)
+        if not conversation_id:
+            raise HTTPException(status_code=400, detail="conversation_id required")
+
+        uid = str(user_scope.get("user_id") or "").strip()
+        soul = str(user_scope.get("soul_id") or "").strip()
+        if not uid or not soul:
+            raise HTTPException(status_code=400, detail="user_id and soul_id required")
+
+        safe["user"] = {**user_scope, "user_id": uid, "soul_id": soul, "conversation_id": conversation_id}
+        svc = _get_service_from_payload(safe)
+
+        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul), asyncio.Lock()):
+            result = await _generate_diary(
+                svc=svc,
+                conversation_id=conversation_id,
+                soul_id=soul,
+                user_id=uid,
+            )
+
+        _record_call(
+            "diary.generate",
+            safe,
+            ok=True,
+            info={
+                "conversationId": conversation_id,
+                "memory_id": result.get("memory_id"),
+                "intention_count": len(result.get("intention_ids") or []),
+            },
+        )
+        return {"ok": True, "result": result}
+    except HTTPException:
+        _record_call("diary.generate", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException")
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        _record_call(
+            "diary.generate",
+            payload if isinstance(payload, dict) else None,
+            ok=False,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 @app.get("/categories", operation_id="list_memory_categories")
 async def list_memory_categories(user_id: str = "", soul_id: str = "", include_empty: bool = False):
     # Scope is required: this server runs per-soul SQLite databases (no shared DB by default).
@@ -2525,6 +3179,12 @@ async def patch_conversation_state(
 
     if "active_intentions" in body or "activeIntentions" in body:
         updates["active_intentions"] = body.get("active_intentions", body.get("activeIntentions"))
+
+    if "diary_worthy_ids" in body or "diaryWorthyIds" in body:
+        updates["diary_worthy_ids"] = body.get("diary_worthy_ids", body.get("diaryWorthyIds"))
+
+    if "self_model_id" in body or "selfModelId" in body:
+        updates["self_model_id"] = body.get("self_model_id", body.get("selfModelId"))
 
     if "last_retrieval_ids" in body or "lastRetrievalIds" in body:
         updates["last_retrieval_ids"] = body.get("last_retrieval_ids", body.get("lastRetrievalIds"))
