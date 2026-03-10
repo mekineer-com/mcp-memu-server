@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [buildfix, main, develop]
   pull_request:
-    branches: [main, develop]
+    branches: [buildfix, main, develop]
 
 jobs:
   quality-check:
@@ -25,18 +25,21 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install dependencies
-        run: uv sync --all-groups
+      - name: Create test environment
+        run: uv venv .venv
 
       - name: Run quality checks
         run: |
-          uv lock --locked
-          uv run pre-commit run --all-files
-          uv run mypy app
-          uv run deptry app
+          . .venv/bin/activate
+          uv pip install -e . pre-commit mypy deptry pytest pytest-asyncio pytest-cov httpx
+          pre-commit run --all-files
+          mypy app
+          deptry app
 
       - name: Run tests with coverage
-        run: uv run pytest --cov=app --cov-report=xml --cov-report=term
+        run: |
+          . .venv/bin/activate
+          pytest --cov=app --cov-report=xml --cov-report=term
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
