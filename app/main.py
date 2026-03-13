@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -36,6 +37,8 @@ from memu.app import MemoryService
 from memu.prompts.diary import self_model_update as diary_self_model_update_prompt
 from memu.prompts.memory_type import diary as diary_memory_prompt
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="mcp-memu-server", version="0.4.0")
 
@@ -1330,6 +1333,14 @@ CREATE TABLE IF NOT EXISTS memu_intentions (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
 """
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_self_model_soul_user "
+        "ON memu_self_model(soul_id, user_id, updated_at DESC)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_intentions_soul_user "
+        "ON memu_intentions(soul_id, user_id, status)"
     )
 
 
@@ -3118,16 +3129,26 @@ async def memorize(payload: dict[str, Any]):
                 processed_count = (
                     len(merged) if isinstance(merged, list) else (len(conv_norm) if isinstance(conv_norm, list) else 0)
                 )
-                _write_conversation_state(
-                    conversation_id,
-                    soul_id=scoped_soul,
-                    user_id=uid,
-                    updates={
-                        "digest_cursor": max(0, processed_count - 1),
-                        "last_memorize_at": datetime.now(UTC).isoformat(),
-                        "append_pending_diary_memory_ids": pending_diary_memory_ids,
-                    },
-                )
+                try:
+                    _write_conversation_state(
+                        conversation_id,
+                        soul_id=scoped_soul,
+                        user_id=uid,
+                        updates={
+                            "digest_cursor": max(0, processed_count - 1),
+                            "last_memorize_at": datetime.now(UTC).isoformat(),
+                            "append_pending_diary_memory_ids": pending_diary_memory_ids,
+                        },
+                    )
+                except Exception:
+                    # State write failed after memories were already persisted.
+                    # The diary-worthy IDs are still in the response so the
+                    # caller can retry or the next memorize will re-derive them.
+                    logger.exception(
+                        "state write failed after memorize; %d diary IDs orphaned: %s",
+                        len(pending_diary_memory_ids),
+                        pending_diary_memory_ids[:5],
+                    )
 
             _record_call(
                 "memorize",
