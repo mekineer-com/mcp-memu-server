@@ -44,6 +44,14 @@ from app.db import (
 from memu.app import MemoryService
 from pydantic import BaseModel
 from app.services.diary import DiaryDeps, generate_diary as generate_diary_service
+from app.services.state import (
+    StateDeps,
+    conversation_state_empty as _conversation_state_empty,
+    conversation_state_from_row as _conversation_state_from_row_impl,
+    conversation_state_row as _conversation_state_row,
+    find_conversation_state_across_dbs as _find_conversation_state_across_dbs_impl,
+    write_conversation_state as _write_conversation_state_impl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1290,70 +1298,22 @@ def _normalize_text_list(value: Any) -> list[str]:
     return out
 
 
+def _state_deps() -> StateDeps:
+    return StateDeps(
+        sqlite_current_path=_sqlite_current_path,
+        sqlite_connect=_sqlite_connect,
+        sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
+        sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
+        sqlite_dir_from_cfg=_sqlite_dir_from_cfg,
+        config=_CONFIG,
+        storage_status=_STORAGE_STATUS,
+        normalize_text_list=_normalize_text_list,
+        merge_unique_text_lists=_merge_unique_text_lists,
+    )
+
+
 def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
-    if row is None:
-        return None
-    digest_raw = row["digest_cursor"] if "digest_cursor" in row.keys() else 0
-    try:
-        digest_cursor = int(digest_raw) if digest_raw is not None else 0
-    except Exception:
-        digest_cursor = 0
-    return {
-        "conversation_id": row["conversation_id"],
-        "soul_id": row["soul_id"] if "soul_id" in row.keys() else None,
-        "user_id": row["user_id"] if "user_id" in row.keys() else None,
-        "digest_cursor": max(0, digest_cursor),
-        "working_note": row["working_note"] if "working_note" in row.keys() else None,
-        "active_intentions": _json_from_db(row["active_intentions"] if "active_intentions" in row.keys() else None),
-        "pending_diary_memory_ids": _normalize_text_list(
-            row["pending_diary_memory_ids"] if "pending_diary_memory_ids" in row.keys() else None
-        ),
-        "self_model_id": row["self_model_id"] if "self_model_id" in row.keys() else None,
-        "last_retrieval_ids": _json_from_db(row["last_retrieval_ids"] if "last_retrieval_ids" in row.keys() else None),
-        "last_memorize_at": row["last_memorize_at"] if "last_memorize_at" in row.keys() else None,
-        "updated_at": row["updated_at"] if "updated_at" in row.keys() else None,
-    }
-
-
-def _conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
-    cols = set(_sqlite_table_columns(con, "memu_conversation_state"))
-    select_cols = [
-        "conversation_id",
-        *(["soul_id"] if "soul_id" in cols else []),
-        "user_id",
-        "digest_cursor",
-        "working_note",
-        "active_intentions",
-        *(["pending_diary_memory_ids"] if "pending_diary_memory_ids" in cols else []),
-        *(["self_model_id"] if "self_model_id" in cols else []),
-        "last_retrieval_ids",
-        "last_memorize_at",
-        "updated_at",
-    ]
-    return con.execute(
-        f"SELECT {', '.join(select_cols)} FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
-        (conversation_id,),
-    ).fetchone()
-
-
-def _conversation_state_empty(
-    conversation_id: str,
-    soul_id: str | None = None,
-    user_id: str | None = None,
-) -> dict[str, Any]:
-    return {
-        "conversation_id": conversation_id,
-        "soul_id": soul_id,
-        "user_id": user_id,
-        "digest_cursor": 0,
-        "working_note": None,
-        "active_intentions": None,
-        "pending_diary_memory_ids": [],
-        "self_model_id": None,
-        "last_retrieval_ids": None,
-        "last_memorize_at": None,
-        "updated_at": None,
-    }
+    return _conversation_state_from_row_impl(row, normalize_text_list=_normalize_text_list)
 
 
 def _write_conversation_state(
@@ -1363,139 +1323,17 @@ def _write_conversation_state(
     user_id: str | None = None,
     updates: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Path]:
-    cid = str(conversation_id or "").strip()
-    if not cid:
-        raise HTTPException(status_code=400, detail="conversation_id is required")
-
-    scoped_soul = str(soul_id or "").strip() or None
-    scoped_user = str(user_id or "").strip() or None
-
-    db_path: Path | None = _sqlite_current_path(scoped_user, scoped_soul) if scoped_soul else None
-    existing_state: dict[str, Any] | None = None
-    if db_path is None:
-        db_path, existing_state = _find_conversation_state_across_dbs(cid)
-        if db_path is None:
-            raise HTTPException(status_code=400, detail="soul_id is required when creating new conversation state")
-
-    _sqlite_ensure_nonempty(db_path)
-    con = _sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        _sqlite_ensure_conversation_state_schema(con)
-
-        if existing_state is None:
-            existing_state = _conversation_state_from_row(_conversation_state_row(con, cid))
-        merged = dict(existing_state or _conversation_state_empty(cid, scoped_soul, scoped_user))
-        merged["conversation_id"] = cid
-        if scoped_soul is not None:
-            merged["soul_id"] = scoped_soul
-        if scoped_user is not None:
-            merged["user_id"] = scoped_user
-
-        raw_updates = dict(updates or {})
-        append_pending_diary_memory_ids = raw_updates.pop("append_pending_diary_memory_ids", None)
-
-        for key, value in raw_updates.items():
-            if key in {
-                "digest_cursor",
-                "working_note",
-                "active_intentions",
-                "pending_diary_memory_ids",
-                "self_model_id",
-                "last_retrieval_ids",
-                "last_memorize_at",
-            }:
-                merged[key] = value
-
-        if append_pending_diary_memory_ids is not None:
-            merged["pending_diary_memory_ids"] = _merge_unique_text_lists(
-                merged.get("pending_diary_memory_ids"),
-                append_pending_diary_memory_ids,
-            )
-
-        try:
-            merged["digest_cursor"] = max(0, int(merged.get("digest_cursor") or 0))
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail="digest_cursor must be an integer") from exc
-
-        raw_last = merged.get("last_memorize_at")
-        merged["last_memorize_at"] = None if raw_last is None else (str(raw_last).strip() or None)
-        raw_note = merged.get("working_note")
-        merged["working_note"] = None if raw_note is None else str(raw_note)
-        merged["pending_diary_memory_ids"] = _normalize_text_list(merged.get("pending_diary_memory_ids"))
-        raw_self_model_id = merged.get("self_model_id")
-        merged["self_model_id"] = None if raw_self_model_id is None else (str(raw_self_model_id).strip() or None)
-        merged["updated_at"] = datetime.now(UTC).isoformat()
-
-        con.execute(
-            """
-INSERT INTO memu_conversation_state (
-    conversation_id,
-    soul_id,
-    user_id,
-    digest_cursor,
-    working_note,
-    active_intentions,
-    pending_diary_memory_ids,
-    self_model_id,
-    last_retrieval_ids,
-    last_memorize_at,
-    updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(conversation_id) DO UPDATE SET
-    soul_id = excluded.soul_id,
-    user_id = excluded.user_id,
-    digest_cursor = excluded.digest_cursor,
-    working_note = excluded.working_note,
-    active_intentions = excluded.active_intentions,
-    pending_diary_memory_ids = excluded.pending_diary_memory_ids,
-    self_model_id = excluded.self_model_id,
-    last_retrieval_ids = excluded.last_retrieval_ids,
-    last_memorize_at = excluded.last_memorize_at,
-    updated_at = excluded.updated_at
-""",
-            (
-                merged["conversation_id"],
-                merged.get("soul_id"),
-                merged.get("user_id"),
-                int(merged.get("digest_cursor") or 0),
-                merged.get("working_note"),
-                _json_to_db(merged.get("active_intentions")),
-                _json_to_db(merged.get("pending_diary_memory_ids") or []),
-                merged.get("self_model_id"),
-                _json_to_db(merged.get("last_retrieval_ids")),
-                merged.get("last_memorize_at"),
-                merged.get("updated_at"),
-            ),
-        )
-        con.commit()
-        state_out = _conversation_state_from_row(_conversation_state_row(con, cid))
-        return state_out or _conversation_state_empty(cid, scoped_soul, scoped_user), db_path
-    finally:
-        con.close()
-
-
-def _sqlite_agent_db_paths() -> list[Path]:
-    sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, str(_STORAGE_STATUS.get("dsn") or ""))
-    if not sqlite_dir.exists():
-        return []
-    return sorted([p.resolve() for p in sqlite_dir.glob("*.db") if p.is_file()])
+    return _write_conversation_state_impl(
+        conversation_id,
+        deps=_state_deps(),
+        soul_id=soul_id,
+        user_id=user_id,
+        updates=updates,
+    )
 
 
 def _find_conversation_state_across_dbs(conversation_id: str) -> tuple[Path | None, dict[str, Any] | None]:
-    for db_path in _sqlite_agent_db_paths():
-        con = _sqlite_connect(db_path)
-        try:
-            con.row_factory = sqlite3.Row
-            _sqlite_ensure_conversation_state_schema(con)
-            row = _conversation_state_row(con, conversation_id)
-            if row is not None:
-                return db_path, _conversation_state_from_row(row)
-        except Exception:
-            continue
-        finally:
-            con.close()
-    return None, None
+    return _find_conversation_state_across_dbs_impl(conversation_id, deps=_state_deps())
 
 
 def _extract_retrieve_where(payload: dict[str, Any]) -> dict[str, Any] | None:
