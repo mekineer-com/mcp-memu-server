@@ -1306,10 +1306,14 @@ CREATE TABLE IF NOT EXISTS memu_self_model (
     trait_invariants TEXT,
     narrative_self TEXT,
     contextual_state TEXT,
+    related_memory_ids TEXT,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
 """
     )
+    cols = set(_sqlite_table_columns(con, "memu_self_model"))
+    if "related_memory_ids" not in cols:
+        con.execute("ALTER TABLE memu_self_model ADD COLUMN related_memory_ids TEXT")
     con.execute(
         """
 CREATE TABLE IF NOT EXISTS memu_intentions (
@@ -2766,6 +2770,7 @@ LIMIT 1
             if current_self_model is not None and "id" in current_self_model.keys()
             else str(uuid.uuid4())
         )
+        related_memory_ids = [str(row["id"]) for row in memory_rows if "id" in row.keys()]
         now_iso = datetime.now(UTC).isoformat()
         con.execute(
             """
@@ -2776,14 +2781,16 @@ INSERT INTO memu_self_model (
     trait_invariants,
     narrative_self,
     contextual_state,
+    related_memory_ids,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     soul_id = excluded.soul_id,
     user_id = excluded.user_id,
     trait_invariants = excluded.trait_invariants,
     narrative_self = excluded.narrative_self,
     contextual_state = excluded.contextual_state,
+    related_memory_ids = excluded.related_memory_ids,
     updated_at = excluded.updated_at
 """,
             (
@@ -2793,6 +2800,7 @@ ON CONFLICT(id) DO UPDATE SET
                 _json_to_db(existing_traits),
                 narrative_self,
                 contextual_state,
+                _json_to_db(related_memory_ids),
                 now_iso,
             ),
         )
