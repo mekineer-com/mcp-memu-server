@@ -1,20 +1,22 @@
-import hashlib
 import asyncio
+import hashlib
 import json
-import os
-import signal
-import traceback
-import time
-import uuid
-import sqlite3
-import re
 import math
+import os
+import re
+import signal
+import sqlite3
 import sys
 import threading
+import time
+import traceback
+import uuid
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone, timedelta, time as dtime
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta, timezone
+from datetime import time as dtime
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any
 
 try:
     from zoneinfo import ZoneInfo
@@ -27,14 +29,13 @@ try:
 except Exception:  # pragma: no cover
     pwd = None  # type: ignore
 
-from fastapi import FastAPI, HTTPException, Request, Body
-from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
+from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-
 from memu.app import MemoryService
 from memu.prompts.diary import self_model_update as diary_self_model_update_prompt
 from memu.prompts.memory_type import diary as diary_memory_prompt
+from pydantic import BaseModel
 
 app = FastAPI(title="mcp-memu-server", version="0.4.0")
 
@@ -224,18 +225,19 @@ async def _trace_requests(request: Request, call_next):
 
         try:
             dt_ms = int((time.time() - t0) * 1000)
-            _LAST_HTTP.append({
-                "t": time.time(),
-                "method": request.method,
-                "path": path,
-                "status": status,
-                "ms": dt_ms,
-            })
+            _LAST_HTTP.append(
+                {
+                    "t": time.time(),
+                    "method": request.method,
+                    "path": path,
+                    "status": status,
+                    "ms": dt_ms,
+                }
+            )
             if len(_LAST_HTTP) > 200:
-                del _LAST_HTTP[0: len(_LAST_HTTP) - 200]
+                del _LAST_HTTP[0 : len(_LAST_HTTP) - 200]
         except Exception:
             pass
-
 
 
 def _is_ephemeral_db(cfg: dict[str, Any]) -> bool:
@@ -254,6 +256,7 @@ def _is_ephemeral_db(cfg: dict[str, Any]) -> bool:
         pass
     return False
 
+
 # -------------------------
 # User scoping (SillyTavern)
 # -------------------------
@@ -268,6 +271,7 @@ class STUserModel(BaseModel):
 # -------------------------
 # Config file (single source of truth for "default" service)
 # -------------------------
+
 
 def _home_dir() -> Path:
     h = os.getenv("HOME") or os.getenv("USERPROFILE") or "."
@@ -297,7 +301,7 @@ def _default_config() -> dict[str, Any]:
             "executable": "",
             "force_venv": False,
         },
-        "pid_file": str((home / "apps" / "mcp-memu-server" / ".memu-server.pid")),
+        "pid_file": str(home / "apps" / "mcp-memu-server" / ".memu-server.pid"),
         "listen": {"host": "127.0.0.1", "port": 8099},
         "llm": {
             "provider": "openai",
@@ -313,7 +317,7 @@ def _default_config() -> dict[str, Any]:
             "metadata_store": {
                 "provider": "sqlite",
                 # absolute path DSN form (4 slashes after sqlite:)
-                "dsn": "sqlite:///:memory:" ,
+                "dsn": "sqlite:///:memory:",
                 "ddl_mode": "create",
             },
             "sqlite_dir": str(sqlite_path.parent),
@@ -409,14 +413,14 @@ def _sqlite_file_from_dsn(dsn: str) -> Path | None:
     if not isinstance(dsn, str):
         return None
     dsn = dsn.strip()
-    if not dsn or ':memory:' in dsn:
+    if not dsn or ":memory:" in dsn:
         return None
 
-    base = dsn.split('?', 1)[0]
-    if base.startswith('sqlite:////'):
-        return Path('/' + base[len('sqlite:////'):])
-    if base.startswith('sqlite:///'):
-        return Path(base[len('sqlite:///'):])
+    base = dsn.split("?", 1)[0]
+    if base.startswith("sqlite:////"):
+        return Path("/" + base[len("sqlite:////") :])
+    if base.startswith("sqlite:///"):
+        return Path(base[len("sqlite:///") :])
     return None
 
 
@@ -451,9 +455,10 @@ def _normalize_sqlite_dsn(dsn_or_path: str) -> str:
 # Per-agent SQLite isolation (always enabled)
 # -------------------------
 
+
 def _sqlite_dir_from_cfg(cfg: dict[str, Any], fallback_dsn: str | None = None) -> Path:
-    storage = cfg.get('storage') if isinstance(cfg.get('storage'), dict) else {}
-    d = storage.get('sqlite_dir')
+    storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
+    d = storage.get("sqlite_dir")
     if isinstance(d, str) and d.strip():
         return _resolve_cfg_path(d)
 
@@ -462,7 +467,7 @@ def _sqlite_dir_from_cfg(cfg: dict[str, Any], fallback_dsn: str | None = None) -
         if f is not None:
             return f.expanduser().resolve().parent
 
-    return (_config_dir() / 'sqlite').resolve()
+    return (_config_dir() / "sqlite").resolve()
 
 
 def _ensure_storage_paths(cfg: dict[str, Any]) -> None:
@@ -473,17 +478,17 @@ def _ensure_storage_paths(cfg: dict[str, Any]) -> None:
     """
     global _STORAGE_STATUS
     try:
-        storage = cfg.get('storage') if isinstance(cfg.get('storage'), dict) else {}
+        storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
 
         # resources_dir
-        resources_dir = storage.get('resources_dir')
+        resources_dir = storage.get("resources_dir")
         if isinstance(resources_dir, str) and resources_dir.strip():
             _resolve_cfg_path(resources_dir).mkdir(parents=True, exist_ok=True)
 
         # sqlite db file parent + file
-        ms = storage.get('metadata_store') if isinstance(storage.get('metadata_store'), dict) else {}
-        provider = str(ms.get('provider') or '').lower()
-        dsn = str(ms.get('dsn') or '')
+        ms = storage.get("metadata_store") if isinstance(storage.get("metadata_store"), dict) else {}
+        provider = str(ms.get("provider") or "").lower()
+        dsn = str(ms.get("dsn") or "")
 
         _STORAGE_STATUS = {
             "ok": True,
@@ -498,7 +503,7 @@ def _ensure_storage_paths(cfg: dict[str, Any]) -> None:
             "error": None,
         }
 
-        if provider == 'sqlite':
+        if provider == "sqlite":
             dsn = _normalize_sqlite_dsn(dsn)
             # Keep normalized DSN visible in /health.
             _STORAGE_STATUS["dsn"] = dsn or None
@@ -517,19 +522,21 @@ def _ensure_storage_paths(cfg: dict[str, Any]) -> None:
             # KISS: do not create/open any DB at startup.
             # Just ensure the directory exists and is writable.
             try:
-                test_path = (sqlite_dir / '.write_test') if sqlite_dir is not None else None
+                test_path = (sqlite_dir / ".write_test") if sqlite_dir is not None else None
                 if test_path is not None:
-                    test_path.write_text('ok', encoding='utf-8')
+                    test_path.write_text("ok", encoding="utf-8")
                     test_path.unlink(missing_ok=True)
             except Exception as e:
-                _STORAGE_STATUS['sqlite_open_ok'] = False
-                _STORAGE_STATUS['ok'] = False
-                _STORAGE_STATUS['error'] = f"sqlite_dir_write: {type(e).__name__}: {e}"
-                _STARTUP_WARNINGS.append(_STORAGE_STATUS['error'])
+                _STORAGE_STATUS["sqlite_open_ok"] = False
+                _STORAGE_STATUS["ok"] = False
+                _STORAGE_STATUS["error"] = f"sqlite_dir_write: {type(e).__name__}: {e}"
+                _STARTUP_WARNINGS.append(_STORAGE_STATUS["error"])
     except Exception as e:
         _STORAGE_STATUS["ok"] = False
         _STORAGE_STATUS["error"] = f"storage_paths: {type(e).__name__}: {e}"
         _STARTUP_WARNINGS.append(_STORAGE_STATUS["error"])
+
+
 def _save_config(cfg: dict[str, Any]) -> None:
     p = _config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -589,16 +596,13 @@ def _get_storage_dir(cfg: dict[str, Any]) -> Path:
     return d
 
 
-
 def _sanitize_db_filename(name: str) -> str:
-    s = str(name or '').strip()
-    s = re.sub(r'[^A-Za-z0-9._-]+', '_', s)
-    s = s.strip('._-')
+    s = str(name or "").strip()
+    s = re.sub(r"[^A-Za-z0-9._-]+", "_", s)
+    s = s.strip("._-")
     if not s:
-        s = 'unknown'
+        s = "unknown"
     return s[:80]
-
-
 
 
 def _sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, Any] | None) -> str:
@@ -610,7 +614,7 @@ def _sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, A
     if not isinstance(scope, dict):
         scope = {}
 
-    soul_id = str(scope.get('soul_id') or '').strip()
+    soul_id = str(scope.get("soul_id") or "").strip()
 
     sqlite_dir = _sqlite_dir_from_cfg(cfg, fallback_dsn=base_dsn)
     sqlite_dir.mkdir(parents=True, exist_ok=True)
@@ -804,7 +808,7 @@ def _get_service_from_payload(
     # Local-first UX: plugin sends llm_profiles + step routing, while storage paths live in server config.json.
     if not isinstance(llm_profiles, dict):
         if not allow_missing_llm_profiles:
-            raise HTTPException(status_code=400, detail='llm_profiles required')
+            raise HTTPException(status_code=400, detail="llm_profiles required")
         llm_profiles = {}
         payload["llm_profiles"] = llm_profiles
 
@@ -820,16 +824,16 @@ def _get_service_from_payload(
     # Enforce per-soul sqlite isolation even if the payload provided a database_config.
     # This prevents cross-character memory mixing at the storage boundary.
     if isinstance(database_config, dict):
-        ms = database_config.get('metadata_store')
-        if isinstance(ms, dict) and str(ms.get('provider') or '').lower() == 'sqlite':
+        ms = database_config.get("metadata_store")
+        if isinstance(ms, dict) and str(ms.get("provider") or "").lower() == "sqlite":
             scope_hint2 = _extract_scope(payload)
-            soul_id2 = str((scope_hint2 or {}).get('soul_id') or '').strip()
+            soul_id2 = str((scope_hint2 or {}).get("soul_id") or "").strip()
             if not soul_id2:
-                raise HTTPException(status_code=400, detail='soul_id required for sqlite scope')
-            base = _normalize_sqlite_dsn(str(ms.get('dsn') or ''))
+                raise HTTPException(status_code=400, detail="soul_id required for sqlite scope")
+            base = _normalize_sqlite_dsn(str(ms.get("dsn") or ""))
             scope_for_dsn = dict(scope_hint2 or {})
-            scope_for_dsn['soul_id'] = soul_id2
-            ms['dsn'] = _sqlite_dsn_for_scope(_CONFIG, base, scope_for_dsn)
+            scope_for_dsn["soul_id"] = soul_id2
+            ms["dsn"] = _sqlite_dsn_for_scope(_CONFIG, base, scope_for_dsn)
 
     blob_config = payload.get("blob_config") or {}
     memorize_config = payload.get("memorize_config") or {}
@@ -885,7 +889,11 @@ def _get_service_from_payload(
 
     # Small UX: disable conversation preprocess prompt unless explicitly set.
     try:
-        mpp = dict(memorize_config.get("multimodal_preprocess_prompts") or {}) if isinstance(memorize_config, dict) else {}
+        mpp = (
+            dict(memorize_config.get("multimodal_preprocess_prompts") or {})
+            if isinstance(memorize_config, dict)
+            else {}
+        )
         if "conversation" not in mpp:
             mpp["conversation"] = ""
         if isinstance(memorize_config, dict):
@@ -933,7 +941,9 @@ def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
     user_id = _pick_str(payload, "user_id", "userId", "userID", "userid")
     soul_id = _pick_str(payload, "soul_id", "soulId", "soulID", "soulid")
     soul_name = _pick_str(payload, "soul_name", "soulName", "character_name", "characterName", "character")
-    session_id = _pick_str(payload, "session_id", "sessionId", "sessionID", "sessionid", "session_date", "sessionDate", "sessiondate")
+    session_id = _pick_str(
+        payload, "session_id", "sessionId", "sessionID", "sessionid", "session_date", "sessionDate", "sessiondate"
+    )
 
     # SillyTavern local plugin sends scope primarily under payload.user.
     user_obj = payload.get("user")
@@ -1084,51 +1094,55 @@ def _normalize_conversation(conv: Any) -> Any:
         # Preserve timestamps when available (epoch ms preferred).
         ts_ms: int | None = None
         try:
-            raw_ts = m.get('ts_ms') if isinstance(m, dict) else None
+            raw_ts = m.get("ts_ms") if isinstance(m, dict) else None
             if raw_ts is None:
-                raw_ts = m.get('timestamp') if isinstance(m, dict) else None
+                raw_ts = m.get("timestamp") if isinstance(m, dict) else None
             if isinstance(raw_ts, (int, float)) and math.isfinite(raw_ts):
                 ts_ms = int(raw_ts)
             elif isinstance(raw_ts, str) and raw_ts.strip():
                 # ISO send_date
                 try:
-                    dt = datetime.fromisoformat(raw_ts.replace('Z', '+00:00'))
+                    dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
                     ts_ms = int(dt.timestamp() * 1000)
                 except Exception:
                     ts_ms = None
         except Exception:
             ts_ms = None
 
-        out.append({
-            "role": role or "unknown",
-            "name": m.get("name"),
-            "content": m.get("content") or "",
-            **({"ts_ms": ts_ms} if ts_ms is not None else {}),
-        })
+        out.append(
+            {
+                "role": role or "unknown",
+                "name": m.get("name"),
+                "content": m.get("content") or "",
+                **({"ts_ms": ts_ms} if ts_ms is not None else {}),
+            }
+        )
     return out
 
 
-def _record_call(op: str, payload: dict[str, Any] | None, *, ok: bool, info: Any = None, error: str | None = None) -> None:
+def _record_call(
+    op: str, payload: dict[str, Any] | None, *, ok: bool, info: Any = None, error: str | None = None
+) -> None:
     try:
         scope = None
         if isinstance(payload, dict):
-            u = payload.get('user')
+            u = payload.get("user")
             if isinstance(u, dict):
                 scope = u
             else:
                 scope = _extract_scope(payload) or None
         item = {
-            't': time.time(),
-            'op': op,
-            'ok': ok,
-            'scope': scope,
-            'info': info,
-            'error': error,
+            "t": time.time(),
+            "op": op,
+            "ok": ok,
+            "scope": scope,
+            "info": info,
+            "error": error,
         }
         _LAST_CALLS.append(item)
         # keep small
         if len(_LAST_CALLS) > 50:
-            del _LAST_CALLS[0: len(_LAST_CALLS) - 50]
+            del _LAST_CALLS[0 : len(_LAST_CALLS) - 50]
     except Exception:
         pass
 
@@ -1138,11 +1152,11 @@ def _sqlite_current_path(
     soul_id: str | None = None,
 ) -> Path | None:
     try:
-        base_dsn = str(_STORAGE_STATUS.get('dsn') or '')
+        base_dsn = str(_STORAGE_STATUS.get("dsn") or "")
         scoped_soul = str(soul_id or "").strip()
         if not scoped_soul:
             return None
-        scope = {'soul_id': scoped_soul}
+        scope = {"soul_id": scoped_soul}
         dsn = _sqlite_dsn_for_scope(_CONFIG, base_dsn, scope)
         f = _sqlite_file_from_dsn(dsn)
         return f.expanduser().resolve() if f is not None else None
@@ -1165,7 +1179,7 @@ def _sqlite_ensure_nonempty(path: Path) -> None:
             except Exception:
                 pass
         con = sqlite3.connect(str(path), timeout=5.0)
-        con.execute('PRAGMA user_version=1')
+        con.execute("PRAGMA user_version=1")
         con.commit()
         con.close()
     except Exception:
@@ -1197,37 +1211,37 @@ def _sqlite_build_scope_where(
 ) -> tuple[str, list[Any]]:
     where = []
     params: list[Any] = []
-    if user_id and 'user_id' in cols:
-        where.append('user_id = ?')
+    if user_id and "user_id" in cols:
+        where.append("user_id = ?")
         params.append(user_id)
     if soul_id:
-        if 'soul_id' in cols:
-            where.append('soul_id = ?')
+        if "soul_id" in cols:
+            where.append("soul_id = ?")
             params.append(soul_id)
-    if session_id and 'session_id' in cols:
-        where.append('session_id = ?')
+    if session_id and "session_id" in cols:
+        where.append("session_id = ?")
         params.append(session_id)
     if not where:
-        return '', params
-    return ' WHERE ' + ' AND '.join(where), params
+        return "", params
+    return " WHERE " + " AND ".join(where), params
 
 
 def _sqlite_file_info(p: Path) -> dict[str, Any]:
     try:
         st = p.stat()
         return {
-            'exists': p.exists(),
-            'path': str(p),
-            'size': int(st.st_size),
-            'mtime': float(st.st_mtime),
+            "exists": p.exists(),
+            "path": str(p),
+            "size": int(st.st_size),
+            "mtime": float(st.st_mtime),
         }
     except Exception as e:
-        return {'exists': p.exists(), 'path': str(p), 'error': f"{type(e).__name__}: {e}"}
+        return {"exists": p.exists(), "path": str(p), "error": f"{type(e).__name__}: {e}"}
 
 
 def _sqlite_pragmas(con: sqlite3.Connection) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for k in ('journal_mode','synchronous','busy_timeout','foreign_keys','cache_size','temp_store'): 
+    for k in ("journal_mode", "synchronous", "busy_timeout", "foreign_keys", "cache_size", "temp_store"):
         try:
             r = con.execute(f"PRAGMA {k}").fetchone()
             out[k] = r[0] if r else None
@@ -1246,7 +1260,7 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
     digest_cursor INTEGER DEFAULT 0,
     working_note TEXT,
     active_intentions JSON,
-    diary_worthy_ids JSON DEFAULT '[]',
+    pending_diary_memory_ids JSON DEFAULT '[]',
     self_model_id VARCHAR,
     last_retrieval_ids JSON,
     last_memorize_at DATETIME,
@@ -1266,8 +1280,8 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN working_note TEXT")
     if "active_intentions" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN active_intentions JSON")
-    if "diary_worthy_ids" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN diary_worthy_ids JSON DEFAULT '[]'")
+    if "pending_diary_memory_ids" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN pending_diary_memory_ids JSON DEFAULT '[]'")
     if "self_model_id" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN self_model_id VARCHAR")
     if "last_retrieval_ids" not in cols:
@@ -1396,6 +1410,10 @@ def _merge_unique_int_lists(left: Any, right: Any) -> list[int]:
     return _normalize_int_list([*_normalize_int_list(left), *_normalize_int_list(right)])
 
 
+def _merge_unique_text_lists(left: Any, right: Any) -> list[str]:
+    return _normalize_text_list([*_normalize_text_list(left), *_normalize_text_list(right)])
+
+
 def _normalize_text_list(value: Any) -> list[str]:
     parsed = _json_from_db(value)
     if not isinstance(parsed, list):
@@ -1426,7 +1444,9 @@ def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | No
         "digest_cursor": max(0, digest_cursor),
         "working_note": row["working_note"] if "working_note" in row.keys() else None,
         "active_intentions": _json_from_db(row["active_intentions"] if "active_intentions" in row.keys() else None),
-        "diary_worthy_ids": _normalize_int_list(row["diary_worthy_ids"] if "diary_worthy_ids" in row.keys() else None),
+        "pending_diary_memory_ids": _normalize_text_list(
+            row["pending_diary_memory_ids"] if "pending_diary_memory_ids" in row.keys() else None
+        ),
         "self_model_id": row["self_model_id"] if "self_model_id" in row.keys() else None,
         "last_retrieval_ids": _json_from_db(row["last_retrieval_ids"] if "last_retrieval_ids" in row.keys() else None),
         "last_memorize_at": row["last_memorize_at"] if "last_memorize_at" in row.keys() else None,
@@ -1438,20 +1458,19 @@ def _conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sq
     cols = set(_sqlite_table_columns(con, "memu_conversation_state"))
     select_cols = [
         "conversation_id",
-        *([ "soul_id" ] if "soul_id" in cols else []),
+        *(["soul_id"] if "soul_id" in cols else []),
         "user_id",
         "digest_cursor",
         "working_note",
         "active_intentions",
-        *([ "diary_worthy_ids" ] if "diary_worthy_ids" in cols else []),
-        *([ "self_model_id" ] if "self_model_id" in cols else []),
+        *(["pending_diary_memory_ids"] if "pending_diary_memory_ids" in cols else []),
+        *(["self_model_id"] if "self_model_id" in cols else []),
         "last_retrieval_ids",
         "last_memorize_at",
         "updated_at",
     ]
     return con.execute(
-        f"SELECT {', '.join(select_cols)} "
-        "FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
+        f"SELECT {', '.join(select_cols)} FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
         (conversation_id,),
     ).fetchone()
 
@@ -1468,7 +1487,7 @@ def _conversation_state_empty(
         "digest_cursor": 0,
         "working_note": None,
         "active_intentions": None,
-        "diary_worthy_ids": [],
+        "pending_diary_memory_ids": [],
         "self_model_id": None,
         "last_retrieval_ids": None,
         "last_memorize_at": None,
@@ -1513,24 +1532,24 @@ def _write_conversation_state(
             merged["user_id"] = scoped_user
 
         raw_updates = dict(updates or {})
-        append_diary_worthy_ids = raw_updates.pop("append_diary_worthy_ids", None)
+        append_pending_diary_memory_ids = raw_updates.pop("append_pending_diary_memory_ids", None)
 
         for key, value in raw_updates.items():
             if key in {
                 "digest_cursor",
                 "working_note",
                 "active_intentions",
-                "diary_worthy_ids",
+                "pending_diary_memory_ids",
                 "self_model_id",
                 "last_retrieval_ids",
                 "last_memorize_at",
             }:
                 merged[key] = value
 
-        if append_diary_worthy_ids is not None:
-            merged["diary_worthy_ids"] = _merge_unique_int_lists(
-                merged.get("diary_worthy_ids"),
-                append_diary_worthy_ids,
+        if append_pending_diary_memory_ids is not None:
+            merged["pending_diary_memory_ids"] = _merge_unique_text_lists(
+                merged.get("pending_diary_memory_ids"),
+                append_pending_diary_memory_ids,
             )
 
         try:
@@ -1542,10 +1561,10 @@ def _write_conversation_state(
         merged["last_memorize_at"] = None if raw_last is None else (str(raw_last).strip() or None)
         raw_note = merged.get("working_note")
         merged["working_note"] = None if raw_note is None else str(raw_note)
-        merged["diary_worthy_ids"] = _normalize_int_list(merged.get("diary_worthy_ids"))
+        merged["pending_diary_memory_ids"] = _normalize_text_list(merged.get("pending_diary_memory_ids"))
         raw_self_model_id = merged.get("self_model_id")
         merged["self_model_id"] = None if raw_self_model_id is None else (str(raw_self_model_id).strip() or None)
-        merged["updated_at"] = datetime.now(timezone.utc).isoformat()
+        merged["updated_at"] = datetime.now(UTC).isoformat()
 
         con.execute(
             """
@@ -1556,7 +1575,7 @@ INSERT INTO memu_conversation_state (
     digest_cursor,
     working_note,
     active_intentions,
-    diary_worthy_ids,
+    pending_diary_memory_ids,
     self_model_id,
     last_retrieval_ids,
     last_memorize_at,
@@ -1568,7 +1587,7 @@ ON CONFLICT(conversation_id) DO UPDATE SET
     digest_cursor = excluded.digest_cursor,
     working_note = excluded.working_note,
     active_intentions = excluded.active_intentions,
-    diary_worthy_ids = excluded.diary_worthy_ids,
+    pending_diary_memory_ids = excluded.pending_diary_memory_ids,
     self_model_id = excluded.self_model_id,
     last_retrieval_ids = excluded.last_retrieval_ids,
     last_memorize_at = excluded.last_memorize_at,
@@ -1581,7 +1600,7 @@ ON CONFLICT(conversation_id) DO UPDATE SET
                 int(merged.get("digest_cursor") or 0),
                 merged.get("working_note"),
                 _json_to_db(merged.get("active_intentions")),
-                _json_to_db(merged.get("diary_worthy_ids") or []),
+                _json_to_db(merged.get("pending_diary_memory_ids") or []),
                 merged.get("self_model_id"),
                 _json_to_db(merged.get("last_retrieval_ids")),
                 merged.get("last_memorize_at"),
@@ -1727,10 +1746,10 @@ async def _run_retrieve(
     return out
 
 
-
 # -------------------------
 # Meta
 # -------------------------
+
 
 @app.get("/health", operation_id="health")
 async def health():
@@ -1767,7 +1786,12 @@ async def health():
 
 @app.get("/version", operation_id="version")
 async def version():
-    return {"ok": True, "buildId": _BUILD_ID, "serverInstanceId": _SERVER_INSTANCE_ID, "startedAtUnix": _SERVER_STARTED_AT_UNIX}
+    return {
+        "ok": True,
+        "buildId": _BUILD_ID,
+        "serverInstanceId": _SERVER_INSTANCE_ID,
+        "startedAtUnix": _SERVER_STARTED_AT_UNIX,
+    }
 
 
 @app.get("/admin/shutdown/status", operation_id="shutdown_status")
@@ -1817,7 +1841,8 @@ async def shutdown_server(payload: dict[str, Any] | None = Body(default=None)):
 @app.get(f"{_DIAG_PREFIX}/diag")
 @app.get("/diag", operation_id="diag_page")
 async def diag_page():
-    return HTMLResponse(content="""<!doctype html>
+    return HTMLResponse(
+        content="""<!doctype html>
 <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
 <title>mcp-memu-server diagnostics</title>
 <style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:20px;line-height:1.4;max-width:980px}code,pre{background:#f2f2f2;border-radius:10px}code{padding:2px 6px}pre{padding:12px;overflow:auto}</style>
@@ -1832,7 +1857,8 @@ async def diag_page():
 <li><a href='/diag/sqlite/recent?table=memu_memory_items&limit=10'>/diag/sqlite/recent</a> <small>(add scope params)</small></li>
 </ul>
 <p><b>Scope tip:</b> if your ST extension uses <code>user_id</code> + <code>soul_id</code>, but your tests omit one, retrieval can look empty. Use the same scope in <code>/diag/sqlite/*</code>.</p>
-</body></html>""")
+</body></html>"""
+    )
 
 
 @app.get(f"{_DIAG_PREFIX}/diag/calls")
@@ -1851,10 +1877,10 @@ async def diag_http():
 @app.get("/diag/sqlite", operation_id="diag_sqlite")
 async def diag_sqlite(user_id: str = "", soul_id: str = ""):
     try:
-        storage = _CONFIG.get('storage') if isinstance(_CONFIG.get('storage'), dict) else {}
-        meta = storage.get('metadata_store') if isinstance(storage.get('metadata_store'), dict) else {}
-        provider = str(meta.get('provider') or '').lower()
-        if provider not in ('sqlite', 'sqlite3'):
+        storage = _CONFIG.get("storage") if isinstance(_CONFIG.get("storage"), dict) else {}
+        meta = storage.get("metadata_store") if isinstance(storage.get("metadata_store"), dict) else {}
+        provider = str(meta.get("provider") or "").lower()
+        if provider not in ("sqlite", "sqlite3"):
             return {"ok": False, "reason": "provider_not_sqlite", "provider": provider, "storage": _STORAGE_STATUS}
 
         scoped_soul = soul_id.strip()
@@ -1868,7 +1894,9 @@ async def diag_sqlite(user_id: str = "", soul_id: str = ""):
 
         con = _sqlite_connect(p)
         try:
-            tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]
+            tables = [
+                r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
+            ]
             return {
                 "ok": True,
                 "storage": _STORAGE_STATUS,
@@ -1907,7 +1935,12 @@ async def diag_sqlite_counts(
     con = _sqlite_connect(p)
     try:
         _sqlite_ensure_conversation_state_schema(con)
-        out: dict[str, Any] = {"ok": True, "path": str(p), "scope": {"user_id": user_id, "soul_id": scoped_soul, "session_id": session_id}, "tables": {}}
+        out: dict[str, Any] = {
+            "ok": True,
+            "path": str(p),
+            "scope": {"user_id": user_id, "soul_id": scoped_soul, "session_id": session_id},
+            "tables": {},
+        }
         for t in allowed:
             cols = _sqlite_table_columns(con, t)
             where, params = _sqlite_build_scope_where(cols, user_id, scoped_soul, session_id)
@@ -1926,7 +1959,7 @@ async def diag_sqlite_counts(
 @app.get(f"{_DIAG_PREFIX}/diag/sqlite/recent")
 @app.get("/diag/sqlite/recent", operation_id="diag_sqlite_recent")
 async def diag_sqlite_recent(
-    table: str = 'memu_memory_items',
+    table: str = "memu_memory_items",
     limit: int = 20,
     user_id: str | None = None,
     soul_id: str | None = None,
@@ -1973,11 +2006,14 @@ async def diag_sqlite_recent(
             "memory_type",
             "source_role",
             "confidence",
+            "source_message_ids",
+            "reflection_salience",
+            "superseded_by",
             "happened_at",
             "digest_cursor",
             "working_note",
             "active_intentions",
-            "diary_worthy_ids",
+            "pending_diary_memory_ids",
             "self_model_id",
             "last_memorize_at",
             "affective_tags",
@@ -2000,7 +2036,7 @@ async def diag_sqlite_recent(
         sel = [c for c in prefer if c in cols and c not in ban]
         if not sel:
             sel = [c for c in cols if c not in ban][:12]
-        order_col = 'created_at' if 'created_at' in cols else ('updated_at' if 'updated_at' in cols else 'id')
+        order_col = "created_at" if "created_at" in cols else ("updated_at" if "updated_at" in cols else "id")
 
         sql = f"SELECT {', '.join(sel)} FROM {table}{scope_where} ORDER BY {order_col} DESC LIMIT ?"
         rows = con.execute(sql, [*params, limit]).fetchall()
@@ -2008,14 +2044,13 @@ async def diag_sqlite_recent(
         for r in rows:
             d = {sel[i]: r[i] for i in range(len(sel))}
             # light truncation for readability
-            for k,v in list(d.items()):
+            for k, v in list(d.items()):
                 if isinstance(v, str) and len(v) > 400:
-                    d[k] = v[:400] + '…'
+                    d[k] = v[:400] + "…"
             out_rows.append(d)
         return {"ok": True, "path": str(p), "table": table, "columns": sel, "rows": out_rows}
     finally:
         con.close()
-
 
 
 @app.get("/config", operation_id="get_config")
@@ -2038,7 +2073,9 @@ async def set_config(req: Request):
         return JSONResponse(content={"ok": True, "config": _mask_config(_CONFIG)})
     except HTTPException as he:
         try:
-            _record_call('config.set', body if isinstance(body, dict) else None, ok=False, error=str(getattr(he, 'detail', he)))
+            _record_call(
+                "config.set", body if isinstance(body, dict) else None, ok=False, error=str(getattr(he, "detail", he))
+            )
         except Exception:
             pass
         raise
@@ -2059,7 +2096,7 @@ async def root():
     """Serve memU-ui if bundled next to the server, otherwise show a JSON health stub."""
     try:
         bundle_root = Path(__file__).resolve().parents[2]
-        ui_index = bundle_root / 'memu-ui' / 'dist' / 'index.html'
+        ui_index = bundle_root / "memu-ui" / "dist" / "index.html"
         if ui_index.exists():
             return FileResponse(str(ui_index))
     except Exception:
@@ -2072,18 +2109,18 @@ async def root():
 # -------------------------
 
 
-
 # -----------------------------
 # ST conversation resource helpers
 # -----------------------------
 
+
 def _msg_key(m: dict[str, Any]) -> tuple[str, str, str, str]:
     # Include timestamp when present so identical text repeated at different times isn't dropped.
     return (
-        str(m.get('role') or ''),
-        str(m.get('name') or ''),
-        str(m.get('content') or ''),
-        str(m.get('ts_ms') or ''),
+        str(m.get("role") or ""),
+        str(m.get("name") or ""),
+        str(m.get("content") or ""),
+        str(m.get("ts_ms") or ""),
     )
 
 
@@ -2091,7 +2128,7 @@ def _read_list(p: Path) -> list[dict[str, Any]]:
     try:
         if not p.exists():
             return []
-        raw = p.read_text(encoding='utf-8')
+        raw = p.read_text(encoding="utf-8")
         obj = json.loads(raw) if raw.strip() else []
         return [m for m in obj if isinstance(m, dict)] if isinstance(obj, list) else []
     except Exception:
@@ -2101,7 +2138,7 @@ def _read_list(p: Path) -> list[dict[str, Any]]:
 def _write_list_if_changed(p: Path, old: list[dict[str, Any]], new: list[dict[str, Any]]) -> None:
     if new == old:
         return
-    p.write_text(json.dumps(new, ensure_ascii=False), encoding='utf-8')
+    p.write_text(json.dumps(new, ensure_ascii=False), encoding="utf-8")
 
 
 def _chat_storage_hash(uid: str, aid: str, key: str) -> str:
@@ -2174,20 +2211,22 @@ def _merge_conv(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[di
 
 def _local_dt(ts_ms: int, zi: Any | None) -> datetime:
     # ts_ms is UTC epoch ms
-    dt_utc = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
+    dt_utc = datetime.fromtimestamp(ts_ms / 1000.0, tz=UTC)
     return dt_utc.astimezone(zi) if zi is not None else dt_utc
 
 
 def _date_label(ts_ms: int | None, zi: Any | None) -> str:
     if ts_ms is None:
-        return 'undated'
+        return "undated"
     try:
         return _local_dt(ts_ms, zi).date().isoformat()
     except Exception:
-        return 'undated'
+        return "undated"
 
 
-def _split_indices_by_sleep(msgs: list[dict[str, Any]], zi: Any | None, tz_ok: bool, min_lull_seconds: int) -> tuple[list[int], dict[str, Any]]:
+def _split_indices_by_sleep(
+    msgs: list[dict[str, Any]], zi: Any | None, tz_ok: bool, min_lull_seconds: int
+) -> tuple[list[int], dict[str, Any]]:
     # Return split indices (start of a new day) within msgs.
     # Choose the largest no-message gap overlapping the local night window (22:00 → 08:00),
     # accepting only when overlap >= min_lull_seconds.
@@ -2196,7 +2235,7 @@ def _split_indices_by_sleep(msgs: list[dict[str, Any]], zi: Any | None, tz_ok: b
 
     ts: list[int | None] = []
     for m in msgs:
-        v = m.get('ts_ms')
+        v = m.get("ts_ms")
         ts.append(int(v) if isinstance(v, int) else None)
     if sum(1 for x in ts if x is not None) < 2:
         return ([], {"tz_ok": True, "timestamps_ok": False})
@@ -2215,7 +2254,7 @@ def _split_indices_by_sleep(msgs: list[dict[str, Any]], zi: Any | None, tz_ok: b
         if t1 <= t0:
             continue
 
-        d0 = (t0.date() - timedelta(days=1))
+        d0 = t0.date() - timedelta(days=1)
         d1 = t1.date()
         # Cap the day-iteration for extremely long gaps.
         max_days = min((d1 - d0).days, 14)
@@ -2234,11 +2273,23 @@ def _split_indices_by_sleep(msgs: list[dict[str, Any]], zi: Any | None, tz_ok: b
     nights_total = len(best)
     nights_qual = sum(1 for (score, _idx) in best.values() if isinstance(score, (int, float)) and score >= min_lull)
 
-    splits = sorted({
-        idx for (score, idx) in best.values()
-        if isinstance(idx, int) and 0 < idx < len(msgs) and isinstance(score, (int, float)) and score >= min_lull
-    })
-    return (splits, {"tz_ok": True, "timestamps_ok": True, "nights_total": nights_total, "nights_qual": nights_qual, "min_lull_seconds": min_lull_seconds})
+    splits = sorted(
+        {
+            idx
+            for (score, idx) in best.values()
+            if isinstance(idx, int) and 0 < idx < len(msgs) and isinstance(score, (int, float)) and score >= min_lull
+        }
+    )
+    return (
+        splits,
+        {
+            "tz_ok": True,
+            "timestamps_ok": True,
+            "nights_total": nights_total,
+            "nights_qual": nights_qual,
+            "min_lull_seconds": min_lull_seconds,
+        },
+    )
 
 
 def _first_ts_in_range(ts_list: list[int | None], a_i: int, b_i: int) -> int | None:
@@ -2249,7 +2300,14 @@ def _first_ts_in_range(ts_list: list[int | None], a_i: int, b_i: int) -> int | N
     return None
 
 
-def _enforce_max_span(boundaries_in: list[int], ts_list: list[int | None], zi: Any | None, tz_ok: bool, max_span_days: int, min_lull_seconds: int) -> tuple[list[int], int]:
+def _enforce_max_span(
+    boundaries_in: list[int],
+    ts_list: list[int | None],
+    zi: Any | None,
+    tz_ok: bool,
+    max_span_days: int,
+    min_lull_seconds: int,
+) -> tuple[list[int], int]:
     # Insert forced boundaries so a segment never spans more than max_span_days.
     if not tz_ok:
         return (boundaries_in, 0)
@@ -2294,7 +2352,7 @@ def _enforce_max_span(boundaries_in: list[int], ts_list: list[int | None], zi: A
             forced += 1
             try:
                 sys.stderr.write(
-                    f"memu-server: sleep-split: no lull >= {min_lull_seconds//3600}h found; forcing split at {_local_dt(ts_list[idx_force], zi).isoformat()} (max {max_span_days}d)\n"
+                    f"memu-server: sleep-split: no lull >= {min_lull_seconds // 3600}h found; forcing split at {_local_dt(ts_list[idx_force], zi).isoformat()} (max {max_span_days}d)\n"
                 )
                 sys.stderr.flush()
             except Exception:
@@ -2318,19 +2376,19 @@ def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, con
         None,
         None,
     )
-    if (primary_dir / 'full.json').exists():
+    if (primary_dir / "full.json").exists():
         return primary_dir
 
     agent_slug = _sanitize_db_filename(soul_id)
     for manifest_path in sorted(chats_dir.glob(f"{agent_slug}_*/manifest.json")):
         try:
-            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        source = manifest.get('source') if isinstance(manifest, dict) else {}
+        source = manifest.get("source") if isinstance(manifest, dict) else {}
         if not isinstance(source, dict):
             continue
-        if str(source.get('conversationId') or '').strip() == conversation_id:
+        if str(source.get("conversationId") or "").strip() == conversation_id:
             return manifest_path.parent
     return None
 
@@ -2343,16 +2401,58 @@ def _format_messages_for_diary(messages: list[dict[str, Any]], message_indices: 
         msg = messages[idx]
         if not isinstance(msg, dict):
             continue
-        speaker = str(msg.get('name') or msg.get('role') or 'unknown').strip() or 'unknown'
-        content = ' '.join(str(msg.get('content') or '').splitlines()).strip()
+        speaker = str(msg.get("name") or msg.get("role") or "unknown").strip() or "unknown"
+        content = " ".join(str(msg.get("content") or "").splitlines()).strip()
         if not content:
             continue
         lines.append(f"[{idx}] [{speaker}]: {content}")
-    return '\n'.join(lines)
+    return "\n".join(lines)
+
+
+def _expand_message_indices(indices: list[int], total: int, *, before: int = 1, after: int = 1) -> list[int]:
+    if total <= 0:
+        return []
+    out: set[int] = set()
+    upper = total - 1
+    for idx in indices:
+        for candidate in range(max(0, idx - before), min(upper, idx + after) + 1):
+            out.add(candidate)
+    return sorted(out)
+
+
+def _format_categories_for_diary(rows: Sequence[sqlite3.Row]) -> str:
+    lines: list[str] = []
+    for row in rows:
+        name = str(row["name"] or "").strip() if "name" in row.keys() else ""
+        if not name:
+            continue
+        summary = str(row["summary"] or "").strip() if "summary" in row.keys() else ""
+        lines.append(f"- {name}: {summary or '(no summary yet)'}")
+    return "\n".join(lines)
+
+
+def _format_memory_rows_for_diary(rows: Sequence[sqlite3.Row]) -> str:
+    lines: list[str] = []
+    for row in rows:
+        memory_type = str(row["memory_type"] or "").strip() if "memory_type" in row.keys() else ""
+        source_role = str(row["source_role"] or "").strip() if "source_role" in row.keys() else ""
+        summary = str(row["summary"] or "").strip() if "summary" in row.keys() else ""
+        if not summary:
+            continue
+        meta_parts = [part for part in (memory_type, source_role) if part]
+        confidence = row["confidence"] if "confidence" in row.keys() else None
+        reflection_salience = row["reflection_salience"] if "reflection_salience" in row.keys() else None
+        if isinstance(confidence, (int, float)):
+            meta_parts.append(f"confidence={float(confidence):.2f}")
+        if isinstance(reflection_salience, (int, float)):
+            meta_parts.append(f"reflection_salience={float(reflection_salience):.2f}")
+        meta = f" ({', '.join(meta_parts)})" if meta_parts else ""
+        lines.append(f"- {summary}{meta}")
+    return "\n".join(lines)
 
 
 def _extract_xml_fragment(raw: str, root_tag: str) -> ET.Element:
-    text = str(raw or '').strip()
+    text = str(raw or "").strip()
     match = re.search(rf"<{root_tag}>(.*)</{root_tag}>", text, re.DOTALL)
     if match is None:
         raise ValueError(f"Missing <{root_tag}> root")
@@ -2379,52 +2479,54 @@ def _xml_float(text: str | None) -> float | None:
 
 
 def _parse_diary_xml(raw: str) -> dict[str, Any]:
-    root = _extract_xml_fragment(raw, 'diary')
-    affect = root.find('affect')
+    root = _extract_xml_fragment(raw, "diary")
+    affect = root.find("affect")
     intentions: list[str] = []
-    intentions_root = root.find('intentions')
+    intentions_root = root.find("intentions")
     if intentions_root is not None:
-        for item in intentions_root.findall('intention'):
-            text = str(item.text or '').strip()
+        for item in intentions_root.findall("intention"):
+            text = str(item.text or "").strip()
             if text:
                 intentions.append(text)
     return {
-        'prose': _xml_text(root, 'prose'),
-        'affective_tags': {
-            'emotion': _xml_text(affect, 'emotion'),
-            'trigger': _xml_text(affect, 'trigger'),
-            'valence': _xml_float(_xml_text(affect, 'valence')),
-            'intensity': _xml_float(_xml_text(affect, 'intensity')),
-            'what_helped': _xml_text(affect, 'what_helped'),
+        "prose": _xml_text(root, "prose"),
+        "affective_tags": {
+            "emotion": _xml_text(affect, "emotion"),
+            "trigger": _xml_text(affect, "trigger"),
+            "valence": _xml_float(_xml_text(affect, "valence")),
+            "intensity": _xml_float(_xml_text(affect, "intensity")),
+            "what_helped": _xml_text(affect, "what_helped"),
         },
-        'unresolved': _xml_text(root, 'unresolved'),
-        'intentions': intentions,
-        'companion_memory': _xml_text(root, 'companion_memory'),
+        "unresolved": _xml_text(root, "unresolved"),
+        "intentions": intentions,
+        "companion_memory": _xml_text(root, "companion_memory"),
     }
 
 
 def _parse_self_model_update_xml(raw: str) -> dict[str, Any]:
-    root = _extract_xml_fragment(raw, 'self_model_update')
-    trait_root = root.find('trait_invariants')
+    root = _extract_xml_fragment(raw, "self_model_update")
+    trait_root = root.find("trait_invariants")
     adds: list[dict[str, Any]] = []
     removes: list[str] = []
     if trait_root is not None:
-        for item in trait_root.findall('add'):
-            tendency = _xml_text(item, 'tendency') or str(item.text or '').strip()
+        for item in trait_root.findall("add"):
+            tendency = _xml_text(item, "tendency") or str(item.text or "").strip()
             if tendency:
-                adds.append({
-                    'tendency': tendency,
-                    'strength': _normalize_trait_strength(_xml_text(item, 'strength')),
-                })
-        for item in trait_root.findall('remove'):
-            text = str(item.text or '').strip()
+                adds.append(
+                    {
+                        "tendency": tendency,
+                        "strength": _normalize_trait_strength(_xml_text(item, "strength")),
+                    }
+                )
+        for item in trait_root.findall("remove"):
+            text = str(item.text or "").strip()
             if text:
                 removes.append(text)
     return {
-        'trait_add': adds,
-        'trait_remove': removes,
-        'narrative_self': _xml_text(root, 'narrative_self'),
-        'contextual_state': _xml_text(root, 'contextual_state'),
+        "trait_add": adds,
+        "trait_remove": removes,
+        "narrative_self": _xml_text(root, "narrative_self"),
+        "contextual_state": _xml_text(root, "contextual_state"),
     }
 
 
@@ -2455,20 +2557,20 @@ LIMIT 1
 
 def _format_self_model_for_prompt(row: sqlite3.Row | None) -> str:
     if row is None:
-        return ''
-    traits = _normalize_trait_invariants(row['trait_invariants'] if 'trait_invariants' in row.keys() else None)
-    lines = ['Trait invariants:']
+        return ""
+    traits = _normalize_trait_invariants(row["trait_invariants"] if "trait_invariants" in row.keys() else None)
+    lines = ["Trait invariants:"]
     if traits:
         lines.extend(f"- {trait['tendency']} (strength: {trait['strength']:.1f})" for trait in traits)
     else:
-        lines.append('-')
-    lines.append('')
-    lines.append('Narrative self:')
-    lines.append(str(row['narrative_self'] or '').strip() or '-')
-    lines.append('')
-    lines.append('Contextual state:')
-    lines.append(str(row['contextual_state'] or '').strip() or '-')
-    return '\n'.join(lines)
+        lines.append("-")
+    lines.append("")
+    lines.append("Narrative self:")
+    lines.append(str(row["narrative_self"] or "").strip() or "-")
+    lines.append("")
+    lines.append("Contextual state:")
+    lines.append(str(row["contextual_state"] or "").strip() or "-")
+    return "\n".join(lines)
 
 
 async def _generate_diary(
@@ -2480,9 +2582,9 @@ async def _generate_diary(
 ) -> dict[str, Any]:
     db_path = _sqlite_current_path(user_id, soul_id)
     if db_path is None:
-        raise HTTPException(status_code=400, detail='soul_id required')
+        raise HTTPException(status_code=400, detail="soul_id required")
     if not db_path.exists():
-        raise HTTPException(status_code=404, detail='conversation database not found')
+        raise HTTPException(status_code=404, detail="conversation database not found")
 
     _sqlite_ensure_nonempty(db_path)
     con = _sqlite_connect(db_path)
@@ -2493,22 +2595,55 @@ async def _generate_diary(
         state_row = _conversation_state_row(con, conversation_id)
         state = _conversation_state_from_row(state_row)
         if state is None:
-            raise HTTPException(status_code=404, detail='conversation state not found')
+            raise HTTPException(status_code=404, detail="conversation state not found")
 
-        diary_worthy_ids = _normalize_int_list(state.get('diary_worthy_ids'))
-        if not diary_worthy_ids:
-            raise HTTPException(status_code=400, detail='no diary-worthy ids queued')
+        pending_diary_memory_ids = _normalize_text_list(state.get("pending_diary_memory_ids"))
+        if not pending_diary_memory_ids:
+            raise HTTPException(status_code=400, detail="no diary-worthy memories queued")
 
         storage_dir = _get_storage_dir(_CONFIG)
-        chats_dir = (storage_dir / 'st_chats').resolve()
+        chats_dir = (storage_dir / "st_chats").resolve()
         chat_dir = _find_chat_dir_for_conversation(chats_dir, user_id, soul_id, conversation_id)
         if chat_dir is None:
-            raise HTTPException(status_code=404, detail='conversation resource not found')
+            raise HTTPException(status_code=404, detail="conversation resource not found")
 
-        full_messages = _read_list((chat_dir / 'full.json').resolve())
-        excerpt = _format_messages_for_diary(full_messages, diary_worthy_ids)
+        placeholders = ",".join("?" for _ in pending_diary_memory_ids)
+        memory_rows_raw = con.execute(
+            f"""
+SELECT id, memory_type, summary, source_role, confidence, source_message_ids, reflection_salience
+FROM memu_memory_items
+WHERE id IN ({placeholders})
+ORDER BY updated_at DESC, created_at DESC, id DESC
+""",
+            tuple(pending_diary_memory_ids),
+        ).fetchall()
+        memory_rows_by_id = {str(row["id"]): row for row in memory_rows_raw if "id" in row.keys()}
+        memory_rows = [memory_rows_by_id[mid] for mid in pending_diary_memory_ids if mid in memory_rows_by_id]
+        if not memory_rows:
+            raise HTTPException(status_code=400, detail="queued diary memories not found")
+
+        category_rows = con.execute(
+            """
+SELECT name, summary
+FROM memu_memory_categories
+WHERE soul_id = ? AND user_id = ?
+ORDER BY name ASC
+""",
+            (soul_id, user_id),
+        ).fetchall()
+
+        full_messages = _read_list((chat_dir / "full.json").resolve())
+        source_message_ids: list[int] = []
+        for row in memory_rows:
+            source_message_ids.extend(
+                _normalize_int_list(row["source_message_ids"] if "source_message_ids" in row.keys() else None)
+            )
+        excerpt = _format_messages_for_diary(
+            full_messages,
+            _expand_message_indices(_normalize_int_list(source_message_ids), len(full_messages)),
+        )
         if not excerpt.strip():
-            raise HTTPException(status_code=400, detail='diary-worthy messages not found in resource')
+            raise HTTPException(status_code=400, detail="diary source messages not found in resource")
 
         previous_diary = con.execute(
             """
@@ -2521,13 +2656,21 @@ LIMIT 1
             (soul_id, user_id),
         ).fetchone()
 
+        context_parts: list[str] = []
+        category_block = _format_categories_for_diary(category_rows)
+        if category_block:
+            context_parts.append(f"Current categories:\n{category_block}")
+        memory_block = _format_memory_rows_for_diary(memory_rows)
+        if memory_block:
+            context_parts.append(f"Diary-worthy memories:\n{memory_block}")
         if previous_diary is not None:
-            context_parts = [f"Previous diary entry:\n{str(previous_diary['summary'] or '').strip()}"]
-            previous_unresolved = str(previous_diary['unresolved'] or '').strip()
+            context_parts.append(f"Previous diary entry:\n{str(previous_diary['summary'] or '').strip()}")
+            previous_unresolved = str(previous_diary["unresolved"] or "").strip()
             if previous_unresolved:
                 context_parts.append(f"Previous unresolved thread:\n{previous_unresolved}")
+        if context_parts:
             diary_prompt = diary_memory_prompt.PROMPT_WITH_CONTEXT.format(
-                context=svc._escape_prompt_value('\n\n'.join(context_parts)),
+                context=svc._escape_prompt_value("\n\n".join(context_parts)),
                 conversation=svc._escape_prompt_value(excerpt),
             )
         else:
@@ -2537,37 +2680,37 @@ LIMIT 1
 
         diary_raw = await svc._get_llm_client().chat(diary_prompt, temperature=0.2)
         diary_data = _parse_diary_xml(diary_raw)
-        prose = str(diary_data.get('prose') or '').strip()
-        companion_memory = str(diary_data.get('companion_memory') or '').strip()
+        prose = str(diary_data.get("prose") or "").strip()
+        companion_memory = str(diary_data.get("companion_memory") or "").strip()
         if not prose:
-            raise HTTPException(status_code=500, detail='diary generation returned empty prose')
+            raise HTTPException(status_code=500, detail="diary generation returned empty prose")
         if not companion_memory:
-            raise HTTPException(status_code=500, detail='diary generation returned empty companion_memory')
+            raise HTTPException(status_code=500, detail="diary generation returned empty companion_memory")
 
-        diary_embedding, companion_embedding = await svc._get_llm_client('embedding').embed([prose, companion_memory])
+        diary_embedding, companion_embedding = await svc._get_llm_client("embedding").embed([prose, companion_memory])
         diary_item = svc.database.memory_item_repo.create_item(
             resource_id=None,
-            memory_type='diary',
+            memory_type="diary",
             summary=prose,
             embedding=diary_embedding,
-            user_data={'user_id': user_id, 'soul_id': soul_id, 'conversation_id': conversation_id},
+            user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
             conversation_id=conversation_id,
-            affective_tags=diary_data.get('affective_tags'),
-            unresolved=diary_data.get('unresolved'),
+            affective_tags=diary_data.get("affective_tags"),
+            unresolved=diary_data.get("unresolved"),
         )
         _companion_item = svc.database.memory_item_repo.create_item(
             resource_id=None,
-            memory_type='event',
+            memory_type="event",
             summary=companion_memory,
             embedding=companion_embedding,
-            user_data={'user_id': user_id, 'soul_id': soul_id, 'conversation_id': conversation_id},
-            source_role='soul',
+            user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
+            source_role="soul",
             conversation_id=conversation_id,
         )
 
         current_self_model = _load_current_self_model(
             con,
-            self_model_id=str(state.get('self_model_id') or '').strip() or None,
+            self_model_id=str(state.get("self_model_id") or "").strip() or None,
             soul_id=soul_id,
             user_id=user_id,
         )
@@ -2586,42 +2729,44 @@ LIMIT 1
         self_model_update = _parse_self_model_update_xml(self_model_raw)
 
         existing_traits = _normalize_trait_invariants(
-            current_self_model['trait_invariants']
-            if current_self_model is not None and 'trait_invariants' in current_self_model.keys()
+            current_self_model["trait_invariants"]
+            if current_self_model is not None and "trait_invariants" in current_self_model.keys()
             else None
         )
-        for text in self_model_update['trait_remove']:
-            existing_traits = [item for item in existing_traits if item['tendency'] != text]
-        for trait in self_model_update['trait_add']:
-            tendency = str(trait.get('tendency') or '').strip()
+        for text in self_model_update["trait_remove"]:
+            existing_traits = [item for item in existing_traits if item["tendency"] != text]
+        for trait in self_model_update["trait_add"]:
+            tendency = str(trait.get("tendency") or "").strip()
             if not tendency:
                 continue
             for existing_trait in existing_traits:
-                if existing_trait['tendency'] == tendency:
-                    existing_trait['strength'] = _normalize_trait_strength(trait.get('strength'))
+                if existing_trait["tendency"] == tendency:
+                    existing_trait["strength"] = _normalize_trait_strength(trait.get("strength"))
                     break
             else:
-                existing_traits.append({
-                    'tendency': tendency,
-                    'strength': _normalize_trait_strength(trait.get('strength')),
-                })
+                existing_traits.append(
+                    {
+                        "tendency": tendency,
+                        "strength": _normalize_trait_strength(trait.get("strength")),
+                    }
+                )
 
         narrative_self = (
-            str(self_model_update.get('narrative_self') or '').strip()
+            str(self_model_update.get("narrative_self") or "").strip()
             or (
-                str(current_self_model['narrative_self'] or '').strip()
-                if current_self_model is not None and 'narrative_self' in current_self_model.keys()
-                else ''
+                str(current_self_model["narrative_self"] or "").strip()
+                if current_self_model is not None and "narrative_self" in current_self_model.keys()
+                else ""
             )
             or None
         )
-        contextual_state = str(self_model_update.get('contextual_state') or '').strip() or None
+        contextual_state = str(self_model_update.get("contextual_state") or "").strip() or None
         self_model_id = (
-            str(current_self_model['id']).strip()
-            if current_self_model is not None and 'id' in current_self_model.keys()
+            str(current_self_model["id"]).strip()
+            if current_self_model is not None and "id" in current_self_model.keys()
             else str(uuid.uuid4())
         )
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
         con.execute(
             """
 INSERT INTO memu_self_model (
@@ -2653,8 +2798,8 @@ ON CONFLICT(id) DO UPDATE SET
         )
 
         intention_ids: list[str] = []
-        for description in diary_data.get('intentions') or []:
-            text = str(description or '').strip()
+        for description in diary_data.get("intentions") or []:
+            text = str(description or "").strip()
             if not text:
                 continue
             intention_id = str(uuid.uuid4())
@@ -2685,26 +2830,27 @@ INSERT INTO memu_intentions (
             intention_ids.append(intention_id)
 
         con.commit()
+
+        updated_state, _db_path = _write_conversation_state(
+            conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={
+                "self_model_id": self_model_id,
+                "pending_diary_memory_ids": [],
+            },
+        )
+        return {
+            "conversation_id": conversation_id,
+            "memory_id": diary_item.id,
+            "self_model_id": self_model_id,
+            "intention_ids": intention_ids,
+            "pending_diary_memory_ids_cleared": True,
+            "state": updated_state,
+        }
     finally:
         con.close()
 
-    updated_state, _db_path = _write_conversation_state(
-        conversation_id,
-        soul_id=soul_id,
-        user_id=user_id,
-        updates={
-            'self_model_id': self_model_id,
-            'diary_worthy_ids': [],
-        },
-    )
-    return {
-        'conversation_id': conversation_id,
-        'memory_id': diary_item.id,
-        'self_model_id': self_model_id,
-        'intention_ids': intention_ids,
-        'diary_worthy_ids_cleared': True,
-        'state': updated_state,
-    }
 
 @app.post("/memorize", operation_id="memorize")
 async def memorize(payload: dict[str, Any]):
@@ -2723,13 +2869,12 @@ async def memorize(payload: dict[str, Any]):
         if conversation_id and isinstance(user_scope, dict):
             user_scope = {**user_scope, "conversation_id": conversation_id}
 
-
         # Per-soul-only: SillyTavern traffic must include user.soul_id.
         if not isinstance(user_scope, dict):
-            raise HTTPException(status_code=400, detail='Missing user scope (user.soul_id required)')
-        scoped_soul = str(user_scope.get('soul_id') or '').strip()
+            raise HTTPException(status_code=400, detail="Missing user scope (user.soul_id required)")
+        scoped_soul = str(user_scope.get("soul_id") or "").strip()
         if not scoped_soul:
-            raise HTTPException(status_code=400, detail='Missing user.soul_id for per-soul DBs')
+            raise HTTPException(status_code=400, detail="Missing user.soul_id for per-soul DBs")
         user_scope = {**user_scope, "soul_id": scoped_soul}
 
         conversation = safe.get("conversation")
@@ -2747,14 +2892,13 @@ async def memorize(payload: dict[str, Any]):
         # - Daily resources split by sleep gap (22:00–08:00 local)
         #   using the largest no-chat gap intersecting that window.
 
-
-        uid = str((user_scope or {}).get('user_id') or 'user') if isinstance(user_scope, dict) else 'user'
-        soul = str((user_scope or {}).get('soul_id') or 'soul') if isinstance(user_scope, dict) else 'soul'
+        uid = str((user_scope or {}).get("user_id") or "user") if isinstance(user_scope, dict) else "user"
+        soul = str((user_scope or {}).get("soul_id") or "soul") if isinstance(user_scope, dict) else "soul"
         async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul), asyncio.Lock()):
             storage_dir = _get_storage_dir(_CONFIG)
-            chats_dir = (storage_dir / 'st_chats').resolve()
-            chat_file = _pick_str(safe, 'chatFileName', 'chat_file_name', 'chat_filename', 'chatFile')
-            resource_url_in = _pick_str(safe, 'resource_url')
+            chats_dir = (storage_dir / "st_chats").resolve()
+            chat_file = _pick_str(safe, "chatFileName", "chat_file_name", "chat_filename", "chatFile")
+            resource_url_in = _pick_str(safe, "resource_url")
             chat_dir, chat_key, chat_key_source = _resolve_chat_storage_dir(
                 chats_dir,
                 uid,
@@ -2763,12 +2907,12 @@ async def memorize(payload: dict[str, Any]):
                 chat_file,
                 resource_url_in,
             )
-            days_dir = (chat_dir / 'days').resolve()
+            days_dir = (chat_dir / "days").resolve()
             chat_dir.mkdir(parents=True, exist_ok=True)
             days_dir.mkdir(parents=True, exist_ok=True)
 
-            full_path = (chat_dir / 'full.json').resolve()
-            manifest_path = (chat_dir / 'manifest.json').resolve()
+            full_path = (chat_dir / "full.json").resolve()
+            manifest_path = (chat_dir / "manifest.json").resolve()
 
             prev_full = _read_list(full_path)
             prev_len = len(prev_full)
@@ -2780,8 +2924,8 @@ async def memorize(payload: dict[str, Any]):
                 _write_list_if_changed(full_path, prev_full, merged)
 
             # Timezone hint (IANA) from client. Offset is only a fallback for logging.
-            tz_name = _pick_str(safe, 'timeZone', 'timezone', 'time_zone')
-            tz_off_raw = safe.get('timeZoneOffsetMin')
+            tz_name = _pick_str(safe, "timeZone", "timezone", "time_zone")
+            tz_off_raw = safe.get("timeZoneOffsetMin")
             tz_off_min = int(tz_off_raw) if isinstance(tz_off_raw, (int, float)) and math.isfinite(tz_off_raw) else None
 
             tz_ok = False
@@ -2805,17 +2949,20 @@ async def memorize(payload: dict[str, Any]):
 
             manifest: dict[str, Any] = {}
             try:
-                rawm = manifest_path.read_text(encoding='utf-8') if manifest_path.exists() else ''
+                rawm = manifest_path.read_text(encoding="utf-8") if manifest_path.exists() else ""
                 manifest = json.loads(rawm) if rawm.strip() else {}
             except Exception:
                 manifest = {}
-            segments: list[dict[str, Any]] = manifest.get('segments') if isinstance(manifest.get('segments'), list) else []
+            segments: list[dict[str, Any]] = (
+                manifest.get("segments") if isinstance(manifest.get("segments"), list) else []
+            )
 
             resource_url = str(full_path)
             days_written = 0
             forced_splits = 0
             sleep_stats: Any | None = None
-            if tz_ok and isinstance(merged, list) and any(isinstance(m.get('ts_ms'), int) for m in merged):
+            new_segments: list[dict[str, Any]] = []
+            if tz_ok and isinstance(merged, list) and any(isinstance(m.get("ts_ms"), int) for m in merged):
                 tail_n = 2500
                 if not segments:
                     rebuild_from = 0
@@ -2826,8 +2973,8 @@ async def memorize(payload: dict[str, Any]):
                     keep_segments = []
                     for s in segments:
                         try:
-                            st_i = int(s.get('start'))
-                            en_i = int(s.get('end'))
+                            st_i = int(s.get("start"))
+                            en_i = int(s.get("end"))
                             if st_i <= tail_start <= en_i:
                                 rebuild_from = st_i
                             if st_i < rebuild_from:
@@ -2842,9 +2989,13 @@ async def memorize(payload: dict[str, Any]):
                 splits = [ctx_start + i for i in splits_rel if (ctx_start + i) > rebuild_from]
 
                 try:
-                    if isinstance(sleep_stats, dict) and sleep_stats.get('nights_total') and not sleep_stats.get('nights_qual'):
+                    if (
+                        isinstance(sleep_stats, dict)
+                        and sleep_stats.get("nights_total")
+                        and not sleep_stats.get("nights_qual")
+                    ):
                         sys.stderr.write(
-                            f"memu-server: sleep-split: no qualifying lull >= {_SLEEP_SPLIT_MIN_LULL_SECONDS//3600}h found in night windows; allowing up to {_SLEEP_SPLIT_MAX_SPAN_DAYS} days per file\n"
+                            f"memu-server: sleep-split: no qualifying lull >= {_SLEEP_SPLIT_MIN_LULL_SECONDS // 3600}h found in night windows; allowing up to {_SLEEP_SPLIT_MAX_SPAN_DAYS} days per file\n"
                         )
                         sys.stderr.flush()
                 except Exception:
@@ -2853,20 +3004,19 @@ async def memorize(payload: dict[str, Any]):
                 boundaries_raw = [rebuild_from] + splits + [len(merged)]
                 ts_list: list[int | None] = []
                 for m in merged:
-                    v = m.get('ts_ms') if isinstance(m, dict) else None
+                    v = m.get("ts_ms") if isinstance(m, dict) else None
                     ts_list.append(int(v) if isinstance(v, int) else None)
                 boundaries, forced_splits = _enforce_max_span(
                     boundaries_raw, ts_list, zi, tz_ok, _SLEEP_SPLIT_MAX_SPAN_DAYS, _SLEEP_SPLIT_MIN_LULL_SECONDS
                 )
-                new_segments: list[dict[str, Any]] = []
                 for a_i, b_i in zip(boundaries, boundaries[1:]):
                     if b_i <= a_i:
                         continue
                     seg = merged[a_i:b_i]
                     if not seg:
                         continue
-                    first_ts = seg[0].get('ts_ms') if isinstance(seg[0], dict) else None
-                    last_ts = seg[-1].get('ts_ms') if isinstance(seg[-1], dict) else None
+                    first_ts = seg[0].get("ts_ms") if isinstance(seg[0], dict) else None
+                    last_ts = seg[-1].get("ts_ms") if isinstance(seg[-1], dict) else None
                     date = _date_label(first_ts if isinstance(first_ts, int) else None, zi)
                     end_date = _date_label(last_ts if isinstance(last_ts, int) else None, zi)
                     fn = f"{date}.json" if end_date == date else f"{date}__{end_date}.json"
@@ -2880,86 +3030,132 @@ async def memorize(payload: dict[str, Any]):
                 try:
                     manifest_out = {
                         "v": 1,
-                        "tz": str(tz_name or ''),
+                        "tz": str(tz_name or ""),
                         "segments": segments,
                         "split": {
                             "min_lull_seconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
                             "max_span_days": _SLEEP_SPLIT_MAX_SPAN_DAYS,
                         },
                         "source": {
-                            "conversationId": conversation_id or '',
-                            "chatFileName": chat_file or '',
-                            "resource_url_in": resource_url_in or '',
+                            "conversationId": conversation_id or "",
+                            "chatFileName": chat_file or "",
+                            "resource_url_in": resource_url_in or "",
                             "timeZoneOffsetMin": tz_off_min if tz_off_min is not None else None,
                             "chatKey": chat_key,
-                            "chatKeySource": chat_key_source or '',
+                            "chatKeySource": chat_key_source or "",
                         },
                     }
-                    manifest_path.write_text(json.dumps(manifest_out, ensure_ascii=False, indent=2), encoding='utf-8')
+                    manifest_path.write_text(json.dumps(manifest_out, ensure_ascii=False, indent=2), encoding="utf-8")
                 except Exception:
                     pass
 
             if segments:
-                last_file = segments[-1].get('file')
+                last_file = segments[-1].get("file")
                 if isinstance(last_file, str) and last_file:
                     resource_url = str((days_dir / last_file).resolve())
 
             delta_conv = conv_norm if isinstance(conv_norm, list) else []
-            if prev_len and isinstance(merged, list) and merged[:prev_len] == prev_full:
+            prefix_same = bool(prev_len and isinstance(merged, list) and merged[:prev_len] == prev_full)
+            if prefix_same:
                 delta_conv = merged[prev_len:]
-            memorize_raw_text = json.dumps(delta_conv, ensure_ascii=False) if delta_conv else None
+            memorize_batches: list[tuple[str, list[dict[str, Any]]]] = []
+            if new_segments and isinstance(merged, list):
+                for segment in new_segments:
+                    try:
+                        start_idx = int(segment.get("start"))
+                        end_idx = int(segment.get("end"))
+                    except Exception:
+                        continue
+                    if end_idx < start_idx:
+                        continue
+                    if prefix_same and end_idx < prev_len:
+                        continue
+                    batch_conv = merged[start_idx : end_idx + 1]
+                    if not batch_conv:
+                        continue
+                    batch_file = segment.get("file")
+                    batch_url = resource_url
+                    if isinstance(batch_file, str) and batch_file:
+                        batch_url = str((days_dir / batch_file).resolve())
+                    memorize_batches.append((batch_url, batch_conv))
+            if not memorize_batches and delta_conv:
+                memorize_batches.append((resource_url, delta_conv))
 
-            result = await svc.memorize(
-                resource_url=resource_url,
-                modality="conversation",
-                user=user_scope,
-                raw_text=memorize_raw_text,
-                local_path=resource_url,
-            )
+            batch_results: list[dict[str, Any]] = []
+            pending_diary_memory_ids: list[str] = []
+            for batch_url, batch_conv in memorize_batches:
+                batch_result = await svc.memorize(
+                    resource_url=batch_url,
+                    modality="conversation",
+                    user=user_scope,
+                    raw_text=json.dumps(batch_conv, ensure_ascii=False),
+                    local_path=batch_url,
+                )
+                if isinstance(batch_result, dict):
+                    batch_results.append(batch_result)
+                    pending_diary_memory_ids.extend(
+                        _normalize_text_list(batch_result.get("pending_diary_memory_ids"))
+                    )
+
+            if len(batch_results) == 1:
+                result: dict[str, Any] = batch_results[0]
+            else:
+                result = {
+                    "results": batch_results,
+                    "batch_count": len(batch_results),
+                    "pending_diary_memory_ids": list(dict.fromkeys(pending_diary_memory_ids)),
+                }
 
             if conversation_id:
-                processed_count = len(merged) if isinstance(merged, list) else (len(conv_norm) if isinstance(conv_norm, list) else 0)
-                diary_worthy_ids = []
-                if isinstance(result, dict):
-                    raw_diary_ids = result.get('diary_worthy_ids')
-                    diary_worthy_ids = _normalize_int_list(raw_diary_ids)
-                if diary_worthy_ids and prev_len and isinstance(merged, list) and merged[:prev_len] == prev_full:
-                    diary_worthy_ids = [prev_len + idx for idx in diary_worthy_ids]
+                processed_count = (
+                    len(merged) if isinstance(merged, list) else (len(conv_norm) if isinstance(conv_norm, list) else 0)
+                )
                 _write_conversation_state(
                     conversation_id,
                     soul_id=scoped_soul,
                     user_id=uid,
                     updates={
                         "digest_cursor": max(0, processed_count - 1),
-                        "last_memorize_at": datetime.now(timezone.utc).isoformat(),
-                        "append_diary_worthy_ids": diary_worthy_ids,
+                        "last_memorize_at": datetime.now(UTC).isoformat(),
+                        "append_pending_diary_memory_ids": pending_diary_memory_ids,
                     },
                 )
 
-            _record_call('memorize', safe, ok=True, info={
-                'resource_url': resource_url,
-                'conversationId': conversation_id,
-                'chatFileName': chat_file,
-                'resourceUrlIn': resource_url_in,
-                'chatKey': chat_key,
-                'chatKeySource': chat_key_source,
-                'timeZone': tz_name,
-                'messages_prev': prev_len,
-                'messages_in': len(conv_norm) if isinstance(conv_norm, list) else None,
-                'messages_merged': len(merged) if isinstance(merged, list) else None,
-                'days_written': days_written,
-                'sleepSplitMinLullSeconds': _SLEEP_SPLIT_MIN_LULL_SECONDS,
-                'sleepSplitMaxSpanDays': _SLEEP_SPLIT_MAX_SPAN_DAYS,
-                'sleepSplitForcedSplits': forced_splits if 'forced_splits' in locals() else 0,
-                'sleepSplitStats': sleep_stats if 'sleep_stats' in locals() else None,
-            })
+            _record_call(
+                "memorize",
+                safe,
+                ok=True,
+                info={
+                    "resource_url": resource_url,
+                    "conversationId": conversation_id,
+                    "chatFileName": chat_file,
+                    "resourceUrlIn": resource_url_in,
+                    "chatKey": chat_key,
+                    "chatKeySource": chat_key_source,
+                    "timeZone": tz_name,
+                    "messages_prev": prev_len,
+                    "messages_in": len(conv_norm) if isinstance(conv_norm, list) else None,
+                    "messages_merged": len(merged) if isinstance(merged, list) else None,
+                    "memorizeBatchCount": len(memorize_batches),
+                    "days_written": days_written,
+                    "sleepSplitMinLullSeconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
+                    "sleepSplitMaxSpanDays": _SLEEP_SPLIT_MAX_SPAN_DAYS,
+                    "sleepSplitForcedSplits": forced_splits if "forced_splits" in locals() else 0,
+                    "sleepSplitStats": sleep_stats if "sleep_stats" in locals() else None,
+                },
+            )
             return {"ok": True, "result": result, "resource_url": resource_url}
     except HTTPException:
         raise
     except Exception as exc:
         traceback.print_exc()
         try:
-            _record_call('memorize', payload if isinstance(payload, dict) else None, ok=False, error=f"{type(exc).__name__}: {exc}")
+            _record_call(
+                "memorize",
+                payload if isinstance(payload, dict) else None,
+                ok=False,
+                error=f"{type(exc).__name__}: {exc}",
+            )
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -3022,6 +3218,7 @@ async def generate_diary(payload: dict[str, Any] = Body(...)):
         )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+
 @app.get("/categories", operation_id="list_memory_categories")
 async def list_memory_categories(user_id: str = "", soul_id: str = "", include_empty: bool = False):
     # Scope is required: this server runs per-soul SQLite databases (no shared DB by default).
@@ -3073,6 +3270,8 @@ async def list_memory_categories(user_id: str = "", soul_id: str = "", include_e
         return {"categories": out}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.post("/categories/search", operation_id="search_memory_categories")
 async def search_memory_categories(payload: dict[str, Any]):
     """Payload-driven category listing (matches SillyTavern plugin's local mode)."""
@@ -3102,13 +3301,20 @@ async def search_memory_categories(payload: dict[str, Any]):
             cc = {**c, "name": nm, "summary": str(c.get("summary") or "")}
             if include_empty or _has_category_content(cc):
                 out.append(cc)
-        _record_call('categories.search', safe, ok=True, info={'returned': len(out)})
+        _record_call("categories.search", safe, ok=True, info={"returned": len(out)})
         return {"categories": out}
     except HTTPException:
-        _record_call('categories.search', payload if isinstance(payload, dict) else None, ok=False, error='HTTPException')
+        _record_call(
+            "categories.search", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException"
+        )
         raise
     except Exception as exc:
-        _record_call('categories.search', payload if isinstance(payload, dict) else None, ok=False, error=f"{type(exc).__name__}: {exc}")
+        _record_call(
+            "categories.search",
+            payload if isinstance(payload, dict) else None,
+            ok=False,
+            error=f"{type(exc).__name__}: {exc}",
+        )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
@@ -3180,8 +3386,11 @@ async def patch_conversation_state(
     if "active_intentions" in body or "activeIntentions" in body:
         updates["active_intentions"] = body.get("active_intentions", body.get("activeIntentions"))
 
-    if "diary_worthy_ids" in body or "diaryWorthyIds" in body:
-        updates["diary_worthy_ids"] = body.get("diary_worthy_ids", body.get("diaryWorthyIds"))
+    if "pending_diary_memory_ids" in body or "pendingDiaryMemoryIds" in body:
+        updates["pending_diary_memory_ids"] = body.get(
+            "pending_diary_memory_ids",
+            body.get("pendingDiaryMemoryIds"),
+        )
 
     if "self_model_id" in body or "selfModelId" in body:
         updates["self_model_id"] = body.get("self_model_id", body.get("selfModelId"))
@@ -3199,6 +3408,7 @@ async def patch_conversation_state(
         updates=updates,
     )
     return {"ok": True, "state": state_out, "path": str(db_path)}
+
 
 @app.post("/clear", operation_id="clear_memory")
 async def clear_memory(payload: dict[str, Any]):
@@ -3251,34 +3461,47 @@ async def clear_memory(payload: dict[str, Any]):
         _record_call("clear", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException")
         raise
     except Exception as exc:
-        _record_call("clear", payload if isinstance(payload, dict) else None, ok=False, error=f"{type(exc).__name__}: {exc}")
+        _record_call(
+            "clear", payload if isinstance(payload, dict) else None, ok=False, error=f"{type(exc).__name__}: {exc}"
+        )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 @app.post("/retrieve", operation_id="retrieve")
 async def retrieve(payload: dict[str, Any]):
     try:
         out = await _run_retrieve(payload)
         _record_call(
-            'retrieve',
+            "retrieve",
             _safe_payload(payload),
             ok=True,
             info={
-                'queries': out.get('queries'),
-                'where': _extract_retrieve_where(_safe_payload(payload)),
-                'method': out.get('method'),
-                'conversationId': out.get('conversation_id'),
+                "queries": out.get("queries"),
+                "where": _extract_retrieve_where(_safe_payload(payload)),
+                "method": out.get("method"),
+                "conversationId": out.get("conversation_id"),
             },
         )
         return out
     except HTTPException as he:
         try:
-            _record_call('retrieve', payload if isinstance(payload, dict) else None, ok=False, error=str(getattr(he, 'detail', he)))
+            _record_call(
+                "retrieve",
+                payload if isinstance(payload, dict) else None,
+                ok=False,
+                error=str(getattr(he, "detail", he)),
+            )
         except Exception:
             pass
         raise
     except Exception as exc:
         try:
-            _record_call('retrieve', payload if isinstance(payload, dict) else None, ok=False, error=f"{type(exc).__name__}: {exc}")
+            _record_call(
+                "retrieve",
+                payload if isinstance(payload, dict) else None,
+                ok=False,
+                error=f"{type(exc).__name__}: {exc}",
+            )
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -3295,23 +3518,30 @@ async def conversation_retrieve(
     try:
         out = await _run_retrieve(payload, conversation_id=cid, persist_llm_state=True)
         _record_call(
-            'conversation.retrieve',
+            "conversation.retrieve",
             _safe_payload(payload),
             ok=True,
             info={
-                'queries': out.get('queries'),
-                'where': _extract_retrieve_where({**_safe_payload(payload), "conversation_id": cid}),
-                'method': out.get('method'),
-                'conversationId': cid,
-                'persistedState': bool(out.get('state')),
+                "queries": out.get("queries"),
+                "where": _extract_retrieve_where({**_safe_payload(payload), "conversation_id": cid}),
+                "method": out.get("method"),
+                "conversationId": cid,
+                "persistedState": bool(out.get("state")),
             },
         )
         return out
     except HTTPException:
-        _record_call('conversation.retrieve', payload if isinstance(payload, dict) else None, ok=False, error='HTTPException')
+        _record_call(
+            "conversation.retrieve", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException"
+        )
         raise
     except Exception as exc:
-        _record_call('conversation.retrieve', payload if isinstance(payload, dict) else None, ok=False, error=f"{type(exc).__name__}: {exc}")
+        _record_call(
+            "conversation.retrieve",
+            payload if isinstance(payload, dict) else None,
+            ok=False,
+            error=f"{type(exc).__name__}: {exc}",
+        )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
@@ -3361,9 +3591,9 @@ except Exception:
 # -------------------------
 try:
     _BUNDLE_ROOT = Path(__file__).resolve().parents[2]
-    _UI_DIST = _BUNDLE_ROOT / 'memu-ui' / 'dist'
+    _UI_DIST = _BUNDLE_ROOT / "memu-ui" / "dist"
     if _UI_DIST.exists():
         # Serve SPA assets (e.g. /assets/*). API routes defined above still win.
-        app.mount('/', StaticFiles(directory=str(_UI_DIST), html=True), name='ui')
+        app.mount("/", StaticFiles(directory=str(_UI_DIST), html=True), name="ui")
 except Exception:
     pass
