@@ -2616,7 +2616,6 @@ async def generate_diary(payload: dict[str, Any] = Body(...)):
                     normalize_trait_invariants=_normalize_trait_invariants,
                     normalize_trait_strength=_normalize_trait_strength,
                     json_to_db=_json_to_db,
-                    write_conversation_state=_write_conversation_state,
                 ),
                 svc=svc,
                 conversation_id=conversation_id,

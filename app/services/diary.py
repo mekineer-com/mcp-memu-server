@@ -34,7 +34,6 @@ class DiaryDeps:
     normalize_trait_invariants: Callable[[Any], list[dict[str, Any]]]
     normalize_trait_strength: Callable[[Any], float]
     json_to_db: Callable[[Any], str | None]
-    write_conversation_state: Callable[..., tuple[dict[str, Any], Path | None]]
 
 
 def _format_messages_for_diary(messages: list[dict[str, Any]], message_indices: list[int]) -> str:
@@ -219,6 +218,78 @@ def _format_self_model_for_prompt(
     lines.append("Contextual state:")
     lines.append(str(row["contextual_state"] or "").strip() or "-")
     return "\n".join(lines)
+
+
+def _write_conversation_state_local(
+    con: sqlite3.Connection,
+    *,
+    deps: DiaryDeps,
+    state: dict[str, Any],
+    conversation_id: str,
+    soul_id: str,
+    user_id: str,
+    self_model_id: str,
+) -> dict[str, Any]:
+    merged = dict(state)
+    merged["conversation_id"] = conversation_id
+    merged["soul_id"] = soul_id
+    merged["user_id"] = user_id
+    try:
+        merged["digest_cursor"] = max(0, int(merged.get("digest_cursor") or 0))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="digest_cursor must be an integer") from exc
+    raw_last = merged.get("last_memorize_at")
+    merged["last_memorize_at"] = None if raw_last is None else (str(raw_last).strip() or None)
+    raw_note = merged.get("working_note")
+    merged["working_note"] = None if raw_note is None else str(raw_note)
+    merged["pending_diary_memory_ids"] = []
+    raw_self_model_id = self_model_id
+    merged["self_model_id"] = None if raw_self_model_id is None else (str(raw_self_model_id).strip() or None)
+    merged["updated_at"] = datetime.now(UTC).isoformat()
+
+    con.execute(
+        """
+INSERT INTO memu_conversation_state (
+    conversation_id,
+    soul_id,
+    user_id,
+    digest_cursor,
+    working_note,
+    active_intentions,
+    pending_diary_memory_ids,
+    self_model_id,
+    last_retrieval_ids,
+    last_memorize_at,
+    updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(conversation_id) DO UPDATE SET
+    soul_id = excluded.soul_id,
+    user_id = excluded.user_id,
+    digest_cursor = excluded.digest_cursor,
+    working_note = excluded.working_note,
+    active_intentions = excluded.active_intentions,
+    pending_diary_memory_ids = excluded.pending_diary_memory_ids,
+    self_model_id = excluded.self_model_id,
+    last_retrieval_ids = excluded.last_retrieval_ids,
+    last_memorize_at = excluded.last_memorize_at,
+    updated_at = excluded.updated_at
+""",
+        (
+            merged["conversation_id"],
+            merged.get("soul_id"),
+            merged.get("user_id"),
+            int(merged.get("digest_cursor") or 0),
+            merged.get("working_note"),
+            deps.json_to_db(merged.get("active_intentions")),
+            deps.json_to_db(merged.get("pending_diary_memory_ids") or []),
+            merged.get("self_model_id"),
+            deps.json_to_db(merged.get("last_retrieval_ids")),
+            merged.get("last_memorize_at"),
+            merged.get("updated_at"),
+        ),
+    )
+    state_out = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id))
+    return state_out or merged
 
 
 async def generate_diary(
@@ -485,17 +556,16 @@ INSERT INTO memu_intentions (
             )
             intention_ids.append(intention_id)
 
-        con.commit()
-
-        updated_state, _db_path = deps.write_conversation_state(
-            conversation_id,
+        updated_state = _write_conversation_state_local(
+            con,
+            deps=deps,
+            state=state,
+            conversation_id=conversation_id,
             soul_id=soul_id,
             user_id=user_id,
-            updates={
-                "self_model_id": self_model_id,
-                "pending_diary_memory_ids": [],
-            },
+            self_model_id=self_model_id,
         )
+        con.commit()
         return {
             "conversation_id": conversation_id,
             "memory_id": diary_item.id,
