@@ -7,19 +7,21 @@
 
 ```
 mcp-memu-server/
-├── app/main.py          # ALL endpoints & business logic (~3,500 lines, monolithic)
-├── app/database.py      # SQLAlchemy async engine + session factory
-├── app/models/base.py   # Declarative ORM base
-├── app/api/v1/          # Empty — routes not yet split from main.py
-├── app/services/        # Empty — future extraction point
-├── run.py               # Entry point: config load, sys.path setup, uvicorn start
-├── config.json          # Runtime config (llm, storage, listen, categories, memu path)
-├── config.example.json  # Template
-├── tests/test_main.py   # Minimal smoke test
-├── alembic/             # DB migration scripts
-├── storage/             # Default SQLite DB + resource dir
-├── Makefile             # make install/run/test/check
-└── pyproject.toml       # Python 3.12+ deps
+├── app/main.py              # Endpoints + remaining business logic (~2,900 lines)
+├── app/db.py                # SQLite helpers, schema ensures, JSON marshalling
+├── app/database.py          # SQLAlchemy async engine + session factory
+├── app/models/base.py       # Declarative ORM base
+├── app/services/diary.py    # Diary generation, self-model update, intention creation
+├── app/services/state.py    # Conversation state read/write/search
+├── app/api/v1/              # Empty — routes not yet split from main.py
+├── run.py                   # Entry point: config load, sys.path setup, uvicorn start
+├── config.json              # Runtime config (llm, storage, listen, categories, memu path)
+├── config.example.json      # Template
+├── tests/test_main.py       # Minimal smoke test
+├── alembic/                 # DB migration scripts
+├── storage/                 # Default SQLite DB + resource dir
+├── Makefile                 # make install/run/test/check
+└── pyproject.toml           # Python 3.12+ deps
 ```
 
 ## Key Endpoints (all in `app/main.py`)
@@ -37,6 +39,14 @@ mcp-memu-server/
 | `/config` | GET/POST | Read or update runtime config |
 | `/reload` | POST | Reload config from disk |
 | `/diag/*` | GET | Diagnostic pages (recent memories, SQLite browser) |
+
+## Extracted Modules
+
+| Module | Purpose |
+|--------|---------|
+| `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
+| `app/services/diary.py` | `generate_diary()`, diary/self-model XML parsing, self-model load/format, intention creation. All diary+self-model+intention writes in one SQLite transaction. |
+| `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, `pending_diary_memory_ids` queue management |
 
 ## How It Connects to memu-1.4.0
 
@@ -57,6 +67,9 @@ from memu.prompts.memory_type import ...  # type prompts
 | Add API endpoint | `app/main.py` — add `@app.post/get` handler, use `_get_service_from_payload()` |
 | Modify memorize flow | `app/main.py` → `_run_memorize()` (calls `svc.memorize()`) |
 | Modify retrieval flow | `app/main.py` → `_run_retrieve()` (calls `svc.retrieve()`) |
+| Modify diary/self-model | `app/services/diary.py` |
+| Modify conversation state | `app/services/state.py` |
+| Modify DB schema/helpers | `app/db.py` |
 | Change config shape | `config.json` + `app/main.py` → `_load_config()` |
 | Add route group | Create `app/api/v1/{group}.py` with APIRouter, include in main.py |
 

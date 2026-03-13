@@ -53,7 +53,6 @@
       }
     ],
     "max_total": 12,
-    "allow_dynamic": true,
     "allow_dynamic_categories": true,
     "dynamic_category_min_mentions": 10,
     "category_centroid_threshold": 0.65,

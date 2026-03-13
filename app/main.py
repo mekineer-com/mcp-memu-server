@@ -412,7 +412,6 @@ _STORAGE_STATUS: dict[str, Any] = {
     "sqlite_parent": None,
     "sqlite_exists": None,
     "sqlite_open_ok": None,
-    "sqlite_mode": "per_agent_only",
     "sqlite_dir": None,
     "error": None,
 }
@@ -516,7 +515,6 @@ def _ensure_storage_paths(cfg: dict[str, Any]) -> None:
             "sqlite_parent": None,
             "sqlite_exists": None,
             "sqlite_open_ok": None,
-            "sqlite_mode": "per_agent_only",
             "sqlite_dir": str(_sqlite_dir_from_cfg(cfg, dsn)),
             "error": None,
         }
@@ -863,9 +861,7 @@ def _get_service_from_payload(
             cats_cfg = (_CONFIG.get("categories") or {}) if isinstance(_CONFIG.get("categories"), dict) else {}
             if fixed_cats:
                 memorize_config["memory_categories"] = fixed_cats
-            memorize_config["allow_dynamic_categories"] = bool(
-                cats_cfg.get("allow_dynamic_categories", cats_cfg.get("allow_dynamic", True))
-            )
+            memorize_config["allow_dynamic_categories"] = bool(cats_cfg.get("allow_dynamic_categories", True))
             memorize_config["dynamic_category_min_mentions"] = int(
                 cats_cfg.get("dynamic_category_min_mentions", 10) or 10
             )
