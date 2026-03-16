@@ -62,7 +62,6 @@ _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 
 # Sleep-based daily split guardrails
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60  # 3 hours
-_SLEEP_SPLIT_MAX_SPAN_DAYS: int = 2  # allow at most 2 days when no qualifying lull is found
 
 
 def _has_category_content(c: dict[str, Any]) -> bool:
@@ -1383,6 +1382,69 @@ def _extract_result_item_ids(result: Any) -> list[str]:
     return out
 
 
+def _merge_memorize_batch_results(
+    batch_results: list[dict[str, Any]],
+    pending_diary_memory_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    def _merge_record_list(values: list[Any], *, id_keys: tuple[str, ...] = ("id",)) -> list[Any]:
+        out: list[Any] = []
+        seen: set[str] = set()
+        for value in values:
+            if not isinstance(value, dict):
+                out.append(value)
+                continue
+            dedupe_key = ""
+            for key in id_keys:
+                raw = str(value.get(key) or "").strip()
+                if raw:
+                    dedupe_key = f"{key}:{raw}"
+                    break
+            if not dedupe_key:
+                try:
+                    dedupe_key = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+                except Exception:
+                    dedupe_key = repr(value)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            out.append(value)
+        return out
+
+    flat_items: list[Any] = []
+    flat_categories: list[Any] = []
+    flat_relations: list[Any] = []
+    flat_resources: list[Any] = []
+    skipped_reasons: list[str] = []
+
+    for batch_result in batch_results:
+        flat_items.extend(batch_result.get("items") or [])
+        flat_categories.extend(batch_result.get("categories") or [])
+        flat_relations.extend(batch_result.get("relations") or [])
+        if isinstance(batch_result.get("resource"), dict):
+            flat_resources.append(batch_result["resource"])
+        resources = batch_result.get("resources")
+        if isinstance(resources, list):
+            flat_resources.extend(resources)
+        skipped_reasons.extend(_normalize_text_list(batch_result.get("skipped_reasons")))
+
+    result: dict[str, Any] = {
+        "results": batch_results,
+        "batch_count": len(batch_results),
+        "items": _merge_record_list(flat_items),
+        "categories": _merge_record_list(flat_categories, id_keys=("id", "name")),
+        "relations": _merge_record_list(flat_relations, id_keys=("item_id", "category_id")),
+        "pending_diary_memory_ids": list(dict.fromkeys(_normalize_text_list(pending_diary_memory_ids))),
+    }
+    merged_resources = _merge_record_list(flat_resources, id_keys=("id", "url", "local_path"))
+    if len(merged_resources) == 1:
+        result["resource"] = merged_resources[0]
+    elif merged_resources:
+        result["resources"] = merged_resources
+    if skipped_reasons:
+        result["skipped_reasons"] = list(dict.fromkeys(skipped_reasons))
+    return result
+
+
 async def _run_retrieve(
     payload: dict[str, Any],
     *,
@@ -1986,82 +2048,6 @@ def _split_indices_by_sleep(
         },
     )
 
-
-def _first_ts_in_range(ts_list: list[int | None], a_i: int, b_i: int) -> int | None:
-    for j in range(max(0, a_i), min(len(ts_list), b_i)):
-        v = ts_list[j]
-        if isinstance(v, int):
-            return v
-    return None
-
-
-def _enforce_max_span(
-    boundaries_in: list[int],
-    ts_list: list[int | None],
-    zi: Any | None,
-    tz_ok: bool,
-    max_span_days: int,
-    min_lull_seconds: int,
-) -> tuple[list[int], int]:
-    # Insert forced boundaries so a segment never spans more than max_span_days.
-    if not tz_ok:
-        return (boundaries_in, 0)
-
-    out: list[int] = []
-    forced = 0
-    for nxt in boundaries_in:
-        if not out:
-            out.append(nxt)
-            continue
-
-        while True:
-            cur = out[-1]
-            if nxt <= cur + 1:
-                break
-
-            start_ts = _first_ts_in_range(ts_list, cur, nxt)
-            if start_ts is None:
-                break
-
-            try:
-                cap_local = _local_dt(start_ts, zi) + timedelta(days=max_span_days)
-            except Exception:
-                break
-
-            idx_force: int | None = None
-            for j in range(cur + 1, nxt):
-                v = ts_list[j]
-                if not isinstance(v, int):
-                    continue
-                try:
-                    if _local_dt(v, zi) >= cap_local:
-                        idx_force = j
-                        break
-                except Exception:
-                    continue
-
-            if idx_force is None or idx_force <= cur or idx_force >= nxt:
-                break
-
-            out.append(idx_force)
-            forced += 1
-            try:
-                sys.stderr.write(
-                    f"memu-server: sleep-split: no lull >= {min_lull_seconds // 3600}h found; forcing split at {_local_dt(ts_list[idx_force], zi).isoformat()} (max {max_span_days}d)\n"
-                )
-                sys.stderr.flush()
-            except Exception:
-                pass
-
-        out.append(nxt)
-
-    out2: list[int] = []
-    for x in out:
-        if not out2 or x != out2[-1]:
-            out2.append(x)
-    return (out2, forced)
-
-
 def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, conversation_id: str) -> Path | None:
     primary_dir, _chat_key, _chat_key_source = _resolve_chat_storage_dir(
         chats_dir,
@@ -2089,7 +2075,7 @@ def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, con
 
 
 @app.post("/memorize", operation_id="memorize")
-async def memorize(payload: dict[str, Any]):
+async def memorize(payload: dict[str, Any], force: bool = False):
     """Memorize a SillyTavern conversation.
 
     Preferred: send the full memU payload (llm_profiles/database_config/etc) so per-step routing works.
@@ -2159,6 +2145,20 @@ async def memorize(payload: dict[str, Any]):
                 merged_len = len(merged)
                 _write_list_if_changed(full_path, prev_full, merged)
 
+            processed_cursor = -1
+            if conversation_id:
+                state_out, _db_path = _write_conversation_state(
+                    conversation_id,
+                    soul_id=scoped_soul,
+                    user_id=uid,
+                    updates={},
+                )
+                if state_out.get("last_memorize_at"):
+                    try:
+                        processed_cursor = int(state_out.get("digest_cursor") or 0)
+                    except Exception:
+                        processed_cursor = -1
+
             # Timezone hint (IANA) from client. Offset is only a fallback for logging.
             tz_name = _pick_str(safe, "timeZone", "timezone", "time_zone")
             tz_off_raw = safe.get("timeZoneOffsetMin")
@@ -2195,7 +2195,6 @@ async def memorize(payload: dict[str, Any]):
 
             resource_url = str(full_path)
             days_written = 0
-            forced_splits = 0
             sleep_stats: Any | None = None
             new_segments: list[dict[str, Any]] = []
             if tz_ok and isinstance(merged, list) and any(isinstance(m.get("ts_ms"), int) for m in merged):
@@ -2224,27 +2223,7 @@ async def memorize(payload: dict[str, Any]):
                 )
                 splits = [ctx_start + i for i in splits_rel if (ctx_start + i) > rebuild_from]
 
-                try:
-                    if (
-                        isinstance(sleep_stats, dict)
-                        and sleep_stats.get("nights_total")
-                        and not sleep_stats.get("nights_qual")
-                    ):
-                        sys.stderr.write(
-                            f"memu-server: sleep-split: no qualifying lull >= {_SLEEP_SPLIT_MIN_LULL_SECONDS // 3600}h found in night windows; allowing up to {_SLEEP_SPLIT_MAX_SPAN_DAYS} days per file\n"
-                        )
-                        sys.stderr.flush()
-                except Exception:
-                    pass
-
-                boundaries_raw = [rebuild_from] + splits + [len(merged)]
-                ts_list: list[int | None] = []
-                for m in merged:
-                    v = m.get("ts_ms") if isinstance(m, dict) else None
-                    ts_list.append(int(v) if isinstance(v, int) else None)
-                boundaries, forced_splits = _enforce_max_span(
-                    boundaries_raw, ts_list, zi, tz_ok, _SLEEP_SPLIT_MAX_SPAN_DAYS, _SLEEP_SPLIT_MIN_LULL_SECONDS
-                )
+                boundaries = [rebuild_from] + splits + [len(merged)]
                 for a_i, b_i in zip(boundaries, boundaries[1:]):
                     if b_i <= a_i:
                         continue
@@ -2270,7 +2249,6 @@ async def memorize(payload: dict[str, Any]):
                         "segments": segments,
                         "split": {
                             "min_lull_seconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
-                            "max_span_days": _SLEEP_SPLIT_MAX_SPAN_DAYS,
                         },
                         "source": {
                             "conversationId": conversation_id or "",
@@ -2290,36 +2268,38 @@ async def memorize(payload: dict[str, Any]):
                 if isinstance(last_file, str) and last_file:
                     resource_url = str((days_dir / last_file).resolve())
 
-            delta_conv = conv_norm if isinstance(conv_norm, list) else []
-            prefix_same = bool(prev_len and isinstance(merged, list) and merged[:prev_len] == prev_full)
-            if prefix_same:
-                delta_conv = merged[prev_len:]
-            memorize_batches: list[tuple[str, list[dict[str, Any]]]] = []
-            if new_segments and isinstance(merged, list):
-                for segment in new_segments:
+            memorize_batches: list[tuple[str, list[dict[str, Any]], int]] = []
+            if force and isinstance(merged, list):
+                start_idx = max(0, processed_cursor + 1)
+                batch_conv = merged[start_idx:]
+                if batch_conv:
+                    memorize_batches.append((str(full_path), batch_conv, len(merged) - 1))
+            elif segments and isinstance(merged, list):
+                last_idx = len(merged) - 1
+                for segment in segments:
                     try:
                         start_idx = int(segment.get("start"))
                         end_idx = int(segment.get("end"))
                     except Exception:
                         continue
-                    if end_idx < start_idx:
+                    if end_idx < start_idx or end_idx >= last_idx or end_idx <= processed_cursor:
                         continue
-                    if prefix_same and end_idx < prev_len:
+                    batch_start = max(start_idx, processed_cursor + 1)
+                    if batch_start > end_idx:
                         continue
-                    batch_conv = merged[start_idx : end_idx + 1]
+                    batch_conv = merged[batch_start : end_idx + 1]
                     if not batch_conv:
                         continue
                     batch_file = segment.get("file")
                     batch_url = resource_url
                     if isinstance(batch_file, str) and batch_file:
                         batch_url = str((days_dir / batch_file).resolve())
-                    memorize_batches.append((batch_url, batch_conv))
-            if not memorize_batches and delta_conv:
-                memorize_batches.append((resource_url, delta_conv))
+                    memorize_batches.append((batch_url, batch_conv, end_idx))
 
             batch_results: list[dict[str, Any]] = []
             pending_diary_memory_ids: list[str] = []
-            for batch_url, batch_conv in memorize_batches:
+            processed_end_cursor = processed_cursor
+            for batch_url, batch_conv, batch_end in memorize_batches:
                 batch_result = await svc.memorize(
                     resource_url=batch_url,
                     modality="conversation",
@@ -2332,27 +2312,23 @@ async def memorize(payload: dict[str, Any]):
                     pending_diary_memory_ids.extend(
                         _normalize_text_list(batch_result.get("pending_diary_memory_ids"))
                     )
+                    processed_end_cursor = max(processed_end_cursor, batch_end)
 
             if len(batch_results) == 1:
                 result: dict[str, Any] = batch_results[0]
+            elif batch_results:
+                result = _merge_memorize_batch_results(batch_results, pending_diary_memory_ids)
             else:
-                result = {
-                    "results": batch_results,
-                    "batch_count": len(batch_results),
-                    "pending_diary_memory_ids": list(dict.fromkeys(pending_diary_memory_ids)),
-                }
+                result = _merge_memorize_batch_results([], pending_diary_memory_ids)
 
-            if conversation_id:
-                processed_count = (
-                    len(merged) if isinstance(merged, list) else (len(conv_norm) if isinstance(conv_norm, list) else 0)
-                )
+            if conversation_id and batch_results:
                 try:
                     _write_conversation_state(
                         conversation_id,
                         soul_id=scoped_soul,
                         user_id=uid,
                         updates={
-                            "digest_cursor": max(0, processed_count - 1),
+                            "digest_cursor": max(0, processed_end_cursor),
                             "last_memorize_at": datetime.now(UTC).isoformat(),
                             "append_pending_diary_memory_ids": pending_diary_memory_ids,
                         },
@@ -2382,11 +2358,11 @@ async def memorize(payload: dict[str, Any]):
                     "messages_prev": prev_len,
                     "messages_in": len(conv_norm) if isinstance(conv_norm, list) else None,
                     "messages_merged": len(merged) if isinstance(merged, list) else None,
+                    "force": force,
                     "memorizeBatchCount": len(memorize_batches),
+                    "memorizeDeferred": not force and not batch_results,
                     "days_written": days_written,
                     "sleepSplitMinLullSeconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
-                    "sleepSplitMaxSpanDays": _SLEEP_SPLIT_MAX_SPAN_DAYS,
-                    "sleepSplitForcedSplits": forced_splits if "forced_splits" in locals() else 0,
                     "sleepSplitStats": sleep_stats if "sleep_stats" in locals() else None,
                 },
             )
