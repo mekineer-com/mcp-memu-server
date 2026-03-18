@@ -64,6 +64,7 @@ _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60  # 3 hours
 # Minimum chunk gate to avoid wasting extraction calls on tiny conversations
 _MIN_CHUNK_TOKENS: int = 2000  # default; overridden by config memorize.min_chunk_tokens
+_VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved"}
 
 
 def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
@@ -1190,6 +1191,13 @@ def _sqlite_current_path(
         return None
 
 
+def _sqlite_agent_db_paths() -> list[Path]:
+    sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, str(_STORAGE_STATUS.get("dsn") or ""))
+    if not sqlite_dir.exists():
+        return []
+    return sorted([p.resolve() for p in sqlite_dir.glob("*.db") if p.is_file()])
+
+
 def _sqlite_build_scope_where(
     cols: list[str],
     user_id: str | None,
@@ -1341,6 +1349,12 @@ def _state_deps() -> StateDeps:
 
 def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return _conversation_state_from_row_impl(row, normalize_text_list=_normalize_text_list)
+
+
+def _intention_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    item = {k: row[k] for k in row.keys()}
+    item["related_memory_ids"] = _normalize_text_list(item.get("related_memory_ids"))
+    return item
 
 
 def _write_conversation_state(
@@ -2596,6 +2610,111 @@ async def search_memory_categories(payload: dict[str, Any]):
             error=f"{type(exc).__name__}: {exc}",
         )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/souls/{soul_id}/intentions", operation_id="list_intentions")
+async def list_intentions(
+    soul_id: str,
+    user_id: str,
+    status: str = "active",
+):
+    scoped_soul = str(soul_id or "").strip()
+    scoped_user = str(user_id or "").strip()
+    scoped_status = str(status or "").strip() or "active"
+
+    if not scoped_soul:
+        raise HTTPException(status_code=400, detail="soul_id required")
+    if not scoped_user:
+        raise HTTPException(status_code=400, detail="user_id required")
+
+    db_path = _sqlite_current_path(scoped_user, scoped_soul)
+    if db_path is None:
+        raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
+    if not db_path.exists():
+        return []
+
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
+        rows = con.execute(
+            """
+SELECT * FROM memu_intentions
+WHERE soul_id = ? AND user_id = ? AND status = ?
+""",
+            (scoped_soul, scoped_user, scoped_status),
+        ).fetchall()
+        return [_intention_row_to_dict(row) for row in rows]
+    finally:
+        con.close()
+
+
+@app.patch("/intentions/{intention_id}", operation_id="patch_intention")
+async def patch_intention(
+    intention_id: str,
+    payload: dict[str, Any] | None = Body(default=None),
+):
+    iid = str(intention_id or "").strip()
+    if not iid:
+        raise HTTPException(status_code=400, detail="intention_id is required")
+
+    body = payload if isinstance(payload, dict) else {}
+    updates: dict[str, Any] = {}
+
+    if "status" in body:
+        next_status = str(body.get("status") or "").strip()
+        if next_status not in _VALID_INTENTION_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"status must be one of: {sorted(_VALID_INTENTION_STATUSES)}",
+            )
+        updates["status"] = next_status
+
+    if "resolution_note" in body:
+        raw_resolution_note = body.get("resolution_note")
+        updates["resolution_note"] = None if raw_resolution_note is None else str(raw_resolution_note)
+
+    for db_path in _sqlite_agent_db_paths():
+        con = _sqlite_connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            _sqlite_ensure_conversation_state_schema(con)
+            row = con.execute(
+                "SELECT * FROM memu_intentions WHERE id = ? LIMIT 1",
+                (iid,),
+            ).fetchone()
+            if row is None:
+                continue
+
+            if updates:
+                set_parts: list[str] = []
+                params: list[Any] = []
+                if "status" in updates:
+                    set_parts.append("status = ?")
+                    params.append(updates["status"])
+                if "resolution_note" in updates:
+                    set_parts.append("resolution_note = ?")
+                    params.append(updates["resolution_note"])
+                set_parts.append("updated_at = ?")
+                params.append(datetime.now(UTC).isoformat())
+                params.append(iid)
+                con.execute(
+                    f"UPDATE memu_intentions SET {', '.join(set_parts)} WHERE id = ?",
+                    params,
+                )
+                con.commit()
+                row = con.execute(
+                    "SELECT * FROM memu_intentions WHERE id = ? LIMIT 1",
+                    (iid,),
+                ).fetchone()
+
+            if row is None:
+                raise HTTPException(status_code=404, detail="intention not found")
+            return _intention_row_to_dict(row)
+        finally:
+            con.close()
+
+    raise HTTPException(status_code=404, detail="intention not found")
 
 
 @app.get("/conversation/{conversation_id}/state", operation_id="get_conversation_state")

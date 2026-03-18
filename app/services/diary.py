@@ -307,7 +307,6 @@ ON CONFLICT(conversation_id) DO UPDATE SET
     user_id = excluded.user_id,
     digest_cursor = excluded.digest_cursor,
     working_note = excluded.working_note,
-    active_intentions = excluded.active_intentions,
     pending_diary_memory_ids = excluded.pending_diary_memory_ids,
     self_model_id = excluded.self_model_id,
     last_retrieval_ids = excluded.last_retrieval_ids,
@@ -622,6 +621,25 @@ INSERT INTO memu_intentions (
             user_id=user_id,
             self_model_id=self_model_id,
         )
+        if intention_ids:
+            current_state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id)) or {}
+            active_intentions = deps.normalize_text_list(current_state.get("active_intentions"))
+            merged_active_intentions = deps.normalize_text_list([*active_intentions, *intention_ids])
+            con.execute(
+                """
+UPDATE memu_conversation_state
+SET active_intentions = ?, updated_at = ?
+WHERE conversation_id = ?
+""",
+                (
+                    deps.json_to_db(merged_active_intentions),
+                    datetime.now(UTC).isoformat(),
+                    conversation_id,
+                ),
+            )
+            refreshed_state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id))
+            if refreshed_state is not None:
+                updated_state = refreshed_state
         con.commit()
         return {
             "conversation_id": conversation_id,

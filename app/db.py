@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS memu_intentions (
     user_id TEXT NOT NULL,
     description TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
+    resolution_note TEXT,
     source TEXT,
     confidence REAL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -83,6 +84,9 @@ CREATE TABLE IF NOT EXISTS memu_intentions (
 )
 """
     )
+    intention_cols = set(sqlite_table_columns(con, "memu_intentions"))
+    if "resolution_note" not in intention_cols:
+        con.execute("ALTER TABLE memu_intentions ADD COLUMN resolution_note TEXT")
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_self_model_soul_user "
         "ON memu_self_model(soul_id, user_id, updated_at DESC)"
