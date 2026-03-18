@@ -9,12 +9,15 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
-from memu.app import MemoryService
 from memu.prompts.diary import self_model_update as diary_self_model_update_prompt
 from memu.prompts.memory_type import diary as diary_memory_prompt
+from app.services.self_model_merge import _apply_tension_updates
+
+if TYPE_CHECKING:
+    from memu.app import MemoryService
 
 
 @dataclass(frozen=True)
@@ -514,20 +517,12 @@ LIMIT 1
                         "strength": deps.normalize_trait_strength(trait.get("strength")),
                     }
                 )
-        for text in self_model_update.get("tension_remove", []):
-            existing_tensions = [item for item in existing_tensions if item.get("between") != text]
-        for tension in self_model_update.get("tension_add", []):
-            between = str(tension.get("between") or "").strip()
-            if not between:
-                continue
-            for existing_tension in existing_tensions:
-                if existing_tension.get("between") == between:
-                    existing_tension["root"] = tension.get("root", existing_tension.get("root", ""))
-                    existing_tension["implication"] = tension.get("implication", existing_tension.get("implication", ""))
-                    existing_tension["strength"] = deps.normalize_trait_strength(tension.get("strength"))
-                    break
-            else:
-                existing_tensions.append(tension)
+        existing_tensions = _apply_tension_updates(
+            existing_tensions,
+            tension_remove=self_model_update.get("tension_remove", []),
+            tension_add=self_model_update.get("tension_add", []),
+            normalize_trait_strength=deps.normalize_trait_strength,
+        )
         existing_traits = existing_traits + existing_tensions
 
         narrative_self = (
