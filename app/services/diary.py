@@ -165,9 +165,32 @@ def _parse_self_model_update_xml(raw: str, normalize_trait_strength: Callable[[A
             text = str(item.text or "").strip()
             if text:
                 removes.append(text)
+    # Tension pair parsing + merge logic
+    tension_root = root.find("tensions")
+    tension_adds: list[dict[str, Any]] = []
+    tension_removes: list[str] = []
+    if tension_root is not None:
+        for item in tension_root.findall("add"):
+            between = _xml_text(item, "between") or str(item.text or "").strip()
+            if between:
+                tension_adds.append(
+                    {
+                        "type": "tension",
+                        "between": between,
+                        "root": _xml_text(item, "root") or "",
+                        "implication": _xml_text(item, "implication") or "",
+                        "strength": normalize_trait_strength(_xml_text(item, "strength")),
+                    }
+                )
+        for item in tension_root.findall("remove"):
+            text = str(item.text or "").strip()
+            if text:
+                tension_removes.append(text)
     return {
         "trait_add": adds,
         "trait_remove": removes,
+        "tension_add": tension_adds,
+        "tension_remove": tension_removes,
         "narrative_self": _xml_text(root, "narrative_self"),
         "contextual_state": _xml_text(root, "contextual_state"),
     }
@@ -205,10 +228,27 @@ def _format_self_model_for_prompt(
 ) -> str:
     if row is None:
         return ""
-    traits = normalize_trait_invariants(row["trait_invariants"] if "trait_invariants" in row.keys() else None)
-    lines = ["Trait invariants:"]
-    if traits:
-        lines.extend(f"- {trait['tendency']} (strength: {trait['strength']:.1f})" for trait in traits)
+    all_items = normalize_trait_invariants(row["trait_invariants"] if "trait_invariants" in row.keys() else None)
+    tendencies = [item for item in all_items if item.get("type") != "tension"]
+    tensions = [item for item in all_items if item.get("type") == "tension"]
+    lines = ["Trait invariants (tendencies):"]
+    if tendencies:
+        lines.extend(f"- {t['tendency']} (strength: {t['strength']:.1f})" for t in tendencies)
+    else:
+        lines.append("-")
+    lines.append("")
+    lines.append("Trait invariants (tensions):")
+    if tensions:
+        for t in tensions:
+            between = t.get("between", "")
+            root = t.get("root", "")
+            implication = t.get("implication", "")
+            strength = t.get("strength", 0.3)
+            lines.append(f"- {between} (strength: {strength:.1f})")
+            if root:
+                lines.append(f"  Root: {root}")
+            if implication:
+                lines.append(f"  Implication: {implication}")
     else:
         lines.append("-")
     lines.append("")
@@ -451,19 +491,21 @@ LIMIT 1
         self_model_raw = await svc._get_llm_client().chat(self_model_prompt, temperature=0.2)
         self_model_update = _parse_self_model_update_xml(self_model_raw, deps.normalize_trait_strength)
 
-        existing_traits = deps.normalize_trait_invariants(
+        all_items = deps.normalize_trait_invariants(
             current_self_model["trait_invariants"]
             if current_self_model is not None and "trait_invariants" in current_self_model.keys()
             else None
         )
+        existing_traits = [item for item in all_items if item.get("type") != "tension"]
+        existing_tensions = [item for item in all_items if item.get("type") == "tension"]
         for text in self_model_update["trait_remove"]:
-            existing_traits = [item for item in existing_traits if item["tendency"] != text]
+            existing_traits = [item for item in existing_traits if item.get("tendency") != text]
         for trait in self_model_update["trait_add"]:
             tendency = str(trait.get("tendency") or "").strip()
             if not tendency:
                 continue
             for existing_trait in existing_traits:
-                if existing_trait["tendency"] == tendency:
+                if existing_trait.get("tendency") == tendency:
                     existing_trait["strength"] = deps.normalize_trait_strength(trait.get("strength"))
                     break
             else:
@@ -473,6 +515,21 @@ LIMIT 1
                         "strength": deps.normalize_trait_strength(trait.get("strength")),
                     }
                 )
+        for text in self_model_update.get("tension_remove", []):
+            existing_tensions = [item for item in existing_tensions if item.get("between") != text]
+        for tension in self_model_update.get("tension_add", []):
+            between = str(tension.get("between") or "").strip()
+            if not between:
+                continue
+            for existing_tension in existing_tensions:
+                if existing_tension.get("between") == between:
+                    existing_tension["root"] = tension.get("root", existing_tension.get("root", ""))
+                    existing_tension["implication"] = tension.get("implication", existing_tension.get("implication", ""))
+                    existing_tension["strength"] = deps.normalize_trait_strength(tension.get("strength"))
+                    break
+            else:
+                existing_tensions.append(tension)
+        existing_traits = existing_traits + existing_tensions
 
         narrative_self = (
             str(self_model_update.get("narrative_self") or "").strip()

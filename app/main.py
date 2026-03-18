@@ -62,6 +62,14 @@ _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 
 # Sleep-based daily split guardrails
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60  # 3 hours
+# Minimum chunk gate to avoid wasting extraction calls on tiny conversations
+_MIN_CHUNK_TOKENS: int = 2000  # default; overridden by config memorize.min_chunk_tokens
+
+
+def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
+    """Rough token estimate: word_count / 0.75.  Good enough for gating."""
+    words = sum(len(str(m.get("content") or m.get("mes") or "").split()) for m in messages)
+    return int(words / 0.75)
 
 
 def _has_category_content(c: dict[str, Any]) -> bool:
@@ -570,6 +578,11 @@ def _mask_config(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 _CONFIG: dict[str, Any] = _load_config()
+
+# Minimum segment size for memorization (in approximate tokens).
+_MIN_CHUNK_TOKENS = int(
+    (_CONFIG.get("memorize") or {}).get("min_chunk_tokens", _MIN_CHUNK_TOKENS)
+)
 
 # Also expose diagnostics under the MCP http_path (e.g. /mcp/diag) to avoid path confusion.
 _DIAG_PREFIX: str = str(_CONFIG.get("mcp", {}).get("http_path") or os.getenv("MCP_HTTP_PATH") or "/mcp").rstrip("/")
@@ -1234,21 +1247,40 @@ def _normalize_trait_invariants(value: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen: dict[str, int] = {}
     for item in parsed:
-        if isinstance(item, Mapping):
-            tendency = str(item.get("tendency") or "").strip()
-            strength = _normalize_trait_strength(item.get("strength"))
+        if isinstance(item, Mapping) and item.get("type") == "tension":
+            between = str(item.get("between") or "").strip()
+            if not between:
+                continue
+            normalized = {
+                "type": "tension",
+                "between": between,
+                "root": str(item.get("root") or "").strip(),
+                "implication": str(item.get("implication") or "").strip(),
+                "strength": _normalize_trait_strength(item.get("strength")),
+            }
+            key = f"tension:{between}"
+            idx = seen.get(key)
+            if idx is None:
+                seen[key] = len(out)
+                out.append(normalized)
+            else:
+                out[idx] = normalized
         else:
-            tendency = str(item or "").strip()
-            strength = _DEFAULT_TRAIT_INVARIANT_STRENGTH
-        if not tendency:
-            continue
-        normalized = {"tendency": tendency, "strength": strength}
-        idx = seen.get(tendency)
-        if idx is None:
-            seen[tendency] = len(out)
-            out.append(normalized)
-        else:
-            out[idx] = normalized
+            if isinstance(item, Mapping):
+                tendency = str(item.get("tendency") or "").strip()
+                strength = _normalize_trait_strength(item.get("strength"))
+            else:
+                tendency = str(item or "").strip()
+                strength = _DEFAULT_TRAIT_INVARIANT_STRENGTH
+            if not tendency:
+                continue
+            normalized = {"tendency": tendency, "strength": strength}
+            idx = seen.get(tendency)
+            if idx is None:
+                seen[tendency] = len(out)
+                out.append(normalized)
+            else:
+                out[idx] = normalized
     return out
 
 
@@ -2269,6 +2301,7 @@ async def memorize(payload: dict[str, Any], force: bool = False):
                     resource_url = str((days_dir / last_file).resolve())
 
             memorize_batches: list[tuple[str, list[dict[str, Any]], int]] = []
+            skipped_short = 0
             if force and isinstance(merged, list):
                 start_idx = max(0, processed_cursor + 1)
                 batch_conv = merged[start_idx:]
@@ -2290,11 +2323,17 @@ async def memorize(payload: dict[str, Any], force: bool = False):
                     batch_conv = merged[batch_start : end_idx + 1]
                     if not batch_conv:
                         continue
+                    if _MIN_CHUNK_TOKENS > 0 and _estimate_tokens(batch_conv) < _MIN_CHUNK_TOKENS:
+                        skipped_short += 1
+                        continue
                     batch_file = segment.get("file")
                     batch_url = resource_url
                     if isinstance(batch_file, str) and batch_file:
                         batch_url = str((days_dir / batch_file).resolve())
                     memorize_batches.append((batch_url, batch_conv, end_idx))
+
+            if skipped_short:
+                logging.info("Skipped %d chunk(s) below min_chunk_tokens=%d", skipped_short, _MIN_CHUNK_TOKENS)
 
             batch_results: list[dict[str, Any]] = []
             pending_diary_memory_ids: list[str] = []
@@ -2360,6 +2399,8 @@ async def memorize(payload: dict[str, Any], force: bool = False):
                     "messages_merged": len(merged) if isinstance(merged, list) else None,
                     "force": force,
                     "memorizeBatchCount": len(memorize_batches),
+                    "skippedShortSegments": skipped_short,
+                    "minChunkTokens": _MIN_CHUNK_TOKENS,
                     "memorizeDeferred": not force and not batch_results,
                     "days_written": days_written,
                     "sleepSplitMinLullSeconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
