@@ -21,12 +21,11 @@ ROOT = Path(__file__).resolve().parent
 
 
 def _config_path() -> Path:
-    p = os.getenv("MEMU_SERVER_CONFIG") or os.getenv("MCP_MEMU_CONFIG") or str(ROOT / "config.json")
-    return Path(p).expanduser().resolve()
+    return (ROOT / "config.json").resolve()
 
 
 def _config_dir() -> Path:
-    return _config_path().parent
+    return ROOT
 
 
 def _resolve_cfg_path(raw: str) -> Path:
@@ -85,8 +84,6 @@ def _maybe_add_memu_to_syspath(cfg: dict) -> None:
 
 
 def _should_force_venv(cfg: dict) -> bool:
-    if str(os.getenv("MEMU_SERVER_FORCE_VENV") or "").strip() == "1":
-        return True
     py = cfg.get("python") if isinstance(cfg.get("python"), dict) else {}
     return bool(py.get("force_venv"))
 
@@ -123,13 +120,8 @@ def _listen(cfg: dict) -> tuple[str, int]:
     except Exception:
         cfg_port_i = None
 
-    host = os.environ.get("MEMU_SERVER_HOST") or cfg_host or "127.0.0.1"
-
-    port_raw = os.environ.get("MEMU_SERVER_PORT")
-    if port_raw and port_raw.isdigit():
-        port = int(port_raw)
-    else:
-        port = cfg_port_i or 8099
+    host = cfg_host or "127.0.0.1"
+    port = cfg_port_i or 8099
 
     return host, port
 
