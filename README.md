@@ -38,10 +38,9 @@ Notes:
    git clone https://github.com/NevaMind-AI/memU-server.git
    cd memU-server
    ```
-3. Set your OpenAI API key in the environment:
-   ```bash
-   export OPENAI_API_KEY=your_api_key_here
-   ```
+3. Edit `config.json` and set:
+   - `llm.api_key`
+   - `storage.metadata_store.dsn`
 4. Install dependencies and start the FastAPI dev server:
    ```bash
    uv sync
@@ -67,17 +66,10 @@ docker compose logs -f
 | Temporal | 7233 | Workflow engine gRPC API |
 | Temporal UI | 8088 | Web management interface |
 
-**Default Configuration:**
-- PostgreSQL DSN: `postgresql://postgres:postgres@localhost:5432/memu`
-- Temporal Database: `temporal` (separate from app database)
-
-**Environment Variables (optional `.env` file):**
-```env
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=postgres
-POSTGRES_DB=memu
-TEMPORAL_DB=temporal
-```
+**Database configuration note:**
+- Runtime DB selection is config-only.
+- Set `storage.metadata_store.dsn` in `config.json` (for example PostgreSQL or SQLite DSN/path).
+- The API server no longer reads `DATABASE_URL` / `DATABASE_*` env branches.
 
 ### Run with Docker
 1. Export your OpenAI API key so Docker can read it:

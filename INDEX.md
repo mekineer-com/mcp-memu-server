@@ -84,12 +84,8 @@ categories: defaults[], allow_dynamic, thresholds
 retrieve:   method (rag|llm)
 ```
 
-## Key Env Var Overrides
+## Config-Only Runtime
 
-| Variable | Purpose |
-|----------|---------|
-| `MEMU_SERVER_CONFIG` | Path to config.json |
-| `MEMU_SERVER_HOST/PORT` | Listen address |
-| `OPENAI_API_KEY` | LLM API key |
-| `STORAGE_PATH` | SQLite base dir |
-| `DATABASE_URL` | PostgreSQL DSN (optional) |
+- Runtime configuration is read from `config.json`.
+- Database DSN source is `storage.metadata_store.dsn` in `config.json`.
+- `run.py` and app runtime no longer use `DATABASE_URL` / `DATABASE_*` env branches.

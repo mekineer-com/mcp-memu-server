@@ -16,5 +16,14 @@ If you want to stay on Python 3.12, install memu-py from source after lowering t
    - `pip install -e . --no-deps`
    Then install FastAPI etc manually (or `pip install -r` if you add one).
 
+## Runtime config rule (current buildfix behavior)
+
+After install, configure runtime in `mcp-memu-server/config.json`:
+- `llm.api_key`
+- `storage.metadata_store.dsn`
+
+Database runtime is config-only in this branch.
+`DATABASE_URL` / `DATABASE_*` environment variables are not used by server runtime or Alembic.
+
 ## Reality check
 Upstream officially targets Python 3.13+, so this is “best-effort”.

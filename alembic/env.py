@@ -1,10 +1,10 @@
 """Alembic migration environment configuration."""
 
-import os
+import json
+from pathlib import Path
 
 # pylint: disable=no-member
 from logging.config import fileConfig
-from urllib.parse import quote
 
 from sqlalchemy import pool
 
@@ -15,73 +15,67 @@ from alembic import context
 # (doesn't create database connections or read environment variables)
 from app.models.base import Base
 
+_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
+
+
+def _config_dir() -> Path:
+    return _CONFIG_PATH.parent
+
+
+def _read_config() -> dict:
+    if not _CONFIG_PATH.exists():
+        raise RuntimeError(f"Missing config file: {_CONFIG_PATH}")
+    raw = _CONFIG_PATH.read_text(encoding="utf-8")
+    cfg = json.loads(raw) if raw.strip() else {}
+    if not isinstance(cfg, dict):
+        raise RuntimeError(f"Invalid config file: {_CONFIG_PATH}")
+    return cfg
+
+
+def _metadata_store_dsn(cfg: dict) -> str:
+    storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
+    meta = storage.get("metadata_store") if isinstance(storage.get("metadata_store"), dict) else {}
+    dsn = str(meta.get("dsn") or "").strip()
+    if not dsn:
+        raise RuntimeError("Missing storage.metadata_store.dsn in config.json")
+    return dsn
+
+
+def _normalize_sync_dsn(raw_dsn: str) -> str:
+    dsn = str(raw_dsn or "").strip()
+    if not dsn:
+        raise RuntimeError("Database DSN is empty")
+
+    if dsn in {":memory:", "memory"}:
+        return "sqlite:///:memory:"
+
+    if dsn.startswith("postgres://"):
+        return "postgresql+psycopg://" + dsn[len("postgres://") :]
+    if dsn.startswith("postgresql://") and not dsn.startswith("postgresql+"):
+        return "postgresql+psycopg://" + dsn[len("postgresql://") :]
+    if dsn.startswith("postgresql+asyncpg://"):
+        return "postgresql+psycopg://" + dsn[len("postgresql+asyncpg://") :]
+    if dsn.startswith("postgresql+psycopg://"):
+        return dsn
+
+    if dsn.startswith("sqlite+aiosqlite://"):
+        return dsn.replace("sqlite+aiosqlite://", "sqlite://", 1)
+    if dsn.startswith("sqlite://"):
+        return dsn
+    if dsn.startswith("sqlite:"):
+        return dsn
+
+    p = Path(dsn).expanduser()
+    if not p.is_absolute():
+        p = (_config_dir() / p).resolve()
+    else:
+        p = p.resolve()
+    return f"sqlite:////{p.as_posix().lstrip('/')}"
+
 
 def get_sync_database_url() -> str:
-    """
-    Get synchronous database URL for Alembic migrations.
-
-    Alembic uses synchronous database connections, so we need to convert
-    the async URL (postgresql+asyncpg://) to sync format (postgresql+psycopg://).
-
-    Returns:
-        str: Synchronous database connection URL
-    """
-    # First try DATABASE_URL from environment
-    database_url = os.getenv("DATABASE_URL")
-    if database_url:
-        # Normalize common PostgreSQL DSNs to use the psycopg (sync) driver.
-        # Handle bare postgres:// and postgresql:// URLs that don't specify a driver.
-        if database_url.startswith("postgres://"):
-            # postgres://user:pass@host/db -> postgresql+psycopg://user:pass@host/db
-            database_url = "postgresql+psycopg://" + database_url[len("postgres://") :]
-        elif database_url.startswith("postgresql://") and not database_url.startswith("postgresql+"):
-            # postgresql://user:pass@host/db -> postgresql+psycopg://user:pass@host/db
-            database_url = "postgresql+psycopg://" + database_url[len("postgresql://") :]
-
-        # Convert async driver to sync driver if needed
-        # postgresql+asyncpg:// -> postgresql+psycopg://
-        if database_url.startswith("postgresql+asyncpg://"):
-            database_url = "postgresql+psycopg://" + database_url[len("postgresql+asyncpg://") :]
-
-        return database_url
-
-    # Construct from individual variables
-    db_host = os.getenv("DATABASE_HOST")
-    db_port = os.getenv("DATABASE_PORT", "5432")  # Default PostgreSQL port
-    db_user = os.getenv("DATABASE_USER")
-    db_pass = os.getenv("DATABASE_PASSWORD")
-    db_name = os.getenv("DATABASE_NAME")
-
-    # Validate required environment variables (consistent with app/database.py)
-    missing_vars = [
-        name
-        for name, value in [
-            ("DATABASE_HOST", db_host),
-            ("DATABASE_USER", db_user),
-            ("DATABASE_PASSWORD", db_pass),
-            ("DATABASE_NAME", db_name),
-        ]
-        if not value
-    ]
-
-    if missing_vars:
-        raise RuntimeError(
-            f"Database configuration is incomplete. Missing environment variables: {', '.join(missing_vars)}"
-        )
-
-    # At this point, we know these are not None
-    assert db_host is not None
-    assert db_user is not None
-    assert db_pass is not None
-    assert db_name is not None
-
-    # URL-encode username and password to handle special characters
-    # Use quote(..., safe="") instead of quote_plus() for URL userinfo section
-    db_user_encoded = quote(db_user, safe="")
-    db_pass_encoded = quote(db_pass, safe="")
-
-    # Use psycopg (sync) for Alembic migrations
-    return f"postgresql+psycopg://{db_user_encoded}:{db_pass_encoded}@{db_host}:{db_port}/{db_name}"
+    cfg = _read_config()
+    return _normalize_sync_dsn(_metadata_store_dsn(cfg))
 
 
 # this is the Alembic Config object, which provides
