@@ -586,7 +586,7 @@ _MIN_CHUNK_TOKENS = int(
 )
 
 # Also expose diagnostics under the MCP http_path (e.g. /mcp/diag) to avoid path confusion.
-_DIAG_PREFIX: str = str(_CONFIG.get("mcp", {}).get("http_path") or os.getenv("MCP_HTTP_PATH") or "/mcp").rstrip("/")
+_DIAG_PREFIX: str = str(_CONFIG.get("mcp", {}).get("http_path") or "/mcp").rstrip("/")
 if _DIAG_PREFIX == "":
     _DIAG_PREFIX = "/mcp"
 
@@ -616,11 +616,7 @@ def _categories_from_cfg(cfg: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _get_storage_dir(cfg: dict[str, Any]) -> Path:
-    env = os.getenv("STORAGE_PATH") or os.getenv("MEMU_STORAGE_DIR") or os.getenv("MEMU_STORAGE_PATH")
-    if env:
-        d = Path(env).expanduser().resolve()
-    else:
-        d = _resolve_cfg_path(str(cfg.get("storage", {}).get("resources_dir") or "./storage"))
+    d = _resolve_cfg_path(str(cfg.get("storage", {}).get("resources_dir") or "./storage"))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -663,12 +659,12 @@ def _database_config_from_cfg(cfg: dict[str, Any], scope: dict[str, Any] | None 
     storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
     meta = storage.get("metadata_store") if isinstance(storage.get("metadata_store"), dict) else {}
 
-    provider = os.getenv("METADATA_STORE_PROVIDER") or meta.get("provider") or "sqlite"
+    provider = meta.get("provider") or "sqlite"
     provider = str(provider).strip().lower() or "sqlite"
     if provider == "inmemory":
         provider = "sqlite"
 
-    dsn = os.getenv("DATABASE_URL") or os.getenv("MEMU_DB_DSN") or meta.get("dsn")
+    dsn = meta.get("dsn")
     if not dsn:
         if provider == "sqlite":
             dsn = _default_config()["storage"]["metadata_store"]["dsn"]
@@ -679,7 +675,7 @@ def _database_config_from_cfg(cfg: dict[str, Any], scope: dict[str, Any] | None 
         dsn = _normalize_sqlite_dsn(str(dsn))
         dsn = _sqlite_dsn_for_scope(cfg, dsn, scope or {})
 
-    ddl_mode = os.getenv("DDL_MODE") or meta.get("ddl_mode") or "create"
+    ddl_mode = meta.get("ddl_mode") or "create"
 
     return {
         "metadata_store": {
@@ -1191,13 +1187,6 @@ def _sqlite_current_path(
         return None
 
 
-def _sqlite_agent_db_paths() -> list[Path]:
-    sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, str(_STORAGE_STATUS.get("dsn") or ""))
-    if not sqlite_dir.exists():
-        return []
-    return sorted([p.resolve() for p in sqlite_dir.glob("*.db") if p.is_file()])
-
-
 def _sqlite_build_scope_where(
     cols: list[str],
     user_id: str | None,
@@ -1581,8 +1570,8 @@ async def health():
         "shutdown": _shutdown_snapshot(),
         "mcp": {
             "enabled": _has_mcp,
-            "http_path": str(_CONFIG.get("mcp", {}).get("http_path") or os.getenv("MCP_HTTP_PATH") or "/mcp"),
-            "sse_path": str(_CONFIG.get("mcp", {}).get("sse_path") or os.getenv("MCP_SSE_PATH") or "/sse"),
+            "http_path": str(_CONFIG.get("mcp", {}).get("http_path") or "/mcp"),
+            "sse_path": str(_CONFIG.get("mcp", {}).get("sse_path") or "/sse"),
         },
     }
 
@@ -2640,11 +2629,20 @@ WHERE soul_id = ? AND user_id = ? AND status = ?
 @app.patch("/intentions/{intention_id}", operation_id="patch_intention")
 async def patch_intention(
     intention_id: str,
+    soul_id: str,
     payload: dict[str, Any] | None = Body(default=None),
 ):
     iid = str(intention_id or "").strip()
     if not iid:
         raise HTTPException(status_code=400, detail="intention_id is required")
+    scoped_soul = str(soul_id or "").strip()
+    if not scoped_soul:
+        raise HTTPException(status_code=400, detail="soul_id required")
+    db_path = _sqlite_current_path(None, scoped_soul)
+    if db_path is None:
+        raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="intention not found")
 
     body = payload if isinstance(payload, dict) else {}
     updates: dict[str, Any] = {}
@@ -2662,47 +2660,44 @@ async def patch_intention(
         raw_resolution_note = body.get("resolution_note")
         updates["resolution_note"] = None if raw_resolution_note is None else str(raw_resolution_note)
 
-    for db_path in _sqlite_agent_db_paths():
-        con = _sqlite_connect(db_path)
-        try:
-            con.row_factory = sqlite3.Row
-            _sqlite_ensure_conversation_state_schema(con)
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
+        row = con.execute(
+            "SELECT * FROM memu_intentions WHERE id = ? LIMIT 1",
+            (iid,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="intention not found")
+
+        if updates:
+            set_parts: list[str] = []
+            params: list[Any] = []
+            if "status" in updates:
+                set_parts.append("status = ?")
+                params.append(updates["status"])
+            if "resolution_note" in updates:
+                set_parts.append("resolution_note = ?")
+                params.append(updates["resolution_note"])
+            set_parts.append("updated_at = ?")
+            params.append(datetime.now(UTC).isoformat())
+            params.append(iid)
+            con.execute(
+                f"UPDATE memu_intentions SET {', '.join(set_parts)} WHERE id = ?",
+                params,
+            )
+            con.commit()
             row = con.execute(
                 "SELECT * FROM memu_intentions WHERE id = ? LIMIT 1",
                 (iid,),
             ).fetchone()
-            if row is None:
-                continue
 
-            if updates:
-                set_parts: list[str] = []
-                params: list[Any] = []
-                if "status" in updates:
-                    set_parts.append("status = ?")
-                    params.append(updates["status"])
-                if "resolution_note" in updates:
-                    set_parts.append("resolution_note = ?")
-                    params.append(updates["resolution_note"])
-                set_parts.append("updated_at = ?")
-                params.append(datetime.now(UTC).isoformat())
-                params.append(iid)
-                con.execute(
-                    f"UPDATE memu_intentions SET {', '.join(set_parts)} WHERE id = ?",
-                    params,
-                )
-                con.commit()
-                row = con.execute(
-                    "SELECT * FROM memu_intentions WHERE id = ? LIMIT 1",
-                    (iid,),
-                ).fetchone()
-
-            if row is None:
-                raise HTTPException(status_code=404, detail="intention not found")
-            return _intention_row_to_dict(row)
-        finally:
-            con.close()
-
-    raise HTTPException(status_code=404, detail="intention not found")
+        if row is None:
+            raise HTTPException(status_code=404, detail="intention not found")
+        return _intention_row_to_dict(row)
+    finally:
+        con.close()
 
 
 @app.get("/conversation/{conversation_id}/state", operation_id="get_conversation_state")
@@ -2965,8 +2960,8 @@ try:
     from fastapi_mcp import FastApiMCP
 
     mcp = FastApiMCP(app)
-    http_path = str(_CONFIG.get("mcp", {}).get("http_path") or os.getenv("MCP_HTTP_PATH") or "/mcp")
-    sse_path = str(_CONFIG.get("mcp", {}).get("sse_path") or os.getenv("MCP_SSE_PATH") or "/sse")
+    http_path = str(_CONFIG.get("mcp", {}).get("http_path") or "/mcp")
+    sse_path = str(_CONFIG.get("mcp", {}).get("sse_path") or "/sse")
     mcp.mount(http_path=http_path, sse_path=sse_path)
     _has_mcp = True
 except Exception:
