@@ -91,7 +91,7 @@ def _has_category_content(c: dict[str, Any]) -> bool:
 # Process identity (for restart detection)
 # -------------------------
 
-_SERVER_INSTANCE_ID: str = os.getenv("MEMU_SERVER_INSTANCE_ID") or str(uuid.uuid4())
+_SERVER_INSTANCE_ID: str = str(uuid.uuid4())
 _SERVER_STARTED_AT_UNIX: float = time.time()
 
 # -------------------------
@@ -365,15 +365,11 @@ def _default_config() -> dict[str, Any]:
 
 
 def _config_path() -> Path:
-    p = os.getenv("MEMU_SERVER_CONFIG") or os.getenv("MCP_MEMU_CONFIG") or "./config.json"
-    return Path(p).expanduser().resolve()
+    return (Path(__file__).resolve().parents[1] / "config.json").resolve()
 
 
 def _config_dir() -> Path:
-    try:
-        return _config_path().parent
-    except Exception:
-        return Path.cwd()
+    return _config_path().parent
 
 
 def _resolve_cfg_path(raw: str) -> Path:
@@ -669,7 +665,7 @@ def _database_config_from_cfg(cfg: dict[str, Any], scope: dict[str, Any] | None 
         if provider == "sqlite":
             dsn = _default_config()["storage"]["metadata_store"]["dsn"]
         else:
-            raise RuntimeError("Postgres selected but no DSN set (storage.metadata_store.dsn or DATABASE_URL).")
+            raise RuntimeError("Postgres selected but no DSN set (storage.metadata_store.dsn).")
 
     if provider == "sqlite":
         dsn = _normalize_sqlite_dsn(str(dsn))
@@ -1297,10 +1293,6 @@ def _normalize_int_list(value: Any) -> list[int]:
         seen.add(candidate)
         out.append(candidate)
     return out
-
-
-def _merge_unique_int_lists(left: Any, right: Any) -> list[int]:
-    return _normalize_int_list([*_normalize_int_list(left), *_normalize_int_list(right)])
 
 
 def _merge_unique_text_lists(left: Any, right: Any) -> list[str]:
