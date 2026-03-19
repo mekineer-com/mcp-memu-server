@@ -696,12 +696,12 @@ def _blob_config_from_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
 
 def _default_llm_profiles_from_server_config() -> dict[str, Any]:
     llm = _CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}
-    api_key = str(os.getenv("OPENAI_API_KEY") or os.getenv("NANOGPT_API_KEY") or llm.get("api_key") or "")
-    base_url = str(os.getenv("OPENAI_BASE_URL") or llm.get("base_url") or "https://api.openai.com/v1")
-    chat_model = str(os.getenv("DEFAULT_CHAT_MODEL") or llm.get("chat_model") or "gpt-4o-mini")
-    embed_model = str(os.getenv("DEFAULT_EMBED_MODEL") or llm.get("embed_model") or "text-embedding-3-small")
-    provider = str(os.getenv("LLM_PROVIDER") or llm.get("provider") or "openai")
-    client_backend = str(os.getenv("LLM_CLIENT_BACKEND") or llm.get("client_backend") or "httpx")
+    api_key = str(llm.get("api_key") or "")
+    base_url = str(llm.get("base_url") or "https://api.openai.com/v1")
+    chat_model = str(llm.get("chat_model") or "gpt-4o-mini")
+    embed_model = str(llm.get("embed_model") or "text-embedding-3-small")
+    provider = str(llm.get("provider") or "openai")
+    client_backend = str(llm.get("client_backend") or "httpx")
     endpoint_overrides = llm.get("endpoint_overrides") or {}
     default_profile = {
         "provider": provider,
@@ -2525,23 +2525,11 @@ async def list_memory_categories(user_id: str = "", soul_id: str = "", include_e
 
     # Build a minimal payload using server config so this GET endpoint can list categories
     # without requiring the caller to send llm_profiles.
-    llm = _CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}
-    api_key = str(os.getenv("OPENAI_API_KEY") or os.getenv("NANOGPT_API_KEY") or llm.get("api_key") or "")
-    base_url = str(os.getenv("OPENAI_BASE_URL") or llm.get("base_url") or "https://api.openai.com/v1")
-    chat_model = str(os.getenv("DEFAULT_CHAT_MODEL") or llm.get("chat_model") or "gpt-4o-mini")
-    embed_model = str(os.getenv("DEFAULT_EMBED_MODEL") or llm.get("embed_model") or "text-embedding-3-small")
+    default_profile = _default_llm_profiles_from_server_config()["default"]
 
     payload = {
         "llm_profiles": {
-            "default": {
-                "provider": str(os.getenv("LLM_PROVIDER") or llm.get("provider") or "openai"),
-                "api_key": api_key,
-                "base_url": base_url,
-                "chat_model": chat_model,
-                "embed_model": embed_model,
-                "client_backend": str(os.getenv("LLM_CLIENT_BACKEND") or llm.get("client_backend") or "httpx"),
-                "endpoint_overrides": llm.get("endpoint_overrides") or {},
-            }
+            "default": default_profile,
         },
         "user": where,
     }
