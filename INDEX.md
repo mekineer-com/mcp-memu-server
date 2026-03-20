@@ -48,7 +48,7 @@ mcp-memu-server/
 | `app/services/diary.py` | `generate_diary()`, diary/self-model XML parsing, self-model load/format, intention creation. All diary+self-model+intention writes in one SQLite transaction. |
 | `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, `pending_diary_memory_ids` queue management |
 
-## How It Connects to memu-1.4.0
+## How It Connects to memu
 
 ```python
 from memu.app import MemoryService    # main facade
@@ -56,7 +56,7 @@ from memu.prompts.diary import ...     # diary prompts
 from memu.prompts.memory_type import ...  # type prompts
 ```
 
-- `config.json` → `memu.path` points to memu-1.4.0/src
+- `config.json` → `memu.path` points to memu/src
 - `run.py` inserts that path into `sys.path[0]`
 - `MemoryService` instances cached per unique (llm_profiles + db_config) pair in `_SERVICES` dict
 
@@ -79,7 +79,7 @@ from memu.prompts.memory_type import ...  # type prompts
 llm:        provider, api_key, base_url, chat_model, embed_model
 storage:    resources_dir, metadata_store (provider + dsn)
 listen:     host, port
-memu:       path (to memu-1.4.0/src)
+memu:       path (to memu/src)
 categories: defaults[], allow_dynamic, thresholds
 retrieve:   method (rag|llm)
 ```
