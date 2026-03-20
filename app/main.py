@@ -307,7 +307,7 @@ def _home_dir() -> Path:
 def _default_config() -> dict[str, Any]:
     home = _home_dir()
 
-    # If you keep memu source in a versioned folder (e.g. ~/apps/memu-1.4.0), default to that if present.
+    # If you keep memu source in a versioned folder (e.g. ~/apps/memu), default to that if present.
     memu_guess = None
     for cand in (home / "apps" / "memu-1.4.0", home / "apps" / "memu"):
         if cand.exists():
@@ -1523,6 +1523,25 @@ async def _run_retrieve(
             )
             out["state"] = state_out
             out["path"] = str(db_path)
+
+    if scoped_conversation_id:
+        state_out: dict[str, Any] | None = None
+        if scoped_soul:
+            db_path = _sqlite_current_path(scoped_user or None, scoped_soul)
+            if db_path is not None and db_path.exists():
+                con = _sqlite_connect(db_path)
+                try:
+                    con.row_factory = sqlite3.Row
+                    _sqlite_ensure_conversation_state_schema(con)
+                    state_out = _conversation_state_from_row(_conversation_state_row(con, scoped_conversation_id))
+                finally:
+                    con.close()
+        else:
+            _db_path, state_out = _find_conversation_state_across_dbs(scoped_conversation_id)
+        if state_out:
+            working_note = state_out.get("working_note")
+            if working_note is not None and str(working_note).strip():
+                out["working_note"] = working_note
 
     out["method"] = method
     out["conversation_id"] = scoped_conversation_id
