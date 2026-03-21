@@ -7,7 +7,7 @@
 
 ```
 mcp-memu-server/
-├── app/main.py              # Endpoints + remaining business logic (~2,900 lines)
+├── app/main.py              # Endpoints + remaining business logic (~3,000 lines)
 ├── app/db.py                # SQLite helpers, schema ensures, JSON marshalling
 ├── app/database.py          # SQLAlchemy async engine + session factory
 ├── app/models/base.py       # Declarative ORM base
@@ -82,6 +82,7 @@ listen:     host, port
 memu:       path (to memu/src)
 categories: defaults[], allow_dynamic, thresholds
 retrieve:   method (rag|llm)
+memorize:   min_chunk_tokens, supersede_similarity_threshold (default 0.75)
 ```
 
 ## Config-Only Runtime

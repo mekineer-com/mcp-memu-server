@@ -333,8 +333,8 @@ def _default_config() -> dict[str, Any]:
             "provider": "openai",
             "api_key": "",
             "base_url": "https://api.openai.com/v1",
-            "chat_model": "gpt-4o-mini",
-            "embed_model": "text-embedding-3-small",
+            "chat_model": "",
+            "embed_model": "",
             "client_backend": "httpx",
             "endpoint_overrides": {},
         },
@@ -690,7 +690,7 @@ def _default_llm_profiles_from_server_config() -> dict[str, Any]:
     llm = _CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}
     api_key = str(llm.get("api_key") or "")
     base_url = str(llm.get("base_url") or "https://api.openai.com/v1")
-    chat_model = str(llm.get("chat_model") or "gpt-4o-mini")
+    chat_model = str(llm.get("chat_model") or "")
     embed_model = str(llm.get("embed_model") or "text-embedding-3-small")
     provider = str(llm.get("provider") or "openai")
     client_backend = str(llm.get("client_backend") or "httpx")
