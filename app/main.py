@@ -29,7 +29,7 @@ try:
 except Exception:  # pragma: no cover
     pwd = None  # type: ignore
 
-from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from app.db import (
@@ -2120,8 +2120,104 @@ def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, con
     return None
 
 
+async def _run_memorize_batches(
+    *,
+    memorize_batches: list[tuple[str, list[dict[str, Any]], int]],
+    svc: Any,
+    user_scope: dict[str, Any],
+    conversation_id: str | None,
+    scoped_soul: str,
+    uid: str,
+    processed_cursor: int,
+    safe: dict[str, Any],
+    resource_url: str,
+    chat_file: str | None,
+    resource_url_in: str | None,
+    chat_key: str | None,
+    chat_key_source: str | None,
+    tz_name: str | None,
+    prev_len: int,
+    merged_len: int,
+    force: bool,
+    days_written: int,
+    sleep_stats: Any,
+) -> None:
+    async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, scoped_soul), asyncio.Lock()):
+        batch_results: list[dict[str, Any]] = []
+        pending_diary_memory_ids: list[str] = []
+        processed_end_cursor = processed_cursor
+        for batch_url, batch_conv, batch_end in memorize_batches:
+            batch_result = await svc.memorize(
+                resource_url=batch_url,
+                modality="conversation",
+                user=user_scope,
+                raw_text=json.dumps(batch_conv, ensure_ascii=False),
+                local_path=batch_url,
+            )
+            if isinstance(batch_result, dict):
+                batch_results.append(batch_result)
+                pending_diary_memory_ids.extend(
+                    _normalize_text_list(batch_result.get("pending_diary_memory_ids"))
+                )
+                processed_end_cursor = max(processed_end_cursor, batch_end)
+                if conversation_id:
+                    try:
+                        _write_conversation_state(
+                            conversation_id,
+                            soul_id=scoped_soul,
+                            user_id=uid,
+                            updates={"digest_cursor": processed_end_cursor},
+                        )
+                    except Exception:
+                        pass
+
+        if conversation_id and batch_results:
+            try:
+                _write_conversation_state(
+                    conversation_id,
+                    soul_id=scoped_soul,
+                    user_id=uid,
+                    updates={
+                        "digest_cursor": max(0, processed_end_cursor),
+                        "last_memorize_at": datetime.now(UTC).isoformat(),
+                        "append_pending_diary_memory_ids": pending_diary_memory_ids,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "state write failed after memorize; %d diary IDs orphaned: %s",
+                    len(pending_diary_memory_ids),
+                    pending_diary_memory_ids[:5],
+                )
+
+        _record_call(
+            "memorize",
+            safe,
+            ok=True,
+            info={
+                "resource_url": resource_url,
+                "conversationId": conversation_id,
+                "chatFileName": chat_file,
+                "resourceUrlIn": resource_url_in,
+                "chatKey": chat_key,
+                "chatKeySource": chat_key_source or "",
+                "timeZone": tz_name,
+                "messages_prev": prev_len,
+                "messages_in": merged_len,
+                "messages_merged": merged_len,
+                "force": force,
+                "memorizeBatchCount": len(memorize_batches),
+                "minChunkTokens": _MIN_CHUNK_TOKENS,
+                "memorizeDeferred": not force and not batch_results,
+                "days_written": days_written,
+                "sleepSplitMinLullSeconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
+                "sleepSplitStats": sleep_stats,
+            },
+        )
+
+
 @app.post("/memorize", operation_id="memorize")
-async def memorize(payload: dict[str, Any], force: bool = False):
+async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool = False):
     """Memorize a SillyTavern conversation.
 
     Preferred: send the full memU payload (llm_profiles/database_config/etc) so per-step routing works.
@@ -2315,7 +2411,6 @@ async def memorize(payload: dict[str, Any], force: bool = False):
                     resource_url = str((days_dir / last_file).resolve())
 
             memorize_batches: list[tuple[str, list[dict[str, Any]], int]] = []
-            skipped_short = 0
             if force and isinstance(merged, list):
                 start_idx = max(0, processed_cursor + 1)
                 batch_conv = merged[start_idx:]
@@ -2323,6 +2418,7 @@ async def memorize(payload: dict[str, Any], force: bool = False):
                     memorize_batches.append((str(full_path), batch_conv, len(merged) - 1))
             elif segments and isinstance(merged, list):
                 last_idx = len(merged) - 1
+                carry: tuple[int, int] | None = None  # (effective_start, end_idx) of a too-short segment
                 for segment in segments:
                     try:
                         start_idx = int(segment.get("start"))
@@ -2331,97 +2427,61 @@ async def memorize(payload: dict[str, Any], force: bool = False):
                         continue
                     if end_idx < start_idx or end_idx >= last_idx or end_idx <= processed_cursor:
                         continue
-                    batch_start = max(start_idx, processed_cursor + 1)
-                    if batch_start > end_idx:
+                    effective_start = carry[0] if carry is not None else max(start_idx, processed_cursor + 1)
+                    carry = None
+                    if effective_start > end_idx:
                         continue
-                    batch_conv = merged[batch_start : end_idx + 1]
+                    batch_conv = merged[effective_start : end_idx + 1]
                     if not batch_conv:
                         continue
                     if _MIN_CHUNK_TOKENS > 0 and _estimate_tokens(batch_conv) < _MIN_CHUNK_TOKENS:
-                        skipped_short += 1
+                        carry = (effective_start, end_idx)
                         continue
                     batch_file = segment.get("file")
                     batch_url = resource_url
                     if isinstance(batch_file, str) and batch_file:
                         batch_url = str((days_dir / batch_file).resolve())
                     memorize_batches.append((batch_url, batch_conv, end_idx))
+                if carry is not None:
+                    batch_conv = merged[carry[0] : carry[1] + 1]
+                    if batch_conv:
+                        memorize_batches.append((resource_url, batch_conv, carry[1]))
 
-            if skipped_short:
-                logging.info("Skipped %d chunk(s) below min_chunk_tokens=%d", skipped_short, _MIN_CHUNK_TOKENS)
-
-            batch_results: list[dict[str, Any]] = []
-            pending_diary_memory_ids: list[str] = []
-            processed_end_cursor = processed_cursor
-            for batch_url, batch_conv, batch_end in memorize_batches:
-                batch_result = await svc.memorize(
-                    resource_url=batch_url,
-                    modality="conversation",
-                    user=user_scope,
-                    raw_text=json.dumps(batch_conv, ensure_ascii=False),
-                    local_path=batch_url,
-                )
-                if isinstance(batch_result, dict):
-                    batch_results.append(batch_result)
-                    pending_diary_memory_ids.extend(
-                        _normalize_text_list(batch_result.get("pending_diary_memory_ids"))
-                    )
-                    processed_end_cursor = max(processed_end_cursor, batch_end)
-
-            if len(batch_results) == 1:
-                result: dict[str, Any] = batch_results[0]
-            elif batch_results:
-                result = _merge_memorize_batch_results(batch_results, pending_diary_memory_ids)
-            else:
-                result = _merge_memorize_batch_results([], pending_diary_memory_ids)
-
-            if conversation_id and batch_results:
-                try:
-                    _write_conversation_state(
-                        conversation_id,
-                        soul_id=scoped_soul,
-                        user_id=uid,
-                        updates={
-                            "digest_cursor": max(0, processed_end_cursor),
-                            "last_memorize_at": datetime.now(UTC).isoformat(),
-                            "append_pending_diary_memory_ids": pending_diary_memory_ids,
-                        },
-                    )
-                except Exception:
-                    # State write failed after memories were already persisted.
-                    # The diary-worthy IDs are still in the response so the
-                    # caller can retry or the next memorize will re-derive them.
-                    logger.exception(
-                        "state write failed after memorize; %d diary IDs orphaned: %s",
-                        len(pending_diary_memory_ids),
-                        pending_diary_memory_ids[:5],
-                    )
-
-            _record_call(
-                "memorize",
-                safe,
-                ok=True,
-                info={
+            expected_cursor = memorize_batches[-1][2] if memorize_batches else processed_cursor
+            background_tasks.add_task(
+                _run_memorize_batches,
+                memorize_batches=memorize_batches,
+                svc=svc,
+                user_scope=user_scope,
+                conversation_id=conversation_id,
+                scoped_soul=scoped_soul,
+                uid=uid,
+                processed_cursor=processed_cursor,
+                safe=safe,
+                resource_url=resource_url,
+                chat_file=chat_file,
+                resource_url_in=resource_url_in,
+                chat_key=chat_key,
+                chat_key_source=chat_key_source,
+                tz_name=tz_name,
+                prev_len=prev_len,
+                merged_len=len(merged) if isinstance(merged, list) else 0,
+                force=force,
+                days_written=days_written,
+                sleep_stats=sleep_stats if "sleep_stats" in locals() else None,
+            )
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "ok": True,
+                    "status": "accepted",
+                    "conversation_id": conversation_id,
+                    "expected_cursor": expected_cursor,
+                    "batch_count": len(memorize_batches),
                     "resource_url": resource_url,
-                    "conversationId": conversation_id,
-                    "chatFileName": chat_file,
-                    "resourceUrlIn": resource_url_in,
-                    "chatKey": chat_key,
-                    "chatKeySource": chat_key_source,
-                    "timeZone": tz_name,
-                    "messages_prev": prev_len,
-                    "messages_in": len(conv_norm) if isinstance(conv_norm, list) else None,
-                    "messages_merged": len(merged) if isinstance(merged, list) else None,
-                    "force": force,
-                    "memorizeBatchCount": len(memorize_batches),
-                    "skippedShortSegments": skipped_short,
-                    "minChunkTokens": _MIN_CHUNK_TOKENS,
-                    "memorizeDeferred": not force and not batch_results,
-                    "days_written": days_written,
-                    "sleepSplitMinLullSeconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
-                    "sleepSplitStats": sleep_stats if "sleep_stats" in locals() else None,
                 },
             )
-            return {"ok": True, "result": result, "resource_url": resource_url}
     except HTTPException:
         raise
     except Exception as exc:

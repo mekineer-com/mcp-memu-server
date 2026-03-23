@@ -372,7 +372,7 @@ async def generate_diary(
         placeholders = ",".join("?" for _ in pending_diary_memory_ids)
         memory_rows_raw = con.execute(
             f"""
-SELECT id, memory_type, summary, source_role, confidence, source_message_ids, reflection_salience
+SELECT id, memory_type, summary, source_role, confidence, source_message_ids, episode_id, reflection_salience
 FROM memu_memory_items
 WHERE id IN ({placeholders})
 ORDER BY updated_at DESC, created_at DESC, id DESC
@@ -395,15 +395,19 @@ ORDER BY name ASC
         ).fetchall()
 
         full_messages = deps.read_list((chat_dir / "full.json").resolve())
-        source_message_ids: list[int] = []
+        message_indices: list[int] = []
         for row in memory_rows:
-            source_message_ids.extend(
-                deps.normalize_int_list(row["source_message_ids"] if "source_message_ids" in row.keys() else None)
-            )
-        excerpt = _format_messages_for_diary(
-            full_messages,
-            _expand_message_indices(deps.normalize_int_list(source_message_ids), len(full_messages)),
-        )
+            ep = row["episode_id"] if "episode_id" in row.keys() else None
+            if ep and ":" in ep:
+                range_part = ep.split(":", 1)[1]
+                if "-" in range_part:
+                    try:
+                        start, end = range_part.split("-", 1)
+                        message_indices.extend(range(int(start), int(end) + 1))
+                    except (ValueError, TypeError):
+                        pass
+        message_indices = sorted(set(message_indices))
+        excerpt = _format_messages_for_diary(full_messages, message_indices)
         if not excerpt.strip():
             raise HTTPException(status_code=400, detail="diary source messages not found in resource")
 
@@ -440,7 +444,7 @@ LIMIT 1
                 conversation=svc._escape_prompt_value(excerpt),
             )
 
-        diary_raw = await svc._get_llm_client().chat(diary_prompt, temperature=0.2)
+        diary_raw = await svc._get_llm_client().chat(diary_prompt, temperature=0.2, max_tokens=800)
         diary_data = _parse_diary_xml(diary_raw)
         prose = str(diary_data.get("prose") or "").strip()
         companion_memory = str(diary_data.get("companion_memory") or "").strip()
@@ -490,7 +494,7 @@ LIMIT 1
                 diary_entry=svc._escape_prompt_value(prose),
             )
 
-        self_model_raw = await svc._get_llm_client().chat(self_model_prompt, temperature=0.2)
+        self_model_raw = await svc._get_llm_client().chat(self_model_prompt, temperature=0.2, max_tokens=1200)
         self_model_update = _parse_self_model_update_xml(self_model_raw, deps.normalize_trait_strength)
 
         all_items = deps.normalize_trait_invariants(
