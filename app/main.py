@@ -2190,6 +2190,40 @@ async def _run_memorize_batches(
                     pending_diary_memory_ids[:5],
                 )
 
+        # Auto-trigger diary generation if memorize produced diary-worthy memories
+        if conversation_id and pending_diary_memory_ids:
+            try:
+                diary_result = await generate_diary_service(
+                    deps=DiaryDeps(
+                        sqlite_current_path=_sqlite_current_path,
+                        sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
+                        sqlite_connect=_sqlite_connect,
+                        sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
+                        conversation_state_row=_conversation_state_row,
+                        conversation_state_from_row=_conversation_state_from_row,
+                        get_storage_dir=_get_storage_dir,
+                        config=_CONFIG,
+                        find_chat_dir_for_conversation=_find_chat_dir_for_conversation,
+                        read_list=_read_list,
+                        normalize_text_list=_normalize_text_list,
+                        normalize_int_list=_normalize_int_list,
+                        normalize_trait_invariants=_normalize_trait_invariants,
+                        normalize_trait_strength=_normalize_trait_strength,
+                        json_to_db=_json_to_db,
+                    ),
+                    svc=svc,
+                    conversation_id=conversation_id,
+                    soul_id=scoped_soul,
+                    user_id=uid,
+                )
+                logger.info(
+                    "diary auto-generated after memorize: memory_id=%s, intentions=%d",
+                    diary_result.get("memory_id"),
+                    len(diary_result.get("intention_ids") or []),
+                )
+            except Exception:
+                logger.exception("diary auto-generation failed after memorize (non-fatal)")
+
         _record_call(
             "memorize",
             safe,
