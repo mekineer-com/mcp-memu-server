@@ -3287,9 +3287,13 @@ async def conversation_turn(
         raise HTTPException(status_code=400, detail="message is required")
 
     history = _normalize_turn_history(safe.get("history"))
+    dry_run = bool(safe.get("dry_run", safe.get("dryRun", False)))
     run_apimw = bool(safe.get("run_apimw", True))
     wait_apimw = bool(safe.get("wait_apimw", False))
     include_debug = bool(safe.get("debug", False))
+    if dry_run:
+        run_apimw = False
+        wait_apimw = False
 
     safe["user"] = {"user_id": uid, "soul_id": soul, "conversation_id": cid}
     safe["conversation_id"] = cid
@@ -3353,6 +3357,8 @@ async def conversation_turn(
     memory_cache_before = _normalize_memory_cache_impl(state_row.get("memory_cache"))
     intention_stack_before = _normalize_intention_stack_impl(state_row.get("active_intentions"))
 
+    turn_system_prompt = _make_turn_system_prompt(soul, soul_card=soul_card)
+
     apimw_task: asyncio.Task | None = None
     if run_apimw:
         apimw_payload = {**safe, "method": "llm", "query": message}
@@ -3386,7 +3392,7 @@ async def conversation_turn(
     svc = _get_service_from_payload(safe, retrieve_method_override="rag")
     llm_raw = await svc._get_llm_client().chat(
         turn_prompt,
-        system_prompt=_make_turn_system_prompt(soul, soul_card=soul_card),
+        system_prompt=turn_system_prompt,
         temperature=0.0,
         max_tokens=1000,
         response_format={"type": "json_object"},
@@ -3417,26 +3423,31 @@ async def conversation_turn(
         [item_id for item_id in annulment_ids if item_id],
     )
 
-    state_out, state_path = _write_conversation_state(
-        cid,
-        soul_id=soul,
-        user_id=uid,
-        updates={
-            "active_intentions": intention_stack_after,
-            "memory_cache": memory_cache_after,
-        },
-    )
+    state_out = state_row
+    state_path = db_path
+    annulment_memory_ids: list[str] = []
 
-    annulment_memory_ids = await _persist_annulment_memories(
-        svc=svc,
-        user_scope={"user_id": uid, "soul_id": soul},
-        conversation_id=cid,
-        intention_stack_before=intention_stack_before,
-        annulments=[row for row in annulments if isinstance(row, dict)],
-    )
+    if not dry_run:
+        state_out, state_path = _write_conversation_state(
+            cid,
+            soul_id=soul,
+            user_id=uid,
+            updates={
+                "active_intentions": intention_stack_after,
+                "memory_cache": memory_cache_after,
+            },
+        )
 
-    apimw_status = "not_started"
-    if apimw_task is not None:
+        annulment_memory_ids = await _persist_annulment_memories(
+            svc=svc,
+            user_scope={"user_id": uid, "soul_id": soul},
+            conversation_id=cid,
+            intention_stack_before=intention_stack_before,
+            annulments=[row for row in annulments if isinstance(row, dict)],
+        )
+
+    apimw_status = "skipped_dry_run" if dry_run else "not_started"
+    if (not dry_run) and apimw_task is not None:
         apimw_status = "started"
         if wait_apimw:
             try:
@@ -3453,9 +3464,12 @@ async def conversation_turn(
     }
     if include_debug:
         out["state"] = state_out
-        out["path"] = str(state_path)
+        out["path"] = str(state_path) if state_path is not None else None
         out["annulment_memory_ids"] = annulment_memory_ids
         out["turn_contract"] = turn_data
+        out["turn_prompt"] = turn_prompt
+        out["turn_system_prompt"] = turn_system_prompt
+        out["dry_run"] = dry_run
     return out
 
 
