@@ -1512,6 +1512,72 @@ def _normalize_turn_history(value: Any) -> list[dict[str, str]]:
     return out
 
 
+def _load_turn_state_and_soul_card(
+    conversation_id: str,
+    *,
+    user_id: str,
+    soul_id: str,
+) -> tuple[dict[str, Any], str | None, Path | None]:
+    state_row: dict[str, Any] | None = None
+    soul_card: str | None = None
+    db_path = _sqlite_current_path(user_id, soul_id)
+    if db_path is not None and db_path.exists():
+        con = _sqlite_connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            _sqlite_ensure_conversation_state_schema(con)
+            state_row = _conversation_state_from_row(_conversation_state_row(con, conversation_id))
+            sm_id = (state_row or {}).get("self_model_id")
+            sm_row = None
+            if sm_id:
+                sm_row = con.execute(
+                    "SELECT narrative_self FROM memu_self_model WHERE id = ? LIMIT 1",
+                    (str(sm_id),),
+                ).fetchone()
+            if sm_row is None:
+                sm_row = con.execute(
+                    "SELECT narrative_self FROM memu_self_model WHERE soul_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT 1",
+                    (soul_id, user_id),
+                ).fetchone()
+            if sm_row is not None:
+                soul_card = str(sm_row["narrative_self"] or "").strip() or None
+        finally:
+            con.close()
+    if state_row is None:
+        state_row = _conversation_state_empty(
+            conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+            normalize_intention_stack=_normalize_intention_stack_impl,
+        )
+    return state_row, soul_card, db_path
+
+
+def _safe_fts_query(text: str) -> str:
+    return " ".join(re.sub(r"[^0-9A-Za-z\\s]", " ", str(text or "")).split())[:8000]
+
+
+async def _run_rag_with_fallback(
+    rag_payload: dict[str, Any],
+    *,
+    conversation_id: str,
+) -> dict[str, Any]:
+    try:
+        return await _run_retrieve(rag_payload, conversation_id=conversation_id, persist_llm_state=False)
+    except Exception as exc:
+        if "fts5: syntax error" not in str(exc).lower():
+            raise
+        fallback_query = _safe_fts_query(str(rag_payload.get("query") or ""))
+        if not fallback_query:
+            raise
+        fallback_payload = {**rag_payload, "query": fallback_query}
+        return await _run_retrieve(
+            fallback_payload,
+            conversation_id=conversation_id,
+            persist_llm_state=False,
+        )
+
+
 async def _persist_annulment_memories(
     *,
     svc: MemoryService,
@@ -1675,46 +1741,34 @@ async def _run_retrieve(
     where = _extract_retrieve_where(safe)
     memu_queries = _extract_retrieve_queries(safe)
 
-    out: dict[str, Any]
     scoped_soul = str((where or {}).get("soul_id") or "").strip()
     scoped_user = str((where or {}).get("user_id") or "user").strip() or "user"
-    if scoped_soul:
-        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(scoped_user, scoped_soul), asyncio.Lock()):
-            result = await svc.retrieve(memu_queries, where=where)
-            if method == "llm" and isinstance(result, dict):
-                result = {**result, "categories": []}
-                result = _dedupe_llm_result_against_rag(result, llm_dedupe_baseline)
-            out = {"ok": True, "result": result}
-            if persist_llm_state and method == "llm" and scoped_conversation_id:
-                state_out, db_path = _write_conversation_state(
-                    scoped_conversation_id,
-                    soul_id=scoped_soul or None,
-                    user_id=scoped_user or None,
-                    updates={
-                        "prior_context": json.dumps(result, ensure_ascii=False, default=str),
-                        "last_retrieval_ids": _extract_result_item_ids(result),
-                    },
-                )
-                out["state"] = state_out
-                out["path"] = str(db_path)
-    else:
+    async def _retrieve_and_maybe_persist(state_soul_id: str | None) -> dict[str, Any]:
         result = await svc.retrieve(memu_queries, where=where)
         if method == "llm" and isinstance(result, dict):
             result = {**result, "categories": []}
             result = _dedupe_llm_result_against_rag(result, llm_dedupe_baseline)
-        out = {"ok": True, "result": result}
+        out_local: dict[str, Any] = {"ok": True, "result": result}
         if persist_llm_state and method == "llm" and scoped_conversation_id:
             state_out, db_path = _write_conversation_state(
                 scoped_conversation_id,
-                soul_id=None,
+                soul_id=state_soul_id,
                 user_id=scoped_user or None,
                 updates={
                     "prior_context": json.dumps(result, ensure_ascii=False, default=str),
                     "last_retrieval_ids": _extract_result_item_ids(result),
                 },
             )
-            out["state"] = state_out
-            out["path"] = str(db_path)
+            out_local["state"] = state_out
+            out_local["path"] = str(db_path)
+        return out_local
+
+    out: dict[str, Any]
+    if scoped_soul:
+        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(scoped_user, scoped_soul), asyncio.Lock()):
+            out = await _retrieve_and_maybe_persist(scoped_soul or None)
+    else:
+        out = await _retrieve_and_maybe_persist(None)
 
     if scoped_conversation_id:
         state_out: dict[str, Any] | None = None
@@ -3277,39 +3331,11 @@ async def conversation_turn(
     safe["conversation_id"] = cid
     safe["conversationId"] = cid
 
-    state_row: dict[str, Any] | None = None
-    soul_card: str | None = None
-    db_path = _sqlite_current_path(uid, soul)
-    if db_path is not None and db_path.exists():
-        con = _sqlite_connect(db_path)
-        try:
-            con.row_factory = sqlite3.Row
-            _sqlite_ensure_conversation_state_schema(con)
-            state_row = _conversation_state_from_row(_conversation_state_row(con, cid))
-            # Load narrative_self from self-model as soul card
-            sm_id = (state_row or {}).get("self_model_id")
-            sm_row = None
-            if sm_id:
-                sm_row = con.execute(
-                    "SELECT narrative_self FROM memu_self_model WHERE id = ? LIMIT 1",
-                    (str(sm_id),),
-                ).fetchone()
-            if sm_row is None:
-                sm_row = con.execute(
-                    "SELECT narrative_self FROM memu_self_model WHERE soul_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT 1",
-                    (soul, uid),
-                ).fetchone()
-            if sm_row is not None:
-                soul_card = str(sm_row["narrative_self"] or "").strip() or None
-        finally:
-            con.close()
-    if state_row is None:
-        state_row = _conversation_state_empty(
-            cid,
-            soul_id=soul,
-            user_id=uid,
-            normalize_intention_stack=_normalize_intention_stack_impl,
-        )
+    state_row, soul_card, db_path = _load_turn_state_and_soul_card(
+        cid,
+        user_id=uid,
+        soul_id=soul,
+    )
 
     prior_context = str(state_row.get("prior_context") or "").strip() or None
     memory_cache_before = _normalize_memory_cache_impl(state_row.get("memory_cache"))
@@ -3318,22 +3344,7 @@ async def conversation_turn(
     turn_system_prompt = _make_turn_system_prompt(soul, soul_card=soul_card)
 
     rag_payload = {**safe, "method": "rag", "query": message}
-    try:
-        rag_out = await _run_retrieve(rag_payload, conversation_id=cid, persist_llm_state=False)
-    except Exception as exc:
-        # Long OCR-like text can produce invalid FTS query syntax in SQLite MATCH.
-        # Retry once with a conservative alnum/space query for retrieval context.
-        if "fts5: syntax error" not in str(exc).lower():
-            raise
-        fallback_query = " ".join(re.sub(r"[^0-9A-Za-z\\s]", " ", message).split())
-        if not fallback_query:
-            raise
-        rag_payload["query"] = fallback_query[:8000]
-        rag_out = await _run_retrieve(
-            rag_payload,
-            conversation_id=cid,
-            persist_llm_state=False,
-        )
+    rag_out = await _run_rag_with_fallback(rag_payload, conversation_id=cid)
     rag_result = rag_out.get("result") if isinstance(rag_out, dict) else None
 
     turn_prompt = _build_turn_prompt(

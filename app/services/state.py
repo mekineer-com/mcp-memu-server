@@ -194,57 +194,19 @@ def write_conversation_state(
                 normalize_intention_stack=deps.normalize_intention_stack,
                 normalize_memory_cache=deps.normalize_memory_cache,
             )
-        merged = dict(
-            existing_state or conversation_state_empty(
-                cid, scoped_soul, scoped_user, normalize_intention_stack=deps.normalize_intention_stack
+
+        if existing_state is None:
+            if scoped_soul is None:
+                raise HTTPException(status_code=400, detail='soul_id is required when creating new conversation state')
+            seed = conversation_state_empty(
+                cid,
+                scoped_soul,
+                scoped_user,
+                normalize_intention_stack=deps.normalize_intention_stack,
             )
-        )
-        merged['conversation_id'] = cid
-        if scoped_soul is not None:
-            merged['soul_id'] = scoped_soul
-        if scoped_user is not None:
-            merged['user_id'] = scoped_user
-
-        raw_updates = dict(updates or {})
-        append_pending_diary_memory_ids = raw_updates.pop('append_pending_diary_memory_ids', None)
-
-        for key, value in raw_updates.items():
-            if key in {
-                'digest_cursor',
-                'prior_context',
-                'active_intentions',
-                'memory_cache',
-                'pending_diary_memory_ids',
-                'self_model_id',
-                'last_retrieval_ids',
-                'last_memorize_at',
-            }:
-                merged[key] = value
-
-        if append_pending_diary_memory_ids is not None:
-            merged['pending_diary_memory_ids'] = deps.merge_unique_text_lists(
-                merged.get('pending_diary_memory_ids'),
-                append_pending_diary_memory_ids,
-            )
-
-        try:
-            merged['digest_cursor'] = max(0, int(merged.get('digest_cursor') or 0))
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail='digest_cursor must be an integer') from exc
-
-        raw_last = merged.get('last_memorize_at')
-        merged['last_memorize_at'] = None if raw_last is None else (str(raw_last).strip() or None)
-        raw_prior_context = merged.get('prior_context')
-        merged['prior_context'] = None if raw_prior_context is None else str(raw_prior_context)
-        merged['active_intentions'] = deps.normalize_intention_stack(merged.get('active_intentions'))
-        merged['memory_cache'] = deps.normalize_memory_cache(merged.get('memory_cache'))
-        merged['pending_diary_memory_ids'] = deps.normalize_text_list(merged.get('pending_diary_memory_ids'))
-        raw_self_model_id = merged.get('self_model_id')
-        merged['self_model_id'] = None if raw_self_model_id is None else (str(raw_self_model_id).strip() or None)
-        merged['updated_at'] = datetime.now(UTC).isoformat()
-
-        con.execute(
-            """
+            seed['updated_at'] = datetime.now(UTC).isoformat()
+            con.execute(
+                """
 INSERT INTO memu_conversation_state (
     conversation_id,
     soul_id,
@@ -259,35 +221,94 @@ INSERT INTO memu_conversation_state (
     last_memorize_at,
     updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(conversation_id) DO UPDATE SET
-    soul_id = excluded.soul_id,
-    user_id = excluded.user_id,
-    digest_cursor = excluded.digest_cursor,
-    prior_context = excluded.prior_context,
-    active_intentions = excluded.active_intentions,
-    memory_cache = excluded.memory_cache,
-    pending_diary_memory_ids = excluded.pending_diary_memory_ids,
-    self_model_id = excluded.self_model_id,
-    last_retrieval_ids = excluded.last_retrieval_ids,
-    last_memorize_at = excluded.last_memorize_at,
-    updated_at = excluded.updated_at
 """,
-            (
-                merged['conversation_id'],
-                merged.get('soul_id'),
-                merged.get('user_id'),
-                int(merged.get('digest_cursor') or 0),
-                merged.get('prior_context'),
-                json_to_db(merged.get('active_intentions')),
-                json_to_db(merged.get('memory_cache') or []),
-                json_to_db(merged.get('pending_diary_memory_ids') or []),
-                merged.get('self_model_id'),
-                json_to_db(merged.get('last_retrieval_ids')),
-                merged.get('last_memorize_at'),
-                merged.get('updated_at'),
-            ),
-        )
-        con.commit()
+                (
+                    seed['conversation_id'],
+                    seed.get('soul_id'),
+                    seed.get('user_id'),
+                    int(seed.get('digest_cursor') or 0),
+                    seed.get('prior_context'),
+                    json_to_db(seed.get('active_intentions')),
+                    json_to_db(seed.get('memory_cache') or []),
+                    json_to_db(seed.get('pending_diary_memory_ids') or []),
+                    seed.get('self_model_id'),
+                    json_to_db(seed.get('last_retrieval_ids')),
+                    seed.get('last_memorize_at'),
+                    seed.get('updated_at'),
+                ),
+            )
+            con.commit()
+            existing_state = seed
+
+        raw_updates = dict(updates or {})
+        append_pending_diary_memory_ids = raw_updates.pop('append_pending_diary_memory_ids', None)
+        field_updates: dict[str, Any] = {}
+
+        for key, value in raw_updates.items():
+            if key in {
+                'digest_cursor',
+                'prior_context',
+                'active_intentions',
+                'memory_cache',
+                'pending_diary_memory_ids',
+                'self_model_id',
+                'last_retrieval_ids',
+                'last_memorize_at',
+            }:
+                field_updates[key] = value
+
+        if append_pending_diary_memory_ids is not None:
+            base_pending = field_updates.get('pending_diary_memory_ids', existing_state.get('pending_diary_memory_ids'))
+            field_updates['pending_diary_memory_ids'] = deps.merge_unique_text_lists(
+                base_pending,
+                append_pending_diary_memory_ids,
+            )
+
+        if 'digest_cursor' in field_updates:
+            try:
+                field_updates['digest_cursor'] = max(0, int(field_updates.get('digest_cursor') or 0))
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail='digest_cursor must be an integer') from exc
+        if 'last_memorize_at' in field_updates:
+            raw_last = field_updates.get('last_memorize_at')
+            field_updates['last_memorize_at'] = None if raw_last is None else (str(raw_last).strip() or None)
+        if 'prior_context' in field_updates:
+            raw_prior_context = field_updates.get('prior_context')
+            field_updates['prior_context'] = None if raw_prior_context is None else str(raw_prior_context)
+        if 'active_intentions' in field_updates:
+            field_updates['active_intentions'] = deps.normalize_intention_stack(field_updates.get('active_intentions'))
+        if 'memory_cache' in field_updates:
+            field_updates['memory_cache'] = deps.normalize_memory_cache(field_updates.get('memory_cache'))
+        if 'pending_diary_memory_ids' in field_updates:
+            field_updates['pending_diary_memory_ids'] = deps.normalize_text_list(field_updates.get('pending_diary_memory_ids'))
+        if 'self_model_id' in field_updates:
+            raw_self_model_id = field_updates.get('self_model_id')
+            field_updates['self_model_id'] = None if raw_self_model_id is None else (str(raw_self_model_id).strip() or None)
+
+        if scoped_soul is not None:
+            field_updates['soul_id'] = scoped_soul
+        if scoped_user is not None:
+            field_updates['user_id'] = scoped_user
+
+        if field_updates:
+            field_updates['updated_at'] = datetime.now(UTC).isoformat()
+            assignments: list[str] = []
+            params: list[Any] = []
+            for key, value in field_updates.items():
+                assignments.append(f"{key} = ?")
+                if key in {'active_intentions', 'memory_cache', 'pending_diary_memory_ids', 'last_retrieval_ids'}:
+                    params.append(json_to_db(value))
+                elif key == 'digest_cursor':
+                    params.append(int(value or 0))
+                else:
+                    params.append(value)
+            params.append(cid)
+            con.execute(
+                f"UPDATE memu_conversation_state SET {', '.join(assignments)} WHERE conversation_id = ?",
+                tuple(params),
+            )
+            con.commit()
+
         state_out = conversation_state_from_row(
             conversation_state_row(con, cid),
             normalize_text_list=deps.normalize_text_list,
