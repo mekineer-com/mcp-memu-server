@@ -421,10 +421,10 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
 
 def format_intention_stack_for_prompt(stack_value: Any, *, max_items: int = 12) -> str:
     stack = normalize_intention_stack(stack_value)
+    current_turn = _int(stack.get("turn_index"), 0)
+    relax_priority = _float(stack.get("relax_priority"), DEFAULT_RELAX_PRIORITY)
     lines: list[str] = []
-    lines.append(
-        f"turn={_int(stack.get('turn_index'), 0)}; decay={_float(stack.get('decay_per_turn'), DEFAULT_DECAY_PER_TURN):.2f}; relax={_float(stack.get('relax_priority'), DEFAULT_RELAX_PRIORITY):.1f}"
-    )
+    lines.append(f"turn={current_turn}; relax threshold={relax_priority:.1f}")
     for item in (stack.get("items") or [])[: max(1, int(max_items))]:
         if not isinstance(item, dict):
             continue
@@ -435,11 +435,11 @@ def format_intention_stack_for_prompt(stack_value: Any, *, max_items: int = 12) 
         active = bool(item.get("active") is True)
         tags = []
         if item_id == RELAX_INTENTION_ID:
-            tags.append("relax")
-        if ephemeral:
+            tags.append("threshold")
+        elif ephemeral:
             tags.append("ephemeral")
-            tags.append(f"expires@{_int(item.get('expires_at_turn'), 0)}")
-        tags.append("active" if active else "inactive")
+        else:
+            tags.append("active" if active else "inactive")
         tag_suffix = f" [{', '.join(tags)}]" if tags else ""
         lines.append(f"- {item_id}: {text} (p={priority:.1f}){tag_suffix}")
     return "\n".join(lines)
