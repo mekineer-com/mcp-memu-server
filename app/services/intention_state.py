@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -8,6 +9,7 @@ RELAX_INTENTION_TEXT = "Relax"
 DEFAULT_RELAX_PRIORITY = 5.0
 DEFAULT_DECAY_PER_TURN = 0.1
 DEFAULT_INTENTION_PRIORITY = 10.0
+DEFAULT_EPHEMERAL_TTL_TURNS = 1
 MAX_MEMORY_CACHE_ENTRIES = 7
 MAX_MEMORY_CACHE_ENTRY_CHARS = 300
 
@@ -25,6 +27,13 @@ def _float(value: Any, default: float) -> float:
         return float(value)
     except Exception:
         return float(default)
+
+
+def _int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
 
 
 def _build_relax_item(relax_priority: float) -> dict[str, Any]:
@@ -76,7 +85,13 @@ def append_memory_cache_entry(
     return items[-max_entries:]
 
 
-def _normalize_stack_item(raw: Any, *, default_priority: float, now_iso: str) -> dict[str, Any] | None:
+def _normalize_stack_item(
+    raw: Any,
+    *,
+    default_priority: float,
+    now_iso: str,
+    current_turn: int,
+) -> dict[str, Any] | None:
     if isinstance(raw, str):
         text = _text(raw)
         if not text:
@@ -113,15 +128,21 @@ def _normalize_stack_item(raw: Any, *, default_priority: float, now_iso: str) ->
         "status": _text(raw.get("status") or "active") or "active",
     }
 
+    if is_relax:
+        return item
+
     source_intention_id = _text(raw.get("source_intention_id") or raw.get("intention_id"))
-    if not is_relax and source_intention_id:
+    if source_intention_id:
         item["source_intention_id"] = source_intention_id
 
     created_at = _text(raw.get("created_at"))
     updated_at = _text(raw.get("updated_at"))
-    if not is_relax:
-        item["created_at"] = created_at or now_iso
-        item["updated_at"] = updated_at or now_iso
+    item["created_at"] = created_at or now_iso
+    item["updated_at"] = updated_at or now_iso
+
+    if item.get("ephemeral") is True:
+        # Ephemerals survive exactly one subsequent turn unless promoted.
+        item["expires_at_turn"] = _int(raw.get("expires_at_turn"), current_turn)
 
     return item
 
@@ -140,18 +161,21 @@ def normalize_intention_stack(
         raw_items = value.get("items") if isinstance(value.get("items"), list) else []
         decay_per_turn = _float(value.get("decay_per_turn"), default_decay_per_turn)
         relax_priority = _float(value.get("relax_priority"), default_relax_priority)
+        turn_index = max(0, _int(value.get("turn_index"), 0))
     elif isinstance(value, list):
         raw_items = value
         decay_per_turn = float(default_decay_per_turn)
         relax_priority = float(default_relax_priority)
+        turn_index = 0
     else:
         raw_items = []
         decay_per_turn = float(default_decay_per_turn)
         relax_priority = float(default_relax_priority)
+        turn_index = 0
 
     by_id: dict[str, dict[str, Any]] = {}
     for raw in raw_items:
-        item = _normalize_stack_item(raw, default_priority=default_priority, now_iso=now)
+        item = _normalize_stack_item(raw, default_priority=default_priority, now_iso=now, current_turn=turn_index)
         if item is None:
             continue
         by_id[item["id"]] = item
@@ -167,6 +191,7 @@ def normalize_intention_stack(
 
     return {
         "version": 1,
+        "turn_index": turn_index,
         "decay_per_turn": float(decay_per_turn),
         "relax_priority": _float(relax_item.get("priority"), default_relax_priority),
         "items": [relax_item, *others],
@@ -182,6 +207,8 @@ def apply_intention_turn_maintenance(
     relax_priority = _float(stack.get("relax_priority"), DEFAULT_RELAX_PRIORITY)
     decay = _float(decay_per_turn, _float(stack.get("decay_per_turn"), DEFAULT_DECAY_PER_TURN))
     now = _now_iso()
+    current_turn = max(0, _int(stack.get("turn_index"), 0))
+    next_turn = current_turn + 1
 
     kept: list[dict[str, Any]] = []
     for item in stack.get("items") or []:
@@ -189,15 +216,24 @@ def apply_intention_turn_maintenance(
             continue
         if _text(item.get("id")) == RELAX_INTENTION_ID or _text(item.get("kind")) == "relax":
             continue
-        if item.get("ephemeral") is True:
-            continue
+
         next_item = dict(item)
+        if next_item.get("ephemeral") is True:
+            expires_at_turn = _int(next_item.get("expires_at_turn"), current_turn)
+            if expires_at_turn < next_turn:
+                continue
+            next_item["expires_at_turn"] = expires_at_turn
+            next_item["updated_at"] = now
+            kept.append(next_item)
+            continue
+
         next_item["priority"] = max(0.0, _float(item.get("priority"), 0.0) - decay)
         next_item["updated_at"] = now
         kept.append(next_item)
 
     return normalize_intention_stack(
         {
+            "turn_index": next_turn,
             "decay_per_turn": decay,
             "relax_priority": relax_priority,
             "items": kept,
@@ -214,6 +250,7 @@ def upsert_intention_stack_entries(
 ) -> dict[str, Any]:
     stack = normalize_intention_stack(stack_value)
     now = _now_iso()
+    current_turn = max(0, _int(stack.get("turn_index"), 0))
     by_id: dict[str, dict[str, Any]] = {
         _text(item.get("id")): dict(item)
         for item in stack.get("items") or []
@@ -248,13 +285,161 @@ def upsert_intention_stack_entries(
             current["priority"] = max(_float(current.get("priority"), 0.0), priority)
             current["ephemeral"] = ephemeral
             current["updated_at"] = now
+
+        if ephemeral:
+            current["expires_at_turn"] = _int(
+                entry.get("expires_at_turn"),
+                current_turn + DEFAULT_EPHEMERAL_TTL_TURNS,
+            )
+        else:
+            current.pop("expires_at_turn", None)
+
         by_id[item_id] = current
 
     return normalize_intention_stack(
         {
+            "turn_index": current_turn,
             "decay_per_turn": stack.get("decay_per_turn"),
             "relax_priority": stack.get("relax_priority"),
             "items": [*by_id.values()],
         },
         now_iso=now,
     )
+
+
+def remove_intentions(stack_value: Any, intention_ids: list[str]) -> dict[str, Any]:
+    stack = normalize_intention_stack(stack_value)
+    remove_ids = {_text(item_id) for item_id in intention_ids if _text(item_id)}
+    if not remove_ids:
+        return stack
+    kept = [
+        item
+        for item in (stack.get("items") or [])
+        if isinstance(item, dict) and _text(item.get("id")) not in remove_ids
+    ]
+    return normalize_intention_stack(
+        {
+            "turn_index": stack.get("turn_index"),
+            "decay_per_turn": stack.get("decay_per_turn"),
+            "relax_priority": stack.get("relax_priority"),
+            "items": kept,
+        }
+    )
+
+
+def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
+    stack = normalize_intention_stack(stack_value)
+    if not isinstance(action, dict):
+        return stack
+
+    action_type = _text(action.get("type") or action.get("action") or "none").lower()
+    if action_type in {"", "none", "noop"}:
+        return stack
+
+    now = _now_iso()
+    current_turn = max(0, _int(stack.get("turn_index"), 0))
+    by_id: dict[str, dict[str, Any]] = {
+        _text(item.get("id")): dict(item)
+        for item in stack.get("items") or []
+        if isinstance(item, dict) and _text(item.get("id")) and _text(item.get("id")) != RELAX_INTENTION_ID
+    }
+
+    if action_type == "boost":
+        target_id = _text(action.get("target_id") or action.get("target") or action.get("intention_id"))
+        if target_id and target_id in by_id:
+            amount = _float(action.get("amount"), 1.0)
+            current = by_id[target_id]
+            current["priority"] = max(0.0, _float(current.get("priority"), 0.0) + amount)
+            current["updated_at"] = now
+            by_id[target_id] = current
+
+    elif action_type == "promote":
+        target_id = _text(action.get("target_id") or action.get("target") or action.get("intention_id"))
+        text = _text(action.get("text") or action.get("description") or target_id)
+        if target_id:
+            current = by_id.get(target_id)
+            if current is None:
+                current = {
+                    "id": target_id,
+                    "text": text,
+                    "priority": DEFAULT_INTENTION_PRIORITY,
+                    "ephemeral": False,
+                    "kind": "intention",
+                    "status": "active",
+                    "source_intention_id": target_id,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            else:
+                current["ephemeral"] = False
+                current["priority"] = max(_float(current.get("priority"), 0.0), DEFAULT_INTENTION_PRIORITY)
+                current["updated_at"] = now
+                current.pop("expires_at_turn", None)
+            if text:
+                current["text"] = text
+            by_id[target_id] = current
+
+    elif action_type == "create":
+        entries = action.get("entries")
+        if not isinstance(entries, list):
+            single = action.get("entry")
+            entries = [single] if isinstance(single, dict) else []
+        for raw in entries[:2]:
+            if not isinstance(raw, dict):
+                continue
+            text = _text(raw.get("text") or raw.get("description") or raw.get("name"))
+            if not text:
+                continue
+            item_id = _text(raw.get("id") or raw.get("intention_id")) or f"ephem-{uuid.uuid4().hex[:8]}"
+            current = by_id.get(item_id) or {
+                "id": item_id,
+                "text": text,
+                "priority": _float(raw.get("priority"), DEFAULT_INTENTION_PRIORITY),
+                "ephemeral": True,
+                "kind": "intention",
+                "status": "active",
+                "source_intention_id": item_id,
+                "created_at": now,
+                "updated_at": now,
+            }
+            current["text"] = text
+            current["ephemeral"] = True
+            current["updated_at"] = now
+            current["expires_at_turn"] = current_turn + DEFAULT_EPHEMERAL_TTL_TURNS
+            by_id[item_id] = current
+
+    return normalize_intention_stack(
+        {
+            "turn_index": current_turn,
+            "decay_per_turn": stack.get("decay_per_turn"),
+            "relax_priority": stack.get("relax_priority"),
+            "items": [*by_id.values()],
+        },
+        now_iso=now,
+    )
+
+
+def format_intention_stack_for_prompt(stack_value: Any, *, max_items: int = 12) -> str:
+    stack = normalize_intention_stack(stack_value)
+    lines: list[str] = []
+    lines.append(
+        f"turn={_int(stack.get('turn_index'), 0)}; decay={_float(stack.get('decay_per_turn'), DEFAULT_DECAY_PER_TURN):.2f}; relax={_float(stack.get('relax_priority'), DEFAULT_RELAX_PRIORITY):.1f}"
+    )
+    for item in (stack.get("items") or [])[: max(1, int(max_items))]:
+        if not isinstance(item, dict):
+            continue
+        item_id = _text(item.get("id"))
+        text = _text(item.get("text"))
+        priority = _float(item.get("priority"), 0.0)
+        ephemeral = bool(item.get("ephemeral") is True)
+        active = bool(item.get("active") is True)
+        tags = []
+        if item_id == RELAX_INTENTION_ID:
+            tags.append("relax")
+        if ephemeral:
+            tags.append("ephemeral")
+            tags.append(f"expires@{_int(item.get('expires_at_turn'), 0)}")
+        tags.append("active" if active else "inactive")
+        tag_suffix = f" [{', '.join(tags)}]" if tags else ""
+        lines.append(f"- {item_id}: {text} (p={priority:.1f}){tag_suffix}")
+    return "\n".join(lines)

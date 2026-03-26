@@ -53,9 +53,17 @@ from app.services.state import (
     write_conversation_state as _write_conversation_state_impl,
 )
 from app.services.intention_state import (
+    append_memory_cache_entry as _append_memory_cache_entry,
+    apply_intention_action as _apply_intention_action,
     apply_intention_turn_maintenance as _apply_intention_turn_maintenance_impl,
     normalize_intention_stack as _normalize_intention_stack_impl,
     normalize_memory_cache as _normalize_memory_cache_impl,
+    remove_intentions as _remove_intentions,
+)
+from app.services.turn_contract import (
+    TURN_SYSTEM_PROMPT as _TURN_SYSTEM_PROMPT,
+    build_turn_prompt as _build_turn_prompt,
+    parse_turn_contract as _parse_turn_contract,
 )
 
 logger = logging.getLogger(__name__)
@@ -1421,6 +1429,90 @@ def _extract_result_item_ids(result: Any) -> list[str]:
     return out
 
 
+def _normalize_turn_history(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        role = _pick_str(item, "role", "name") or "unknown"
+        content = _pick_str(item, "content", "text", "message")
+        if not content:
+            continue
+        out.append({"role": role, "content": content})
+    return out
+
+
+async def _persist_annulment_memories(
+    *,
+    svc: MemoryService,
+    user_scope: dict[str, Any],
+    conversation_id: str,
+    intention_stack_before: Any,
+    annulments: list[dict[str, str]],
+) -> list[str]:
+    if not annulments:
+        return []
+
+    stack = _normalize_intention_stack_impl(intention_stack_before)
+    by_id = {
+        str(item.get("id")): item
+        for item in (stack.get("items") or [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+
+    summaries: list[str] = []
+    metadata_rows: list[dict[str, Any]] = []
+    for row in annulments:
+        intention_id = str(row.get("intention_id") or "").strip()
+        status = str(row.get("status") or "").strip().lower()
+        if not intention_id or status not in {"completed", "deleted"}:
+            continue
+        note = str(row.get("note") or "").strip()
+        intention_text = str((by_id.get(intention_id) or {}).get("text") or intention_id).strip() or intention_id
+        summary = f"Intention {status}: {intention_text}"
+        if note:
+            summary = f"{summary}. Note: {note}"
+        summaries.append(summary)
+        metadata_rows.append(
+            {
+                "intention_id": intention_id,
+                "status": status,
+                "note": note,
+                "reflection_salience": 0.8 if status == "completed" else 0.4,
+            }
+        )
+
+    if not summaries:
+        return []
+
+    embeddings = await svc._get_llm_client("embedding").embed(summaries)
+    created_ids: list[str] = []
+    for idx, summary in enumerate(summaries):
+        if idx >= len(embeddings):
+            break
+        meta = metadata_rows[idx]
+        item = svc.database.memory_item_repo.create_item(
+            resource_id=None,
+            memory_type="event",
+            summary=summary,
+            embedding=embeddings[idx],
+            user_data=user_scope,
+            source_role="assistant",
+            confidence=1.0,
+            happened_at=datetime.now(UTC),
+            reflection_salience=float(meta["reflection_salience"]),
+            conversation_id=conversation_id,
+            affective_tags={
+                "annulment_status": meta["status"],
+                "intention_id": meta["intention_id"],
+            },
+        )
+        created_ids.append(str(item.id))
+    return created_ids
+
+
 def _merge_memorize_batch_results(
     batch_results: list[dict[str, Any]],
     pending_diary_memory_ids: list[str] | None = None,
@@ -1489,6 +1581,7 @@ async def _run_retrieve(
     *,
     conversation_id: str | None = None,
     persist_llm_state: bool = False,
+    apply_turn_maintenance: bool = True,
 ) -> dict[str, Any]:
     safe = _safe_payload(payload)
     scoped_conversation_id = str(conversation_id or _extract_conversation_id(safe) or "").strip() or None
@@ -1506,7 +1599,7 @@ async def _run_retrieve(
     scoped_user = str((where or {}).get("user_id") or "user").strip() or "user"
     if scoped_soul:
         async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(scoped_user, scoped_soul), asyncio.Lock()):
-            if method == "rag" and scoped_conversation_id:
+            if method == "rag" and scoped_conversation_id and apply_turn_maintenance:
                 current_state: dict[str, Any] | None = None
                 db_path = _sqlite_current_path(scoped_user or None, scoped_soul)
                 if db_path is not None and db_path.exists():
@@ -3069,6 +3162,184 @@ async def conversation_retrieve(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.post("/conversation/{conversation_id}/turn", operation_id="conversation_turn")
+async def conversation_turn(
+    conversation_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    cid = str(conversation_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+
+    safe = _safe_payload(payload if isinstance(payload, dict) else {})
+    if not isinstance(safe.get("llm_profiles"), dict):
+        safe["llm_profiles"] = _default_llm_profiles_from_server_config()
+
+    user_scope = safe.get("user")
+    if not isinstance(user_scope, dict):
+        user_scope = _extract_scope(safe) or None
+    if not isinstance(user_scope, dict):
+        raise HTTPException(status_code=400, detail="user scope required")
+
+    uid = str(user_scope.get("user_id") or "").strip()
+    soul = str(user_scope.get("soul_id") or "").strip()
+    if not uid or not soul:
+        raise HTTPException(status_code=400, detail="user_id and soul_id required")
+
+    message = _pick_str(safe, "message", "query", "text")
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    history = _normalize_turn_history(safe.get("history"))
+    run_apimw = bool(safe.get("run_apimw", True))
+    wait_apimw = bool(safe.get("wait_apimw", False))
+    include_debug = bool(safe.get("debug", False))
+
+    safe["user"] = {"user_id": uid, "soul_id": soul, "conversation_id": cid}
+    safe["conversation_id"] = cid
+    safe["conversationId"] = cid
+
+    rag_payload = {**safe, "method": "rag", "query": message}
+    try:
+        rag_out = await _run_retrieve(rag_payload, conversation_id=cid, persist_llm_state=False)
+    except Exception as exc:
+        # Long OCR-like text can produce invalid FTS query syntax in SQLite MATCH.
+        # Retry once with a conservative alnum/space query for retrieval context.
+        if "fts5: syntax error" not in str(exc).lower():
+            raise
+        fallback_query = " ".join(re.sub(r"[^0-9A-Za-z\\s]", " ", message).split())
+        if not fallback_query:
+            raise
+        rag_payload["query"] = fallback_query[:8000]
+        rag_out = await _run_retrieve(
+            rag_payload,
+            conversation_id=cid,
+            persist_llm_state=False,
+            apply_turn_maintenance=False,
+        )
+    rag_result = rag_out.get("result") if isinstance(rag_out, dict) else None
+
+    state_row: dict[str, Any] | None = None
+    db_path = _sqlite_current_path(uid, soul)
+    if db_path is not None and db_path.exists():
+        con = _sqlite_connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            _sqlite_ensure_conversation_state_schema(con)
+            state_row = _conversation_state_from_row(_conversation_state_row(con, cid))
+        finally:
+            con.close()
+    if state_row is None:
+        state_row = _conversation_state_empty(
+            cid,
+            soul_id=soul,
+            user_id=uid,
+            normalize_intention_stack=_normalize_intention_stack_impl,
+        )
+
+    prior_context = str(state_row.get("prior_context") or "").strip() or None
+    memory_cache_before = _normalize_memory_cache_impl(state_row.get("memory_cache"))
+    intention_stack_before = _normalize_intention_stack_impl(state_row.get("active_intentions"))
+
+    apimw_task: asyncio.Task | None = None
+    if run_apimw:
+        apimw_payload = {**safe, "method": "llm", "query": message}
+        apimw_task = asyncio.create_task(_run_retrieve(apimw_payload, conversation_id=cid, persist_llm_state=True))
+
+        if not wait_apimw:
+            def _on_apimw_done(task: asyncio.Task) -> None:
+                try:
+                    task.result()
+                except Exception:
+                    logger.exception("APImw background retrieve failed for %s", cid)
+
+            apimw_task.add_done_callback(_on_apimw_done)
+
+    turn_prompt = _build_turn_prompt(
+        user_message=message,
+        history=history,
+        prior_context=prior_context,
+        rag_result=rag_result,
+        memory_cache=memory_cache_before,
+        intention_stack=intention_stack_before,
+    )
+
+    svc = _get_service_from_payload(safe, retrieve_method_override="rag")
+    llm_raw = await svc._get_llm_client().chat(
+        turn_prompt,
+        system_prompt=_TURN_SYSTEM_PROMPT,
+        temperature=0.0,
+        max_tokens=1000,
+        response_format={"type": "json_object"},
+    )
+    try:
+        turn_data = _parse_turn_contract(llm_raw)
+    except Exception as exc:
+        raw_snippet = str(llm_raw or "")[:200]
+        raise HTTPException(
+            status_code=502,
+            detail=f"turn contract parse failure: {exc}; raw={raw_snippet!r}",
+        ) from exc
+
+    memory_cache_after = list(memory_cache_before)
+    cache_entry = str(turn_data.get("cache_entry") or "").strip()
+    if cache_entry:
+        memory_cache_after = _append_memory_cache_entry(memory_cache_after, cache_entry)
+
+    inner_thought = str(turn_data.get("inner_thought") or "").strip()
+    if inner_thought:
+        memory_cache_after = _append_memory_cache_entry(memory_cache_after, inner_thought)
+
+    intention_stack_after = _apply_intention_action(intention_stack_before, turn_data.get("intention_action"))
+    annulments = turn_data.get("annulments") if isinstance(turn_data.get("annulments"), list) else []
+    annulment_ids = [str(row.get("intention_id") or "").strip() for row in annulments if isinstance(row, dict)]
+    intention_stack_after = _remove_intentions(
+        intention_stack_after,
+        [item_id for item_id in annulment_ids if item_id],
+    )
+
+    state_out, state_path = _write_conversation_state(
+        cid,
+        soul_id=soul,
+        user_id=uid,
+        updates={
+            "active_intentions": intention_stack_after,
+            "memory_cache": memory_cache_after,
+        },
+    )
+
+    annulment_memory_ids = await _persist_annulment_memories(
+        svc=svc,
+        user_scope={"user_id": uid, "soul_id": soul},
+        conversation_id=cid,
+        intention_stack_before=intention_stack_before,
+        annulments=[row for row in annulments if isinstance(row, dict)],
+    )
+
+    apimw_status = "not_started"
+    if apimw_task is not None:
+        apimw_status = "started"
+        if wait_apimw:
+            try:
+                await apimw_task
+                apimw_status = "completed"
+            except Exception:
+                apimw_status = "failed"
+
+    out: dict[str, Any] = {
+        "ok": True,
+        "conversation_id": cid,
+        "response": str(turn_data.get("response") or "").strip(),
+        "apimw": apimw_status,
+    }
+    if include_debug:
+        out["state"] = state_out
+        out["path"] = str(state_path)
+        out["annulment_memory_ids"] = annulment_memory_ids
+        out["turn_contract"] = turn_data
+    return out
+
+
 # memU-ui compatibility: it calls /api/*
 @app.post("/api/memorize", operation_id="api_memorize")
 async def api_memorize(payload: dict[str, Any] = Body(...)):
@@ -3086,6 +3357,14 @@ async def api_conversation_retrieve(
     payload: dict[str, Any] = Body(...),
 ):
     return await conversation_retrieve(conversation_id, payload)
+
+
+@app.post("/api/conversation/{conversation_id}/turn", operation_id="api_conversation_turn")
+async def api_conversation_turn(
+    conversation_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    return await conversation_turn(conversation_id, payload)
 
 
 @app.post("/api/clear", operation_id="api_clear")

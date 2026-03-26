@@ -437,6 +437,10 @@ LIMIT 1
         category_block = _format_categories_for_diary(category_rows)
         if category_block:
             context_parts.append(f"Current categories:\n{category_block}")
+        cache_entries = normalize_memory_cache(state.get("memory_cache"))
+        if cache_entries:
+            cache_text = "\n".join(f"- {entry}" for entry in cache_entries)
+            context_parts.append(f"Recent internal cache:\n{cache_text}")
         memory_block = _format_memory_rows_for_diary(memory_rows)
         if memory_block:
             context_parts.append(f"Diary-worthy memories:\n{memory_block}")
