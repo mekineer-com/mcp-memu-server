@@ -61,7 +61,7 @@ from app.services.intention_state import (
     remove_intentions as _remove_intentions,
 )
 from app.services.turn_contract import (
-    TURN_SYSTEM_PROMPT as _TURN_SYSTEM_PROMPT,
+    make_turn_system_prompt as _make_turn_system_prompt,
     build_turn_prompt as _build_turn_prompt,
     parse_turn_contract as _parse_turn_contract,
 )
@@ -1429,6 +1429,74 @@ def _extract_result_item_ids(result: Any) -> list[str]:
     return out
 
 
+def _norm_result_sig(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    return text
+
+
+def _item_sig(row: Any) -> str:
+    if not isinstance(row, dict):
+        return ""
+    item_id = _norm_result_sig(row.get("id"))
+    if item_id:
+        return f"id:{item_id}"
+    summary = _norm_result_sig(row.get("summary"))
+    if summary:
+        return f"summary:{summary}"
+    return ""
+
+
+def _resource_sig(row: Any) -> str:
+    if not isinstance(row, dict):
+        return ""
+    for key in ("id", "url", "local_path", "name", "caption", "title"):
+        value = _norm_result_sig(row.get(key))
+        if value:
+            return f"{key}:{value}"
+    return ""
+
+
+def _dedupe_llm_result_against_rag(result: Any, rag_result: Any | None) -> Any:
+    if not isinstance(result, dict) or not isinstance(rag_result, dict):
+        return result
+
+    rag_item_sigs: set[str] = set()
+    for row in (rag_result.get("items") or []):
+        sig = _item_sig(row)
+        if sig:
+            rag_item_sigs.add(sig)
+
+    rag_resource_sigs: set[str] = set()
+    rag_resources = rag_result.get("resources")
+    if isinstance(rag_resources, list):
+        for row in rag_resources:
+            sig = _resource_sig(row)
+            if sig:
+                rag_resource_sigs.add(sig)
+    rag_resource = rag_result.get("resource")
+    sig_single = _resource_sig(rag_resource)
+    if sig_single:
+        rag_resource_sigs.add(sig_single)
+
+    out = dict(result)
+
+    llm_items = result.get("items")
+    if isinstance(llm_items, list) and rag_item_sigs:
+        out["items"] = [row for row in llm_items if (_item_sig(row) not in rag_item_sigs)]
+
+    llm_resources = result.get("resources")
+    if isinstance(llm_resources, list) and rag_resource_sigs:
+        out["resources"] = [row for row in llm_resources if (_resource_sig(row) not in rag_resource_sigs)]
+    elif "resources" in out and not isinstance(llm_resources, list):
+        out["resources"] = []
+
+    llm_resource = result.get("resource")
+    if rag_resource_sigs and _resource_sig(llm_resource) in rag_resource_sigs:
+        out.pop("resource", None)
+
+    return out
+
+
 def _normalize_turn_history(value: Any) -> list[dict[str, str]]:
     if not isinstance(value, list):
         return []
@@ -1582,6 +1650,7 @@ async def _run_retrieve(
     conversation_id: str | None = None,
     persist_llm_state: bool = False,
     apply_turn_maintenance: bool = True,
+    llm_dedupe_baseline: Any | None = None,
 ) -> dict[str, Any]:
     safe = _safe_payload(payload)
     scoped_conversation_id = str(conversation_id or _extract_conversation_id(safe) or "").strip() or None
@@ -1590,6 +1659,19 @@ async def _run_retrieve(
         safe["conversationId"] = scoped_conversation_id
 
     method = _normalize_retrieve_method(safe.get("method"), _retrieve_method_from_cfg(_CONFIG))
+    if method == "llm":
+        retrieve_cfg = safe.get("retrieve_config")
+        if not isinstance(retrieve_cfg, dict):
+            retrieve_cfg = {}
+            safe["retrieve_config"] = retrieve_cfg
+        cat_cfg = retrieve_cfg.get("category")
+        if not isinstance(cat_cfg, dict):
+            cat_cfg = {}
+        else:
+            cat_cfg = dict(cat_cfg)
+        cat_cfg["enabled"] = False
+        cat_cfg["top_k"] = 0
+        retrieve_cfg["category"] = cat_cfg
     svc = _get_service_from_payload(safe, retrieve_method_override=method)
     where = _extract_retrieve_where(safe)
     memu_queries = _extract_retrieve_queries(safe)
@@ -1621,6 +1703,9 @@ async def _run_retrieve(
                     },
                 )
             result = await svc.retrieve(memu_queries, where=where)
+            if method == "llm" and isinstance(result, dict):
+                result = {**result, "categories": []}
+                result = _dedupe_llm_result_against_rag(result, llm_dedupe_baseline)
             out = {"ok": True, "result": result}
             if persist_llm_state and method == "llm" and scoped_conversation_id:
                 state_out, db_path = _write_conversation_state(
@@ -1636,6 +1721,9 @@ async def _run_retrieve(
                 out["path"] = str(db_path)
     else:
         result = await svc.retrieve(memu_queries, where=where)
+        if method == "llm" and isinstance(result, dict):
+            result = {**result, "categories": []}
+            result = _dedupe_llm_result_against_rag(result, llm_dedupe_baseline)
         out = {"ok": True, "result": result}
         if persist_llm_state and method == "llm" and scoped_conversation_id:
             state_out, db_path = _write_conversation_state(
@@ -1668,6 +1756,14 @@ async def _run_retrieve(
             prior_context = state_out.get("prior_context")
             if prior_context is not None and str(prior_context).strip():
                 out["prior_context"] = prior_context
+            memory_cache = state_out.get("memory_cache")
+            if isinstance(memory_cache, list) and memory_cache:
+                out["memory_cache"] = memory_cache
+            active_intentions = state_out.get("active_intentions")
+            if isinstance(active_intentions, dict):
+                items = active_intentions.get("items")
+                if isinstance(items, list) and items:
+                    out["active_intentions"] = active_intentions
 
     out["method"] = method
     out["conversation_id"] = scoped_conversation_id
@@ -3220,6 +3316,7 @@ async def conversation_turn(
     rag_result = rag_out.get("result") if isinstance(rag_out, dict) else None
 
     state_row: dict[str, Any] | None = None
+    soul_card: str | None = None
     db_path = _sqlite_current_path(uid, soul)
     if db_path is not None and db_path.exists():
         con = _sqlite_connect(db_path)
@@ -3227,6 +3324,21 @@ async def conversation_turn(
             con.row_factory = sqlite3.Row
             _sqlite_ensure_conversation_state_schema(con)
             state_row = _conversation_state_from_row(_conversation_state_row(con, cid))
+            # Load narrative_self from self-model as soul card
+            sm_id = (state_row or {}).get("self_model_id")
+            sm_row = None
+            if sm_id:
+                sm_row = con.execute(
+                    "SELECT narrative_self FROM memu_self_model WHERE id = ? LIMIT 1",
+                    (str(sm_id),),
+                ).fetchone()
+            if sm_row is None:
+                sm_row = con.execute(
+                    "SELECT narrative_self FROM memu_self_model WHERE soul_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT 1",
+                    (soul, uid),
+                ).fetchone()
+            if sm_row is not None:
+                soul_card = str(sm_row["narrative_self"] or "").strip() or None
         finally:
             con.close()
     if state_row is None:
@@ -3244,7 +3356,14 @@ async def conversation_turn(
     apimw_task: asyncio.Task | None = None
     if run_apimw:
         apimw_payload = {**safe, "method": "llm", "query": message}
-        apimw_task = asyncio.create_task(_run_retrieve(apimw_payload, conversation_id=cid, persist_llm_state=True))
+        apimw_task = asyncio.create_task(
+            _run_retrieve(
+                apimw_payload,
+                conversation_id=cid,
+                persist_llm_state=True,
+                llm_dedupe_baseline=rag_result if isinstance(rag_result, dict) else None,
+            )
+        )
 
         if not wait_apimw:
             def _on_apimw_done(task: asyncio.Task) -> None:
@@ -3267,7 +3386,7 @@ async def conversation_turn(
     svc = _get_service_from_payload(safe, retrieve_method_override="rag")
     llm_raw = await svc._get_llm_client().chat(
         turn_prompt,
-        system_prompt=_TURN_SYSTEM_PROMPT,
+        system_prompt=_make_turn_system_prompt(soul, soul_card=soul_card),
         temperature=0.0,
         max_tokens=1000,
         response_format={"type": "json_object"},
