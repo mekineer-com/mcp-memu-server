@@ -23,12 +23,16 @@ class StateDeps:
     storage_status: Mapping[str, Any]
     normalize_text_list: Callable[[Any], list[str]]
     merge_unique_text_lists: Callable[[Any, Any], list[str]]
+    normalize_intention_stack: Callable[[Any], dict[str, Any]]
+    normalize_memory_cache: Callable[[Any], list[str]]
 
 
 def conversation_state_from_row(
     row: sqlite3.Row | None,
     *,
     normalize_text_list: Callable[[Any], list[str]],
+    normalize_intention_stack: Callable[[Any], dict[str, Any]],
+    normalize_memory_cache: Callable[[Any], list[str]],
 ) -> dict[str, Any] | None:
     if row is None:
         return None
@@ -37,13 +41,19 @@ def conversation_state_from_row(
         digest_cursor = int(digest_raw) if digest_raw is not None else 0
     except Exception:
         digest_cursor = 0
+    prior_context = row['prior_context'] if 'prior_context' in row.keys() else None
     return {
         'conversation_id': row['conversation_id'],
         'soul_id': row['soul_id'] if 'soul_id' in row.keys() else None,
         'user_id': row['user_id'] if 'user_id' in row.keys() else None,
         'digest_cursor': max(0, digest_cursor),
-        'working_note': row['working_note'] if 'working_note' in row.keys() else None,
-        'active_intentions': json_from_db(row['active_intentions'] if 'active_intentions' in row.keys() else None),
+        'prior_context': None if prior_context is None else str(prior_context),
+        'active_intentions': normalize_intention_stack(
+            json_from_db(row['active_intentions'] if 'active_intentions' in row.keys() else None)
+        ),
+        'memory_cache': normalize_memory_cache(
+            json_from_db(row['memory_cache'] if 'memory_cache' in row.keys() else None)
+        ),
         'pending_diary_memory_ids': normalize_text_list(
             row['pending_diary_memory_ids'] if 'pending_diary_memory_ids' in row.keys() else None
         ),
@@ -61,8 +71,9 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
         *( ['soul_id'] if 'soul_id' in cols else [] ),
         'user_id',
         'digest_cursor',
-        'working_note',
+        *( ['prior_context'] if 'prior_context' in cols else [] ),
         'active_intentions',
+        *( ['memory_cache'] if 'memory_cache' in cols else [] ),
         *( ['pending_diary_memory_ids'] if 'pending_diary_memory_ids' in cols else [] ),
         *( ['self_model_id'] if 'self_model_id' in cols else [] ),
         'last_retrieval_ids',
@@ -79,14 +90,35 @@ def conversation_state_empty(
     conversation_id: str,
     soul_id: str | None = None,
     user_id: str | None = None,
+    normalize_intention_stack: Callable[[Any], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    if normalize_intention_stack is None:
+        default_stack: dict[str, Any] = {
+            'version': 1,
+            'decay_per_turn': 0.1,
+            'relax_priority': 5.0,
+            'items': [
+                {
+                    'id': 'relax',
+                    'text': 'Relax',
+                    'priority': 5.0,
+                    'ephemeral': False,
+                    'kind': 'relax',
+                    'status': 'active',
+                    'active': True,
+                }
+            ],
+        }
+    else:
+        default_stack = normalize_intention_stack(None)
     return {
         'conversation_id': conversation_id,
         'soul_id': soul_id,
         'user_id': user_id,
         'digest_cursor': 0,
-        'working_note': None,
-        'active_intentions': None,
+        'prior_context': None,
+        'active_intentions': default_stack,
+        'memory_cache': [],
         'pending_diary_memory_ids': [],
         'self_model_id': None,
         'last_retrieval_ids': None,
@@ -114,7 +146,12 @@ def find_conversation_state_across_dbs(
             deps.sqlite_ensure_conversation_state_schema(con)
             row = conversation_state_row(con, conversation_id)
             if row is not None:
-                return db_path, conversation_state_from_row(row, normalize_text_list=deps.normalize_text_list)
+                return db_path, conversation_state_from_row(
+                    row,
+                    normalize_text_list=deps.normalize_text_list,
+                    normalize_intention_stack=deps.normalize_intention_stack,
+                    normalize_memory_cache=deps.normalize_memory_cache,
+                )
         except Exception:
             continue
         finally:
@@ -152,9 +189,16 @@ def write_conversation_state(
 
         if existing_state is None:
             existing_state = conversation_state_from_row(
-                conversation_state_row(con, cid), normalize_text_list=deps.normalize_text_list
+                conversation_state_row(con, cid),
+                normalize_text_list=deps.normalize_text_list,
+                normalize_intention_stack=deps.normalize_intention_stack,
+                normalize_memory_cache=deps.normalize_memory_cache,
             )
-        merged = dict(existing_state or conversation_state_empty(cid, scoped_soul, scoped_user))
+        merged = dict(
+            existing_state or conversation_state_empty(
+                cid, scoped_soul, scoped_user, normalize_intention_stack=deps.normalize_intention_stack
+            )
+        )
         merged['conversation_id'] = cid
         if scoped_soul is not None:
             merged['soul_id'] = scoped_soul
@@ -167,8 +211,9 @@ def write_conversation_state(
         for key, value in raw_updates.items():
             if key in {
                 'digest_cursor',
-                'working_note',
+                'prior_context',
                 'active_intentions',
+                'memory_cache',
                 'pending_diary_memory_ids',
                 'self_model_id',
                 'last_retrieval_ids',
@@ -189,8 +234,10 @@ def write_conversation_state(
 
         raw_last = merged.get('last_memorize_at')
         merged['last_memorize_at'] = None if raw_last is None else (str(raw_last).strip() or None)
-        raw_note = merged.get('working_note')
-        merged['working_note'] = None if raw_note is None else str(raw_note)
+        raw_prior_context = merged.get('prior_context')
+        merged['prior_context'] = None if raw_prior_context is None else str(raw_prior_context)
+        merged['active_intentions'] = deps.normalize_intention_stack(merged.get('active_intentions'))
+        merged['memory_cache'] = deps.normalize_memory_cache(merged.get('memory_cache'))
         merged['pending_diary_memory_ids'] = deps.normalize_text_list(merged.get('pending_diary_memory_ids'))
         raw_self_model_id = merged.get('self_model_id')
         merged['self_model_id'] = None if raw_self_model_id is None else (str(raw_self_model_id).strip() or None)
@@ -203,20 +250,22 @@ INSERT INTO memu_conversation_state (
     soul_id,
     user_id,
     digest_cursor,
-    working_note,
+    prior_context,
     active_intentions,
+    memory_cache,
     pending_diary_memory_ids,
     self_model_id,
     last_retrieval_ids,
     last_memorize_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(conversation_id) DO UPDATE SET
     soul_id = excluded.soul_id,
     user_id = excluded.user_id,
     digest_cursor = excluded.digest_cursor,
-    working_note = excluded.working_note,
+    prior_context = excluded.prior_context,
     active_intentions = excluded.active_intentions,
+    memory_cache = excluded.memory_cache,
     pending_diary_memory_ids = excluded.pending_diary_memory_ids,
     self_model_id = excluded.self_model_id,
     last_retrieval_ids = excluded.last_retrieval_ids,
@@ -228,8 +277,9 @@ ON CONFLICT(conversation_id) DO UPDATE SET
                 merged.get('soul_id'),
                 merged.get('user_id'),
                 int(merged.get('digest_cursor') or 0),
-                merged.get('working_note'),
+                merged.get('prior_context'),
                 json_to_db(merged.get('active_intentions')),
+                json_to_db(merged.get('memory_cache') or []),
                 json_to_db(merged.get('pending_diary_memory_ids') or []),
                 merged.get('self_model_id'),
                 json_to_db(merged.get('last_retrieval_ids')),
@@ -238,7 +288,14 @@ ON CONFLICT(conversation_id) DO UPDATE SET
             ),
         )
         con.commit()
-        state_out = conversation_state_from_row(conversation_state_row(con, cid), normalize_text_list=deps.normalize_text_list)
-        return state_out or conversation_state_empty(cid, scoped_soul, scoped_user), db_path
+        state_out = conversation_state_from_row(
+            conversation_state_row(con, cid),
+            normalize_text_list=deps.normalize_text_list,
+            normalize_intention_stack=deps.normalize_intention_stack,
+            normalize_memory_cache=deps.normalize_memory_cache,
+        )
+        return state_out or conversation_state_empty(
+            cid, scoped_soul, scoped_user, normalize_intention_stack=deps.normalize_intention_stack
+        ), db_path
     finally:
         con.close()

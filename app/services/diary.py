@@ -15,6 +15,11 @@ from fastapi import HTTPException
 from memu.prompts.diary import self_model_update as diary_self_model_update_prompt
 from memu.prompts.memory_type import diary as diary_memory_prompt
 from app.services.self_model_merge import _apply_tension_updates
+from app.services.intention_state import (
+    normalize_intention_stack,
+    normalize_memory_cache,
+    upsert_intention_stack_entries,
+)
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
@@ -283,8 +288,10 @@ def _write_conversation_state_local(
         raise HTTPException(status_code=400, detail="digest_cursor must be an integer") from exc
     raw_last = merged.get("last_memorize_at")
     merged["last_memorize_at"] = None if raw_last is None else (str(raw_last).strip() or None)
-    raw_note = merged.get("working_note")
-    merged["working_note"] = None if raw_note is None else str(raw_note)
+    raw_prior = merged.get("prior_context")
+    merged["prior_context"] = None if raw_prior is None else str(raw_prior)
+    merged["active_intentions"] = normalize_intention_stack(merged.get("active_intentions"))
+    merged["memory_cache"] = normalize_memory_cache(merged.get("memory_cache"))
     merged["pending_diary_memory_ids"] = []
     raw_self_model_id = self_model_id
     merged["self_model_id"] = None if raw_self_model_id is None else (str(raw_self_model_id).strip() or None)
@@ -297,19 +304,22 @@ INSERT INTO memu_conversation_state (
     soul_id,
     user_id,
     digest_cursor,
-    working_note,
+    prior_context,
     active_intentions,
+    memory_cache,
     pending_diary_memory_ids,
     self_model_id,
     last_retrieval_ids,
     last_memorize_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(conversation_id) DO UPDATE SET
     soul_id = excluded.soul_id,
     user_id = excluded.user_id,
     digest_cursor = excluded.digest_cursor,
-    working_note = excluded.working_note,
+    prior_context = excluded.prior_context,
+    active_intentions = excluded.active_intentions,
+    memory_cache = excluded.memory_cache,
     pending_diary_memory_ids = excluded.pending_diary_memory_ids,
     self_model_id = excluded.self_model_id,
     last_retrieval_ids = excluded.last_retrieval_ids,
@@ -321,8 +331,9 @@ ON CONFLICT(conversation_id) DO UPDATE SET
             merged.get("soul_id"),
             merged.get("user_id"),
             int(merged.get("digest_cursor") or 0),
-            merged.get("working_note"),
+            merged.get("prior_context"),
             deps.json_to_db(merged.get("active_intentions")),
+            deps.json_to_db(merged.get("memory_cache") or []),
             deps.json_to_db(merged.get("pending_diary_memory_ids") or []),
             merged.get("self_model_id"),
             deps.json_to_db(merged.get("last_retrieval_ids")),
@@ -580,6 +591,7 @@ ON CONFLICT(id) DO UPDATE SET
         )
 
         intention_ids: list[str] = []
+        intention_stack_entries: list[dict[str, Any]] = []
         for description in diary_data.get("intentions") or []:
             text = str(description or "").strip()
             if not text:
@@ -610,6 +622,14 @@ INSERT INTO memu_intentions (
                 ),
             )
             intention_ids.append(intention_id)
+            intention_stack_entries.append(
+                {
+                    "id": intention_id,
+                    "text": text,
+                    "priority": 10.0,
+                    "ephemeral": False,
+                }
+            )
 
         updated_state = _write_conversation_state_local(
             con,
@@ -622,8 +642,10 @@ INSERT INTO memu_intentions (
         )
         if intention_ids:
             current_state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id)) or {}
-            active_intentions = deps.normalize_text_list(current_state.get("active_intentions"))
-            merged_active_intentions = deps.normalize_text_list([*active_intentions, *intention_ids])
+            merged_active_intentions = upsert_intention_stack_entries(
+                normalize_intention_stack(current_state.get("active_intentions")),
+                intention_stack_entries,
+            )
             con.execute(
                 """
 UPDATE memu_conversation_state

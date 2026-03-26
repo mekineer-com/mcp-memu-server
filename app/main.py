@@ -52,6 +52,11 @@ from app.services.state import (
     find_conversation_state_across_dbs as _find_conversation_state_across_dbs_impl,
     write_conversation_state as _write_conversation_state_impl,
 )
+from app.services.intention_state import (
+    apply_intention_turn_maintenance as _apply_intention_turn_maintenance_impl,
+    normalize_intention_stack as _normalize_intention_stack_impl,
+    normalize_memory_cache as _normalize_memory_cache_impl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1325,11 +1330,18 @@ def _state_deps() -> StateDeps:
         storage_status=_STORAGE_STATUS,
         normalize_text_list=_normalize_text_list,
         merge_unique_text_lists=_merge_unique_text_lists,
+        normalize_intention_stack=_normalize_intention_stack_impl,
+        normalize_memory_cache=_normalize_memory_cache_impl,
     )
 
 
 def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
-    return _conversation_state_from_row_impl(row, normalize_text_list=_normalize_text_list)
+    return _conversation_state_from_row_impl(
+        row,
+        normalize_text_list=_normalize_text_list,
+        normalize_intention_stack=_normalize_intention_stack_impl,
+        normalize_memory_cache=_normalize_memory_cache_impl,
+    )
 
 
 def _intention_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -1494,6 +1506,27 @@ async def _run_retrieve(
     scoped_user = str((where or {}).get("user_id") or "user").strip() or "user"
     if scoped_soul:
         async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(scoped_user, scoped_soul), asyncio.Lock()):
+            if method == "rag" and scoped_conversation_id:
+                current_state: dict[str, Any] | None = None
+                db_path = _sqlite_current_path(scoped_user or None, scoped_soul)
+                if db_path is not None and db_path.exists():
+                    con = _sqlite_connect(db_path)
+                    try:
+                        con.row_factory = sqlite3.Row
+                        _sqlite_ensure_conversation_state_schema(con)
+                        current_state = _conversation_state_from_row(_conversation_state_row(con, scoped_conversation_id))
+                    finally:
+                        con.close()
+                _write_conversation_state(
+                    scoped_conversation_id,
+                    soul_id=scoped_soul or None,
+                    user_id=scoped_user or None,
+                    updates={
+                        "active_intentions": _apply_intention_turn_maintenance_impl(
+                            (current_state or {}).get("active_intentions")
+                        ),
+                    },
+                )
             result = await svc.retrieve(memu_queries, where=where)
             out = {"ok": True, "result": result}
             if persist_llm_state and method == "llm" and scoped_conversation_id:
@@ -1502,7 +1535,7 @@ async def _run_retrieve(
                     soul_id=scoped_soul or None,
                     user_id=scoped_user or None,
                     updates={
-                        "working_note": json.dumps(result, ensure_ascii=False, default=str),
+                        "prior_context": json.dumps(result, ensure_ascii=False, default=str),
                         "last_retrieval_ids": _extract_result_item_ids(result),
                     },
                 )
@@ -1517,7 +1550,7 @@ async def _run_retrieve(
                 soul_id=None,
                 user_id=scoped_user or None,
                 updates={
-                    "working_note": json.dumps(result, ensure_ascii=False, default=str),
+                    "prior_context": json.dumps(result, ensure_ascii=False, default=str),
                     "last_retrieval_ids": _extract_result_item_ids(result),
                 },
             )
@@ -1539,9 +1572,9 @@ async def _run_retrieve(
         else:
             _db_path, state_out = _find_conversation_state_across_dbs(scoped_conversation_id)
         if state_out:
-            working_note = state_out.get("working_note")
-            if working_note is not None and str(working_note).strip():
-                out["working_note"] = working_note
+            prior_context = state_out.get("prior_context")
+            if prior_context is not None and str(prior_context).strip():
+                out["prior_context"] = prior_context
 
     out["method"] = method
     out["conversation_id"] = scoped_conversation_id
@@ -1814,8 +1847,9 @@ async def diag_sqlite_recent(
             "superseded_by",
             "happened_at",
             "digest_cursor",
-            "working_note",
+            "prior_context",
             "active_intentions",
+            "memory_cache",
             "pending_diary_memory_ids",
             "self_model_id",
             "last_memorize_at",
@@ -2867,11 +2901,14 @@ async def patch_conversation_state(
         raw_cursor = body.get("digest_cursor", body.get("digestCursor"))
         updates["digest_cursor"] = 0 if raw_cursor is None else raw_cursor
 
-    if "working_note" in body or "workingNote" in body:
-        updates["working_note"] = body.get("working_note", body.get("workingNote"))
+    if "prior_context" in body or "priorContext" in body:
+        updates["prior_context"] = body.get("prior_context", body.get("priorContext"))
 
     if "active_intentions" in body or "activeIntentions" in body:
         updates["active_intentions"] = body.get("active_intentions", body.get("activeIntentions"))
+
+    if "memory_cache" in body or "memoryCache" in body:
+        updates["memory_cache"] = body.get("memory_cache", body.get("memoryCache"))
 
     if "pending_diary_memory_ids" in body or "pendingDiaryMemoryIds" in body:
         updates["pending_diary_memory_ids"] = body.get(
