@@ -1649,7 +1649,6 @@ async def _run_retrieve(
     *,
     conversation_id: str | None = None,
     persist_llm_state: bool = False,
-    apply_turn_maintenance: bool = True,
     llm_dedupe_baseline: Any | None = None,
 ) -> dict[str, Any]:
     safe = _safe_payload(payload)
@@ -1681,27 +1680,6 @@ async def _run_retrieve(
     scoped_user = str((where or {}).get("user_id") or "user").strip() or "user"
     if scoped_soul:
         async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(scoped_user, scoped_soul), asyncio.Lock()):
-            if method == "rag" and scoped_conversation_id and apply_turn_maintenance:
-                current_state: dict[str, Any] | None = None
-                db_path = _sqlite_current_path(scoped_user or None, scoped_soul)
-                if db_path is not None and db_path.exists():
-                    con = _sqlite_connect(db_path)
-                    try:
-                        con.row_factory = sqlite3.Row
-                        _sqlite_ensure_conversation_state_schema(con)
-                        current_state = _conversation_state_from_row(_conversation_state_row(con, scoped_conversation_id))
-                    finally:
-                        con.close()
-                _write_conversation_state(
-                    scoped_conversation_id,
-                    soul_id=scoped_soul or None,
-                    user_id=scoped_user or None,
-                    updates={
-                        "active_intentions": _apply_intention_turn_maintenance_impl(
-                            (current_state or {}).get("active_intentions")
-                        ),
-                    },
-                )
             result = await svc.retrieve(memu_queries, where=where)
             if method == "llm" and isinstance(result, dict):
                 result = {**result, "categories": []}
@@ -3299,26 +3277,6 @@ async def conversation_turn(
     safe["conversation_id"] = cid
     safe["conversationId"] = cid
 
-    rag_payload = {**safe, "method": "rag", "query": message}
-    try:
-        rag_out = await _run_retrieve(rag_payload, conversation_id=cid, persist_llm_state=False)
-    except Exception as exc:
-        # Long OCR-like text can produce invalid FTS query syntax in SQLite MATCH.
-        # Retry once with a conservative alnum/space query for retrieval context.
-        if "fts5: syntax error" not in str(exc).lower():
-            raise
-        fallback_query = " ".join(re.sub(r"[^0-9A-Za-z\\s]", " ", message).split())
-        if not fallback_query:
-            raise
-        rag_payload["query"] = fallback_query[:8000]
-        rag_out = await _run_retrieve(
-            rag_payload,
-            conversation_id=cid,
-            persist_llm_state=False,
-            apply_turn_maintenance=False,
-        )
-    rag_result = rag_out.get("result") if isinstance(rag_out, dict) else None
-
     state_row: dict[str, Any] | None = None
     soul_card: str | None = None
     db_path = _sqlite_current_path(uid, soul)
@@ -3355,30 +3313,28 @@ async def conversation_turn(
 
     prior_context = str(state_row.get("prior_context") or "").strip() or None
     memory_cache_before = _normalize_memory_cache_impl(state_row.get("memory_cache"))
-    intention_stack_before = _normalize_intention_stack_impl(state_row.get("active_intentions"))
+    intention_stack_before = _apply_intention_turn_maintenance_impl(state_row.get("active_intentions"))
 
     turn_system_prompt = _make_turn_system_prompt(soul, soul_card=soul_card)
 
-    apimw_task: asyncio.Task | None = None
-    if run_apimw:
-        apimw_payload = {**safe, "method": "llm", "query": message}
-        apimw_task = asyncio.create_task(
-            _run_retrieve(
-                apimw_payload,
-                conversation_id=cid,
-                persist_llm_state=True,
-                llm_dedupe_baseline=rag_result if isinstance(rag_result, dict) else None,
-            )
+    rag_payload = {**safe, "method": "rag", "query": message}
+    try:
+        rag_out = await _run_retrieve(rag_payload, conversation_id=cid, persist_llm_state=False)
+    except Exception as exc:
+        # Long OCR-like text can produce invalid FTS query syntax in SQLite MATCH.
+        # Retry once with a conservative alnum/space query for retrieval context.
+        if "fts5: syntax error" not in str(exc).lower():
+            raise
+        fallback_query = " ".join(re.sub(r"[^0-9A-Za-z\\s]", " ", message).split())
+        if not fallback_query:
+            raise
+        rag_payload["query"] = fallback_query[:8000]
+        rag_out = await _run_retrieve(
+            rag_payload,
+            conversation_id=cid,
+            persist_llm_state=False,
         )
-
-        if not wait_apimw:
-            def _on_apimw_done(task: asyncio.Task) -> None:
-                try:
-                    task.result()
-                except Exception:
-                    logger.exception("APImw background retrieve failed for %s", cid)
-
-            apimw_task.add_done_callback(_on_apimw_done)
+    rag_result = rag_out.get("result") if isinstance(rag_out, dict) else None
 
     turn_prompt = _build_turn_prompt(
         user_message=message,
@@ -3428,15 +3384,17 @@ async def conversation_turn(
     annulment_memory_ids: list[str] = []
 
     if not dry_run:
-        state_out, state_path = _write_conversation_state(
-            cid,
-            soul_id=soul,
-            user_id=uid,
-            updates={
-                "active_intentions": intention_stack_after,
-                "memory_cache": memory_cache_after,
-            },
-        )
+        state_lock = _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul), asyncio.Lock())
+        async with state_lock:
+            state_out, state_path = _write_conversation_state(
+                cid,
+                soul_id=soul,
+                user_id=uid,
+                updates={
+                    "active_intentions": intention_stack_after,
+                    "memory_cache": memory_cache_after,
+                },
+            )
 
         annulment_memory_ids = await _persist_annulment_memories(
             svc=svc,
@@ -3447,14 +3405,37 @@ async def conversation_turn(
         )
 
     apimw_status = "skipped_dry_run" if dry_run else "not_started"
-    if (not dry_run) and apimw_task is not None:
-        apimw_status = "started"
+    if (not dry_run) and run_apimw:
+        apimw_payload = {**safe, "method": "llm", "query": message}
         if wait_apimw:
             try:
-                await apimw_task
+                await _run_retrieve(
+                    apimw_payload,
+                    conversation_id=cid,
+                    persist_llm_state=True,
+                    llm_dedupe_baseline=rag_result if isinstance(rag_result, dict) else None,
+                )
                 apimw_status = "completed"
             except Exception:
                 apimw_status = "failed"
+        else:
+            apimw_status = "started"
+            apimw_task = asyncio.create_task(
+                _run_retrieve(
+                    apimw_payload,
+                    conversation_id=cid,
+                    persist_llm_state=True,
+                    llm_dedupe_baseline=rag_result if isinstance(rag_result, dict) else None,
+                )
+            )
+
+            def _on_apimw_done(task: asyncio.Task) -> None:
+                try:
+                    task.result()
+                except Exception:
+                    logger.exception("APImw background retrieve failed for %s", cid)
+
+            apimw_task.add_done_callback(_on_apimw_done)
 
     out: dict[str, Any] = {
         "ok": True,
