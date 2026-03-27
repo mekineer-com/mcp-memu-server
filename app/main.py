@@ -3249,6 +3249,7 @@ async def conversation_retrieve(
                 _state_row, soul_card, _db_path = _load_turn_state_and_soul_card(
                     cid, user_id=uid, soul_id=soul_id,
                 )
+                soul_card = soul_card or (str(safe.get("soul_card") or "").strip() or None)
 
                 message = _pick_str(safe, "message", "query", "text") or ""
                 history = _normalize_turn_history(safe.get("history"))
@@ -3342,6 +3343,7 @@ async def conversation_turn(
             user_id=uid,
             soul_id=soul_id,
         )
+        soul_card = soul_card or (str(safe.get("soul_card") or "").strip() or None)
 
         prior_context = str(state_row.get("prior_context") or "").strip() or None
         memory_cache_before = _normalize_memory_cache_impl(state_row.get("memory_cache"))

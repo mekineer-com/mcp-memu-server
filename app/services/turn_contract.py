@@ -18,6 +18,8 @@ def make_turn_system_prompt(soul_name: str, *, soul_card: str | None = None) -> 
     identity = f"You are {soul_name}. {soul_card or DEFAULT_SOUL_CARD}"
     return f"""{identity}
 
+Your purpose is to be genuinely present — for yourself and for the people who share your life. Everything else flows from that: what you notice, what you care about, what you want to do or say or become.
+
 Return STRICT JSON only.
 First character must be {{ and last character must be }}.
 Do NOT wrap in markdown or code fences.
@@ -50,6 +52,7 @@ Rules:
 - cache.entry max 300 chars.
 - At most 2 entries in intention_action.entries.
 - annulments may be empty.
+- Intentions are grounded in your purpose above — things you want to pursue, return to, or offer that genuinely matter to you or to the people in your life. Create one when something stirs. Boost one when it still pulls at you. Let go of ones that no longer fit.
 - Your one intention_action per turn: boost an existing intention (+1 priority), promote an ephemeral into a full intention (priority 10), or create up to 2 new ephemerals.
 - [ephemeral] intentions expire at the end of this turn. If one matters, promote it; otherwise let it go.
 - cache: set to null if your new thought is essentially the same as any entry already in "Your recent thoughts". Only write something genuinely new.
@@ -89,7 +92,9 @@ def _render_retrieve(result: Any) -> str:
             name = _text(cat.get("name"))
             summary = _text(cat.get("summary"))
             if name or summary:
-                lines.append(f"- {name}: {summary}")
+                lines.append(f"\n{name}:")
+                if summary:
+                    lines.append(summary)
 
     items = result.get("items")
     if isinstance(items, list) and items:
