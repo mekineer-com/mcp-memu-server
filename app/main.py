@@ -1554,7 +1554,7 @@ def _load_turn_state_and_soul_card(
 
 
 def _safe_fts_query(text: str) -> str:
-    return " ".join(re.sub(r"[^0-9A-Za-z\\s]", " ", str(text or "")).split())[:8000]
+    return " ".join(re.sub(r"[^0-9A-Za-z\s]", " ", str(text or "")).split())[:8000]
 
 
 async def _run_rag_with_fallback(
@@ -3296,173 +3296,208 @@ async def conversation_turn(
     payload: dict[str, Any] = Body(...),
 ):
     cid = str(conversation_id or "").strip()
-    if not cid:
-        raise HTTPException(status_code=400, detail="conversation_id is required")
-
-    safe = _safe_payload(payload if isinstance(payload, dict) else {})
-    if not isinstance(safe.get("llm_profiles"), dict):
-        safe["llm_profiles"] = _default_llm_profiles_from_server_config()
-
-    user_scope = safe.get("user")
-    if not isinstance(user_scope, dict):
-        user_scope = _extract_scope(safe) or None
-    if not isinstance(user_scope, dict):
-        raise HTTPException(status_code=400, detail="user scope required")
-
-    uid = str(user_scope.get("user_id") or "").strip()
-    soul = str(user_scope.get("soul_id") or "").strip()
-    if not uid or not soul:
-        raise HTTPException(status_code=400, detail="user_id and soul_id required")
-
-    message = _pick_str(safe, "message", "query", "text")
-    if not message:
-        raise HTTPException(status_code=400, detail="message is required")
-
-    history = _normalize_turn_history(safe.get("history"))
-    dry_run = bool(safe.get("dry_run", safe.get("dryRun", False)))
-    run_apimw = bool(safe.get("run_apimw", True))
-    wait_apimw = bool(safe.get("wait_apimw", False))
-    include_debug = bool(safe.get("debug", False))
-    if dry_run:
-        run_apimw = False
-        wait_apimw = False
-
-    safe["user"] = {"user_id": uid, "soul_id": soul, "conversation_id": cid}
-    safe["conversation_id"] = cid
-    safe["conversationId"] = cid
-
-    state_row, soul_card, db_path = _load_turn_state_and_soul_card(
-        cid,
-        user_id=uid,
-        soul_id=soul,
-    )
-
-    prior_context = str(state_row.get("prior_context") or "").strip() or None
-    memory_cache_before = _normalize_memory_cache_impl(state_row.get("memory_cache"))
-    intention_stack_before = _apply_intention_turn_maintenance_impl(state_row.get("active_intentions"))
-
-    turn_system_prompt = _make_turn_system_prompt(soul, soul_card=soul_card)
-
-    rag_payload = {**safe, "method": "rag", "query": message}
-    rag_out = await _run_rag_with_fallback(rag_payload, conversation_id=cid)
-    rag_result = rag_out.get("result") if isinstance(rag_out, dict) else None
-
-    turn_prompt = _build_turn_prompt(
-        user_message=message,
-        history=history,
-        prior_context=prior_context,
-        rag_result=rag_result,
-        memory_cache=memory_cache_before,
-        intention_stack=intention_stack_before,
-    )
-
-    svc = _get_service_from_payload(safe, retrieve_method_override="rag")
-    llm_raw = await svc._get_llm_client().chat(
-        turn_prompt,
-        system_prompt=turn_system_prompt,
-        temperature=0.0,
-        max_tokens=1000,
-        response_format={"type": "json_object"},
-    )
     try:
-        turn_data = _parse_turn_contract(llm_raw)
-    except Exception as exc:
-        raw_snippet = str(llm_raw or "")[:200]
-        raise HTTPException(
-            status_code=502,
-            detail=f"turn contract parse failure: {exc}; raw={raw_snippet!r}",
-        ) from exc
+        if not cid:
+            raise HTTPException(status_code=400, detail="conversation_id is required")
 
-    memory_cache_after = list(memory_cache_before)
-    cache_entry = str(turn_data.get("cache_entry") or "").strip()
-    if cache_entry:
-        memory_cache_after = _append_memory_cache_entry(memory_cache_after, cache_entry)
+        safe = _safe_payload(payload if isinstance(payload, dict) else {})
+        if not isinstance(safe.get("llm_profiles"), dict):
+            safe["llm_profiles"] = _default_llm_profiles_from_server_config()
 
-    inner_thought = str(turn_data.get("inner_thought") or "").strip()
-    if inner_thought:
-        memory_cache_after = _append_memory_cache_entry(memory_cache_after, inner_thought)
+        user_scope = safe.get("user")
+        if not isinstance(user_scope, dict):
+            user_scope = _extract_scope(safe) or None
+        if not isinstance(user_scope, dict):
+            raise HTTPException(status_code=400, detail="user scope required")
 
-    intention_stack_after = _apply_intention_action(intention_stack_before, turn_data.get("intention_action"))
-    annulments = turn_data.get("annulments") if isinstance(turn_data.get("annulments"), list) else []
-    annulment_ids = [str(row.get("intention_id") or "").strip() for row in annulments if isinstance(row, dict)]
-    intention_stack_after = _remove_intentions(
-        intention_stack_after,
-        [item_id for item_id in annulment_ids if item_id],
-    )
+        uid = str(user_scope.get("user_id") or "").strip()
+        soul = str(user_scope.get("soul_id") or "").strip()
+        if not uid or not soul:
+            raise HTTPException(status_code=400, detail="user_id and soul_id required")
 
-    state_out = state_row
-    state_path = db_path
-    annulment_memory_ids: list[str] = []
+        message = _pick_str(safe, "message", "query", "text")
+        if not message:
+            raise HTTPException(status_code=400, detail="message is required")
 
-    if not dry_run:
-        state_lock = _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul), asyncio.Lock())
-        async with state_lock:
-            state_out, state_path = _write_conversation_state(
-                cid,
-                soul_id=soul,
-                user_id=uid,
-                updates={
-                    "active_intentions": intention_stack_after,
-                    "memory_cache": memory_cache_after,
-                },
-            )
+        history = _normalize_turn_history(safe.get("history"))
+        dry_run = bool(safe.get("dry_run", safe.get("dryRun", False)))
+        run_apimw_raw = safe.get("run_apimw", safe.get("runApimw", True))
+        wait_apimw_raw = safe.get("wait_apimw", safe.get("waitApimw", False))
+        run_apimw = True if run_apimw_raw is None else bool(run_apimw_raw)
+        wait_apimw = False if wait_apimw_raw is None else bool(wait_apimw_raw)
+        include_debug = bool(safe.get("debug", False))
+        if dry_run:
+            run_apimw = False
+            wait_apimw = False
 
-        annulment_memory_ids = await _persist_annulment_memories(
-            svc=svc,
-            user_scope={"user_id": uid, "soul_id": soul},
-            conversation_id=cid,
-            intention_stack_before=intention_stack_before,
-            annulments=[row for row in annulments if isinstance(row, dict)],
+        safe["user"] = {"user_id": uid, "soul_id": soul, "conversation_id": cid}
+        safe["conversation_id"] = cid
+        safe["conversationId"] = cid
+
+        state_row, soul_card, db_path = _load_turn_state_and_soul_card(
+            cid,
+            user_id=uid,
+            soul_id=soul,
         )
 
-    apimw_status = "skipped_dry_run" if dry_run else "not_started"
-    if (not dry_run) and run_apimw:
-        apimw_payload = {**safe, "method": "llm", "query": message}
-        if wait_apimw:
-            try:
-                await _run_retrieve(
-                    apimw_payload,
-                    conversation_id=cid,
-                    persist_llm_state=True,
-                    llm_dedupe_baseline=rag_result if isinstance(rag_result, dict) else None,
+        prior_context = str(state_row.get("prior_context") or "").strip() or None
+        memory_cache_before = _normalize_memory_cache_impl(state_row.get("memory_cache"))
+        intention_stack_before = _apply_intention_turn_maintenance_impl(state_row.get("active_intentions"))
+
+        turn_system_prompt = _make_turn_system_prompt(soul, soul_card=soul_card)
+
+        rag_payload = {**safe, "method": "rag", "query": message}
+        rag_out = await _run_rag_with_fallback(rag_payload, conversation_id=cid)
+        rag_result = rag_out.get("result") if isinstance(rag_out, dict) else None
+
+        turn_prompt = _build_turn_prompt(
+            user_message=message,
+            history=history,
+            prior_context=prior_context,
+            rag_result=rag_result,
+            memory_cache=memory_cache_before,
+            intention_stack=intention_stack_before,
+        )
+
+        svc = _get_service_from_payload(safe, retrieve_method_override="rag")
+        llm_raw = await svc._get_llm_client().chat(
+            turn_prompt,
+            system_prompt=turn_system_prompt,
+            temperature=0.0,
+            max_tokens=1000,
+            response_format={"type": "json_object"},
+        )
+        try:
+            turn_data = _parse_turn_contract(llm_raw)
+        except Exception as exc:
+            raw_snippet = str(llm_raw or "")[:200]
+            raise HTTPException(
+                status_code=502,
+                detail=f"turn contract parse failure: {exc}; raw={raw_snippet!r}",
+            ) from exc
+
+        memory_cache_after = list(memory_cache_before)
+        cache_entry = str(turn_data.get("cache_entry") or "").strip()
+        if cache_entry:
+            memory_cache_after = _append_memory_cache_entry(memory_cache_after, cache_entry)
+
+        inner_thought = str(turn_data.get("inner_thought") or "").strip()
+        if inner_thought:
+            memory_cache_after = _append_memory_cache_entry(memory_cache_after, inner_thought)
+
+        intention_stack_after = _apply_intention_action(intention_stack_before, turn_data.get("intention_action"))
+        annulments = turn_data.get("annulments") if isinstance(turn_data.get("annulments"), list) else []
+        annulment_ids = [str(row.get("intention_id") or "").strip() for row in annulments if isinstance(row, dict)]
+        intention_stack_after = _remove_intentions(
+            intention_stack_after,
+            [item_id for item_id in annulment_ids if item_id],
+        )
+
+        state_out = state_row
+        state_path = db_path
+        annulment_memory_ids: list[str] = []
+
+        if not dry_run:
+            state_lock = _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul), asyncio.Lock())
+            async with state_lock:
+                state_out, state_path = _write_conversation_state(
+                    cid,
+                    soul_id=soul,
+                    user_id=uid,
+                    updates={
+                        "active_intentions": intention_stack_after,
+                        "memory_cache": memory_cache_after,
+                    },
                 )
-                apimw_status = "completed"
-            except Exception:
-                apimw_status = "failed"
-        else:
-            apimw_status = "started"
-            apimw_task = asyncio.create_task(
-                _run_retrieve(
-                    apimw_payload,
-                    conversation_id=cid,
-                    persist_llm_state=True,
-                    llm_dedupe_baseline=rag_result if isinstance(rag_result, dict) else None,
-                )
+
+            annulment_memory_ids = await _persist_annulment_memories(
+                svc=svc,
+                user_scope={"user_id": uid, "soul_id": soul},
+                conversation_id=cid,
+                intention_stack_before=intention_stack_before,
+                annulments=[row for row in annulments if isinstance(row, dict)],
             )
 
-            def _on_apimw_done(task: asyncio.Task) -> None:
+        apimw_status = "skipped_dry_run" if dry_run else "not_started"
+        if (not dry_run) and run_apimw:
+            apimw_payload = {**safe, "method": "llm", "query": message}
+            if wait_apimw:
                 try:
-                    task.result()
+                    await _run_retrieve(
+                        apimw_payload,
+                        conversation_id=cid,
+                        persist_llm_state=True,
+                        llm_dedupe_baseline=rag_result if isinstance(rag_result, dict) else None,
+                    )
+                    apimw_status = "completed"
                 except Exception:
-                    logger.exception("APImw background retrieve failed for %s", cid)
+                    apimw_status = "failed"
+            else:
+                apimw_status = "started"
+                apimw_task = asyncio.create_task(
+                    _run_retrieve(
+                        apimw_payload,
+                        conversation_id=cid,
+                        persist_llm_state=True,
+                        llm_dedupe_baseline=rag_result if isinstance(rag_result, dict) else None,
+                    )
+                )
 
-            apimw_task.add_done_callback(_on_apimw_done)
+                def _on_apimw_done(task: asyncio.Task) -> None:
+                    try:
+                        task.result()
+                    except Exception:
+                        logger.exception("APImw background retrieve failed for %s", cid)
 
-    out: dict[str, Any] = {
-        "ok": True,
-        "conversation_id": cid,
-        "response": str(turn_data.get("response") or "").strip(),
-        "apimw": apimw_status,
-    }
-    if include_debug:
-        out["state"] = state_out
-        out["path"] = str(state_path) if state_path is not None else None
-        out["annulment_memory_ids"] = annulment_memory_ids
-        out["turn_contract"] = turn_data
-        out["turn_prompt"] = turn_prompt
-        out["turn_system_prompt"] = turn_system_prompt
-        out["dry_run"] = dry_run
-    return out
+                apimw_task.add_done_callback(_on_apimw_done)
+
+        out: dict[str, Any] = {
+            "ok": True,
+            "conversation_id": cid,
+            "response": str(turn_data.get("response") or "").strip(),
+            "apimw": apimw_status,
+        }
+        if include_debug:
+            out["state"] = state_out
+            out["path"] = str(state_path) if state_path is not None else None
+            out["annulment_memory_ids"] = annulment_memory_ids
+            out["turn_contract"] = turn_data
+            out["turn_prompt"] = turn_prompt
+            out["turn_system_prompt"] = turn_system_prompt
+            out["dry_run"] = dry_run
+
+        _record_call(
+            "conversation.turn",
+            safe,
+            ok=True,
+            info={
+                "conversationId": cid,
+                "dryRun": dry_run,
+                "runApimw": run_apimw,
+                "waitApimw": wait_apimw,
+                "apimw": apimw_status,
+                "responseLen": len(str(out.get("response") or "")),
+            },
+        )
+        return out
+    except HTTPException:
+        _record_call(
+            "conversation.turn",
+            payload if isinstance(payload, dict) else None,
+            ok=False,
+            info={"conversationId": cid or None},
+            error="HTTPException",
+        )
+        raise
+    except Exception as exc:
+        _record_call(
+            "conversation.turn",
+            payload if isinstance(payload, dict) else None,
+            ok=False,
+            info={"conversationId": cid or None},
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # memU-ui compatibility: it calls /api/*
