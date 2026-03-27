@@ -29,12 +29,17 @@ mcp-memu-server/
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/health` | GET | Health check |
+| `/ping` | GET | Plugin ping (returns ok + serverInstanceId) |
 | `/memorize` | POST | Extract memories from conversation text |
 | `/retrieve` | POST | Query memories (rag or llm method) |
+| `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt for chat path |
+| `/conversation/{id}/turn` | POST | Soul turn loop: run LLM with turn contract, persist intentions + cache |
+| `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/diary/generate` | POST | Generate diary entry from recent memories |
+| `/intentions` | GET | List active intentions for a soul |
+| `/intentions/{id}` | PATCH | Update intention status/priority |
 | `/categories` | GET | List all categories |
 | `/categories/search` | POST | Search categories |
-| `/conversation/{id}/state` | GET | Conversation working state |
 | `/clear` | POST | Delete memories in scope |
 | `/config` | GET/POST | Read or update runtime config |
 | `/reload` | POST | Reload config from disk |
@@ -47,6 +52,8 @@ mcp-memu-server/
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
 | `app/services/diary.py` | `generate_diary()`, diary/self-model XML parsing, self-model load/format, intention creation. All diary+self-model+intention writes in one SQLite transaction. |
 | `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, `pending_diary_memory_ids` queue management |
+| `app/services/turn_contract.py` | `make_turn_system_prompt()`, `build_turn_prompt()`, `parse_turn_contract()` — soul turn prompt construction and JSON contract parsing |
+| `app/services/intention_state.py` | `normalize_intentions_stack()`, `format_intentions_for_prompt()`, `upsert_intentions_stack_entries()` — intentions normalization and prompt formatting |
 
 ## How It Connects to memu
 
@@ -67,8 +74,10 @@ from memu.prompts.memory_type import ...  # type prompts
 | Add API endpoint | `app/main.py` — add `@app.post/get` handler, use `_get_service_from_payload()` |
 | Modify memorize flow | `app/main.py` → `_run_memorize()` (calls `svc.memorize()`) |
 | Modify retrieval flow | `app/main.py` → `_run_retrieve()` (calls `svc.retrieve()`) |
+| Modify soul turn loop | `app/main.py` → `conversation_turn()` + `app/services/turn_contract.py` |
 | Modify diary/self-model | `app/services/diary.py` |
 | Modify conversation state | `app/services/state.py` |
+| Modify intentions | `app/services/intention_state.py` |
 | Modify DB schema/helpers | `app/db.py` |
 | Change config shape | `config.json` + `app/main.py` → `_load_config()` |
 | Add route group | Create `app/api/v1/{group}.py` with APIRouter, include in main.py |

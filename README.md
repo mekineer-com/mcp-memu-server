@@ -1,172 +1,128 @@
-# memU-server: Local Backend Service for AI Memory System
+# mcp-memu-server
 
-memU-server is the backend management service for MemU, responsible for providing API endpoints, data storage, and management capabilities, as well as deep integration with the core memU framework. It powers the frontend memU-ui with reliable data support, ensuring efficient reading, writing, and maintenance of Agent memories. memU-server can be deployed locally or in private environments and supports quick startup and configuration via Docker, enabling developers to manage the AI memory system in a secure environment.
+Local FastAPI server that wraps the `memu` memory engine and exposes it as an HTTP API. Handles conversation state, diary generation, the soul turn loop, and all orchestration between clients and the engine.
 
-- Core Algorithm 👉 memU: https://github.com/NevaMind-AI/memU
-- One call = response + memory 👉 memU Response API: https://memu.pro/docs#responseapi
-- Local-first deployment: run this service directly in your own environment.
+This is part of the memU local stack — a private fork, not affiliated with NevaMind-AI.
 
 ---
 
-## ⭐ Star Us on GitHub
+## Requirements
 
-Star memU-server to get notified about new releases and join our growing community of AI developers building intelligent agents with persistent memory capabilities.
-💬 Join our Discord community: https://discord.gg/memu
+- Python 3.12+
+- `memu` engine checked out and pointed to via `config.json`
+- An LLM provider API key (OpenAI-compatible)
+- No Docker required
 
 ---
 
-## 🚀 Get Started
-
-### Config file example
-This repo now includes a user-editable example config at `config.example.json`.
-
-Copy it to `config.json` in the `mcp-memu-server` folder, then edit the paths and API key:
+## Quick start
 
 ```bash
+# 1. Copy the example config
 cp config.example.json config.json
+
+# 2. Edit config.json — at minimum:
+#    llm.api_key, storage.metadata_store.dsn, memu.path
+
+# 3. Install deps
+pip install -e .
+
+# 4. Start the server
+python run.py
+# or: uvicorn app.main:app --host 127.0.0.1 --port 8099
 ```
 
-Notes:
-- `memu.path` should point to your local memU source tree (repo root or `src` path both work).
-- Relative paths in the example are resolved from the `mcp-memu-server` folder.
-- The example uses port `8098`, which is the normal default port for non-dev installs.
+The server runs on `http://127.0.0.1:8099` by default.
 
-### Run from source
-1. Ensure you have Python 3.12+ and [uv](https://docs.astral.sh/uv/) installed.
-2. Clone the repository and enter it:
-   ```bash
-   git clone https://github.com/NevaMind-AI/memU-server.git
-   cd memU-server
-   ```
-3. Edit `config.json` and set:
-   - `llm.api_key`
-   - `storage.metadata_store.dsn`
-4. Install dependencies and start the FastAPI dev server:
-   ```bash
-   uv sync
-   uv run fastapi dev
-   ```
-   The server runs on `http://127.0.0.1:8000`.
+---
 
-### Run local infrastructure with Docker Compose
-Start local infrastructure dependencies (PostgreSQL and Temporal). Start the FastAPI API server separately (see "Run from source" above):
+## Config (`config.json`)
+
+```json
+{
+  "llm": {
+    "provider": "openai",
+    "api_key": "sk-...",
+    "base_url": "https://api.openai.com/v1",
+    "chat_model": "gpt-4o",
+    "embed_model": "text-embedding-3-large"
+  },
+  "storage": {
+    "metadata_store": { "provider": "sqlite", "dsn": "../memu/sqlite/memu.db" }
+  },
+  "listen": { "host": "127.0.0.1", "port": 8099 },
+  "memu": { "path": "../memu/src" },
+  "categories": {
+    "defaults": [
+      { "name": "Identity", "description": "..." },
+      { "name": "Preferences", "description": "..." },
+      { "name": "Relationships", "description": "..." },
+      { "name": "Experiences", "description": "..." }
+    ],
+    "allow_dynamic_categories": true
+  },
+  "retrieve": { "method": "rag" }
+}
+```
+
+See `config.example.json` for the full reference. Relative paths in config are resolved from the `mcp-memu-server/` directory.
+
+---
+
+## Key endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/health` | GET | Health check |
+| `/memorize` | POST | Extract memories from conversation (async, returns 202) |
+| `/retrieve` | POST | Query memories |
+| `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt (RAG + prior context) |
+| `/conversation/{id}/turn` | POST | Soul turn loop: run LLM, persist intentions + cache |
+| `/conversation/{id}/state` | GET/PATCH | Conversation working state |
+| `/diary/generate` | POST | Generate diary entry from recent memories |
+| `/intentions` | GET | List active intentions |
+| `/intentions/{id}` | PATCH | Update intention status/priority |
+| `/categories` | GET | List all categories |
+| `/clear` | POST | Delete memories in scope |
+| `/config` | GET/POST | Read or update runtime config |
+| `/diag/*` | GET | Diagnostic pages (recent memories, SQLite browser) |
+
+See `INDEX.md` for the full endpoint list and task→file guide.
+
+---
+
+## Codebase orientation
+
+```
+mcp-memu-server/
+├── app/main.py              # All endpoints + business logic
+├── app/db.py                # SQLite helpers
+├── app/database.py          # SQLAlchemy async engine
+├── app/services/diary.py    # Diary + self-model generation
+├── app/services/state.py    # Conversation state management
+├── app/services/turn_contract.py   # Soul turn prompt construction
+├── app/services/intention_state.py # Intentions normalization
+├── run.py                   # Entry point
+└── config.json              # Runtime config (not committed)
+```
+
+---
+
+## Development
 
 ```bash
-# Start infrastructure services (PostgreSQL, Temporal, Temporal UI)
-docker compose up -d
+# Syntax check
+python3 -m py_compile app/main.py
 
-# View logs
-docker compose logs -f
+# Run tests
+make test
+
+# Tail logs
+tail -f mcp-memu-server.log
 ```
 
-**Services:**
-| Service | Port | Description |
-|---------|------|-------------|
-| PostgreSQL | 5432 | Database with pgvector extension |
-| Temporal | 7233 | Workflow engine gRPC API |
-| Temporal UI | 8088 | Web management interface |
-
-**Database configuration note:**
-- Runtime DB selection is config-only.
-- Set `storage.metadata_store.dsn` in `config.json` (for example PostgreSQL or SQLite DSN/path).
-- The API server no longer reads `DATABASE_URL` / `DATABASE_*` env branches.
-
-### Run with Docker
-1. Export your OpenAI API key so Docker can read it:
-   ```bash
-   export OPENAI_API_KEY=your_api_key_here
-   ```
-2. Pull the latest image:
-   ```bash
-   docker pull nevamindai/memu-server:latest
-   ```
-3. Start the container (optionally mount a host directory to persist `./data`):
-   ```bash
-   docker run --rm -p 8000:8000 \
-     -e OPENAI_API_KEY=$OPENAI_API_KEY \
-     nevamindai/memu-server:latest
-   ```
-   Access the API at `http://127.0.0.1:8000`.
-
-### API Endpoints
-- `POST /memorize`: persist a conversation-style payload for later retrieval. Example body shape:
-  ```json
-  {
-    "content": [
-      {"role": "user", "content": {"text": "..."}, "created_at": "YYYY-MM-DD HH:MM:SS"},
-      {"role": "assistant", "content": {"text": "..."}, "created_at": "YYYY-MM-DD HH:MM:SS"}
-    ]
-  }
-  ```
-- `POST /retrieve`: query stored memories with a text prompt:
-  ```json
-  {"query": "your question about the conversation"}
-  ```
-- To smoke-test locally, set `MEMU_API_URL` (defaults to `http://127.0.0.1:12345`), POST a conversation to `/memorize`, then call `/retrieve` with a text query.
-
 ---
 
-## 🔑 Key Features
+## License
 
-### Quick Deployment
-- Docker image provided
-- Launch backend service and database with a single command
-- Provides API endpoints compatible with memU-ui, ensuring stable and reliable data services
-
-### Comprehensive Memory Management
-(Some features planned for future releases)
-- Memory Data Management
-  - Support creating, reading, and deleting Memory Submissions
-  - Memorize results support create, read, update, and delete (CRUD) operations
-  - Retrieve records support querying and tracking
-  - Tracks LLM token usage for transparent and controllable costs
-- User and Permission Management
-  - User login and registration system
-  - Role-based access control: Developer / Admin / Regular User
-  - Backend manages access scope and permissions for secure operations
-
----
-
-## 🧩 Why MemU?
-
-Most memory systems in current LLM pipelines rely heavily on explicit modeling, requiring manual definition and annotation of memory categories. This limits AI’s ability to truly understand memory and makes it difficult to support diverse usage scenarios.
-
-MemU offers a flexible and robust alternative, inspired by hierarchical storage architecture in computer systems. It progressively transforms heterogeneous input data into queryable and interpretable textual memory.
-
-Its core architecture consists of three layers: **Resource Layer → Memory Item Layer → MemoryCategory Layer**.
-
-<img width="1363" height="563" alt="Three-Layer Architecture Diagram" src="https://github.com/user-attachments/assets/2803b54a-7595-42f7-85ad-1ea505a6d57c" />
-
-- Resource Layer: Multimodal raw data warehouse
-- Memory Item Layer: Discrete extracted memory units
-- MemoryCategory Layer: Aggregated textual memory units
-
-### Key Features:
-- Full Traceability: Track from raw data → items → documents and back
-- Memory Lifecycle: Memorization → Retrieval → Self-evolution
-- Two Retrieval Methods:
-  - RAG-based: Fast embedding vector search
-  - LLM-based: Direct file reading with deep semantic understanding
-- Self-Evolving: Adapts memory structure based on usage patterns
-
-<img width="1365" height="308" alt="process" src="https://github.com/user-attachments/assets/3c5ce3ff-14c0-4d2d-aec7-c93f04a1f3e4" />
-
----
-
-## 📄 License
-
-By contributing to memU-server, you agree that your contributions will be licensed under the **GPLv3 License**.
-
----
-
-## 🌍 Community
-
-For more information please contact info@nevamind.ai
-
-- GitHub Issues: Report bugs, request features, and track development. [Submit an issue](https://github.com/NevaMind-AI/memU-server/issues)
-- Discord: Get real-time support, chat with the community, and stay updated. [Join us](https://discord.com/invite/hQZntfGsbJ)
-- X (Twitter): Follow for updates, AI insights, and key announcements. [Follow us](https://x.com/memU_ai)
-
-
-## Python 3.12 / Alpine
-If you're on Alpine (Python 3.12), see `README_PY312.md`.
+GPLv3. See `LICENSE` and `NOTICE`.
