@@ -148,6 +148,25 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
     con.commit()
 
 
+def normalize_text_list(value: Any) -> list[str]:
+    parsed = json_from_db(value)
+    if not isinstance(parsed, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in parsed:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def merge_unique_text_lists(left: Any, right: Any) -> list[str]:
+    return normalize_text_list([*normalize_text_list(left), *normalize_text_list(right)])
+
+
 def json_to_db(value: Any) -> str | None:
     if value is None:
         return None

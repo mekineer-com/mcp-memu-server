@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -9,31 +8,19 @@ from typing import Any
 import sqlite3
 from fastapi import HTTPException
 
-from app.db import json_from_db, json_to_db
+from app.db import (
+    json_from_db,
+    json_to_db,
+    merge_unique_text_lists,
+    normalize_text_list,
+    sqlite_connect,
+    sqlite_ensure_conversation_state_schema,
+    sqlite_ensure_nonempty,
+)
+from app.services.intention_state import normalize_intentions_stack, normalize_memory_cache
 
 
-@dataclass(frozen=True)
-class StateDeps:
-    sqlite_current_path: Callable[[str | None, str | None], Path | None]
-    sqlite_connect: Callable[[Path], sqlite3.Connection]
-    sqlite_ensure_nonempty: Callable[[Path], None]
-    sqlite_ensure_conversation_state_schema: Callable[[sqlite3.Connection], None]
-    sqlite_dir_from_cfg: Callable[[dict[str, Any], str | None], Path]
-    config: dict[str, Any]
-    storage_status: Mapping[str, Any]
-    normalize_text_list: Callable[[Any], list[str]]
-    merge_unique_text_lists: Callable[[Any, Any], list[str]]
-    normalize_intentions_stack: Callable[[Any], dict[str, Any]]
-    normalize_memory_cache: Callable[[Any], list[str]]
-
-
-def conversation_state_from_row(
-    row: sqlite3.Row | None,
-    *,
-    normalize_text_list: Callable[[Any], list[str]],
-    normalize_intentions_stack: Callable[[Any], dict[str, Any]],
-    normalize_memory_cache: Callable[[Any], list[str]],
-) -> dict[str, Any] | None:
+def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
     try:
@@ -71,34 +58,14 @@ def conversation_state_empty(
     conversation_id: str,
     soul_id: str | None = None,
     user_id: str | None = None,
-    normalize_intentions_stack: Callable[[Any], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    if normalize_intentions_stack is None:
-        default_stack: dict[str, Any] = {
-            'version': 1,
-            'decay_per_turn': 0.1,
-            'relax_priority': 5.0,
-            'items': [
-                {
-                    'id': 'relax',
-                    'text': 'Relax',
-                    'priority': 5.0,
-                    'ephemeral': False,
-                    'kind': 'relax',
-                    'status': 'active',
-                    'active': True,
-                }
-            ],
-        }
-    else:
-        default_stack = normalize_intentions_stack(None)
     return {
         'conversation_id': conversation_id,
         'soul_id': soul_id,
         'user_id': user_id,
         'digest_cursor': 0,
         'prior_context': None,
-        'intentions_active': default_stack,
+        'intentions_active': normalize_intentions_stack(None),
         'memory_cache': [],
         'pending_diary_memory_ids': [],
         'self_model_id': None,
@@ -108,8 +75,7 @@ def conversation_state_empty(
     }
 
 
-def sqlite_agent_db_paths(*, deps: StateDeps) -> list[Path]:
-    sqlite_dir = deps.sqlite_dir_from_cfg(deps.config, str(deps.storage_status.get('dsn') or ''))
+def sqlite_agent_db_paths(sqlite_dir: Path) -> list[Path]:
     if not sqlite_dir.exists():
         return []
     return sorted([p.resolve() for p in sqlite_dir.glob('*.db') if p.is_file()])
@@ -117,22 +83,16 @@ def sqlite_agent_db_paths(*, deps: StateDeps) -> list[Path]:
 
 def find_conversation_state_across_dbs(
     conversation_id: str,
-    *,
-    deps: StateDeps,
+    sqlite_dir: Path,
 ) -> tuple[Path | None, dict[str, Any] | None]:
-    for db_path in sqlite_agent_db_paths(deps=deps):
-        con = deps.sqlite_connect(db_path)
+    for db_path in sqlite_agent_db_paths(sqlite_dir):
+        con = sqlite_connect(db_path)
         try:
             con.row_factory = sqlite3.Row
-            deps.sqlite_ensure_conversation_state_schema(con)
+            sqlite_ensure_conversation_state_schema(con)
             row = conversation_state_row(con, conversation_id)
             if row is not None:
-                return db_path, conversation_state_from_row(
-                    row,
-                    normalize_text_list=deps.normalize_text_list,
-                    normalize_intentions_stack=deps.normalize_intentions_stack,
-                    normalize_memory_cache=deps.normalize_memory_cache,
-                )
+                return db_path, conversation_state_from_row(row)
         except Exception:
             continue
         finally:
@@ -143,7 +103,8 @@ def find_conversation_state_across_dbs(
 def write_conversation_state(
     conversation_id: str,
     *,
-    deps: StateDeps,
+    sqlite_current_path: Callable[[str | None, str | None], Path | None],
+    sqlite_dir: Path,
     soul_id: str | None = None,
     user_id: str | None = None,
     updates: Mapping[str, Any] | None = None,
@@ -155,36 +116,26 @@ def write_conversation_state(
     scoped_soul = str(soul_id or '').strip() or None
     scoped_user = str(user_id or '').strip() or None
 
-    db_path: Path | None = deps.sqlite_current_path(scoped_user, scoped_soul) if scoped_soul else None
+    db_path: Path | None = sqlite_current_path(scoped_user, scoped_soul) if scoped_soul else None
     existing_state: dict[str, Any] | None = None
     if db_path is None:
-        db_path, existing_state = find_conversation_state_across_dbs(cid, deps=deps)
+        db_path, existing_state = find_conversation_state_across_dbs(cid, sqlite_dir)
         if db_path is None:
             raise HTTPException(status_code=400, detail='soul_id is required when creating new conversation state')
 
-    deps.sqlite_ensure_nonempty(db_path)
-    con = deps.sqlite_connect(db_path)
+    sqlite_ensure_nonempty(db_path)
+    con = sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        deps.sqlite_ensure_conversation_state_schema(con)
+        sqlite_ensure_conversation_state_schema(con)
 
         if existing_state is None:
-            existing_state = conversation_state_from_row(
-                conversation_state_row(con, cid),
-                normalize_text_list=deps.normalize_text_list,
-                normalize_intentions_stack=deps.normalize_intentions_stack,
-                normalize_memory_cache=deps.normalize_memory_cache,
-            )
+            existing_state = conversation_state_from_row(conversation_state_row(con, cid))
 
         if existing_state is None:
             if scoped_soul is None:
                 raise HTTPException(status_code=400, detail='soul_id is required when creating new conversation state')
-            seed = conversation_state_empty(
-                cid,
-                scoped_soul,
-                scoped_user,
-                normalize_intentions_stack=deps.normalize_intentions_stack,
-            )
+            seed = conversation_state_empty(cid, scoped_soul, scoped_user)
             seed['updated_at'] = datetime.now(UTC).isoformat()
             con.execute(
                 """
@@ -240,7 +191,7 @@ INSERT INTO memu_conversation_state (
 
         if append_pending_diary_memory_ids is not None:
             base_pending = field_updates.get('pending_diary_memory_ids', existing_state.get('pending_diary_memory_ids'))
-            field_updates['pending_diary_memory_ids'] = deps.merge_unique_text_lists(
+            field_updates['pending_diary_memory_ids'] = merge_unique_text_lists(
                 base_pending,
                 append_pending_diary_memory_ids,
             )
@@ -257,11 +208,11 @@ INSERT INTO memu_conversation_state (
             raw_prior_context = field_updates.get('prior_context')
             field_updates['prior_context'] = None if raw_prior_context is None else str(raw_prior_context)
         if 'intentions_active' in field_updates:
-            field_updates['intentions_active'] = deps.normalize_intentions_stack(field_updates.get('intentions_active'))
+            field_updates['intentions_active'] = normalize_intentions_stack(field_updates.get('intentions_active'))
         if 'memory_cache' in field_updates:
-            field_updates['memory_cache'] = deps.normalize_memory_cache(field_updates.get('memory_cache'))
+            field_updates['memory_cache'] = normalize_memory_cache(field_updates.get('memory_cache'))
         if 'pending_diary_memory_ids' in field_updates:
-            field_updates['pending_diary_memory_ids'] = deps.normalize_text_list(field_updates.get('pending_diary_memory_ids'))
+            field_updates['pending_diary_memory_ids'] = normalize_text_list(field_updates.get('pending_diary_memory_ids'))
         if 'self_model_id' in field_updates:
             raw_self_model_id = field_updates.get('self_model_id')
             field_updates['self_model_id'] = None if raw_self_model_id is None else (str(raw_self_model_id).strip() or None)
@@ -290,14 +241,7 @@ INSERT INTO memu_conversation_state (
             )
             con.commit()
 
-        state_out = conversation_state_from_row(
-            conversation_state_row(con, cid),
-            normalize_text_list=deps.normalize_text_list,
-            normalize_intentions_stack=deps.normalize_intentions_stack,
-            normalize_memory_cache=deps.normalize_memory_cache,
-        )
-        return state_out or conversation_state_empty(
-            cid, scoped_soul, scoped_user, normalize_intentions_stack=deps.normalize_intentions_stack
-        ), db_path
+        state_out = conversation_state_from_row(conversation_state_row(con, cid))
+        return state_out or conversation_state_empty(cid, scoped_soul, scoped_user), db_path
     finally:
         con.close()

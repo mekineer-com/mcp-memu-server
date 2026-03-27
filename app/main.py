@@ -35,6 +35,8 @@ from fastapi.staticfiles import StaticFiles
 from app.db import (
     json_from_db as _json_from_db,
     json_to_db as _json_to_db,
+    merge_unique_text_lists as _merge_unique_text_lists,
+    normalize_text_list as _normalize_text_list,
     sqlite_connect as _sqlite_connect,
     sqlite_ensure_conversation_state_schema as _sqlite_ensure_conversation_state_schema,
     sqlite_ensure_nonempty as _sqlite_ensure_nonempty,
@@ -45,7 +47,6 @@ from memu.app import MemoryService
 from pydantic import BaseModel
 from app.services.diary import DiaryDeps, generate_diary as generate_diary_service
 from app.services.state import (
-    StateDeps,
     conversation_state_empty as _conversation_state_empty,
     conversation_state_from_row as _conversation_state_from_row_impl,
     conversation_state_row as _conversation_state_row,
@@ -1308,48 +1309,8 @@ def _normalize_int_list(value: Any) -> list[int]:
     return out
 
 
-def _merge_unique_text_lists(left: Any, right: Any) -> list[str]:
-    return _normalize_text_list([*_normalize_text_list(left), *_normalize_text_list(right)])
-
-
-def _normalize_text_list(value: Any) -> list[str]:
-    parsed = _json_from_db(value)
-    if not isinstance(parsed, list):
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in parsed:
-        text = str(item or "").strip()
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        out.append(text)
-    return out
-
-
-def _state_deps() -> StateDeps:
-    return StateDeps(
-        sqlite_current_path=_sqlite_current_path,
-        sqlite_connect=_sqlite_connect,
-        sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
-        sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
-        sqlite_dir_from_cfg=_sqlite_dir_from_cfg,
-        config=_CONFIG,
-        storage_status=_STORAGE_STATUS,
-        normalize_text_list=_normalize_text_list,
-        merge_unique_text_lists=_merge_unique_text_lists,
-        normalize_intentions_stack=_normalize_intentions_stack_impl,
-        normalize_memory_cache=_normalize_memory_cache_impl,
-    )
-
-
 def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
-    return _conversation_state_from_row_impl(
-        row,
-        normalize_text_list=_normalize_text_list,
-        normalize_intentions_stack=_normalize_intentions_stack_impl,
-        normalize_memory_cache=_normalize_memory_cache_impl,
-    )
+    return _conversation_state_from_row_impl(row)
 
 
 def _intention_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -1365,9 +1326,11 @@ def _write_conversation_state(
     user_id: str | None = None,
     updates: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Path]:
+    sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, str(_STORAGE_STATUS.get('dsn') or ''))
     return _write_conversation_state_impl(
         conversation_id,
-        deps=_state_deps(),
+        sqlite_current_path=_sqlite_current_path,
+        sqlite_dir=sqlite_dir,
         soul_id=soul_id,
         user_id=user_id,
         updates=updates,
@@ -1375,7 +1338,8 @@ def _write_conversation_state(
 
 
 def _find_conversation_state_across_dbs(conversation_id: str) -> tuple[Path | None, dict[str, Any] | None]:
-    return _find_conversation_state_across_dbs_impl(conversation_id, deps=_state_deps())
+    sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, str(_STORAGE_STATUS.get('dsn') or ''))
+    return _find_conversation_state_across_dbs_impl(conversation_id, sqlite_dir)
 
 
 def _extract_retrieve_where(payload: dict[str, Any]) -> dict[str, Any] | None:
