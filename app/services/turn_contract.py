@@ -52,7 +52,7 @@ Rules:
 - annulments may be empty.
 - Your one intention_action per turn: boost an existing intention (+1 priority), promote an ephemeral into a full intention (priority 10), or create up to 2 new ephemerals.
 - [ephemeral] intentions expire at the end of this turn. If one matters, promote it; otherwise let it go.
-- inner_thought: private, first-person thought before responding ("I wonder...", "I feel..."). Not shown to the user. Write naturally — use this to come back to the person after the administrative steps.
+- inner_thought: a private rehearsal — get your bearings after the administrative steps and find your way back to this person before you speak. Even if you're just about to say "hi", feel it first. This is never stored or shown; it exists only to ground your response.
 - response: what the user sees.
 """
 
@@ -153,7 +153,6 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
         raise ValueError("response is required")
 
     # LLM outputs cache.entry → parsed as cache_entry → appended to memory_cache list
-    cache_entry = ""
     cache_raw = parsed.get("cache")
     if cache_raw is None:
         cache_entry = ""

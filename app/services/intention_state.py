@@ -157,6 +157,9 @@ def normalize_intentions_stack(
 ) -> dict[str, Any]:
     now = now_iso or _now_iso()
 
+    decay_per_turn = float(default_decay_per_turn)
+    relax_priority = float(default_relax_priority)
+    turn_index = 0
     if isinstance(value, dict):
         raw_items = value.get("items") if isinstance(value.get("items"), list) else []
         decay_per_turn = _float(value.get("decay_per_turn"), default_decay_per_turn)
@@ -164,14 +167,8 @@ def normalize_intentions_stack(
         turn_index = max(0, _int(value.get("turn_index"), 0))
     elif isinstance(value, list):
         raw_items = value
-        decay_per_turn = float(default_decay_per_turn)
-        relax_priority = float(default_relax_priority)
-        turn_index = 0
     else:
         raw_items = []
-        decay_per_turn = float(default_decay_per_turn)
-        relax_priority = float(default_relax_priority)
-        turn_index = 0
 
     by_id: dict[str, dict[str, Any]] = {}
     for raw in raw_items:

@@ -9,7 +9,7 @@ from typing import Any
 import sqlite3
 from fastapi import HTTPException
 
-from app.db import json_from_db, json_to_db, sqlite_table_columns
+from app.db import json_from_db, json_to_db
 
 
 @dataclass(frozen=True)
@@ -36,52 +36,33 @@ def conversation_state_from_row(
 ) -> dict[str, Any] | None:
     if row is None:
         return None
-    digest_raw = row['digest_cursor'] if 'digest_cursor' in row.keys() else 0
     try:
-        digest_cursor = int(digest_raw) if digest_raw is not None else 0
+        digest_cursor = int(row['digest_cursor'] or 0)
     except Exception:
         digest_cursor = 0
-    prior_context = row['prior_context'] if 'prior_context' in row.keys() else None
+    prior_context = row['prior_context']
     return {
         'conversation_id': row['conversation_id'],
-        'soul_id': row['soul_id'] if 'soul_id' in row.keys() else None,
-        'user_id': row['user_id'] if 'user_id' in row.keys() else None,
+        'soul_id': row['soul_id'],
+        'user_id': row['user_id'],
         'digest_cursor': max(0, digest_cursor),
         'prior_context': None if prior_context is None else str(prior_context),
-        'intentions_active': normalize_intentions_stack(
-            json_from_db(row['intentions_active'] if 'intentions_active' in row.keys() else None)
-        ),
-        'memory_cache': normalize_memory_cache(
-            json_from_db(row['memory_cache'] if 'memory_cache' in row.keys() else None)
-        ),
-        'pending_diary_memory_ids': normalize_text_list(
-            row['pending_diary_memory_ids'] if 'pending_diary_memory_ids' in row.keys() else None
-        ),
-        'self_model_id': row['self_model_id'] if 'self_model_id' in row.keys() else None,
-        'last_retrieval_ids': json_from_db(row['last_retrieval_ids'] if 'last_retrieval_ids' in row.keys() else None),
-        'last_memorize_at': row['last_memorize_at'] if 'last_memorize_at' in row.keys() else None,
-        'updated_at': row['updated_at'] if 'updated_at' in row.keys() else None,
+        'intentions_active': normalize_intentions_stack(json_from_db(row['intentions_active'])),
+        'memory_cache': normalize_memory_cache(json_from_db(row['memory_cache'])),
+        'pending_diary_memory_ids': normalize_text_list(row['pending_diary_memory_ids']),
+        'self_model_id': row['self_model_id'],
+        'last_retrieval_ids': json_from_db(row['last_retrieval_ids']),
+        'last_memorize_at': row['last_memorize_at'],
+        'updated_at': row['updated_at'],
     }
 
 
 def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
-    cols = set(sqlite_table_columns(con, 'memu_conversation_state'))
-    select_cols = [
-        'conversation_id',
-        *( ['soul_id'] if 'soul_id' in cols else [] ),
-        'user_id',
-        'digest_cursor',
-        *( ['prior_context'] if 'prior_context' in cols else [] ),
-        'intentions_active',
-        *( ['memory_cache'] if 'memory_cache' in cols else [] ),
-        *( ['pending_diary_memory_ids'] if 'pending_diary_memory_ids' in cols else [] ),
-        *( ['self_model_id'] if 'self_model_id' in cols else [] ),
-        'last_retrieval_ids',
-        'last_memorize_at',
-        'updated_at',
-    ]
     return con.execute(
-        f"SELECT {', '.join(select_cols)} FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
+        "SELECT conversation_id, soul_id, user_id, digest_cursor, prior_context, "
+        "intentions_active, memory_cache, pending_diary_memory_ids, self_model_id, "
+        "last_retrieval_ids, last_memorize_at, updated_at "
+        "FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
         (conversation_id,),
     ).fetchone()
 
@@ -240,7 +221,7 @@ INSERT INTO memu_conversation_state (
             con.commit()
             existing_state = seed
 
-        raw_updates = dict(updates or {})
+        raw_updates = dict(updates) if updates else {}
         append_pending_diary_memory_ids = raw_updates.pop('append_pending_diary_memory_ids', None)
         field_updates: dict[str, Any] = {}
 

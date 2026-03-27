@@ -3414,10 +3414,6 @@ async def conversation_turn(
         if cache_entry:
             memory_cache_after = _append_memory_cache_entry(memory_cache_after, cache_entry)
 
-        inner_thought = str(turn_contract.get("inner_thought") or "").strip()
-        if inner_thought:
-            memory_cache_after = _append_memory_cache_entry(memory_cache_after, inner_thought)
-
         intentions_after = _apply_intention_action(intentions_before, turn_contract.get("intention_action"))
         annulments = turn_contract.get("annulments") if isinstance(turn_contract.get("annulments"), list) else []
         annulment_ids = [str(row.get("intention_id") or "").strip() for row in annulments if isinstance(row, dict)]
