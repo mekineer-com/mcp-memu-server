@@ -147,7 +147,7 @@ def _normalize_stack_item(
     return item
 
 
-def normalize_intention_stack(
+def normalize_intentions_stack(
     value: Any,
     *,
     default_priority: float = DEFAULT_INTENTION_PRIORITY,
@@ -203,7 +203,7 @@ def apply_intention_turn_maintenance(
     *,
     decay_per_turn: float | None = None,
 ) -> dict[str, Any]:
-    stack = normalize_intention_stack(value)
+    stack = normalize_intentions_stack(value)
     relax_priority = _float(stack.get("relax_priority"), DEFAULT_RELAX_PRIORITY)
     decay = _float(decay_per_turn, _float(stack.get("decay_per_turn"), DEFAULT_DECAY_PER_TURN))
     now = _now_iso()
@@ -231,7 +231,7 @@ def apply_intention_turn_maintenance(
         next_item["updated_at"] = now
         kept.append(next_item)
 
-    return normalize_intention_stack(
+    return normalize_intentions_stack(
         {
             "turn_index": next_turn,
             "decay_per_turn": decay,
@@ -242,13 +242,13 @@ def apply_intention_turn_maintenance(
     )
 
 
-def upsert_intention_stack_entries(
+def upsert_intentions_stack_entries(
     stack_value: Any,
     entries: list[dict[str, Any]],
     *,
     default_priority: float = DEFAULT_INTENTION_PRIORITY,
 ) -> dict[str, Any]:
-    stack = normalize_intention_stack(stack_value)
+    stack = normalize_intentions_stack(stack_value)
     now = _now_iso()
     current_turn = max(0, _int(stack.get("turn_index"), 0))
     by_id: dict[str, dict[str, Any]] = {
@@ -296,7 +296,7 @@ def upsert_intention_stack_entries(
 
         by_id[item_id] = current
 
-    return normalize_intention_stack(
+    return normalize_intentions_stack(
         {
             "turn_index": current_turn,
             "decay_per_turn": stack.get("decay_per_turn"),
@@ -308,7 +308,7 @@ def upsert_intention_stack_entries(
 
 
 def remove_intentions(stack_value: Any, intention_ids: list[str]) -> dict[str, Any]:
-    stack = normalize_intention_stack(stack_value)
+    stack = normalize_intentions_stack(stack_value)
     remove_ids = {_text(item_id) for item_id in intention_ids if _text(item_id)}
     if not remove_ids:
         return stack
@@ -317,7 +317,7 @@ def remove_intentions(stack_value: Any, intention_ids: list[str]) -> dict[str, A
         for item in (stack.get("items") or [])
         if isinstance(item, dict) and _text(item.get("id")) not in remove_ids
     ]
-    return normalize_intention_stack(
+    return normalize_intentions_stack(
         {
             "turn_index": stack.get("turn_index"),
             "decay_per_turn": stack.get("decay_per_turn"),
@@ -328,12 +328,12 @@ def remove_intentions(stack_value: Any, intention_ids: list[str]) -> dict[str, A
 
 
 def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
-    stack = normalize_intention_stack(stack_value)
+    stack = normalize_intentions_stack(stack_value)
     if not isinstance(action, dict):
         return stack
 
     action_type = _text(action.get("type") or "none").lower()
-    if action_type in {"", "none", "noop"}:
+    if action_type in {"", "none"}:
         return stack
 
     now = _now_iso()
@@ -355,7 +355,7 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
 
     elif action_type == "promote":
         target_id = _text(action.get("target_id"))
-        text = _text(action.get("text") or action.get("description") or target_id)
+        text = _text(action.get("text") or target_id)
         if target_id:
             current = by_id.get(target_id)
             if current is None:
@@ -382,15 +382,14 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
     elif action_type == "create":
         entries = action.get("entries")
         if not isinstance(entries, list):
-            single = action.get("entry")
-            entries = [single] if isinstance(single, dict) else []
+            entries = []
         for raw in entries[:2]:
             if not isinstance(raw, dict):
                 continue
-            text = _text(raw.get("text") or raw.get("description") or raw.get("name"))
+            text = _text(raw.get("text"))
             if not text:
                 continue
-            item_id = _text(raw.get("id") or raw.get("intention_id")) or f"ephem-{uuid.uuid4().hex[:8]}"
+            item_id = _text(raw.get("id")) or f"ephem-{uuid.uuid4().hex[:8]}"
             current = by_id.get(item_id) or {
                 "id": item_id,
                 "text": text,
@@ -408,7 +407,7 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
             current["expires_at_turn"] = current_turn + DEFAULT_EPHEMERAL_TTL_TURNS
             by_id[item_id] = current
 
-    return normalize_intention_stack(
+    return normalize_intentions_stack(
         {
             "turn_index": current_turn,
             "decay_per_turn": stack.get("decay_per_turn"),
@@ -419,8 +418,8 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
     )
 
 
-def format_intention_stack_for_prompt(stack_value: Any, *, max_items: int = 12) -> str:
-    stack = normalize_intention_stack(stack_value)
+def format_intentions_for_prompt(stack_value: Any, *, max_items: int = 12) -> str:
+    stack = normalize_intentions_stack(stack_value)
     current_turn = _int(stack.get("turn_index"), 0)
     relax_priority = _float(stack.get("relax_priority"), DEFAULT_RELAX_PRIORITY)
     lines: list[str] = []

@@ -56,7 +56,7 @@ from app.services.intention_state import (
     append_memory_cache_entry as _append_memory_cache_entry,
     apply_intention_action as _apply_intention_action,
     apply_intention_turn_maintenance as _apply_intention_turn_maintenance_impl,
-    normalize_intention_stack as _normalize_intention_stack_impl,
+    normalize_intentions_stack as _normalize_intentions_stack_impl,
     normalize_memory_cache as _normalize_memory_cache_impl,
     remove_intentions as _remove_intentions,
 )
@@ -1024,7 +1024,7 @@ def _canonicalize_scope_where(where: Mapping[str, Any] | None) -> dict[str, Any]
 
     out = dict(where)
     user_id = _pick_str(out, "user_id", "userId", "userID", "userid")
-    scoped_soul = _pick_str(
+    soul_id = _pick_str(
         out,
         "soul_id",
         "soulId",
@@ -1067,8 +1067,8 @@ def _canonicalize_scope_where(where: Mapping[str, Any] | None) -> dict[str, Any]
 
     if user_id:
         out["user_id"] = user_id
-    if scoped_soul:
-        out["soul_id"] = scoped_soul
+    if soul_id:
+        out["soul_id"] = soul_id
     if session_id:
         out["session_id"] = session_id
     return out
@@ -1185,10 +1185,10 @@ def _sqlite_current_path(
 ) -> Path | None:
     try:
         base_dsn = str(_STORAGE_STATUS.get("dsn") or "")
-        scoped_soul = str(soul_id or "").strip()
-        if not scoped_soul:
+        soul_id = str(soul_id or "").strip()
+        if not soul_id:
             return None
-        scope = {"soul_id": scoped_soul}
+        scope = {"soul_id": soul_id}
         dsn = _sqlite_dsn_for_scope(_CONFIG, base_dsn, scope)
         f = _sqlite_file_from_dsn(dsn)
         return f.expanduser().resolve() if f is not None else None
@@ -1338,7 +1338,7 @@ def _state_deps() -> StateDeps:
         storage_status=_STORAGE_STATUS,
         normalize_text_list=_normalize_text_list,
         merge_unique_text_lists=_merge_unique_text_lists,
-        normalize_intention_stack=_normalize_intention_stack_impl,
+        normalize_intentions_stack=_normalize_intentions_stack_impl,
         normalize_memory_cache=_normalize_memory_cache_impl,
     )
 
@@ -1347,7 +1347,7 @@ def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | No
     return _conversation_state_from_row_impl(
         row,
         normalize_text_list=_normalize_text_list,
-        normalize_intention_stack=_normalize_intention_stack_impl,
+        normalize_intentions_stack=_normalize_intentions_stack_impl,
         normalize_memory_cache=_normalize_memory_cache_impl,
     )
 
@@ -1379,12 +1379,12 @@ def _find_conversation_state_across_dbs(conversation_id: str) -> tuple[Path | No
 
 
 def _extract_retrieve_where(payload: dict[str, Any]) -> dict[str, Any] | None:
-    where = payload.get("where")
-    if where is not None and not isinstance(where, dict):
-        raise HTTPException(status_code=400, detail="'where' must be an object")
-    if where is None:
-        where = payload.get("user") if isinstance(payload.get("user"), dict) else (_extract_scope(payload) or None)
-    return _canonicalize_scope_where(where)
+    scope = payload.get("scope") or payload.get("where")
+    if scope is not None and not isinstance(scope, dict):
+        raise HTTPException(status_code=400, detail="'scope' must be an object")
+    if scope is None:
+        scope = payload.get("user") if isinstance(payload.get("user"), dict) else (_extract_scope(payload) or None)
+    return _canonicalize_scope_where(scope)
 
 
 def _extract_retrieve_queries(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1456,24 +1456,24 @@ def _resource_sig(row: Any) -> str:
     return ""
 
 
-def _dedupe_llm_result_against_rag(result: Any, rag_result: Any | None) -> Any:
-    if not isinstance(result, dict) or not isinstance(rag_result, dict):
+def _dedupe_llm_result_against_rag(result: Any, retrieve_rag: Any | None) -> Any:
+    if not isinstance(result, dict) or not isinstance(retrieve_rag, dict):
         return result
 
     rag_item_sigs: set[str] = set()
-    for row in (rag_result.get("items") or []):
+    for row in (retrieve_rag.get("items") or []):
         sig = _item_sig(row)
         if sig:
             rag_item_sigs.add(sig)
 
     rag_resource_sigs: set[str] = set()
-    rag_resources = rag_result.get("resources")
+    rag_resources = retrieve_rag.get("resources")
     if isinstance(rag_resources, list):
         for row in rag_resources:
             sig = _resource_sig(row)
             if sig:
                 rag_resource_sigs.add(sig)
-    rag_resource = rag_result.get("resource")
+    rag_resource = retrieve_rag.get("resource")
     sig_single = _resource_sig(rag_resource)
     if sig_single:
         rag_resource_sigs.add(sig_single)
@@ -1548,7 +1548,7 @@ def _load_turn_state_and_soul_card(
             conversation_id,
             soul_id=soul_id,
             user_id=user_id,
-            normalize_intention_stack=_normalize_intention_stack_impl,
+            normalize_intentions_stack=_normalize_intentions_stack_impl,
         )
     return state_row, soul_card, db_path
 
@@ -1581,15 +1581,15 @@ async def _run_rag_with_fallback(
 async def _persist_annulment_memories(
     *,
     svc: MemoryService,
-    user_scope: dict[str, Any],
+    scope: dict[str, Any],
     conversation_id: str,
-    intention_stack_before: Any,
+    intentions_before: Any,
     annulments: list[dict[str, str]],
 ) -> list[str]:
     if not annulments:
         return []
 
-    stack = _normalize_intention_stack_impl(intention_stack_before)
+    stack = _normalize_intentions_stack_impl(intentions_before)
     by_id = {
         str(item.get("id")): item
         for item in (stack.get("items") or [])
@@ -1632,7 +1632,7 @@ async def _persist_annulment_memories(
             memory_type="event",
             summary=summary,
             embedding=embeddings[idx],
-            user_data=user_scope,
+            user_data=scope,
             source_role="assistant",
             confidence=1.0,
             happened_at=datetime.now(UTC),
@@ -1738,13 +1738,13 @@ async def _run_retrieve(
         cat_cfg["top_k"] = 0
         retrieve_cfg["category"] = cat_cfg
     svc = _get_service_from_payload(safe, retrieve_method_override=method)
-    where = _extract_retrieve_where(safe)
+    scope = _extract_retrieve_where(safe)
     memu_queries = _extract_retrieve_queries(safe)
 
-    scoped_soul = str((where or {}).get("soul_id") or "").strip()
-    scoped_user = str((where or {}).get("user_id") or "user").strip() or "user"
+    soul_id = str((scope or {}).get("soul_id") or "").strip()
+    user_id = str((scope or {}).get("user_id") or "user").strip() or "user"
     async def _retrieve_and_maybe_persist(state_soul_id: str | None) -> dict[str, Any]:
-        result = await svc.retrieve(memu_queries, where=where)
+        result = await svc.retrieve(memu_queries, where=scope)
         if method == "llm" and isinstance(result, dict):
             result = {**result, "categories": []}
             result = _dedupe_llm_result_against_rag(result, llm_dedupe_baseline)
@@ -1753,9 +1753,13 @@ async def _run_retrieve(
             state_out, db_path = _write_conversation_state(
                 scoped_conversation_id,
                 soul_id=state_soul_id,
-                user_id=scoped_user or None,
+                user_id=user_id or None,
                 updates={
-                    "prior_context": json.dumps(result, ensure_ascii=False, default=str),
+                    "prior_context": "\n".join(
+                        f"[{str(it.get('memory_type') or 'memory').strip()}] {str(it.get('summary') or '').strip()}"
+                        for it in (result.get("items") or [])[:8]
+                        if isinstance(it, dict) and str(it.get("summary") or "").strip()
+                    ) or None,
                     "last_retrieval_ids": _extract_result_item_ids(result),
                 },
             )
@@ -1764,16 +1768,16 @@ async def _run_retrieve(
         return out_local
 
     out: dict[str, Any]
-    if scoped_soul:
-        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(scoped_user, scoped_soul), asyncio.Lock()):
-            out = await _retrieve_and_maybe_persist(scoped_soul or None)
+    if soul_id:
+        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(user_id, soul_id), asyncio.Lock()):
+            out = await _retrieve_and_maybe_persist(soul_id or None)
     else:
         out = await _retrieve_and_maybe_persist(None)
 
     if scoped_conversation_id:
         state_out: dict[str, Any] | None = None
-        if scoped_soul:
-            db_path = _sqlite_current_path(scoped_user or None, scoped_soul)
+        if soul_id:
+            db_path = _sqlite_current_path(user_id or None, soul_id)
             if db_path is not None and db_path.exists():
                 con = _sqlite_connect(db_path)
                 try:
@@ -1791,11 +1795,11 @@ async def _run_retrieve(
             memory_cache = state_out.get("memory_cache")
             if isinstance(memory_cache, list) and memory_cache:
                 out["memory_cache"] = memory_cache
-            active_intentions = state_out.get("active_intentions")
-            if isinstance(active_intentions, dict):
-                items = active_intentions.get("items")
+            intentions_active = state_out.get("intentions_active")
+            if isinstance(intentions_active, dict):
+                items = intentions_active.get("items")
                 if isinstance(items, list) and items:
-                    out["active_intentions"] = active_intentions
+                    out["intentions_active"] = intentions_active
 
     out["method"] = method
     out["conversation_id"] = scoped_conversation_id
@@ -1940,8 +1944,8 @@ async def diag_sqlite(user_id: str = "", soul_id: str = ""):
         if provider not in ("sqlite", "sqlite3"):
             return {"ok": False, "reason": "provider_not_sqlite", "provider": provider, "storage": _STORAGE_STATUS}
 
-        scoped_soul = soul_id.strip()
-        p = _sqlite_current_path(user_id or None, scoped_soul or None)
+        soul_id = soul_id.strip()
+        p = _sqlite_current_path(user_id or None, soul_id or None)
         if p is None:
             return {"ok": False, "reason": "soul_id_required", "storage": _STORAGE_STATUS}
 
@@ -1974,8 +1978,8 @@ async def diag_sqlite_counts(
     soul_id: str | None = None,
     session_id: str | None = None,
 ):
-    scoped_soul = str(soul_id or "").strip() or None
-    p = _sqlite_current_path(user_id or None, scoped_soul)
+    soul_id = str(soul_id or "").strip() or None
+    p = _sqlite_current_path(user_id or None, soul_id)
     if p is None or not p.exists():
         reason = "soul_id_required" if p is None else "sqlite_file_missing"
         return {"ok": False, "reason": reason, "path": str(p) if p else None, "storage": _STORAGE_STATUS}
@@ -2035,8 +2039,8 @@ async def diag_sqlite_recent(
         raise HTTPException(status_code=400, detail=f"table must be one of: {sorted(allowed)}")
     limit = max(1, min(int(limit or 20), 200))
 
-    scoped_soul = str(soul_id or "").strip() or None
-    p = _sqlite_current_path(user_id or None, scoped_soul)
+    soul_id = str(soul_id or "").strip() or None
+    p = _sqlite_current_path(user_id or None, soul_id)
     if p is None or not p.exists():
         reason = "soul_id_required" if p is None else "sqlite_file_missing"
         return {"ok": False, "reason": reason, "path": str(p) if p else None, "storage": _STORAGE_STATUS}
@@ -2046,7 +2050,7 @@ async def diag_sqlite_recent(
         if table in {"memu_conversation_state", "memu_self_model", "memu_intentions"}:
             _sqlite_ensure_conversation_state_schema(con)
         cols = _sqlite_table_columns(con, table)
-        scope_where, params = _sqlite_build_scope_where(cols, user_id, scoped_soul, session_id)
+        scope_where, params = _sqlite_build_scope_where(cols, user_id, soul_id, session_id)
 
         # Avoid dumping big JSON embeddings/extras by default.
         prefer = [
@@ -2069,7 +2073,7 @@ async def diag_sqlite_recent(
             "happened_at",
             "digest_cursor",
             "prior_context",
-            "active_intentions",
+            "intentions_active",
             "memory_cache",
             "pending_diary_memory_ids",
             "self_model_id",
@@ -2379,9 +2383,9 @@ async def _run_memorize_batches(
     *,
     memorize_batches: list[tuple[str, list[dict[str, Any]], int]],
     svc: Any,
-    user_scope: dict[str, Any],
+    scope: dict[str, Any],
     conversation_id: str | None,
-    scoped_soul: str,
+    soul_id: str,
     uid: str,
     processed_cursor: int,
     safe: dict[str, Any],
@@ -2397,7 +2401,7 @@ async def _run_memorize_batches(
     days_written: int,
     sleep_stats: Any,
 ) -> None:
-    async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, scoped_soul), asyncio.Lock()):
+    async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul_id), asyncio.Lock()):
         batch_results: list[dict[str, Any]] = []
         pending_diary_memory_ids: list[str] = []
         processed_end_cursor = processed_cursor
@@ -2405,7 +2409,7 @@ async def _run_memorize_batches(
             batch_result = await svc.memorize(
                 resource_url=batch_url,
                 modality="conversation",
-                user=user_scope,
+                user=scope,
                 raw_text=json.dumps(batch_conv, ensure_ascii=False),
                 local_path=batch_url,
             )
@@ -2419,7 +2423,7 @@ async def _run_memorize_batches(
                     try:
                         _write_conversation_state(
                             conversation_id,
-                            soul_id=scoped_soul,
+                            soul_id=soul_id,
                             user_id=uid,
                             updates={"digest_cursor": processed_end_cursor},
                         )
@@ -2430,7 +2434,7 @@ async def _run_memorize_batches(
             try:
                 _write_conversation_state(
                     conversation_id,
-                    soul_id=scoped_soul,
+                    soul_id=soul_id,
                     user_id=uid,
                     updates={
                         "digest_cursor": max(0, processed_end_cursor),
@@ -2468,7 +2472,7 @@ async def _run_memorize_batches(
                     ),
                     svc=svc,
                     conversation_id=conversation_id,
-                    soul_id=scoped_soul,
+                    soul_id=soul_id,
                     user_id=uid,
                 )
                 logger.info(
@@ -2515,20 +2519,20 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         safe = _safe_payload(payload)
         svc = _get_service_from_payload(safe)
 
-        user_scope = safe.get("user")
-        if not isinstance(user_scope, dict):
-            user_scope = _extract_scope(safe) or None
+        scope = safe.get("user")
+        if not isinstance(scope, dict):
+            scope = _extract_scope(safe) or None
         conversation_id = _extract_conversation_id(safe)
-        if conversation_id and isinstance(user_scope, dict):
-            user_scope = {**user_scope, "conversation_id": conversation_id}
+        if conversation_id and isinstance(scope, dict):
+            scope = {**scope, "conversation_id": conversation_id}
 
         # Per-soul-only: SillyTavern traffic must include user.soul_id.
-        if not isinstance(user_scope, dict):
+        if not isinstance(scope, dict):
             raise HTTPException(status_code=400, detail="Missing user scope (user.soul_id required)")
-        scoped_soul = str(user_scope.get("soul_id") or "").strip()
-        if not scoped_soul:
+        soul_id = str(scope.get("soul_id") or "").strip()
+        if not soul_id:
             raise HTTPException(status_code=400, detail="Missing user.soul_id for per-soul DBs")
-        user_scope = {**user_scope, "soul_id": scoped_soul}
+        scope = {**scope, "soul_id": soul_id}
 
         conversation = safe.get("conversation")
         if conversation is None:
@@ -2545,9 +2549,9 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         # - Daily resources split by sleep gap (22:00–08:00 local)
         #   using the largest no-chat gap intersecting that window.
 
-        uid = str((user_scope or {}).get("user_id") or "user") if isinstance(user_scope, dict) else "user"
-        soul = str((user_scope or {}).get("soul_id") or "soul") if isinstance(user_scope, dict) else "soul"
-        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul), asyncio.Lock()):
+        uid = str((scope or {}).get("user_id") or "user") if isinstance(scope, dict) else "user"
+        soul_id = str((scope or {}).get("soul_id") or "soul") if isinstance(scope, dict) else "soul"
+        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul_id), asyncio.Lock()):
             storage_dir = _get_storage_dir(_CONFIG)
             chats_dir = (storage_dir / "st_chats").resolve()
             chat_file = _pick_str(safe, "chatFileName", "chat_file_name", "chat_filename", "chatFile")
@@ -2555,7 +2559,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
             chat_dir, chat_key, chat_key_source = _resolve_chat_storage_dir(
                 chats_dir,
                 uid,
-                soul,
+                soul_id,
                 conversation_id,
                 chat_file,
                 resource_url_in,
@@ -2580,7 +2584,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
             if conversation_id:
                 state_out, _db_path = _write_conversation_state(
                     conversation_id,
-                    soul_id=scoped_soul,
+                    soul_id=soul_id,
                     user_id=uid,
                     updates={},
                 )
@@ -2741,9 +2745,9 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                 _run_memorize_batches,
                 memorize_batches=memorize_batches,
                 svc=svc,
-                user_scope=user_scope,
+                scope=scope,
                 conversation_id=conversation_id,
-                scoped_soul=scoped_soul,
+                soul_id=soul_id,
                 uid=uid,
                 processed_cursor=processed_cursor,
                 safe=safe,
@@ -2794,25 +2798,25 @@ async def generate_diary(payload: dict[str, Any] = Body(...)):
         if not isinstance(safe.get("llm_profiles"), dict):
             safe["llm_profiles"] = _default_llm_profiles_from_server_config()
 
-        user_scope = safe.get("user")
-        if not isinstance(user_scope, dict):
-            user_scope = _extract_scope(safe) or None
-        if not isinstance(user_scope, dict):
+        scope = safe.get("user")
+        if not isinstance(scope, dict):
+            scope = _extract_scope(safe) or None
+        if not isinstance(scope, dict):
             raise HTTPException(status_code=400, detail="user scope required")
 
         conversation_id = _extract_conversation_id(safe)
         if not conversation_id:
             raise HTTPException(status_code=400, detail="conversation_id required")
 
-        uid = str(user_scope.get("user_id") or "").strip()
-        soul = str(user_scope.get("soul_id") or "").strip()
-        if not uid or not soul:
+        uid = str(scope.get("user_id") or "").strip()
+        soul_id = str(scope.get("soul_id") or "").strip()
+        if not uid or not soul_id:
             raise HTTPException(status_code=400, detail="user_id and soul_id required")
 
-        safe["user"] = {**user_scope, "user_id": uid, "soul_id": soul, "conversation_id": conversation_id}
+        safe["user"] = {**scope, "user_id": uid, "soul_id": soul_id, "conversation_id": conversation_id}
         svc = _get_service_from_payload(safe)
 
-        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul), asyncio.Lock()):
+        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul_id), asyncio.Lock()):
             result = await generate_diary_service(
                 deps=DiaryDeps(
                     sqlite_current_path=_sqlite_current_path,
@@ -2865,12 +2869,12 @@ async def generate_diary(payload: dict[str, Any] = Body(...)):
 @app.get("/categories", operation_id="list_memory_categories")
 async def list_memory_categories(user_id: str = "", soul_id: str = "", include_empty: bool = False):
     # Scope is required: this server runs per-soul SQLite databases (no shared DB by default).
-    scoped_soul = soul_id.strip()
-    if not scoped_soul:
+    soul_id = soul_id.strip()
+    if not soul_id:
         raise HTTPException(status_code=400, detail="soul_id required")
-    where: dict[str, Any] = {"soul_id": scoped_soul}
+    scope: dict[str, Any] = {"soul_id": soul_id}
     if user_id.strip():
-        where["user_id"] = user_id.strip()
+        scope["user_id"] = user_id.strip()
 
     # Build a minimal payload using server config so this GET endpoint can list categories
     # without requiring the caller to send llm_profiles.
@@ -2880,12 +2884,12 @@ async def list_memory_categories(user_id: str = "", soul_id: str = "", include_e
         "llm_profiles": {
             "default": default_profile,
         },
-        "user": where,
+        "user": scope,
     }
     svc = _get_service_from_payload(payload)
 
     try:
-        cats = await svc.list_memory_categories(where=where)
+        cats = await svc.list_memory_categories(where=scope)
         if isinstance(cats, dict):
             cats = cats.get("categories")
         out = []
@@ -2910,16 +2914,16 @@ async def search_memory_categories(payload: dict[str, Any]):
         safe = _safe_payload(payload)
         svc = _get_service_from_payload(safe)
 
-        where = safe.get("where")
-        if where is not None and not isinstance(where, dict):
-            raise HTTPException(status_code=400, detail="'where' must be an object")
-        if where is None:
-            where = safe.get("user") if isinstance(safe.get("user"), dict) else (_extract_scope(safe) or None)
-        where = _canonicalize_scope_where(where)
+        scope = safe.get("scope") or safe.get("where")
+        if scope is not None and not isinstance(scope, dict):
+            raise HTTPException(status_code=400, detail="'scope' must be an object")
+        if scope is None:
+            scope = safe.get("user") if isinstance(safe.get("user"), dict) else (_extract_scope(safe) or None)
+        scope = _canonicalize_scope_where(scope)
 
         include_empty = bool(safe.get("include_empty"))
 
-        cats = await svc.list_memory_categories(where=where)
+        cats = await svc.list_memory_categories(where=scope)
         if isinstance(cats, dict):
             cats = cats.get("categories")
         out = []
@@ -2955,16 +2959,16 @@ async def list_intentions(
     user_id: str,
     status: str = "active",
 ):
-    scoped_soul = str(soul_id or "").strip()
-    scoped_user = str(user_id or "").strip()
+    soul_id = str(soul_id or "").strip()
+    user_id = str(user_id or "").strip()
     scoped_status = str(status or "").strip() or "active"
 
-    if not scoped_soul:
+    if not soul_id:
         raise HTTPException(status_code=400, detail="soul_id required")
-    if not scoped_user:
+    if not user_id:
         raise HTTPException(status_code=400, detail="user_id required")
 
-    db_path = _sqlite_current_path(scoped_user, scoped_soul)
+    db_path = _sqlite_current_path(user_id, soul_id)
     if db_path is None:
         raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
     if not db_path.exists():
@@ -2979,7 +2983,7 @@ async def list_intentions(
 SELECT * FROM memu_intentions
 WHERE soul_id = ? AND user_id = ? AND status = ?
 """,
-            (scoped_soul, scoped_user, scoped_status),
+            (soul_id, user_id, scoped_status),
         ).fetchall()
         return [_intention_row_to_dict(row) for row in rows]
     finally:
@@ -2995,10 +2999,10 @@ async def patch_intention(
     iid = str(intention_id or "").strip()
     if not iid:
         raise HTTPException(status_code=400, detail="intention_id is required")
-    scoped_soul = str(soul_id or "").strip()
-    if not scoped_soul:
+    soul_id = str(soul_id or "").strip()
+    if not soul_id:
         raise HTTPException(status_code=400, detail="soul_id required")
-    db_path = _sqlite_current_path(None, scoped_soul)
+    db_path = _sqlite_current_path(None, soul_id)
     if db_path is None:
         raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
     if not db_path.exists():
@@ -3072,11 +3076,11 @@ async def get_conversation_state(
 
     db_path: Path | None = None
     state_out: dict[str, Any] | None = None
-    scoped_soul = str(soul_id or "").strip() or None
-    scoped_user = str(user_id or "").strip() or None
+    soul_id = str(soul_id or "").strip() or None
+    user_id = str(user_id or "").strip() or None
 
-    if scoped_soul:
-        db_path = _sqlite_current_path(scoped_user, scoped_soul)
+    if soul_id:
+        db_path = _sqlite_current_path(user_id, soul_id)
         if db_path is None:
             raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
         if not db_path.exists():
@@ -3108,15 +3112,15 @@ async def patch_conversation_state(
 
     body_soul_id = _pick_str(body, "soul_id", "soulId")
     body_user_id = _pick_str(body, "user_id", "userId")
-    scoped_soul = body_soul_id or (str(soul_id or "").strip() or None)
-    scoped_user = body_user_id or (str(user_id or "").strip() or None)
+    soul_id = body_soul_id or (str(soul_id or "").strip() or None)
+    user_id = body_user_id or (str(user_id or "").strip() or None)
 
     updates: dict[str, Any] = {}
 
     if "soul_id" in body or "soulId" in body:
-        scoped_soul = body_soul_id
+        soul_id = body_soul_id
     if "user_id" in body or "userId" in body:
-        scoped_user = body_user_id
+        user_id = body_user_id
 
     if "digest_cursor" in body or "digestCursor" in body:
         raw_cursor = body.get("digest_cursor", body.get("digestCursor"))
@@ -3125,8 +3129,8 @@ async def patch_conversation_state(
     if "prior_context" in body or "priorContext" in body:
         updates["prior_context"] = body.get("prior_context", body.get("priorContext"))
 
-    if "active_intentions" in body or "activeIntentions" in body:
-        updates["active_intentions"] = body.get("active_intentions", body.get("activeIntentions"))
+    if "intentions_active" in body or "activeIntentions" in body:
+        updates["intentions_active"] = body.get("intentions_active", body.get("activeIntentions"))
 
     if "memory_cache" in body or "memoryCache" in body:
         updates["memory_cache"] = body.get("memory_cache", body.get("memoryCache"))
@@ -3148,8 +3152,8 @@ async def patch_conversation_state(
 
     state_out, db_path = _write_conversation_state(
         cid,
-        soul_id=scoped_soul,
-        user_id=scoped_user,
+        soul_id=soul_id,
+        user_id=user_id,
         updates=updates,
     )
     return {"ok": True, "state": state_out, "path": str(db_path)}
@@ -3166,25 +3170,25 @@ async def clear_memory(payload: dict[str, Any]):
     try:
         safe = _safe_payload(payload)
 
-        where = safe.get("where")
-        if where is not None and not isinstance(where, dict):
-            raise HTTPException(status_code=400, detail="'where' must be an object")
-        if where is None:
+        scope = safe.get("scope") or safe.get("where")
+        if scope is not None and not isinstance(scope, dict):
+            raise HTTPException(status_code=400, detail="'scope' must be an object")
+        if scope is None:
             if isinstance(safe.get("user"), dict):
-                where = dict(safe.get("user") or {})
+                scope = dict(safe.get("user") or {})
             else:
-                where = _extract_scope(safe) or {}
+                scope = _extract_scope(safe) or {}
 
-        uid = str((where or {}).get("user_id") or "").strip()
-        sid = str((where or {}).get("soul_id") or "").strip()
+        uid = str((scope or {}).get("user_id") or "").strip()
+        sid = str((scope or {}).get("soul_id") or "").strip()
         if not uid or not sid:
             raise HTTPException(status_code=400, detail="user_id and soul_id required")
-        where = {"user_id": uid, "soul_id": sid}
+        scope = {"user_id": uid, "soul_id": sid}
 
-        safe["user"] = where
+        safe["user"] = scope
 
         svc = _get_service_from_payload(safe, allow_missing_llm_profiles=True)
-        result = await svc.clear_memory(where=where)
+        result = await svc.clear_memory(where=scope)
 
         deleted_categories = result.get("deleted_categories") if isinstance(result, dict) else []
         deleted_items = result.get("deleted_items") if isinstance(result, dict) else []
@@ -3198,9 +3202,9 @@ async def clear_memory(payload: dict[str, Any]):
                 "items": len(deleted_items) if isinstance(deleted_items, list) else 0,
                 "resources": len(deleted_resources) if isinstance(deleted_resources, list) else 0,
             },
-            "where": where,
+            "where": scope,
         }
-        _record_call("clear", safe, ok=True, info={"where": where, "purged": out["purged"]})
+        _record_call("clear", safe, ok=True, info={"where": scope, "purged": out["purged"]})
         return out
     except HTTPException:
         _record_call("clear", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException")
@@ -3269,26 +3273,26 @@ async def conversation_retrieve(
         if want_turn_prompt:
             scope = _extract_scope(safe)
             uid = str(scope.get("user_id") or "").strip()
-            soul = str(scope.get("soul_id") or "").strip()
+            soul_id = str(scope.get("soul_id") or "").strip()
 
-            if uid and soul:
+            if uid and soul_id:
                 _state_row, soul_card, _db_path = _load_turn_state_and_soul_card(
-                    cid, user_id=uid, soul_id=soul,
+                    cid, user_id=uid, soul_id=soul_id,
                 )
 
                 message = _pick_str(safe, "message", "query", "text") or ""
                 history = _normalize_turn_history(safe.get("history"))
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
-                intention_stack = _apply_intention_turn_maintenance_impl(out.get("active_intentions"))
+                intentions_active = _apply_intention_turn_maintenance_impl(out.get("intentions_active"))
 
-                out["turn_system_prompt"] = _make_turn_system_prompt(soul, soul_card=soul_card)
+                out["turn_system_prompt"] = _make_turn_system_prompt(soul_id, soul_card=soul_card)
                 out["turn_user_prompt"] = _build_turn_prompt(
                     user_message=message,
                     history=history,
                     prior_context=out.get("prior_context"),
-                    rag_result=out.get("result"),
+                    retrieve_rag=out.get("result"),
                     memory_cache=memory_cache,
-                    intention_stack=intention_stack,
+                    intentions_active=intentions_active,
                 )
 
         _record_call(
@@ -3333,15 +3337,15 @@ async def conversation_turn(
         if not isinstance(safe.get("llm_profiles"), dict):
             safe["llm_profiles"] = _default_llm_profiles_from_server_config()
 
-        user_scope = safe.get("user")
-        if not isinstance(user_scope, dict):
-            user_scope = _extract_scope(safe) or None
-        if not isinstance(user_scope, dict):
+        scope = safe.get("user")
+        if not isinstance(scope, dict):
+            scope = _extract_scope(safe) or None
+        if not isinstance(scope, dict):
             raise HTTPException(status_code=400, detail="user scope required")
 
-        uid = str(user_scope.get("user_id") or "").strip()
-        soul = str(user_scope.get("soul_id") or "").strip()
-        if not uid or not soul:
+        uid = str(scope.get("user_id") or "").strip()
+        soul_id = str(scope.get("soul_id") or "").strip()
+        if not uid or not soul_id:
             raise HTTPException(status_code=400, detail="user_id and soul_id required")
 
         message = _pick_str(safe, "message", "query", "text")
@@ -3359,45 +3363,45 @@ async def conversation_turn(
             run_apimw = False
             wait_apimw = False
 
-        safe["user"] = {"user_id": uid, "soul_id": soul, "conversation_id": cid}
+        safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
         safe["conversation_id"] = cid
         safe["conversationId"] = cid
 
         state_row, soul_card, db_path = _load_turn_state_and_soul_card(
             cid,
             user_id=uid,
-            soul_id=soul,
+            soul_id=soul_id,
         )
 
         prior_context = str(state_row.get("prior_context") or "").strip() or None
         memory_cache_before = _normalize_memory_cache_impl(state_row.get("memory_cache"))
-        intention_stack_before = _apply_intention_turn_maintenance_impl(state_row.get("active_intentions"))
+        intentions_before = _apply_intention_turn_maintenance_impl(state_row.get("intentions_active"))
 
-        turn_system_prompt = _make_turn_system_prompt(soul, soul_card=soul_card)
+        turn_system_prompt = _make_turn_system_prompt(soul_id, soul_card=soul_card)
 
         rag_payload = {**safe, "method": "rag", "query": message}
         rag_out = await _run_rag_with_fallback(rag_payload, conversation_id=cid)
-        rag_result = rag_out.get("result") if isinstance(rag_out, dict) else None
+        retrieve_rag = rag_out.get("result") if isinstance(rag_out, dict) else None
 
-        turn_prompt = _build_turn_prompt(
+        turn_user_prompt = _build_turn_prompt(
             user_message=message,
             history=history,
             prior_context=prior_context,
-            rag_result=rag_result,
+            retrieve_rag=retrieve_rag,
             memory_cache=memory_cache_before,
-            intention_stack=intention_stack_before,
+            intentions_active=intentions_before,
         )
 
         svc = _get_service_from_payload(safe, retrieve_method_override="rag")
         llm_raw = await svc.chat(
-            turn_prompt,
+            turn_user_prompt,
             system_prompt=turn_system_prompt,
             temperature=0.0,
             max_tokens=1000,
             response_format={"type": "json_object"},
         )
         try:
-            turn_data = _parse_turn_contract(llm_raw)
+            turn_contract = _parse_turn_contract(llm_raw)
         except Exception as exc:
             raw_snippet = str(llm_raw or "")[:200]
             raise HTTPException(
@@ -3406,19 +3410,19 @@ async def conversation_turn(
             ) from exc
 
         memory_cache_after = list(memory_cache_before)
-        cache_entry = str(turn_data.get("cache_entry") or "").strip()
+        cache_entry = str(turn_contract.get("cache_entry") or "").strip()
         if cache_entry:
             memory_cache_after = _append_memory_cache_entry(memory_cache_after, cache_entry)
 
-        inner_thought = str(turn_data.get("inner_thought") or "").strip()
+        inner_thought = str(turn_contract.get("inner_thought") or "").strip()
         if inner_thought:
             memory_cache_after = _append_memory_cache_entry(memory_cache_after, inner_thought)
 
-        intention_stack_after = _apply_intention_action(intention_stack_before, turn_data.get("intention_action"))
-        annulments = turn_data.get("annulments") if isinstance(turn_data.get("annulments"), list) else []
+        intentions_after = _apply_intention_action(intentions_before, turn_contract.get("intention_action"))
+        annulments = turn_contract.get("annulments") if isinstance(turn_contract.get("annulments"), list) else []
         annulment_ids = [str(row.get("intention_id") or "").strip() for row in annulments if isinstance(row, dict)]
-        intention_stack_after = _remove_intentions(
-            intention_stack_after,
+        intentions_after = _remove_intentions(
+            intentions_after,
             [item_id for item_id in annulment_ids if item_id],
         )
 
@@ -3427,23 +3431,23 @@ async def conversation_turn(
         annulment_memory_ids: list[str] = []
 
         if not dry_run:
-            state_lock = _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul), asyncio.Lock())
+            state_lock = _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul_id), asyncio.Lock())
             async with state_lock:
                 state_out, state_path = _write_conversation_state(
                     cid,
-                    soul_id=soul,
+                    soul_id=soul_id,
                     user_id=uid,
                     updates={
-                        "active_intentions": intention_stack_after,
+                        "intentions_active": intentions_after,
                         "memory_cache": memory_cache_after,
                     },
                 )
 
             annulment_memory_ids = await _persist_annulment_memories(
                 svc=svc,
-                user_scope={"user_id": uid, "soul_id": soul},
+                scope={"user_id": uid, "soul_id": soul_id},
                 conversation_id=cid,
-                intention_stack_before=intention_stack_before,
+                intentions_before=intentions_before,
                 annulments=[row for row in annulments if isinstance(row, dict)],
             )
 
@@ -3456,7 +3460,7 @@ async def conversation_turn(
                         apimw_payload,
                         conversation_id=cid,
                         persist_llm_state=True,
-                        llm_dedupe_baseline=rag_result if isinstance(rag_result, dict) else None,
+                        llm_dedupe_baseline=retrieve_rag if isinstance(retrieve_rag, dict) else None,
                     )
                     apimw_status = "completed"
                 except Exception:
@@ -3468,7 +3472,7 @@ async def conversation_turn(
                         apimw_payload,
                         conversation_id=cid,
                         persist_llm_state=True,
-                        llm_dedupe_baseline=rag_result if isinstance(rag_result, dict) else None,
+                        llm_dedupe_baseline=retrieve_rag if isinstance(retrieve_rag, dict) else None,
                     )
                 )
 
@@ -3483,15 +3487,15 @@ async def conversation_turn(
         out: dict[str, Any] = {
             "ok": True,
             "conversation_id": cid,
-            "response": str(turn_data.get("response") or "").strip(),
+            "response": str(turn_contract.get("response") or "").strip(),
             "apimw": apimw_status,
         }
         if include_debug:
             out["state"] = state_out
             out["path"] = str(state_path) if state_path is not None else None
             out["annulment_memory_ids"] = annulment_memory_ids
-            out["turn_contract"] = turn_data
-            out["turn_prompt"] = turn_prompt
+            out["turn_contract"] = turn_contract
+            out["turn_user_prompt"] = turn_user_prompt
             out["turn_system_prompt"] = turn_system_prompt
             out["dry_run"] = dry_run
 

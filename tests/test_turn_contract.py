@@ -22,9 +22,9 @@ def test_build_turn_prompt_includes_core_sections():
         user_message="hello",
         history=[{"role": "user", "content": "hi"}],
         prior_context="prior",
-        rag_result={"categories": [{"name": "Goals", "summary": "wants progress"}]},
+        retrieve_rag={"categories": [{"name": "Goals", "summary": "wants progress"}]},
         memory_cache=["note a"],
-        intention_stack={"items": [{"id": "relax", "text": "Relax", "priority": 5, "kind": "relax"}]},
+        intentions_active={"items": [{"id": "relax", "text": "Relax", "priority": 5, "kind": "relax"}]},
     )
     assert "Conversation history:" in prompt
     assert "Prior context:" in prompt

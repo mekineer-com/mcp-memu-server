@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
     user_id VARCHAR,
     digest_cursor INTEGER DEFAULT 0,
     prior_context TEXT,
-    active_intentions JSON,
+    intentions_active JSON,
     memory_cache JSON DEFAULT '[]',
     pending_diary_memory_ids JSON DEFAULT '[]',
     self_model_id VARCHAR,
@@ -126,8 +126,10 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN digest_cursor INTEGER DEFAULT 0")
     if "prior_context" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN prior_context TEXT")
-    if "active_intentions" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN active_intentions JSON")
+    if "intentions_active" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN intentions_active JSON")
+    if "active_intentions" in cols and "intentions_active" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state RENAME COLUMN active_intentions TO intentions_active")
     if "memory_cache" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN memory_cache JSON DEFAULT '[]'")
     if "pending_diary_memory_ids" not in cols:

@@ -16,9 +16,9 @@ from memu.prompts.diary import self_model_update as diary_self_model_update_prom
 from memu.prompts.memory_type import diary as diary_memory_prompt
 from app.services.self_model_merge import _apply_tension_updates
 from app.services.intention_state import (
-    normalize_intention_stack,
+    normalize_intentions_stack,
     normalize_memory_cache,
-    upsert_intention_stack_entries,
+    upsert_intentions_stack_entries,
 )
 
 if TYPE_CHECKING:
@@ -290,7 +290,7 @@ def _write_conversation_state_local(
     merged["last_memorize_at"] = None if raw_last is None else (str(raw_last).strip() or None)
     raw_prior = merged.get("prior_context")
     merged["prior_context"] = None if raw_prior is None else str(raw_prior)
-    merged["active_intentions"] = normalize_intention_stack(merged.get("active_intentions"))
+    merged["intentions_active"] = normalize_intentions_stack(merged.get("intentions_active"))
     merged["memory_cache"] = normalize_memory_cache(merged.get("memory_cache"))
     merged["pending_diary_memory_ids"] = []
     raw_self_model_id = self_model_id
@@ -305,7 +305,7 @@ INSERT INTO memu_conversation_state (
     user_id,
     digest_cursor,
     prior_context,
-    active_intentions,
+    intentions_active,
     memory_cache,
     pending_diary_memory_ids,
     self_model_id,
@@ -318,7 +318,7 @@ ON CONFLICT(conversation_id) DO UPDATE SET
     user_id = excluded.user_id,
     digest_cursor = excluded.digest_cursor,
     prior_context = excluded.prior_context,
-    active_intentions = excluded.active_intentions,
+    intentions_active = excluded.intentions_active,
     memory_cache = excluded.memory_cache,
     pending_diary_memory_ids = excluded.pending_diary_memory_ids,
     self_model_id = excluded.self_model_id,
@@ -332,7 +332,7 @@ ON CONFLICT(conversation_id) DO UPDATE SET
             merged.get("user_id"),
             int(merged.get("digest_cursor") or 0),
             merged.get("prior_context"),
-            deps.json_to_db(merged.get("active_intentions")),
+            deps.json_to_db(merged.get("intentions_active")),
             deps.json_to_db(merged.get("memory_cache") or []),
             deps.json_to_db(merged.get("pending_diary_memory_ids") or []),
             merged.get("self_model_id"),
@@ -646,18 +646,18 @@ INSERT INTO memu_intentions (
         )
         if intention_ids:
             current_state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id)) or {}
-            merged_active_intentions = upsert_intention_stack_entries(
-                normalize_intention_stack(current_state.get("active_intentions")),
+            merged_intentions_active = upsert_intentions_stack_entries(
+                normalize_intentions_stack(current_state.get("intentions_active")),
                 intention_stack_entries,
             )
             con.execute(
                 """
 UPDATE memu_conversation_state
-SET active_intentions = ?, updated_at = ?
+SET intentions_active = ?, updated_at = ?
 WHERE conversation_id = ?
 """,
                 (
-                    deps.json_to_db(merged_active_intentions),
+                    deps.json_to_db(merged_intentions_active),
                     datetime.now(UTC).isoformat(),
                     conversation_id,
                 ),

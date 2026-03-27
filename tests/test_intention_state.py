@@ -1,10 +1,10 @@
 from app.services.intention_state import (
     apply_intention_action,
     apply_intention_turn_maintenance,
-    normalize_intention_stack,
+    normalize_intentions_stack,
     normalize_memory_cache,
     remove_intentions,
-    upsert_intention_stack_entries,
+    upsert_intentions_stack_entries,
 )
 
 
@@ -12,8 +12,8 @@ def _items_by_id(stack: dict):
     return {item["id"]: item for item in stack.get("items") or [] if isinstance(item, dict)}
 
 
-def test_normalize_intention_stack_from_legacy_id_list():
-    stack = normalize_intention_stack(["i-1", "i-2"])
+def test_normalize_intentions_stack_from_legacy_id_list():
+    stack = normalize_intentions_stack(["i-1", "i-2"])
     items = _items_by_id(stack)
 
     assert stack["version"] == 1
@@ -24,7 +24,7 @@ def test_normalize_intention_stack_from_legacy_id_list():
 
 
 def test_apply_maintenance_decays_and_ephemeral_expires_next_turn():
-    stack = normalize_intention_stack(
+    stack = normalize_intentions_stack(
         {
             "turn_index": 0,
             "items": [
@@ -48,14 +48,14 @@ def test_apply_maintenance_decays_and_ephemeral_expires_next_turn():
 
 
 def test_upsert_intention_entries_keeps_highest_priority():
-    base = normalize_intention_stack(
+    base = normalize_intentions_stack(
         {
             "items": [
                 {"id": "task-a", "text": "Task A", "priority": 8.0, "ephemeral": False},
             ]
         }
     )
-    updated = upsert_intention_stack_entries(
+    updated = upsert_intentions_stack_entries(
         base,
         [
             {"id": "task-a", "text": "Task A refined", "priority": 7.0},
@@ -76,7 +76,7 @@ def test_normalize_memory_cache_caps_size_and_entry_length():
 
 
 def test_apply_intention_action_create_then_promote():
-    base = normalize_intention_stack({"turn_index": 3, "items": []})
+    base = normalize_intentions_stack({"turn_index": 3, "items": []})
     created = apply_intention_action(
         base,
         {
@@ -96,7 +96,7 @@ def test_apply_intention_action_create_then_promote():
 
 
 def test_remove_intentions():
-    stack = normalize_intention_stack(
+    stack = normalize_intentions_stack(
         {
             "items": [
                 {"id": "a", "text": "a", "priority": 9},

@@ -23,7 +23,7 @@ class StateDeps:
     storage_status: Mapping[str, Any]
     normalize_text_list: Callable[[Any], list[str]]
     merge_unique_text_lists: Callable[[Any, Any], list[str]]
-    normalize_intention_stack: Callable[[Any], dict[str, Any]]
+    normalize_intentions_stack: Callable[[Any], dict[str, Any]]
     normalize_memory_cache: Callable[[Any], list[str]]
 
 
@@ -31,7 +31,7 @@ def conversation_state_from_row(
     row: sqlite3.Row | None,
     *,
     normalize_text_list: Callable[[Any], list[str]],
-    normalize_intention_stack: Callable[[Any], dict[str, Any]],
+    normalize_intentions_stack: Callable[[Any], dict[str, Any]],
     normalize_memory_cache: Callable[[Any], list[str]],
 ) -> dict[str, Any] | None:
     if row is None:
@@ -48,8 +48,8 @@ def conversation_state_from_row(
         'user_id': row['user_id'] if 'user_id' in row.keys() else None,
         'digest_cursor': max(0, digest_cursor),
         'prior_context': None if prior_context is None else str(prior_context),
-        'active_intentions': normalize_intention_stack(
-            json_from_db(row['active_intentions'] if 'active_intentions' in row.keys() else None)
+        'intentions_active': normalize_intentions_stack(
+            json_from_db(row['intentions_active'] if 'intentions_active' in row.keys() else None)
         ),
         'memory_cache': normalize_memory_cache(
             json_from_db(row['memory_cache'] if 'memory_cache' in row.keys() else None)
@@ -72,7 +72,7 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
         'user_id',
         'digest_cursor',
         *( ['prior_context'] if 'prior_context' in cols else [] ),
-        'active_intentions',
+        'intentions_active',
         *( ['memory_cache'] if 'memory_cache' in cols else [] ),
         *( ['pending_diary_memory_ids'] if 'pending_diary_memory_ids' in cols else [] ),
         *( ['self_model_id'] if 'self_model_id' in cols else [] ),
@@ -90,9 +90,9 @@ def conversation_state_empty(
     conversation_id: str,
     soul_id: str | None = None,
     user_id: str | None = None,
-    normalize_intention_stack: Callable[[Any], dict[str, Any]] | None = None,
+    normalize_intentions_stack: Callable[[Any], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    if normalize_intention_stack is None:
+    if normalize_intentions_stack is None:
         default_stack: dict[str, Any] = {
             'version': 1,
             'decay_per_turn': 0.1,
@@ -110,14 +110,14 @@ def conversation_state_empty(
             ],
         }
     else:
-        default_stack = normalize_intention_stack(None)
+        default_stack = normalize_intentions_stack(None)
     return {
         'conversation_id': conversation_id,
         'soul_id': soul_id,
         'user_id': user_id,
         'digest_cursor': 0,
         'prior_context': None,
-        'active_intentions': default_stack,
+        'intentions_active': default_stack,
         'memory_cache': [],
         'pending_diary_memory_ids': [],
         'self_model_id': None,
@@ -149,7 +149,7 @@ def find_conversation_state_across_dbs(
                 return db_path, conversation_state_from_row(
                     row,
                     normalize_text_list=deps.normalize_text_list,
-                    normalize_intention_stack=deps.normalize_intention_stack,
+                    normalize_intentions_stack=deps.normalize_intentions_stack,
                     normalize_memory_cache=deps.normalize_memory_cache,
                 )
         except Exception:
@@ -191,7 +191,7 @@ def write_conversation_state(
             existing_state = conversation_state_from_row(
                 conversation_state_row(con, cid),
                 normalize_text_list=deps.normalize_text_list,
-                normalize_intention_stack=deps.normalize_intention_stack,
+                normalize_intentions_stack=deps.normalize_intentions_stack,
                 normalize_memory_cache=deps.normalize_memory_cache,
             )
 
@@ -202,7 +202,7 @@ def write_conversation_state(
                 cid,
                 scoped_soul,
                 scoped_user,
-                normalize_intention_stack=deps.normalize_intention_stack,
+                normalize_intentions_stack=deps.normalize_intentions_stack,
             )
             seed['updated_at'] = datetime.now(UTC).isoformat()
             con.execute(
@@ -213,7 +213,7 @@ INSERT INTO memu_conversation_state (
     user_id,
     digest_cursor,
     prior_context,
-    active_intentions,
+    intentions_active,
     memory_cache,
     pending_diary_memory_ids,
     self_model_id,
@@ -228,7 +228,7 @@ INSERT INTO memu_conversation_state (
                     seed.get('user_id'),
                     int(seed.get('digest_cursor') or 0),
                     seed.get('prior_context'),
-                    json_to_db(seed.get('active_intentions')),
+                    json_to_db(seed.get('intentions_active')),
                     json_to_db(seed.get('memory_cache') or []),
                     json_to_db(seed.get('pending_diary_memory_ids') or []),
                     seed.get('self_model_id'),
@@ -248,7 +248,7 @@ INSERT INTO memu_conversation_state (
             if key in {
                 'digest_cursor',
                 'prior_context',
-                'active_intentions',
+                'intentions_active',
                 'memory_cache',
                 'pending_diary_memory_ids',
                 'self_model_id',
@@ -275,8 +275,8 @@ INSERT INTO memu_conversation_state (
         if 'prior_context' in field_updates:
             raw_prior_context = field_updates.get('prior_context')
             field_updates['prior_context'] = None if raw_prior_context is None else str(raw_prior_context)
-        if 'active_intentions' in field_updates:
-            field_updates['active_intentions'] = deps.normalize_intention_stack(field_updates.get('active_intentions'))
+        if 'intentions_active' in field_updates:
+            field_updates['intentions_active'] = deps.normalize_intentions_stack(field_updates.get('intentions_active'))
         if 'memory_cache' in field_updates:
             field_updates['memory_cache'] = deps.normalize_memory_cache(field_updates.get('memory_cache'))
         if 'pending_diary_memory_ids' in field_updates:
@@ -296,7 +296,7 @@ INSERT INTO memu_conversation_state (
             params: list[Any] = []
             for key, value in field_updates.items():
                 assignments.append(f"{key} = ?")
-                if key in {'active_intentions', 'memory_cache', 'pending_diary_memory_ids', 'last_retrieval_ids'}:
+                if key in {'intentions_active', 'memory_cache', 'pending_diary_memory_ids', 'last_retrieval_ids'}:
                     params.append(json_to_db(value))
                 elif key == 'digest_cursor':
                     params.append(int(value or 0))
@@ -312,11 +312,11 @@ INSERT INTO memu_conversation_state (
         state_out = conversation_state_from_row(
             conversation_state_row(con, cid),
             normalize_text_list=deps.normalize_text_list,
-            normalize_intention_stack=deps.normalize_intention_stack,
+            normalize_intentions_stack=deps.normalize_intentions_stack,
             normalize_memory_cache=deps.normalize_memory_cache,
         )
         return state_out or conversation_state_empty(
-            cid, scoped_soul, scoped_user, normalize_intention_stack=deps.normalize_intention_stack
+            cid, scoped_soul, scoped_user, normalize_intentions_stack=deps.normalize_intentions_stack
         ), db_path
     finally:
         con.close()

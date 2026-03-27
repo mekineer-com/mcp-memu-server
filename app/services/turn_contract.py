@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.services.intention_state import format_intention_stack_for_prompt, normalize_memory_cache
+from app.services.intention_state import format_intentions_for_prompt, normalize_memory_cache
 
 DEFAULT_SOUL_CARD = (
     "You have your own inner life — thoughts, feelings, preferences, curiosities. "
@@ -109,9 +109,9 @@ def build_turn_prompt(
     user_message: str,
     history: list[dict[str, Any]] | None,
     prior_context: str | None,
-    rag_result: Any,
+    retrieve_rag: Any,
     memory_cache: Any,
-    intention_stack: Any,
+    intentions_active: Any,
 ) -> str:
     cache = normalize_memory_cache(memory_cache)
     cache_lines = [f"{idx + 1}. {entry}" for idx, entry in enumerate(cache)]
@@ -126,13 +126,13 @@ def build_turn_prompt(
         _text(prior_context) or "(none)",
         "",
         "Retrieved memory context:",
-        _render_retrieve(rag_result),
+        _render_retrieve(retrieve_rag),
         "",
         "Your recent thoughts:",
         "\n".join(cache_lines) if cache_lines else "(empty)",
         "",
         "Intentions:",
-        format_intention_stack_for_prompt(intention_stack),
+        format_intentions_for_prompt(intentions_active),
         "",
         f"New message:\n{_text(user_message)}",
     ]
@@ -152,16 +152,15 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
     if not response:
         raise ValueError("response is required")
 
+    # LLM outputs cache.entry → parsed as cache_entry → appended to memory_cache list
     cache_entry = ""
     cache_raw = parsed.get("cache")
     if cache_raw is None:
         cache_entry = ""
     elif isinstance(cache_raw, dict):
         cache_entry = _text(cache_raw.get("entry"))[:300]
-    elif isinstance(cache_raw, str):
-        cache_entry = _text(cache_raw)[:300]
     else:
-        raise ValueError("cache must be object|string|null")
+        raise ValueError("cache must be object|null")
 
     intention_action = parsed.get("intention_action")
     if intention_action is not None and not isinstance(intention_action, dict):
