@@ -459,7 +459,7 @@ LIMIT 1
                 conversation=svc._escape_prompt_value(excerpt),
             )
 
-        diary_raw = await svc._get_llm_client().chat(diary_prompt, temperature=0.2, max_tokens=800)
+        diary_raw = await svc.chat(diary_prompt, temperature=0.2, max_tokens=800)
         diary_data = _parse_diary_xml(diary_raw)
         prose = str(diary_data.get("prose") or "").strip()
         companion_memory = str(diary_data.get("companion_memory") or "").strip()
@@ -468,7 +468,7 @@ LIMIT 1
         if not companion_memory:
             raise HTTPException(status_code=500, detail="diary generation returned empty companion_memory")
 
-        diary_embedding, companion_embedding = await svc._get_llm_client("embedding").embed([prose, companion_memory])
+        diary_embedding, companion_embedding = await svc.embed([prose, companion_memory], profile="embedding")
         diary_item = svc.database.memory_item_repo.create_item(
             resource_id=None,
             memory_type="diary",
@@ -509,7 +509,7 @@ LIMIT 1
                 diary_entry=svc._escape_prompt_value(prose),
             )
 
-        self_model_raw = await svc._get_llm_client().chat(self_model_prompt, temperature=0.2, max_tokens=1200)
+        self_model_raw = await svc.chat(self_model_prompt, temperature=0.2, max_tokens=1200)
         self_model_update = _parse_self_model_update_xml(self_model_raw, deps.normalize_trait_strength)
 
         all_items = deps.normalize_trait_invariants(

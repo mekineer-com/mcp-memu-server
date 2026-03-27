@@ -1621,7 +1621,7 @@ async def _persist_annulment_memories(
     if not summaries:
         return []
 
-    embeddings = await svc._get_llm_client("embedding").embed(summaries)
+    embeddings = await svc.embed(summaries, profile="embedding")
     created_ids: list[str] = []
     for idx, summary in enumerate(summaries):
         if idx >= len(embeddings):
@@ -3262,13 +3262,42 @@ async def conversation_retrieve(
         raise HTTPException(status_code=400, detail="conversation_id is required")
     try:
         out = await _run_retrieve(payload, conversation_id=cid, persist_llm_state=True)
+
+        safe = _safe_payload(payload if isinstance(payload, dict) else {})
+        want_turn_prompt = bool(safe.get("build_turn_prompt", safe.get("buildTurnPrompt", False)))
+
+        if want_turn_prompt:
+            scope = _extract_scope(safe)
+            uid = str(scope.get("user_id") or "").strip()
+            soul = str(scope.get("soul_id") or "").strip()
+
+            if uid and soul:
+                _state_row, soul_card, _db_path = _load_turn_state_and_soul_card(
+                    cid, user_id=uid, soul_id=soul,
+                )
+
+                message = _pick_str(safe, "message", "query", "text") or ""
+                history = _normalize_turn_history(safe.get("history"))
+                memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
+                intention_stack = _apply_intention_turn_maintenance_impl(out.get("active_intentions"))
+
+                out["turn_system_prompt"] = _make_turn_system_prompt(soul, soul_card=soul_card)
+                out["turn_user_prompt"] = _build_turn_prompt(
+                    user_message=message,
+                    history=history,
+                    prior_context=out.get("prior_context"),
+                    rag_result=out.get("result"),
+                    memory_cache=memory_cache,
+                    intention_stack=intention_stack,
+                )
+
         _record_call(
             "conversation.retrieve",
-            _safe_payload(payload),
+            safe,
             ok=True,
             info={
                 "queries": out.get("queries"),
-                "where": _extract_retrieve_where({**_safe_payload(payload), "conversation_id": cid}),
+                "where": _extract_retrieve_where({**safe, "conversation_id": cid}),
                 "method": out.get("method"),
                 "conversationId": cid,
                 "persistedState": bool(out.get("state")),
@@ -3360,7 +3389,7 @@ async def conversation_turn(
         )
 
         svc = _get_service_from_payload(safe, retrieve_method_override="rag")
-        llm_raw = await svc._get_llm_client().chat(
+        llm_raw = await svc.chat(
             turn_prompt,
             system_prompt=turn_system_prompt,
             temperature=0.0,
