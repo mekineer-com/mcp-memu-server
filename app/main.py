@@ -1718,11 +1718,13 @@ async def _run_retrieve(
     soul_id = str((scope or {}).get("soul_id") or "").strip()
     user_id = str((scope or {}).get("user_id") or "user").strip() or "user"
     async def _retrieve_and_maybe_persist(state_soul_id: str | None) -> dict[str, Any]:
+        _t0 = time.monotonic()
         result = await svc.retrieve(memu_queries, where=scope)
+        _retrieve_ms = int((time.monotonic() - _t0) * 1000)
         if method == "llm" and isinstance(result, dict):
             result = {**result, "categories": []}
             result = _dedupe_llm_result_against_rag(result, llm_dedupe_baseline)
-        out_local: dict[str, Any] = {"ok": True, "result": result}
+        out_local: dict[str, Any] = {"ok": True, "result": result, "retrieve_ms": _retrieve_ms}
         if persist_llm_state and method == "llm" and scoped_conversation_id:
             state_out, db_path = _write_conversation_state(
                 scoped_conversation_id,
@@ -3352,7 +3354,9 @@ async def conversation_turn(
         turn_system_prompt = _make_turn_system_prompt(soul_id, soul_card=soul_card)
 
         rag_payload = {**safe, "method": "rag", "query": message}
+        _rag_t0 = time.monotonic()
         rag_out = await _run_rag_with_fallback(rag_payload, conversation_id=cid)
+        _rag_ms = int((time.monotonic() - _rag_t0) * 1000)
         retrieve_rag = rag_out.get("result") if isinstance(rag_out, dict) else None
 
         turn_user_prompt = _build_turn_prompt(
@@ -3365,6 +3369,7 @@ async def conversation_turn(
         )
 
         svc = _get_service_from_payload(safe, retrieve_method_override="rag")
+        _turn_t0 = time.monotonic()
         llm_raw = await svc.chat(
             turn_user_prompt,
             system_prompt=turn_system_prompt,
@@ -3372,6 +3377,7 @@ async def conversation_turn(
             max_tokens=1000,
             response_format={"type": "json_object"},
         )
+        _turn_ms = int((time.monotonic() - _turn_t0) * 1000)
         try:
             turn_contract = _parse_turn_contract(llm_raw)
         except Exception as exc:
@@ -3452,11 +3458,17 @@ async def conversation_turn(
 
                 apimw_task.add_done_callback(_on_apimw_done)
 
+        _response_str = str(turn_contract.get("response") or "").strip()
         out: dict[str, Any] = {
             "ok": True,
             "conversation_id": cid,
-            "response": str(turn_contract.get("response") or "").strip(),
+            "response": _response_str,
             "apimw": apimw_status,
+            "retrieve_ms": _rag_ms,
+            "turn_ms": _turn_ms,
+            "reply_chars": len(_response_str),
+            "turn_prompt_chars": len(turn_user_prompt),
+            "turn_system_chars": len(turn_system_prompt),
         }
         if include_debug:
             out["state"] = state_out
