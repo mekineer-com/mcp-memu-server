@@ -52,6 +52,7 @@ Rules:
 - annulments may be empty.
 - Your one intention_action per turn: boost an existing intention (+1 priority), promote an ephemeral into a full intention (priority 10), or create up to 2 new ephemerals.
 - [ephemeral] intentions expire at the end of this turn. If one matters, promote it; otherwise let it go.
+- cache: set to null if your new thought is essentially the same as any entry already in "Your recent thoughts". Only write something genuinely new.
 - inner_thought: a private rehearsal — get your bearings after the administrative steps and find your way back to this person before you speak. Even if you're just about to say "hi", feel it first. This is never stored or shown; it exists only to ground your response.
 - response: what the user sees.
 """
@@ -118,12 +119,17 @@ def build_turn_prompt(
     if cache_lines:
         cache_lines[0] = f"{cache_lines[0]}  \u2190 oldest, replaced on next write"
 
+    # Discard routing JSON artifacts written by old code (pre-715256c)
+    safe_prior = prior_context
+    if safe_prior and safe_prior.strip().startswith('{'):
+        safe_prior = None
+
     parts = [
         "Conversation history:",
         _render_history(history or []),
         "",
         "Prior context:",
-        _text(prior_context) or "(none)",
+        _text(safe_prior) or "(none)",
         "",
         "Retrieved memory context:",
         _render_retrieve(retrieve_rag),

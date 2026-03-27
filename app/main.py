@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 import hashlib
 import json
 import logging
@@ -177,6 +178,15 @@ def _memorize_lock_key(user_id: str, soul_id: str) -> str:
     except Exception:
         pass
     return f"{user_id}::{soul_id}"
+
+
+@asynccontextmanager
+async def _retrieve_scope_lock(user_id: str, soul_id: str):
+    if soul_id:
+        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(user_id, soul_id), asyncio.Lock()):
+            yield
+    else:
+        yield
 
 
 def _begin_shutdown_drain(requested_by: str | None, reason: str | None, max_wait_sec: int) -> bool:
@@ -1731,12 +1741,8 @@ async def _run_retrieve(
             out_local["path"] = str(db_path)
         return out_local
 
-    out: dict[str, Any]
-    if soul_id:
-        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(user_id, soul_id), asyncio.Lock()):
-            out = await _retrieve_and_maybe_persist(soul_id or None)
-    else:
-        out = await _retrieve_and_maybe_persist(None)
+    async with _retrieve_scope_lock(user_id, soul_id):
+        out = await _retrieve_and_maybe_persist(soul_id or None)
 
     if scoped_conversation_id:
         state_out: dict[str, Any] | None = None
