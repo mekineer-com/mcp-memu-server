@@ -184,7 +184,7 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
             raise ValueError("annulment requires intention_id and status completed|deleted")
         annulments.append({"intention_id": intention_id, "status": status, "note": note})
 
-    inner_thought = _text(parsed.get("inner_thought") or parsed.get("thought"))
+    inner_thought = _text(parsed.get("inner_thought"))
     return {
         "response": response,
         "cache_entry": cache_entry,

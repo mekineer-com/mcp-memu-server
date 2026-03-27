@@ -111,11 +111,11 @@ def _normalize_stack_item(
     if not isinstance(raw, dict):
         return None
 
-    item_id = _text(raw.get("id") or raw.get("intention_id") or raw.get("source_intention_id") or raw.get("text"))
+    item_id = _text(raw.get("id") or "")
     if not item_id:
         return None
 
-    text = _text(raw.get("text") or raw.get("description") or raw.get("name") or item_id)
+    text = _text(raw.get("text") or item_id)
     kind = _text(raw.get("kind") or "intention") or "intention"
     is_relax = item_id.lower() == RELAX_INTENTION_ID or kind == "relax"
 
@@ -332,7 +332,7 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
     if not isinstance(action, dict):
         return stack
 
-    action_type = _text(action.get("type") or action.get("action") or "none").lower()
+    action_type = _text(action.get("type") or "none").lower()
     if action_type in {"", "none", "noop"}:
         return stack
 
@@ -345,7 +345,7 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
     }
 
     if action_type == "boost":
-        target_id = _text(action.get("target_id") or action.get("target") or action.get("intention_id"))
+        target_id = _text(action.get("target_id"))
         if target_id and target_id in by_id:
             amount = _float(action.get("amount"), 1.0)
             current = by_id[target_id]
@@ -354,7 +354,7 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
             by_id[target_id] = current
 
     elif action_type == "promote":
-        target_id = _text(action.get("target_id") or action.get("target") or action.get("intention_id"))
+        target_id = _text(action.get("target_id"))
         text = _text(action.get("text") or action.get("description") or target_id)
         if target_id:
             current = by_id.get(target_id)
