@@ -1,4 +1,5 @@
 import asyncio
+import weakref
 from contextlib import asynccontextmanager
 import hashlib
 import json
@@ -46,7 +47,12 @@ from app.db import (
 )
 from memu.app import MemoryService
 from pydantic import BaseModel
-from app.services.diary import DiaryDeps, generate_diary as generate_diary_service
+from app.services.diary import (
+    DiaryDeps,
+    gather_diary_inputs as _gather_diary_inputs,
+    run_diary_llm as _run_diary_llm,
+    write_diary_outputs as _write_diary_outputs,
+)
 from app.services.state import (
     conversation_state_empty as _conversation_state_empty,
     conversation_state_from_row as _conversation_state_from_row_impl,
@@ -117,7 +123,15 @@ _LAST_CALLS: list[dict[str, Any]] = []
 # Full HTTP trace (method/path/status/elapsed). This answers:
 # "Is anything reaching the server from the plugin?"
 _LAST_HTTP: list[dict[str, Any]] = []
-_MEMORIZE_LOCKS: dict[str, asyncio.Lock] = {}
+_MEMORIZE_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+
+
+def _get_memorize_lock(key: str) -> asyncio.Lock:
+    lock = _MEMORIZE_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _MEMORIZE_LOCKS[key] = lock
+    return lock
 
 
 # -------------------------
@@ -183,7 +197,7 @@ def _memorize_lock_key(user_id: str, soul_id: str) -> str:
 @asynccontextmanager
 async def _retrieve_scope_lock(user_id: str, soul_id: str):
     if soul_id:
-        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(user_id, soul_id), asyncio.Lock()):
+        async with _get_memorize_lock(_memorize_lock_key(user_id, soul_id)):
             yield
     else:
         yield
@@ -1743,7 +1757,10 @@ async def _run_retrieve(
             out_local["path"] = str(db_path)
         return out_local
 
-    async with _retrieve_scope_lock(user_id, soul_id):
+    if persist_llm_state:
+        async with _retrieve_scope_lock(user_id, soul_id):
+            out = await _retrieve_and_maybe_persist(soul_id or None)
+    else:
         out = await _retrieve_and_maybe_persist(soul_id or None)
 
     if scoped_conversation_id:
@@ -2351,6 +2368,54 @@ def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, con
     return None
 
 
+def _make_diary_deps() -> DiaryDeps:
+    return DiaryDeps(
+        sqlite_current_path=_sqlite_current_path,
+        sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
+        sqlite_connect=_sqlite_connect,
+        sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
+        conversation_state_row=_conversation_state_row,
+        conversation_state_from_row=_conversation_state_from_row,
+        get_storage_dir=_get_storage_dir,
+        config=_CONFIG,
+        find_chat_dir_for_conversation=_find_chat_dir_for_conversation,
+        read_list=_read_list,
+        normalize_text_list=_normalize_text_list,
+        normalize_int_list=_normalize_int_list,
+        normalize_trait_invariants=_normalize_trait_invariants,
+        normalize_trait_strength=_normalize_trait_strength,
+        json_to_db=_json_to_db,
+    )
+
+
+async def _run_diary_task(
+    svc: Any,
+    *,
+    conversation_id: str,
+    soul_id: str,
+    uid: str,
+) -> None:
+    """Run diary as a background task with two-phase lock (gather + write separate from LLM)."""
+    try:
+        deps = _make_diary_deps()
+        diary_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
+        async with diary_lock:
+            inputs = _gather_diary_inputs(deps, conversation_id=conversation_id, soul_id=soul_id, user_id=uid)
+        llm_results = await _run_diary_llm(svc, deps, inputs=inputs)
+        async with diary_lock:
+            result = _write_diary_outputs(
+                deps, svc, inputs=inputs, llm_results=llm_results,
+                conversation_id=conversation_id, soul_id=soul_id, user_id=uid,
+            )
+        logger.info(
+            "diary auto-generated after memorize: memory_id=%s, intentions=%d",
+            result.get("memory_id"),
+            len(result.get("intention_ids") or []),
+        )
+    except Exception:
+        logger.exception("diary auto-generation failed after memorize (non-fatal)")
+
+
 async def _run_memorize_batches(
     *,
     memorize_batches: list[tuple[str, list[dict[str, Any]], int]],
@@ -2373,7 +2438,7 @@ async def _run_memorize_batches(
     days_written: int,
     sleep_stats: Any,
 ) -> None:
-    async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul_id), asyncio.Lock()):
+    async with _get_memorize_lock(_memorize_lock_key(uid, soul_id)):
         batch_results: list[dict[str, Any]] = []
         pending_diary_memory_ids: list[str] = []
         processed_end_cursor = processed_cursor
@@ -2421,39 +2486,11 @@ async def _run_memorize_batches(
                     pending_diary_memory_ids[:5],
                 )
 
-        # Auto-trigger diary generation if memorize produced diary-worthy memories
+        # Auto-trigger diary generation in background (releases memorize lock before LLM calls)
         if conversation_id and pending_diary_memory_ids:
-            try:
-                diary_result = await generate_diary_service(
-                    deps=DiaryDeps(
-                        sqlite_current_path=_sqlite_current_path,
-                        sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
-                        sqlite_connect=_sqlite_connect,
-                        sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
-                        conversation_state_row=_conversation_state_row,
-                        conversation_state_from_row=_conversation_state_from_row,
-                        get_storage_dir=_get_storage_dir,
-                        config=_CONFIG,
-                        find_chat_dir_for_conversation=_find_chat_dir_for_conversation,
-                        read_list=_read_list,
-                        normalize_text_list=_normalize_text_list,
-                        normalize_int_list=_normalize_int_list,
-                        normalize_trait_invariants=_normalize_trait_invariants,
-                        normalize_trait_strength=_normalize_trait_strength,
-                        json_to_db=_json_to_db,
-                    ),
-                    svc=svc,
-                    conversation_id=conversation_id,
-                    soul_id=soul_id,
-                    user_id=uid,
-                )
-                logger.info(
-                    "diary auto-generated after memorize: memory_id=%s, intentions=%d",
-                    diary_result.get("memory_id"),
-                    len(diary_result.get("intention_ids") or []),
-                )
-            except Exception:
-                logger.exception("diary auto-generation failed after memorize (non-fatal)")
+            asyncio.create_task(
+                _run_diary_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid)
+            )
 
         _record_call(
             "memorize",
@@ -2523,7 +2560,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
 
         uid = str((scope or {}).get("user_id") or "user") if isinstance(scope, dict) else "user"
         soul_id = str((scope or {}).get("soul_id") or "soul") if isinstance(scope, dict) else "soul"
-        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul_id), asyncio.Lock()):
+        async with _get_memorize_lock(_memorize_lock_key(uid, soul_id)):
             storage_dir = _get_storage_dir(_CONFIG)
             chats_dir = (storage_dir / "st_chats").resolve()
             chat_file = _pick_str(safe, "chatFileName", "chat_file_name", "chat_filename", "chatFile")
@@ -2788,29 +2825,17 @@ async def generate_diary(payload: dict[str, Any] = Body(...)):
         safe["user"] = {**scope, "user_id": uid, "soul_id": soul_id, "conversation_id": conversation_id}
         svc = _get_service_from_payload(safe)
 
-        async with _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul_id), asyncio.Lock()):
-            result = await generate_diary_service(
-                deps=DiaryDeps(
-                    sqlite_current_path=_sqlite_current_path,
-                    sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
-                    sqlite_connect=_sqlite_connect,
-                    sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
-                    conversation_state_row=_conversation_state_row,
-                    conversation_state_from_row=_conversation_state_from_row,
-                    get_storage_dir=_get_storage_dir,
-                    config=_CONFIG,
-                    find_chat_dir_for_conversation=_find_chat_dir_for_conversation,
-                    read_list=_read_list,
-                    normalize_text_list=_normalize_text_list,
-                    normalize_int_list=_normalize_int_list,
-                    normalize_trait_invariants=_normalize_trait_invariants,
-                    normalize_trait_strength=_normalize_trait_strength,
-                    json_to_db=_json_to_db,
-                ),
-                svc=svc,
-                conversation_id=conversation_id,
-                soul_id=soul,
-                user_id=uid,
+        deps = _make_diary_deps()
+        diary_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
+        async with diary_lock:
+            diary_inputs = _gather_diary_inputs(
+                deps, conversation_id=conversation_id, soul_id=soul_id, user_id=uid,
+            )
+        diary_llm = await _run_diary_llm(svc, deps, inputs=diary_inputs)
+        async with diary_lock:
+            result = _write_diary_outputs(
+                deps, svc, inputs=diary_inputs, llm_results=diary_llm,
+                conversation_id=conversation_id, soul_id=soul_id, user_id=uid,
             )
 
         _record_call(
@@ -3340,19 +3365,22 @@ async def conversation_turn(
         safe["conversation_id"] = cid
         safe["conversationId"] = cid
 
-        state_row, soul_card, db_path = _load_turn_state_and_soul_card(
-            cid,
-            user_id=uid,
-            soul_id=soul_id,
-        )
-        soul_card = soul_card or (str(safe.get("soul_card") or "").strip() or None)
+        state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
 
-        prior_context = str(state_row.get("prior_context") or "").strip() or None
-        memory_cache_before = _normalize_memory_cache_impl(state_row.get("memory_cache"))
-        intentions_before = _apply_intention_turn_maintenance_impl(state_row.get("intentions_active"))
+        # Phase 1: read state for prompt building (lock held only for this quick read)
+        async with state_lock:
+            state_row, soul_card, db_path = _load_turn_state_and_soul_card(
+                cid,
+                user_id=uid,
+                soul_id=soul_id,
+            )
+            soul_card = soul_card or (str(safe.get("soul_card") or "").strip() or None)
+            prior_context = str(state_row.get("prior_context") or "").strip() or None
+            memory_cache_before = _normalize_memory_cache_impl(state_row.get("memory_cache"))
+            intentions_before = _apply_intention_turn_maintenance_impl(state_row.get("intentions_active"))
 
+        # RAG + LLM outside lock (may take seconds; other operations can proceed)
         turn_system_prompt = _make_turn_system_prompt(soul_id, soul_card=soul_card)
-
         rag_payload = {**safe, "method": "rag", "query": message}
         _rag_t0 = time.monotonic()
         rag_out = await _run_rag_with_fallback(rag_payload, conversation_id=cid)
@@ -3387,26 +3415,27 @@ async def conversation_turn(
                 detail=f"turn contract parse failure: {exc}; raw={raw_snippet!r}",
             ) from exc
 
-        memory_cache_after = list(memory_cache_before)
         cache_entry = str(turn_contract.get("cache_entry") or "").strip()
-        if cache_entry:
-            memory_cache_after = _append_memory_cache_entry(memory_cache_after, cache_entry)
-
-        intentions_after = _apply_intention_action(intentions_before, turn_contract.get("intention_action"))
+        intention_action = turn_contract.get("intention_action")
         annulments = turn_contract.get("annulments") if isinstance(turn_contract.get("annulments"), list) else []
         annulment_ids = [str(row.get("intention_id") or "").strip() for row in annulments if isinstance(row, dict)]
-        intentions_after = _remove_intentions(
-            intentions_after,
-            [item_id for item_id in annulment_ids if item_id],
-        )
 
         state_out = state_row
         state_path = db_path
         annulment_memory_ids: list[str] = []
 
+        # Phase 2: re-read fresh state, merge this turn's updates, write (lock held only for this quick write)
         if not dry_run:
-            state_lock = _MEMORIZE_LOCKS.setdefault(_memorize_lock_key(uid, soul_id), asyncio.Lock())
             async with state_lock:
+                fresh_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
+                fresh_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
+                fresh_intentions = _apply_intention_turn_maintenance_impl(fresh_row.get("intentions_active"))
+                memory_cache_after = _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
+                intentions_after = _apply_intention_action(fresh_intentions, intention_action)
+                intentions_after = _remove_intentions(
+                    intentions_after,
+                    [item_id for item_id in annulment_ids if item_id],
+                )
                 state_out, state_path = _write_conversation_state(
                     cid,
                     soul_id=soul_id,
@@ -3417,6 +3446,7 @@ async def conversation_turn(
                     },
                 )
 
+        if not dry_run:
             annulment_memory_ids = await _persist_annulment_memories(
                 svc=svc,
                 scope={"user_id": uid, "soul_id": soul_id},

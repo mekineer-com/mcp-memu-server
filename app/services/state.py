@@ -139,7 +139,7 @@ def write_conversation_state(
             seed['updated_at'] = datetime.now(UTC).isoformat()
             con.execute(
                 """
-INSERT INTO memu_conversation_state (
+INSERT OR IGNORE INTO memu_conversation_state (
     conversation_id,
     soul_id,
     user_id,
@@ -170,7 +170,7 @@ INSERT INTO memu_conversation_state (
                 ),
             )
             con.commit()
-            existing_state = seed
+            existing_state = conversation_state_from_row(conversation_state_row(con, cid)) or seed
 
         raw_updates = dict(updates) if updates else {}
         append_pending_diary_memory_ids = raw_updates.pop('append_pending_diary_memory_ids', None)
