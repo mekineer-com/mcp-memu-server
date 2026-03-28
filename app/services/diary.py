@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -418,6 +419,7 @@ LIMIT 1
         )
         con.commit()
 
+        run_hash = hashlib.sha1("|".join(sorted(pending_diary_memory_ids)).encode()).hexdigest()[:12]
         return {
             "db_path": db_path,
             "state": state,
@@ -427,6 +429,7 @@ LIMIT 1
             "existing_self_model_text": existing_self_model_text,
             "context_parts": context_parts,
             "excerpt": excerpt,
+            "diary_run_episode_id": f"diary-run:{run_hash}",
         }
     finally:
         con.close()
@@ -510,25 +513,43 @@ def write_diary_outputs(
     companion_embedding = llm_results["companion_embedding"]
     self_model_update: dict[str, Any] = llm_results["self_model_update"]
 
-    diary_item = svc.database.memory_item_repo.create_item(
-        resource_id=None,
-        memory_type="diary",
-        summary=prose,
-        embedding=diary_embedding,
-        user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
-        conversation_id=conversation_id,
-        affective_tags=diary_data.get("affective_tags"),
-        unresolved=diary_data.get("unresolved"),
+    diary_run_episode_id: str | None = inputs.get("diary_run_episode_id")
+    companion_episode_id = f"companion:{diary_run_episode_id}" if diary_run_episode_id else None
+
+    existing_diary = (
+        svc.database.memory_item_repo.list_items({"episode_id": diary_run_episode_id, "memory_type": "diary"})
+        if diary_run_episode_id else {}
     )
-    svc.database.memory_item_repo.create_item(
-        resource_id=None,
-        memory_type="event",
-        summary=companion_memory,
-        embedding=companion_embedding,
-        user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
-        source_role="soul",
-        conversation_id=conversation_id,
+    if existing_diary:
+        diary_item = next(iter(existing_diary.values()))
+    else:
+        diary_item = svc.database.memory_item_repo.create_item(
+            resource_id=None,
+            memory_type="diary",
+            summary=prose,
+            embedding=diary_embedding,
+            user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
+            conversation_id=conversation_id,
+            affective_tags=diary_data.get("affective_tags"),
+            unresolved=diary_data.get("unresolved"),
+            episode_id=diary_run_episode_id,
+        )
+
+    existing_companion = (
+        svc.database.memory_item_repo.list_items({"episode_id": companion_episode_id, "memory_type": "event"})
+        if companion_episode_id else {}
     )
+    if not existing_companion:
+        svc.database.memory_item_repo.create_item(
+            resource_id=None,
+            memory_type="event",
+            summary=companion_memory,
+            embedding=companion_embedding,
+            user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
+            source_role="soul",
+            conversation_id=conversation_id,
+            episode_id=companion_episode_id,
+        )
 
     all_items = deps.normalize_trait_invariants(
         current_self_model["trait_invariants"]
