@@ -190,7 +190,7 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
         status = _text(row.get("status")).lower()
         note = _text(row.get("note"))
         if not intention_id or status not in {"completed", "deleted"}:
-            raise ValueError("annulment requires intention_id and status completed|deleted")
+            raise ValueError("annulment requires intention_id (or id) and status completed|deleted")
         annulments.append({"intention_id": intention_id, "status": status, "note": note})
 
     inner_thought = _text(parsed.get("inner_thought"))
