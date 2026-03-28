@@ -352,13 +352,13 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
 
     elif action_type == "promote":
         target_id = _text(action.get("target_id"))
-        text = _text(action.get("text") or target_id)
+        explicit_text = _text(action.get("text"))
         if target_id:
             current = by_id.get(target_id)
             if current is None:
                 current = {
                     "id": target_id,
-                    "text": text,
+                    "text": explicit_text or target_id,
                     "priority": DEFAULT_INTENTION_PRIORITY,
                     "ephemeral": False,
                     "kind": "intention",
@@ -372,8 +372,8 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
                 current["priority"] = max(_float(current.get("priority"), 0.0), DEFAULT_INTENTION_PRIORITY)
                 current["updated_at"] = now
                 current.pop("expires_at_turn", None)
-            if text:
-                current["text"] = text
+            if explicit_text:
+                current["text"] = explicit_text
             by_id[target_id] = current
 
     elif action_type == "create":
