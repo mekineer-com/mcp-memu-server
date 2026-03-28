@@ -143,7 +143,11 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
     if "updated_at" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN updated_at DATETIME")
     for stmt in alters:
-        con.execute(stmt)
+        try:
+            con.execute(stmt)
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
     sqlite_ensure_diary_tables(con)
     con.commit()
 
@@ -183,5 +187,5 @@ def json_from_db(value: Any) -> Any:
         try:
             return json.loads(s)
         except Exception:
-            return value
+            return None
     return value
