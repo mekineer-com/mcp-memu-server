@@ -2396,9 +2396,10 @@ async def _run_diary_task(
     uid: str,
 ) -> None:
     """Run diary as a background task with two-phase lock (gather + write separate from LLM)."""
+    deps = _make_diary_deps()
+    diary_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
+    inputs: dict[str, Any] | None = None
     try:
-        deps = _make_diary_deps()
-        diary_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
         async with diary_lock:
             inputs = _gather_diary_inputs(deps, conversation_id=conversation_id, soul_id=soul_id, user_id=uid)
         llm_results = await _run_diary_llm(svc, deps, inputs=inputs)
@@ -2414,6 +2415,15 @@ async def _run_diary_task(
         )
     except Exception:
         logger.exception("diary auto-generation failed after memorize (non-fatal)")
+        if inputs is not None:
+            try:
+                async with diary_lock:
+                    _write_conversation_state(
+                        conversation_id, soul_id=soul_id, user_id=uid,
+                        updates={"append_pending_diary_memory_ids": inputs["pending_diary_memory_ids"]},
+                    )
+            except Exception:
+                logger.exception("diary: failed to restore pending_diary_memory_ids after failure")
 
 
 async def _run_memorize_batches(
@@ -2802,6 +2812,11 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
 
 @app.post("/diary/generate", operation_id="generate_diary")
 async def generate_diary(payload: dict[str, Any] = Body(...)):
+    diary_lock: asyncio.Lock | None = None
+    diary_inputs: dict[str, Any] | None = None
+    uid_ref: str = ""
+    soul_id_ref: str = ""
+    conversation_id_ref: str = ""
     try:
         safe = _safe_payload(payload)
         if not isinstance(safe.get("llm_profiles"), dict):
@@ -2813,29 +2828,29 @@ async def generate_diary(payload: dict[str, Any] = Body(...)):
         if not isinstance(scope, dict):
             raise HTTPException(status_code=400, detail="user scope required")
 
-        conversation_id = _extract_conversation_id(safe)
-        if not conversation_id:
+        conversation_id_ref = _extract_conversation_id(safe) or ""
+        if not conversation_id_ref:
             raise HTTPException(status_code=400, detail="conversation_id required")
 
-        uid = str(scope.get("user_id") or "").strip()
-        soul_id = str(scope.get("soul_id") or "").strip()
-        if not uid or not soul_id:
+        uid_ref = str(scope.get("user_id") or "").strip()
+        soul_id_ref = str(scope.get("soul_id") or "").strip()
+        if not uid_ref or not soul_id_ref:
             raise HTTPException(status_code=400, detail="user_id and soul_id required")
 
-        safe["user"] = {**scope, "user_id": uid, "soul_id": soul_id, "conversation_id": conversation_id}
+        safe["user"] = {**scope, "user_id": uid_ref, "soul_id": soul_id_ref, "conversation_id": conversation_id_ref}
         svc = _get_service_from_payload(safe)
 
         deps = _make_diary_deps()
-        diary_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
+        diary_lock = _get_memorize_lock(_memorize_lock_key(uid_ref, soul_id_ref))
         async with diary_lock:
             diary_inputs = _gather_diary_inputs(
-                deps, conversation_id=conversation_id, soul_id=soul_id, user_id=uid,
+                deps, conversation_id=conversation_id_ref, soul_id=soul_id_ref, user_id=uid_ref,
             )
         diary_llm = await _run_diary_llm(svc, deps, inputs=diary_inputs)
         async with diary_lock:
             result = _write_diary_outputs(
                 deps, svc, inputs=diary_inputs, llm_results=diary_llm,
-                conversation_id=conversation_id, soul_id=soul_id, user_id=uid,
+                conversation_id=conversation_id_ref, soul_id=soul_id_ref, user_id=uid_ref,
             )
 
         _record_call(
@@ -2843,16 +2858,25 @@ async def generate_diary(payload: dict[str, Any] = Body(...)):
             safe,
             ok=True,
             info={
-                "conversationId": conversation_id,
+                "conversationId": conversation_id_ref,
                 "memory_id": result.get("memory_id"),
                 "intention_count": len(result.get("intention_ids") or []),
             },
         )
         return {"ok": True, "result": result}
-    except HTTPException:
-        _record_call("diary.generate", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException")
-        raise
     except Exception as exc:
+        if diary_inputs is not None and diary_lock is not None:
+            try:
+                async with diary_lock:
+                    _write_conversation_state(
+                        conversation_id_ref, soul_id=soul_id_ref, user_id=uid_ref,
+                        updates={"append_pending_diary_memory_ids": diary_inputs["pending_diary_memory_ids"]},
+                    )
+            except Exception:
+                pass
+        if isinstance(exc, HTTPException):
+            _record_call("diary.generate", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException")
+            raise
         traceback.print_exc()
         _record_call(
             "diary.generate",

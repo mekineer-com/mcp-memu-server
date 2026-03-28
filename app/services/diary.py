@@ -315,13 +315,6 @@ def gather_diary_inputs(
         if not pending_diary_memory_ids:
             raise HTTPException(status_code=400, detail="no diary-worthy memories queued")
 
-        # Clear immediately so new memorize runs accumulate fresh IDs during our LLM phase.
-        con.execute(
-            "UPDATE memu_conversation_state SET pending_diary_memory_ids = ?, updated_at = ? WHERE conversation_id = ?",
-            (deps.json_to_db([]), datetime.now(UTC).isoformat(), conversation_id),
-        )
-        con.commit()
-
         storage_dir = deps.get_storage_dir(deps.config)
         chats_dir = (storage_dir / "st_chats").resolve()
         chat_dir = deps.find_chat_dir_for_conversation(chats_dir, user_id, soul_id, conversation_id)
@@ -417,6 +410,13 @@ LIMIT 1
             current_self_model,
             normalize_trait_invariants=deps.normalize_trait_invariants,
         )
+
+        # Clear only after all inputs validated — failures before here leave IDs intact for retry.
+        con.execute(
+            "UPDATE memu_conversation_state SET pending_diary_memory_ids = ?, updated_at = ? WHERE conversation_id = ?",
+            (deps.json_to_db([]), datetime.now(UTC).isoformat(), conversation_id),
+        )
+        con.commit()
 
         return {
             "db_path": db_path,
