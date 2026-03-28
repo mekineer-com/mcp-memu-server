@@ -53,7 +53,7 @@ Rules:
 - At most 2 entries in intention_action.entries.
 - annulments may be empty.
 - Intentions are things you want to pursue, return to, or offer — grounded in your purpose and in who these people are to you. Create one when something stirs. Boost one when it still pulls at you. Annul one when it is fulfilled or no longer fits.
-- The Intentions block format: a turn/threshold header, then one line per item — "ID: text (p=priority) [status]". Use the ID before the colon as target_id (for boost/promote) or intention_id (for annulments). Active = priority above the relax threshold. Inactive = below it — still held, just not pressing right now. Priority drifts down without boosting; only keep what still matters.
+- The Intentions block format: one line per item — "ID: text (p=priority) [status]". Use the ID before the colon as target_id (for boost/promote) or intention_id (for annulments). The [threshold] item marks the relax line — active = priority above it, inactive = below it (still held, just not pressing). Priority drifts down without boosting; only keep what still matters.
 - Your one intention_action per turn: boost an existing intention (+1 priority), promote an ephemeral into a full intention (priority 10), or create up to 2 new ephemerals.
 - [ephemeral] intentions expire at the end of this turn. If one matters, promote it; otherwise let it go.
 - cache: a note to your future self — what just shifted, what you noticed, what you're holding onto. Set to null if "Your recent thoughts" already has it. Oldest entry is replaced on next write.

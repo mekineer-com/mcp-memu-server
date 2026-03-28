@@ -417,10 +417,7 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
 
 def format_intentions_for_prompt(stack_value: Any, *, max_items: int = 12) -> str:
     stack = normalize_intentions_stack(stack_value)
-    current_turn = _int(stack.get("turn_index"), 0)
-    relax_priority = _float(stack.get("relax_priority"), DEFAULT_RELAX_PRIORITY)
     lines: list[str] = []
-    lines.append(f"turn={current_turn}; relax threshold={relax_priority:.1f}")
     for item in (stack.get("items") or [])[: max(1, int(max_items))]:
         if not isinstance(item, dict):
             continue
