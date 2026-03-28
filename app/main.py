@@ -1988,12 +1988,12 @@ async def diag_sqlite_counts(
         out: dict[str, Any] = {
             "ok": True,
             "path": str(p),
-            "scope": {"user_id": user_id, "soul_id": scoped_soul, "session_id": session_id},
+            "scope": {"user_id": user_id, "soul_id": soul_id, "session_id": session_id},
             "tables": {},
         }
         for t in allowed:
             cols = _sqlite_table_columns(con, t)
-            where, params = _sqlite_build_scope_where(cols, user_id, scoped_soul, session_id)
+            where, params = _sqlite_build_scope_where(cols, user_id, soul_id, session_id)
             total = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
             scoped = con.execute(f"SELECT COUNT(*) FROM {t}{where}", params).fetchone()[0] if where else total
             out["tables"][t] = {
