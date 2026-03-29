@@ -118,18 +118,22 @@ def _normalize_stack_item(
     text = _text(raw.get("text") or item_id)
     kind = _text(raw.get("kind") or "intention") or "intention"
     is_relax = item_id.lower() == RELAX_INTENTION_ID or kind == "relax"
+    ephemeral = bool(raw.get("ephemeral") is True)
 
     item: dict[str, Any] = {
         "id": RELAX_INTENTION_ID if is_relax else item_id,
         "text": RELAX_INTENTION_TEXT if is_relax else text,
-        "priority": _float(raw.get("priority"), default_priority),
-        "ephemeral": bool(raw.get("ephemeral") is True),
+        "ephemeral": ephemeral,
         "kind": "relax" if is_relax else "intention",
         "status": _text(raw.get("status") or "active") or "active",
     }
 
     if is_relax:
+        item["priority"] = _float(raw.get("priority"), default_priority)
+        item["ephemeral"] = False
         return item
+    if not ephemeral:
+        item["priority"] = _float(raw.get("priority"), default_priority)
 
     source_intention_id = _text(raw.get("source_intention_id") or raw.get("intention_id"))
     if source_intention_id:
@@ -181,10 +185,16 @@ def normalize_intentions_stack(
 
     relax_item = by_id[RELAX_INTENTION_ID]
     others = [item for key, item in by_id.items() if key != RELAX_INTENTION_ID]
-    others.sort(key=lambda item: _float(item.get("priority"), 0.0), reverse=True)
+    ranked = [item for item in others if item.get("ephemeral") is not True]
+    ephemerals = [item for item in others if item.get("ephemeral") is True]
+    ranked.sort(key=lambda item: _float(item.get("priority"), 0.0), reverse=True)
+    ephemerals.sort(
+        key=lambda item: _text(item.get("updated_at")) or _text(item.get("created_at")),
+        reverse=True,
+    )
 
     seen_top_ten = False
-    for item in others:
+    for item in ranked:
         priority = _float(item.get("priority"), 0.0)
         if priority >= DEFAULT_INTENTION_PRIORITY:
             if not seen_top_ten:
@@ -194,10 +204,13 @@ def normalize_intentions_stack(
                 item["priority"] = float(DEFAULT_INTENTION_PRIORITY - 0.1)
 
     relax_priority_value = _float(relax_item.get("priority"), default_relax_priority)
-    for item in others:
+    for item in ranked:
         item["active"] = _float(item.get("priority"), 0.0) >= relax_priority_value
+    for item in ephemerals:
+        item.pop("priority", None)
+        item["active"] = False
 
-    ordered_items = [*others, relax_item]
+    ordered_items = [*ranked, *ephemerals, relax_item]
 
     return {
         "version": 1,
@@ -274,15 +287,14 @@ def upsert_intentions_stack_entries(
         if not item_id:
             continue
         text = _text(entry.get("text") or entry.get("description") or item_id)
-        priority = _float(entry.get("priority"), default_priority)
         ephemeral = bool(entry.get("ephemeral") is True)
+        priority = _float(entry.get("priority"), default_priority)
 
         current = by_id.get(item_id)
         if current is None:
             current = {
                 "id": item_id,
                 "text": text,
-                "priority": priority,
                 "ephemeral": ephemeral,
                 "kind": "intention",
                 "status": "active",
@@ -290,17 +302,23 @@ def upsert_intentions_stack_entries(
                 "created_at": now,
                 "updated_at": now,
             }
+            if not ephemeral:
+                current["priority"] = priority
         else:
             current["text"] = text or _text(current.get("text")) or item_id
-            current["priority"] = max(_float(current.get("priority"), 0.0), priority)
             current["ephemeral"] = ephemeral
             current["updated_at"] = now
+            if not ephemeral:
+                current["priority"] = max(_float(current.get("priority"), 0.0), priority)
+            else:
+                current.pop("priority", None)
 
         if ephemeral:
             current["expires_at_turn"] = _int(
                 entry.get("expires_at_turn"),
                 current_turn + DEFAULT_EPHEMERAL_TTL_TURNS,
             )
+            current.pop("priority", None)
         else:
             current.pop("expires_at_turn", None)
 
@@ -357,10 +375,11 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
     if action_type == "boost":
         target_id = _text(action.get("target_id"))
         if target_id and target_id in by_id:
-            amount = _float(action.get("amount"), 1.0)
             current = by_id[target_id]
-            current["priority"] = max(0.0, _float(current.get("priority"), 0.0) + amount)
-            current["updated_at"] = now
+            if current.get("ephemeral") is not True:
+                amount = _float(action.get("amount"), 1.0)
+                current["priority"] = max(0.0, _float(current.get("priority"), 0.0) + amount)
+                current["updated_at"] = now
             by_id[target_id] = current
 
     elif action_type == "promote":
@@ -391,7 +410,7 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
             for other_id, other in by_id.items():
                 if other_id == target_id:
                     continue
-                if _float(other.get("priority"), 0.0) >= DEFAULT_INTENTION_PRIORITY:
+                if other.get("ephemeral") is not True and _float(other.get("priority"), 0.0) >= DEFAULT_INTENTION_PRIORITY:
                     other["priority"] = float(DEFAULT_INTENTION_PRIORITY - 0.1)
                     other["updated_at"] = now
                     by_id[other_id] = other
@@ -410,10 +429,6 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
             current = by_id.get(item_id) or {
                 "id": item_id,
                 "text": text,
-                "priority": min(
-                    _float(raw.get("priority"), DEFAULT_INTENTION_PRIORITY - 1.0),
-                    DEFAULT_INTENTION_PRIORITY - 0.1,
-                ),
                 "ephemeral": True,
                 "kind": "intention",
                 "status": "active",
@@ -423,10 +438,7 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
             }
             current["text"] = text
             current["ephemeral"] = True
-            current["priority"] = min(
-                _float(current.get("priority"), DEFAULT_INTENTION_PRIORITY - 1.0),
-                DEFAULT_INTENTION_PRIORITY - 0.1,
-            )
+            current.pop("priority", None)
             current["updated_at"] = now
             current["expires_at_turn"] = current_turn + DEFAULT_EPHEMERAL_TTL_TURNS
             by_id[item_id] = current
@@ -450,8 +462,8 @@ def format_intentions_for_prompt(stack_value: Any, *, max_items: int = 12) -> st
             continue
         item_id = _text(item.get("id"))
         text = _text(item.get("text"))
-        priority = _float(item.get("priority"), 0.0)
         ephemeral = bool(item.get("ephemeral") is True)
+        priority = _float(item.get("priority"), 0.0)
         active = bool(item.get("active") is True)
         tags = []
         if item_id == RELAX_INTENTION_ID:
@@ -461,5 +473,8 @@ def format_intentions_for_prompt(stack_value: Any, *, max_items: int = 12) -> st
         else:
             tags.append("active" if active else "inactive")
         tag_suffix = f" [{', '.join(tags)}]" if tags else ""
-        lines.append(f"- {item_id}: {text} (p={priority:.1f}){tag_suffix}")
+        if ephemeral:
+            lines.append(f"- {item_id}: {text}{tag_suffix}")
+        else:
+            lines.append(f"- {item_id}: {text} (p={priority:.1f}){tag_suffix}")
     return "\n".join(lines)
