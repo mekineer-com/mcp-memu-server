@@ -380,7 +380,6 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
                 amount = _float(action.get("amount"), 1.0)
                 current["priority"] = max(0.0, _float(current.get("priority"), 0.0) + amount)
                 current["updated_at"] = now
-            by_id[target_id] = current
 
     elif action_type == "promote":
         target_id = _text(action.get("target_id"))
@@ -413,7 +412,6 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
                 if other.get("ephemeral") is not True and _float(other.get("priority"), 0.0) >= DEFAULT_INTENTION_PRIORITY:
                     other["priority"] = float(DEFAULT_INTENTION_PRIORITY - 0.1)
                     other["updated_at"] = now
-                    by_id[other_id] = other
 
     elif action_type == "create":
         entries = action.get("entries")
