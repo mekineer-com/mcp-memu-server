@@ -3718,7 +3718,13 @@ async def conversation_cache_clear(
             cache.pop()
         if cache:
             cache.pop()
-        _write_conversation_state(cid, soul_id=soul_id, user_id=uid, updates={"memory_cache": cache})
+        snapshot = state_row.get("undo_snapshot") if isinstance(state_row, dict) else None
+        updates: dict[str, Any] = {"memory_cache": cache}
+        if isinstance(snapshot, dict):
+            next_snapshot = dict(snapshot)
+            next_snapshot["memory_cache"] = list(cache)
+            updates["undo_snapshot"] = next_snapshot
+        _write_conversation_state(cid, soul_id=soul_id, user_id=uid, updates=updates)
     return {"status": "cleared"}
 
 
