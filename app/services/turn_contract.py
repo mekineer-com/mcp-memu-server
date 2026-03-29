@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from app.services.intention_state import format_intentions_for_prompt, normalize_memory_cache
@@ -99,6 +100,8 @@ def _render_retrieve(result: Any) -> str:
 
     items = result.get("items")
     if isinstance(items, list) and items:
+        if lines:
+            lines.append("")
         lines.append("Memories:")
         for item in items[:12]:
             if not isinstance(item, dict):
@@ -109,6 +112,37 @@ def _render_retrieve(result: Any) -> str:
                 lines.append(f"- [{memory_type}] {summary}")
 
     return "\n".join(lines) if lines else "(none)"
+
+
+def _dedupe_prior_context(prior_context: str | None, retrieve_rag: Any) -> str:
+    prior = _text(prior_context)
+    if not prior:
+        return ""
+    if not isinstance(retrieve_rag, dict):
+        return prior
+
+    rag_summaries: set[str] = set()
+    for item in (retrieve_rag.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        summary = _text(item.get("summary"))
+        if summary:
+            rag_summaries.add(summary.lower())
+
+    if not rag_summaries:
+        return prior
+
+    kept: list[str] = []
+    for line in prior.splitlines():
+        text = _text(line)
+        if not text:
+            continue
+        m = re.match(r"^\[[^\]]+\]\s*(.+)$", text)
+        probe = _text(m.group(1) if m else text).lower()
+        if probe and probe in rag_summaries:
+            continue
+        kept.append(text)
+    return "\n".join(kept)
 
 
 def build_turn_prompt(
@@ -129,6 +163,7 @@ def build_turn_prompt(
     safe_prior = prior_context
     if safe_prior and safe_prior.strip().startswith('{'):
         safe_prior = None
+    safe_prior = _dedupe_prior_context(safe_prior, retrieve_rag) or None
 
     parts = [
         "Conversation history:",
