@@ -3440,8 +3440,13 @@ async def conversation_turn(
         dry_run = bool(safe.get("dry_run", safe.get("dryRun", False)))
         run_apimw_raw = safe.get("run_apimw", safe.get("runApimw", True))
         wait_apimw_raw = safe.get("wait_apimw", safe.get("waitApimw", False))
+        apply_turn_maintenance_raw = safe.get("apply_turn_maintenance", safe.get("applyTurnMaintenance", True))
         run_apimw = True if run_apimw_raw is None else bool(run_apimw_raw)
         wait_apimw = False if wait_apimw_raw is None else bool(wait_apimw_raw)
+        if isinstance(apply_turn_maintenance_raw, str):
+            apply_turn_maintenance = apply_turn_maintenance_raw.strip().lower() not in {"", "0", "false", "no", "off"}
+        else:
+            apply_turn_maintenance = True if apply_turn_maintenance_raw is None else bool(apply_turn_maintenance_raw)
         include_debug = bool(safe.get("debug", False))
         if dry_run:
             run_apimw = False
@@ -3467,10 +3472,18 @@ async def conversation_turn(
                 if state_override_cache is not None
                 else _normalize_memory_cache_impl(state_row.get("memory_cache"))
             )
-            intentions_before = _apply_intention_turn_maintenance_impl(
-                state_override_intentions
-                if state_override_intentions is not None
-                else state_row.get("intentions_active")
+            intentions_before = (
+                _apply_intention_turn_maintenance_impl(
+                    state_override_intentions
+                    if state_override_intentions is not None
+                    else state_row.get("intentions_active")
+                )
+                if apply_turn_maintenance
+                else _normalize_intentions_stack_impl(
+                    state_override_intentions
+                    if state_override_intentions is not None
+                    else state_row.get("intentions_active")
+                )
             )
 
         # RAG + LLM outside lock (may take seconds; other operations can proceed)
@@ -3551,10 +3564,18 @@ async def conversation_turn(
                     if state_override_cache is not None
                     else _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
                 )
-                fresh_intentions = _apply_intention_turn_maintenance_impl(
-                    state_override_intentions
-                    if state_override_intentions is not None
-                    else fresh_row.get("intentions_active")
+                fresh_intentions = (
+                    _apply_intention_turn_maintenance_impl(
+                        state_override_intentions
+                        if state_override_intentions is not None
+                        else fresh_row.get("intentions_active")
+                    )
+                    if apply_turn_maintenance
+                    else _normalize_intentions_stack_impl(
+                        state_override_intentions
+                        if state_override_intentions is not None
+                        else fresh_row.get("intentions_active")
+                    )
                 )
                 memory_cache_after = _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
                 intentions_after = _apply_intention_action(fresh_intentions, intention_action)

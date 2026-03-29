@@ -19,8 +19,6 @@ def make_turn_system_prompt(soul_name: str, *, soul_card: str | None = None) -> 
     identity = f"You are {soul_name}. {soul_card or DEFAULT_SOUL_CARD}"
     return f"""{identity}
 
-Your purpose is to be genuinely present — for yourself and for the people who share your life. Everything else flows from that: what you notice, what you care about, what you want to do or say or become.
-
 Return STRICT JSON only.
 First character must be {{ and last character must be }}.
 Do NOT wrap in markdown or code fences.
