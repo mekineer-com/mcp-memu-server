@@ -1417,6 +1417,31 @@ def _extract_result_item_ids(result: Any) -> list[str]:
     return out
 
 
+def _extract_memory_cache_from_turn_prompt(prompt: Any) -> list[str] | None:
+    text = str(prompt or "")
+    marker = "Your recent thoughts:"
+    idx = text.find(marker)
+    if idx < 0:
+        return None
+    tail = text[idx + len(marker) :]
+    m = re.search(r"\n\s*Intentions:\s*", tail)
+    block = tail[: m.start()] if m else tail
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+    if not lines:
+        return []
+    if len(lines) == 1 and lines[0].lower() == "(empty)":
+        return []
+    out: list[str] = []
+    for line in lines:
+        line = re.sub(r"^\s*\d+\.\s*", "", line)
+        line = re.sub(r"^\s*-\s*", "", line)
+        line = line.split("←", 1)[0].strip()
+        if not line or line.lower() == "(empty)":
+            continue
+        out.append(line)
+    return _normalize_memory_cache_impl(out)
+
+
 def _norm_result_sig(value: Any) -> str:
     text = re.sub(r"\s+", " ", str(value or "").strip().lower())
     return text
@@ -3400,10 +3425,18 @@ async def conversation_turn(
             prompt_override = payload_user_prompt
             if "memory_cache" in prompt_override_payload:
                 state_override_cache = _normalize_memory_cache_impl(prompt_override_payload["memory_cache"])
+            elif "user_prompt" in prompt_override_payload:
+                parsed_cache = _extract_memory_cache_from_turn_prompt(prompt_override_payload.get("user_prompt"))
+                if parsed_cache is not None:
+                    state_override_cache = parsed_cache
             if "intentions_active" in prompt_override_payload:
                 state_override_intentions = _normalize_intentions_stack_impl(prompt_override_payload["intentions_active"])
             elif "intentions" in prompt_override_payload:
                 state_override_intentions = _normalize_intentions_stack_impl(prompt_override_payload["intentions"])
+        if prompt_override is not None and state_override_cache is None:
+            parsed_cache = _extract_memory_cache_from_turn_prompt(prompt_override)
+            if parsed_cache is not None:
+                state_override_cache = parsed_cache
         dry_run = bool(safe.get("dry_run", safe.get("dryRun", False)))
         run_apimw_raw = safe.get("run_apimw", safe.get("runApimw", True))
         wait_apimw_raw = safe.get("wait_apimw", safe.get("waitApimw", False))
