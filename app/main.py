@@ -3305,7 +3305,7 @@ async def conversation_retrieve(
                 message = _pick_str(safe, "message", "query", "text") or ""
                 history = _normalize_turn_history(safe.get("history"))
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
-                intentions_active = _apply_intention_turn_maintenance_impl(out.get("intentions_active"))
+                intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
 
                 out["turn_system_prompt"] = _make_turn_system_prompt(soul_id, soul_card=soul_card)
                 out["turn_user_prompt"] = _build_turn_prompt(
