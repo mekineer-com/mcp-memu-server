@@ -3375,6 +3375,27 @@ async def conversation_turn(
             raise HTTPException(status_code=400, detail="message is required")
 
         history = _normalize_turn_history(safe.get("history"))
+        prompt_override_raw = safe.get("prompt_override", safe.get("promptOverride"))
+        prompt_override_payload_raw = safe.get("prompt_override_payload", safe.get("promptOverridePayload"))
+        prompt_override: str | None = None
+        prompt_override_payload: dict[str, Any] | None = None
+        if prompt_override_raw is not None:
+            if not isinstance(prompt_override_raw, str):
+                raise HTTPException(status_code=400, detail="prompt_override must be a string")
+            prompt_override = prompt_override_raw if prompt_override_raw.strip() else None
+        if prompt_override_payload_raw is not None:
+            if not isinstance(prompt_override_payload_raw, dict):
+                raise HTTPException(status_code=400, detail="prompt_override_payload must be an object")
+            prompt_override_payload = dict(prompt_override_payload_raw)
+            payload_user_prompt = str(
+                prompt_override_payload.get("user_prompt", prompt_override_payload.get("prompt", ""))
+            )
+            if not payload_user_prompt.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="prompt_override_payload.user_prompt (or prompt) is required",
+                )
+            prompt_override = payload_user_prompt
         dry_run = bool(safe.get("dry_run", safe.get("dryRun", False)))
         run_apimw_raw = safe.get("run_apimw", safe.get("runApimw", True))
         wait_apimw_raw = safe.get("wait_apimw", safe.get("waitApimw", False))
@@ -3405,19 +3426,46 @@ async def conversation_turn(
 
         # RAG + LLM outside lock (may take seconds; other operations can proceed)
         turn_system_prompt = _make_turn_system_prompt(soul_id, soul_card=soul_card)
-        rag_payload = {**safe, "method": "rag", "query": message}
-        _rag_t0 = time.monotonic()
-        rag_out = await _run_rag_with_fallback(rag_payload, conversation_id=cid)
-        _rag_ms = int((time.monotonic() - _rag_t0) * 1000)
-        retrieve_rag = rag_out.get("result") if isinstance(rag_out, dict) else None
+        turn_temperature = 0.0
+        turn_max_tokens = 1000
+        turn_response_format: Any = {"type": "json_object"}
+        if prompt_override_payload is not None:
+            payload_system_prompt = str(prompt_override_payload.get("system_prompt") or "").strip()
+            if payload_system_prompt:
+                turn_system_prompt = payload_system_prompt
+            try:
+                turn_temperature = float(prompt_override_payload.get("temperature", turn_temperature))
+            except Exception:
+                pass
+            try:
+                turn_max_tokens = int(prompt_override_payload.get("max_tokens", turn_max_tokens))
+            except Exception:
+                pass
+            if "response_format" in prompt_override_payload:
+                turn_response_format = prompt_override_payload.get("response_format")
+            if turn_response_format is None:
+                turn_response_format = {"type": "json_object"}
 
-        turn_user_prompt = _build_turn_prompt(
-            user_message=message,
-            history=history,
-            prior_context=prior_context,
-            retrieve_rag=retrieve_rag,
-            memory_cache=memory_cache_before,
-            intentions_active=intentions_before,
+        retrieve_rag: dict[str, Any] | None = None
+        _rag_ms = 0
+        if prompt_override is None:
+            rag_payload = {**safe, "method": "rag", "query": message}
+            _rag_t0 = time.monotonic()
+            rag_out = await _run_rag_with_fallback(rag_payload, conversation_id=cid)
+            _rag_ms = int((time.monotonic() - _rag_t0) * 1000)
+            retrieve_rag = rag_out.get("result") if isinstance(rag_out, dict) else None
+
+        turn_user_prompt = (
+            prompt_override
+            if prompt_override is not None
+            else _build_turn_prompt(
+                user_message=message,
+                history=history,
+                prior_context=prior_context,
+                retrieve_rag=retrieve_rag,
+                memory_cache=memory_cache_before,
+                intentions_active=intentions_before,
+            )
         )
 
         svc = _get_service_from_payload(safe, retrieve_method_override="rag")
@@ -3425,9 +3473,9 @@ async def conversation_turn(
         llm_raw = await svc.chat(
             turn_user_prompt,
             system_prompt=turn_system_prompt,
-            temperature=0.0,
-            max_tokens=1000,
-            response_format={"type": "json_object"},
+            temperature=turn_temperature,
+            max_tokens=turn_max_tokens,
+            response_format=turn_response_format,
         )
         _turn_ms = int((time.monotonic() - _turn_t0) * 1000)
         try:
@@ -3522,6 +3570,15 @@ async def conversation_turn(
             "conversation_id": cid,
             "response": _response_str,
             "apimw": apimw_status,
+            "prompt_override_used": prompt_override is not None,
+            "final_turn_prompt": turn_user_prompt,
+            "final_turn_payload": {
+                "system_prompt": turn_system_prompt,
+                "user_prompt": turn_user_prompt,
+                "temperature": turn_temperature,
+                "max_tokens": turn_max_tokens,
+                "response_format": turn_response_format,
+            },
             "retrieve_ms": _rag_ms,
             "turn_ms": _turn_ms,
             "reply_chars": len(_response_str),
@@ -3631,7 +3688,14 @@ async def conversation_cache_clear(
         raise HTTPException(status_code=400, detail="user_id and soul_id required")
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
     async with state_lock:
-        _write_conversation_state(cid, soul_id=soul_id, user_id=uid, updates={"memory_cache": []})
+        _db_path, state_row = _find_conversation_state_across_dbs(cid)
+        cache = list(state_row.get("memory_cache") or []) if state_row else []
+        # Pop last entry; skip one null/empty entry if present (single depth)
+        if cache and not cache[-1]:
+            cache.pop()
+        if cache:
+            cache.pop()
+        _write_conversation_state(cid, soul_id=soul_id, user_id=uid, updates={"memory_cache": cache})
     return {"status": "cleared"}
 
 
