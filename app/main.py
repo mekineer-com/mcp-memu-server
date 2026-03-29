@@ -3430,9 +3430,8 @@ async def conversation_turn(
         turn_max_tokens = 1000
         turn_response_format: Any = {"type": "json_object"}
         if prompt_override_payload is not None:
-            payload_system_prompt = str(prompt_override_payload.get("system_prompt") or "").strip()
-            if payload_system_prompt:
-                turn_system_prompt = payload_system_prompt
+            if "system_prompt" in prompt_override_payload:
+                turn_system_prompt = str(prompt_override_payload["system_prompt"] or "").strip()
             try:
                 turn_temperature = float(prompt_override_payload.get("temperature", turn_temperature))
             except Exception:
@@ -3442,9 +3441,7 @@ async def conversation_turn(
             except Exception:
                 pass
             if "response_format" in prompt_override_payload:
-                turn_response_format = prompt_override_payload.get("response_format")
-            if turn_response_format is None:
-                turn_response_format = {"type": "json_object"}
+                turn_response_format = prompt_override_payload["response_format"]
 
         retrieve_rag: dict[str, Any] | None = None
         _rag_ms = 0
