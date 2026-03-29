@@ -41,6 +41,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         'last_retrieval_ids': json_from_db(row['last_retrieval_ids']),
         'last_memorize_at': row['last_memorize_at'],
         'updated_at': row['updated_at'],
+        'undo_snapshot': json_from_db(row['undo_snapshot']),
     }
 
 
@@ -48,7 +49,7 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
     return con.execute(
         "SELECT conversation_id, soul_id, user_id, digest_cursor, prior_context, "
         "intentions_active, memory_cache, pending_diary_memory_ids, self_model_id, "
-        "last_retrieval_ids, last_memorize_at, updated_at "
+        "last_retrieval_ids, last_memorize_at, updated_at, undo_snapshot "
         "FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
         (conversation_id,),
     ).fetchone()
@@ -186,6 +187,7 @@ INSERT OR IGNORE INTO memu_conversation_state (
                 'self_model_id',
                 'last_retrieval_ids',
                 'last_memorize_at',
+                'undo_snapshot',
             }:
                 field_updates[key] = value
 
@@ -228,7 +230,7 @@ INSERT OR IGNORE INTO memu_conversation_state (
             params: list[Any] = []
             for key, value in field_updates.items():
                 assignments.append(f"{key} = ?")
-                if key in {'intentions_active', 'memory_cache', 'pending_diary_memory_ids', 'last_retrieval_ids'}:
+                if key in {'intentions_active', 'memory_cache', 'pending_diary_memory_ids', 'last_retrieval_ids', 'undo_snapshot'}:
                     params.append(json_to_db(value))
                 elif key == 'digest_cursor':
                     params.append(int(value or 0))

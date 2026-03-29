@@ -112,7 +112,8 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
     self_model_id VARCHAR,
     last_retrieval_ids JSON,
     last_memorize_at DATETIME,
-    updated_at DATETIME
+    updated_at DATETIME,
+    undo_snapshot JSON
 )
 """
     )
@@ -142,6 +143,8 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_memorize_at DATETIME")
     if "updated_at" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN updated_at DATETIME")
+    if "undo_snapshot" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN undo_snapshot JSON")
     for stmt in alters:
         try:
             con.execute(stmt)
