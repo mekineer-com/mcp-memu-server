@@ -3488,25 +3488,9 @@ async def conversation_turn(
 
         # RAG + LLM outside lock (may take seconds; other operations can proceed)
         turn_system_prompt = _make_turn_system_prompt(soul_id, soul_card=soul_card)
-        turn_temperature = 0.2
-        turn_max_tokens = 1000
-        turn_response_format: Any = {"type": "json_object"}
-        turn_st_chat_completion: dict[str, Any] | None = None
         if prompt_override_payload is not None:
             if "system_prompt" in prompt_override_payload:
                 turn_system_prompt = str(prompt_override_payload["system_prompt"] or "").strip()
-            try:
-                turn_temperature = float(prompt_override_payload.get("temperature", turn_temperature))
-            except Exception:
-                pass
-            try:
-                turn_max_tokens = int(prompt_override_payload.get("max_tokens", turn_max_tokens))
-            except Exception:
-                pass
-            if "response_format" in prompt_override_payload:
-                turn_response_format = prompt_override_payload["response_format"]
-            if isinstance(prompt_override_payload.get("st_chat_completion"), dict):
-                turn_st_chat_completion = dict(prompt_override_payload["st_chat_completion"])
 
         retrieve_rag: dict[str, Any] | None = None
         _rag_ms = 0
@@ -3653,10 +3637,6 @@ async def conversation_turn(
             "final_turn_payload": {
                 "system_prompt": turn_system_prompt,
                 "user_prompt": turn_user_prompt,
-                "temperature": turn_temperature,
-                "max_tokens": turn_max_tokens,
-                "response_format": turn_response_format,
-                **({"st_chat_completion": turn_st_chat_completion} if turn_st_chat_completion is not None else {}),
                 "memory_cache": memory_cache_before,
                 "intentions_active": intentions_before,
             },
