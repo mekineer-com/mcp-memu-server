@@ -664,6 +664,24 @@ def _sanitize_db_filename(name: str) -> str:
     return s[:80]
 
 
+def _soul_gen_config_path(soul_id: str) -> Path:
+    return _sqlite_dir_from_cfg(_CONFIG) / f"{_sanitize_db_filename(soul_id)}.gen.json"
+
+
+def _load_soul_gen_config(soul_id: str) -> dict[str, Any]:
+    p = _soul_gen_config_path(soul_id)
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return {}
+
+
+def _save_soul_gen_config(soul_id: str, cfg: dict[str, Any]) -> None:
+    _soul_gen_config_path(soul_id).write_text(json.dumps(cfg, indent=2))
+
+
 def _sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, Any] | None) -> str:
     """Resolve the sqlite DSN for this request.
 
@@ -3487,6 +3505,32 @@ async def conversation_turn(
             )
 
         # RAG + LLM outside lock (may take seconds; other operations can proceed)
+
+        # Load soul generation config (persists across frontends).
+        # Frontend params update stored config when they differ.
+        soul_gen = _load_soul_gen_config(soul_id)
+        turn_temperature: float = float(soul_gen.get("temperature", 0.2))
+        turn_max_tokens: int = int(soul_gen.get("max_tokens", 1000))
+        turn_response_format: Any = {"type": "json_object"}
+        req_temperature = payload.get("temperature")
+        req_max_tokens = payload.get("max_tokens")
+        if req_temperature is not None or req_max_tokens is not None:
+            updated = dict(soul_gen)
+            if req_temperature is not None:
+                try:
+                    updated["temperature"] = float(req_temperature)
+                    turn_temperature = updated["temperature"]
+                except (TypeError, ValueError):
+                    pass
+            if req_max_tokens is not None:
+                try:
+                    updated["max_tokens"] = int(req_max_tokens)
+                    turn_max_tokens = updated["max_tokens"]
+                except (TypeError, ValueError):
+                    pass
+            if updated != soul_gen:
+                _save_soul_gen_config(soul_id, updated)
+
         turn_system_prompt = _make_turn_system_prompt(soul_id, soul_card=soul_card)
         if prompt_override_payload is not None:
             if "system_prompt" in prompt_override_payload:
