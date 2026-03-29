@@ -164,20 +164,20 @@ def build_turn_prompt(
     safe_prior = _dedupe_prior_context(safe_prior, retrieve_rag) or None
 
     parts = [
-        "Conversation history:",
-        _render_history(history or []),
+        "Retrieved memory context:",
+        _render_retrieve(retrieve_rag),
         "",
         "Prior context:",
         _text(safe_prior) or "(none)",
-        "",
-        "Retrieved memory context:",
-        _render_retrieve(retrieve_rag),
         "",
         "Your recent thoughts:",
         "\n".join(cache_lines) if cache_lines else "(empty)",
         "",
         "Intentions:",
         format_intentions_for_prompt(intentions_active),
+        "",
+        "Conversation history:",
+        _render_history(history or []),
         "",
         f"New message:\n{_text(user_message)}",
     ]
