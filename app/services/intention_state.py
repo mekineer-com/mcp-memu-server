@@ -183,15 +183,19 @@ def normalize_intentions_stack(
     others = [item for key, item in by_id.items() if key != RELAX_INTENTION_ID]
     others.sort(key=lambda item: _float(item.get("priority"), 0.0), reverse=True)
 
+    relax_priority_value = _float(relax_item.get("priority"), default_relax_priority)
     for item in others:
-        item["active"] = _float(item.get("priority"), 0.0) >= _float(relax_item.get("priority"), default_relax_priority)
+        item["active"] = _float(item.get("priority"), 0.0) >= relax_priority_value
+
+    ordered_items = [relax_item, *others]
+    ordered_items.sort(key=lambda item: _float(item.get("priority"), 0.0), reverse=True)
 
     return {
         "version": 1,
         "turn_index": turn_index,
         "decay_per_turn": float(decay_per_turn),
-        "relax_priority": _float(relax_item.get("priority"), default_relax_priority),
-        "items": [relax_item, *others],
+        "relax_priority": relax_priority_value,
+        "items": ordered_items,
     }
 
 

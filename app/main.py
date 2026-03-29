@@ -3379,6 +3379,8 @@ async def conversation_turn(
         prompt_override_payload_raw = safe.get("prompt_override_payload", safe.get("promptOverridePayload"))
         prompt_override: str | None = None
         prompt_override_payload: dict[str, Any] | None = None
+        state_override_cache: list[str] | None = None
+        state_override_intentions: dict[str, Any] | None = None
         if prompt_override_raw is not None:
             if not isinstance(prompt_override_raw, str):
                 raise HTTPException(status_code=400, detail="prompt_override must be a string")
@@ -3396,6 +3398,12 @@ async def conversation_turn(
                     detail="prompt_override_payload.user_prompt (or prompt) is required",
                 )
             prompt_override = payload_user_prompt
+            if "memory_cache" in prompt_override_payload:
+                state_override_cache = _normalize_memory_cache_impl(prompt_override_payload["memory_cache"])
+            if "intentions_active" in prompt_override_payload:
+                state_override_intentions = _normalize_intentions_stack_impl(prompt_override_payload["intentions_active"])
+            elif "intentions" in prompt_override_payload:
+                state_override_intentions = _normalize_intentions_stack_impl(prompt_override_payload["intentions"])
         dry_run = bool(safe.get("dry_run", safe.get("dryRun", False)))
         run_apimw_raw = safe.get("run_apimw", safe.get("runApimw", True))
         wait_apimw_raw = safe.get("wait_apimw", safe.get("waitApimw", False))
@@ -3421,12 +3429,20 @@ async def conversation_turn(
             )
             soul_card = soul_card or (str(safe.get("soul_card") or "").strip() or None)
             prior_context = str(state_row.get("prior_context") or "").strip() or None
-            memory_cache_before = _normalize_memory_cache_impl(state_row.get("memory_cache"))
-            intentions_before = _apply_intention_turn_maintenance_impl(state_row.get("intentions_active"))
+            memory_cache_before = (
+                list(state_override_cache)
+                if state_override_cache is not None
+                else _normalize_memory_cache_impl(state_row.get("memory_cache"))
+            )
+            intentions_before = _apply_intention_turn_maintenance_impl(
+                state_override_intentions
+                if state_override_intentions is not None
+                else state_row.get("intentions_active")
+            )
 
         # RAG + LLM outside lock (may take seconds; other operations can proceed)
         turn_system_prompt = _make_turn_system_prompt(soul_id, soul_card=soul_card)
-        turn_temperature = 0.0
+        turn_temperature = 0.2
         turn_max_tokens = 1000
         turn_response_format: Any = {"type": "json_object"}
         if prompt_override_payload is not None:
@@ -3497,8 +3513,16 @@ async def conversation_turn(
         if not dry_run:
             async with state_lock:
                 fresh_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
-                fresh_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
-                fresh_intentions = _apply_intention_turn_maintenance_impl(fresh_row.get("intentions_active"))
+                fresh_cache = (
+                    list(state_override_cache)
+                    if state_override_cache is not None
+                    else _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
+                )
+                fresh_intentions = _apply_intention_turn_maintenance_impl(
+                    state_override_intentions
+                    if state_override_intentions is not None
+                    else fresh_row.get("intentions_active")
+                )
                 memory_cache_after = _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
                 intentions_after = _apply_intention_action(fresh_intentions, intention_action)
                 intentions_after = _remove_intentions(
@@ -3575,6 +3599,8 @@ async def conversation_turn(
                 "temperature": turn_temperature,
                 "max_tokens": turn_max_tokens,
                 "response_format": turn_response_format,
+                "memory_cache": memory_cache_before,
+                "intentions_active": intentions_before,
             },
             "retrieve_ms": _rag_ms,
             "turn_ms": _turn_ms,
