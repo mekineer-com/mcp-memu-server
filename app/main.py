@@ -3767,28 +3767,7 @@ async def conversation_turn_undo(
             cache.pop()
         if cache:
             cache.pop()
-        snapshot_intentions = _normalize_intentions_stack_impl(snapshot.get("intentions_active"))
-        current_intentions = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
-        merged_by_id: dict[str, dict[str, Any]] = {
-            str(item.get("id") or "").strip(): dict(item)
-            for item in (snapshot_intentions.get("items") or [])
-            if isinstance(item, dict) and str(item.get("id") or "").strip() and str(item.get("id") or "").strip() != "relax"
-        }
-        for item in (current_intentions.get("items") or []):
-            if not isinstance(item, dict) or item.get("ephemeral") is not True:
-                continue
-            item_id = str(item.get("id") or "").strip()
-            if not item_id or item_id == "relax":
-                continue
-            merged_by_id[item_id] = dict(item)
-        merged_intentions = _normalize_intentions_stack_impl(
-            {
-                "turn_index": snapshot_intentions.get("turn_index"),
-                "decay_per_turn": snapshot_intentions.get("decay_per_turn"),
-                "relax_priority": snapshot_intentions.get("relax_priority"),
-                "items": [*merged_by_id.values()],
-            }
-        )
+        merged_intentions = _normalize_intentions_stack_impl(snapshot.get("intentions_active"))
         _write_conversation_state(
             cid,
             soul_id=soul_id,
