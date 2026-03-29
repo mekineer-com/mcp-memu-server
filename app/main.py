@@ -3491,6 +3491,7 @@ async def conversation_turn(
         turn_temperature = 0.2
         turn_max_tokens = 1000
         turn_response_format: Any = {"type": "json_object"}
+        turn_st_chat_completion: dict[str, Any] | None = None
         if prompt_override_payload is not None:
             if "system_prompt" in prompt_override_payload:
                 turn_system_prompt = str(prompt_override_payload["system_prompt"] or "").strip()
@@ -3504,6 +3505,8 @@ async def conversation_turn(
                 pass
             if "response_format" in prompt_override_payload:
                 turn_response_format = prompt_override_payload["response_format"]
+            if isinstance(prompt_override_payload.get("st_chat_completion"), dict):
+                turn_st_chat_completion = dict(prompt_override_payload["st_chat_completion"])
 
         retrieve_rag: dict[str, Any] | None = None
         _rag_ms = 0
@@ -3653,6 +3656,7 @@ async def conversation_turn(
                 "temperature": turn_temperature,
                 "max_tokens": turn_max_tokens,
                 "response_format": turn_response_format,
+                **({"st_chat_completion": turn_st_chat_completion} if turn_st_chat_completion is not None else {}),
                 "memory_cache": memory_cache_before,
                 "intentions_active": intentions_before,
             },
