@@ -183,12 +183,21 @@ def normalize_intentions_stack(
     others = [item for key, item in by_id.items() if key != RELAX_INTENTION_ID]
     others.sort(key=lambda item: _float(item.get("priority"), 0.0), reverse=True)
 
+    seen_top_ten = False
+    for item in others:
+        priority = _float(item.get("priority"), 0.0)
+        if priority >= DEFAULT_INTENTION_PRIORITY:
+            if not seen_top_ten:
+                item["priority"] = float(DEFAULT_INTENTION_PRIORITY)
+                seen_top_ten = True
+            else:
+                item["priority"] = float(DEFAULT_INTENTION_PRIORITY - 0.1)
+
     relax_priority_value = _float(relax_item.get("priority"), default_relax_priority)
     for item in others:
         item["active"] = _float(item.get("priority"), 0.0) >= relax_priority_value
 
-    ordered_items = [relax_item, *others]
-    ordered_items.sort(key=lambda item: _float(item.get("priority"), 0.0), reverse=True)
+    ordered_items = [*others, relax_item]
 
     return {
         "version": 1,
@@ -373,12 +382,19 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
                 }
             else:
                 current["ephemeral"] = False
-                current["priority"] = max(_float(current.get("priority"), 0.0), DEFAULT_INTENTION_PRIORITY)
+                current["priority"] = float(DEFAULT_INTENTION_PRIORITY)
                 current["updated_at"] = now
                 current.pop("expires_at_turn", None)
             if explicit_text:
                 current["text"] = explicit_text
             by_id[target_id] = current
+            for other_id, other in by_id.items():
+                if other_id == target_id:
+                    continue
+                if _float(other.get("priority"), 0.0) >= DEFAULT_INTENTION_PRIORITY:
+                    other["priority"] = float(DEFAULT_INTENTION_PRIORITY - 0.1)
+                    other["updated_at"] = now
+                    by_id[other_id] = other
 
     elif action_type == "create":
         entries = action.get("entries")
@@ -394,7 +410,10 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
             current = by_id.get(item_id) or {
                 "id": item_id,
                 "text": text,
-                "priority": _float(raw.get("priority"), DEFAULT_INTENTION_PRIORITY),
+                "priority": min(
+                    _float(raw.get("priority"), DEFAULT_INTENTION_PRIORITY - 1.0),
+                    DEFAULT_INTENTION_PRIORITY - 0.1,
+                ),
                 "ephemeral": True,
                 "kind": "intention",
                 "status": "active",
@@ -404,6 +423,10 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
             }
             current["text"] = text
             current["ephemeral"] = True
+            current["priority"] = min(
+                _float(current.get("priority"), DEFAULT_INTENTION_PRIORITY - 1.0),
+                DEFAULT_INTENTION_PRIORITY - 0.1,
+            )
             current["updated_at"] = now
             current["expires_at_turn"] = current_turn + DEFAULT_EPHEMERAL_TTL_TURNS
             by_id[item_id] = current
