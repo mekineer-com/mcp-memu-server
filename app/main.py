@@ -3767,14 +3767,12 @@ async def conversation_turn_undo(
             cache.pop()
         if cache:
             cache.pop()
-        merged_intentions = _normalize_intentions_stack_impl(snapshot.get("intentions_active"))
         _write_conversation_state(
             cid,
             soul_id=soul_id,
             user_id=uid,
             updates={
                 "memory_cache": cache,
-                "intentions_active": merged_intentions,
                 "undo_snapshot": None,
             },
         )
