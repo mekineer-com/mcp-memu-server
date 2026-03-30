@@ -3726,7 +3726,6 @@ async def conversation_turn_undo(
             user_id=uid,
             updates={
                 "memory_cache": list(snapshot.get("memory_cache") or []),
-                "intentions_active": snapshot.get("intentions_active"),
                 "undo_snapshot": None,
             },
         )
@@ -3753,8 +3752,8 @@ async def conversation_cache_clear(
         raise HTTPException(status_code=400, detail="user_id and soul_id required")
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
     async with state_lock:
-        _db_path, state_row = _find_conversation_state_across_dbs(cid)
-        cache = list(state_row.get("memory_cache") or []) if state_row else []
+        state_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
+        cache = list(state_row.get("memory_cache") or [])
         # Pop last entry; skip one null/empty entry if present (single depth)
         if cache and not cache[-1]:
             cache.pop()
