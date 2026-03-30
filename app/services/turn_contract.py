@@ -71,6 +71,8 @@ def _render_history(history: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for item in history[-16:]:
         role = _text(item.get("role") or item.get("name") or "unknown")
+        if role == "assistant":
+            role = "soul"
         content = _text(item.get("content"))
         if not content:
             continue
