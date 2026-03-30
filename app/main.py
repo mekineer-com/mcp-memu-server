@@ -3724,12 +3724,30 @@ async def conversation_turn_undo(
             cache.pop()
         if cache:
             cache.pop()
+
+        # Restore intention snapshot while honoring user deletions made after the snapshot.
+        # Rule: restore snapshot items still present in current DB; keep user-added items
+        # (in current but not in snapshot); user-deleted items (in snapshot but not in
+        # current) stay deleted.
+        snap_int = _normalize_intentions_stack_impl(snapshot.get("intentions_active"))
+        cur_int = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
+        snap_items = [i for i in (snap_int.get("items") or []) if i.get("id") and i["id"] != "relax"]
+        cur_items = [i for i in (cur_int.get("items") or []) if i.get("id") and i["id"] != "relax"]
+        snap_by_id = {i["id"]: i for i in snap_items}
+        cur_by_id = {i["id"]: i for i in cur_items}
+        restored_items = (
+            [snap_by_id[id_] for id_ in snap_by_id if id_ in cur_by_id]
+            + [cur_by_id[id_] for id_ in cur_by_id if id_ not in snap_by_id]
+        )
+        restored_intentions = _normalize_intentions_stack_impl({**snap_int, "items": restored_items})
+
         _write_conversation_state(
             cid,
             soul_id=soul_id,
             user_id=uid,
             updates={
                 "memory_cache": cache,
+                "intentions_active": restored_intentions,
                 "undo_snapshot": None,
             },
         )
