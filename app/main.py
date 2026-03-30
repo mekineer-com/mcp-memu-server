@@ -3591,36 +3591,6 @@ async def conversation_turn_undo(
     return {"status": "restored"}
 
 
-@app.post("/conversation/{conversation_id}/cache/clear", operation_id="conversation_cache_clear")
-async def conversation_cache_clear(
-    conversation_id: str,
-    payload: dict[str, Any] = Body(...),
-):
-    cid = str(conversation_id or "").strip()
-    if not cid:
-        raise HTTPException(status_code=400, detail="conversation_id is required")
-    safe = _safe_payload(payload if isinstance(payload, dict) else {})
-    scope = safe.get("user")
-    if not isinstance(scope, dict):
-        scope = _extract_scope(safe) or None
-    if not isinstance(scope, dict):
-        raise HTTPException(status_code=400, detail="user scope required")
-    uid = str(scope.get("user_id") or "").strip()
-    soul_id = str(scope.get("soul_id") or "").strip()
-    if not uid or not soul_id:
-        raise HTTPException(status_code=400, detail="user_id and soul_id required")
-    state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
-    async with state_lock:
-        state_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
-        cache = list(state_row.get("memory_cache") or [])
-        # Pop last entry; skip one null/empty entry if present (single depth)
-        if cache and not cache[-1]:
-            cache.pop()
-        if cache:
-            cache.pop()
-        _write_conversation_state(cid, soul_id=soul_id, user_id=uid, updates={"memory_cache": cache})
-    return {"status": "cleared"}
-
 
 # -------------------------
 # MCP mounting (optional)
