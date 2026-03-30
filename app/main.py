@@ -3719,14 +3719,14 @@ async def conversation_turn_undo(
         snapshot = state_row.get("undo_snapshot")
         if not isinstance(snapshot, dict):
             return {"status": "no_snapshot"}
-        cache = list(snapshot.get("memory_cache") or [])
 
         _write_conversation_state(
             cid,
             soul_id=soul_id,
             user_id=uid,
             updates={
-                "memory_cache": cache,
+                "memory_cache": list(snapshot.get("memory_cache") or []),
+                "intentions_active": snapshot.get("intentions_active"),
                 "undo_snapshot": None,
             },
         )
