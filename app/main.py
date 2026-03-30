@@ -3611,7 +3611,7 @@ async def conversation_turn(
                     )
                 )
                 memory_cache_after = _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
-                intentions_after = _apply_intention_action(fresh_intentions, intention_action)
+                intentions_after = _apply_intention_action(fresh_intentions, intention_action) if apply_turn_maintenance else fresh_intentions
                 intentions_after = _remove_intentions(
                     intentions_after,
                     [item_id for item_id in annulment_ids if item_id],
