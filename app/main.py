@@ -1593,7 +1593,7 @@ async def _persist_annulment_memories(
             summary=summary,
             embedding=embeddings[idx],
             user_data=scope,
-            source_role="assistant",
+            source_role="soul",
             confidence=1.0,
             happened_at=datetime.now(UTC),
             reflection_salience=float(meta["reflection_salience"]),
