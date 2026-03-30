@@ -3726,6 +3726,7 @@ async def conversation_turn_undo(
             user_id=uid,
             updates={
                 "memory_cache": list(snapshot.get("memory_cache") or []),
+                "intentions_active": snapshot.get("intentions_active"),
                 "undo_snapshot": None,
             },
         )
