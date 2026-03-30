@@ -1702,7 +1702,6 @@ async def _run_retrieve(
     scoped_conversation_id = str(conversation_id or _extract_conversation_id(safe) or "").strip() or None
     if scoped_conversation_id:
         safe["conversation_id"] = scoped_conversation_id
-        safe["conversationId"] = scoped_conversation_id
 
     method = _normalize_retrieve_method(safe.get("method"), _retrieve_method_from_cfg(_CONFIG))
     if method == "llm":
