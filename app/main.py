@@ -991,33 +991,22 @@ def _pick_str(payload: dict[str, Any], *keys: str) -> str | None:
 
 
 def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
-    user_id = _pick_str(payload, "user_id", "userId", "userID", "userid")
-    soul_id = _pick_str(payload, "soul_id", "soulId", "soulID", "soulid")
-    soul_name = _pick_str(payload, "soul_name", "soulName", "character_name", "characterName", "character")
-    session_id = _pick_str(
-        payload, "session_id", "sessionId", "sessionID", "sessionid", "session_date", "sessionDate", "sessiondate"
-    )
+    user_id = _pick_str(payload, "user_id")
+    soul_id = _pick_str(payload, "soul_id")
+    soul_name = _pick_str(payload, "soul_name", "character_name", "character")
+    session_id = _pick_str(payload, "session_id", "session_date")
 
     # SillyTavern local plugin sends scope primarily under payload.user.
     user_obj = payload.get("user")
     if isinstance(user_obj, dict):
         if not user_id:
-            user_id = _pick_str(user_obj, "user_id", "userId", "userID", "userid")
+            user_id = _pick_str(user_obj, "user_id")
         if not soul_id:
-            soul_id = _pick_str(user_obj, "soul_id", "soulId", "soulID", "soulid")
+            soul_id = _pick_str(user_obj, "soul_id")
         if not soul_name:
-            soul_name = _pick_str(user_obj, "soul_name", "soulName", "character_name", "characterName", "character")
+            soul_name = _pick_str(user_obj, "soul_name", "character_name", "character")
         if not session_id:
-            session_id = _pick_str(
-                user_obj,
-                "session_id",
-                "sessionId",
-                "sessionID",
-                "sessionid",
-                "session_date",
-                "sessionDate",
-                "sessiondate",
-            )
+            session_id = _pick_str(user_obj, "session_id", "session_date")
 
     # Final fallback: use character/soul name when explicit IDs are absent.
     if not soul_id and soul_name:
@@ -1044,45 +1033,16 @@ def _canonicalize_scope_where(where: Mapping[str, Any] | None) -> dict[str, Any]
         return None
 
     out = dict(where)
-    user_id = _pick_str(out, "user_id", "userId", "userID", "userid")
-    soul_id = _pick_str(
-        out,
-        "soul_id",
-        "soulId",
-        "soulID",
-        "soulid",
-    )
-    session_id = _pick_str(
-        out,
-        "session_id",
-        "sessionId",
-        "sessionID",
-        "sessionid",
-        "session_date",
-        "sessionDate",
-        "sessiondate",
-    )
+    user_id = _pick_str(out, "user_id")
+    soul_id = _pick_str(out, "soul_id")
+    session_id = _pick_str(out, "session_id", "session_date")
 
     for key in (
         "user_id",
-        "userId",
-        "userID",
-        "userid",
         "soul_id",
-        "soulId",
-        "soulID",
-        "soulid",
         "session_id",
-        "sessionId",
-        "sessionID",
-        "sessionid",
         "session_date",
-        "sessionDate",
-        "sessiondate",
         "conversation_id",
-        "conversationId",
-        "conversationID",
-        "conversationid",
     ):
         out.pop(key, None)
 
@@ -1096,40 +1056,16 @@ def _canonicalize_scope_where(where: Mapping[str, Any] | None) -> dict[str, Any]
 
 
 def _extract_conversation_id(payload: dict[str, Any]) -> str | None:
-    conversation_id = _pick_str(payload, "conversation_id", "conversationId", "conversationID", "conversationid")
+    conversation_id = _pick_str(payload, "conversation_id")
     if not conversation_id:
-        conversation_id = _pick_str(
-            payload,
-            "session_id",
-            "sessionId",
-            "sessionID",
-            "sessionid",
-            "session_date",
-            "sessionDate",
-            "sessiondate",
-        )
+        conversation_id = _pick_str(payload, "session_id", "session_date")
 
     user_obj = payload.get("user")
     if isinstance(user_obj, dict):
         if not conversation_id:
-            conversation_id = _pick_str(
-                user_obj,
-                "conversation_id",
-                "conversationId",
-                "conversationID",
-                "conversationid",
-            )
+            conversation_id = _pick_str(user_obj, "conversation_id")
         if not conversation_id:
-            conversation_id = _pick_str(
-                user_obj,
-                "session_id",
-                "sessionId",
-                "sessionID",
-                "sessionid",
-                "session_date",
-                "sessionDate",
-                "sessiondate",
-            )
+            conversation_id = _pick_str(user_obj, "session_id", "session_date")
     return conversation_id
 
 
@@ -2350,7 +2286,7 @@ def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, con
         source = manifest.get("source") if isinstance(manifest, dict) else {}
         if not isinstance(source, dict):
             continue
-        if str(source.get("conversationId") or "").strip() == conversation_id:
+        if str(source.get("conversation_id") or "").strip() == conversation_id:
             return manifest_path.parent
     return None
 
@@ -2557,7 +2493,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         async with _get_memorize_lock(_memorize_lock_key(uid, soul_id)):
             storage_dir = _get_storage_dir(_CONFIG)
             chats_dir = (storage_dir / "st_chats").resolve()
-            chat_file = _pick_str(safe, "chatFileName", "chat_file_name", "chat_filename", "chatFile")
+            chat_file = _pick_str(safe, "chat_file_name", "chat_filename")
             resource_url_in = _pick_str(safe, "resource_url")
             chat_dir, chat_key, chat_key_source = _resolve_chat_storage_dir(
                 chats_dir,
@@ -2595,8 +2531,8 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                     processed_cursor = int(state_out.get("digest_cursor") or 0)
 
             # Timezone hint (IANA) from client. Offset is only a fallback for logging.
-            tz_name = _pick_str(safe, "timeZone", "timezone", "time_zone")
-            tz_off_raw = safe.get("timeZoneOffsetMin")
+            tz_name = _pick_str(safe, "time_zone")
+            tz_off_raw = safe.get("time_zone_offset_min")
             tz_off_min = int(tz_off_raw) if isinstance(tz_off_raw, (int, float)) and math.isfinite(tz_off_raw) else None
 
             tz_ok = False
@@ -3105,45 +3041,42 @@ async def patch_conversation_state(
         raise HTTPException(status_code=400, detail="conversation_id is required")
     body = payload if isinstance(payload, dict) else {}
 
-    body_soul_id = _pick_str(body, "soul_id", "soulId")
-    body_user_id = _pick_str(body, "user_id", "userId")
+    body_soul_id = _pick_str(body, "soul_id")
+    body_user_id = _pick_str(body, "user_id")
     soul_id = body_soul_id or (str(soul_id or "").strip() or None)
     user_id = body_user_id or (str(user_id or "").strip() or None)
 
     updates: dict[str, Any] = {}
 
-    if "soul_id" in body or "soulId" in body:
+    if "soul_id" in body:
         soul_id = body_soul_id
-    if "user_id" in body or "userId" in body:
+    if "user_id" in body:
         user_id = body_user_id
 
-    if "digest_cursor" in body or "digestCursor" in body:
-        raw_cursor = body.get("digest_cursor", body.get("digestCursor"))
+    if "digest_cursor" in body:
+        raw_cursor = body.get("digest_cursor")
         updates["digest_cursor"] = 0 if raw_cursor is None else raw_cursor
 
-    if "prior_context" in body or "priorContext" in body:
-        updates["prior_context"] = body.get("prior_context", body.get("priorContext"))
+    if "prior_context" in body:
+        updates["prior_context"] = body.get("prior_context")
 
-    if "intentions_active" in body or "activeIntentions" in body:
-        updates["intentions_active"] = body.get("intentions_active", body.get("activeIntentions"))
+    if "intentions_active" in body:
+        updates["intentions_active"] = body.get("intentions_active")
 
-    if "memory_cache" in body or "memoryCache" in body:
-        updates["memory_cache"] = body.get("memory_cache", body.get("memoryCache"))
+    if "memory_cache" in body:
+        updates["memory_cache"] = body.get("memory_cache")
 
-    if "pending_diary_memory_ids" in body or "pendingDiaryMemoryIds" in body:
-        updates["pending_diary_memory_ids"] = body.get(
-            "pending_diary_memory_ids",
-            body.get("pendingDiaryMemoryIds"),
-        )
+    if "pending_diary_memory_ids" in body:
+        updates["pending_diary_memory_ids"] = body.get("pending_diary_memory_ids")
 
-    if "self_model_id" in body or "selfModelId" in body:
-        updates["self_model_id"] = body.get("self_model_id", body.get("selfModelId"))
+    if "self_model_id" in body:
+        updates["self_model_id"] = body.get("self_model_id")
 
-    if "last_retrieval_ids" in body or "lastRetrievalIds" in body:
-        updates["last_retrieval_ids"] = body.get("last_retrieval_ids", body.get("lastRetrievalIds"))
+    if "last_retrieval_ids" in body:
+        updates["last_retrieval_ids"] = body.get("last_retrieval_ids")
 
-    if "last_memorize_at" in body or "lastMemorizeAt" in body:
-        updates["last_memorize_at"] = body.get("last_memorize_at", body.get("lastMemorizeAt"))
+    if "last_memorize_at" in body:
+        updates["last_memorize_at"] = body.get("last_memorize_at")
 
     state_out, db_path = _write_conversation_state(
         cid,
@@ -3263,7 +3196,7 @@ async def conversation_retrieve(
         out = await _run_retrieve(payload, conversation_id=cid, persist_llm_state=True)
 
         safe = _safe_payload(payload if isinstance(payload, dict) else {})
-        want_turn_prompt = bool(safe.get("build_turn_prompt", safe.get("buildTurnPrompt", False)))
+        want_turn_prompt = bool(safe.get("build_turn_prompt", False))
 
         if want_turn_prompt:
             scope = _extract_scope(safe)
