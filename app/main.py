@@ -1559,31 +1559,6 @@ def _load_turn_state_and_soul_card(
     return state_row, soul_card, db_path
 
 
-def _safe_fts_query(text: str) -> str:
-    return " ".join(re.sub(r"[^0-9A-Za-z\s]", " ", str(text or "")).split())[:8000]
-
-
-async def _run_rag_with_fallback(
-    rag_payload: dict[str, Any],
-    *,
-    conversation_id: str,
-) -> dict[str, Any]:
-    try:
-        return await _run_retrieve(rag_payload, conversation_id=conversation_id, persist_llm_state=False)
-    except Exception as exc:
-        if "fts5: syntax error" not in str(exc).lower():
-            raise
-        fallback_query = _safe_fts_query(str(rag_payload.get("query") or ""))
-        if not fallback_query:
-            raise
-        fallback_payload = {**rag_payload, "query": fallback_query}
-        return await _run_retrieve(
-            fallback_payload,
-            conversation_id=conversation_id,
-            persist_llm_state=False,
-        )
-
-
 async def _persist_annulment_memories(
     *,
     svc: MemoryService,
@@ -1793,8 +1768,6 @@ async def _run_retrieve(
                     state_out = _conversation_state_from_row(_conversation_state_row(con, scoped_conversation_id))
                 finally:
                     con.close()
-        else:
-            _db_path, state_out = _find_conversation_state_across_dbs(scoped_conversation_id)
         if state_out:
             prior_context = state_out.get("prior_context")
             if prior_context is not None and str(prior_context).strip():
@@ -3372,14 +3345,14 @@ async def conversation_turn(
         if not uid or not soul_id:
             raise HTTPException(status_code=400, detail="user_id and soul_id required")
 
-        message = _pick_str(safe, "message", "query", "text")
+        message = str(safe.get("message") or "").strip()
         if not message:
             raise HTTPException(status_code=400, detail="message is required")
 
         history = _normalize_turn_history(safe.get("history"))
-        if safe.get("prompt_override", safe.get("promptOverride")) is not None:
+        if safe.get("prompt_override") is not None:
             raise HTTPException(status_code=400, detail="prompt_override is unsupported; use prompt_override_payload")
-        prompt_override_payload_raw = safe.get("prompt_override_payload", safe.get("promptOverridePayload"))
+        prompt_override_payload_raw = safe.get("prompt_override_payload")
         prompt_override: str | None = None
         prompt_override_payload: dict[str, Any] | None = None
         state_override_cache: list[str] | None = None
@@ -3387,29 +3360,26 @@ async def conversation_turn(
             if not isinstance(prompt_override_payload_raw, dict):
                 raise HTTPException(status_code=400, detail="prompt_override_payload must be an object")
             prompt_override_payload = dict(prompt_override_payload_raw)
-            payload_user_prompt = str(
-                prompt_override_payload.get("user_prompt", prompt_override_payload.get("prompt", ""))
-            )
+            payload_user_prompt = str(prompt_override_payload.get("user_prompt", ""))
             if not payload_user_prompt.strip():
                 raise HTTPException(
                     status_code=400,
-                    detail="prompt_override_payload.user_prompt (or prompt) is required",
+                    detail="prompt_override_payload.user_prompt is required",
                 )
             prompt_override = payload_user_prompt
         if prompt_override is not None:
             parsed_cache = _extract_memory_cache_from_turn_prompt(prompt_override)
             if parsed_cache is not None:
                 state_override_cache = parsed_cache
-        dry_run = bool(safe.get("dry_run", safe.get("dryRun", False)))
-        run_apimw = bool(safe.get("run_apimw", safe.get("runApimw", True)))
-        apply_turn_maintenance = bool(safe.get("apply_turn_maintenance", safe.get("applyTurnMaintenance", True)))
+        dry_run = bool(safe.get("dry_run", False))
+        run_apimw = bool(safe.get("run_apimw", True))
+        apply_turn_maintenance = bool(safe.get("apply_turn_maintenance", True))
         include_debug = bool(safe.get("debug", False))
         if dry_run:
             run_apimw = False
 
         safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
         safe["conversation_id"] = cid
-        safe["conversationId"] = cid
 
         state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
 
@@ -3446,7 +3416,7 @@ async def conversation_turn(
         turn_max_tokens: int = int(soul_gen.get("max_tokens", 1000))
         turn_response_format: Any = {"type": "json_object"}
         req_temperature = safe.get("temperature")
-        req_max_tokens = safe.get("max_tokens", safe.get("maxTokens"))
+        req_max_tokens = safe.get("max_tokens")
         if req_temperature is not None or req_max_tokens is not None:
             updated = dict(soul_gen)
             if req_temperature is not None:
@@ -3474,7 +3444,7 @@ async def conversation_turn(
         if prompt_override is None:
             rag_payload = {**safe, "method": "rag", "query": message}
             _rag_t0 = time.monotonic()
-            rag_out = await _run_rag_with_fallback(rag_payload, conversation_id=cid)
+            rag_out = await _run_retrieve(rag_payload, conversation_id=cid, persist_llm_state=False)
             _rag_ms = int((time.monotonic() - _rag_t0) * 1000)
             retrieve_rag = rag_out.get("result") if isinstance(rag_out, dict) else None
 
@@ -3623,7 +3593,6 @@ async def conversation_turn(
             info={
                 "conversationId": cid,
                 "dryRun": dry_run,
-                "runApimw": run_apimw,
                 "apimw": apimw_status,
                 "responseLen": len(str(out.get("response") or "")),
             },
@@ -3719,38 +3688,6 @@ async def conversation_cache_clear(
             cache.pop()
         _write_conversation_state(cid, soul_id=soul_id, user_id=uid, updates={"memory_cache": cache})
     return {"status": "cleared"}
-
-
-# memU-ui compatibility: it calls /api/*
-@app.post("/api/memorize", operation_id="api_memorize")
-async def api_memorize(payload: dict[str, Any] = Body(...)):
-    return await memorize(payload)
-
-
-@app.post("/api/retrieve", operation_id="api_retrieve")
-async def api_retrieve(payload: dict[str, Any] = Body(...)):
-    return await retrieve(payload)
-
-
-@app.post("/api/conversation/{conversation_id}/retrieve", operation_id="api_conversation_retrieve")
-async def api_conversation_retrieve(
-    conversation_id: str,
-    payload: dict[str, Any] = Body(...),
-):
-    return await conversation_retrieve(conversation_id, payload)
-
-
-@app.post("/api/conversation/{conversation_id}/turn", operation_id="api_conversation_turn")
-async def api_conversation_turn(
-    conversation_id: str,
-    payload: dict[str, Any] = Body(...),
-):
-    return await conversation_turn(conversation_id, payload)
-
-
-@app.post("/api/clear", operation_id="api_clear")
-async def api_clear(payload: dict[str, Any] = Body(...)):
-    return await clear_memory(payload)
 
 
 # -------------------------
