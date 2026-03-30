@@ -3377,16 +3377,12 @@ async def conversation_turn(
             raise HTTPException(status_code=400, detail="message is required")
 
         history = _normalize_turn_history(safe.get("history"))
-        prompt_override_raw = safe.get("prompt_override", safe.get("promptOverride"))
+        if safe.get("prompt_override", safe.get("promptOverride")) is not None:
+            raise HTTPException(status_code=400, detail="prompt_override is unsupported; use prompt_override_payload")
         prompt_override_payload_raw = safe.get("prompt_override_payload", safe.get("promptOverridePayload"))
         prompt_override: str | None = None
         prompt_override_payload: dict[str, Any] | None = None
         state_override_cache: list[str] | None = None
-        state_override_intentions: dict[str, Any] | None = None
-        if prompt_override_raw is not None:
-            if not isinstance(prompt_override_raw, str):
-                raise HTTPException(status_code=400, detail="prompt_override must be a string")
-            prompt_override = prompt_override_raw if prompt_override_raw.strip() else None
         if prompt_override_payload_raw is not None:
             if not isinstance(prompt_override_payload_raw, dict):
                 raise HTTPException(status_code=400, detail="prompt_override_payload must be an object")
@@ -3400,34 +3396,16 @@ async def conversation_turn(
                     detail="prompt_override_payload.user_prompt (or prompt) is required",
                 )
             prompt_override = payload_user_prompt
-            if "memory_cache" in prompt_override_payload:
-                state_override_cache = _normalize_memory_cache_impl(prompt_override_payload["memory_cache"])
-            elif "user_prompt" in prompt_override_payload:
-                parsed_cache = _extract_memory_cache_from_turn_prompt(prompt_override_payload.get("user_prompt"))
-                if parsed_cache is not None:
-                    state_override_cache = parsed_cache
-            if "intentions_active" in prompt_override_payload:
-                state_override_intentions = _normalize_intentions_stack_impl(prompt_override_payload["intentions_active"])
-            elif "intentions" in prompt_override_payload:
-                state_override_intentions = _normalize_intentions_stack_impl(prompt_override_payload["intentions"])
-        if prompt_override is not None and state_override_cache is None:
+        if prompt_override is not None:
             parsed_cache = _extract_memory_cache_from_turn_prompt(prompt_override)
             if parsed_cache is not None:
                 state_override_cache = parsed_cache
         dry_run = bool(safe.get("dry_run", safe.get("dryRun", False)))
-        run_apimw_raw = safe.get("run_apimw", safe.get("runApimw", True))
-        wait_apimw_raw = safe.get("wait_apimw", safe.get("waitApimw", False))
-        apply_turn_maintenance_raw = safe.get("apply_turn_maintenance", safe.get("applyTurnMaintenance", True))
-        run_apimw = True if run_apimw_raw is None else bool(run_apimw_raw)
-        wait_apimw = False if wait_apimw_raw is None else bool(wait_apimw_raw)
-        if isinstance(apply_turn_maintenance_raw, str):
-            apply_turn_maintenance = apply_turn_maintenance_raw.strip().lower() not in {"", "0", "false", "no", "off"}
-        else:
-            apply_turn_maintenance = True if apply_turn_maintenance_raw is None else bool(apply_turn_maintenance_raw)
+        run_apimw = bool(safe.get("run_apimw", safe.get("runApimw", True)))
+        apply_turn_maintenance = bool(safe.get("apply_turn_maintenance", safe.get("applyTurnMaintenance", True)))
         include_debug = bool(safe.get("debug", False))
         if dry_run:
             run_apimw = False
-            wait_apimw = False
 
         safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
         safe["conversation_id"] = cid
@@ -3451,15 +3429,11 @@ async def conversation_turn(
             )
             intentions_before = (
                 _apply_intention_turn_maintenance_impl(
-                    state_override_intentions
-                    if state_override_intentions is not None
-                    else state_row.get("intentions_active")
+                    state_row.get("intentions_active")
                 )
                 if apply_turn_maintenance
                 else _normalize_intentions_stack_impl(
-                    state_override_intentions
-                    if state_override_intentions is not None
-                    else state_row.get("intentions_active")
+                    state_row.get("intentions_active")
                 )
             )
 
@@ -3556,15 +3530,11 @@ async def conversation_turn(
                 )
                 fresh_intentions = (
                     _apply_intention_turn_maintenance_impl(
-                        state_override_intentions
-                        if state_override_intentions is not None
-                        else fresh_row.get("intentions_active")
+                        fresh_row.get("intentions_active")
                     )
                     if apply_turn_maintenance
                     else _normalize_intentions_stack_impl(
-                        state_override_intentions
-                        if state_override_intentions is not None
-                        else fresh_row.get("intentions_active")
+                        fresh_row.get("intentions_active")
                     )
                 )
                 memory_cache_after = _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
@@ -3599,35 +3569,23 @@ async def conversation_turn(
         apimw_status = "skipped_dry_run" if dry_run else "not_started"
         if (not dry_run) and run_apimw:
             apimw_payload = {**safe, "method": "llm", "query": message}
-            if wait_apimw:
-                try:
-                    await _run_retrieve(
-                        apimw_payload,
-                        conversation_id=cid,
-                        persist_llm_state=True,
-                        llm_dedupe_baseline=retrieve_rag if isinstance(retrieve_rag, dict) else None,
-                    )
-                    apimw_status = "completed"
-                except Exception:
-                    apimw_status = "failed"
-            else:
-                apimw_status = "started"
-                apimw_task = asyncio.create_task(
-                    _run_retrieve(
-                        apimw_payload,
-                        conversation_id=cid,
-                        persist_llm_state=True,
-                        llm_dedupe_baseline=retrieve_rag if isinstance(retrieve_rag, dict) else None,
-                    )
+            apimw_status = "started"
+            apimw_task = asyncio.create_task(
+                _run_retrieve(
+                    apimw_payload,
+                    conversation_id=cid,
+                    persist_llm_state=True,
+                    llm_dedupe_baseline=retrieve_rag if isinstance(retrieve_rag, dict) else None,
                 )
+            )
 
-                def _on_apimw_done(task: asyncio.Task) -> None:
-                    try:
-                        task.result()
-                    except Exception:
-                        logger.exception("APImw background retrieve failed for %s", cid)
+            def _on_apimw_done(task: asyncio.Task) -> None:
+                try:
+                    task.result()
+                except Exception:
+                    logger.exception("APImw background retrieve failed for %s", cid)
 
-                apimw_task.add_done_callback(_on_apimw_done)
+            apimw_task.add_done_callback(_on_apimw_done)
 
         _response_str = str(turn_contract.get("response") or "").strip()
         out: dict[str, Any] = {
@@ -3666,7 +3624,6 @@ async def conversation_turn(
                 "conversationId": cid,
                 "dryRun": dry_run,
                 "runApimw": run_apimw,
-                "waitApimw": wait_apimw,
                 "apimw": apimw_status,
                 "responseLen": len(str(out.get("response") or "")),
             },
