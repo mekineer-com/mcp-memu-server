@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from app.services.intention_state import format_intentions_for_prompt, normalize_memory_cache
+from app.services.intention_state import MAX_MEMORY_CACHE_ENTRIES, format_intentions_for_prompt, normalize_memory_cache
 
 DEFAULT_SOUL_CARD = (
     "You have your own inner life — thoughts, feelings, preferences, curiosities. "
@@ -154,7 +154,7 @@ def build_turn_prompt(
 ) -> str:
     cache = normalize_memory_cache(memory_cache)
     cache_lines = [f"{idx + 1}. {entry}" for idx, entry in enumerate(cache)]
-    if cache_lines:
+    if len(cache) >= MAX_MEMORY_CACHE_ENTRIES:
         cache_lines[0] = f"{cache_lines[0]}  \u2190 oldest, replaced on next write"
 
     # Discard routing JSON artifacts written by old code (pre-715256c)
