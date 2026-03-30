@@ -1371,6 +1371,49 @@ def _extract_memory_cache_from_turn_prompt(prompt: Any) -> list[str] | None:
     return _normalize_memory_cache_impl(out)
 
 
+def _extract_intentions_from_turn_prompt(prompt: Any) -> dict[str, Any] | None:
+    text = str(prompt or "")
+    marker = "Intentions:"
+    idx = text.find(marker)
+    if idx < 0:
+        return None
+    tail = text[idx + len(marker) :]
+    m = re.search(r"\n\s*Conversation history:\s*", tail)
+    block = tail[: m.start()] if m else tail
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+    if not lines:
+        return _normalize_intentions_stack_impl({"items": []})
+    items: list[dict[str, Any]] = []
+    for line in lines:
+        line = re.sub(r"^\s*-\s*", "", line).strip()
+        if not line:
+            continue
+        mm = re.match(
+            r"^(?P<id>[^:]+):\s*(?P<text>.*?)(?:\s*\(p=(?P<p>[-+]?\d+(?:\.\d+)?)\))?(?:\s*\[(?P<tags>[^\]]*)\])?\s*$",
+            line,
+        )
+        if not mm:
+            continue
+        item_id = str(mm.group("id") or "").strip()
+        item_text = str(mm.group("text") or "").strip()
+        if not item_id or not item_text:
+            continue
+        tags = [t.strip().lower() for t in str(mm.group("tags") or "").split(",") if t.strip()]
+        ephemeral = "ephemeral" in tags
+        active = "inactive" not in tags
+        row: dict[str, Any] = {
+            "id": item_id,
+            "text": item_text,
+            "ephemeral": ephemeral,
+            "active": active,
+        }
+        p = mm.group("p")
+        if (not ephemeral) and p is not None and str(p).strip():
+            row["priority"] = float(p)
+        items.append(row)
+    return _normalize_intentions_stack_impl({"items": items})
+
+
 def _norm_result_sig(value: Any) -> str:
     text = re.sub(r"\s+", " ", str(value or "").strip().lower())
     return text
@@ -3288,6 +3331,7 @@ async def conversation_turn(
         prompt_override: str | None = None
         prompt_override_payload: dict[str, Any] | None = None
         state_override_cache: list[str] | None = None
+        state_override_intentions: dict[str, Any] | None = None
         if prompt_override_payload_raw is not None:
             if not isinstance(prompt_override_payload_raw, dict):
                 raise HTTPException(status_code=400, detail="prompt_override_payload must be an object")
@@ -3303,6 +3347,9 @@ async def conversation_turn(
             parsed_cache = _extract_memory_cache_from_turn_prompt(prompt_override)
             if parsed_cache is not None:
                 state_override_cache = parsed_cache
+            parsed_intentions = _extract_intentions_from_turn_prompt(prompt_override)
+            if parsed_intentions is not None:
+                state_override_intentions = parsed_intentions
         dry_run = bool(safe.get("dry_run", False))
         run_apimw = bool(safe.get("run_apimw", True))
         apply_turn_maintenance = bool(safe.get("apply_turn_maintenance", True))
@@ -3330,12 +3377,16 @@ async def conversation_turn(
                 else _normalize_memory_cache_impl(state_row.get("memory_cache"))
             )
             intentions_before = (
-                _apply_intention_turn_maintenance_impl(
-                    state_row.get("intentions_active")
-                )
-                if apply_turn_maintenance
-                else _normalize_intentions_stack_impl(
-                    state_row.get("intentions_active")
+                _normalize_intentions_stack_impl(state_override_intentions)
+                if state_override_intentions is not None
+                else (
+                    _apply_intention_turn_maintenance_impl(
+                        state_row.get("intentions_active")
+                    )
+                    if apply_turn_maintenance
+                    else _normalize_intentions_stack_impl(
+                        state_row.get("intentions_active")
+                    )
                 )
             )
 
@@ -3431,12 +3482,16 @@ async def conversation_turn(
                     else _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
                 )
                 fresh_intentions = (
-                    _apply_intention_turn_maintenance_impl(
-                        fresh_row.get("intentions_active")
-                    )
-                    if apply_turn_maintenance
-                    else _normalize_intentions_stack_impl(
-                        fresh_row.get("intentions_active")
+                    _normalize_intentions_stack_impl(state_override_intentions)
+                    if state_override_intentions is not None
+                    else (
+                        _apply_intention_turn_maintenance_impl(
+                            fresh_row.get("intentions_active")
+                        )
+                        if apply_turn_maintenance
+                        else _normalize_intentions_stack_impl(
+                            fresh_row.get("intentions_active")
+                        )
                     )
                 )
                 memory_cache_after = _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
