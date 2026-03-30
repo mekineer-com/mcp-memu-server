@@ -36,7 +36,7 @@ Schema:
   "intention_action":
     {{"type":"boost","target_id":"string","amount":1}}
     | {{"type":"promote","target_id":"string"}}
-    | {{"type":"create","entries":[{{"id":"optional","text":"string","priority":10}},{{"id":"optional","text":"string"}}]}}
+    | {{"type":"create","entries":[{{"id":"slug","text":"string","priority":10}},{{"id":"slug","text":"string"}}]}}
     | {{"type":"none"}}
     | null,
   "annulments":[
