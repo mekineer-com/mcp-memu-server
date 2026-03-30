@@ -3736,7 +3736,7 @@ async def conversation_turn_undo(
         snap_by_id = {i["id"]: i for i in snap_items}
         cur_by_id = {i["id"]: i for i in cur_items}
         restored_items = (
-            list(snap_by_id.values())
+            [snap_by_id[id_] for id_ in snap_by_id if id_ in cur_by_id]
             + [cur_by_id[id_] for id_ in cur_by_id if id_ not in snap_by_id]
         )
         restored_intentions = _normalize_intentions_stack_impl({**snap_int, "items": restored_items})
