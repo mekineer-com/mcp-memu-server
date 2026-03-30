@@ -23,10 +23,7 @@ from app.services.intention_state import normalize_intentions_stack, normalize_m
 def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
-    try:
-        digest_cursor = int(row['digest_cursor'] or 0)
-    except Exception:
-        digest_cursor = 0
+    digest_cursor = int(row['digest_cursor'] or 0)
     prior_context = row['prior_context']
     return {
         'conversation_id': row['conversation_id'],
@@ -94,8 +91,6 @@ def find_conversation_state_across_dbs(
             row = conversation_state_row(con, conversation_id)
             if row is not None:
                 return db_path, conversation_state_from_row(row)
-        except Exception:
-            continue
         finally:
             con.close()
     return None, None

@@ -100,12 +100,9 @@ def _has_category_content(c: dict[str, Any]) -> bool:
     We intentionally do NOT fabricate content. We only consider fields that
     already exist on the category object.
     """
-    try:
-        summary = str(c.get("summary") or "").strip()
-        desc = str(c.get("description") or "").strip()
-        return bool(summary or desc)
-    except Exception:
-        return False
+    summary = str(c.get("summary") or "").strip()
+    desc = str(c.get("description") or "").strip()
+    return bool(summary or desc)
 
 
 # -------------------------
@@ -159,13 +156,10 @@ def _is_control_path(path: str) -> bool:
         return True
     if p.startswith("/diag/"):
         return True
-    try:
-        pref = str(_DIAG_PREFIX or "").rstrip("/")
-        if pref:
-            if p == f"{pref}/diag" or p.startswith(f"{pref}/diag/"):
-                return True
-    except Exception:
-        pass
+    pref = str(_DIAG_PREFIX or "").rstrip("/")
+    if pref:
+        if p == f"{pref}/diag" or p.startswith(f"{pref}/diag/"):
+            return True
     return False
 
 
@@ -190,7 +184,7 @@ def _memorize_lock_key(user_id: str, soul_id: str) -> str:
         if p is not None:
             return str(p)
     except Exception:
-        pass
+        logger.warning("_memorize_lock_key: path lookup failed for soul_id=%r, using fallback key", soul_id, exc_info=True)
     return f"{user_id}::{soul_id}"
 
 
@@ -566,17 +560,11 @@ def _ensure_storage_paths(cfg: dict[str, Any]) -> None:
             # Keep normalized DSN visible in /health.
             _STORAGE_STATUS["dsn"] = dsn or None
             # Also persist normalization back into config in-memory (no disk write).
-            try:
-                ms["dsn"] = dsn
-            except Exception:
-                pass
+            ms["dsn"] = dsn
 
             sqlite_dir = _sqlite_dir_from_cfg(cfg, dsn)
             if sqlite_dir is not None:
-                try:
-                    sqlite_dir.mkdir(parents=True, exist_ok=True)
-                except Exception:
-                    pass
+                sqlite_dir.mkdir(parents=True, exist_ok=True)
             # KISS: do not create/open any DB at startup.
             # Just ensure the directory exists and is writable.
             try:
@@ -603,12 +591,9 @@ def _save_config(cfg: dict[str, Any]) -> None:
 
 def _mask_config(cfg: dict[str, Any]) -> dict[str, Any]:
     out = json.loads(json.dumps(cfg))
-    try:
-        key = out.get("llm", {}).get("api_key", "")
-        if isinstance(key, str) and key:
-            out["llm"]["api_key"] = key[:4] + "…" + key[-4:]
-    except Exception:
-        pass
+    key = out.get("llm", {}).get("api_key", "")
+    if isinstance(key, str) and key:
+        out["llm"]["api_key"] = key[:4] + "…" + key[-4:]
     return out
 
 
@@ -674,10 +659,7 @@ def _load_soul_gen_config(user_id: str, soul_id: str) -> dict[str, Any]:
     p = _soul_gen_config_path(user_id, soul_id)
     if not p.exists():
         return {}
-    try:
-        return json.loads(p.read_text())
-    except Exception:
-        return {}
+    return json.loads(p.read_text())
 
 
 def _save_soul_gen_config(user_id: str, soul_id: str, cfg: dict[str, Any]) -> None:
@@ -918,23 +900,20 @@ def _get_service_from_payload(
     memorize_config = payload.get("memorize_config") or {}
 
     # Enforce categories + dynamic policy from server config.json.
-    try:
-        fixed_cats = _categories_from_cfg(_CONFIG)
-        if isinstance(memorize_config, dict):
-            cats_cfg = (_CONFIG.get("categories") or {}) if isinstance(_CONFIG.get("categories"), dict) else {}
-            if fixed_cats:
-                memorize_config["memory_categories"] = fixed_cats
-            memorize_config["allow_dynamic_categories"] = bool(cats_cfg.get("allow_dynamic_categories", True))
-            memorize_config["dynamic_category_min_mentions"] = int(
-                cats_cfg.get("dynamic_category_min_mentions", 10) or 10
-            )
-            memorize_config["category_centroid_threshold"] = float(
-                cats_cfg.get("category_centroid_threshold", 0.65) or 0.65
-            )
-            memorize_config["homeless_trigger_count"] = int(cats_cfg.get("homeless_trigger_count", 20) or 20)
-            memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
-    except Exception:
-        pass
+    fixed_cats = _categories_from_cfg(_CONFIG)
+    if isinstance(memorize_config, dict):
+        cats_cfg = (_CONFIG.get("categories") or {}) if isinstance(_CONFIG.get("categories"), dict) else {}
+        if fixed_cats:
+            memorize_config["memory_categories"] = fixed_cats
+        memorize_config["allow_dynamic_categories"] = bool(cats_cfg.get("allow_dynamic_categories", True))
+        memorize_config["dynamic_category_min_mentions"] = int(
+            cats_cfg.get("dynamic_category_min_mentions", 10) or 10
+        )
+        memorize_config["category_centroid_threshold"] = float(
+            cats_cfg.get("category_centroid_threshold", 0.65) or 0.65
+        )
+        memorize_config["homeless_trigger_count"] = int(cats_cfg.get("homeless_trigger_count", 20) or 20)
+        memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
     retrieve_config = payload.get("retrieve_config")
     if not isinstance(retrieve_config, dict):
         retrieve_config = {}
@@ -965,18 +944,15 @@ def _get_service_from_payload(
     user_config = {**(user_config if isinstance(user_config, dict) else {}), "model": STUserModel}
 
     # Small UX: disable conversation preprocess prompt unless explicitly set.
-    try:
-        mpp = (
-            dict(memorize_config.get("multimodal_preprocess_prompts") or {})
-            if isinstance(memorize_config, dict)
-            else {}
-        )
-        if "conversation" not in mpp:
-            mpp["conversation"] = ""
-        if isinstance(memorize_config, dict):
-            memorize_config["multimodal_preprocess_prompts"] = mpp
-    except Exception:
-        pass
+    mpp = (
+        dict(memorize_config.get("multimodal_preprocess_prompts") or {})
+        if isinstance(memorize_config, dict)
+        else {}
+    )
+    if "conversation" not in mpp:
+        mpp["conversation"] = ""
+    if isinstance(memorize_config, dict):
+        memorize_config["multimodal_preprocess_prompts"] = mpp
 
     svc = MemoryService(
         llm_profiles=llm_profiles,
@@ -1228,17 +1204,14 @@ def _sqlite_current_path(
     user_id: str | None = None,
     soul_id: str | None = None,
 ) -> Path | None:
-    try:
-        base_dsn = str(_STORAGE_STATUS.get("dsn") or "")
-        soul_id = str(soul_id or "").strip()
-        if not soul_id:
-            return None
-        scope = {"soul_id": soul_id}
-        dsn = _sqlite_dsn_for_scope(_CONFIG, base_dsn, scope)
-        f = _sqlite_file_from_dsn(dsn)
-        return f.expanduser().resolve() if f is not None else None
-    except Exception:
+    base_dsn = str(_STORAGE_STATUS.get("dsn") or "")
+    soul_id = str(soul_id or "").strip()
+    if not soul_id:
         return None
+    scope = {"soul_id": soul_id}
+    dsn = _sqlite_dsn_for_scope(_CONFIG, base_dsn, scope)
+    f = _sqlite_file_from_dsn(dsn)
+    return f.expanduser().resolve() if f is not None else None
 
 
 def _sqlite_build_scope_where(
@@ -2221,14 +2194,11 @@ def _msg_key(m: dict[str, Any]) -> tuple[str, str, str, str]:
 
 
 def _read_list(p: Path) -> list[dict[str, Any]]:
-    try:
-        if not p.exists():
-            return []
-        raw = p.read_text(encoding="utf-8")
-        obj = json.loads(raw) if raw.strip() else []
-        return [m for m in obj if isinstance(m, dict)] if isinstance(obj, list) else []
-    except Exception:
+    if not p.exists():
         return []
+    raw = p.read_text(encoding="utf-8")
+    obj = json.loads(raw) if raw.strip() else []
+    return [m for m in obj if isinstance(m, dict)] if isinstance(obj, list) else []
 
 
 def _write_list_if_changed(p: Path, old: list[dict[str, Any]], new: list[dict[str, Any]]) -> None:
@@ -2512,15 +2482,12 @@ async def _run_memorize_batches(
                 )
                 processed_end_cursor = max(processed_end_cursor, batch_end)
                 if conversation_id:
-                    try:
-                        _write_conversation_state(
-                            conversation_id,
-                            soul_id=soul_id,
-                            user_id=uid,
-                            updates={"digest_cursor": processed_end_cursor},
-                        )
-                    except Exception:
-                        pass
+                    _write_conversation_state(
+                        conversation_id,
+                        soul_id=soul_id,
+                        user_id=uid,
+                        updates={"digest_cursor": processed_end_cursor},
+                    )
 
         if conversation_id and batch_results:
             try:
@@ -2653,10 +2620,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                     updates={},
                 )
                 if state_out.get("last_memorize_at"):
-                    try:
-                        processed_cursor = int(state_out.get("digest_cursor") or 0)
-                    except Exception:
-                        processed_cursor = -1
+                    processed_cursor = int(state_out.get("digest_cursor") or 0)
 
             # Timezone hint (IANA) from client. Offset is only a fallback for logging.
             tz_name = _pick_str(safe, "timeZone", "timezone", "time_zone")
@@ -2682,12 +2646,8 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                     zi = None
                     tz_ok = False
 
-            manifest: dict[str, Any] = {}
-            try:
-                rawm = manifest_path.read_text(encoding="utf-8") if manifest_path.exists() else ""
-                manifest = json.loads(rawm) if rawm.strip() else {}
-            except Exception:
-                manifest = {}
+            rawm = manifest_path.read_text(encoding="utf-8") if manifest_path.exists() else ""
+            manifest: dict[str, Any] = json.loads(rawm) if rawm.strip() else {}
             segments: list[dict[str, Any]] = (
                 manifest.get("segments") if isinstance(manifest.get("segments"), list) else []
             )
@@ -2741,26 +2701,23 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                     new_segments.append({"date": date, "end_date": end_date, "start": a_i, "end": b_i - 1, "file": fn})
 
                 segments = keep_segments + new_segments
-                try:
-                    manifest_out = {
-                        "v": 1,
-                        "tz": str(tz_name or ""),
-                        "segments": segments,
-                        "split": {
-                            "min_lull_seconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
-                        },
-                        "source": {
-                            "conversationId": conversation_id or "",
-                            "chatFileName": chat_file or "",
-                            "resource_url_in": resource_url_in or "",
-                            "timeZoneOffsetMin": tz_off_min if tz_off_min is not None else None,
-                            "chatKey": chat_key,
-                            "chatKeySource": chat_key_source or "",
-                        },
-                    }
-                    manifest_path.write_text(json.dumps(manifest_out, ensure_ascii=False, indent=2), encoding="utf-8")
-                except Exception:
-                    pass
+                manifest_out = {
+                    "v": 1,
+                    "tz": str(tz_name or ""),
+                    "segments": segments,
+                    "split": {
+                        "min_lull_seconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
+                    },
+                    "source": {
+                        "conversationId": conversation_id or "",
+                        "chatFileName": chat_file or "",
+                        "resource_url_in": resource_url_in or "",
+                        "timeZoneOffsetMin": tz_off_min if tz_off_min is not None else None,
+                        "chatKey": chat_key,
+                        "chatKeySource": chat_key_source or "",
+                    },
+                }
+                manifest_path.write_text(json.dumps(manifest_out, ensure_ascii=False, indent=2), encoding="utf-8")
 
             if segments:
                 last_file = segments[-1].get("file")
