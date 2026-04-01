@@ -654,7 +654,7 @@ ON CONFLICT(id) DO UPDATE SET
             intention_id = str(uuid.uuid4())
             con.execute(
                 """
-INSERT INTO memu_intentions (
+INSERT INTO intentions_life_goals (
     id, soul_id, user_id, description, status, source, confidence, target_date, related_memory_ids, updated_at
 ) VALUES (?, ?, ?, ?, 'active', 'inferred', NULL, NULL, ?, ?)
 """,

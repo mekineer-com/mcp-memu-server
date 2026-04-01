@@ -66,9 +66,17 @@ CREATE TABLE IF NOT EXISTS memu_self_model (
     cols = set(sqlite_table_columns(con, "memu_self_model"))
     if "related_memory_ids" not in cols:
         con.execute("ALTER TABLE memu_self_model ADD COLUMN related_memory_ids TEXT")
+    tables = {
+        str(row[0])
+        for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        if row and row[0]
+    }
+    if "memu_intentions" in tables and "intentions_life_goals" not in tables:
+        con.execute("ALTER TABLE memu_intentions RENAME TO intentions_life_goals")
+
     con.execute(
         """
-CREATE TABLE IF NOT EXISTS memu_intentions (
+CREATE TABLE IF NOT EXISTS intentions_life_goals (
     id TEXT PRIMARY KEY,
     soul_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
@@ -84,16 +92,16 @@ CREATE TABLE IF NOT EXISTS memu_intentions (
 )
 """
     )
-    intention_cols = set(sqlite_table_columns(con, "memu_intentions"))
+    intention_cols = set(sqlite_table_columns(con, "intentions_life_goals"))
     if "resolution_note" not in intention_cols:
-        con.execute("ALTER TABLE memu_intentions ADD COLUMN resolution_note TEXT")
+        con.execute("ALTER TABLE intentions_life_goals ADD COLUMN resolution_note TEXT")
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_self_model_soul_user "
         "ON memu_self_model(soul_id, user_id, updated_at DESC)"
     )
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_intentions_soul_user "
-        "ON memu_intentions(soul_id, user_id, status)"
+        "ON intentions_life_goals(soul_id, user_id, status)"
     )
 
 

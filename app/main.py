@@ -1950,7 +1950,7 @@ async def diag_sqlite_counts(
         "memu_category_items",
         "memu_conversation_state",
         "memu_self_model",
-        "memu_intentions",
+        "intentions_life_goals",
     ]
     con = _sqlite_connect(p)
     try:
@@ -1992,7 +1992,7 @@ async def diag_sqlite_recent(
         "memu_category_items",
         "memu_conversation_state",
         "memu_self_model",
-        "memu_intentions",
+        "intentions_life_goals",
     }
     if table not in allowed:
         raise HTTPException(status_code=400, detail=f"table must be one of: {sorted(allowed)}")
@@ -2006,7 +2006,7 @@ async def diag_sqlite_recent(
 
     con = _sqlite_connect(p)
     try:
-        if table in {"memu_conversation_state", "memu_self_model", "memu_intentions"}:
+        if table in {"memu_conversation_state", "memu_self_model", "intentions_life_goals"}:
             _sqlite_ensure_conversation_state_schema(con)
         cols = _sqlite_table_columns(con, table)
         scope_where, params = _sqlite_build_scope_where(cols, user_id, soul_id, session_id)
@@ -2955,7 +2955,7 @@ async def list_intentions(
         _sqlite_ensure_conversation_state_schema(con)
         rows = con.execute(
             """
-SELECT * FROM memu_intentions
+SELECT * FROM intentions_life_goals
 WHERE soul_id = ? AND user_id = ? AND status = ?
 """,
             (soul_id, user_id, scoped_status),
@@ -3004,7 +3004,7 @@ async def patch_intention(
         con.row_factory = sqlite3.Row
         _sqlite_ensure_conversation_state_schema(con)
         row = con.execute(
-            "SELECT * FROM memu_intentions WHERE id = ? LIMIT 1",
+            "SELECT * FROM intentions_life_goals WHERE id = ? LIMIT 1",
             (iid,),
         ).fetchone()
         if row is None:
@@ -3023,12 +3023,12 @@ async def patch_intention(
             params.append(datetime.now(UTC).isoformat())
             params.append(iid)
             con.execute(
-                f"UPDATE memu_intentions SET {', '.join(set_parts)} WHERE id = ?",
+                f"UPDATE intentions_life_goals SET {', '.join(set_parts)} WHERE id = ?",
                 params,
             )
             con.commit()
             row = con.execute(
-                "SELECT * FROM memu_intentions WHERE id = ? LIMIT 1",
+                "SELECT * FROM intentions_life_goals WHERE id = ? LIMIT 1",
                 (iid,),
             ).fetchone()
 
