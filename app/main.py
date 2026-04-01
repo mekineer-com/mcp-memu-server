@@ -2807,11 +2807,6 @@ async def generate_diary(payload: dict[str, Any] = Body(...)):
                 conversation_id=conversation_id_ref, soul_id=soul_id_ref, user_id=uid_ref,
             )
 
-        if conversation_id_ref:
-            _write_conversation_state(
-                conversation_id_ref, soul_id=soul_id_ref, user_id=uid_ref,
-                updates={"all_categories_summary": result.get("all_categories_summary")},
-            )
         _record_call(
             "diary.generate",
             safe,

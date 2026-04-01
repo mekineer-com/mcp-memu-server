@@ -606,6 +606,21 @@ def write_diary_outputs(
     try:
         con.row_factory = sqlite3.Row
         deps.sqlite_ensure_conversation_state_schema(con)
+        where: dict[str, Any] = {}
+        if soul_id:
+            where["soul_id"] = soul_id
+        if user_id:
+            where["user_id"] = user_id
+        categories = svc.database.memory_category_repo.list_categories(where)
+        all_categories_summary = "\n".join(
+            f"{name}: {summary}"
+            for cat in categories.values()
+            for name, summary in [(
+                str(getattr(cat, "name", "") or "").strip(),
+                str(getattr(cat, "summary", "") or "").strip(),
+            )]
+            if name and summary
+        ) or None
 
         con.execute(
             """
@@ -671,6 +686,13 @@ INSERT INTO memu_intentions (
             refreshed_state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id))
             if refreshed_state is not None:
                 updated_state = refreshed_state
+        con.execute(
+            "UPDATE memu_conversation_state SET all_categories_summary = ?, updated_at = ? WHERE conversation_id = ?",
+            (all_categories_summary, datetime.now(UTC).isoformat(), conversation_id),
+        )
+        refreshed_state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id))
+        if refreshed_state is not None:
+            updated_state = refreshed_state
         con.commit()
         return {
             "conversation_id": conversation_id,
@@ -678,45 +700,8 @@ INSERT INTO memu_intentions (
             "self_model_id": self_model_id,
             "intention_ids": intention_ids,
             "pending_diary_memory_ids_cleared": True,
+            "all_categories_summary": all_categories_summary,
             "state": updated_state,
         }
     finally:
         con.close()
-
-
-async def generate_diary(
-    *,
-    deps: DiaryDeps,
-    svc: MemoryService,
-    conversation_id: str,
-    soul_id: str,
-    user_id: str,
-) -> dict[str, Any]:
-    inputs = gather_diary_inputs(deps, conversation_id=conversation_id, soul_id=soul_id, user_id=user_id)
-    llm_results = await run_diary_llm(svc, deps, inputs=inputs)
-    result = write_diary_outputs(
-        deps, svc, inputs=inputs, llm_results=llm_results,
-        conversation_id=conversation_id, soul_id=soul_id, user_id=user_id,
-    )
-    # Generate all-categories-summary
-    try:
-        where = {}
-        if soul_id:
-            where["soul_id"] = soul_id
-        if user_id:
-            where["user_id"] = user_id
-        store = svc._get_database()
-        categories = store.memory_category_repo.list_categories(where)
-        if categories:
-            lines = []
-            for cat in categories.values():
-                name = str(getattr(cat, "name", "") or "").strip()
-                summary = str(getattr(cat, "summary", "") or "").strip()
-                if name and summary:
-                    lines.append(f"{name}: {summary}")
-            result["all_categories_summary"] = "\n".join(lines) if lines else None
-        else:
-            result["all_categories_summary"] = None
-    except Exception:
-        result["all_categories_summary"] = None
-    return result
