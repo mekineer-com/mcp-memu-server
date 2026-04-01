@@ -732,7 +732,7 @@ def _default_llm_profiles_from_server_config() -> dict[str, Any]:
     api_key = str(llm.get("api_key") or "")
     base_url = str(llm.get("base_url") or "https://api.openai.com/v1")
     chat_model = str(llm.get("chat_model") or "")
-    embed_model = str(llm.get("embed_model") or "text-embedding-3-small")
+    embed_model = str(llm.get("embed_model") or "")
     provider = str(llm.get("provider") or "openai")
     client_backend = str(llm.get("client_backend") or "httpx")
     endpoint_overrides = llm.get("endpoint_overrides") or {}
