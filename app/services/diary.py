@@ -404,7 +404,7 @@ LIMIT 1
             if current_self_model_row is not None else None
         )
         life_goal_rows = con.execute(
-            "SELECT id, description FROM intentions_life_goals WHERE soul_id = ? AND user_id = ? AND status = 'active' ORDER BY updated_at ASC",
+            "SELECT id, description FROM intentions_life_goals WHERE soul_id = ? AND user_id = ? AND status = 'active' AND source = 'life_goal' ORDER BY updated_at ASC",
             (soul_id, user_id),
         ).fetchall()
         existing_life_goals = [
@@ -640,6 +640,7 @@ def write_diary_outputs(
     )
     related_memory_ids = [str(row["id"]) for row in memory_rows if "id" in row]
     now_iso = datetime.now(UTC).isoformat()
+    dropped_goal_memories: list[tuple[str, list[float]]] = []
 
     deps.sqlite_ensure_nonempty(db_path)
     con = deps.sqlite_connect(db_path)
@@ -686,26 +687,18 @@ ON CONFLICT(id) DO UPDATE SET
         )
 
         goal_id_by_desc = {g["description"]: g["id"] for g in existing_life_goals}
-        removed_count = 0
+        removed_goal_ids: set[str] = set()
         for desc, embedding in llm_results.get("dropped_goal_embeddings") or []:
             goal_id = goal_id_by_desc.get(desc)
-            if goal_id:
+            if goal_id and goal_id not in removed_goal_ids:
                 con.execute(
                     "UPDATE intentions_life_goals SET status = 'removed', updated_at = ? WHERE id = ?",
                     (now_iso, goal_id),
                 )
-                removed_count += 1
-                svc.database.memory_item_repo.create_item(
-                    resource_id=None,
-                    memory_type="event",
-                    source_role="soul",
-                    summary=f"I used to want: {desc}",
-                    embedding=embedding,
-                    user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
-                    conversation_id=conversation_id,
-                )
+                removed_goal_ids.add(goal_id)
+                dropped_goal_memories.append((str(desc), embedding))
 
-        active_life_goal_count = len(existing_life_goals) - removed_count
+        active_life_goal_count = len(existing_life_goals) - len(removed_goal_ids)
         for desc in self_model_update.get("life_goal_add") or []:
             text = str(desc or "").strip()
             if not text or active_life_goal_count >= 3:
@@ -770,7 +763,7 @@ INSERT INTO intentions_life_goals (
         if refreshed_state is not None:
             updated_state = refreshed_state
         con.commit()
-        return {
+        result = {
             "conversation_id": conversation_id,
             "memory_id": diary_item.id,
             "self_model_id": self_model_id,
@@ -781,3 +774,15 @@ INSERT INTO intentions_life_goals (
         }
     finally:
         con.close()
+
+    for desc, embedding in dropped_goal_memories:
+        svc.database.memory_item_repo.create_item(
+            resource_id=None,
+            memory_type="event",
+            source_role="soul",
+            summary=f"I used to want: {desc}",
+            embedding=embedding,
+            user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
+            conversation_id=conversation_id,
+        )
+    return result

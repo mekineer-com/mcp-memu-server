@@ -86,7 +86,7 @@ _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60  # 3 hours
 # Minimum chunk gate to avoid wasting extraction calls on tiny conversations
 _MIN_CHUNK_TOKENS: int = 2000  # default; overridden by config memorize.min_chunk_tokens
-_VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved"}
+_VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved", "removed"}
 
 
 def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
