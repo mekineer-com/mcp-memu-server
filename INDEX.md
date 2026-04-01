@@ -36,7 +36,7 @@ mcp-memu-server/
 | `/conversation/{id}/turn` | POST | Soul turn loop: run LLM with turn contract, persist intentions + cache |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/diary/generate` | POST | Generate diary entry from recent memories |
-| `/intentions` | GET | List active intentions for a soul |
+| `/intentions` | GET | List intentions from `intentions_life_goals` table (long-term, diary-managed) |
 | `/intentions/{id}` | PATCH | Update intention status/priority |
 | `/categories` | GET | List all categories |
 | `/categories/search` | POST | Search categories |
@@ -50,7 +50,7 @@ mcp-memu-server/
 | Module | Purpose |
 |--------|---------|
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
-| `app/services/diary.py` | `generate_diary()`, diary/self-model XML parsing, self-model load/format, intention creation. All diary+self-model+intention writes in one SQLite transaction. |
+| `app/services/diary.py` | Three-phase diary pipeline: `gather_diary_inputs()` (DB reads, life goals fetch) → `run_diary_llm()` (async LLM; no DB) → `write_diary_outputs()` (holds memorize lock; writes diary, self-model, intentions, all_categories_summary, life goals). `generate_diary()` wrapper deleted — both entry points call the three phases directly. |
 | `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, `pending_diary_memory_ids` queue management |
 | `app/services/turn_contract.py` | `make_turn_system_prompt()`, `build_turn_prompt()`, `parse_turn_contract()` — soul turn prompt construction and JSON contract parsing |
 | `app/services/intention_state.py` | `normalize_intentions_stack()`, `format_intentions_for_prompt()`, `upsert_intentions_stack_entries()` — intentions normalization and prompt formatting |
@@ -77,7 +77,8 @@ from memu.prompts.memory_type import ...  # type prompts
 | Modify soul turn loop | `app/main.py` → `conversation_turn()` + `app/services/turn_contract.py` |
 | Modify diary/self-model | `app/services/diary.py` |
 | Modify conversation state | `app/services/state.py` |
-| Modify intentions | `app/services/intention_state.py` |
+| Modify turn intentions (working stack) | `app/services/intention_state.py` — reads/writes `intentions_active` JSON in conversation state |
+| Modify life goals (long-term) | `app/services/diary.py` — `intentions_life_goals` DB table, managed exclusively by diary |
 | Modify DB schema/helpers | `app/db.py` |
 | Change config shape | `config.json` + `app/main.py` → `_load_config()` |
 | Add route group | Create `app/api/v1/{group}.py` with APIRouter, include in main.py |
