@@ -39,6 +39,8 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         'last_memorize_at': row['last_memorize_at'],
         'updated_at': row['updated_at'],
         'undo_snapshot': json_from_db(row['undo_snapshot']),
+        'all_categories_summary': row['all_categories_summary'] if 'all_categories_summary' in row.keys() else None,
+        'last_chat_x': row['last_chat_x'] if 'last_chat_x' in row.keys() else None,
     }
 
 
@@ -46,7 +48,8 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
     return con.execute(
         "SELECT conversation_id, soul_id, user_id, digest_cursor, prior_context, "
         "intentions_active, memory_cache, pending_diary_memory_ids, self_model_id, "
-        "last_retrieval_ids, last_memorize_at, updated_at, undo_snapshot "
+        "last_retrieval_ids, last_memorize_at, updated_at, undo_snapshot, "
+        "all_categories_summary, last_chat_x "
         "FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
         (conversation_id,),
     ).fetchone()
@@ -70,6 +73,8 @@ def conversation_state_empty(
         'last_retrieval_ids': None,
         'last_memorize_at': None,
         'updated_at': None,
+        'all_categories_summary': None,
+        'last_chat_x': None,
     }
 
 
@@ -147,8 +152,10 @@ INSERT OR IGNORE INTO memu_conversation_state (
     self_model_id,
     last_retrieval_ids,
     last_memorize_at,
-    updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    updated_at,
+    all_categories_summary,
+    last_chat_x
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """,
                 (
                     seed['conversation_id'],
@@ -163,6 +170,8 @@ INSERT OR IGNORE INTO memu_conversation_state (
                     json_to_db(seed.get('last_retrieval_ids')),
                     seed.get('last_memorize_at'),
                     seed.get('updated_at'),
+                    seed.get('all_categories_summary'),
+                    seed.get('last_chat_x'),
                 ),
             )
             con.commit()
@@ -183,6 +192,8 @@ INSERT OR IGNORE INTO memu_conversation_state (
                 'last_retrieval_ids',
                 'last_memorize_at',
                 'undo_snapshot',
+                'all_categories_summary',
+                'last_chat_x',
             }:
                 field_updates[key] = value
 
@@ -204,6 +215,12 @@ INSERT OR IGNORE INTO memu_conversation_state (
         if 'prior_context' in field_updates:
             raw_prior_context = field_updates.get('prior_context')
             field_updates['prior_context'] = None if raw_prior_context is None else str(raw_prior_context)
+        if 'all_categories_summary' in field_updates:
+            raw_acs = field_updates.get('all_categories_summary')
+            field_updates['all_categories_summary'] = None if raw_acs is None else (str(raw_acs) or None)
+        if 'last_chat_x' in field_updates:
+            raw_lcx = field_updates.get('last_chat_x')
+            field_updates['last_chat_x'] = None if raw_lcx is None else (str(raw_lcx).strip() or None)
         if 'intentions_active' in field_updates:
             field_updates['intentions_active'] = normalize_intentions_stack(field_updates.get('intentions_active'))
         if 'memory_cache' in field_updates:

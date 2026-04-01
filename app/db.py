@@ -145,6 +145,10 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN updated_at DATETIME")
     if "undo_snapshot" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN undo_snapshot JSON")
+    if "all_categories_summary" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN all_categories_summary TEXT")
+    if "last_chat_x" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_chat_x TEXT")
     for stmt in alters:
         try:
             con.execute(stmt)

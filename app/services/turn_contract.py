@@ -29,6 +29,7 @@ Required top-level keys:
 - annulments: array
 - inner_thought: string
 - response: string
+- chat_x: string or null
 
 Schema:
 {{
@@ -43,7 +44,8 @@ Schema:
     {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
   ],
   "inner_thought":"string",
-  "response":"string"
+  "response":"string",
+  "chat_x": "source_message_id where the current topic began, or null if unknown/new conversation" | null
 }}
 
 Rules:
@@ -58,6 +60,7 @@ Rules:
 - cache: a note to your future self — what just shifted, what you noticed, what you're holding onto. Set to null if "Your recent thoughts" already has it. Oldest entry is replaced on next write.
 - inner_thought: a private rehearsal — get your bearings after the administrative steps and find your way back to this person before you speak. Even if you're just about to say "hi", feel it first. This is never stored or shown; it exists only to ground your response.
 - response: what the user sees.
+- chat_x: the message_id from conversation history where you feel the current topic began. Set null if this is the start of a new topic or you're unsure.
 """
 
 
@@ -83,6 +86,8 @@ def _render_retrieve(result: Any) -> str:
         return "(none)"
 
     lines: list[str] = []
+    cat_text: set[str] = set()
+
     categories = result.get("categories")
     if isinstance(categories, list) and categories:
         lines.append("Categories:")
@@ -95,6 +100,7 @@ def _render_retrieve(result: Any) -> str:
                 lines.append(f"\n{name}:")
                 if summary:
                     lines.append(summary)
+                    cat_text.add(summary.lower())
 
     items = result.get("items")
     if isinstance(items, list) and items:
@@ -106,7 +112,7 @@ def _render_retrieve(result: Any) -> str:
                 continue
             memory_type = _text(item.get("memory_type") or "memory")
             summary = _text(item.get("summary"))
-            if summary:
+            if summary and summary.lower() not in cat_text:
                 lines.append(f"- [{memory_type}] {summary}")
 
     return "\n".join(lines) if lines else "(none)"
@@ -228,10 +234,12 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
         annulments.append({"intention_id": intention_id, "status": status, "note": note})
 
     inner_thought = _text(parsed.get("inner_thought"))
+    chat_x = _text(parsed.get("chat_x")) or None
     return {
         "response": response,
         "cache_entry": cache_entry,
         "intention_action": intention_action if isinstance(intention_action, dict) else {"type": "none"},
         "annulments": annulments,
         "inner_thought": inner_thought,
+        "chat_x": chat_x,
     }

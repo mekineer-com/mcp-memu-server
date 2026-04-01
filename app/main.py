@@ -64,6 +64,7 @@ from app.services.intention_state import (
     append_memory_cache_entry as _append_memory_cache_entry,
     apply_intention_action as _apply_intention_action,
     apply_intention_turn_maintenance as _apply_intention_turn_maintenance_impl,
+    format_intentions_for_prompt as _format_intentions_for_prompt,
     normalize_intentions_stack as _normalize_intentions_stack_impl,
     normalize_memory_cache as _normalize_memory_cache_impl,
     remove_intentions as _remove_intentions,
@@ -2806,6 +2807,11 @@ async def generate_diary(payload: dict[str, Any] = Body(...)):
                 conversation_id=conversation_id_ref, soul_id=soul_id_ref, user_id=uid_ref,
             )
 
+        if result.get("all_categories_summary") and conversation_id_ref:
+            _write_conversation_state(
+                conversation_id_ref, soul_id=soul_id_ref, user_id=uid_ref,
+                updates={"all_categories_summary": result["all_categories_summary"]},
+            )
         _record_call(
             "diary.generate",
             safe,
@@ -3425,7 +3431,23 @@ async def conversation_turn(
         retrieve_rag: dict[str, Any] | None = None
         _rag_ms = 0
         if prompt_override is None:
-            rag_payload = {**safe, "method": "rag", "query": message}
+            # Build soul context for retrieval
+            _soul_ctx_queries: list[dict[str, Any]] = []
+            _all_cats_summary = str(state_row.get("all_categories_summary") or "").strip()
+            if _all_cats_summary:
+                _soul_ctx_queries.append({"role": "all_categories_summary", "content": {"text": _all_cats_summary}})
+            _cache_text = "\n".join(str(e) for e in (memory_cache_before or []))
+            if _cache_text:
+                _soul_ctx_queries.append({"role": "memory_cache", "content": {"text": _cache_text}})
+            _intentions_text = _format_intentions_for_prompt(intentions_before) if intentions_before else ""
+            if _intentions_text and _intentions_text.strip() != "(none)":
+                _soul_ctx_queries.append({"role": "intentions", "content": {"text": _intentions_text}})
+            _soul_ctx_queries.append({"role": "user", "content": {"text": message}})
+            rag_payload = {**safe, "method": "rag", "queries": _soul_ctx_queries}
+            rag_retrieve_cfg = dict(rag_payload.get("retrieve_config") or {})
+            rag_retrieve_cfg["route_intention"] = True
+            rag_retrieve_cfg["sufficiency_check"] = True
+            rag_payload["retrieve_config"] = rag_retrieve_cfg
             _rag_t0 = time.monotonic()
             rag_out = await _run_retrieve(rag_payload, conversation_id=cid, persist_llm_state=False)
             _rag_ms = int((time.monotonic() - _rag_t0) * 1000)
@@ -3467,6 +3489,7 @@ async def conversation_turn(
         intention_action = turn_contract.get("intention_action")
         annulments = turn_contract.get("annulments") if isinstance(turn_contract.get("annulments"), list) else []
         annulment_ids = [str(row.get("intention_id") or "").strip() for row in annulments if isinstance(row, dict)]
+        chat_x = str(turn_contract.get("chat_x") or "").strip() or None
 
         state_out = state_row
         state_path = db_path
@@ -3507,6 +3530,7 @@ async def conversation_turn(
                     updates={
                         "intentions_active": intentions_after,
                         "memory_cache": memory_cache_after,
+                        "last_chat_x": chat_x,
                         "undo_snapshot": {
                             "memory_cache": fresh_cache,
                             "intentions_active": fresh_intentions,

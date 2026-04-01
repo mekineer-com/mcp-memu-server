@@ -694,7 +694,29 @@ async def generate_diary(
 ) -> dict[str, Any]:
     inputs = gather_diary_inputs(deps, conversation_id=conversation_id, soul_id=soul_id, user_id=user_id)
     llm_results = await run_diary_llm(svc, deps, inputs=inputs)
-    return write_diary_outputs(
+    result = write_diary_outputs(
         deps, svc, inputs=inputs, llm_results=llm_results,
         conversation_id=conversation_id, soul_id=soul_id, user_id=user_id,
     )
+    # Generate all-categories-summary
+    try:
+        where = {}
+        if soul_id:
+            where["soul_id"] = soul_id
+        if user_id:
+            where["user_id"] = user_id
+        store = svc._get_database()
+        categories = store.memory_category_repo.list_categories(where)
+        if categories:
+            lines = []
+            for cat in categories.values():
+                name = str(getattr(cat, "name", "") or "").strip()
+                summary = str(getattr(cat, "summary", "") or "").strip()
+                if name and summary:
+                    lines.append(f"{name}: {summary}")
+            result["all_categories_summary"] = "\n".join(lines) if lines else None
+        else:
+            result["all_categories_summary"] = None
+    except Exception:
+        result["all_categories_summary"] = None
+    return result
