@@ -1237,24 +1237,6 @@ def _normalize_trait_invariants(value: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _normalize_int_list(value: Any) -> list[int]:
-    parsed = _json_from_db(value)
-    if not isinstance(parsed, list):
-        return []
-    out: list[int] = []
-    seen: set[int] = set()
-    for item in parsed:
-        try:
-            candidate = int(item)
-        except (TypeError, ValueError):
-            continue
-        if candidate < 0 or candidate in seen:
-            continue
-        seen.add(candidate)
-        out.append(candidate)
-    return out
-
-
 def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return _conversation_state_from_row_impl(row)
 
@@ -2340,11 +2322,64 @@ def _make_diary_deps() -> DiaryDeps:
         find_chat_dir_for_conversation=_find_chat_dir_for_conversation,
         read_list=_read_list,
         normalize_text_list=_normalize_text_list,
-        normalize_int_list=_normalize_int_list,
         normalize_trait_invariants=_normalize_trait_invariants,
         normalize_trait_strength=_normalize_trait_strength,
         json_to_db=_json_to_db,
     )
+
+
+async def _run_diary_pipeline_once(
+    *,
+    svc: Any,
+    deps: DiaryDeps,
+    diary_lock: asyncio.Lock,
+    conversation_id: str,
+    soul_id: str,
+    user_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    async with diary_lock:
+        diary_inputs = _gather_diary_inputs(
+            deps,
+            conversation_id=conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+        )
+    diary_llm = await _run_diary_llm(svc, deps, inputs=diary_inputs)
+    async with diary_lock:
+        result = _write_diary_outputs(
+            deps,
+            svc,
+            inputs=diary_inputs,
+            llm_results=diary_llm,
+            conversation_id=conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+        )
+    return result, diary_inputs
+
+
+async def _restore_pending_diary_episode_ids(
+    *,
+    diary_lock: asyncio.Lock,
+    conversation_id: str,
+    soul_id: str,
+    user_id: str,
+    diary_inputs: dict[str, Any] | None,
+    log_failure: bool = False,
+) -> None:
+    if diary_inputs is None:
+        return
+    try:
+        async with diary_lock:
+            _write_conversation_state(
+                conversation_id,
+                soul_id=soul_id,
+                user_id=user_id,
+                updates={"append_pending_diary_episode_ids": diary_inputs["pending_diary_episode_ids"]},
+            )
+    except Exception:
+        if log_failure:
+            logger.exception("diary: failed to restore pending_diary_episode_ids after failure")
 
 
 async def _run_diary_task(
@@ -2357,16 +2392,16 @@ async def _run_diary_task(
     """Run diary as a background task with two-phase lock (gather + write separate from LLM)."""
     deps = _make_diary_deps()
     diary_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
-    inputs: dict[str, Any] | None = None
+    diary_inputs: dict[str, Any] | None = None
     try:
-        async with diary_lock:
-            inputs = _gather_diary_inputs(deps, conversation_id=conversation_id, soul_id=soul_id, user_id=uid)
-        llm_results = await _run_diary_llm(svc, deps, inputs=inputs)
-        async with diary_lock:
-            result = _write_diary_outputs(
-                deps, svc, inputs=inputs, llm_results=llm_results,
-                conversation_id=conversation_id, soul_id=soul_id, user_id=uid,
-            )
+        result, diary_inputs = await _run_diary_pipeline_once(
+            svc=svc,
+            deps=deps,
+            diary_lock=diary_lock,
+            conversation_id=conversation_id,
+            soul_id=soul_id,
+            user_id=uid,
+        )
         logger.info(
             "diary auto-generated after memorize: memory_id=%s, intentions=%d",
             result.get("memory_id"),
@@ -2374,15 +2409,14 @@ async def _run_diary_task(
         )
     except Exception:
         logger.exception("diary auto-generation failed after memorize (non-fatal)")
-        if inputs is not None:
-            try:
-                async with diary_lock:
-                    _write_conversation_state(
-                        conversation_id, soul_id=soul_id, user_id=uid,
-                        updates={"append_pending_diary_episode_ids": inputs["pending_diary_episode_ids"]},
-                    )
-            except Exception:
-                logger.exception("diary: failed to restore pending_diary_episode_ids after failure")
+        await _restore_pending_diary_episode_ids(
+            diary_lock=diary_lock,
+            conversation_id=conversation_id,
+            soul_id=soul_id,
+            user_id=uid,
+            diary_inputs=diary_inputs,
+            log_failure=True,
+        )
 
 
 async def _run_memorize_batches(
@@ -2408,7 +2442,7 @@ async def _run_memorize_batches(
     sleep_stats: Any,
 ) -> None:
     async with _get_memorize_lock(_memorize_lock_key(uid, soul_id)):
-        batch_results: list[dict[str, Any]] = []
+        has_batch_results = False
         pending_diary_episode_ids: list[str] = []
         processed_end_cursor = processed_cursor
         for batch_url, batch_conv, batch_end in memorize_batches:
@@ -2420,7 +2454,7 @@ async def _run_memorize_batches(
                 local_path=batch_url,
             )
             if isinstance(batch_result, dict):
-                batch_results.append(batch_result)
+                has_batch_results = True
                 pending_diary_episode_ids.extend(
                     _normalize_text_list(batch_result.get("pending_diary_episode_ids"))
                 )
@@ -2433,7 +2467,7 @@ async def _run_memorize_batches(
                         updates={"digest_cursor": processed_end_cursor},
                     )
 
-        if conversation_id and batch_results:
+        if conversation_id and has_batch_results:
             try:
                 _write_conversation_state(
                     conversation_id,
@@ -2788,16 +2822,14 @@ async def generate_diary(payload: dict[str, Any] = Body(...)):
 
         deps = _make_diary_deps()
         diary_lock = _get_memorize_lock(_memorize_lock_key(uid_ref, soul_id_ref))
-        async with diary_lock:
-            diary_inputs = _gather_diary_inputs(
-                deps, conversation_id=conversation_id_ref, soul_id=soul_id_ref, user_id=uid_ref,
-            )
-        diary_llm = await _run_diary_llm(svc, deps, inputs=diary_inputs)
-        async with diary_lock:
-            result = _write_diary_outputs(
-                deps, svc, inputs=diary_inputs, llm_results=diary_llm,
-                conversation_id=conversation_id_ref, soul_id=soul_id_ref, user_id=uid_ref,
-            )
+        result, diary_inputs = await _run_diary_pipeline_once(
+            svc=svc,
+            deps=deps,
+            diary_lock=diary_lock,
+            conversation_id=conversation_id_ref,
+            soul_id=soul_id_ref,
+            user_id=uid_ref,
+        )
 
         _record_call(
             "diary.generate",
@@ -2811,15 +2843,14 @@ async def generate_diary(payload: dict[str, Any] = Body(...)):
         )
         return {"ok": True, "result": result}
     except Exception as exc:
-        if diary_inputs is not None and diary_lock is not None:
-            try:
-                async with diary_lock:
-                    _write_conversation_state(
-                        conversation_id_ref, soul_id=soul_id_ref, user_id=uid_ref,
-                        updates={"append_pending_diary_episode_ids": diary_inputs["pending_diary_episode_ids"]},
-                    )
-            except Exception:
-                pass
+        if diary_lock is not None:
+            await _restore_pending_diary_episode_ids(
+                diary_lock=diary_lock,
+                conversation_id=conversation_id_ref,
+                soul_id=soul_id_ref,
+                user_id=uid_ref,
+                diary_inputs=diary_inputs,
+            )
         if isinstance(exc, HTTPException):
             _record_call("diary.generate", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException")
             raise

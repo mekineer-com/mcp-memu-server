@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import sqlite3
 import uuid
@@ -39,7 +38,6 @@ class DiaryDeps:
     find_chat_dir_for_conversation: Callable[[Path, str, str, str], Path | None]
     read_list: Callable[[Path], list[dict[str, Any]]]
     normalize_text_list: Callable[[Any], list[str]]
-    normalize_int_list: Callable[[Any], list[int]]
     normalize_trait_invariants: Callable[[Any], list[dict[str, Any]]]
     normalize_trait_strength: Callable[[Any], float]
     json_to_db: Callable[[Any], str | None]
@@ -59,17 +57,6 @@ def _format_messages_for_diary(messages: list[dict[str, Any]], message_indices: 
             continue
         lines.append(f"[{idx}] [{speaker}]: {content}")
     return "\n".join(lines)
-
-
-def _expand_message_indices(indices: list[int], total: int, *, before: int = 1, after: int = 1) -> list[int]:
-    if total <= 0:
-        return []
-    out: set[int] = set()
-    upper = total - 1
-    for idx in indices:
-        for candidate in range(max(0, idx - before), min(upper, idx + after) + 1):
-            out.add(candidate)
-    return sorted(out)
 
 
 def _format_categories_for_diary(rows: Sequence[sqlite3.Row]) -> str:
@@ -283,23 +270,6 @@ def _format_self_model_for_prompt(
     return "\n".join(lines)
 
 
-def _write_conversation_state_local(
-    con: sqlite3.Connection,
-    *,
-    deps: DiaryDeps,
-    conversation_id: str,
-    self_model_id: str,
-) -> dict[str, Any]:
-    # Diary owns only self_model_id. pending_diary_episode_ids is cleared in gather phase.
-    now = datetime.now(UTC).isoformat()
-    con.execute(
-        "UPDATE memu_conversation_state SET self_model_id = ?, updated_at = ? WHERE conversation_id = ?",
-        (str(self_model_id).strip() or None, now, conversation_id),
-    )
-    state_out = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id))
-    return state_out or {}
-
-
 def gather_diary_inputs(
     deps: DiaryDeps,
     *,
@@ -339,7 +309,7 @@ def gather_diary_inputs(
         placeholders = ",".join("?" for _ in pending_diary_episode_ids)
         memory_rows_raw = con.execute(
             f"""
-SELECT id, memory_type, summary, source_role, confidence, source_message_ids, episode_id, reflection_salience
+SELECT id, memory_type, summary, source_role, confidence, episode_id, reflection_salience
 FROM memu_memory_items
 WHERE episode_id IN ({placeholders})
 ORDER BY updated_at DESC, created_at DESC, id DESC
@@ -442,7 +412,6 @@ LIMIT 1
         run_hash = hashlib.sha1("|".join(sorted(pending_diary_episode_ids)).encode()).hexdigest()[:12]
         return {
             "db_path": db_path,
-            "state": state,
             "pending_diary_episode_ids": pending_diary_episode_ids,
             "memory_rows": memory_rows,
             "current_self_model": current_self_model,
@@ -733,30 +702,22 @@ INSERT INTO intentions_life_goals (
                 }
             )
 
-        updated_state = _write_conversation_state_local(
-            con, deps=deps, conversation_id=conversation_id, self_model_id=self_model_id,
-        )
+        assignments = ["self_model_id = ?", "all_categories_summary = ?", "updated_at = ?"]
+        params: list[Any] = [str(self_model_id).strip() or None, all_categories_summary, datetime.now(UTC).isoformat()]
         if intention_ids:
             current_state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id)) or {}
             merged_intentions_active = upsert_intentions_stack_entries(
                 normalize_intentions_stack(current_state.get("intentions_active")),
                 intention_stack_entries,
             )
-            con.execute(
-                "UPDATE memu_conversation_state SET intentions_active = ?, updated_at = ? WHERE conversation_id = ?",
-                (deps.json_to_db(merged_intentions_active), datetime.now(UTC).isoformat(), conversation_id),
-            )
-            refreshed_state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id))
-            if refreshed_state is not None:
-                updated_state = refreshed_state
+            assignments.insert(2, "intentions_active = ?")
+            params.insert(2, deps.json_to_db(merged_intentions_active))
         con.execute(
-            "UPDATE memu_conversation_state SET all_categories_summary = ?, updated_at = ? WHERE conversation_id = ?",
-            (all_categories_summary, datetime.now(UTC).isoformat(), conversation_id),
+            f"UPDATE memu_conversation_state SET {', '.join(assignments)} WHERE conversation_id = ?",
+            (*params, conversation_id),
         )
-        refreshed_state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id))
-        if refreshed_state is not None:
-            updated_state = refreshed_state
         con.commit()
+        updated_state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id)) or {}
         result = {
             "conversation_id": conversation_id,
             "memory_id": diary_item.id,
