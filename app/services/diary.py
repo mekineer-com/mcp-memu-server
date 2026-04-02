@@ -363,10 +363,13 @@ LIMIT 1
             soul_id=soul_id,
             user_id=user_id,
         )
-        current_self_model: dict[str, Any] | None = (
-            {k: current_self_model_row[k] for k in current_self_model_row.keys()}
-            if current_self_model_row is not None else None
-        )
+        current_self_model: dict[str, Any] | None = None
+        if current_self_model_row is not None:
+            current_self_model = {
+                "id": current_self_model_row["id"],
+                "trait_invariants": current_self_model_row["trait_invariants"],
+                "narrative_self": current_self_model_row["narrative_self"],
+            }
         life_goal_rows = con.execute(
             "SELECT id, description FROM intentions_life_goals WHERE soul_id = ? AND user_id = ? AND status = 'active' AND source = 'life_goal' ORDER BY updated_at ASC",
             (soul_id, user_id),
@@ -409,11 +412,12 @@ LIMIT 1
         )
         con.commit()
 
+        memory_ids = [str(row["id"]) for row in memory_rows if "id" in row]
         run_hash = hashlib.sha1("|".join(sorted(pending_diary_episode_ids)).encode()).hexdigest()[:12]
         return {
             "db_path": db_path,
             "pending_diary_episode_ids": pending_diary_episode_ids,
-            "memory_rows": memory_rows,
+            "memory_ids": memory_ids,
             "current_self_model": current_self_model,
             "existing_life_goals": existing_life_goals,
             "existing_self_model_text": existing_self_model_text,
@@ -482,7 +486,11 @@ async def run_diary_llm(
         dropped_goal_embeddings = []
 
     return {
-        "diary_data": diary_data,
+        "diary_data": {
+            "affective_tags": diary_data.get("affective_tags"),
+            "unresolved": diary_data.get("unresolved"),
+            "intentions": diary_data.get("intentions") or [],
+        },
         "prose": prose,
         "companion_memory": companion_memory,
         "diary_embedding": diary_embedding,
@@ -505,7 +513,7 @@ def write_diary_outputs(
     """Phase 3: write diary item, self_model, intentions, update state.
     Caller must hold the memorize lock."""
     db_path: Path = inputs["db_path"]
-    memory_rows: list[dict[str, Any]] = inputs["memory_rows"]
+    memory_ids: list[str] = [str(x) for x in (inputs.get("memory_ids") or []) if str(x).strip()]
     current_self_model: dict[str, Any] | None = inputs.get("current_self_model")
     existing_life_goals = inputs.get("existing_life_goals") or []
 
@@ -601,7 +609,7 @@ def write_diary_outputs(
         if current_self_model is not None and "id" in current_self_model
         else str(uuid.uuid4())
     )
-    related_memory_ids = [str(row["id"]) for row in memory_rows if "id" in row]
+    related_memory_ids = memory_ids
     now_iso = datetime.now(UTC).isoformat()
     dropped_goal_memories: list[tuple[str, list[float]]] = []
 
