@@ -994,8 +994,7 @@ def _pick_str(payload: dict[str, Any], *keys: str) -> str | None:
 def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
     user_id = _pick_str(payload, "user_id")
     soul_id = _pick_str(payload, "soul_id")
-    soul_name = _pick_str(payload, "soul_name", "character_name", "character")
-    session_id = _pick_str(payload, "session_id", "session_date")
+    session_id = _pick_str(payload, "session_id")
 
     # SillyTavern local plugin sends scope primarily under payload.user.
     user_obj = payload.get("user")
@@ -1004,14 +1003,8 @@ def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
             user_id = _pick_str(user_obj, "user_id")
         if not soul_id:
             soul_id = _pick_str(user_obj, "soul_id")
-        if not soul_name:
-            soul_name = _pick_str(user_obj, "soul_name", "character_name", "character")
         if not session_id:
-            session_id = _pick_str(user_obj, "session_id", "session_date")
-
-    # Final fallback: use character/soul name when explicit IDs are absent.
-    if not soul_id and soul_name:
-        soul_id = soul_name
+            session_id = _pick_str(user_obj, "session_id")
 
     scope: dict[str, Any] = {}
     if user_id:
@@ -1036,13 +1029,12 @@ def _canonicalize_scope_where(where: Mapping[str, Any] | None) -> dict[str, Any]
     out = dict(where)
     user_id = _pick_str(out, "user_id")
     soul_id = _pick_str(out, "soul_id")
-    session_id = _pick_str(out, "session_id", "session_date")
+    session_id = _pick_str(out, "session_id")
 
     for key in (
         "user_id",
         "soul_id",
         "session_id",
-        "session_date",
         "conversation_id",
     ):
         out.pop(key, None)
@@ -1059,14 +1051,14 @@ def _canonicalize_scope_where(where: Mapping[str, Any] | None) -> dict[str, Any]
 def _extract_conversation_id(payload: dict[str, Any]) -> str | None:
     conversation_id = _pick_str(payload, "conversation_id")
     if not conversation_id:
-        conversation_id = _pick_str(payload, "session_id", "session_date")
+        conversation_id = _pick_str(payload, "session_id")
 
     user_obj = payload.get("user")
     if isinstance(user_obj, dict):
         if not conversation_id:
             conversation_id = _pick_str(user_obj, "conversation_id")
         if not conversation_id:
-            conversation_id = _pick_str(user_obj, "session_id", "session_date")
+            conversation_id = _pick_str(user_obj, "session_id")
     return conversation_id
 
 
@@ -1490,8 +1482,8 @@ def _normalize_turn_history(value: Any) -> list[dict[str, str]]:
     for item in value:
         if not isinstance(item, dict):
             continue
-        role = _pick_str(item, "role", "name") or "unknown"
-        content = _pick_str(item, "content", "text", "message")
+        role = _pick_str(item, "role") or "unknown"
+        content = _pick_str(item, "content")
         if not content:
             continue
         out.append({"role": role, "content": content})
@@ -1610,7 +1602,7 @@ async def _persist_annulment_memories(
 
 def _merge_memorize_batch_results(
     batch_results: list[dict[str, Any]],
-    pending_diary_memory_ids: list[str] | None = None,
+    pending_diary_episode_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     def _merge_record_list(values: list[Any], *, id_keys: tuple[str, ...] = ("id",)) -> list[Any]:
         out: list[Any] = []
@@ -1659,7 +1651,7 @@ def _merge_memorize_batch_results(
         "items": _merge_record_list(flat_items),
         "categories": _merge_record_list(flat_categories, id_keys=("id", "name")),
         "relations": _merge_record_list(flat_relations, id_keys=("item_id", "category_id")),
-        "pending_diary_memory_ids": list(dict.fromkeys(_normalize_text_list(pending_diary_memory_ids))),
+        "pending_diary_episode_ids": list(dict.fromkeys(_normalize_text_list(pending_diary_episode_ids))),
     }
     merged_resources = _merge_record_list(flat_resources, id_keys=("id", "url", "local_path"))
     if len(merged_resources) == 1:
@@ -2034,7 +2026,7 @@ async def diag_sqlite_recent(
             "prior_context",
             "intentions_active",
             "memory_cache",
-            "pending_diary_memory_ids",
+            "pending_diary_episode_ids",
             "self_model_id",
             "last_memorize_at",
             "affective_tags",
@@ -2387,10 +2379,10 @@ async def _run_diary_task(
                 async with diary_lock:
                     _write_conversation_state(
                         conversation_id, soul_id=soul_id, user_id=uid,
-                        updates={"append_pending_diary_memory_ids": inputs["pending_diary_memory_ids"]},
+                        updates={"append_pending_diary_episode_ids": inputs["pending_diary_episode_ids"]},
                     )
             except Exception:
-                logger.exception("diary: failed to restore pending_diary_memory_ids after failure")
+                logger.exception("diary: failed to restore pending_diary_episode_ids after failure")
 
 
 async def _run_memorize_batches(
@@ -2417,7 +2409,7 @@ async def _run_memorize_batches(
 ) -> None:
     async with _get_memorize_lock(_memorize_lock_key(uid, soul_id)):
         batch_results: list[dict[str, Any]] = []
-        pending_diary_memory_ids: list[str] = []
+        pending_diary_episode_ids: list[str] = []
         processed_end_cursor = processed_cursor
         for batch_url, batch_conv, batch_end in memorize_batches:
             batch_result = await svc.memorize(
@@ -2429,8 +2421,8 @@ async def _run_memorize_batches(
             )
             if isinstance(batch_result, dict):
                 batch_results.append(batch_result)
-                pending_diary_memory_ids.extend(
-                    _normalize_text_list(batch_result.get("pending_diary_memory_ids"))
+                pending_diary_episode_ids.extend(
+                    _normalize_text_list(batch_result.get("pending_diary_episode_ids"))
                 )
                 processed_end_cursor = max(processed_end_cursor, batch_end)
                 if conversation_id:
@@ -2450,18 +2442,18 @@ async def _run_memorize_batches(
                     updates={
                         "digest_cursor": max(0, processed_end_cursor),
                         "last_memorize_at": datetime.now(UTC).isoformat(),
-                        "append_pending_diary_memory_ids": pending_diary_memory_ids,
+                        "append_pending_diary_episode_ids": pending_diary_episode_ids,
                     },
                 )
             except Exception:
                 logger.exception(
                     "state write failed after memorize; %d diary IDs orphaned: %s",
-                    len(pending_diary_memory_ids),
-                    pending_diary_memory_ids[:5],
+                    len(pending_diary_episode_ids),
+                    pending_diary_episode_ids[:5],
                 )
 
         # Auto-trigger diary generation in background (releases memorize lock before LLM calls)
-        if conversation_id and pending_diary_memory_ids:
+        if conversation_id and pending_diary_episode_ids:
             asyncio.create_task(
                 _run_diary_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid)
             )
@@ -2537,7 +2529,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         async with _get_memorize_lock(_memorize_lock_key(uid, soul_id)):
             storage_dir = _get_storage_dir(_CONFIG)
             chats_dir = (storage_dir / "st_chats").resolve()
-            chat_file = _pick_str(safe, "chat_file_name", "chat_filename")
+            chat_file = _pick_str(safe, "chat_file_name")
             resource_url_in = _pick_str(safe, "resource_url")
             chat_dir, chat_key, chat_key_source = _resolve_chat_storage_dir(
                 chats_dir,
@@ -2824,7 +2816,7 @@ async def generate_diary(payload: dict[str, Any] = Body(...)):
                 async with diary_lock:
                     _write_conversation_state(
                         conversation_id_ref, soul_id=soul_id_ref, user_id=uid_ref,
-                        updates={"append_pending_diary_memory_ids": diary_inputs["pending_diary_memory_ids"]},
+                        updates={"append_pending_diary_episode_ids": diary_inputs["pending_diary_episode_ids"]},
                     )
             except Exception:
                 pass
@@ -3110,8 +3102,8 @@ async def patch_conversation_state(
     if "memory_cache" in body:
         updates["memory_cache"] = body.get("memory_cache")
 
-    if "pending_diary_memory_ids" in body:
-        updates["pending_diary_memory_ids"] = body.get("pending_diary_memory_ids")
+    if "pending_diary_episode_ids" in body:
+        updates["pending_diary_episode_ids"] = body.get("pending_diary_episode_ids")
 
     if "self_model_id" in body:
         updates["self_model_id"] = body.get("self_model_id")
@@ -3253,7 +3245,7 @@ async def conversation_retrieve(
                 )
                 soul_card = soul_card or (str(safe.get("soul_card") or "").strip() or None)
 
-                message = _pick_str(safe, "message", "query", "text") or ""
+                message = _pick_str(safe, "message") or ""
                 history = _normalize_turn_history(safe.get("history"))
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
@@ -3570,7 +3562,6 @@ async def conversation_turn(
             "response": _response_str,
             "apimw": apimw_status,
             "prompt_override_used": prompt_override is not None,
-            "final_turn_prompt": turn_user_prompt,
             "final_turn_payload": {
                 "system_prompt": turn_system_prompt,
                 "user_prompt": turn_user_prompt,
@@ -3588,8 +3579,6 @@ async def conversation_turn(
             out["path"] = str(state_path) if state_path is not None else None
             out["annulment_memory_ids"] = annulment_memory_ids
             out["turn_contract"] = turn_contract
-            out["turn_user_prompt"] = turn_user_prompt
-            out["turn_system_prompt"] = turn_system_prompt
             out["dry_run"] = dry_run
 
         _record_call(

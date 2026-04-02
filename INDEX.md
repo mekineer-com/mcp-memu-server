@@ -51,7 +51,7 @@ mcp-memu-server/
 |--------|---------|
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
 | `app/services/diary.py` | Three-phase diary pipeline: `gather_diary_inputs()` (DB reads, life goals fetch) → `run_diary_llm()` (async LLM; no DB) → `write_diary_outputs()` (holds memorize lock; writes diary, self-model, intentions, all_categories_summary, life goals). `generate_diary()` wrapper deleted — both entry points call the three phases directly. |
-| `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, `pending_diary_memory_ids` queue management |
+| `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, `pending_diary_episode_ids` queue management |
 | `app/services/turn_contract.py` | `make_turn_system_prompt()`, `build_turn_prompt()`, `parse_turn_contract()` — soul turn prompt construction and JSON contract parsing |
 | `app/services/intention_state.py` | `normalize_intentions_stack()`, `format_intentions_for_prompt()`, `upsert_intentions_stack_entries()` — intentions normalization and prompt formatting |
 

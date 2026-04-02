@@ -290,7 +290,7 @@ def _write_conversation_state_local(
     conversation_id: str,
     self_model_id: str,
 ) -> dict[str, Any]:
-    # Diary owns only self_model_id. pending_diary_memory_ids is cleared in gather phase.
+    # Diary owns only self_model_id. pending_diary_episode_ids is cleared in gather phase.
     now = datetime.now(UTC).isoformat()
     con.execute(
         "UPDATE memu_conversation_state SET self_model_id = ?, updated_at = ? WHERE conversation_id = ?",
@@ -307,7 +307,7 @@ def gather_diary_inputs(
     soul_id: str,
     user_id: str,
 ) -> dict[str, Any]:
-    """Phase 1: read all diary inputs; clear pending_diary_memory_ids immediately.
+    """Phase 1: read all diary inputs; clear pending_diary_episode_ids immediately.
     Returns plain-Python dict. Caller must hold the memorize lock."""
     db_path = deps.sqlite_current_path(user_id, soul_id)
     if db_path is None:
@@ -326,9 +326,9 @@ def gather_diary_inputs(
         if state is None:
             raise HTTPException(status_code=404, detail="conversation state not found")
 
-        pending_diary_memory_ids = deps.normalize_text_list(state.get("pending_diary_memory_ids"))
-        if not pending_diary_memory_ids:
-            raise HTTPException(status_code=400, detail="no diary-worthy memories queued")
+        pending_diary_episode_ids = deps.normalize_text_list(state.get("pending_diary_episode_ids"))
+        if not pending_diary_episode_ids:
+            raise HTTPException(status_code=400, detail="no diary-worthy episodes queued")
 
         storage_dir = deps.get_storage_dir(deps.config)
         chats_dir = (storage_dir / "st_chats").resolve()
@@ -336,24 +336,19 @@ def gather_diary_inputs(
         if chat_dir is None:
             raise HTTPException(status_code=404, detail="conversation resource not found")
 
-        placeholders = ",".join("?" for _ in pending_diary_memory_ids)
+        placeholders = ",".join("?" for _ in pending_diary_episode_ids)
         memory_rows_raw = con.execute(
             f"""
 SELECT id, memory_type, summary, source_role, confidence, source_message_ids, episode_id, reflection_salience
 FROM memu_memory_items
-WHERE id IN ({placeholders})
+WHERE episode_id IN ({placeholders})
 ORDER BY updated_at DESC, created_at DESC, id DESC
 """,
-            tuple(pending_diary_memory_ids),
+            tuple(pending_diary_episode_ids),
         ).fetchall()
-        memory_rows_by_id = {str(row["id"]): row for row in memory_rows_raw if "id" in row.keys()}
-        memory_rows: list[dict[str, Any]] = [
-            {k: memory_rows_by_id[mid][k] for k in memory_rows_by_id[mid].keys()}
-            for mid in pending_diary_memory_ids
-            if mid in memory_rows_by_id
-        ]
+        memory_rows: list[dict[str, Any]] = [{k: row[k] for k in row.keys()} for row in memory_rows_raw]
         if not memory_rows:
-            raise HTTPException(status_code=400, detail="queued diary memories not found")
+            raise HTTPException(status_code=400, detail="queued diary episodes not found")
 
         category_rows = con.execute(
             """
@@ -367,8 +362,7 @@ ORDER BY name ASC
 
         full_messages = deps.read_list((chat_dir / "full.json").resolve())
         message_indices: list[int] = []
-        for row in memory_rows:
-            ep = row.get("episode_id")
+        for ep in pending_diary_episode_ids:
             if ep and ":" in str(ep):
                 range_part = str(ep).split(":", 1)[1]
                 if "-" in range_part:
@@ -440,16 +434,16 @@ LIMIT 1
 
         # Clear only after all inputs validated — failures before here leave IDs intact for retry.
         con.execute(
-            "UPDATE memu_conversation_state SET pending_diary_memory_ids = ?, updated_at = ? WHERE conversation_id = ?",
+            "UPDATE memu_conversation_state SET pending_diary_episode_ids = ?, updated_at = ? WHERE conversation_id = ?",
             (deps.json_to_db([]), datetime.now(UTC).isoformat(), conversation_id),
         )
         con.commit()
 
-        run_hash = hashlib.sha1("|".join(sorted(pending_diary_memory_ids)).encode()).hexdigest()[:12]
+        run_hash = hashlib.sha1("|".join(sorted(pending_diary_episode_ids)).encode()).hexdigest()[:12]
         return {
             "db_path": db_path,
             "state": state,
-            "pending_diary_memory_ids": pending_diary_memory_ids,
+            "pending_diary_episode_ids": pending_diary_episode_ids,
             "memory_rows": memory_rows,
             "current_self_model": current_self_model,
             "existing_life_goals": existing_life_goals,
@@ -768,7 +762,7 @@ INSERT INTO intentions_life_goals (
             "memory_id": diary_item.id,
             "self_model_id": self_model_id,
             "intention_ids": intention_ids,
-            "pending_diary_memory_ids_cleared": True,
+            "pending_diary_episode_ids_cleared": True,
             "all_categories_summary": all_categories_summary,
             "state": updated_state,
         }
