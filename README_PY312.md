@@ -1,29 +1,27 @@
 # Python 3.12 (Alpine) install notes
 
-memu-py 1.4.x on PyPI declares **Requires-Python >= 3.13**, so pip on Python 3.12 will refuse to install it.
-If you want to stay on Python 3.12, install memu-py from source after lowering the `requires-python` gate.
+This server is configured for Python 3.12 on Alpine.
 
-## Steps (high level)
+## Runtime rule
 
-1) Unpack memu_py-1.4.0.tar.gz
-2) Edit `memu_py-1.4.0/pyproject.toml`:
-   - change `requires-python = ">=3.13"` to `>=3.12`
-3) Build/install memu-py (maturin builds the Rust extension):
-   - `pip install -U pip maturin`
-   - `maturin develop --release`
-   If you already have a broken `.so`, delete `src/memu/_core*.so` first.
-4) Install this server without pulling deps:
-   - `pip install -e . --no-deps`
-   Then install FastAPI etc manually (or `pip install -r` if you add one).
+Use local source paths from `config.json`:
 
-## Runtime config rule (current buildfix behavior)
+- `memu.path` points to the local memu source tree
+- `storage.metadata_store.dsn` controls the database path
+- `llm.api_key` / model fields control LLM runtime
 
-After install, configure runtime in `mcp-memu-server/config.json`:
-- `llm.api_key`
-- `storage.metadata_store.dsn`
+No runtime path in this repo requires switching to a newer Python.
 
-Database runtime is config-only in this branch.
-`DATABASE_URL` / `DATABASE_*` environment variables are not used by server runtime or Alembic.
+## Quick setup
 
-## Reality check
-Upstream officially targets Python 3.13+, so this is “best-effort”.
+```sh
+python3.12 -m venv .venv --system-site-packages
+.venv/bin/python -m pip install -U pip setuptools wheel
+.venv/bin/pip install -e .
+```
+
+## Start
+
+```sh
+.venv/bin/python run.py
+```

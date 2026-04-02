@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "backend wrapper for memU"
 readme = "README.md"
 license = {file = "LICENSE"}
-requires-python = ">=3.12"
+requires-python = "==3.12.*"
 classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
 ]
@@ -12,7 +12,6 @@ classifiers = [
 dependencies = [
     # Web Framework
     "fastapi[standard]>=0.122.0",
-    "memu-py>=1.4.0",
     "fastapi-mcp>=0.4.0",
     "uvicorn[standard]>=0.35.0",
 
@@ -136,6 +135,4 @@ disallow_untyped_defs = false  # Gradually enable
 ignore_missing_imports = true
 
 [project.optional-dependencies]
-# If you're on Python 3.13+, you can install memU from PyPI normally.
-# If you're on Python 3.12 (Alpine), install memu-py from the local tarball after lowering requires-python.
-memu = ["memu-py>=1.4.0"]
+memu = []
