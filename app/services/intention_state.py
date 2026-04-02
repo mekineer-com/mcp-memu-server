@@ -409,7 +409,10 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
             for other_id, other in by_id.items():
                 if other_id == target_id:
                     continue
-                if other.get("ephemeral") is not True and _float(other.get("priority"), 0.0) >= DEFAULT_INTENTION_PRIORITY:
+                if (
+                    other.get("ephemeral") is not True
+                    and _float(other.get("priority"), 0.0) >= DEFAULT_INTENTION_PRIORITY
+                ):
                     other["priority"] = float(DEFAULT_INTENTION_PRIORITY - 0.1)
                     other["updated_at"] = now
 

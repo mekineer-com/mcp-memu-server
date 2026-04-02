@@ -126,7 +126,7 @@ def _dedupe_prior_context(prior_context: str | None, retrieve_rag: Any) -> str:
         return prior
 
     rag_summaries: set[str] = set()
-    for item in (retrieve_rag.get("items") or []):
+    for item in retrieve_rag.get("items") or []:
         if not isinstance(item, dict):
             continue
         summary = _text(item.get("summary"))
@@ -165,7 +165,7 @@ def build_turn_prompt(
 
     # Discard routing JSON artifacts written by old code (pre-715256c)
     safe_prior = prior_context
-    if safe_prior and safe_prior.strip().startswith('{'):
+    if safe_prior and safe_prior.strip().startswith("{"):
         safe_prior = None
     safe_prior = _dedupe_prior_context(safe_prior, retrieve_rag) or None
 

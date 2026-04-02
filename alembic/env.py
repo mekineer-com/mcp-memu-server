@@ -1,10 +1,10 @@
 """Alembic migration environment configuration."""
 
 import json
-from pathlib import Path
 
 # pylint: disable=no-member
 from logging.config import fileConfig
+from pathlib import Path
 
 from sqlalchemy import pool
 

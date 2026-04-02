@@ -14,12 +14,13 @@ from typing import TYPE_CHECKING, Any
 from fastapi import HTTPException
 from memu.prompts.diary import self_model_update as diary_self_model_update_prompt
 from memu.prompts.memory_type import diary as diary_memory_prompt
-from app.services.self_model_merge import _apply_tension_updates
+
 from app.services.intention_state import (
     normalize_intentions_stack,
     normalize_memory_cache,
     upsert_intentions_stack_entries,
 )
+from app.services.self_model_merge import _apply_tension_updates
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
@@ -306,16 +307,32 @@ def gather_diary_inputs(
         if chat_dir is None:
             raise HTTPException(status_code=404, detail="conversation resource not found")
 
-        placeholders = ",".join("?" for _ in pending_diary_episode_ids)
-        memory_rows_raw = con.execute(
-            f"""
-SELECT id, memory_type, summary, source_role, confidence, episode_id, reflection_salience
+        max_bind_vars = 900
+        memory_rows_raw: list[sqlite3.Row] = []
+        for start_idx in range(0, len(pending_diary_episode_ids), max_bind_vars):
+            batch_ids = pending_diary_episode_ids[start_idx : start_idx + max_bind_vars]
+            if not batch_ids:
+                continue
+            placeholders = ",".join("?" for _ in batch_ids)
+            memory_rows_raw.extend(
+                con.execute(
+                    f"""
+SELECT id, memory_type, summary, source_role, confidence, episode_id, reflection_salience, updated_at, created_at
 FROM memu_memory_items
 WHERE episode_id IN ({placeholders})
 ORDER BY updated_at DESC, created_at DESC, id DESC
 """,
-            tuple(pending_diary_episode_ids),
-        ).fetchall()
+                    tuple(batch_ids),
+                ).fetchall()
+            )
+        memory_rows_raw.sort(
+            key=lambda row: (
+                str(row["updated_at"] or ""),
+                str(row["created_at"] or ""),
+                str(row["id"] or ""),
+            ),
+            reverse=True,
+        )
         memory_rows: list[dict[str, Any]] = [{k: row[k] for k in row.keys()} for row in memory_rows_raw]
         if not memory_rows:
             raise HTTPException(status_code=400, detail="queued diary episodes not found")
@@ -529,7 +546,8 @@ def write_diary_outputs(
 
     existing_diary = (
         svc.database.memory_item_repo.list_items({"episode_id": diary_run_episode_id, "memory_type": "diary"})
-        if diary_run_episode_id else {}
+        if diary_run_episode_id
+        else {}
     )
     if existing_diary:
         diary_item = next(iter(existing_diary.values()))
@@ -548,7 +566,8 @@ def write_diary_outputs(
 
     existing_companion = (
         svc.database.memory_item_repo.list_items({"episode_id": companion_episode_id, "memory_type": "event"})
-        if companion_episode_id else {}
+        if companion_episode_id
+        else {}
     )
     if not existing_companion:
         svc.database.memory_item_repo.create_item(
@@ -624,15 +643,20 @@ def write_diary_outputs(
         if user_id:
             where["user_id"] = user_id
         categories = svc.database.memory_category_repo.list_categories(where)
-        all_categories_summary = "\n".join(
-            f"{name}: {summary}"
-            for cat in categories.values()
-            for name, summary in [(
-                str(getattr(cat, "name", "") or "").strip(),
-                str(getattr(cat, "summary", "") or "").strip(),
-            )]
-            if name and summary
-        ) or None
+        all_categories_summary = (
+            "\n".join(
+                f"{name}: {summary}"
+                for cat in categories.values()
+                for name, summary in [
+                    (
+                        str(getattr(cat, "name", "") or "").strip(),
+                        str(getattr(cat, "summary", "") or "").strip(),
+                    )
+                ]
+                if name and summary
+            )
+            or None
+        )
 
         con.execute(
             """
@@ -649,9 +673,12 @@ ON CONFLICT(id) DO UPDATE SET
     updated_at = excluded.updated_at
 """,
             (
-                self_model_id, soul_id, user_id,
+                self_model_id,
+                soul_id,
+                user_id,
                 deps.json_to_db(existing_traits),
-                narrative_self, contextual_state,
+                narrative_self,
+                contextual_state,
                 deps.json_to_db(related_memory_ids),
                 now_iso,
             ),

@@ -72,6 +72,49 @@ def _write_pidfile(cfg: dict) -> None:
     atexit.register(_cleanup)
 
 
+def _parse_pid(text: str) -> int | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    try:
+        pid = int(raw, 10)
+    except Exception:
+        return None
+    if pid <= 0:
+        return None
+    return pid
+
+
+def _is_pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+    return True
+
+
+def _enforce_single_instance(cfg: dict) -> None:
+    pf = _pidfile_path(cfg)
+    if not pf.exists():
+        return
+    existing = _parse_pid(pf.read_text(encoding="utf-8"))
+    if existing is None:
+        return
+    if existing == os.getpid():
+        return
+    if _is_pid_alive(existing):
+        print(f"mcp-memu-server already running (pid={existing}, pid_file={pf})", file=sys.stderr)
+        raise SystemExit(1)
+    try:
+        pf.unlink()
+    except Exception:
+        pass
+
+
 def _maybe_add_memu_to_syspath(cfg: dict) -> None:
     memu_obj = cfg.get("memu") if isinstance(cfg.get("memu"), dict) else {}
     memu_path = memu_obj.get("path") if isinstance(memu_obj.get("path"), str) else ""
@@ -137,6 +180,9 @@ def main() -> None:
 
     # Ensure memu import works even if memu is not installed into this venv.
     _maybe_add_memu_to_syspath(cfg)
+
+    # Single-instance guard: refuse startup if another live server owns pid_file.
+    _enforce_single_instance(cfg)
 
     # pidfile for plugin stop/restart.
     _write_pidfile(cfg)

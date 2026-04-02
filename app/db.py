@@ -96,12 +96,10 @@ CREATE TABLE IF NOT EXISTS intentions_life_goals (
     if "resolution_note" not in intention_cols:
         con.execute("ALTER TABLE intentions_life_goals ADD COLUMN resolution_note TEXT")
     con.execute(
-        "CREATE INDEX IF NOT EXISTS idx_self_model_soul_user "
-        "ON memu_self_model(soul_id, user_id, updated_at DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_self_model_soul_user ON memu_self_model(soul_id, user_id, updated_at DESC)"
     )
     con.execute(
-        "CREATE INDEX IF NOT EXISTS idx_intentions_soul_user "
-        "ON intentions_life_goals(soul_id, user_id, status)"
+        "CREATE INDEX IF NOT EXISTS idx_intentions_soul_user ON intentions_life_goals(soul_id, user_id, status)"
     )
 
 

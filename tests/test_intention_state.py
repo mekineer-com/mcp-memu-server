@@ -30,7 +30,7 @@ def test_apply_maintenance_decays_and_ephemeral_expires_next_turn():
             "items": [
                 {"id": "task-a", "text": "Task A", "priority": 8.0, "ephemeral": False},
                 {"id": "temp-b", "text": "Temp B", "priority": 9.0, "ephemeral": True, "expires_at_turn": 1},
-            ]
+            ],
         }
     )
 

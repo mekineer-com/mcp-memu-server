@@ -14,7 +14,7 @@ mcp-memu-server/
 ├── app/services/diary.py    # Diary generation, self-model update, intention creation
 ├── app/services/state.py    # Conversation state read/write/search
 ├── app/api/v1/              # Empty — routes not yet split from main.py
-├── run.py                   # Entry point: config load, sys.path setup, uvicorn start
+├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
 ├── config.json              # Runtime config (llm, storage, listen, categories, memu path)
 ├── config.example.json      # Template
 ├── tests/test_main.py       # Minimal smoke test
@@ -34,6 +34,7 @@ mcp-memu-server/
 | `/retrieve` | POST | Query memories (rag or llm method) |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt for chat path |
 | `/conversation/{id}/turn` | POST | Soul turn loop: run LLM with turn contract, persist intentions + cache |
+| `/conversation/{id}/turn/undo` | POST | Undo latest turn maintenance using `undo_snapshot` (single-step depth) |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/diary/generate` | POST | Generate diary entry from recent memories |
 | `/intentions` | GET | List intentions from `intentions_life_goals` table (long-term, diary-managed) |

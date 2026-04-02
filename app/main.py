@@ -1,6 +1,4 @@
 import asyncio
-import weakref
-from contextlib import asynccontextmanager
 import hashlib
 import json
 import logging
@@ -9,12 +7,13 @@ import os
 import re
 import signal
 import sqlite3
-import sys
 import threading
 import time
 import traceback
 import uuid
-from collections.abc import Mapping, Sequence
+import weakref
+from collections.abc import Mapping
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta, timezone
 from datetime import time as dtime
 from pathlib import Path
@@ -34,44 +33,88 @@ except Exception:  # pragma: no cover
 from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from app.db import (
-    json_from_db as _json_from_db,
-    json_to_db as _json_to_db,
-    merge_unique_text_lists as _merge_unique_text_lists,
-    normalize_text_list as _normalize_text_list,
-    sqlite_connect as _sqlite_connect,
-    sqlite_ensure_conversation_state_schema as _sqlite_ensure_conversation_state_schema,
-    sqlite_ensure_nonempty as _sqlite_ensure_nonempty,
-    sqlite_pragmas as _sqlite_pragmas,
-    sqlite_table_columns as _sqlite_table_columns,
-)
 from memu.app import MemoryService
 from pydantic import BaseModel
+
+from app.db import (
+    json_from_db as _json_from_db,
+)
+from app.db import (
+    json_to_db as _json_to_db,
+)
+from app.db import (
+    normalize_text_list as _normalize_text_list,
+)
+from app.db import (
+    sqlite_connect as _sqlite_connect,
+)
+from app.db import (
+    sqlite_ensure_conversation_state_schema as _sqlite_ensure_conversation_state_schema,
+)
+from app.db import (
+    sqlite_ensure_nonempty as _sqlite_ensure_nonempty,
+)
+from app.db import (
+    sqlite_pragmas as _sqlite_pragmas,
+)
+from app.db import (
+    sqlite_table_columns as _sqlite_table_columns,
+)
 from app.services.diary import (
     DiaryDeps,
-    gather_diary_inputs as _gather_diary_inputs,
-    run_diary_llm as _run_diary_llm,
-    write_diary_outputs as _write_diary_outputs,
 )
-from app.services.state import (
-    conversation_state_empty as _conversation_state_empty,
-    conversation_state_from_row as _conversation_state_from_row_impl,
-    conversation_state_row as _conversation_state_row,
-    find_conversation_state_across_dbs as _find_conversation_state_across_dbs_impl,
-    write_conversation_state as _write_conversation_state_impl,
+from app.services.diary import (
+    gather_diary_inputs as _gather_diary_inputs,
+)
+from app.services.diary import (
+    run_diary_llm as _run_diary_llm,
+)
+from app.services.diary import (
+    write_diary_outputs as _write_diary_outputs,
 )
 from app.services.intention_state import (
     append_memory_cache_entry as _append_memory_cache_entry,
+)
+from app.services.intention_state import (
     apply_intention_action as _apply_intention_action,
+)
+from app.services.intention_state import (
     apply_intention_turn_maintenance as _apply_intention_turn_maintenance_impl,
+)
+from app.services.intention_state import (
     format_intentions_for_prompt as _format_intentions_for_prompt,
+)
+from app.services.intention_state import (
     normalize_intentions_stack as _normalize_intentions_stack_impl,
+)
+from app.services.intention_state import (
     normalize_memory_cache as _normalize_memory_cache_impl,
+)
+from app.services.intention_state import (
     remove_intentions as _remove_intentions,
+)
+from app.services.state import (
+    conversation_state_empty as _conversation_state_empty,
+)
+from app.services.state import (
+    conversation_state_from_row as _conversation_state_from_row_impl,
+)
+from app.services.state import (
+    conversation_state_row as _conversation_state_row,
+)
+from app.services.state import (
+    find_conversation_state_across_dbs as _find_conversation_state_across_dbs_impl,
+)
+from app.services.state import (
+    write_conversation_state as _write_conversation_state_impl,
+)
+from app.services.turn_contract import (
+    build_turn_prompt as _build_turn_prompt,
 )
 from app.services.turn_contract import (
     make_turn_system_prompt as _make_turn_system_prompt,
-    build_turn_prompt as _build_turn_prompt,
+)
+from app.services.turn_contract import (
     parse_turn_contract as _parse_turn_contract,
 )
 
@@ -185,7 +228,9 @@ def _memorize_lock_key(user_id: str, soul_id: str) -> str:
         if p is not None:
             return str(p)
     except Exception:
-        logger.warning("_memorize_lock_key: path lookup failed for soul_id=%r, using fallback key", soul_id, exc_info=True)
+        logger.warning(
+            "_memorize_lock_key: path lookup failed for soul_id=%r, using fallback key", soul_id, exc_info=True
+        )
     return f"{user_id}::{soul_id}"
 
 
@@ -324,7 +369,6 @@ def _is_ephemeral_db(cfg: dict[str, Any]) -> bool:
 class STUserModel(BaseModel):
     user_id: str | None = None
     soul_id: str | None = None
-    session_id: str | None = None
 
 
 # -------------------------
@@ -601,9 +645,7 @@ def _mask_config(cfg: dict[str, Any]) -> dict[str, Any]:
 _CONFIG: dict[str, Any] = _load_config()
 
 # Minimum segment size for memorization (in approximate tokens).
-_MIN_CHUNK_TOKENS = int(
-    (_CONFIG.get("memorize") or {}).get("min_chunk_tokens", _MIN_CHUNK_TOKENS)
-)
+_MIN_CHUNK_TOKENS = int((_CONFIG.get("memorize") or {}).get("min_chunk_tokens", _MIN_CHUNK_TOKENS))
 
 # Also expose diagnostics under the MCP http_path (e.g. /mcp/diag) to avoid path confusion.
 _DIAG_PREFIX: str = str(_CONFIG.get("mcp", {}).get("http_path") or "/mcp").rstrip("/")
@@ -836,8 +878,7 @@ def _derive_service_key(payload: dict[str, Any]) -> str:
     scope = _extract_scope(payload) if isinstance(payload, dict) else {}
     user_id = str((scope or {}).get("user_id") or "").strip()
     soul_id = str((scope or {}).get("soul_id") or "").strip()
-    session_id = str((scope or {}).get("session_id") or "").strip()
-    parts = [p for p in (user_id, soul_id, session_id) if p]
+    parts = [p for p in (user_id, soul_id) if p]
     return "__".join(parts) if parts else "default"
 
 
@@ -907,9 +948,7 @@ def _get_service_from_payload(
         if fixed_cats:
             memorize_config["memory_categories"] = fixed_cats
         memorize_config["allow_dynamic_categories"] = bool(cats_cfg.get("allow_dynamic_categories", True))
-        memorize_config["dynamic_category_min_mentions"] = int(
-            cats_cfg.get("dynamic_category_min_mentions", 10) or 10
-        )
+        memorize_config["dynamic_category_min_mentions"] = int(cats_cfg.get("dynamic_category_min_mentions", 10) or 10)
         memorize_config["category_centroid_threshold"] = float(
             cats_cfg.get("category_centroid_threshold", 0.65) or 0.65
         )
@@ -941,15 +980,11 @@ def _get_service_from_payload(
         _SERVICES.pop(service_key, None)
         _SERVICE_STORAGE_FP.pop(service_key, None)
 
-    # Force STUserModel so soul_id/session_id filters are accepted.
+    # Force STUserModel so soul_id filters are accepted.
     user_config = {**(user_config if isinstance(user_config, dict) else {}), "model": STUserModel}
 
     # Small UX: disable conversation preprocess prompt unless explicitly set.
-    mpp = (
-        dict(memorize_config.get("multimodal_preprocess_prompts") or {})
-        if isinstance(memorize_config, dict)
-        else {}
-    )
+    mpp = dict(memorize_config.get("multimodal_preprocess_prompts") or {}) if isinstance(memorize_config, dict) else {}
     if "conversation" not in mpp:
         mpp["conversation"] = ""
     if isinstance(memorize_config, dict):
@@ -994,7 +1029,6 @@ def _pick_str(payload: dict[str, Any], *keys: str) -> str | None:
 def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
     user_id = _pick_str(payload, "user_id")
     soul_id = _pick_str(payload, "soul_id")
-    session_id = _pick_str(payload, "session_id")
 
     # SillyTavern local plugin sends scope primarily under payload.user.
     user_obj = payload.get("user")
@@ -1003,25 +1037,19 @@ def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
             user_id = _pick_str(user_obj, "user_id")
         if not soul_id:
             soul_id = _pick_str(user_obj, "soul_id")
-        if not session_id:
-            session_id = _pick_str(user_obj, "session_id")
 
     scope: dict[str, Any] = {}
     if user_id:
         scope["user_id"] = user_id
     if soul_id:
         scope["soul_id"] = soul_id
-    if session_id:
-        scope["session_id"] = session_id
     return scope
 
 
 def _canonicalize_scope_where(where: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """Normalize scope aliases before handing filters to memU.
 
-    memU's current ST user model accepts `user_id`, `soul_id`, and
-    `session_id`. The server accepts `soul_id` as the preferred public lexicon,
-    so payload-driven endpoints need to translate that alias at the boundary.
+    memU's current ST user model accepts `user_id` and `soul_id`.
     """
     if where is None:
         return None
@@ -1029,12 +1057,10 @@ def _canonicalize_scope_where(where: Mapping[str, Any] | None) -> dict[str, Any]
     out = dict(where)
     user_id = _pick_str(out, "user_id")
     soul_id = _pick_str(out, "soul_id")
-    session_id = _pick_str(out, "session_id")
 
     for key in (
         "user_id",
         "soul_id",
-        "session_id",
         "conversation_id",
     ):
         out.pop(key, None)
@@ -1043,22 +1069,16 @@ def _canonicalize_scope_where(where: Mapping[str, Any] | None) -> dict[str, Any]
         out["user_id"] = user_id
     if soul_id:
         out["soul_id"] = soul_id
-    if session_id:
-        out["session_id"] = session_id
     return out
 
 
 def _extract_conversation_id(payload: dict[str, Any]) -> str | None:
     conversation_id = _pick_str(payload, "conversation_id")
-    if not conversation_id:
-        conversation_id = _pick_str(payload, "session_id")
 
     user_obj = payload.get("user")
     if isinstance(user_obj, dict):
         if not conversation_id:
             conversation_id = _pick_str(user_obj, "conversation_id")
-        if not conversation_id:
-            conversation_id = _pick_str(user_obj, "session_id")
     return conversation_id
 
 
@@ -1147,7 +1167,7 @@ def _sqlite_build_scope_where(
     cols: list[str],
     user_id: str | None,
     soul_id: str | None,
-    session_id: str | None,
+    conversation_id: str | None,
 ) -> tuple[str, list[Any]]:
     where = []
     params: list[Any] = []
@@ -1158,9 +1178,9 @@ def _sqlite_build_scope_where(
         if "soul_id" in cols:
             where.append("soul_id = ?")
             params.append(soul_id)
-    if session_id and "session_id" in cols:
-        where.append("session_id = ?")
-        params.append(session_id)
+    if conversation_id and "conversation_id" in cols:
+        where.append("conversation_id = ?")
+        params.append(conversation_id)
     if not where:
         return "", params
     return " WHERE " + " AND ".join(where), params
@@ -1254,7 +1274,7 @@ def _write_conversation_state(
     user_id: str | None = None,
     updates: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Path]:
-    sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, str(_STORAGE_STATUS.get('dsn') or ''))
+    sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, str(_STORAGE_STATUS.get("dsn") or ""))
     return _write_conversation_state_impl(
         conversation_id,
         sqlite_current_path=_sqlite_current_path,
@@ -1266,7 +1286,7 @@ def _write_conversation_state(
 
 
 def _find_conversation_state_across_dbs(conversation_id: str) -> tuple[Path | None, dict[str, Any] | None]:
-    sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, str(_STORAGE_STATUS.get('dsn') or ''))
+    sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, str(_STORAGE_STATUS.get("dsn") or ""))
     return _find_conversation_state_across_dbs_impl(conversation_id, sqlite_dir)
 
 
@@ -1421,7 +1441,7 @@ def _dedupe_llm_result_against_rag(result: Any, retrieve_rag: Any | None) -> Any
         return result
 
     rag_item_sigs: set[str] = set()
-    for row in (retrieve_rag.get("items") or []):
+    for row in retrieve_rag.get("items") or []:
         sig = _item_sig(row)
         if sig:
             rag_item_sigs.add(sig)
@@ -1677,6 +1697,7 @@ async def _run_retrieve(
 
     soul_id = str((scope or {}).get("soul_id") or "").strip()
     user_id = str((scope or {}).get("user_id") or "user").strip() or "user"
+
     async def _retrieve_and_maybe_persist(state_soul_id: str | None) -> dict[str, Any]:
         _t0 = time.monotonic()
         result = await svc.retrieve(memu_queries, where=scope)
@@ -1695,7 +1716,8 @@ async def _run_retrieve(
                         f"[{str(it.get('memory_type') or 'memory').strip()}] {str(it.get('summary') or '').strip()}"
                         for it in (result.get("items") or [])[:8]
                         if isinstance(it, dict) and str(it.get("summary") or "").strip()
-                    ) or None,
+                    )
+                    or None,
                     "last_retrieval_ids": _extract_result_item_ids(result),
                 },
             )
@@ -1909,7 +1931,7 @@ async def diag_sqlite(user_id: str = "", soul_id: str = ""):
 async def diag_sqlite_counts(
     user_id: str | None = None,
     soul_id: str | None = None,
-    session_id: str | None = None,
+    conversation_id: str | None = None,
 ):
     soul_id = str(soul_id or "").strip() or None
     p = _sqlite_current_path(user_id or None, soul_id)
@@ -1932,18 +1954,18 @@ async def diag_sqlite_counts(
         out: dict[str, Any] = {
             "ok": True,
             "path": str(p),
-            "scope": {"user_id": user_id, "soul_id": soul_id, "session_id": session_id},
+            "scope": {"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
             "tables": {},
         }
         for t in allowed:
             cols = _sqlite_table_columns(con, t)
-            where, params = _sqlite_build_scope_where(cols, user_id, soul_id, session_id)
+            where, params = _sqlite_build_scope_where(cols, user_id, soul_id, conversation_id)
             total = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
             scoped = con.execute(f"SELECT COUNT(*) FROM {t}{where}", params).fetchone()[0] if where else total
             out["tables"][t] = {
                 "total": int(total),
                 "scoped": int(scoped),
-                "scope_cols": [c for c in ("user_id", "soul_id", "session_id", "conversation_id") if c in cols],
+                "scope_cols": [c for c in ("user_id", "soul_id", "conversation_id") if c in cols],
             }
         return out
     finally:
@@ -1957,7 +1979,7 @@ async def diag_sqlite_recent(
     limit: int = 20,
     user_id: str | None = None,
     soul_id: str | None = None,
-    session_id: str | None = None,
+    conversation_id: str | None = None,
 ):
     allowed = {
         "memu_resources",
@@ -1983,7 +2005,7 @@ async def diag_sqlite_recent(
         if table in {"memu_conversation_state", "memu_self_model", "intentions_life_goals"}:
             _sqlite_ensure_conversation_state_schema(con)
         cols = _sqlite_table_columns(con, table)
-        scope_where, params = _sqlite_build_scope_where(cols, user_id, soul_id, session_id)
+        scope_where, params = _sqlite_build_scope_where(cols, user_id, soul_id, conversation_id)
 
         # Avoid dumping big JSON embeddings/extras by default.
         prefer = [
@@ -1992,7 +2014,6 @@ async def diag_sqlite_recent(
             "updated_at",
             "user_id",
             "soul_id",
-            "session_id",
             "conversation_id",
             "name",
             "description",
@@ -2067,15 +2088,12 @@ async def set_config(req: Request):
         _clear_cached_services()
         return JSONResponse(content={"ok": True, "config": _mask_config(_CONFIG)})
     except HTTPException as he:
-        try:
-            _record_call(
-                "config.set", body if isinstance(body, dict) else None, ok=False, error=str(getattr(he, "detail", he))
-            )
-        except Exception:
-            pass
+        _record_call(
+            "config.set", body if isinstance(body, dict) else None, ok=False, error=str(getattr(he, "detail", he))
+        )
         raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail="Internal Server Error. Check server logs.") from exc
 
 
 @app.post("/reload", operation_id="reload")
@@ -2283,6 +2301,7 @@ def _split_indices_by_sleep(
         },
     )
 
+
 def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, conversation_id: str) -> Path | None:
     primary_dir, _chat_key, _chat_key_source = _resolve_chat_storage_dir(
         chats_dir,
@@ -2455,9 +2474,7 @@ async def _run_memorize_batches(
             )
             if isinstance(batch_result, dict):
                 has_batch_results = True
-                pending_diary_episode_ids.extend(
-                    _normalize_text_list(batch_result.get("pending_diary_episode_ids"))
-                )
+                pending_diary_episode_ids.extend(_normalize_text_list(batch_result.get("pending_diary_episode_ids")))
                 processed_end_cursor = max(processed_end_cursor, batch_end)
                 if conversation_id:
                     _write_conversation_state(
@@ -2488,9 +2505,7 @@ async def _run_memorize_batches(
 
         # Auto-trigger diary generation in background (releases memorize lock before LLM calls)
         if conversation_id and pending_diary_episode_ids:
-            asyncio.create_task(
-                _run_diary_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid)
-            )
+            asyncio.create_task(_run_diary_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid))
 
         _record_call(
             "memorize",
@@ -2763,6 +2778,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                 sleep_stats=sleep_stats if "sleep_stats" in locals() else None,
             )
             from fastapi.responses import JSONResponse
+
             return JSONResponse(
                 status_code=202,
                 content={
@@ -2778,16 +2794,13 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         raise
     except Exception as exc:
         traceback.print_exc()
-        try:
-            _record_call(
-                "memorize",
-                payload if isinstance(payload, dict) else None,
-                ok=False,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _record_call(
+            "memorize",
+            payload if isinstance(payload, dict) else None,
+            ok=False,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
 @app.post("/diary/generate", operation_id="generate_diary")
@@ -2852,7 +2865,9 @@ async def generate_diary(payload: dict[str, Any] = Body(...)):
                 diary_inputs=diary_inputs,
             )
         if isinstance(exc, HTTPException):
-            _record_call("diary.generate", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException")
+            _record_call(
+                "diary.generate", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException"
+            )
             raise
         traceback.print_exc()
         _record_call(
@@ -2861,7 +2876,7 @@ async def generate_diary(payload: dict[str, Any] = Body(...)):
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
 @app.get("/categories", operation_id="list_memory_categories")
@@ -2902,7 +2917,7 @@ async def list_memory_categories(user_id: str = "", soul_id: str = "", include_e
                 out.append(cc)
         return {"categories": out}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
 @app.post("/categories/search", operation_id="search_memory_categories")
@@ -2948,7 +2963,7 @@ async def search_memory_categories(payload: dict[str, Any]):
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
 @app.get("/souls/{soul_id}/intentions", operation_id="list_intentions")
@@ -3208,7 +3223,7 @@ async def clear_memory(payload: dict[str, Any]):
         _record_call(
             "clear", payload if isinstance(payload, dict) else None, ok=False, error=f"{type(exc).__name__}: {exc}"
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
 @app.post("/retrieve", operation_id="retrieve")
@@ -3228,27 +3243,21 @@ async def retrieve(payload: dict[str, Any]):
         )
         return out
     except HTTPException as he:
-        try:
-            _record_call(
-                "retrieve",
-                payload if isinstance(payload, dict) else None,
-                ok=False,
-                error=str(getattr(he, "detail", he)),
-            )
-        except Exception:
-            pass
+        _record_call(
+            "retrieve",
+            payload if isinstance(payload, dict) else None,
+            ok=False,
+            error=str(getattr(he, "detail", he)),
+        )
         raise
     except Exception as exc:
-        try:
-            _record_call(
-                "retrieve",
-                payload if isinstance(payload, dict) else None,
-                ok=False,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _record_call(
+            "retrieve",
+            payload if isinstance(payload, dict) else None,
+            ok=False,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
 @app.post("/conversation/{conversation_id}/retrieve", operation_id="conversation_retrieve")
@@ -3272,7 +3281,9 @@ async def conversation_retrieve(
 
             if uid and soul_id:
                 _state_row, soul_card, _db_path = _load_turn_state_and_soul_card(
-                    cid, user_id=uid, soul_id=soul_id,
+                    cid,
+                    user_id=uid,
+                    soul_id=soul_id,
                 )
                 soul_card = soul_card or (str(safe.get("soul_card") or "").strip() or None)
 
@@ -3316,7 +3327,7 @@ async def conversation_retrieve(
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
 @app.post("/conversation/{conversation_id}/turn", operation_id="conversation_turn")
@@ -3404,13 +3415,9 @@ async def conversation_turn(
                 _normalize_intentions_stack_impl(state_override_intentions)
                 if state_override_intentions is not None
                 else (
-                    _apply_intention_turn_maintenance_impl(
-                        state_row.get("intentions_active")
-                    )
+                    _apply_intention_turn_maintenance_impl(state_row.get("intentions_active"))
                     if apply_turn_maintenance
-                    else _normalize_intentions_stack_impl(
-                        state_row.get("intentions_active")
-                    )
+                    else _normalize_intentions_stack_impl(state_row.get("intentions_active"))
                 )
             )
 
@@ -3526,17 +3533,19 @@ async def conversation_turn(
                     _normalize_intentions_stack_impl(state_override_intentions)
                     if state_override_intentions is not None
                     else (
-                        _apply_intention_turn_maintenance_impl(
-                            fresh_row.get("intentions_active")
-                        )
+                        _apply_intention_turn_maintenance_impl(fresh_row.get("intentions_active"))
                         if apply_turn_maintenance
-                        else _normalize_intentions_stack_impl(
-                            fresh_row.get("intentions_active")
-                        )
+                        else _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
                     )
                 )
-                memory_cache_after = _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
-                intentions_after = _apply_intention_action(fresh_intentions, intention_action) if apply_turn_maintenance else fresh_intentions
+                memory_cache_after = (
+                    _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
+                )
+                intentions_after = (
+                    _apply_intention_action(fresh_intentions, intention_action)
+                    if apply_turn_maintenance
+                    else fresh_intentions
+                )
                 intentions_after = _remove_intentions(
                     intentions_after,
                     [item_id for item_id in annulment_ids if item_id],
@@ -3641,7 +3650,7 @@ async def conversation_turn(
             info={"conversationId": cid or None},
             error=f"{type(exc).__name__}: {exc}",
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
 @app.post("/conversation/{conversation_id}/turn/undo", operation_id="conversation_turn_undo")
@@ -3683,7 +3692,6 @@ async def conversation_turn_undo(
             },
         )
     return {"status": "restored"}
-
 
 
 # -------------------------
