@@ -51,7 +51,7 @@ mcp-memu-server/
 | Module | Purpose |
 |--------|---------|
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
-| `app/services/diary.py` | Three-phase diary pipeline: `gather_diary_inputs()` builds anchor excerpt from queued episodes (with episode/time headers), fetches context (`memory_cache`, `intentions_active`, life goals) and memory-search candidates; `run_diary_llm()` first does XML LLM ID-selection for related background memories, then writes diary/self-model prompts; `write_diary_outputs()` (lock-held) persists diary, self-model, intentions, summaries, and life-goal updates. |
+| `app/services/diary.py` | Three-phase diary pipeline: `gather_diary_inputs()` builds anchor excerpt from queued episodes (with episode/time headers) and context (`memory_cache`, `intentions_active`, life goals); `run_diary_llm()` performs one `retrieve()` call per episode anchor to gather related background memories, then writes diary/self-model prompts; `write_diary_outputs()` (lock-held) persists diary, self-model, intentions, summaries, and life-goal updates. |
 | `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, `pending_diary_episode_ids` queue management |
 | `app/services/turn_contract.py` | `make_turn_system_prompt()`, `build_turn_prompt()`, `parse_turn_contract()` — soul turn prompt construction and JSON contract parsing |
 | `app/services/intention_state.py` | `normalize_intentions_stack()`, `format_intentions_for_prompt()`, `upsert_intentions_stack_entries()` — intentions normalization and prompt formatting |

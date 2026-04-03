@@ -137,32 +137,6 @@ def _format_memory_rows_for_diary(rows: Sequence[sqlite3.Row]) -> str:
     return "\n".join(lines)
 
 
-def _format_memory_rows_for_search(rows: Sequence[dict[str, Any]]) -> str:
-    lines: list[str] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        memory_id = str(row.get("id") or "").strip()
-        summary = str(row.get("summary") or "").strip()
-        if not memory_id or not summary:
-            continue
-        memory_type = str(row.get("memory_type") or "").strip()
-        source_role = str(row.get("source_role") or "").strip()
-        episode_id = str(row.get("episode_id") or "").strip()
-        meta_parts = [part for part in (memory_type, source_role) if part]
-        if episode_id:
-            meta_parts.append(f"episode_id={episode_id}")
-        confidence = row.get("confidence")
-        reflection_salience = row.get("reflection_salience")
-        if isinstance(confidence, (int, float)):
-            meta_parts.append(f"confidence={float(confidence):.2f}")
-        if isinstance(reflection_salience, (int, float)):
-            meta_parts.append(f"reflection_salience={float(reflection_salience):.2f}")
-        meta = f" ({', '.join(meta_parts)})" if meta_parts else ""
-        lines.append(f"- id={memory_id}{meta}: {summary}")
-    return "\n".join(lines)
-
-
 def _extract_xml_fragment(raw: str, root_tag: str) -> ET.Element:
     text = str(raw or "").strip()
     match = re.search(rf"<{root_tag}>(.*)</{root_tag}>", text, re.DOTALL)
@@ -188,16 +162,6 @@ def _xml_float(text: str | None) -> float | None:
         return float(text)
     except (TypeError, ValueError):
         return None
-
-
-def _parse_related_memory_ids_xml(raw: str) -> list[str]:
-    root = _extract_xml_fragment(raw, "related_memory_ids")
-    ids: list[str] = []
-    for node in root.findall("id"):
-        text = str(node.text or "").strip()
-        if text:
-            ids.append(text)
-    return ids
 
 
 def _parse_diary_xml(raw: str) -> dict[str, Any]:
@@ -389,23 +353,6 @@ def gather_diary_inputs(
         if chat_dir is None:
             raise HTTPException(status_code=404, detail="conversation resource not found")
 
-        memory_rows_raw = con.execute(
-            """
-SELECT id, memory_type, summary, source_role, confidence, episode_id, reflection_salience, updated_at, created_at
-FROM memu_memory_items
-WHERE soul_id = ? AND user_id = ? AND summary IS NOT NULL AND TRIM(summary) != ''
-ORDER BY updated_at DESC, created_at DESC, id DESC
-LIMIT 240
-""",
-            (soul_id, user_id),
-        ).fetchall()
-        pending_episode_set = {str(ep or "").strip() for ep in pending_diary_episode_ids if str(ep or "").strip()}
-        memory_search_candidates: list[dict[str, Any]] = [
-            {k: row[k] for k in row.keys()}
-            for row in memory_rows_raw
-            if str(row["episode_id"] or "").strip() not in pending_episode_set
-        ]
-
         category_rows = con.execute(
             """
 SELECT name, summary
@@ -425,6 +372,16 @@ ORDER BY name ASC
         excerpt = _format_messages_for_diary(full_messages, episode_ranges)
         if not excerpt.strip():
             raise HTTPException(status_code=400, detail="diary source messages not found in resource")
+        episode_anchors = [
+            {
+                "episode_id": episode_id,
+                "text": _format_messages_for_diary(full_messages, [(episode_id, start_idx, end_idx)]),
+            }
+            for episode_id, start_idx, end_idx in episode_ranges
+        ]
+        episode_anchors = [row for row in episode_anchors if str(row.get("text") or "").strip()]
+        if not episode_anchors:
+            raise HTTPException(status_code=400, detail="no episode anchors for retrieval")
 
         current_self_model_row = _load_current_self_model(
             con,
@@ -486,7 +443,8 @@ ORDER BY name ASC
         return {
             "db_path": db_path,
             "pending_diary_episode_ids": pending_diary_episode_ids,
-            "memory_search_candidates": memory_search_candidates,
+            "episode_anchors": episode_anchors,
+            "retrieve_scope": {"user_id": user_id, "soul_id": soul_id},
             "current_self_model": current_self_model,
             "existing_life_goals": existing_life_goals,
             "existing_self_model_text": existing_self_model_text,
@@ -509,46 +467,32 @@ async def run_diary_llm(
     excerpt: str = inputs["excerpt"]
     existing_self_model_text: str = inputs.get("existing_self_model_text", "")
     existing_life_goals = inputs.get("existing_life_goals") or []
-    memory_search_candidates: list[dict[str, Any]] = inputs.get("memory_search_candidates") or []
+    episode_anchors: list[dict[str, Any]] = inputs["episode_anchors"]
+    retrieve_scope: dict[str, Any] = inputs["retrieve_scope"]
+    pending_episode_set = {str(ep or "").strip() for ep in inputs["pending_diary_episode_ids"]}
     related_memory_ids: list[str] = []
-    if memory_search_candidates:
-        search_pool_text = _format_memory_rows_for_search(memory_search_candidates)
-        if search_pool_text:
-            related_search_prompt = "\n\n".join(
-                [
-                    "# Task Objective",
-                    "Select background memory IDs that are relevant to the anchor episodes.",
-                    "The anchors are the source of truth. Selected memories are background context only.",
-                    "# Rules",
-                    "- Use only IDs from the candidate list.",
-                    "- Return at most 24 IDs.",
-                    "- If none are relevant, return an empty list.",
-                    "# Output Format (XML)",
-                    "<related_memory_ids>",
-                    "  <id>memory-id</id>",
-                    "</related_memory_ids>",
-                    "# Anchor Episodes",
-                    f"<anchor_episodes>\n{svc._escape_prompt_value(excerpt)}\n</anchor_episodes>",
-                    "# Candidate Memories",
-                    f"<candidate_memories>\n{svc._escape_prompt_value(search_pool_text)}\n</candidate_memories>",
-                ]
-            )
-            related_raw = await svc.chat(related_search_prompt, temperature=0.0, max_tokens=800)
-            selected_ids = _parse_related_memory_ids_xml(related_raw)
-            by_id = {str(row.get("id") or "").strip(): row for row in memory_search_candidates}
-            selected_rows: list[dict[str, Any]] = []
-            seen_ids: set[str] = set()
-            for item_id in selected_ids:
-                key = str(item_id or "").strip()
-                row = by_id.get(key)
-                if not key or row is None or key in seen_ids:
-                    continue
-                selected_rows.append(row)
-                seen_ids.add(key)
-                related_memory_ids.append(key)
-            related_block = _format_memory_rows_for_diary(selected_rows)
-            if related_block:
-                context_parts.append(f"Related background memories:\n{related_block}")
+    related_rows: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for anchor in episode_anchors:
+        retrieve_out = await svc.retrieve(
+            [{"role": "user", "content": {"text": str(anchor["text"]).strip()}}],
+            where=retrieve_scope,
+        )
+        for item in retrieve_out["items"]:
+            item_id = str(item.get("id") or "").strip()
+            if not item_id or item_id in seen_ids:
+                continue
+            if str(item.get("episode_id") or "").strip() in pending_episode_set:
+                continue
+            summary = str(item.get("summary") or "").strip()
+            if not summary:
+                continue
+            seen_ids.add(item_id)
+            related_memory_ids.append(item_id)
+            related_rows.append(item)
+    related_block = _format_memory_rows_for_diary(related_rows)
+    if related_block:
+        context_parts.append(f"Related background memories:\n{related_block}")
 
     if context_parts:
         diary_prompt = diary_memory_prompt.PROMPT_WITH_CONTEXT.format(
