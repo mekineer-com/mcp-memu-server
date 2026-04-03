@@ -52,8 +52,6 @@ class DiaryDeps:
     find_chat_dir_for_conversation: Callable[[Path, str, str, str], Path | None]
     read_list: Callable[[Path], list[dict[str, Any]]]
     normalize_text_list: Callable[[Any], list[str]]
-    normalize_trait_invariants: Callable[[Any], list[dict[str, Any]]]
-    normalize_trait_strength: Callable[[Any], float]
     json_to_db: Callable[[Any], str | None]
 
 
@@ -202,7 +200,7 @@ def _parse_diary_xml(raw: str) -> dict[str, Any]:
     }
 
 
-def _parse_self_model_update_xml(raw: str, normalize_trait_strength: Callable[[Any], float]) -> dict[str, Any]:
+def _parse_self_model_update_xml(raw: str) -> dict[str, Any]:
     root = _extract_xml_fragment(raw, "self_model_update")
     obs_root = root.find("soul_observations")
     soul_observations: list[str] = []
@@ -259,8 +257,6 @@ LIMIT 1
 
 def _format_self_model_for_prompt(
     row: sqlite3.Row | None,
-    *,
-    normalize_trait_invariants: Callable[[Any], list[dict[str, Any]]],
 ) -> str:
     if row is None:
         return ""
@@ -348,7 +344,6 @@ ORDER BY name ASC
         if current_self_model_row is not None:
             current_self_model = {
                 "id": current_self_model_row["id"],
-                "trait_invariants": current_self_model_row["trait_invariants"],
                 "narrative_self": current_self_model_row["narrative_self"],
             }
         life_goal_rows = con.execute(
@@ -376,16 +371,12 @@ ORDER BY name ASC
         intention_lines = [
             f"- {text}"
             for item in (intentions_stack.get("items") or [])
-            if isinstance(item, dict)
-            and (text := str(item.get("text") or "").strip())
+            if isinstance(item, dict) and (text := str(item.get("text") or "").strip())
         ]
         if intention_lines:
             context_parts.append(f"Current intentions:\n{'\n'.join(intention_lines)}")
 
-        existing_self_model_text = _format_self_model_for_prompt(
-            current_self_model,
-            normalize_trait_invariants=deps.normalize_trait_invariants,
-        )
+        existing_self_model_text = _format_self_model_for_prompt(current_self_model)
 
         # Clear only after all inputs validated — failures before here leave IDs intact for retry.
         con.execute(
@@ -486,7 +477,7 @@ async def run_diary_llm(
         )
 
     self_model_raw = await svc.chat(self_model_prompt, temperature=0.2, max_tokens=1200)
-    self_model_update = _parse_self_model_update_xml(self_model_raw, deps.normalize_trait_strength)
+    self_model_update = _parse_self_model_update_xml(self_model_raw)
     soul_observations: list[str] = self_model_update.get("soul_observations") or []
     if soul_observations:
         soul_observation_embeddings = await svc.embed(soul_observations, profile="embedding")
@@ -646,12 +637,11 @@ def write_diary_outputs(
         con.execute(
             """
 INSERT INTO memu_self_model (
-    id, soul_id, user_id, trait_invariants, narrative_self, contextual_state, related_memory_ids, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    id, soul_id, user_id, narrative_self, contextual_state, related_memory_ids, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     soul_id = excluded.soul_id,
     user_id = excluded.user_id,
-    trait_invariants = excluded.trait_invariants,
     narrative_self = excluded.narrative_self,
     contextual_state = excluded.contextual_state,
     related_memory_ids = excluded.related_memory_ids,
@@ -661,7 +651,6 @@ ON CONFLICT(id) DO UPDATE SET
                 self_model_id,
                 soul_id,
                 user_id,
-                deps.json_to_db([]),
                 narrative_self,
                 contextual_state,
                 deps.json_to_db(related_memory_ids),

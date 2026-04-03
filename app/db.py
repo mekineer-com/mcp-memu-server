@@ -55,7 +55,6 @@ CREATE TABLE IF NOT EXISTS memu_self_model (
     id TEXT PRIMARY KEY,
     soul_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
-    trait_invariants TEXT,
     narrative_self TEXT,
     contextual_state TEXT,
     related_memory_ids TEXT,
@@ -64,6 +63,32 @@ CREATE TABLE IF NOT EXISTS memu_self_model (
 """
     )
     cols = set(sqlite_table_columns(con, "memu_self_model"))
+    if "trait_invariants" in cols:
+        con.execute(
+            """
+CREATE TABLE memu_self_model__new (
+    id TEXT PRIMARY KEY,
+    soul_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    narrative_self TEXT,
+    contextual_state TEXT,
+    related_memory_ids TEXT,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+"""
+        )
+        con.execute(
+            """
+INSERT INTO memu_self_model__new (
+    id, soul_id, user_id, narrative_self, contextual_state, related_memory_ids, updated_at
+)
+SELECT id, soul_id, user_id, narrative_self, contextual_state, related_memory_ids, updated_at
+FROM memu_self_model
+"""
+        )
+        con.execute("DROP TABLE memu_self_model")
+        con.execute("ALTER TABLE memu_self_model__new RENAME TO memu_self_model")
+        cols = set(sqlite_table_columns(con, "memu_self_model"))
     if "related_memory_ids" not in cols:
         con.execute("ALTER TABLE memu_self_model ADD COLUMN related_memory_ids TEXT")
     tables = {

@@ -33,7 +33,7 @@ mcp-memu-server/
 | `/memorize` | POST | Extract memories from conversation text |
 | `/retrieve` | POST | Query memories (rag or llm method) |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt for chat path |
-| `/conversation/{id}/turn` | POST | Soul turn loop: run LLM with turn contract, persist intentions + cache; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self` + tendencies/tensions + contextual_state) |
+| `/conversation/{id}/turn` | POST | Soul turn loop: run LLM with turn contract, persist intentions + cache; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self` + `contextual_state`) |
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn maintenance using `undo_snapshot` (single-step depth) |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/diary/generate` | POST | Generate diary entry from recent memories |

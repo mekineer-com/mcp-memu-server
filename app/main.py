@@ -37,9 +37,6 @@ from memu.app import MemoryService
 from pydantic import BaseModel
 
 from app.db import (
-    json_from_db as _json_from_db,
-)
-from app.db import (
     json_to_db as _json_to_db,
 )
 from app.db import (
@@ -1199,64 +1196,6 @@ def _sqlite_file_info(p: Path) -> dict[str, Any]:
         return {"exists": p.exists(), "path": str(p), "error": f"{type(e).__name__}: {e}"}
 
 
-_DEFAULT_TRAIT_INVARIANT_STRENGTH = 0.3
-
-
-def _normalize_trait_strength(value: Any, default: float = _DEFAULT_TRAIT_INVARIANT_STRENGTH) -> float:
-    try:
-        strength = float(value)
-    except (TypeError, ValueError):
-        strength = default
-    if math.isnan(strength) or math.isinf(strength):
-        strength = default
-    strength = max(0.1, min(0.9, strength))
-    return round(strength, 1)
-
-
-def _normalize_trait_invariants(value: Any) -> list[dict[str, Any]]:
-    parsed = _json_from_db(value)
-    if not isinstance(parsed, list):
-        return []
-    out: list[dict[str, Any]] = []
-    seen: dict[str, int] = {}
-    for item in parsed:
-        if isinstance(item, Mapping) and item.get("type") == "tension":
-            between = str(item.get("between") or "").strip()
-            if not between:
-                continue
-            normalized = {
-                "type": "tension",
-                "between": between,
-                "root": str(item.get("root") or "").strip(),
-                "implication": str(item.get("implication") or "").strip(),
-                "strength": _normalize_trait_strength(item.get("strength")),
-            }
-            key = f"tension:{between}"
-            idx = seen.get(key)
-            if idx is None:
-                seen[key] = len(out)
-                out.append(normalized)
-            else:
-                out[idx] = normalized
-        else:
-            if isinstance(item, Mapping):
-                tendency = str(item.get("tendency") or "").strip()
-                strength = _normalize_trait_strength(item.get("strength"))
-            else:
-                tendency = str(item or "").strip()
-                strength = _DEFAULT_TRAIT_INVARIANT_STRENGTH
-            if not tendency:
-                continue
-            normalized = {"tendency": tendency, "strength": strength}
-            idx = seen.get(tendency)
-            if idx is None:
-                seen[tendency] = len(out)
-                out.append(normalized)
-            else:
-                out[idx] = normalized
-    return out
-
-
 def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return _conversation_state_from_row_impl(row)
 
@@ -1501,35 +1440,10 @@ def _load_turn_state_and_soul_card(
     def _self_model_to_soul_card(sm_row: sqlite3.Row) -> str | None:
         narrative_self = str(sm_row["narrative_self"] or "").strip()
         contextual_state = str(sm_row["contextual_state"] or "").strip()
-        trait_items = _normalize_trait_invariants(sm_row["trait_invariants"])
-        tendencies = [item for item in trait_items if item.get("type") != "tension"]
-        tensions = [item for item in trait_items if item.get("type") == "tension"]
 
         lines: list[str] = []
         if narrative_self:
             lines.append(narrative_self)
-        if tendencies:
-            lines.append("Tendencies:")
-            lines.extend(
-                f"- {str(item.get('tendency') or '').strip()} (strength: {_normalize_trait_strength(item.get('strength')):.1f})"
-                for item in tendencies
-                if str(item.get("tendency") or "").strip()
-            )
-        if tensions:
-            lines.append("Tensions:")
-            for item in tensions:
-                between = str(item.get("between") or "").strip()
-                if not between:
-                    continue
-                lines.append(
-                    f"- {between} (strength: {_normalize_trait_strength(item.get('strength')):.1f})"
-                )
-                root = str(item.get("root") or "").strip()
-                implication = str(item.get("implication") or "").strip()
-                if root:
-                    lines.append(f"  Root: {root}")
-                if implication:
-                    lines.append(f"  Implication: {implication}")
         if contextual_state:
             lines.append("Contextual state:")
             lines.append(contextual_state)
@@ -1549,12 +1463,13 @@ def _load_turn_state_and_soul_card(
             sm_row = None
             if sm_id:
                 sm_row = con.execute(
-                    "SELECT narrative_self, trait_invariants, contextual_state FROM memu_self_model WHERE id = ? LIMIT 1",
+                    "SELECT narrative_self, contextual_state FROM memu_self_model WHERE id = ? LIMIT 1",
                     (str(sm_id),),
                 ).fetchone()
             if sm_row is None:
                 sm_row = con.execute(
-                    "SELECT narrative_self, trait_invariants, contextual_state FROM memu_self_model WHERE soul_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT 1",
+                    "SELECT narrative_self, contextual_state FROM memu_self_model "
+                    "WHERE soul_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT 1",
                     (soul_id, user_id),
                 ).fetchone()
             if sm_row is not None:
@@ -2079,7 +1994,6 @@ async def diag_sqlite_recent(
             "caption",
             "item_id",
             "category_id",
-            "trait_invariants",
             "narrative_self",
             "contextual_state",
             "source",
@@ -2379,8 +2293,6 @@ def _make_diary_deps() -> DiaryDeps:
         find_chat_dir_for_conversation=_find_chat_dir_for_conversation,
         read_list=_read_list,
         normalize_text_list=_normalize_text_list,
-        normalize_trait_invariants=_normalize_trait_invariants,
-        normalize_trait_strength=_normalize_trait_strength,
         json_to_db=_json_to_db,
     )
 
