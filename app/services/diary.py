@@ -343,13 +343,18 @@ ORDER BY name ASC
                 "narrative_self": current_self_model_row["narrative_self"],
             }
         life_goal_rows = con.execute(
-            "SELECT id, description FROM intentions_life_goals WHERE soul_id = ? AND user_id = ? AND status = 'active' AND source = 'life_goal' ORDER BY updated_at ASC",
+            "SELECT id, description, status FROM intentions_life_goals WHERE soul_id = ? AND user_id = ? AND source = 'life_goal' AND status IN ('active', 'removed') ORDER BY updated_at ASC",
             (soul_id, user_id),
         ).fetchall()
         existing_life_goals = [
             {"id": str(row["id"]), "description": str(row["description"] or "").strip()}
             for row in life_goal_rows
-            if str(row["description"] or "").strip()
+            if str(row["description"] or "").strip() and row["status"] == "active"
+        ]
+        removed_life_goals = [
+            {"id": str(row["id"]), "description": str(row["description"] or "").strip()}
+            for row in life_goal_rows
+            if str(row["description"] or "").strip() and row["status"] == "removed"
         ]
 
         context_parts: list[str] = []
@@ -358,7 +363,10 @@ ORDER BY name ASC
             context_parts.append(f"Current categories:\n{category_block}")
         if existing_life_goals:
             goals_text = "\n".join(f"- {g['description']}" for g in existing_life_goals)
-            context_parts.append(f"Current life goals:\n{goals_text}")
+            context_parts.append(f"Active life goals:\n{goals_text}")
+        if removed_life_goals:
+            removed_text = "\n".join(f"- {g['description']}" for g in removed_life_goals)
+            context_parts.append(f"Removed life goals (write description in <remove> to extinguish permanently):\n{removed_text}")
         cache_entries = normalize_memory_cache(state.get("memory_cache"))
         if cache_entries:
             cache_text = "\n".join(f"- {entry}" for entry in cache_entries)
@@ -389,6 +397,7 @@ ORDER BY name ASC
             "retrieve_scope": {"user_id": user_id, "soul_id": soul_id},
             "current_self_model": current_self_model,
             "existing_life_goals": existing_life_goals,
+            "removed_life_goals": removed_life_goals,
             "existing_self_model_text": existing_self_model_text,
             "context_parts": context_parts,
             "excerpt": excerpt,
@@ -458,9 +467,14 @@ async def run_diary_llm(
 
     diary_embedding, companion_embedding = await svc.embed([prose, companion_memory], profile="embedding")
 
+    removed_life_goals = inputs.get("removed_life_goals") or []
+    goal_parts: list[str] = []
     if existing_life_goals:
-        goals_lines = "\n".join(f"- {g['description']}" for g in existing_life_goals)
-        existing_self_model_text = (existing_self_model_text + f"\n\nCurrent life goals:\n{goals_lines}").strip()
+        goal_parts.append("Active life goals:\n" + "\n".join(f"- {g['description']}" for g in existing_life_goals))
+    if removed_life_goals:
+        goal_parts.append("Removed life goals:\n" + "\n".join(f"- {g['description']}" for g in removed_life_goals))
+    if goal_parts:
+        existing_self_model_text = (existing_self_model_text + "\n\n" + "\n\n".join(goal_parts)).strip()
 
     if existing_self_model_text:
         self_model_prompt = diary_self_model_update_prompt.PROMPT_WITH_EXISTING.format(
@@ -651,20 +665,29 @@ ON CONFLICT(id) DO UPDATE SET
             ),
         )
 
-        goal_id_by_desc = {g["description"]: g["id"] for g in existing_life_goals}
-        removed_goal_ids: set[str] = set()
-        for desc, embedding in llm_results.get("dropped_goal_embeddings") or []:
-            goal_id = goal_id_by_desc.get(desc)
-            if goal_id and goal_id not in removed_goal_ids:
+        all_goal_info: dict[str, dict[str, str]] = {}
+        for g in existing_life_goals:
+            all_goal_info[g["description"]] = {"id": g["id"], "status": "active"}
+        for g in (inputs.get("removed_life_goals") or []):
+            all_goal_info[g["description"]] = {"id": g["id"], "status": "removed"}
+
+        active_life_goal_count = len(existing_life_goals)
+        for desc, embedding in (llm_results.get("dropped_goal_embeddings") or [])[:1]:
+            goal_info = all_goal_info.get(str(desc or "").strip())
+            if not goal_info:
+                continue
+            goal_id = goal_info["id"]
+            if goal_info["status"] == "active":
                 con.execute(
                     "UPDATE intentions_life_goals SET status = 'removed', updated_at = ? WHERE id = ?",
                     (now_iso, goal_id),
                 )
-                removed_goal_ids.add(goal_id)
                 dropped_goal_memories.append((str(desc), embedding))
+                active_life_goal_count -= 1
+            else:
+                con.execute("DELETE FROM intentions_life_goals WHERE id = ?", (goal_id,))
 
-        active_life_goal_count = len(existing_life_goals) - len(removed_goal_ids)
-        for desc in self_model_update.get("life_goal_add") or []:
+        for desc in (self_model_update.get("life_goal_add") or [])[:1]:
             text = str(desc or "").strip()
             if not text or active_life_goal_count >= 3:
                 continue
