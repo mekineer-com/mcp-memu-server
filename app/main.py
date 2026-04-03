@@ -1439,14 +1439,10 @@ def _load_turn_state_and_soul_card(
 ) -> tuple[dict[str, Any], str | None, Path | None]:
     def _self_model_to_soul_card(sm_row: sqlite3.Row) -> str | None:
         narrative_self = str(sm_row["narrative_self"] or "").strip()
-        contextual_state = str(sm_row["contextual_state"] or "").strip()
 
         lines: list[str] = []
         if narrative_self:
             lines.append(narrative_self)
-        if contextual_state:
-            lines.append("Contextual state:")
-            lines.append(contextual_state)
         card = "\n".join(lines).strip()
         return card or None
 
@@ -1463,12 +1459,12 @@ def _load_turn_state_and_soul_card(
             sm_row = None
             if sm_id:
                 sm_row = con.execute(
-                    "SELECT narrative_self, contextual_state FROM memu_self_model WHERE id = ? LIMIT 1",
+                    "SELECT narrative_self FROM memu_self_model WHERE id = ? LIMIT 1",
                     (str(sm_id),),
                 ).fetchone()
             if sm_row is None:
                 sm_row = con.execute(
-                    "SELECT narrative_self, contextual_state FROM memu_self_model "
+                    "SELECT narrative_self FROM memu_self_model "
                     "WHERE soul_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT 1",
                     (soul_id, user_id),
                 ).fetchone()
@@ -1995,7 +1991,6 @@ async def diag_sqlite_recent(
             "item_id",
             "category_id",
             "narrative_self",
-            "contextual_state",
             "source",
             "target_date",
             "related_memory_ids",
