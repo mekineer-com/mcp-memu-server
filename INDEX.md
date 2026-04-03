@@ -33,7 +33,7 @@ mcp-memu-server/
 | `/memorize` | POST | Extract memories from conversation text |
 | `/retrieve` | POST | Query memories (rag or llm method) |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt for chat path |
-| `/conversation/{id}/turn` | POST | Soul turn loop: run LLM with turn contract, persist intentions + cache |
+| `/conversation/{id}/turn` | POST | Soul turn loop: run LLM with turn contract, persist intentions + cache; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self` + tendencies/tensions + contextual_state) |
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn maintenance using `undo_snapshot` (single-step depth) |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/diary/generate` | POST | Generate diary entry from recent memories |
@@ -51,7 +51,7 @@ mcp-memu-server/
 | Module | Purpose |
 |--------|---------|
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
-| `app/services/diary.py` | Three-phase diary pipeline: `gather_diary_inputs()` (DB reads, life goals fetch) → `run_diary_llm()` (async LLM; no DB) → `write_diary_outputs()` (holds memorize lock; writes diary, self-model, intentions, all_categories_summary, life goals). `generate_diary()` wrapper deleted — both entry points call the three phases directly. |
+| `app/services/diary.py` | Three-phase diary pipeline: `gather_diary_inputs()` builds anchor excerpt from queued episodes (with episode/time headers), fetches context (`memory_cache`, `intentions_active`, life goals) and memory-search candidates; `run_diary_llm()` first does XML LLM ID-selection for related background memories, then writes diary/self-model prompts; `write_diary_outputs()` (lock-held) persists diary, self-model, intentions, summaries, and life-goal updates. |
 | `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, `pending_diary_episode_ids` queue management |
 | `app/services/turn_contract.py` | `make_turn_system_prompt()`, `build_turn_prompt()`, `parse_turn_contract()` — soul turn prompt construction and JSON contract parsing |
 | `app/services/intention_state.py` | `normalize_intentions_stack()`, `format_intentions_for_prompt()`, `upsert_intentions_stack_entries()` — intentions normalization and prompt formatting |

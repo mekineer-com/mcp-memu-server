@@ -1498,6 +1498,44 @@ def _load_turn_state_and_soul_card(
     user_id: str,
     soul_id: str,
 ) -> tuple[dict[str, Any], str | None, Path | None]:
+    def _self_model_to_soul_card(sm_row: sqlite3.Row) -> str | None:
+        narrative_self = str(sm_row["narrative_self"] or "").strip()
+        contextual_state = str(sm_row["contextual_state"] or "").strip()
+        trait_items = _normalize_trait_invariants(sm_row["trait_invariants"])
+        tendencies = [item for item in trait_items if item.get("type") != "tension"]
+        tensions = [item for item in trait_items if item.get("type") == "tension"]
+
+        lines: list[str] = []
+        if narrative_self:
+            lines.append(narrative_self)
+        if tendencies:
+            lines.append("Tendencies:")
+            lines.extend(
+                f"- {str(item.get('tendency') or '').strip()} (strength: {_normalize_trait_strength(item.get('strength')):.1f})"
+                for item in tendencies
+                if str(item.get("tendency") or "").strip()
+            )
+        if tensions:
+            lines.append("Tensions:")
+            for item in tensions:
+                between = str(item.get("between") or "").strip()
+                if not between:
+                    continue
+                lines.append(
+                    f"- {between} (strength: {_normalize_trait_strength(item.get('strength')):.1f})"
+                )
+                root = str(item.get("root") or "").strip()
+                implication = str(item.get("implication") or "").strip()
+                if root:
+                    lines.append(f"  Root: {root}")
+                if implication:
+                    lines.append(f"  Implication: {implication}")
+        if contextual_state:
+            lines.append("Contextual state:")
+            lines.append(contextual_state)
+        card = "\n".join(lines).strip()
+        return card or None
+
     state_row: dict[str, Any] | None = None
     soul_card: str | None = None
     db_path = _sqlite_current_path(user_id, soul_id)
@@ -1511,16 +1549,16 @@ def _load_turn_state_and_soul_card(
             sm_row = None
             if sm_id:
                 sm_row = con.execute(
-                    "SELECT narrative_self FROM memu_self_model WHERE id = ? LIMIT 1",
+                    "SELECT narrative_self, trait_invariants, contextual_state FROM memu_self_model WHERE id = ? LIMIT 1",
                     (str(sm_id),),
                 ).fetchone()
             if sm_row is None:
                 sm_row = con.execute(
-                    "SELECT narrative_self FROM memu_self_model WHERE soul_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT 1",
+                    "SELECT narrative_self, trait_invariants, contextual_state FROM memu_self_model WHERE soul_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT 1",
                     (soul_id, user_id),
                 ).fetchone()
             if sm_row is not None:
-                soul_card = str(sm_row["narrative_self"] or "").strip() or None
+                soul_card = _self_model_to_soul_card(sm_row)
         finally:
             con.close()
     if state_row is None:
@@ -3285,7 +3323,8 @@ async def conversation_retrieve(
                     user_id=uid,
                     soul_id=soul_id,
                 )
-                soul_card = soul_card or (str(safe.get("soul_card") or "").strip() or None)
+                payload_soul_card = str(safe.get("soul_card") or "").strip() or None
+                soul_card = payload_soul_card or soul_card
 
                 message = _pick_str(safe, "message") or ""
                 history = _normalize_turn_history(safe.get("history"))
@@ -3404,7 +3443,8 @@ async def conversation_turn(
                 user_id=uid,
                 soul_id=soul_id,
             )
-            soul_card = soul_card or (str(safe.get("soul_card") or "").strip() or None)
+            payload_soul_card = str(safe.get("soul_card") or "").strip() or None
+            soul_card = payload_soul_card or soul_card
             prior_context = str(state_row.get("prior_context") or "").strip() or None
             memory_cache_before = (
                 list(state_override_cache)

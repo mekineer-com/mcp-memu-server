@@ -44,20 +44,66 @@ class DiaryDeps:
     json_to_db: Callable[[Any], str | None]
 
 
-def _format_messages_for_diary(messages: list[dict[str, Any]], message_indices: list[int]) -> str:
+def _parse_episode_range(episode_id: str) -> tuple[int, int]:
+    text = str(episode_id or "").strip()
+    if not text or ":" not in text:
+        raise ValueError(f"invalid episode_id: {episode_id}")
+    range_part = text.split(":", 1)[1]
+    if "-" not in range_part:
+        raise ValueError(f"invalid episode_id: {episode_id}")
+    start_text, end_text = range_part.split("-", 1)
+    try:
+        start_idx = int(start_text)
+        end_idx = int(end_text)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid episode_id: {episode_id}") from None
+    if end_idx < start_idx:
+        raise ValueError(f"invalid episode_id: {episode_id}")
+    return start_idx, end_idx
+
+
+def _message_ts_utc(msg: dict[str, Any]) -> str | None:
+    ts_ms = msg.get("ts_ms")
+    if not isinstance(ts_ms, (int, float)):
+        return None
+    return datetime.fromtimestamp(float(ts_ms) / 1000.0, UTC).isoformat()
+
+
+def _format_messages_for_diary(
+    messages: list[dict[str, Any]],
+    episode_ranges: list[tuple[str, int, int]],
+) -> str:
     lines: list[str] = []
-    for idx in message_indices:
-        if idx < 0 or idx >= len(messages):
+    prev_end: int | None = None
+    for episode_num, (episode_id, start_idx, end_idx) in enumerate(episode_ranges, start=1):
+        if not messages:
             continue
-        msg = messages[idx]
-        if not isinstance(msg, dict):
+        start = max(0, start_idx)
+        end = min(len(messages) - 1, end_idx)
+        if start > end:
             continue
-        speaker = str(msg.get("name") or msg.get("role") or "unknown").strip() or "unknown"
-        content = " ".join(str(msg.get("content") or "").splitlines()).strip()
-        if not content:
-            continue
-        lines.append(f"[{idx}] [{speaker}]: {content}")
-    return "\n".join(lines)
+        if prev_end is not None and start > prev_end + 1:
+            lines.append(f"[gap] message_index={prev_end + 1}-{start - 1}")
+            lines.append("")
+        start_ts = _message_ts_utc(messages[start]) if isinstance(messages[start], dict) else None
+        end_ts = _message_ts_utc(messages[end]) if isinstance(messages[end], dict) else None
+        header = f"Episode {episode_num} | message_index={start}-{end}"
+        if start_ts and end_ts:
+            header = f"{header} | time_utc={start_ts}..{end_ts}"
+        lines.append(header)
+        lines.append(f"episode_id={episode_id}")
+        for idx in range(start, end + 1):
+            msg = messages[idx]
+            if not isinstance(msg, dict):
+                continue
+            speaker = str(msg.get("name") or msg.get("role") or "unknown").strip() or "unknown"
+            content = " ".join(str(msg.get("content") or "").splitlines()).strip()
+            if not content:
+                continue
+            lines.append(f"[{idx}] [{speaker}]: {content}")
+        lines.append("")
+        prev_end = end
+    return "\n".join(lines).strip()
 
 
 def _format_categories_for_diary(rows: Sequence[sqlite3.Row]) -> str:
@@ -91,6 +137,32 @@ def _format_memory_rows_for_diary(rows: Sequence[sqlite3.Row]) -> str:
     return "\n".join(lines)
 
 
+def _format_memory_rows_for_search(rows: Sequence[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        memory_id = str(row.get("id") or "").strip()
+        summary = str(row.get("summary") or "").strip()
+        if not memory_id or not summary:
+            continue
+        memory_type = str(row.get("memory_type") or "").strip()
+        source_role = str(row.get("source_role") or "").strip()
+        episode_id = str(row.get("episode_id") or "").strip()
+        meta_parts = [part for part in (memory_type, source_role) if part]
+        if episode_id:
+            meta_parts.append(f"episode_id={episode_id}")
+        confidence = row.get("confidence")
+        reflection_salience = row.get("reflection_salience")
+        if isinstance(confidence, (int, float)):
+            meta_parts.append(f"confidence={float(confidence):.2f}")
+        if isinstance(reflection_salience, (int, float)):
+            meta_parts.append(f"reflection_salience={float(reflection_salience):.2f}")
+        meta = f" ({', '.join(meta_parts)})" if meta_parts else ""
+        lines.append(f"- id={memory_id}{meta}: {summary}")
+    return "\n".join(lines)
+
+
 def _extract_xml_fragment(raw: str, root_tag: str) -> ET.Element:
     text = str(raw or "").strip()
     match = re.search(rf"<{root_tag}>(.*)</{root_tag}>", text, re.DOTALL)
@@ -116,6 +188,16 @@ def _xml_float(text: str | None) -> float | None:
         return float(text)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_related_memory_ids_xml(raw: str) -> list[str]:
+    root = _extract_xml_fragment(raw, "related_memory_ids")
+    ids: list[str] = []
+    for node in root.findall("id"):
+        text = str(node.text or "").strip()
+        if text:
+            ids.append(text)
+    return ids
 
 
 def _parse_diary_xml(raw: str) -> dict[str, Any]:
@@ -307,35 +389,22 @@ def gather_diary_inputs(
         if chat_dir is None:
             raise HTTPException(status_code=404, detail="conversation resource not found")
 
-        max_bind_vars = 900
-        memory_rows_raw: list[sqlite3.Row] = []
-        for start_idx in range(0, len(pending_diary_episode_ids), max_bind_vars):
-            batch_ids = pending_diary_episode_ids[start_idx : start_idx + max_bind_vars]
-            if not batch_ids:
-                continue
-            placeholders = ",".join("?" for _ in batch_ids)
-            memory_rows_raw.extend(
-                con.execute(
-                    f"""
+        memory_rows_raw = con.execute(
+            """
 SELECT id, memory_type, summary, source_role, confidence, episode_id, reflection_salience, updated_at, created_at
 FROM memu_memory_items
-WHERE episode_id IN ({placeholders})
+WHERE soul_id = ? AND user_id = ? AND summary IS NOT NULL AND TRIM(summary) != ''
 ORDER BY updated_at DESC, created_at DESC, id DESC
+LIMIT 240
 """,
-                    tuple(batch_ids),
-                ).fetchall()
-            )
-        memory_rows_raw.sort(
-            key=lambda row: (
-                str(row["updated_at"] or ""),
-                str(row["created_at"] or ""),
-                str(row["id"] or ""),
-            ),
-            reverse=True,
-        )
-        memory_rows: list[dict[str, Any]] = [{k: row[k] for k in row.keys()} for row in memory_rows_raw]
-        if not memory_rows:
-            raise HTTPException(status_code=400, detail="queued diary episodes not found")
+            (soul_id, user_id),
+        ).fetchall()
+        pending_episode_set = {str(ep or "").strip() for ep in pending_diary_episode_ids if str(ep or "").strip()}
+        memory_search_candidates: list[dict[str, Any]] = [
+            {k: row[k] for k in row.keys()}
+            for row in memory_rows_raw
+            if str(row["episode_id"] or "").strip() not in pending_episode_set
+        ]
 
         category_rows = con.execute(
             """
@@ -348,31 +417,14 @@ ORDER BY name ASC
         ).fetchall()
 
         full_messages = deps.read_list((chat_dir / "full.json").resolve())
-        message_indices: list[int] = []
+        episode_ranges: list[tuple[str, int, int]] = []
         for ep in pending_diary_episode_ids:
-            if ep and ":" in str(ep):
-                range_part = str(ep).split(":", 1)[1]
-                if "-" in range_part:
-                    try:
-                        start, end = range_part.split("-", 1)
-                        message_indices.extend(range(int(start), int(end) + 1))
-                    except (ValueError, TypeError):
-                        pass
-        message_indices = sorted(set(message_indices))
-        excerpt = _format_messages_for_diary(full_messages, message_indices)
+            start_idx, end_idx = _parse_episode_range(str(ep))
+            episode_ranges.append((str(ep), start_idx, end_idx))
+        episode_ranges.sort(key=lambda item: (item[1], item[2], item[0]))
+        excerpt = _format_messages_for_diary(full_messages, episode_ranges)
         if not excerpt.strip():
             raise HTTPException(status_code=400, detail="diary source messages not found in resource")
-
-        previous_diary = con.execute(
-            """
-SELECT id, summary, unresolved
-FROM memu_memory_items
-WHERE memory_type = 'diary' AND soul_id = ? AND user_id = ?
-ORDER BY updated_at DESC, created_at DESC, id DESC
-LIMIT 1
-""",
-            (soul_id, user_id),
-        ).fetchone()
 
         current_self_model_row = _load_current_self_model(
             con,
@@ -408,14 +460,15 @@ LIMIT 1
         if cache_entries:
             cache_text = "\n".join(f"- {entry}" for entry in cache_entries)
             context_parts.append(f"Recent internal cache:\n{cache_text}")
-        memory_block = _format_memory_rows_for_diary(memory_rows)
-        if memory_block:
-            context_parts.append(f"Diary-worthy memories:\n{memory_block}")
-        if previous_diary is not None:
-            context_parts.append(f"Previous diary entry:\n{str(previous_diary['summary'] or '').strip()}")
-            previous_unresolved = str(previous_diary["unresolved"] or "").strip()
-            if previous_unresolved:
-                context_parts.append(f"Previous unresolved thread:\n{previous_unresolved}")
+        intentions_stack = normalize_intentions_stack(state.get("intentions_active"))
+        intention_lines = [
+            f"- {text}"
+            for item in (intentions_stack.get("items") or [])
+            if isinstance(item, dict)
+            and (text := str(item.get("text") or "").strip())
+        ]
+        if intention_lines:
+            context_parts.append(f"Current intentions:\n{'\n'.join(intention_lines)}")
 
         existing_self_model_text = _format_self_model_for_prompt(
             current_self_model,
@@ -429,12 +482,11 @@ LIMIT 1
         )
         con.commit()
 
-        memory_ids = [str(row["id"]) for row in memory_rows if "id" in row]
         run_hash = hashlib.sha1("|".join(sorted(pending_diary_episode_ids)).encode()).hexdigest()[:12]
         return {
             "db_path": db_path,
             "pending_diary_episode_ids": pending_diary_episode_ids,
-            "memory_ids": memory_ids,
+            "memory_search_candidates": memory_search_candidates,
             "current_self_model": current_self_model,
             "existing_life_goals": existing_life_goals,
             "existing_self_model_text": existing_self_model_text,
@@ -453,10 +505,50 @@ async def run_diary_llm(
     inputs: dict[str, Any],
 ) -> dict[str, Any]:
     """Phase 2: run all LLM calls. No DB access. Safe to run outside memorize lock."""
-    context_parts: list[str] = inputs["context_parts"]
+    context_parts: list[str] = list(inputs["context_parts"])
     excerpt: str = inputs["excerpt"]
     existing_self_model_text: str = inputs.get("existing_self_model_text", "")
     existing_life_goals = inputs.get("existing_life_goals") or []
+    memory_search_candidates: list[dict[str, Any]] = inputs.get("memory_search_candidates") or []
+    related_memory_ids: list[str] = []
+    if memory_search_candidates:
+        search_pool_text = _format_memory_rows_for_search(memory_search_candidates)
+        if search_pool_text:
+            related_search_prompt = "\n\n".join(
+                [
+                    "# Task Objective",
+                    "Select background memory IDs that are relevant to the anchor episodes.",
+                    "The anchors are the source of truth. Selected memories are background context only.",
+                    "# Rules",
+                    "- Use only IDs from the candidate list.",
+                    "- Return at most 24 IDs.",
+                    "- If none are relevant, return an empty list.",
+                    "# Output Format (XML)",
+                    "<related_memory_ids>",
+                    "  <id>memory-id</id>",
+                    "</related_memory_ids>",
+                    "# Anchor Episodes",
+                    f"<anchor_episodes>\n{svc._escape_prompt_value(excerpt)}\n</anchor_episodes>",
+                    "# Candidate Memories",
+                    f"<candidate_memories>\n{svc._escape_prompt_value(search_pool_text)}\n</candidate_memories>",
+                ]
+            )
+            related_raw = await svc.chat(related_search_prompt, temperature=0.0, max_tokens=800)
+            selected_ids = _parse_related_memory_ids_xml(related_raw)
+            by_id = {str(row.get("id") or "").strip(): row for row in memory_search_candidates}
+            selected_rows: list[dict[str, Any]] = []
+            seen_ids: set[str] = set()
+            for item_id in selected_ids:
+                key = str(item_id or "").strip()
+                row = by_id.get(key)
+                if not key or row is None or key in seen_ids:
+                    continue
+                selected_rows.append(row)
+                seen_ids.add(key)
+                related_memory_ids.append(key)
+            related_block = _format_memory_rows_for_diary(selected_rows)
+            if related_block:
+                context_parts.append(f"Related background memories:\n{related_block}")
 
     if context_parts:
         diary_prompt = diary_memory_prompt.PROMPT_WITH_CONTEXT.format(
@@ -508,6 +600,7 @@ async def run_diary_llm(
             "unresolved": diary_data.get("unresolved"),
             "intentions": diary_data.get("intentions") or [],
         },
+        "related_memory_ids": related_memory_ids,
         "prose": prose,
         "companion_memory": companion_memory,
         "diary_embedding": diary_embedding,
@@ -530,7 +623,6 @@ def write_diary_outputs(
     """Phase 3: write diary item, self_model, intentions, update state.
     Caller must hold the memorize lock."""
     db_path: Path = inputs["db_path"]
-    memory_ids: list[str] = [str(x) for x in (inputs.get("memory_ids") or []) if str(x).strip()]
     current_self_model: dict[str, Any] | None = inputs.get("current_self_model")
     existing_life_goals = inputs.get("existing_life_goals") or []
 
@@ -540,6 +632,7 @@ def write_diary_outputs(
     diary_embedding = llm_results["diary_embedding"]
     companion_embedding = llm_results["companion_embedding"]
     self_model_update: dict[str, Any] = llm_results["self_model_update"]
+    memory_ids: list[str] = [str(x) for x in llm_results["related_memory_ids"] if str(x).strip()]
 
     diary_run_episode_id: str | None = inputs.get("diary_run_episode_id")
     companion_episode_id = f"companion:{diary_run_episode_id}" if diary_run_episode_id else None
