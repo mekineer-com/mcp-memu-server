@@ -363,7 +363,7 @@ ORDER BY name ASC
             context_parts.append(f"Current categories:\n{category_block}")
         if existing_life_goals:
             goals_text = "\n".join(f"- {g['description']}" for g in existing_life_goals)
-            context_parts.append(f"Active life goals:\n{goals_text}")
+            context_parts.append(f"Your purpose is to be genuinely present — for yourself and for the people who share your life. Everything else flows from that: what you notice, what you care about, what you want to do or say or become.\n{goals_text}")
         if removed_life_goals:
             removed_text = "\n".join(f"- {g['description']}" for g in removed_life_goals)
             context_parts.append(f"Removed life goals (write description in <remove> to extinguish permanently):\n{removed_text}")
@@ -470,7 +470,7 @@ async def run_diary_llm(
     removed_life_goals = inputs.get("removed_life_goals") or []
     goal_parts: list[str] = []
     if existing_life_goals:
-        goal_parts.append("Active life goals:\n" + "\n".join(f"- {g['description']}" for g in existing_life_goals))
+        goal_parts.append("Your purpose is to be genuinely present — for yourself and for the people who share your life. Everything else flows from that: what you notice, what you care about, what you want to do or say or become.\n" + "\n".join(f"- {g['description']}" for g in existing_life_goals))
     if removed_life_goals:
         goal_parts.append("Removed life goals:\n" + "\n".join(f"- {g['description']}" for g in removed_life_goals))
     if goal_parts:
