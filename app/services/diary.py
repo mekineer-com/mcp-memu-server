@@ -226,7 +226,6 @@ def _parse_self_model_update_xml(raw: str) -> dict[str, Any]:
         "life_goal_add": life_goal_add,
         "life_goal_remove": life_goal_remove,
         "narrative_self": _xml_text(root, "narrative_self"),
-        "contextual_state": _xml_text(root, "contextual_state"),
     }
 
 
@@ -262,9 +261,6 @@ def _format_self_model_for_prompt(
         return ""
     lines = ["Narrative self:"]
     lines.append(str(row["narrative_self"] or "").strip() or "-")
-    lines.append("")
-    lines.append("Contextual state:")
-    lines.append(str(row["contextual_state"] or "").strip() or "-")
     return "\n".join(lines)
 
 
@@ -598,7 +594,6 @@ def write_diary_outputs(
         )
         or None
     )
-    contextual_state = str(self_model_update.get("contextual_state") or "").strip() or None
     self_model_id = (
         str(current_self_model["id"]).strip()
         if current_self_model is not None and "id" in current_self_model
@@ -637,13 +632,12 @@ def write_diary_outputs(
         con.execute(
             """
 INSERT INTO memu_self_model (
-    id, soul_id, user_id, narrative_self, contextual_state, related_memory_ids, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+    id, soul_id, user_id, narrative_self, related_memory_ids, updated_at
+) VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     soul_id = excluded.soul_id,
     user_id = excluded.user_id,
     narrative_self = excluded.narrative_self,
-    contextual_state = excluded.contextual_state,
     related_memory_ids = excluded.related_memory_ids,
     updated_at = excluded.updated_at
 """,
@@ -652,7 +646,6 @@ ON CONFLICT(id) DO UPDATE SET
                 soul_id,
                 user_id,
                 narrative_self,
-                contextual_state,
                 deps.json_to_db(related_memory_ids),
                 now_iso,
             ),
