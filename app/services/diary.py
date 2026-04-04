@@ -128,13 +128,16 @@ def _format_categories_for_diary(rows: Sequence[sqlite3.Row]) -> str:
     return "\n".join(lines)
 
 
-def _format_memory_rows_for_diary(rows: Sequence[sqlite3.Row]) -> str:
+def _format_memory_rows_for_diary(rows: Sequence[sqlite3.Row], *, include_ids: bool = False) -> str:
     lines: list[str] = []
     for row in rows:
+        item_id = str(row["id"] or "").strip() if "id" in row.keys() else ""
         memory_type = str(row["memory_type"] or "").strip() if "memory_type" in row.keys() else ""
         source_role = str(row["source_role"] or "").strip() if "source_role" in row.keys() else ""
         summary = str(row["summary"] or "").strip() if "summary" in row.keys() else ""
         if not summary:
+            continue
+        if include_ids and not item_id:
             continue
         meta_parts = [part for part in (memory_type, source_role) if part]
         confidence = row["confidence"] if "confidence" in row.keys() else None
@@ -144,7 +147,10 @@ def _format_memory_rows_for_diary(rows: Sequence[sqlite3.Row]) -> str:
         if isinstance(reflection_salience, (int, float)):
             meta_parts.append(f"reflection_salience={float(reflection_salience):.2f}")
         meta = f" ({', '.join(meta_parts)})" if meta_parts else ""
-        lines.append(f"- {summary}{meta}")
+        if include_ids:
+            lines.append(f"[{item_id}] {summary}{meta}")
+        else:
+            lines.append(f"- {summary}{meta}")
     return "\n".join(lines)
 
 
@@ -203,12 +209,24 @@ def _parse_diary_xml(raw: str) -> dict[str, Any]:
 def _parse_self_model_update_xml(raw: str) -> dict[str, Any]:
     root = _extract_xml_fragment(raw, "self_model_update")
     obs_root = root.find("soul_observations")
-    soul_observations: list[str] = []
+    soul_observations: list[dict[str, Any]] = []
     if obs_root is not None:
         for item in obs_root.findall("observation"):
-            text = str(item.text or "").strip()
-            if text:
-                soul_observations.append(text)
+            text_node = item.find("text")
+            obs_text = str(text_node.text or "").strip() if text_node is not None else ""
+            if not obs_text:
+                continue
+            superseded_ids: list[str] = []
+            sup_root = item.find("supersedes")
+            if sup_root is not None:
+                for sup_id_node in sup_root.findall("id"):
+                    sup_id = str(sup_id_node.text or "").strip()
+                    if sup_id:
+                        superseded_ids.append(sup_id)
+            soul_observations.append({
+                "text": obs_text,
+                "superseded_ids": superseded_ids,
+            })
     life_goal_root = root.find("life_goals")
     life_goal_add: list[str] = []
     life_goal_remove: list[str] = []
@@ -443,6 +461,7 @@ async def run_diary_llm(
             related_memory_ids.append(item_id)
             related_rows.append(item)
     related_block = _format_memory_rows_for_diary(related_rows)
+    related_block_with_ids = _format_memory_rows_for_diary(related_rows, include_ids=True)
     if related_block:
         context_parts.append(f"Related background memories:\n{related_block}")
 
@@ -476,21 +495,27 @@ async def run_diary_llm(
     if goal_parts:
         existing_self_model_text = (existing_self_model_text + "\n\n" + "\n\n".join(goal_parts)).strip()
 
+    background_memories_str = ""
+    if related_block_with_ids:
+        background_memories_str = f"\n# Background memories\n{related_block_with_ids}"
     if existing_self_model_text:
         self_model_prompt = diary_self_model_update_prompt.PROMPT_WITH_EXISTING.format(
             existing_self_model=svc._escape_prompt_value(existing_self_model_text),
             diary_entry=svc._escape_prompt_value(prose),
+            background_memories=svc._escape_prompt_value(background_memories_str),
         )
     else:
         self_model_prompt = diary_self_model_update_prompt.PROMPT.format(
             diary_entry=svc._escape_prompt_value(prose),
+            background_memories=svc._escape_prompt_value(background_memories_str),
         )
 
     self_model_raw = await svc.chat(self_model_prompt, temperature=0.2, max_tokens=1200)
     self_model_update = _parse_self_model_update_xml(self_model_raw)
-    soul_observations: list[str] = self_model_update.get("soul_observations") or []
+    soul_observations: list[dict[str, Any]] = self_model_update.get("soul_observations") or []
     if soul_observations:
-        soul_observation_embeddings = await svc.embed(soul_observations, profile="embedding")
+        soul_observation_texts = [obs["text"] for obs in soul_observations]
+        soul_observation_embeddings = await svc.embed(soul_observation_texts, profile="embedding")
     else:
         soul_observation_embeddings = []
     life_goal_remove = self_model_update.get("life_goal_remove") or []
@@ -584,20 +609,50 @@ def write_diary_outputs(
 
     soul_observations = llm_results.get("soul_observations") or []
     obs_embeddings = llm_results.get("soul_observation_embeddings") or []
-    for obs_text, obs_emb in zip(soul_observations, obs_embeddings):
-        text = str(obs_text or "").strip()
-        if not text:
-            continue
-        svc.database.memory_item_repo.create_item(
-            resource_id=None,
-            memory_type="behavior",
-            summary=text,
-            embedding=obs_emb,
-            source_role="soul",
-            user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
-            conversation_id=conversation_id,
-            episode_id=diary_run_episode_id,
-        )
+    
+    con = deps.sqlite_connect(db_path)
+    try:
+        for obs_dict, obs_emb in zip(soul_observations, obs_embeddings):
+            text = str(obs_dict["text"] or "").strip()
+            if not text:
+                continue
+            
+            new_item = svc.database.memory_item_repo.create_item(
+                resource_id=None,
+                memory_type="behavior",
+                summary=text,
+                embedding=obs_emb,
+                source_role="soul",
+                user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
+                conversation_id=conversation_id,
+                episode_id=diary_run_episode_id,
+            )
+
+            # Supersede older memories
+            superseded_ids = obs_dict.get("superseded_ids") or []
+            if superseded_ids:
+                # Sanitize IDs to be safe
+                clean_ids = [str(x).strip() for x in superseded_ids if str(x).strip()]
+                # Validate the IDs are within the related_memory_ids scope to prevent hallucinations wiping DB
+                valid_ids = [x for x in clean_ids if x in memory_ids]
+                
+                if valid_ids:
+                    # Update these specific valid IDs to be superseded by our new item
+                    placeholders = ",".join("?" for _ in valid_ids)
+                    con.execute(
+                        f"""
+                        UPDATE memu_memory_items 
+                        SET superseded_by = ? 
+                        WHERE id IN ({placeholders}) 
+                          AND superseded_by IS NULL
+                          AND user_id = ? 
+                          AND soul_id = ?
+                        """,
+                        (new_item.id, *valid_ids, user_id, soul_id),
+                    )
+                    con.commit()
+    finally:
+        con.close()
 
     narrative_self = (
         str(self_model_update.get("narrative_self") or "").strip()
