@@ -213,11 +213,12 @@ def _parse_self_model_update_xml(raw: str) -> dict[str, Any]:
     if obs_root is not None:
         for item in obs_root.findall("observation"):
             text_node = item.find("text")
-            if text_node is None:
-                raise ValueError("Missing <text> in <observation>")
-            obs_text = str(text_node.text or "").strip()
+            if text_node is not None:
+                obs_text = str(text_node.text or "").strip()
+            else:
+                obs_text = str(item.text or "").strip()
             if not obs_text:
-                raise ValueError("Empty <text> in <observation>")
+                continue
             superseded_ids: list[str] = []
             sup_root = item.find("supersedes")
             if sup_root is not None:
