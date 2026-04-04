@@ -213,7 +213,10 @@ def _parse_self_model_update_xml(raw: str) -> dict[str, Any]:
     if obs_root is not None:
         for item in obs_root.findall("observation"):
             text_node = item.find("text")
-            obs_text = str(text_node.text or "").strip() if text_node is not None else ""
+            if text_node is not None:
+                obs_text = str(text_node.text or "").strip()
+            else:
+                obs_text = str(item.text or "").strip()
             if not obs_text:
                 continue
             superseded_ids: list[str] = []
@@ -610,49 +613,28 @@ def write_diary_outputs(
     soul_observations = llm_results.get("soul_observations") or []
     obs_embeddings = llm_results.get("soul_observation_embeddings") or []
     
-    con = deps.sqlite_connect(db_path)
-    try:
-        for obs_dict, obs_emb in zip(soul_observations, obs_embeddings):
-            text = str(obs_dict["text"] or "").strip()
-            if not text:
-                continue
-            
-            new_item = svc.database.memory_item_repo.create_item(
-                resource_id=None,
-                memory_type="behavior",
-                summary=text,
-                embedding=obs_emb,
-                source_role="soul",
-                user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
-                conversation_id=conversation_id,
-                episode_id=diary_run_episode_id,
-            )
+    for obs_dict, obs_emb in zip(soul_observations, obs_embeddings):
+        text = str(obs_dict["text"] or "").strip()
+        if not text:
+            continue
 
-            # Supersede older memories
-            superseded_ids = obs_dict.get("superseded_ids") or []
-            if superseded_ids:
-                # Sanitize IDs to be safe
-                clean_ids = [str(x).strip() for x in superseded_ids if str(x).strip()]
-                # Validate the IDs are within the related_memory_ids scope to prevent hallucinations wiping DB
-                valid_ids = [x for x in clean_ids if x in memory_ids]
-                
-                if valid_ids:
-                    # Update these specific valid IDs to be superseded by our new item
-                    placeholders = ",".join("?" for _ in valid_ids)
-                    con.execute(
-                        f"""
-                        UPDATE memu_memory_items 
-                        SET superseded_by = ? 
-                        WHERE id IN ({placeholders}) 
-                          AND superseded_by IS NULL
-                          AND user_id = ? 
-                          AND soul_id = ?
-                        """,
-                        (new_item.id, *valid_ids, user_id, soul_id),
-                    )
-                    con.commit()
-    finally:
-        con.close()
+        new_item = svc.database.memory_item_repo.create_item(
+            resource_id=None,
+            memory_type="behavior",
+            summary=text,
+            embedding=obs_emb,
+            source_role="soul",
+            user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
+            conversation_id=conversation_id,
+            episode_id=diary_run_episode_id,
+        )
+
+        superseded_ids = obs_dict.get("superseded_ids") or []
+        if superseded_ids:
+            clean_ids = [str(x).strip() for x in superseded_ids if str(x).strip()]
+            valid_ids = [x for x in clean_ids if x in memory_ids]
+            for vid in valid_ids:
+                svc.database.memory_item_repo.update_item(item_id=vid, superseded_by=new_item.id)
 
     narrative_self = (
         str(self_model_update.get("narrative_self") or "").strip()
