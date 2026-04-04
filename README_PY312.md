@@ -1,6 +1,7 @@
 # Python 3.12 (Alpine) install notes
 
 This server is configured for Python 3.12 on Alpine.
+For non-Alpine setups, use the generic instructions in `README.md`.
 
 ## Runtime rule
 
