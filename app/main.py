@@ -1425,9 +1425,13 @@ def _normalize_turn_history(value: Any) -> list[dict[str, str]]:
             continue
         role = _pick_str(item, "role") or "unknown"
         content = _pick_str(item, "content")
+        name = _pick_str(item, "name")
         if not content:
             continue
-        out.append({"role": role, "content": content})
+        item_out = {"role": role, "content": content}
+        if name:
+            item_out["name"] = name
+        out.append(item_out)
     return out
 
 
@@ -3233,7 +3237,7 @@ async def conversation_retrieve(
                 payload_soul_card = str(safe.get("soul_card") or "").strip() or None
                 soul_card = payload_soul_card or soul_card
 
-                message = _pick_str(safe, "message") or ""
+                message = _pick_str(safe, "message", "query") or ""
                 history = _normalize_turn_history(safe.get("history"))
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
