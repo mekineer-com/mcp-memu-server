@@ -36,8 +36,8 @@
   "categories": {
     "defaults": [
       {
-        "name": "Profiles",
-        "description": "Who the participants are as people — their identity, traits, and inner life"
+        "name": "Identity",
+        "description": "Who the participants are as people — their character, traits, personality, inner life, and characteristic ways of being"
       },
       {
         "name": "Preferences",
@@ -48,13 +48,13 @@
         "description": "The bond between participants — its texture, history, and quality of connection"
       },
       {
-        "name": "Goals",
-        "description": "What the participants are working toward, hoping for, or committed to"
+        "name": "Experiences",
+        "description": "Meaningful moments — lived, shared, or dreamed — that reveal or shape who someone is or how they relate"
       }
     ],
     "max_total": 12,
     "allow_dynamic_categories": true,
-    "dynamic_category_min_mentions": 10,
+    "dynamic_category_min_mentions": 1,
     "category_centroid_threshold": 0.65,
     "homeless_trigger_count": 20
   },
