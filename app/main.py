@@ -1575,7 +1575,6 @@ def _load_turn_state_and_soul_card(
             conversation_id,
             soul_id=soul_id,
             user_id=user_id,
-            normalize_intentions_stack=_normalize_intentions_stack_impl,
         )
     return state_row, soul_card, db_path
 
