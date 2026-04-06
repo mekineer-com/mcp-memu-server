@@ -699,7 +699,18 @@ def _load_soul_gen_config(user_id: str, soul_id: str) -> dict[str, Any]:
     p = _soul_gen_config_path(user_id, soul_id)
     if not p.exists():
         return {}
-    return json.loads(p.read_text())
+    raw = p.read_text(encoding="utf-8")
+    if not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        logger.warning("Ignoring invalid soul generation config at %s", p, exc_info=True)
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("Ignoring non-object soul generation config at %s (type=%s)", p, type(parsed).__name__)
+        return {}
+    return parsed
 
 
 def _save_soul_gen_config(user_id: str, soul_id: str, cfg: dict[str, Any]) -> None:
@@ -1416,10 +1427,29 @@ def _dedupe_llm_result_against_rag(result: Any, retrieve_rag: Any | None) -> Any
     return out
 
 
-def _normalize_turn_history(value: Any) -> list[dict[str, str]]:
+def _parse_turn_ts_ms(value: Any) -> int | None:
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return int(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return int(float(s))
+        except Exception:
+            pass
+        try:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            return None
+    return None
+
+
+def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     for idx, item in enumerate(value):
         if not isinstance(item, dict):
             continue
@@ -1432,11 +1462,38 @@ def _normalize_turn_history(value: Any) -> list[dict[str, str]]:
         item_out = {"role": role, "content": content, "message_id": message_id}
         if name:
             item_out["name"] = name
+        ts_ms = _parse_turn_ts_ms(item.get("ts_ms"))
+        if ts_ms is None:
+            ts_ms = _parse_turn_ts_ms(item.get("timestamp"))
+        if ts_ms is not None:
+            item_out["ts_ms"] = ts_ms
         out.append(item_out)
     return out
 
 
-def _slice_history_from_chat_x(history: list[dict[str, str]], chat_x: str | None, *, limit: int = 12) -> list[dict[str, str]]:
+def _slice_history_after_recent_sleep_gap(
+    history: list[dict[str, Any]],
+    *,
+    min_gap_seconds: int,
+) -> list[dict[str, Any]]:
+    if len(history) < 2:
+        return history
+    gap_ms = int(max(1, min_gap_seconds) * 1000)
+    last_gap_start_idx: int | None = None
+    prev_ts: int | None = None
+    for idx, item in enumerate(history):
+        ts = _parse_turn_ts_ms(item.get("ts_ms"))
+        if ts is None:
+            continue
+        if prev_ts is not None and ts - prev_ts >= gap_ms:
+            last_gap_start_idx = idx
+        prev_ts = ts
+    if last_gap_start_idx is None:
+        return history
+    return history[last_gap_start_idx:]
+
+
+def _slice_history_from_chat_x(history: list[dict[str, Any]], chat_x: str | None, *, limit: int = 12) -> list[dict[str, Any]]:
     if not history:
         return []
     if not chat_x:
@@ -1455,7 +1512,7 @@ def _slice_history_from_chat_x(history: list[dict[str, str]], chat_x: str | None
     return sliced[-limit:]
 
 
-def _format_route_history(history: list[dict[str, str]]) -> str:
+def _format_route_history(history: list[dict[str, Any]]) -> str:
     if not history:
         return ""
     lines: list[str] = []
@@ -3275,7 +3332,10 @@ async def conversation_retrieve(
                 soul_card = payload_soul_card or soul_card
 
                 message = _pick_str(safe, "message", "query") or ""
-                history = _normalize_turn_history(safe.get("history"))
+                history = _slice_history_after_recent_sleep_gap(
+                    _normalize_turn_history(safe.get("history")),
+                    min_gap_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
+                )
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
 
@@ -3347,7 +3407,10 @@ async def conversation_turn(
         if not message:
             raise HTTPException(status_code=400, detail="message is required")
 
-        history = _normalize_turn_history(safe.get("history"))
+        history = _slice_history_after_recent_sleep_gap(
+            _normalize_turn_history(safe.get("history")),
+            min_gap_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
+        )
         if safe.get("prompt_override") is not None:
             raise HTTPException(status_code=400, detail="prompt_override is unsupported; use prompt_override_payload")
         prompt_override_payload_raw = safe.get("prompt_override_payload")

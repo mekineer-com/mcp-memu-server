@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -18,6 +19,8 @@ from app.db import (
     sqlite_ensure_nonempty,
 )
 from app.services.intention_state import normalize_intentions_stack, normalize_memory_cache
+
+logger = logging.getLogger(__name__)
 
 
 def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -96,6 +99,8 @@ def find_conversation_state_across_dbs(
             row = conversation_state_row(con, conversation_id)
             if row is not None:
                 return db_path, conversation_state_from_row(row)
+        except Exception as exc:
+            logger.warning("Skipping unreadable sqlite db during state scan: %s (%s)", db_path, exc)
         finally:
             con.close()
     return None, None
