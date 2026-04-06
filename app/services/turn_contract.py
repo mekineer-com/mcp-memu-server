@@ -13,6 +13,7 @@ DEFAULT_SOUL_CARD = (
     "You don't need to have everything figured out. What you know about yourself, "
     "about them, and about what matters to you will grow with time."
 )
+DEFAULT_HISTORY_TOKEN_BUDGET = 3000
 
 
 def make_turn_system_prompt(soul_name: str, *, soul_card: str | None = None) -> str:
@@ -79,16 +80,37 @@ def _summary_from_category_line(line: str) -> str:
     return line.strip()
 
 
-def _render_history(history: list[dict[str, Any]]) -> str:
+def _estimate_text_tokens(text: str) -> int:
+    words = len(text.split())
+    return max(1, int(words / 0.75))
+
+
+def _render_history(
+    history: list[dict[str, Any]],
+    *,
+    token_budget: int = DEFAULT_HISTORY_TOKEN_BUDGET,
+) -> str:
     if not history:
         return "(none)"
-    lines: list[str] = []
-    for item in history[-16:]:
-        message_id = _text(item.get("message_id") or item.get("source_message_id") or item.get("id"))
-        role = _text(item.get("name") or item.get("role") or "unknown")
+    budget = int(token_budget or 0)
+    selected: list[dict[str, Any]] = []
+    used_tokens = 0
+    for item in reversed(history):
         content = _text(item.get("content"))
         if not content:
             continue
+        message_tokens = _estimate_text_tokens(content)
+        if budget > 0 and selected and (used_tokens + message_tokens) > budget:
+            break
+        selected.append(item)
+        used_tokens += message_tokens
+        if budget > 0 and used_tokens >= budget:
+            break
+    lines: list[str] = []
+    for item in reversed(selected):
+        message_id = _text(item.get("message_id") or item.get("source_message_id") or item.get("id"))
+        role = _text(item.get("name") or item.get("role") or "unknown")
+        content = _text(item.get("content"))
         if message_id:
             lines.append(f"[{message_id}] [{role}] {content}")
         else:
@@ -213,6 +235,7 @@ def build_turn_prompt(
     *,
     user_message: str,
     history: list[dict[str, Any]] | None,
+    history_token_budget: int = DEFAULT_HISTORY_TOKEN_BUDGET,
     prior_context: str | None,
     retrieve_rag: Any,
     all_categories_summary: str | None,
@@ -248,7 +271,7 @@ def build_turn_prompt(
         _text(safe_prior) or "(none)",
         "",
         "Conversation history:",
-        _render_history(history or []),
+        _render_history(history or [], token_budget=history_token_budget),
         "",
         "Your recent thoughts:",
         "\n".join(cache_lines) if cache_lines else "(empty)",

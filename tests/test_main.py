@@ -61,3 +61,19 @@ def test_merge_memorize_batch_results_flattens_top_level_lists():
     assert out["skipped_reasons"] == ["skip-a", "skip-b"]
     assert "results" in out
     assert [res["id"] for res in out["resources"]] == ["r1", "r2"]
+
+
+def test_estimate_unmemorized_tokens_respects_digest_cursor():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    messages = [
+        {"content": "one two three"},
+        {"content": "four five six"},
+        {"content": "seven eight nine"},
+    ]
+    assert main._estimate_unmemorized_tokens(messages, -1) == main._estimate_tokens(messages)
+    assert main._estimate_unmemorized_tokens(messages, 1) == main._estimate_tokens(messages[2:])
+    assert main._estimate_unmemorized_tokens(messages, 99) == 0

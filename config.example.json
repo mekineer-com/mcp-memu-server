@@ -59,7 +59,8 @@
     "homeless_trigger_count": 20
   },
   "memorize": {
-    "min_chunk_tokens": 2000
+    "min_chunk_tokens": 4000,
+    "turn_history_token_budget": 3000
   },
   "retrieve": {
     "method": "rag"

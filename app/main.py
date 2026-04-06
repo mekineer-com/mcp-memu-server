@@ -125,7 +125,10 @@ _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 # Sleep-based daily split guardrails
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60  # 3 hours
 # Minimum chunk gate to avoid wasting extraction calls on tiny conversations
-_MIN_CHUNK_TOKENS: int = 2000  # default; overridden by config memorize.min_chunk_tokens
+_DEFAULT_MIN_CHUNK_TOKENS: int = 4000
+_DEFAULT_TURN_HISTORY_TOKEN_BUDGET: int = 3000
+_MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS  # overridden by config memorize.min_chunk_tokens
+_TURN_HISTORY_TOKEN_BUDGET: int = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET  # overridden by config memorize.turn_history_token_budget
 _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved", "removed"}
 
 
@@ -133,6 +136,49 @@ def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
     """Rough token estimate: word_count / 0.75.  Good enough for gating."""
     words = sum(len(str(m.get("content") or m.get("mes") or "").split()) for m in messages)
     return int(words / 0.75)
+
+
+def _estimate_unmemorized_tokens(messages: list[dict[str, Any]], digest_cursor: Any) -> int:
+    if not messages:
+        return 0
+    try:
+        cursor = int(digest_cursor)
+    except Exception:
+        cursor = -1
+    start = max(0, cursor + 1)
+    if start >= len(messages):
+        return 0
+    return _estimate_tokens(messages[start:])
+
+
+def _history_for_memorize_payload(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for item in history:
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        row: dict[str, Any] = {
+            "role": str(item.get("role") or "unknown"),
+            "content": content,
+        }
+        name = str(item.get("name") or "").strip()
+        if name:
+            row["name"] = name
+        ts_ms = _parse_turn_ts_ms(item.get("ts_ms"))
+        if ts_ms is not None:
+            row["ts_ms"] = ts_ms
+        out.append(row)
+    return out
+
+
+async def _run_forced_memorize_from_turn(payload: dict[str, Any]) -> None:
+    try:
+        background_tasks = BackgroundTasks()
+        await memorize(payload, background_tasks=background_tasks, force=True)
+        if background_tasks.tasks:
+            await background_tasks()
+    except Exception:
+        logger.exception("forced memorize from turn failed")
 
 
 def _has_category_content(c: dict[str, Any]) -> bool:
@@ -641,8 +687,23 @@ def _mask_config(cfg: dict[str, Any]) -> dict[str, Any]:
 
 _CONFIG: dict[str, Any] = _load_config()
 
-# Minimum segment size for memorization (in approximate tokens).
-_MIN_CHUNK_TOKENS = int((_CONFIG.get("memorize") or {}).get("min_chunk_tokens", _MIN_CHUNK_TOKENS))
+def _refresh_runtime_limits() -> None:
+    global _MIN_CHUNK_TOKENS, _TURN_HISTORY_TOKEN_BUDGET
+    memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
+    try:
+        _MIN_CHUNK_TOKENS = max(0, int(memorize_cfg.get("min_chunk_tokens", _DEFAULT_MIN_CHUNK_TOKENS)))
+    except Exception:
+        _MIN_CHUNK_TOKENS = _DEFAULT_MIN_CHUNK_TOKENS
+    try:
+        _TURN_HISTORY_TOKEN_BUDGET = max(
+            1,
+            int(memorize_cfg.get("turn_history_token_budget", _DEFAULT_TURN_HISTORY_TOKEN_BUDGET)),
+        )
+    except Exception:
+        _TURN_HISTORY_TOKEN_BUDGET = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET
+
+
+_refresh_runtime_limits()
 
 # Also expose diagnostics under the MCP http_path (e.g. /mcp/diag) to avoid path confusion.
 _DIAG_PREFIX: str = str(_CONFIG.get("mcp", {}).get("http_path") or "/mcp").rstrip("/")
@@ -2128,6 +2189,7 @@ async def set_config(req: Request):
         merged = {**_CONFIG, **body}
         _save_config(merged)
         _CONFIG = merged
+        _refresh_runtime_limits()
         _ensure_storage_paths(_CONFIG)
         _clear_cached_services()
         return JSONResponse(content={"ok": True, "config": _mask_config(_CONFIG)})
@@ -2144,6 +2206,7 @@ async def set_config(req: Request):
 async def reload_config():
     global _CONFIG
     _CONFIG = _load_config()
+    _refresh_runtime_limits()
     _clear_cached_services()
     return JSONResponse(content={"ok": True})
 
@@ -2567,7 +2630,7 @@ async def _run_memorize_batches(
                 "force": force,
                 "memorizeBatchCount": len(memorize_batches),
                 "minChunkTokens": _MIN_CHUNK_TOKENS,
-                "memorizeDeferred": not force and not batch_results,
+                "memorizeDeferred": not force and not has_batch_results,
                 "days_written": days_written,
                 "sleepSplitMinLullSeconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
                 "sleepSplitStats": sleep_stats,
@@ -3342,6 +3405,7 @@ async def conversation_retrieve(
                 out["turn_user_prompt"] = _build_turn_prompt(
                     user_message=message,
                     history=history,
+                    history_token_budget=_TURN_HISTORY_TOKEN_BUDGET,
                     prior_context=out.get("prior_context"),
                     retrieve_rag=out.get("result"),
                     all_categories_summary=_state_row.get("all_categories_summary"),
@@ -3406,8 +3470,9 @@ async def conversation_turn(
         if not message:
             raise HTTPException(status_code=400, detail="message is required")
 
+        history_full = _normalize_turn_history(safe.get("history"))
         history = _slice_history_after_recent_sleep_gap(
-            _normalize_turn_history(safe.get("history")),
+            history_full,
             min_gap_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
         )
         if safe.get("prompt_override") is not None:
@@ -3446,6 +3511,8 @@ async def conversation_turn(
         safe["conversation_id"] = cid
 
         state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
+        force_memorize_payload: dict[str, Any] | None = None
+        force_memorize_unmemorized_tokens = 0
 
         # Phase 1: read state for prompt building (lock held only for this quick read)
         async with state_lock:
@@ -3465,12 +3532,23 @@ async def conversation_turn(
             intentions_before = (
                 _normalize_intentions_stack_impl(state_override_intentions)
                 if state_override_intentions is not None
-                else (
-                    _apply_intention_turn_maintenance_impl(state_row.get("intentions_active"))
-                    if apply_turn_maintenance
-                    else _normalize_intentions_stack_impl(state_row.get("intentions_active"))
+                    else (
+                        _apply_intention_turn_maintenance_impl(state_row.get("intentions_active"))
+                        if apply_turn_maintenance
+                        else _normalize_intentions_stack_impl(state_row.get("intentions_active"))
+                    )
                 )
-            )
+            digest_cursor_for_gate = state_row.get("digest_cursor") if state_row.get("last_memorize_at") else -1
+            force_memorize_unmemorized_tokens = _estimate_unmemorized_tokens(history_full, digest_cursor_for_gate)
+            if (not dry_run) and history_full and force_memorize_unmemorized_tokens > _TURN_HISTORY_TOKEN_BUDGET:
+                memorize_history = _history_for_memorize_payload(history_full)
+                if memorize_history:
+                    force_memorize_payload = {
+                        **safe,
+                        "conversation_id": cid,
+                        "conversation": memorize_history,
+                        "user": {"user_id": uid, "soul_id": soul_id, "conversation_id": cid},
+                    }
 
         # RAG + LLM outside lock (may take seconds; other operations can proceed)
 
@@ -3542,6 +3620,7 @@ async def conversation_turn(
             else _build_turn_prompt(
                 user_message=message,
                 history=history,
+                history_token_budget=_TURN_HISTORY_TOKEN_BUDGET,
                 prior_context=prior_context,
                 retrieve_rag=retrieve_rag,
                 all_categories_summary=state_row.get("all_categories_summary"),
@@ -3679,6 +3758,14 @@ async def conversation_turn(
             out["annulment_memory_ids"] = annulment_memory_ids
             out["turn_contract"] = turn_contract
             out["dry_run"] = dry_run
+            out["forced_memorize"] = {
+                "queued": bool(force_memorize_payload),
+                "unmemorized_tokens": force_memorize_unmemorized_tokens,
+                "history_budget_tokens": _TURN_HISTORY_TOKEN_BUDGET,
+            }
+
+        if force_memorize_payload is not None:
+            asyncio.create_task(_run_forced_memorize_from_turn(force_memorize_payload))
 
         _record_call(
             "conversation.turn",
@@ -3688,6 +3775,9 @@ async def conversation_turn(
                 "conversationId": cid,
                 "dryRun": dry_run,
                 "apimw": apimw_status,
+                "forcedMemorizeQueued": bool(force_memorize_payload),
+                "unmemorizedTokens": force_memorize_unmemorized_tokens,
+                "historyBudgetTokens": _TURN_HISTORY_TOKEN_BUDGET,
                 "responseLen": len(str(out.get("response") or "")),
             },
         )

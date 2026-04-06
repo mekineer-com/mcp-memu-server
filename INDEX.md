@@ -33,7 +33,7 @@ mcp-memu-server/
 | `/memorize` | POST | Extract memories from conversation text |
 | `/retrieve` | POST | Query memories (rag or llm method) |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt for chat path |
-| `/conversation/{id}/turn` | POST | Soul turn loop: run LLM with turn contract, persist intentions + cache; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self`) |
+| `/conversation/{id}/turn` | POST | Soul turn loop: run LLM with turn contract, persist intentions + cache; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self`); queues forced memorize when unmemorized chat tail exceeds `memorize.turn_history_token_budget` |
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn maintenance using `undo_snapshot` (single-step depth) |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/diary/generate` | POST | Generate diary entry from recent memories |
@@ -93,7 +93,7 @@ listen:     host, port
 memu:       path (to memu/src)
 categories: defaults[], allow_dynamic, thresholds
 retrieve:   method (rag|llm)
-memorize:   min_chunk_tokens, supersede_similarity_threshold (default 0.75)
+memorize:   min_chunk_tokens, turn_history_token_budget, supersede_similarity_threshold (default 0.75)
 ```
 
 ## Config-Only Runtime
