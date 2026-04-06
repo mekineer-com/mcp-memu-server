@@ -68,72 +68,132 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _norm_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip().lower()
+
+
+def _summary_from_category_line(line: str) -> str:
+    head, sep, tail = line.partition(":")
+    if sep and tail.strip():
+        return tail.strip()
+    return line.strip()
+
+
 def _render_history(history: list[dict[str, Any]]) -> str:
     if not history:
         return "(none)"
     lines: list[str] = []
     for item in history[-16:]:
+        message_id = _text(item.get("message_id") or item.get("source_message_id") or item.get("id"))
         role = _text(item.get("name") or item.get("role") or "unknown")
         content = _text(item.get("content"))
         if not content:
             continue
-        lines.append(f"[{role}] {content}")
+        if message_id:
+            lines.append(f"[{message_id}] [{role}] {content}")
+        else:
+            lines.append(f"[{role}] {content}")
     return "\n".join(lines) or "(none)"
 
 
-def _render_retrieve(result: Any) -> str:
+def _render_retrieve(result: Any) -> tuple[str, set[str], set[str]]:
     if not isinstance(result, dict):
-        return "(none)"
+        return "(none)", set(), set()
 
     lines: list[str] = []
-    cat_text: set[str] = set()
+    item_terms: set[str] = set()
+    category_terms: set[str] = set()
 
-    categories = result.get("categories")
-    if isinstance(categories, list) and categories:
-        lines.append("Categories:")
-        for cat in categories[:8]:
-            if not isinstance(cat, dict):
-                continue
-            name = _text(cat.get("name"))
-            summary = _text(cat.get("summary"))
-            if name or summary:
-                lines.append(f"\n{name}:")
-                if summary:
-                    lines.append(summary)
-                    cat_text.add(summary.lower())
-
+    item_rows: list[tuple[str, str]] = []
+    seen_items: set[str] = set()
     items = result.get("items")
-    if isinstance(items, list) and items:
-        if lines:
-            lines.append("")
-        lines.append("Memories:")
+    if isinstance(items, list):
         for item in items[:12]:
             if not isinstance(item, dict):
                 continue
             memory_type = _text(item.get("memory_type") or "memory")
             summary = _text(item.get("summary"))
-            if summary and summary.lower() not in cat_text:
-                lines.append(f"- [{memory_type}] {summary}")
+            if not summary:
+                continue
+            summary_key = _norm_text(summary)
+            if not summary_key or summary_key in seen_items:
+                continue
+            seen_items.add(summary_key)
+            item_terms.add(summary_key)
+            item_rows.append((memory_type, summary))
 
-    return "\n".join(lines) if lines else "(none)"
+    categories = result.get("categories")
+    if isinstance(categories, list):
+        category_rows: list[tuple[str, str]] = []
+        seen_categories: set[str] = set()
+        for cat in categories[:8]:
+            if not isinstance(cat, dict):
+                continue
+            name = _text(cat.get("name"))
+            summary = _text(cat.get("summary"))
+            if not summary:
+                continue
+            summary_key = _norm_text(summary)
+            if not summary_key or summary_key in item_terms or summary_key in seen_categories:
+                continue
+            seen_categories.add(summary_key)
+            category_terms.add(summary_key)
+            category_rows.append((name, summary))
+    else:
+        category_rows = []
+
+    if category_rows:
+        lines.append("Categories:")
+        for name, summary in category_rows:
+            lines.append(f"\n{name}:")
+            lines.append(summary)
+
+    if item_rows:
+        if lines:
+            lines.append("")
+        lines.append("Memories:")
+        for memory_type, summary in item_rows:
+            lines.append(f"- [{memory_type}] {summary}")
+
+    return ("\n".join(lines) if lines else "(none)"), item_terms, category_terms
 
 
-def _dedupe_prior_context(prior_context: str | None, retrieve_rag: Any) -> str:
+def _render_all_categories_summary(
+    all_categories_summary: str | None,
+    protected_terms: set[str],
+) -> tuple[str, set[str]]:
+    raw = _text(all_categories_summary)
+    if not raw:
+        return "(none)", set()
+
+    kept: list[str] = []
+    terms: set[str] = set()
+    seen: set[str] = set()
+    for line in raw.splitlines():
+        text = _text(line)
+        if not text:
+            continue
+        summary_key = _norm_text(_summary_from_category_line(text))
+        line_key = _norm_text(text)
+        key = summary_key or line_key
+        if not key:
+            continue
+        if key in protected_terms or key in seen:
+            continue
+        seen.add(key)
+        terms.add(key)
+        if line_key and line_key != key:
+            terms.add(line_key)
+        kept.append(text)
+
+    return ("\n".join(kept) if kept else "(none)"), terms
+
+
+def _dedupe_prior_context(prior_context: str | None, blocked_terms: set[str]) -> str:
     prior = _text(prior_context)
     if not prior:
         return ""
-    if not isinstance(retrieve_rag, dict):
-        return prior
-
-    rag_summaries: set[str] = set()
-    for item in retrieve_rag.get("items") or []:
-        if not isinstance(item, dict):
-            continue
-        summary = _text(item.get("summary"))
-        if summary:
-            rag_summaries.add(summary.lower())
-
-    if not rag_summaries:
+    if not blocked_terms:
         return prior
 
     kept: list[str] = []
@@ -142,8 +202,8 @@ def _dedupe_prior_context(prior_context: str | None, retrieve_rag: Any) -> str:
         if not text:
             continue
         m = re.match(r"^\[[^\]]+\]\s*(.+)$", text)
-        probe = _text(m.group(1) if m else text).lower()
-        if probe and probe in rag_summaries:
+        probe = _text(m.group(1) if m else text)
+        if _norm_text(probe) in blocked_terms or _norm_text(text) in blocked_terms:
             continue
         kept.append(text)
     return "\n".join(kept)
@@ -155,6 +215,7 @@ def build_turn_prompt(
     history: list[dict[str, Any]] | None,
     prior_context: str | None,
     retrieve_rag: Any,
+    all_categories_summary: str | None,
     memory_cache: Any,
     intentions_active: Any,
 ) -> str:
@@ -163,15 +224,25 @@ def build_turn_prompt(
     if len(cache) >= MAX_MEMORY_CACHE_ENTRIES:
         cache_lines[0] = f"{cache_lines[0]}  \u2190 oldest, replaced on next write"
 
+    rendered_retrieve, item_terms, category_terms = _render_retrieve(retrieve_rag)
+    rendered_all_categories, all_categories_terms = _render_all_categories_summary(
+        all_categories_summary,
+        item_terms | category_terms,
+    )
+    blocked_terms = item_terms | category_terms | all_categories_terms
+
     # Discard routing JSON artifacts written by old code (pre-715256c)
     safe_prior = prior_context
     if safe_prior and safe_prior.strip().startswith("{"):
         safe_prior = None
-    safe_prior = _dedupe_prior_context(safe_prior, retrieve_rag) or None
+    safe_prior = _dedupe_prior_context(safe_prior, blocked_terms) or None
 
     parts = [
         "Retrieved memory context:",
-        _render_retrieve(retrieve_rag),
+        rendered_retrieve,
+        "",
+        "All categories summary:",
+        rendered_all_categories,
         "",
         "Prior context:",
         _text(safe_prior) or "(none)",

@@ -1420,19 +1420,56 @@ def _normalize_turn_history(value: Any) -> list[dict[str, str]]:
     if not isinstance(value, list):
         return []
     out: list[dict[str, str]] = []
-    for item in value:
+    for idx, item in enumerate(value):
         if not isinstance(item, dict):
             continue
         role = _pick_str(item, "role") or "unknown"
         content = _pick_str(item, "content")
         name = _pick_str(item, "name")
+        message_id = _pick_str(item, "source_message_id", "message_id", "id", "mid") or str(idx)
         if not content:
             continue
-        item_out = {"role": role, "content": content}
+        item_out = {"role": role, "content": content, "message_id": message_id}
         if name:
             item_out["name"] = name
         out.append(item_out)
     return out
+
+
+def _slice_history_from_chat_x(history: list[dict[str, str]], chat_x: str | None, *, limit: int = 12) -> list[dict[str, str]]:
+    if not history:
+        return []
+    if not chat_x:
+        return history[-limit:]
+    anchor = str(chat_x).strip()
+    if not anchor:
+        return history[-limit:]
+    start_idx = None
+    for idx, item in enumerate(history):
+        if str(item.get("message_id") or "").strip() == anchor:
+            start_idx = idx
+            break
+    if start_idx is None:
+        return history[-limit:]
+    sliced = history[start_idx:]
+    return sliced[-limit:]
+
+
+def _format_route_history(history: list[dict[str, str]]) -> str:
+    if not history:
+        return ""
+    lines: list[str] = []
+    for item in history:
+        message_id = str(item.get("message_id") or "").strip()
+        role = str(item.get("name") or item.get("role") or "unknown").strip()
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        if message_id:
+            lines.append(f"[{message_id}] [{role}] {content}")
+        else:
+            lines.append(f"[{role}] {content}")
+    return "\n".join(lines)
 
 
 def _load_turn_state_and_soul_card(
@@ -3248,6 +3285,7 @@ async def conversation_retrieve(
                     history=history,
                     prior_context=out.get("prior_context"),
                     retrieve_rag=out.get("result"),
+                    all_categories_summary=_state_row.get("all_categories_summary"),
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
                 )
@@ -3418,6 +3456,13 @@ async def conversation_turn(
             _intentions_text = _format_intentions_for_prompt(intentions_before) if intentions_before else ""
             if _intentions_text and _intentions_text.strip() != "(none)":
                 _soul_ctx_queries.append({"role": "intentions", "content": {"text": _intentions_text}})
+            _history_from_chat_x = _slice_history_from_chat_x(
+                history,
+                str(state_row.get("last_chat_x") or "").strip() or None,
+            )
+            _history_text = _format_route_history(_history_from_chat_x)
+            if _history_text:
+                _soul_ctx_queries.append({"role": "history_from_chat_x", "content": {"text": _history_text}})
             _soul_ctx_queries.append({"role": "user", "content": {"text": message}})
             rag_payload = {**safe, "method": "rag", "queries": _soul_ctx_queries}
             rag_retrieve_cfg = dict(rag_payload.get("retrieve_config") or {})
@@ -3437,6 +3482,7 @@ async def conversation_turn(
                 history=history,
                 prior_context=prior_context,
                 retrieve_rag=retrieve_rag,
+                all_categories_summary=state_row.get("all_categories_summary"),
                 memory_cache=memory_cache_before,
                 intentions_active=intentions_before,
             )

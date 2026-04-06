@@ -23,6 +23,7 @@ def test_build_turn_prompt_includes_core_sections():
         history=[{"role": "user", "content": "hi"}],
         prior_context="prior",
         retrieve_rag={"categories": [{"name": "Goals", "summary": "wants progress"}]},
+        all_categories_summary="Goals: wants progress",
         memory_cache=["note a"],
         intentions_active={"items": [{"id": "relax", "text": "Relax", "priority": 5, "kind": "relax"}]},
     )
