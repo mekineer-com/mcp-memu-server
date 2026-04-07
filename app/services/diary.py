@@ -226,9 +226,17 @@ def _parse_self_model_update_xml(raw: str) -> dict[str, Any]:
                     sup_id = str(sup_id_node.text or "").strip()
                     if sup_id:
                         superseded_ids.append(sup_id)
+            shaped_by_ids: list[str] = []
+            shaped_root = item.find("shaped_by")
+            if shaped_root is not None:
+                for shaped_id_node in shaped_root.findall("id"):
+                    shaped_id = str(shaped_id_node.text or "").strip()
+                    if shaped_id:
+                        shaped_by_ids.append(shaped_id)
             soul_observations.append({
                 "text": obs_text,
                 "superseded_ids": superseded_ids,
+                "shaped_by_ids": shaped_by_ids,
             })
     life_goal_root = root.find("life_goals")
     life_goal_add: list[str] = []
@@ -635,6 +643,12 @@ def write_diary_outputs(
             valid_ids = [x for x in clean_ids if x in memory_ids]
             for vid in valid_ids:
                 svc.database.memory_item_repo.update_item(item_id=vid, superseded_by=new_item.id)
+        shaped_by_ids = obs_dict.get("shaped_by_ids") or []
+        if shaped_by_ids:
+            memory_ids_set = set(memory_ids)
+            valid_shaped = [str(x).strip() for x in shaped_by_ids if str(x).strip() and str(x).strip() in memory_ids_set]
+            if valid_shaped:
+                svc.database.memory_item_repo.update_item(item_id=new_item.id, extra={"shaped_by_ids": valid_shaped})
 
     narrative_self = (
         str(self_model_update.get("narrative_self") or "").strip()
