@@ -3860,9 +3860,16 @@ async def conversation_turn(
                 history,
                 _chat_x_anchors,
             )
-            _history_text = _format_route_history(_history_from_chat_x)
-            if _history_text:
-                _soul_ctx_queries.append({"role": "history_from_chat_x", "content": {"text": _history_text}})
+            _history_two_text = _format_route_history(_history_from_chat_x)
+            if _history_two_text:
+                _soul_ctx_queries.append({"role": "history_from_chat_x", "content": {"text": _history_two_text}})
+            _history_from_last_chat_x = _slice_history_from_chat_x(
+                history,
+                _chat_x_anchors[:1],
+            )
+            _history_one_text = _format_route_history(_history_from_last_chat_x)
+            if _history_one_text:
+                _soul_ctx_queries.append({"role": "history_from_last_chat_x", "content": {"text": _history_one_text}})
             _soul_ctx_queries.append({"role": "user", "content": {"text": message}})
             rag_payload = {**safe, "method": "rag", "queries": _soul_ctx_queries}
             rag_retrieve_cfg = dict(rag_payload.get("retrieve_config") or {})
