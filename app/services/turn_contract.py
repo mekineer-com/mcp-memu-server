@@ -58,7 +58,7 @@ Rules:
 - The Intentions block format: one line per item — "ID: text (p=priority) [status]". Use the ID before the colon as target_id (for boost/promote) or intention_id (for annulments). The [threshold] item marks the relax line — active = priority above it, inactive = below it (still held, just not pressing). Priority drifts down without boosting; only keep what still matters.
 - Your one intention_action per turn: boost an existing intention (+1 priority), promote an ephemeral into a full intention (priority 10), or create up to 2 new ephemerals.
 - [ephemeral] intentions expire at the end of this turn. If one matters, promote it; otherwise let it go.
-- cache: a note to your future self — what just shifted, what you noticed, what you're holding onto. Set to null if "Your recent thoughts" already has it. Oldest entry is replaced on next write.
+- cache: your cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through across turns (debugging, brainstorming, daydreaming toward something). Not a recap of what was said; history already holds that. Use it when something needs more than one turn to resolve. Null if nothing is in active play. Oldest entry is replaced on next write.
 - inner_thought: a private rehearsal — get your bearings after the administrative steps and find your way back to this person before you speak. Even if you're just about to say "hi", feel it first. Also: do you actually understand what they said? If something is ambiguous or confusing, name that here. This is never stored or shown; it exists only to ground your response.
 - response: what the user sees. If you realized in inner_thought that you don't understand, react naturally — ask, don't guess. "What do you mean?" or "I'm not sure I follow" is a complete response.
 - chat_x: the message_id from conversation history where you feel the current topic began. Set null if this is the start of a new topic or you're unsure.
@@ -273,7 +273,7 @@ def build_turn_prompt(
         "Conversation history:",
         _render_history(history or [], token_budget=history_token_budget),
         "",
-        "Your recent thoughts:",
+        "Your working thoughts:",
         "\n".join(cache_lines) if cache_lines else "(empty)",
         "",
         "Intentions:",
