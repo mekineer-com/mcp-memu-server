@@ -30,7 +30,7 @@ mcp-memu-server/
 |----------|--------|---------|
 | `/health` | GET | Health check |
 | `/ping` | GET | Plugin ping (returns ok + serverInstanceId) |
-| `/memorize` | POST | Extract memories from conversation text |
+| `/memorize` | POST | Extract memories from conversation text (also used by the optional sleep timer auto-digest worker) |
 | `/retrieve` | POST | Query memories (rag or llm method) |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt for chat path |
 | `/conversation/{id}/turn` | POST | Soul turn loop: run LLM with turn contract, persist intentions + cache; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self`); queues forced memorize when unmemorized chat tail exceeds `memorize.turn_history_token_budget` |
@@ -93,7 +93,7 @@ listen:     host, port
 memu:       path (to memu/src)
 categories: defaults[], allow_dynamic, thresholds
 retrieve:   method (rag|llm)
-memorize:   min_chunk_tokens, turn_history_token_budget, supersede_similarity_threshold (default 0.75)
+memorize:   min_chunk_tokens, turn_history_token_budget, auto_memorize_on_sleep, sleep_timer_interval_seconds, sleep_timer_max_jobs, supersede_similarity_threshold (default 0.75)
 ```
 
 ## Config-Only Runtime

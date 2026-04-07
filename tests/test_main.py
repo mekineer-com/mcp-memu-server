@@ -5,6 +5,8 @@ as the project evolves. Currently using placeholder tests to ensure
 CI pipeline runs successfully.
 """
 
+from datetime import UTC, datetime
+
 import pytest
 
 
@@ -77,3 +79,19 @@ def test_estimate_unmemorized_tokens_respects_digest_cursor():
     assert main._estimate_unmemorized_tokens(messages, -1) == main._estimate_tokens(messages)
     assert main._estimate_unmemorized_tokens(messages, 1) == main._estimate_tokens(messages[2:])
     assert main._estimate_unmemorized_tokens(messages, 99) == 0
+
+
+def test_sleep_gap_complete_since_last_message_uses_night_window():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    zi = UTC
+    last_ts = int(datetime(2026, 4, 6, 22, 30, tzinfo=UTC).timestamp() * 1000)
+    now_ts = int(datetime(2026, 4, 7, 2, 30, tzinfo=UTC).timestamp() * 1000)
+    assert main._sleep_gap_complete_since_last_message(last_ts, zi, now_ms=now_ts) is True
+
+    day_last = int(datetime(2026, 4, 6, 10, 0, tzinfo=UTC).timestamp() * 1000)
+    day_now = int(datetime(2026, 4, 6, 14, 30, tzinfo=UTC).timestamp() * 1000)
+    assert main._sleep_gap_complete_since_last_message(day_last, zi, now_ms=day_now) is False

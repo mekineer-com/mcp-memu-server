@@ -127,8 +127,13 @@ _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60  # 3 hours
 # Minimum chunk gate to avoid wasting extraction calls on tiny conversations
 _DEFAULT_MIN_CHUNK_TOKENS: int = 4000
 _DEFAULT_TURN_HISTORY_TOKEN_BUDGET: int = 3000
+_DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS: int = 300
+_DEFAULT_SLEEP_TIMER_MAX_JOBS: int = 2
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS  # overridden by config memorize.min_chunk_tokens
 _TURN_HISTORY_TOKEN_BUDGET: int = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET  # overridden by config memorize.turn_history_token_budget
+_SLEEP_TIMER_ENABLED: bool = False
+_SLEEP_TIMER_INTERVAL_SECONDS: int = _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS
+_SLEEP_TIMER_MAX_JOBS: int = _DEFAULT_SLEEP_TIMER_MAX_JOBS
 _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved", "removed"}
 
 
@@ -151,32 +156,11 @@ def _estimate_unmemorized_tokens(messages: list[dict[str, Any]], digest_cursor: 
     return _estimate_tokens(messages[start:])
 
 
-def _history_for_memorize_payload(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for item in history:
-        content = str(item.get("content") or "").strip()
-        if not content:
-            continue
-        row: dict[str, Any] = {
-            "role": str(item.get("role") or "unknown"),
-            "content": content,
-        }
-        name = str(item.get("name") or "").strip()
-        if name:
-            row["name"] = name
-        ts_ms = _parse_turn_ts_ms(item.get("ts_ms"))
-        if ts_ms is not None:
-            row["ts_ms"] = ts_ms
-        out.append(row)
-    return out
-
-
 async def _run_forced_memorize_from_turn(payload: dict[str, Any]) -> None:
     try:
         background_tasks = BackgroundTasks()
         await memorize(payload, background_tasks=background_tasks, force=True)
-        if background_tasks.tasks:
-            await background_tasks()
+        await background_tasks()
     except Exception:
         logger.exception("forced memorize from turn failed")
 
@@ -226,6 +210,7 @@ _STATE_LOCK = threading.Lock()
 _ACTIVE_HTTP_REQUESTS: int = 0
 _ACTIVE_WORK_REQUESTS: int = 0
 _SHUTDOWN_TASK: asyncio.Task | None = None
+_SLEEP_MEMORIZE_TIMER_TASK: asyncio.Task | None = None
 _SHUTDOWN_STATE: dict[str, Any] = {
     "draining": False,
     "stopping": False,
@@ -689,6 +674,7 @@ _CONFIG: dict[str, Any] = _load_config()
 
 def _refresh_runtime_limits() -> None:
     global _MIN_CHUNK_TOKENS, _TURN_HISTORY_TOKEN_BUDGET
+    global _SLEEP_TIMER_ENABLED, _SLEEP_TIMER_INTERVAL_SECONDS, _SLEEP_TIMER_MAX_JOBS
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
     try:
         _MIN_CHUNK_TOKENS = max(0, int(memorize_cfg.get("min_chunk_tokens", _DEFAULT_MIN_CHUNK_TOKENS)))
@@ -701,6 +687,18 @@ def _refresh_runtime_limits() -> None:
         )
     except Exception:
         _TURN_HISTORY_TOKEN_BUDGET = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET
+    _SLEEP_TIMER_ENABLED = bool(memorize_cfg.get("auto_memorize_on_sleep", False))
+    try:
+        _SLEEP_TIMER_INTERVAL_SECONDS = max(
+            30,
+            int(memorize_cfg.get("sleep_timer_interval_seconds", _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS)),
+        )
+    except Exception:
+        _SLEEP_TIMER_INTERVAL_SECONDS = _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS
+    try:
+        _SLEEP_TIMER_MAX_JOBS = max(1, int(memorize_cfg.get("sleep_timer_max_jobs", _DEFAULT_SLEEP_TIMER_MAX_JOBS)))
+    except Exception:
+        _SLEEP_TIMER_MAX_JOBS = _DEFAULT_SLEEP_TIMER_MAX_JOBS
 
 
 _refresh_runtime_limits()
@@ -1874,6 +1872,18 @@ async def _run_retrieve(
 # -------------------------
 
 
+@app.on_event("startup")
+async def _startup_sleep_timer():
+    await _reconcile_sleep_timer_task()
+
+
+@app.on_event("shutdown")
+async def _shutdown_sleep_timer():
+    global _SLEEP_TIMER_ENABLED
+    _SLEEP_TIMER_ENABLED = False
+    await _reconcile_sleep_timer_task()
+
+
 @app.get("/health", operation_id="health")
 async def health():
     storage_dir = _get_storage_dir(_CONFIG)
@@ -1899,6 +1909,12 @@ async def health():
         "services_cached": len(_SERVICES),
         "startup_warnings": _STARTUP_WARNINGS,
         "shutdown": _shutdown_snapshot(),
+        "sleepMemorizeTimer": {
+            "enabled": _SLEEP_TIMER_ENABLED,
+            "running": bool(_SLEEP_MEMORIZE_TIMER_TASK is not None and not _SLEEP_MEMORIZE_TIMER_TASK.done()),
+            "intervalSec": _SLEEP_TIMER_INTERVAL_SECONDS,
+            "maxJobs": _SLEEP_TIMER_MAX_JOBS,
+        },
         "mcp": {
             "enabled": _has_mcp,
             "http_path": str(_CONFIG.get("mcp", {}).get("http_path") or "/mcp"),
@@ -2190,6 +2206,7 @@ async def set_config(req: Request):
         _save_config(merged)
         _CONFIG = merged
         _refresh_runtime_limits()
+        await _reconcile_sleep_timer_task()
         _ensure_storage_paths(_CONFIG)
         _clear_cached_services()
         return JSONResponse(content={"ok": True, "config": _mask_config(_CONFIG)})
@@ -2207,6 +2224,7 @@ async def reload_config():
     global _CONFIG
     _CONFIG = _load_config()
     _refresh_runtime_limits()
+    await _reconcile_sleep_timer_task()
     _clear_cached_services()
     return JSONResponse(content={"ok": True})
 
@@ -2433,6 +2451,201 @@ def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, con
         if str(source.get("conversation_id") or "").strip() == conversation_id:
             return manifest_path.parent
     return None
+
+
+def _iter_sleep_timer_scope_rows(sqlite_dir: Path) -> list[dict[str, Any]]:
+    rows_out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for db_path in sorted(sqlite_dir.glob("*.db")):
+        con: sqlite3.Connection | None = None
+        try:
+            con = _sqlite_connect(db_path)
+            con.row_factory = sqlite3.Row
+            _sqlite_ensure_conversation_state_schema(con)
+            rows = con.execute(
+                "SELECT conversation_id, user_id, soul_id, digest_cursor, last_memorize_at "
+                "FROM memu_conversation_state"
+            ).fetchall()
+        except Exception:
+            continue
+        finally:
+            if con is not None:
+                con.close()
+        for row in rows:
+            conversation_id = str(row["conversation_id"] or "").strip()
+            user_id = str(row["user_id"] or "").strip()
+            soul_id = str(row["soul_id"] or "").strip()
+            if not conversation_id or not user_id or not soul_id:
+                continue
+            key = (conversation_id, user_id, soul_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows_out.append(
+                {
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "soul_id": soul_id,
+                    "digest_cursor": row["digest_cursor"],
+                    "last_memorize_at": row["last_memorize_at"],
+                }
+            )
+    return rows_out
+
+
+def _resolve_sleep_timer_timezone(manifest: dict[str, Any]) -> tuple[Any | None, str | None, int | None]:
+    tz_name = str(manifest.get("tz") or "").strip() or None
+    source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
+    raw_off = source.get("timeZoneOffsetMin")
+    tz_off_min: int | None = None
+    if isinstance(raw_off, (int, float)) and math.isfinite(raw_off):
+        tz_off_min = int(raw_off)
+
+    zi = None
+    if tz_name and ZoneInfo is not None:
+        try:
+            zi = ZoneInfo(str(tz_name))
+        except Exception:
+            zi = None
+    if zi is None and tz_off_min is not None:
+        try:
+            zi = timezone(timedelta(minutes=-tz_off_min))
+        except Exception:
+            zi = None
+    return zi, tz_name, tz_off_min
+
+
+def _sleep_gap_complete_since_last_message(last_ts_ms: int, zi: Any, *, now_ms: int | None = None) -> bool:
+    now_ms = int(now_ms if isinstance(now_ms, int) else (time.time() * 1000))
+    if now_ms <= int(last_ts_ms):
+        return False
+    probe = [{"ts_ms": int(last_ts_ms)}, {"ts_ms": now_ms}]
+    splits, _stats = _split_indices_by_sleep(probe, zi, True, _SLEEP_SPLIT_MIN_LULL_SECONDS)
+    return bool(splits)
+
+
+def _build_sleep_timer_memorize_payload(chats_dir: Path, row: dict[str, Any]) -> dict[str, Any] | None:
+    conversation_id = str(row.get("conversation_id") or "").strip()
+    user_id = str(row.get("user_id") or "").strip()
+    soul_id = str(row.get("soul_id") or "").strip()
+    if not conversation_id or not user_id or not soul_id:
+        return None
+
+    chat_dir = _find_chat_dir_for_conversation(chats_dir, user_id, soul_id, conversation_id)
+    if chat_dir is None:
+        return None
+    full_path = (chat_dir / "full.json").resolve()
+    manifest_path = (chat_dir / "manifest.json").resolve()
+    full = _read_list(full_path)
+    if not isinstance(full, list) or not full:
+        return None
+
+    digest_cursor = row.get("digest_cursor") if row.get("last_memorize_at") else -1
+    try:
+        cursor = int(digest_cursor)
+    except Exception:
+        cursor = -1
+    start_idx = max(0, cursor + 1)
+    if start_idx >= len(full):
+        return None
+
+    unprocessed = full[start_idx:]
+    if _MIN_CHUNK_TOKENS > 0 and _estimate_tokens(unprocessed) < _MIN_CHUNK_TOKENS:
+        return None
+
+    last_msg = full[-1] if isinstance(full[-1], dict) else {}
+    last_ts_ms = _parse_turn_ts_ms(last_msg.get("ts_ms"))
+    if last_ts_ms is None:
+        last_ts_ms = _parse_turn_ts_ms(last_msg.get("timestamp"))
+    if last_ts_ms is None:
+        return None
+
+    manifest: dict[str, Any] = {}
+    if manifest_path.exists():
+        try:
+            raw = manifest_path.read_text(encoding="utf-8")
+            parsed = json.loads(raw) if raw.strip() else {}
+            if isinstance(parsed, dict):
+                manifest = parsed
+        except Exception:
+            manifest = {}
+
+    zi, tz_name, tz_off_min = _resolve_sleep_timer_timezone(manifest)
+    if zi is None:
+        return None
+    if not _sleep_gap_complete_since_last_message(last_ts_ms, zi):
+        return None
+
+    probe_conv = _normalize_conversation([last_msg])
+    if not probe_conv:
+        return None
+    payload: dict[str, Any] = {
+        "user": {"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
+        "conversation_id": conversation_id,
+        "conversation": probe_conv,
+        "resource_url": str(full_path),
+    }
+    if tz_name:
+        payload["time_zone"] = tz_name
+    if tz_off_min is not None:
+        payload["time_zone_offset_min"] = tz_off_min
+    return payload
+
+
+def _is_draining() -> bool:
+    with _STATE_LOCK:
+        return bool(_SHUTDOWN_STATE.get("draining"))
+
+
+async def _run_sleep_timer_tick() -> int:
+    if not _SLEEP_TIMER_ENABLED or _is_draining():
+        return 0
+    sqlite_dir = _sqlite_dir_from_cfg(_CONFIG)
+    chats_dir = (_get_storage_dir(_CONFIG) / "st_chats").resolve()
+    if not sqlite_dir.exists() or not chats_dir.exists():
+        return 0
+
+    jobs = 0
+    for row in _iter_sleep_timer_scope_rows(sqlite_dir):
+        if jobs >= _SLEEP_TIMER_MAX_JOBS:
+            break
+        payload = _build_sleep_timer_memorize_payload(chats_dir, row)
+        if payload is None:
+            continue
+        await _run_forced_memorize_from_turn(payload)
+        jobs += 1
+    return jobs
+
+
+async def _sleep_memorize_timer_worker() -> None:
+    await asyncio.sleep(5)
+    while True:
+        try:
+            jobs = await _run_sleep_timer_tick()
+            if jobs:
+                logger.info("sleep timer memorize processed=%d", jobs)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("sleep timer tick failed")
+        await asyncio.sleep(_SLEEP_TIMER_INTERVAL_SECONDS)
+
+
+async def _reconcile_sleep_timer_task() -> None:
+    global _SLEEP_MEMORIZE_TIMER_TASK
+    task = _SLEEP_MEMORIZE_TIMER_TASK
+    if _SLEEP_TIMER_ENABLED:
+        if task is None or task.done():
+            _SLEEP_MEMORIZE_TIMER_TASK = asyncio.create_task(_sleep_memorize_timer_worker())
+        return
+    if task is None:
+        return
+    _SLEEP_MEMORIZE_TIMER_TASK = None
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 def _make_diary_deps() -> DiaryDeps:
@@ -3541,7 +3754,7 @@ async def conversation_turn(
             digest_cursor_for_gate = state_row.get("digest_cursor") if state_row.get("last_memorize_at") else -1
             force_memorize_unmemorized_tokens = _estimate_unmemorized_tokens(history_full, digest_cursor_for_gate)
             if (not dry_run) and history_full and force_memorize_unmemorized_tokens > _TURN_HISTORY_TOKEN_BUDGET:
-                memorize_history = _history_for_memorize_payload(history_full)
+                memorize_history = _normalize_conversation(history_full)
                 if memorize_history:
                     force_memorize_payload = {
                         **safe,
