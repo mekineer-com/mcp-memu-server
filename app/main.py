@@ -1378,8 +1378,15 @@ def _extract_result_item_ids(result: Any) -> list[str]:
 
 def _extract_memory_cache_from_turn_prompt(prompt: Any) -> list[str] | None:
     text = str(prompt or "")
-    marker = "Your recent thoughts:"
-    idx = text.find(marker)
+    marker = ""
+    idx = -1
+    for candidate in ("Your working thoughts:", "Your recent thoughts:"):
+        pos = text.find(candidate)
+        if pos < 0:
+            continue
+        if idx < 0 or pos < idx:
+            idx = pos
+            marker = candidate
     if idx < 0:
         return None
     tail = text[idx + len(marker) :]

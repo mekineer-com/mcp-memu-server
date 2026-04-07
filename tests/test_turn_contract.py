@@ -30,7 +30,7 @@ def test_build_turn_prompt_includes_core_sections():
     assert "Conversation history:" in prompt
     assert "Prior context:" in prompt
     assert "Retrieved memory context:" in prompt
-    assert "Your recent thoughts:" in prompt
+    assert "Your working thoughts:" in prompt
     assert "Intentions:" in prompt
 
 
