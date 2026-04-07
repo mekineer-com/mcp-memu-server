@@ -51,7 +51,7 @@ mcp-memu-server/
 | Module | Purpose |
 |--------|---------|
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
-| `app/services/diary.py` | Three-phase diary pipeline: `gather_diary_inputs()` builds anchor excerpt from queued episodes (with episode/time headers) and context (`memory_cache`, `intentions_active`, life goals); `run_diary_llm()` performs one forced-`method="llm"` `retrieve()` call per episode anchor to gather related background memories (IDs passed to self-model prompt), then writes diary/self-model prompts; `write_diary_outputs()` (lock-held) persists diary, self-model, intentions, summaries, life-goal updates, and supersession writes for any `<supersedes>` IDs in soul observations (scope-validated; FTS-safe via `memory_item_repo.update_item()`). |
+| `app/services/diary.py` | Three-phase diary pipeline: `gather_diary_inputs()` builds anchor excerpt from queued episodes (with episode/time headers) and context (`memory_cache`, `intentions_active`, life goals); `run_diary_llm()` performs one forced-`method="llm"` `retrieve()` call per episode anchor to gather related background memories (IDs passed to self-model prompt), then writes diary/self-model prompts; `write_diary_outputs()` (lock-held) persists diary, self-model, intentions, summaries, life-goal updates, supersession writes for any `<supersedes>` IDs in soul observations (scope-validated; FTS-safe via `memory_item_repo.update_item()`), and `shaped_by` ID storage (parsed from `<shaped_by>` tags; stored as `extra.shaped_by_ids` on the written soul observation memory — provenance audit trail). |
 | `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, `pending_diary_episode_ids` queue management |
 | `app/services/turn_contract.py` | `make_turn_system_prompt()`, `build_turn_prompt()`, `parse_turn_contract()` — soul turn prompt construction and JSON contract parsing |
 | `app/services/intention_state.py` | `normalize_intentions_stack()`, `format_intentions_for_prompt()`, `upsert_intentions_stack_entries()` — intentions normalization and prompt formatting |
@@ -94,6 +94,7 @@ memu:       path (to memu/src)
 categories: defaults[], allow_dynamic, thresholds
 retrieve:   method (rag|llm)
 memorize:   min_chunk_tokens, turn_history_token_budget, auto_memorize_on_sleep, sleep_timer_interval_seconds, supersede_similarity_threshold (default 0.75)
+debug:      log_prompts (bool) — dumps exact LLM prompt + response for memorize and diary steps to console
 ```
 
 ## Config-Only Runtime
