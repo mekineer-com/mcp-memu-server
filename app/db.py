@@ -178,6 +178,8 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN all_categories_summary TEXT")
     if "last_chat_x" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_chat_x TEXT")
+    if "last_chat_x_prev" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_chat_x_prev TEXT")
     for stmt in alters:
         try:
             con.execute(stmt)

@@ -95,3 +95,31 @@ def test_sleep_gap_complete_since_last_message_uses_night_window():
     day_last = int(datetime(2026, 4, 6, 10, 0, tzinfo=UTC).timestamp() * 1000)
     day_now = int(datetime(2026, 4, 6, 14, 30, tzinfo=UTC).timestamp() * 1000)
     assert main._sleep_gap_complete_since_last_message(day_last, zi, now_ms=day_now) is False
+
+
+def test_compact_chat_x_anchors_keeps_two_unique_newest():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    anchors = main._compact_chat_x_anchors("m9", "m8", "m9", "m7")
+    assert anchors == ["m9", "m8"]
+
+
+def test_slice_history_from_chat_x_uses_two_anchors():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    history = [
+        {"message_id": "m1", "content": "1"},
+        {"message_id": "m2", "content": "2"},
+        {"message_id": "m3", "content": "3"},
+        {"message_id": "m4", "content": "4"},
+        {"message_id": "m5", "content": "5"},
+        {"message_id": "m6", "content": "6"},
+    ]
+    sliced = main._slice_history_from_chat_x(history, ["m5", "m3"], limit=12)
+    assert [item.get("message_id") for item in sliced] == ["m3", "m4", "m5", "m6"]

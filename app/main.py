@@ -1578,17 +1578,37 @@ def _slice_history_after_recent_sleep_gap(
     return history[last_gap_start_idx:]
 
 
-def _slice_history_from_chat_x(history: list[dict[str, Any]], chat_x: str | None, *, limit: int = 12) -> list[dict[str, Any]]:
+def _compact_chat_x_anchors(*anchors: str | None, max_count: int = 2) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in anchors:
+        anchor = str(raw or "").strip()
+        if not anchor or anchor in seen:
+            continue
+        out.append(anchor)
+        seen.add(anchor)
+        if len(out) >= max_count:
+            break
+    return out
+
+
+def _slice_history_from_chat_x(
+    history: list[dict[str, Any]],
+    chat_x_anchors: list[str] | None,
+    *,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
     if not history:
         return []
-    if not chat_x:
+    if not chat_x_anchors:
         return history[-limit:]
-    anchor = str(chat_x).strip()
-    if not anchor:
+    anchors = _compact_chat_x_anchors(*chat_x_anchors, max_count=2)
+    if not anchors:
         return history[-limit:]
+    anchor_set = set(anchors)
     start_idx = None
     for idx, item in enumerate(history):
-        if str(item.get("message_id") or "").strip() == anchor:
+        if str(item.get("message_id") or "").strip() in anchor_set:
             start_idx = idx
             break
     if start_idx is None:
@@ -3832,9 +3852,13 @@ async def conversation_turn(
             _intentions_text = _format_intentions_for_prompt(intentions_before) if intentions_before else ""
             if _intentions_text and _intentions_text.strip() != "(none)":
                 _soul_ctx_queries.append({"role": "intentions", "content": {"text": _intentions_text}})
+            _chat_x_anchors = _compact_chat_x_anchors(
+                str(state_row.get("last_chat_x") or "").strip() or None,
+                str(state_row.get("last_chat_x_prev") or "").strip() or None,
+            )
             _history_from_chat_x = _slice_history_from_chat_x(
                 history,
-                str(state_row.get("last_chat_x") or "").strip() or None,
+                _chat_x_anchors,
             )
             _history_text = _format_route_history(_history_from_chat_x)
             if _history_text:
@@ -3924,6 +3948,13 @@ async def conversation_turn(
                     intentions_after,
                     [item_id for item_id in annulment_ids if item_id],
                 )
+                _next_chat_x_anchors = _compact_chat_x_anchors(
+                    chat_x,
+                    str(fresh_row.get("last_chat_x") or "").strip() or None,
+                    str(fresh_row.get("last_chat_x_prev") or "").strip() or None,
+                )
+                _next_last_chat_x = _next_chat_x_anchors[0] if _next_chat_x_anchors else None
+                _next_last_chat_x_prev = _next_chat_x_anchors[1] if len(_next_chat_x_anchors) > 1 else None
                 state_out, state_path = _write_conversation_state(
                     cid,
                     soul_id=soul_id,
@@ -3931,7 +3962,8 @@ async def conversation_turn(
                     updates={
                         "intentions_active": intentions_after,
                         "memory_cache": memory_cache_after,
-                        "last_chat_x": chat_x,
+                        "last_chat_x": _next_last_chat_x,
+                        "last_chat_x_prev": _next_last_chat_x_prev,
                         "undo_snapshot": {
                             "memory_cache": fresh_cache,
                             "intentions_active": fresh_intentions,
