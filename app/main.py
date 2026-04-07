@@ -133,6 +133,7 @@ _TURN_HISTORY_TOKEN_BUDGET: int = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET  # overridd
 _SLEEP_TIMER_ENABLED: bool = False
 _SLEEP_TIMER_INTERVAL_SECONDS: int = _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS
 _SLEEP_TIMER_MAX_JOBS: int = 1
+_LOG_PROMPTS: bool = False
 _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved", "removed"}
 
 
@@ -674,6 +675,7 @@ _CONFIG: dict[str, Any] = _load_config()
 def _refresh_runtime_limits() -> None:
     global _MIN_CHUNK_TOKENS, _TURN_HISTORY_TOKEN_BUDGET
     global _SLEEP_TIMER_ENABLED, _SLEEP_TIMER_INTERVAL_SECONDS
+    global _LOG_PROMPTS
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
     try:
         _MIN_CHUNK_TOKENS = max(0, int(memorize_cfg.get("min_chunk_tokens", _DEFAULT_MIN_CHUNK_TOKENS)))
@@ -694,6 +696,32 @@ def _refresh_runtime_limits() -> None:
         )
     except Exception:
         _SLEEP_TIMER_INTERVAL_SECONDS = _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS
+    debug_cfg = _CONFIG.get("debug") if isinstance(_CONFIG.get("debug"), dict) else {}
+    _LOG_PROMPTS = bool(debug_cfg.get("log_prompts", False))
+
+
+def _prompt_log_before(ctx: Any, request_view: Any) -> None:
+    if getattr(request_view, "kind", None) == "embed":
+        return
+    logger.info(
+        "[PROMPT] op=%s step=%s model=%s\n%s",
+        getattr(ctx, "operation", None) or "-",
+        getattr(ctx, "step_id", None) or "-",
+        getattr(ctx, "model", None) or "-",
+        getattr(request_view, "content", None) or "",
+    )
+
+
+def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: Any) -> None:
+    content = getattr(response_view, "content", None)
+    if not content:
+        return
+    logger.info(
+        "[RESPONSE] op=%s step=%s\n%s",
+        getattr(ctx, "operation", None) or "-",
+        getattr(ctx, "step_id", None) or "-",
+        content,
+    )
 
 
 _refresh_runtime_limits()
@@ -1060,6 +1088,9 @@ def _get_service_from_payload(
         retrieve_config=retrieve_config,
         user_config=user_config,
     )
+    if _LOG_PROMPTS:
+        svc.intercept_before_llm_call(_prompt_log_before, name="prompt_logger")
+        svc.intercept_after_llm_call(_prompt_log_after, name="response_logger")
 
     # Cap cached payload-services without a thundering-herd full wipe.
     if len(_SERVICES) >= 50:

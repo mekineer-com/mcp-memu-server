@@ -66,5 +66,8 @@
   },
   "retrieve": {
     "method": "rag"
+  },
+  "debug": {
+    "log_prompts": false
   }
 }
