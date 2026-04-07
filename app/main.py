@@ -128,6 +128,7 @@ _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60  # 3 hours
 _DEFAULT_MIN_CHUNK_TOKENS: int = 4000
 _DEFAULT_TURN_HISTORY_TOKEN_BUDGET: int = 3000
 _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS: int = 300
+_FORCE_MEMORIZE_MAX_CHUNK_TOKENS: int = 6000
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS  # overridden by config memorize.min_chunk_tokens
 _TURN_HISTORY_TOKEN_BUDGET: int = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET  # overridden by config memorize.turn_history_token_budget
 _SLEEP_TIMER_ENABLED: bool = False
@@ -154,6 +155,109 @@ def _estimate_unmemorized_tokens(messages: list[dict[str, Any]], digest_cursor: 
     if start >= len(messages):
         return 0
     return _estimate_tokens(messages[start:])
+
+
+def _chunk_index_ranges_by_token_budget(
+    messages: list[dict[str, Any]],
+    *,
+    start_idx: int,
+    end_idx: int,
+    max_chunk_tokens: int,
+) -> list[tuple[int, int]]:
+    if start_idx > end_idx:
+        return []
+    if max_chunk_tokens <= 0:
+        return [(start_idx, end_idx)]
+    ranges: list[tuple[int, int]] = []
+    chunk_start = start_idx
+    chunk_tokens = 0
+    for idx in range(start_idx, end_idx + 1):
+        msg_tokens = _estimate_tokens([messages[idx]])
+        if chunk_tokens > 0 and (chunk_tokens + msg_tokens) > max_chunk_tokens:
+            ranges.append((chunk_start, idx - 1))
+            chunk_start = idx
+            chunk_tokens = 0
+        chunk_tokens += msg_tokens
+    ranges.append((chunk_start, end_idx))
+    return ranges
+
+
+def _build_force_memorize_batches(
+    merged: list[dict[str, Any]],
+    *,
+    start_idx: int,
+    segments: list[dict[str, Any]],
+    days_dir: Path,
+    full_path: Path,
+    resource_url: str,
+    max_chunk_tokens: int,
+) -> list[tuple[str, list[dict[str, Any]], int]]:
+    if not merged:
+        return []
+    start_idx = max(0, int(start_idx))
+    last_idx = len(merged) - 1
+    if start_idx > last_idx:
+        return []
+
+    def _append_chunked(
+        out: list[tuple[str, list[dict[str, Any]], int]],
+        batch_url: str,
+        range_start: int,
+        range_end: int,
+    ) -> None:
+        for sub_start, sub_end in _chunk_index_ranges_by_token_budget(
+            merged,
+            start_idx=range_start,
+            end_idx=range_end,
+            max_chunk_tokens=max_chunk_tokens,
+        ):
+            batch_conv = merged[sub_start : sub_end + 1]
+            if batch_conv:
+                out.append((batch_url, batch_conv, sub_end))
+
+    out: list[tuple[str, list[dict[str, Any]], int]] = []
+
+    if segments:
+        segment_ranges: list[tuple[int, int, str]] = []
+        for segment in segments:
+            try:
+                seg_start = int(segment.get("start"))
+                seg_end = int(segment.get("end"))
+            except Exception:
+                continue
+            if seg_end < seg_start or seg_end < start_idx or seg_start > last_idx:
+                continue
+            a = max(seg_start, start_idx)
+            b = min(seg_end, last_idx)
+            if a > b:
+                continue
+            batch_url = resource_url
+            batch_file = segment.get("file")
+            if isinstance(batch_file, str) and batch_file:
+                batch_url = str((days_dir / batch_file).resolve())
+            segment_ranges.append((a, b, batch_url))
+        segment_ranges.sort(key=lambda row: (row[0], row[1]))
+
+        next_idx = start_idx
+        for a, b, batch_url in segment_ranges:
+            if b < next_idx:
+                continue
+            if a > next_idx:
+                _append_chunked(out, str(full_path), next_idx, a - 1)
+            effective_start = max(a, next_idx)
+            if effective_start > b:
+                continue
+            _append_chunked(out, batch_url, effective_start, b)
+            next_idx = b + 1
+
+        if next_idx <= last_idx:
+            _append_chunked(out, str(full_path), next_idx, last_idx)
+
+        if out:
+            return out
+
+    _append_chunked(out, str(full_path), start_idx, last_idx)
+    return out
 
 
 async def _run_forced_memorize_from_turn(payload: dict[str, Any]) -> None:
@@ -3081,9 +3185,15 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
             memorize_batches: list[tuple[str, list[dict[str, Any]], int]] = []
             if force and isinstance(merged, list):
                 start_idx = max(0, processed_cursor + 1)
-                batch_conv = merged[start_idx:]
-                if batch_conv:
-                    memorize_batches.append((str(full_path), batch_conv, len(merged) - 1))
+                memorize_batches = _build_force_memorize_batches(
+                    merged,
+                    start_idx=start_idx,
+                    segments=segments,
+                    days_dir=days_dir,
+                    full_path=full_path,
+                    resource_url=resource_url,
+                    max_chunk_tokens=_FORCE_MEMORIZE_MAX_CHUNK_TOKENS,
+                )
             elif segments and isinstance(merged, list):
                 last_idx = len(merged) - 1
                 carry: tuple[int, int] | None = None  # (effective_start, end_idx) of a too-short segment

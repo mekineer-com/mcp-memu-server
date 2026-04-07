@@ -6,6 +6,7 @@ CI pipeline runs successfully.
 """
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -140,3 +141,74 @@ def test_slice_history_from_chat_x_uses_one_anchor():
     ]
     sliced = main._slice_history_from_chat_x(history, ["m4"], limit=12)
     assert [item.get("message_id") for item in sliced] == ["m4", "m5"]
+
+
+def test_build_force_memorize_batches_prefers_segments():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    merged = [{"content": f"m{i}"} for i in range(1, 7)]
+    segments = [
+        {"start": 0, "end": 2, "file": "day1.json"},
+        {"start": 3, "end": 5, "file": "day2.json"},
+    ]
+    batches = main._build_force_memorize_batches(
+        merged,
+        start_idx=0,
+        segments=segments,
+        days_dir=Path("/tmp/days"),
+        full_path=Path("/tmp/full.json"),
+        resource_url="/tmp/day-latest.json",
+        max_chunk_tokens=999,
+    )
+    assert [end for _url, _conv, end in batches] == [2, 5]
+    assert batches[0][0].endswith("/tmp/days/day1.json")
+    assert batches[1][0].endswith("/tmp/days/day2.json")
+
+
+def test_build_force_memorize_batches_falls_back_to_token_windows():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    merged = [{"content": "one"} for _ in range(7)]
+    batches = main._build_force_memorize_batches(
+        merged,
+        start_idx=0,
+        segments=[],
+        days_dir=Path("/tmp/days"),
+        full_path=Path("/tmp/full.json"),
+        resource_url="/tmp/day-latest.json",
+        max_chunk_tokens=3,
+    )
+    assert [end for _url, _conv, end in batches] == [2, 5, 6]
+    assert all(url.endswith("/tmp/full.json") for url, _conv, _end in batches)
+
+
+def test_build_force_memorize_batches_fills_segment_gaps_with_full_path():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    merged = [{"content": f"m{i}"} for i in range(1, 7)]
+    segments = [
+        {"start": 0, "end": 1, "file": "day1.json"},
+        {"start": 4, "end": 5, "file": "day2.json"},
+    ]
+    batches = main._build_force_memorize_batches(
+        merged,
+        start_idx=0,
+        segments=segments,
+        days_dir=Path("/tmp/days"),
+        full_path=Path("/tmp/full.json"),
+        resource_url="/tmp/day-latest.json",
+        max_chunk_tokens=999,
+    )
+    assert [end for _url, _conv, end in batches] == [1, 3, 5]
+    assert batches[0][0].endswith("/tmp/days/day1.json")
+    assert batches[1][0].endswith("/tmp/full.json")
+    assert batches[2][0].endswith("/tmp/days/day2.json")
