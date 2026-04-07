@@ -128,12 +128,11 @@ _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60  # 3 hours
 _DEFAULT_MIN_CHUNK_TOKENS: int = 4000
 _DEFAULT_TURN_HISTORY_TOKEN_BUDGET: int = 3000
 _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS: int = 300
-_DEFAULT_SLEEP_TIMER_MAX_JOBS: int = 2
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS  # overridden by config memorize.min_chunk_tokens
 _TURN_HISTORY_TOKEN_BUDGET: int = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET  # overridden by config memorize.turn_history_token_budget
 _SLEEP_TIMER_ENABLED: bool = False
 _SLEEP_TIMER_INTERVAL_SECONDS: int = _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS
-_SLEEP_TIMER_MAX_JOBS: int = _DEFAULT_SLEEP_TIMER_MAX_JOBS
+_SLEEP_TIMER_MAX_JOBS: int = 1
 _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved", "removed"}
 
 
@@ -674,7 +673,7 @@ _CONFIG: dict[str, Any] = _load_config()
 
 def _refresh_runtime_limits() -> None:
     global _MIN_CHUNK_TOKENS, _TURN_HISTORY_TOKEN_BUDGET
-    global _SLEEP_TIMER_ENABLED, _SLEEP_TIMER_INTERVAL_SECONDS, _SLEEP_TIMER_MAX_JOBS
+    global _SLEEP_TIMER_ENABLED, _SLEEP_TIMER_INTERVAL_SECONDS
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
     try:
         _MIN_CHUNK_TOKENS = max(0, int(memorize_cfg.get("min_chunk_tokens", _DEFAULT_MIN_CHUNK_TOKENS)))
@@ -695,10 +694,6 @@ def _refresh_runtime_limits() -> None:
         )
     except Exception:
         _SLEEP_TIMER_INTERVAL_SECONDS = _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS
-    try:
-        _SLEEP_TIMER_MAX_JOBS = max(1, int(memorize_cfg.get("sleep_timer_max_jobs", _DEFAULT_SLEEP_TIMER_MAX_JOBS)))
-    except Exception:
-        _SLEEP_TIMER_MAX_JOBS = _DEFAULT_SLEEP_TIMER_MAX_JOBS
 
 
 _refresh_runtime_limits()
@@ -2592,13 +2587,10 @@ def _build_sleep_timer_memorize_payload(chats_dir: Path, row: dict[str, Any]) ->
     return payload
 
 
-def _is_draining() -> bool:
-    with _STATE_LOCK:
-        return bool(_SHUTDOWN_STATE.get("draining"))
-
-
 async def _run_sleep_timer_tick() -> int:
-    if not _SLEEP_TIMER_ENABLED or _is_draining():
+    with _STATE_LOCK:
+        draining = bool(_SHUTDOWN_STATE.get("draining"))
+    if not _SLEEP_TIMER_ENABLED or draining:
         return 0
     sqlite_dir = _sqlite_dir_from_cfg(_CONFIG)
     chats_dir = (_get_storage_dir(_CONFIG) / "st_chats").resolve()

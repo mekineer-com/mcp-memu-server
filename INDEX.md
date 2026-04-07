@@ -93,7 +93,7 @@ listen:     host, port
 memu:       path (to memu/src)
 categories: defaults[], allow_dynamic, thresholds
 retrieve:   method (rag|llm)
-memorize:   min_chunk_tokens, turn_history_token_budget, auto_memorize_on_sleep, sleep_timer_interval_seconds, sleep_timer_max_jobs, supersede_similarity_threshold (default 0.75)
+memorize:   min_chunk_tokens, turn_history_token_budget, auto_memorize_on_sleep, sleep_timer_interval_seconds, supersede_similarity_threshold (default 0.75)
 ```
 
 ## Config-Only Runtime

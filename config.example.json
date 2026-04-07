@@ -62,8 +62,7 @@
     "min_chunk_tokens": 4000,
     "turn_history_token_budget": 3000,
     "auto_memorize_on_sleep": false,
-    "sleep_timer_interval_seconds": 300,
-    "sleep_timer_max_jobs": 2
+    "sleep_timer_interval_seconds": 300
   },
   "retrieve": {
     "method": "rag"
