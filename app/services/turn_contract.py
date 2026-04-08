@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from app.services.intention_state import MAX_MEMORY_CACHE_ENTRIES, format_intentions_for_prompt, normalize_memory_cache
@@ -16,9 +18,25 @@ DEFAULT_SOUL_CARD = (
 DEFAULT_HISTORY_TOKEN_BUDGET = 3000
 
 
-def make_turn_system_prompt(soul_name: str, *, soul_card: str | None = None) -> str:
+def _local_now(now: datetime | None = None) -> datetime:
+    anchor = now if isinstance(now, datetime) else datetime.now().astimezone()
+    if anchor.tzinfo is None:
+        return anchor.replace(tzinfo=timezone.utc).astimezone()
+    return anchor.astimezone()
+
+
+def _format_time_anchor(now: datetime | None = None) -> str:
+    anchor = _local_now(now)
+    zone = anchor.tzname() or "local"
+    return f"{anchor.strftime('%A, %B')} {anchor.day}, {anchor.year} {anchor.strftime('%H:%M')} {zone}"
+
+
+def make_turn_system_prompt(soul_name: str, *, soul_card: str | None = None, now: datetime | None = None) -> str:
     identity = f"You are {soul_name}. {soul_card or DEFAULT_SOUL_CARD}"
+    anchor_line = f"Current time anchor: {_format_time_anchor(now)} (local server time)."
     return f"""{identity}
+
+{anchor_line}
 
 Return STRICT JSON only.
 First character must be {{ and last character must be }}.
@@ -85,11 +103,7 @@ def _estimate_text_tokens(text: str) -> int:
     return max(1, int(words / 0.75))
 
 
-def _render_history(
-    history: list[dict[str, Any]],
-    *,
-    token_budget: int = DEFAULT_HISTORY_TOKEN_BUDGET,
-) -> str:
+def _render_history(history: list[dict[str, Any]], *, token_budget: int = DEFAULT_HISTORY_TOKEN_BUDGET) -> str:
     if not history:
         return "(none)"
     budget = int(token_budget or 0)
@@ -118,7 +132,120 @@ def _render_history(
     return "\n".join(lines) or "(none)"
 
 
-def _render_retrieve(result: Any) -> tuple[str, set[str], set[str]]:
+def _elapsed_calendar_months(older: datetime, newer: datetime) -> int:
+    months = ((newer.year - older.year) * 12) + (newer.month - older.month)
+    if newer.day < older.day:
+        months -= 1
+    return max(0, months)
+
+
+def _parse_happened_at(raw: Any) -> datetime | None:
+    parsed: datetime | None = None
+    if isinstance(raw, datetime):
+        parsed = raw
+    elif isinstance(raw, (int, float)) and math.isfinite(raw):
+        epoch = float(raw)
+        if abs(epoch) > 1_000_000_000_000:
+            epoch = epoch / 1000.0
+        try:
+            parsed = datetime.fromtimestamp(epoch, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    elif isinstance(raw, str):
+        text = _text(raw)
+        if not text:
+            return None
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+            try:
+                numeric = float(text)
+            except ValueError:
+                return None
+            return _parse_happened_at(numeric)
+        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone()
+
+
+def _format_relative_time_label(happened_at: Any, *, now: datetime | None = None) -> str | None:
+    happened = _parse_happened_at(happened_at)
+    if happened is None:
+        return None
+    anchor = _local_now(now)
+    day_delta = (anchor.date() - happened.date()).days
+
+    if day_delta >= 0:
+        if day_delta == 0:
+            return "today"
+        if day_delta == 1:
+            return "yesterday"
+        if day_delta <= 6:
+            return f"{day_delta} days ago"
+        if day_delta <= 29:
+            weeks = max(1, day_delta // 7)
+            return f"{weeks} week{'s' if weeks != 1 else ''} ago"
+        months = _elapsed_calendar_months(happened, anchor)
+        if months < 1:
+            months = 1
+        if months < 12:
+            return f"{months} month{'s' if months != 1 else ''} ago"
+        years = months // 12
+        rem_months = months % 12
+        if rem_months:
+            return f"{years} year{'s' if years != 1 else ''}, {rem_months} month{'s' if rem_months != 1 else ''} ago"
+        return f"{years} year{'s' if years != 1 else ''} ago"
+
+    future_days = abs(day_delta)
+    if future_days == 1:
+        return "tomorrow"
+    if future_days <= 6:
+        return f"in {future_days} days"
+    if future_days <= 29:
+        weeks = max(1, future_days // 7)
+        return f"in {weeks} week{'s' if weeks != 1 else ''}"
+    months = _elapsed_calendar_months(anchor, happened)
+    if months < 1:
+        months = 1
+    if months < 12:
+        return f"in {months} month{'s' if months != 1 else ''}"
+    years = months // 12
+    rem_months = months % 12
+    if rem_months:
+        return f"in {years} year{'s' if years != 1 else ''}, {rem_months} month{'s' if rem_months != 1 else ''}"
+    return f"in {years} year{'s' if years != 1 else ''}"
+
+
+def _extract_reinforcement_count(extra: Any) -> int:
+    if not isinstance(extra, dict):
+        return 1
+    raw = extra.get("reinforcement_count")
+    try:
+        count = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return count if count > 1 else 1
+
+
+def _format_item_suffix(item: dict[str, Any], *, now: datetime | None = None) -> str:
+    parts: list[str] = []
+    time_label = _format_relative_time_label(item.get("happened_at"), now=now)
+    if time_label:
+        parts.append(time_label)
+    reinforcement_count = _extract_reinforcement_count(item.get("extra"))
+    if reinforcement_count > 1:
+        parts.append(f"reinforced {reinforcement_count}x")
+    if not parts:
+        return ""
+    return f" ({', '.join(parts)})"
+
+
+def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, set[str], set[str]]:
     if not isinstance(result, dict):
         return "(none)", set(), set()
 
@@ -126,7 +253,7 @@ def _render_retrieve(result: Any) -> tuple[str, set[str], set[str]]:
     item_terms: set[str] = set()
     category_terms: set[str] = set()
 
-    item_rows: list[tuple[str, str]] = []
+    item_rows: list[tuple[str, str, str]] = []
     seen_items: set[str] = set()
     items = result.get("items")
     if isinstance(items, list):
@@ -142,7 +269,7 @@ def _render_retrieve(result: Any) -> tuple[str, set[str], set[str]]:
                 continue
             seen_items.add(summary_key)
             item_terms.add(summary_key)
-            item_rows.append((memory_type, summary))
+            item_rows.append((memory_type, _format_item_suffix(item, now=now), summary))
 
     categories = result.get("categories")
     if isinstance(categories, list):
@@ -174,8 +301,8 @@ def _render_retrieve(result: Any) -> tuple[str, set[str], set[str]]:
         if lines:
             lines.append("")
         lines.append("Memories:")
-        for memory_type, summary in item_rows:
-            lines.append(f"- [{memory_type}] {summary}")
+        for memory_type, suffix, summary in item_rows:
+            lines.append(f"- [{memory_type}]{suffix} {summary}")
 
     return ("\n".join(lines) if lines else "(none)"), item_terms, category_terms
 
@@ -241,13 +368,14 @@ def build_turn_prompt(
     all_categories_summary: str | None,
     memory_cache: Any,
     intentions_active: Any,
+    now: datetime | None = None,
 ) -> str:
     cache = normalize_memory_cache(memory_cache)
     cache_lines = [f"{idx + 1}. {entry}" for idx, entry in enumerate(cache)]
     if len(cache) >= MAX_MEMORY_CACHE_ENTRIES:
         cache_lines[0] = f"{cache_lines[0]}  \u2190 oldest, replaced on next write"
 
-    rendered_retrieve, item_terms, category_terms = _render_retrieve(retrieve_rag)
+    rendered_retrieve, item_terms, category_terms = _render_retrieve(retrieve_rag, now=now)
     rendered_all_categories, all_categories_terms = _render_all_categories_summary(
         all_categories_summary,
         item_terms | category_terms,
