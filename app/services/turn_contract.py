@@ -33,7 +33,7 @@ def _format_time_anchor(now: datetime | None = None) -> str:
 
 def make_turn_system_prompt(soul_name: str, *, soul_card: str | None = None, now: datetime | None = None) -> str:
     identity = f"You are {soul_name}. {soul_card or DEFAULT_SOUL_CARD}"
-    anchor_line = f"Current time anchor: {_format_time_anchor(now)} (local server time)."
+    anchor_line = f"Today is {_format_time_anchor(now)}."
     return f"""{identity}
 
 {anchor_line}

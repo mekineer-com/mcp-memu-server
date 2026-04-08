@@ -59,8 +59,8 @@ def test_make_turn_system_prompt_includes_time_anchor() -> None:
         "Codexia",
         now=datetime(2026, 4, 8, 9, 30, tzinfo=timezone.utc),
     )
-    assert "Current time anchor:" in prompt
-    assert "(local server time)." in prompt
+    assert "Today is " in prompt
+    assert "2026" in prompt
 
 
 def test_build_turn_prompt_renders_relative_time_and_reinforcement() -> None:
