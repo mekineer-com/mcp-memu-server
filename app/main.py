@@ -58,6 +58,9 @@ from app.db import (
     sqlite_table_columns as _sqlite_table_columns,
 )
 from app.services.diary import (
+    build_all_categories_summary as _build_all_categories_summary,
+)
+from app.services.diary import (
     DiaryDeps,
 )
 from app.services.diary import (
@@ -136,6 +139,7 @@ _SLEEP_TIMER_INTERVAL_SECONDS: int = _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS
 _SLEEP_TIMER_MAX_JOBS: int = 1
 _LOG_PROMPTS: bool = False
 _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved", "removed"}
+_ALL_CATEGORIES_SUMMARY_PER_CATEGORY_TOKEN_CAP: int = 100
 
 
 def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
@@ -1920,6 +1924,24 @@ def _merge_memorize_batch_results(
     return result
 
 
+def _compute_all_categories_summary_for_scope(
+    *,
+    svc: Any,
+    soul_id: str,
+    user_id: str,
+) -> str | None:
+    where: dict[str, Any] = {}
+    if soul_id:
+        where["soul_id"] = soul_id
+    if user_id:
+        where["user_id"] = user_id
+    categories = svc.database.memory_category_repo.list_categories(where)
+    return _build_all_categories_summary(
+        categories=list(categories.values()),
+        per_category_token_cap=_ALL_CATEGORIES_SUMMARY_PER_CATEGORY_TOKEN_CAP,
+    )
+
+
 async def _run_retrieve(
     payload: dict[str, Any],
     *,
@@ -2929,6 +2951,15 @@ async def _run_memorize_batches(
         has_batch_results = False
         pending_diary_episode_ids: list[str] = []
         processed_end_cursor = processed_cursor
+        current_all_categories_summary: str | None = None
+        soul_card_for_memorize: str | None = None
+        if conversation_id:
+            state_row, soul_card_for_memorize, _ = _load_turn_state_and_soul_card(
+                conversation_id,
+                user_id=uid,
+                soul_id=soul_id,
+            )
+            current_all_categories_summary = str(state_row.get("all_categories_summary") or "").strip() or None
         for batch_url, batch_conv, batch_end in memorize_batches:
             batch_result = await svc.memorize(
                 resource_url=batch_url,
@@ -2936,17 +2967,27 @@ async def _run_memorize_batches(
                 user=scope,
                 raw_text=json.dumps(batch_conv, ensure_ascii=False),
                 local_path=batch_url,
+                all_categories_summary=current_all_categories_summary,
+                soul_card=soul_card_for_memorize,
             )
             if isinstance(batch_result, dict):
                 has_batch_results = True
                 pending_diary_episode_ids.extend(_normalize_text_list(batch_result.get("pending_diary_episode_ids")))
                 processed_end_cursor = max(processed_end_cursor, batch_end)
                 if conversation_id:
+                    current_all_categories_summary = _compute_all_categories_summary_for_scope(
+                        svc=svc,
+                        soul_id=soul_id,
+                        user_id=uid,
+                    )
                     _write_conversation_state(
                         conversation_id,
                         soul_id=soul_id,
                         user_id=uid,
-                        updates={"digest_cursor": processed_end_cursor},
+                        updates={
+                            "digest_cursor": processed_end_cursor,
+                            "all_categories_summary": current_all_categories_summary,
+                        },
                     )
 
         if conversation_id and has_batch_results:
@@ -2959,6 +3000,7 @@ async def _run_memorize_batches(
                         "digest_cursor": max(0, processed_end_cursor),
                         "last_memorize_at": datetime.now(UTC).isoformat(),
                         "append_pending_diary_episode_ids": pending_diary_episode_ids,
+                        "all_categories_summary": current_all_categories_summary,
                     },
                 )
             except Exception:
