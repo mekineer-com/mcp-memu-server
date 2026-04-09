@@ -65,7 +65,8 @@
     "sleep_timer_interval_seconds": 300
   },
   "retrieve": {
-    "method": "rag"
+    "method": "rag",
+    "apimw_enabled": true
   },
   "debug": {
     "log_prompts": false

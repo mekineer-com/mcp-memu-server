@@ -20,6 +20,29 @@ def test_placeholder():
     assert True
 
 
+def test_retrieve_method_from_cfg_forces_public_rag():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    assert main._retrieve_method_from_cfg({"retrieve": {"method": "rag"}}) == "rag"
+    assert main._retrieve_method_from_cfg({"retrieve": {"method": "llm"}}) == "rag"
+    assert main._retrieve_method_from_cfg({"retrieve": {"method": "unknown"}}) == "rag"
+
+
+def test_retrieve_apimw_enabled_from_cfg_defaults_and_override():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    assert main._retrieve_apimw_enabled_from_cfg(None) is True
+    assert main._retrieve_apimw_enabled_from_cfg({"retrieve": {}}) is True
+    assert main._retrieve_apimw_enabled_from_cfg({"retrieve": {"apimw_enabled": True}}) is True
+    assert main._retrieve_apimw_enabled_from_cfg({"retrieve": {"apimw_enabled": False}}) is False
+
+
 def test_imports():
     """Test that main application modules can be imported."""
     try:

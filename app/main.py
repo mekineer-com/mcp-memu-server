@@ -572,6 +572,7 @@ def _default_config() -> dict[str, Any]:
         },
         "retrieve": {
             "method": "rag",
+            "apimw_enabled": True,
         },
         "mcp": {"http_path": "/mcp", "sse_path": "/sse"},
     }
@@ -1091,7 +1092,17 @@ def _retrieve_method_from_cfg(cfg: Mapping[str, Any] | None) -> str:
     retrieve = cfg.get("retrieve")
     if not isinstance(retrieve, Mapping):
         return "rag"
-    return _normalize_retrieve_method(retrieve.get("method"), "rag")
+    method = _normalize_retrieve_method(retrieve.get("method"), "rag")
+    return "rag" if method == "llm" else method
+
+
+def _retrieve_apimw_enabled_from_cfg(cfg: Mapping[str, Any] | None) -> bool:
+    if not isinstance(cfg, Mapping):
+        return True
+    retrieve = cfg.get("retrieve")
+    if not isinstance(retrieve, Mapping):
+        return True
+    return bool(retrieve.get("apimw_enabled", True))
 
 
 def _get_service_from_payload(
@@ -1950,6 +1961,7 @@ async def _run_retrieve(
     conversation_id: str | None = None,
     persist_llm_state: bool = False,
     llm_dedupe_baseline: Any | None = None,
+    allow_llm_method: bool = False,
 ) -> dict[str, Any]:
     safe = _safe_payload(payload)
     scoped_conversation_id = str(conversation_id or _extract_conversation_id(safe) or "").strip() or None
@@ -1957,6 +1969,8 @@ async def _run_retrieve(
         safe["conversation_id"] = scoped_conversation_id
 
     method = _normalize_retrieve_method(safe.get("method"), _retrieve_method_from_cfg(_CONFIG))
+    if method == "llm" and not allow_llm_method:
+        raise HTTPException(status_code=400, detail="method=llm is internal-only; use method=rag")
     if method == "llm":
         retrieve_cfg = safe.get("retrieve_config")
         if not isinstance(retrieve_cfg, dict):
@@ -3911,7 +3925,7 @@ async def conversation_turn(
             if parsed_intentions is not None:
                 state_override_intentions = parsed_intentions
         dry_run = bool(safe.get("dry_run", False))
-        run_apimw = bool(safe.get("run_apimw", True))
+        run_apimw = _retrieve_apimw_enabled_from_cfg(_CONFIG) and bool(safe.get("run_apimw", True))
         apply_turn_maintenance = bool(safe.get("apply_turn_maintenance", True))
         include_debug = bool(safe.get("debug", False))
         if dry_run:
@@ -4151,6 +4165,7 @@ async def conversation_turn(
                     conversation_id=cid,
                     persist_llm_state=True,
                     llm_dedupe_baseline=retrieve_rag if isinstance(retrieve_rag, dict) else None,
+                    allow_llm_method=True,
                 )
             )
 

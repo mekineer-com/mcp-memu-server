@@ -31,7 +31,7 @@ mcp-memu-server/
 | `/health` | GET | Health check |
 | `/ping` | GET | Plugin ping (returns ok + serverInstanceId) |
 | `/memorize` | POST | Extract memories from conversation text (also used by the optional sleep timer auto-digest worker); `force=true` batching via `_build_force_memorize_batches()` — prefers segment manifest ranges, fills gaps with `full.json`, falls back to token-window chunking |
-| `/retrieve` | POST | Query memories (rag or llm method) |
+| `/retrieve` | POST | Query memories (`rag` method; `llm` is internal-only for background flows) |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt for chat path |
 | `/conversation/{id}/turn` | POST | Soul turn loop: run LLM with turn contract, persist intentions + cache; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self`); queues forced memorize when unmemorized chat tail exceeds `memorize.turn_history_token_budget` |
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn maintenance using `undo_snapshot` (single-step depth) |
@@ -92,7 +92,7 @@ storage:    resources_dir, metadata_store (provider + dsn)
 listen:     host, port
 memu:       path (to memu/src)
 categories: defaults[], allow_dynamic, thresholds
-retrieve:   method (rag|llm)
+retrieve:   method (rag), apimw_enabled (bool; toggles turn-level APImw background retrieve)
 memorize:   min_chunk_tokens, turn_history_token_budget, auto_memorize_on_sleep, sleep_timer_interval_seconds, supersede_similarity_threshold (default 0.75), enable_item_reinforcement (default true — enables reinforcement count roll-up on semantic dedupe merge)
 debug:      log_prompts (bool) — dumps exact LLM prompt + response for memorize and diary steps to console
 ```
