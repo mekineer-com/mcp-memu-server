@@ -25,9 +25,9 @@ if TYPE_CHECKING:
     from memu.app import MemoryService
 
 
-def _make_llm_retrieve_service(svc: MemoryService) -> MemoryService:
+def _make_diary_retrieve_service(svc: MemoryService) -> MemoryService:
     retrieve_config = svc.retrieve_config.model_copy(deep=True)
-    retrieve_config.method = "llm"
+    retrieve_config.method = "rag_plus_llm"
     return svc.__class__(
         llm_profiles=svc.llm_profiles,
         blob_config=svc.blob_config,
@@ -479,12 +479,12 @@ async def run_diary_llm(
     episode_anchors: list[dict[str, Any]] = inputs["episode_anchors"]
     retrieve_scope: dict[str, Any] = inputs["retrieve_scope"]
     pending_episode_set = {str(ep or "").strip() for ep in inputs["pending_diary_episode_ids"]}
-    llm_retrieve_svc = _make_llm_retrieve_service(svc)
+    diary_retrieve_svc = _make_diary_retrieve_service(svc)
     related_memory_ids: list[str] = []
     related_rows: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for anchor in episode_anchors:
-        retrieve_out = await llm_retrieve_svc.retrieve(
+        retrieve_out = await diary_retrieve_svc.retrieve(
             [{"role": "user", "content": {"text": str(anchor["text"]).strip()}}],
             where=retrieve_scope,
         )

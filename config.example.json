@@ -65,7 +65,7 @@
     "sleep_timer_interval_seconds": 300
   },
   "retrieve": {
-    "method": "rag"
+    "method": "rag_plus_llm"
   },
   "debug": {
     "log_prompts": false

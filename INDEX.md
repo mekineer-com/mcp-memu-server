@@ -31,7 +31,7 @@ mcp-memu-server/
 | `/health` | GET | Health check |
 | `/ping` | GET | Plugin ping (returns ok + serverInstanceId) |
 | `/memorize` | POST | Extract memories from conversation text (also used by the optional sleep timer auto-digest worker); `force=true` batching via `_build_force_memorize_batches()` — prefers segment manifest ranges, fills gaps with `full.json`, falls back to token-window chunking |
-| `/retrieve` | POST | Query memories (rag or llm method) |
+| `/retrieve` | POST | Query memories (`rag` or `rag_plus_llm` method) |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt for chat path |
 | `/conversation/{id}/turn` | POST | Soul turn loop: run LLM with turn contract, persist intentions + cache; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self`); queues forced memorize when unmemorized chat tail exceeds `memorize.turn_history_token_budget` |
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn maintenance using `undo_snapshot` (single-step depth) |
@@ -51,7 +51,7 @@ mcp-memu-server/
 | Module | Purpose |
 |--------|---------|
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
-| `app/services/diary.py` | Three-phase diary pipeline: `gather_diary_inputs()` builds anchor excerpt from queued episodes (with episode/time headers) and context (`memory_cache`, `intentions_active`, life goals); `run_diary_llm()` performs one forced-`method="llm"` `retrieve()` call per episode anchor to gather related background memories (IDs passed to self-model prompt), then writes diary/self-model prompts; `write_diary_outputs()` (lock-held) persists diary, self-model, intentions, summaries, life-goal updates, supersession writes for any `<supersedes>` IDs in soul observations (scope-validated; FTS-safe via `memory_item_repo.update_item()`), and `shaped_by` ID storage (parsed from `<shaped_by>` tags; stored as `extra.shaped_by_ids` on the written soul observation memory — provenance audit trail). `build_all_categories_summary()` — shared capped summary builder (100 tokens/category); used by diary state write and fed into memorize extraction for context enrichment. |
+| `app/services/diary.py` | Three-phase diary pipeline: `gather_diary_inputs()` builds anchor excerpt from queued episodes (with episode/time headers) and context (`memory_cache`, `intentions_active`, life goals); `run_diary_llm()` performs one forced-`method="rag_plus_llm"` `retrieve()` call per episode anchor to gather related background memories (IDs passed to self-model prompt), then writes diary/self-model prompts; `write_diary_outputs()` (lock-held) persists diary, self-model, intentions, summaries, life-goal updates, supersession writes for any `<supersedes>` IDs in soul observations (scope-validated; FTS-safe via `memory_item_repo.update_item()`), and `shaped_by` ID storage (parsed from `<shaped_by>` tags; stored as `extra.shaped_by_ids` on the written soul observation memory — provenance audit trail). `build_all_categories_summary()` — shared capped summary builder (100 tokens/category); used by diary state write and fed into memorize extraction for context enrichment. |
 | `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, `pending_diary_episode_ids` queue management |
 | `app/services/turn_contract.py` | `make_turn_system_prompt()`, `build_turn_prompt()`, `parse_turn_contract()` — soul turn prompt construction and JSON contract parsing; temporal awareness: system prompt includes `Today is [date].` anchor; retrieved memory lines include relative-time labels from `happened_at` and `reinforced Nx` suffix from `reinforcement_count` |
 | `app/services/intention_state.py` | `normalize_intentions_stack()`, `format_intentions_for_prompt()`, `upsert_intentions_stack_entries()` — intentions normalization and prompt formatting |
@@ -92,7 +92,7 @@ storage:    resources_dir, metadata_store (provider + dsn)
 listen:     host, port
 memu:       path (to memu/src)
 categories: defaults[], allow_dynamic, thresholds
-retrieve:   method (rag|llm)
+retrieve:   method (rag|rag_plus_llm)
 memorize:   min_chunk_tokens, turn_history_token_budget, auto_memorize_on_sleep, sleep_timer_interval_seconds, supersede_similarity_threshold (default 0.75), enable_item_reinforcement (default true — enables reinforcement count roll-up on semantic dedupe merge)
 debug:      log_prompts (bool) — dumps exact LLM prompt + response for memorize and diary steps to console
 ```
