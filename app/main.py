@@ -571,7 +571,7 @@ def _default_config() -> dict[str, Any]:
             "homeless_trigger_count": 20,
         },
         "retrieve": {
-            "method": "rag_plus_llm",
+            "method": "rag",
         },
         "mcp": {"http_path": "/mcp", "sse_path": "/sse"},
     }
@@ -1080,20 +1080,18 @@ def _derive_service_key(payload: dict[str, Any]) -> str:
     return "__".join(parts) if parts else "default"
 
 
-def _normalize_retrieve_method(value: Any, default: str = "rag_plus_llm") -> str:
+def _normalize_retrieve_method(value: Any, default: str = "rag") -> str:
     method = str(value or "").strip().lower()
-    if method == "llm":
-        return "rag_plus_llm"
-    return method if method in {"rag", "rag_plus_llm"} else default
+    return method if method in {"rag", "llm"} else default
 
 
 def _retrieve_method_from_cfg(cfg: Mapping[str, Any] | None) -> str:
     if not isinstance(cfg, Mapping):
-        return "rag_plus_llm"
+        return "rag"
     retrieve = cfg.get("retrieve")
     if not isinstance(retrieve, Mapping):
-        return "rag_plus_llm"
-    return _normalize_retrieve_method(retrieve.get("method"), "rag_plus_llm")
+        return "rag"
+    return _normalize_retrieve_method(retrieve.get("method"), "rag")
 
 
 def _get_service_from_payload(
@@ -1556,6 +1554,74 @@ def _extract_intentions_from_turn_prompt(prompt: Any) -> dict[str, Any] | None:
     return _normalize_intentions_stack_impl({"items": items})
 
 
+def _norm_result_sig(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    return text
+
+
+def _item_sig(row: Any) -> str:
+    if not isinstance(row, dict):
+        return ""
+    item_id = _norm_result_sig(row.get("id"))
+    if item_id:
+        return f"id:{item_id}"
+    summary = _norm_result_sig(row.get("summary"))
+    if summary:
+        return f"summary:{summary}"
+    return ""
+
+
+def _resource_sig(row: Any) -> str:
+    if not isinstance(row, dict):
+        return ""
+    for key in ("id", "url", "local_path", "name", "caption", "title"):
+        value = _norm_result_sig(row.get(key))
+        if value:
+            return f"{key}:{value}"
+    return ""
+
+
+def _dedupe_llm_result_against_rag(result: Any, retrieve_rag: Any | None) -> Any:
+    if not isinstance(result, dict) or not isinstance(retrieve_rag, dict):
+        return result
+
+    rag_item_sigs: set[str] = set()
+    for row in retrieve_rag.get("items") or []:
+        sig = _item_sig(row)
+        if sig:
+            rag_item_sigs.add(sig)
+
+    rag_resource_sigs: set[str] = set()
+    rag_resources = retrieve_rag.get("resources")
+    if isinstance(rag_resources, list):
+        for row in rag_resources:
+            sig = _resource_sig(row)
+            if sig:
+                rag_resource_sigs.add(sig)
+    rag_resource = retrieve_rag.get("resource")
+    sig_single = _resource_sig(rag_resource)
+    if sig_single:
+        rag_resource_sigs.add(sig_single)
+
+    out = dict(result)
+
+    llm_items = result.get("items")
+    if isinstance(llm_items, list) and rag_item_sigs:
+        out["items"] = [row for row in llm_items if (_item_sig(row) not in rag_item_sigs)]
+
+    llm_resources = result.get("resources")
+    if isinstance(llm_resources, list) and rag_resource_sigs:
+        out["resources"] = [row for row in llm_resources if (_resource_sig(row) not in rag_resource_sigs)]
+    elif "resources" in out and not isinstance(llm_resources, list):
+        out["resources"] = []
+
+    llm_resource = result.get("resource")
+    if rag_resource_sigs and _resource_sig(llm_resource) in rag_resource_sigs:
+        out.pop("resource", None)
+
+    return out
+
+
 def _parse_turn_ts_ms(value: Any) -> int | None:
     if isinstance(value, (int, float)) and math.isfinite(value):
         return int(value)
@@ -1882,7 +1948,8 @@ async def _run_retrieve(
     payload: dict[str, Any],
     *,
     conversation_id: str | None = None,
-    persist_state: bool = False,
+    persist_llm_state: bool = False,
+    llm_dedupe_baseline: Any | None = None,
 ) -> dict[str, Any]:
     safe = _safe_payload(payload)
     scoped_conversation_id = str(conversation_id or _extract_conversation_id(safe) or "").strip() or None
@@ -1890,6 +1957,19 @@ async def _run_retrieve(
         safe["conversation_id"] = scoped_conversation_id
 
     method = _normalize_retrieve_method(safe.get("method"), _retrieve_method_from_cfg(_CONFIG))
+    if method == "llm":
+        retrieve_cfg = safe.get("retrieve_config")
+        if not isinstance(retrieve_cfg, dict):
+            retrieve_cfg = {}
+            safe["retrieve_config"] = retrieve_cfg
+        cat_cfg = retrieve_cfg.get("category")
+        if not isinstance(cat_cfg, dict):
+            cat_cfg = {}
+        else:
+            cat_cfg = dict(cat_cfg)
+        cat_cfg["enabled"] = False
+        cat_cfg["top_k"] = 0
+        retrieve_cfg["category"] = cat_cfg
     svc = _get_service_from_payload(safe, retrieve_method_override=method)
     scope = _extract_retrieve_where(safe)
     memu_queries = _extract_retrieve_queries(safe)
@@ -1901,8 +1981,11 @@ async def _run_retrieve(
         _t0 = time.monotonic()
         result = await svc.retrieve(memu_queries, where=scope)
         _retrieve_ms = int((time.monotonic() - _t0) * 1000)
+        if method == "llm" and isinstance(result, dict):
+            result = {**result, "categories": []}
+            result = _dedupe_llm_result_against_rag(result, llm_dedupe_baseline)
         out_local: dict[str, Any] = {"ok": True, "result": result, "retrieve_ms": _retrieve_ms}
-        if persist_state and scoped_conversation_id:
+        if persist_llm_state and method == "llm" and scoped_conversation_id:
             state_out, db_path = _write_conversation_state(
                 scoped_conversation_id,
                 soul_id=state_soul_id,
@@ -1921,7 +2004,7 @@ async def _run_retrieve(
             out_local["path"] = str(db_path)
         return out_local
 
-    if persist_state:
+    if persist_llm_state:
         async with _retrieve_scope_lock(user_id, soul_id):
             out = await _retrieve_and_maybe_persist(soul_id or None)
     else:
@@ -3701,7 +3784,7 @@ async def conversation_retrieve(
     if not cid:
         raise HTTPException(status_code=400, detail="conversation_id is required")
     try:
-        out = await _run_retrieve(payload, conversation_id=cid, persist_state=True)
+        out = await _run_retrieve(payload, conversation_id=cid, persist_llm_state=True)
 
         safe = _safe_payload(payload if isinstance(payload, dict) else {})
         want_turn_prompt = bool(safe.get("build_turn_prompt", False))
@@ -3831,9 +3914,6 @@ async def conversation_turn(
         run_apimw = bool(safe.get("run_apimw", True))
         apply_turn_maintenance = bool(safe.get("apply_turn_maintenance", True))
         include_debug = bool(safe.get("debug", False))
-        retrieve_mode = _retrieve_method_from_cfg(_CONFIG)
-        if retrieve_mode == "rag":
-            run_apimw = False
         if dry_run:
             run_apimw = False
 
@@ -3880,7 +3960,7 @@ async def conversation_turn(
                         "user": {"user_id": uid, "soul_id": soul_id, "conversation_id": cid},
                     }
 
-        # Retrieval outside lock (may take seconds; other operations can proceed)
+        # RAG + LLM outside lock (may take seconds; other operations can proceed)
 
         # Load soul generation config (persists across frontends).
         # Frontend params update stored config when they differ.
@@ -3945,9 +4025,13 @@ async def conversation_turn(
             if _history_one_text:
                 _soul_ctx_queries.append({"role": "history_from_last_chat_x", "content": {"text": _history_one_text}})
             _soul_ctx_queries.append({"role": "user", "content": {"text": message}})
-            rag_payload = {**safe, "method": retrieve_mode, "queries": _soul_ctx_queries}
+            rag_payload = {**safe, "method": "rag", "queries": _soul_ctx_queries}
+            rag_retrieve_cfg = dict(rag_payload.get("retrieve_config") or {})
+            rag_retrieve_cfg["route_intention"] = True
+            rag_retrieve_cfg["sufficiency_check"] = True
+            rag_payload["retrieve_config"] = rag_retrieve_cfg
             _rag_t0 = time.monotonic()
-            rag_out = await _run_retrieve(rag_payload, conversation_id=cid, persist_state=False)
+            rag_out = await _run_retrieve(rag_payload, conversation_id=cid, persist_llm_state=False)
             _rag_ms = int((time.monotonic() - _rag_t0) * 1000)
             retrieve_rag = rag_out.get("result") if isinstance(rag_out, dict) else None
 
@@ -3966,7 +4050,7 @@ async def conversation_turn(
             )
         )
 
-        svc = _get_service_from_payload(safe, retrieve_method_override=retrieve_mode)
+        svc = _get_service_from_payload(safe, retrieve_method_override="rag")
         _turn_t0 = time.monotonic()
         llm_raw = await svc.chat(
             turn_user_prompt,
@@ -4059,13 +4143,14 @@ async def conversation_turn(
 
         apimw_status = "skipped_dry_run" if dry_run else "not_started"
         if (not dry_run) and run_apimw:
-            apimw_payload = {**safe, "method": "rag_plus_llm", "query": message}
+            apimw_payload = {**safe, "method": "llm", "query": message}
             apimw_status = "started"
             apimw_task = asyncio.create_task(
                 _run_retrieve(
                     apimw_payload,
                     conversation_id=cid,
-                    persist_state=True,
+                    persist_llm_state=True,
+                    llm_dedupe_baseline=retrieve_rag if isinstance(retrieve_rag, dict) else None,
                 )
             )
 
