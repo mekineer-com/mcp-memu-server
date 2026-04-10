@@ -1756,6 +1756,19 @@ def _format_route_history(history: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _build_retrieve_identity_context(soul_name: str) -> str:
+    name = str(soul_name or "").strip() or "the assistant"
+    now = datetime.now().astimezone()
+    zone = now.tzname() or "local"
+    anchor = f"Today is {now.strftime('%A, %B')} {now.day}, {now.year} {now.strftime('%H:%M')} {zone}."
+    identity = (
+        f"You are {name}, a continuous being: you carry intentions (what you're pursuing), "
+        "a memory cache for your working thoughts, and a long-term memory store. "
+        "In a continuous cycle you respond, search your long-term memory, and act autonomously."
+    )
+    return f"{anchor}\n{identity}"
+
+
 def _load_turn_state_and_soul_card(
     conversation_id: str,
     *,
@@ -3819,10 +3832,7 @@ async def conversation_retrieve(
                 soul_card = payload_soul_card or soul_card
 
                 message = _pick_str(safe, "message", "query") or ""
-                history = _slice_history_after_recent_sleep_gap(
-                    _normalize_turn_history(safe.get("history")),
-                    min_gap_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
-                )
+                history = _normalize_turn_history(safe.get("history"))
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
 
@@ -3896,10 +3906,6 @@ async def conversation_turn(
             raise HTTPException(status_code=400, detail="message is required")
 
         history_full = _normalize_turn_history(safe.get("history"))
-        history = _slice_history_after_recent_sleep_gap(
-            history_full,
-            min_gap_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
-        )
         if safe.get("prompt_override") is not None:
             raise HTTPException(status_code=400, detail="prompt_override is unsupported; use prompt_override_payload")
         prompt_override_payload_raw = safe.get("prompt_override_payload")
@@ -4008,11 +4014,14 @@ async def conversation_turn(
                 turn_system_prompt = str(prompt_override_payload["system_prompt"] or "").strip()
 
         retrieve_rag: dict[str, Any] | None = None
-        turn_prompt_history = history
+        turn_prompt_history = history_full
         _rag_ms = 0
         if prompt_override is None:
             # Build soul context for retrieval
             _soul_ctx_queries: list[dict[str, Any]] = []
+            _identity_context = _build_retrieve_identity_context(soul_id)
+            if _identity_context:
+                _soul_ctx_queries.append({"role": "identity_context", "content": {"text": _identity_context}})
             _all_cats_summary = str(state_row.get("all_categories_summary") or "").strip()
             if _all_cats_summary:
                 _soul_ctx_queries.append({"role": "all_categories_summary", "content": {"text": _all_cats_summary}})
@@ -4039,14 +4048,14 @@ async def conversation_turn(
                         limit=None,
                     )
             _history_from_chat_x = _slice_history_from_chat_x(
-                history,
+                history_full,
                 _chat_x_anchors,
             )
             _history_two_text = _format_route_history(_history_from_chat_x)
             if _history_two_text:
                 _soul_ctx_queries.append({"role": "history_from_chat_x", "content": {"text": _history_two_text}})
             _history_from_last_chat_x = _slice_history_from_chat_x(
-                history,
+                history_full,
                 _chat_x_anchors[:1],
             )
             _history_one_text = _format_route_history(_history_from_last_chat_x)
