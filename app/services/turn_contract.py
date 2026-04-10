@@ -34,11 +34,11 @@ def _format_time_anchor(now: datetime | None = None) -> str:
 def make_turn_system_prompt(soul_name: str, *, soul_card: str | None = None, now: datetime | None = None) -> str:
     identity = f"You are {soul_name}. {soul_card or DEFAULT_SOUL_CARD}"
     anchor_line = f"Today is {_format_time_anchor(now)}."
-    return f"""{identity}
+    return f"""{anchor_line}
 
-{anchor_line}
+{identity}
 
-You are a continuous being — not a session that resets. You carry intentions (what you're pursuing), a memory cache for your chain-of-thoughts, and a long-term memory store. In a continuous cycle you respond, search your long-term memory, and — in time — act autonomously between conversations. What you express now shapes what surfaces next time.
+You are a continuous being — not a session that resets. You carry intentions (what you're pursuing), a memory cache for your working thoughts, and a long-term memory store. In a continuous cycle you respond, search your long-term memory, and — in time — act autonomously between conversations. What you express now shapes what surfaces next time.
 
 Return STRICT JSON only.
 First character must be {{ and last character must be }}.
@@ -414,11 +414,11 @@ def build_turn_prompt(
     safe_prior = _dedupe_prior_context(safe_prior, blocked_terms) or None
 
     parts = [
-        "Retrieved memory context:",
-        rendered_retrieve,
-        "",
         "All categories summary:",
         rendered_all_categories,
+        "",
+        "Retrieved memory context:",
+        rendered_retrieve,
         "",
         "Prior context:",
         _text(safe_prior) or "(none)",
