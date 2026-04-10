@@ -100,6 +100,29 @@ def _summary_from_category_line(line: str) -> str:
     return line.strip()
 
 
+def _strip_duplicate_category_heading(summary: str, category_name: str) -> str:
+    text = _text(summary)
+    name = _text(category_name)
+    if not text or not name:
+        return text
+    lines = text.splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if not lines:
+        return text
+    first = lines[0].strip()
+    if not first.startswith("#"):
+        return text
+    heading = first.lstrip("#").strip()
+    if _norm_text(heading) != _norm_text(name):
+        return text
+    rest = lines[1:]
+    while rest and not rest[0].strip():
+        rest.pop(0)
+    cleaned = "\n".join(rest).strip()
+    return cleaned or text
+
+
 def _estimate_text_tokens(text: str) -> int:
     words = len(text.split())
     return max(1, int(words / 0.75))
@@ -289,7 +312,7 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
                 continue
             seen_categories.add(summary_key)
             category_terms.add(summary_key)
-            category_rows.append((name, summary))
+            category_rows.append((name, _strip_duplicate_category_heading(summary, name)))
     else:
         category_rows = []
 
