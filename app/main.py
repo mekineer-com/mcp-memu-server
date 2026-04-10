@@ -1717,15 +1717,16 @@ def _slice_history_from_chat_x(
     history: list[dict[str, Any]],
     chat_x_anchors: list[str] | None,
     *,
-    limit: int = 12,
+    limit: int | None = 12,
 ) -> list[dict[str, Any]]:
     if not history:
         return []
+    has_limit = isinstance(limit, int) and limit > 0
     if not chat_x_anchors:
-        return history[-limit:]
+        return history[-limit:] if has_limit else list(history)
     anchors = _compact_chat_x_anchors(*chat_x_anchors, max_count=2)
     if not anchors:
-        return history[-limit:]
+        return history[-limit:] if has_limit else list(history)
     anchor_set = set(anchors)
     start_idx = None
     for idx, item in enumerate(history):
@@ -1733,9 +1734,9 @@ def _slice_history_from_chat_x(
             start_idx = idx
             break
     if start_idx is None:
-        return history[-limit:]
+        return history[-limit:] if has_limit else list(history)
     sliced = history[start_idx:]
-    return sliced[-limit:]
+    return sliced[-limit:] if has_limit else sliced
 
 
 def _format_route_history(history: list[dict[str, Any]]) -> str:
@@ -4007,6 +4008,7 @@ async def conversation_turn(
                 turn_system_prompt = str(prompt_override_payload["system_prompt"] or "").strip()
 
         retrieve_rag: dict[str, Any] | None = None
+        turn_prompt_history = history
         _rag_ms = 0
         if prompt_override is None:
             # Build soul context for retrieval
@@ -4024,6 +4026,18 @@ async def conversation_turn(
                 str(state_row.get("last_chat_x") or "").strip() or None,
                 str(state_row.get("last_chat_x_prev") or "").strip() or None,
             )
+            if _chat_x_anchors:
+                _chat_x_anchor_set = set(_chat_x_anchors)
+                _has_chat_x_anchor = any(
+                    str(item.get("message_id") or "").strip() in _chat_x_anchor_set
+                    for item in history_full
+                )
+                if _has_chat_x_anchor:
+                    turn_prompt_history = _slice_history_from_chat_x(
+                        history_full,
+                        _chat_x_anchors,
+                        limit=None,
+                    )
             _history_from_chat_x = _slice_history_from_chat_x(
                 history,
                 _chat_x_anchors,
@@ -4054,7 +4068,7 @@ async def conversation_turn(
             if prompt_override is not None
             else _build_turn_prompt(
                 user_message=message,
-                history=history,
+                history=turn_prompt_history,
                 history_token_budget=_TURN_HISTORY_TOKEN_BUDGET,
                 prior_context=prior_context,
                 retrieve_rag=retrieve_rag,
