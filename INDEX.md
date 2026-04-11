@@ -33,7 +33,7 @@ mcp-memu-server/
 | `/memorize` | POST | Extract memories from conversation text (also used by the optional sleep timer auto-digest worker); `force=true` batching via `_build_force_memorize_batches()` — prefers segment manifest ranges, fills gaps with `full.json`, falls back to token-window chunking |
 | `/retrieve` | POST | Query memories (`rag` method; `llm` is internal-only for background flows) |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt for chat path |
-| `/conversation/{id}/turn` | POST | Soul turn loop: run LLM with turn contract, persist intentions + cache; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self`); retrieve route context prepends an identity/time anchor block (`identity_context`) before soul-context queries; turn prompt history always uses full normalized turn history (token-budgeted at render time); queues forced memorize when unmemorized chat tail exceeds `memorize.turn_history_token_budget` |
+| `/conversation/{id}/turn` | POST | Soul turn loop: requires extension-provided `prompt_override_payload` (prepared by `/conversation/{id}/retrieve`), runs LLM with turn contract, persists intentions + cache, and never re-runs retrieve inside turn; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self`); APImw dedupe baseline comes from payload `retrieve_rag`; queues forced memorize when unmemorized chat tail exceeds `memorize.turn_history_token_budget` |
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn maintenance using `undo_snapshot` (single-step depth) |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/diary/generate` | POST | Generate diary entry from recent memories |

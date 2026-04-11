@@ -1497,74 +1497,6 @@ def _extract_result_item_ids(result: Any) -> list[str]:
     return out
 
 
-def _extract_memory_cache_from_turn_prompt(prompt: Any) -> list[str] | None:
-    text = str(prompt or "")
-    marker = "Your working thoughts:"
-    idx = text.find(marker)
-    if idx < 0:
-        return None
-    tail = text[idx + len(marker) :]
-    m = re.search(r"\n\s*Intentions:\s*", tail)
-    block = tail[: m.start()] if m else tail
-    lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
-    if not lines:
-        return []
-    if len(lines) == 1 and lines[0].lower() == "(empty)":
-        return []
-    out: list[str] = []
-    for line in lines:
-        line = re.sub(r"^\s*\d+\.\s*", "", line)
-        line = re.sub(r"^\s*-\s*", "", line)
-        line = line.split("←", 1)[0].strip()
-        if not line or line.lower() == "(empty)":
-            continue
-        out.append(line)
-    return _normalize_memory_cache_impl(out)
-
-
-def _extract_intentions_from_turn_prompt(prompt: Any) -> dict[str, Any] | None:
-    text = str(prompt or "")
-    marker = "Intentions:"
-    idx = text.find(marker)
-    if idx < 0:
-        return None
-    tail = text[idx + len(marker) :]
-    m = re.search(r"\n\s*Conversation history:\s*", tail)
-    block = tail[: m.start()] if m else tail
-    lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
-    if not lines:
-        return _normalize_intentions_stack_impl({"items": []})
-    items: list[dict[str, Any]] = []
-    for line in lines:
-        line = re.sub(r"^\s*-\s*", "", line).strip()
-        if not line:
-            continue
-        mm = re.match(
-            r"^(?P<id>[^:]+):\s*(?P<text>.*?)(?:\s*\(p=(?P<p>[-+]?\d+(?:\.\d+)?)\))?(?:\s*\[(?P<tags>[^\]]*)\])?\s*$",
-            line,
-        )
-        if not mm:
-            continue
-        item_id = str(mm.group("id") or "").strip()
-        item_text = str(mm.group("text") or "").strip()
-        if not item_id or not item_text:
-            continue
-        tags = [t.strip().lower() for t in str(mm.group("tags") or "").split(",") if t.strip()]
-        ephemeral = "ephemeral" in tags
-        active = "inactive" not in tags
-        row: dict[str, Any] = {
-            "id": item_id,
-            "text": item_text,
-            "ephemeral": ephemeral,
-            "active": active,
-        }
-        p = mm.group("p")
-        if (not ephemeral) and p is not None and str(p).strip():
-            row["priority"] = float(p)
-        items.append(row)
-    return _normalize_intentions_stack_impl({"items": items})
-
-
 def _norm_result_sig(value: Any) -> str:
     text = re.sub(r"\s+", " ", str(value or "").strip().lower())
     return text
@@ -3889,28 +3821,38 @@ async def conversation_turn(
         if safe.get("prompt_override") is not None:
             raise HTTPException(status_code=400, detail="prompt_override is unsupported; use prompt_override_payload")
         prompt_override_payload_raw = safe.get("prompt_override_payload")
-        prompt_override: str | None = None
-        prompt_override_payload: dict[str, Any] | None = None
-        state_override_cache: list[str] | None = None
-        state_override_intentions: dict[str, Any] | None = None
-        if prompt_override_payload_raw is not None:
-            if not isinstance(prompt_override_payload_raw, dict):
-                raise HTTPException(status_code=400, detail="prompt_override_payload must be an object")
-            prompt_override_payload = dict(prompt_override_payload_raw)
-            payload_user_prompt = str(prompt_override_payload.get("user_prompt", ""))
-            if not payload_user_prompt.strip():
-                raise HTTPException(
-                    status_code=400,
-                    detail="prompt_override_payload.user_prompt is required",
-                )
-            prompt_override = payload_user_prompt
-        if prompt_override is not None:
-            parsed_cache = _extract_memory_cache_from_turn_prompt(prompt_override)
-            if parsed_cache is not None:
-                state_override_cache = parsed_cache
-            parsed_intentions = _extract_intentions_from_turn_prompt(prompt_override)
-            if parsed_intentions is not None:
-                state_override_intentions = parsed_intentions
+        if not isinstance(prompt_override_payload_raw, dict):
+            raise HTTPException(status_code=400, detail="prompt_override_payload is required")
+        prompt_override_payload = dict(prompt_override_payload_raw)
+        payload_user_prompt = str(prompt_override_payload.get("user_prompt", "")).strip()
+        if not payload_user_prompt:
+            raise HTTPException(
+                status_code=400,
+                detail="prompt_override_payload.user_prompt is required",
+            )
+        payload_system_prompt = str(prompt_override_payload.get("system_prompt", "")).strip()
+        payload_retrieve_rag = prompt_override_payload.get("retrieve_rag")
+        if not isinstance(payload_retrieve_rag, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="prompt_override_payload.retrieve_rag is required",
+            )
+        payload_memory_cache_raw = prompt_override_payload.get("memory_cache")
+        if not isinstance(payload_memory_cache_raw, list):
+            raise HTTPException(
+                status_code=400,
+                detail="prompt_override_payload.memory_cache is required",
+            )
+        payload_intentions_raw = prompt_override_payload.get("intentions_active")
+        if not isinstance(payload_intentions_raw, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="prompt_override_payload.intentions_active is required",
+            )
+        state_override_cache: list[str] = _normalize_memory_cache_impl(payload_memory_cache_raw)
+        state_override_intentions: dict[str, Any] = _normalize_intentions_stack_impl(payload_intentions_raw)
+        payload_retrieve_ms = prompt_override_payload.get("retrieve_ms")
+        _rag_ms = int(payload_retrieve_ms) if isinstance(payload_retrieve_ms, (int, float)) else 0
         dry_run = bool(safe.get("dry_run", False))
         run_apimw = _retrieve_apimw_enabled_from_cfg(_CONFIG) and bool(safe.get("run_apimw", True))
         apply_turn_maintenance = bool(safe.get("apply_turn_maintenance", True))
@@ -3934,21 +3876,12 @@ async def conversation_turn(
             )
             payload_soul_card = str(safe.get("soul_card") or "").strip() or None
             soul_card = payload_soul_card or soul_card
-            prior_context = str(state_row.get("prior_context") or "").strip() or None
-            memory_cache_before = (
-                list(state_override_cache)
-                if state_override_cache is not None
-                else _normalize_memory_cache_impl(state_row.get("memory_cache"))
-            )
+            memory_cache_before = list(state_override_cache)
             intentions_before = (
-                _normalize_intentions_stack_impl(state_override_intentions)
-                if state_override_intentions is not None
-                    else (
-                        _apply_intention_turn_maintenance_impl(state_row.get("intentions_active"))
-                        if apply_turn_maintenance
-                        else _normalize_intentions_stack_impl(state_row.get("intentions_active"))
-                    )
-                )
+                _apply_intention_turn_maintenance_impl(state_override_intentions)
+                if apply_turn_maintenance
+                else _normalize_intentions_stack_impl(state_override_intentions)
+            )
             digest_cursor_for_gate = state_row.get("digest_cursor") if state_row.get("last_memorize_at") else -1
             force_memorize_unmemorized_tokens = _estimate_unmemorized_tokens(history_full, digest_cursor_for_gate)
             if (not dry_run) and history_full and force_memorize_unmemorized_tokens > _TURN_HISTORY_TOKEN_BUDGET:
@@ -3961,7 +3894,7 @@ async def conversation_turn(
                         "user": {"user_id": uid, "soul_id": soul_id, "conversation_id": cid},
                     }
 
-        # RAG + LLM outside lock (may take seconds; other operations can proceed)
+        # Turn LLM call outside lock (may take seconds; other operations can proceed)
 
         # Load soul generation config (persists across frontends).
         # Frontend params update stored config when they differ.
@@ -3988,71 +3921,9 @@ async def conversation_turn(
             if updated != soul_gen:
                 _save_soul_gen_config(uid, soul_id, updated)
 
-        turn_system_prompt = _make_turn_system_prompt(soul_id, soul_card=soul_card)
-        if prompt_override_payload is not None:
-            if "system_prompt" in prompt_override_payload:
-                turn_system_prompt = str(prompt_override_payload["system_prompt"] or "").strip()
-
-        retrieve_rag: dict[str, Any] | None = None
-        _rag_ms = 0
-        if prompt_override is None:
-            # Build soul context for retrieval
-            _soul_ctx_queries: list[dict[str, Any]] = []
-            _identity_context = _build_retrieve_identity_context(soul_id)
-            if _identity_context:
-                _soul_ctx_queries.append({"role": "identity_context", "content": {"text": _identity_context}})
-            _all_cats_summary = str(state_row.get("all_categories_summary") or "").strip()
-            if _all_cats_summary:
-                _soul_ctx_queries.append({"role": "all_categories_summary", "content": {"text": _all_cats_summary}})
-            _cache_text = "\n".join(str(e) for e in (memory_cache_before or []))
-            if _cache_text:
-                _soul_ctx_queries.append({"role": "memory_cache", "content": {"text": _cache_text}})
-            _intentions_text = _format_intentions_for_prompt(intentions_before) if intentions_before else ""
-            if _intentions_text and _intentions_text.strip() != "(none)":
-                _soul_ctx_queries.append({"role": "intentions", "content": {"text": _intentions_text}})
-            _chat_x_anchors = _compact_chat_x_anchors(
-                str(state_row.get("last_chat_x") or "").strip() or None,
-                str(state_row.get("last_chat_x_prev") or "").strip() or None,
-            )
-            _history_from_chat_x = _slice_history_from_chat_x(
-                history_full,
-                _chat_x_anchors,
-            )
-            _history_two_text = _format_route_history(_history_from_chat_x)
-            if _history_two_text:
-                _soul_ctx_queries.append({"role": "history_from_chat_x", "content": {"text": _history_two_text}})
-            _history_from_last_chat_x = _slice_history_from_chat_x(
-                history_full,
-                _chat_x_anchors[:1],
-            )
-            _history_one_text = _format_route_history(_history_from_last_chat_x)
-            if _history_one_text:
-                _soul_ctx_queries.append({"role": "history_from_last_chat_x", "content": {"text": _history_one_text}})
-            _soul_ctx_queries.append({"role": "user", "content": {"text": message}})
-            rag_payload = {**safe, "method": "rag", "queries": _soul_ctx_queries}
-            rag_retrieve_cfg = dict(rag_payload.get("retrieve_config") or {})
-            rag_retrieve_cfg["route_intention"] = True
-            rag_retrieve_cfg["sufficiency_check"] = True
-            rag_payload["retrieve_config"] = rag_retrieve_cfg
-            _rag_t0 = time.monotonic()
-            rag_out = await _run_retrieve(rag_payload, conversation_id=cid, persist_llm_state=False)
-            _rag_ms = int((time.monotonic() - _rag_t0) * 1000)
-            retrieve_rag = rag_out.get("result") if isinstance(rag_out, dict) else None
-
-        turn_user_prompt = (
-            prompt_override
-            if prompt_override is not None
-            else _build_turn_prompt(
-                user_message=message,
-                history=history_full,
-                history_token_budget=_TURN_HISTORY_TOKEN_BUDGET,
-                prior_context=prior_context,
-                retrieve_rag=retrieve_rag,
-                all_categories_summary=state_row.get("all_categories_summary"),
-                memory_cache=memory_cache_before,
-                intentions_active=intentions_before,
-            )
-        )
+        turn_system_prompt = payload_system_prompt or _make_turn_system_prompt(soul_id, soul_card=soul_card)
+        retrieve_rag: dict[str, Any] = dict(payload_retrieve_rag)
+        turn_user_prompt = payload_user_prompt
 
         svc = _get_service_from_payload(safe, retrieve_method_override="rag")
         _turn_t0 = time.monotonic()
@@ -4087,20 +3958,8 @@ async def conversation_turn(
         if not dry_run:
             async with state_lock:
                 fresh_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
-                fresh_cache = (
-                    list(state_override_cache)
-                    if state_override_cache is not None
-                    else _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
-                )
-                fresh_intentions = (
-                    _normalize_intentions_stack_impl(state_override_intentions)
-                    if state_override_intentions is not None
-                    else (
-                        _apply_intention_turn_maintenance_impl(fresh_row.get("intentions_active"))
-                        if apply_turn_maintenance
-                        else _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
-                    )
-                )
+                fresh_cache = list(memory_cache_before)
+                fresh_intentions = _normalize_intentions_stack_impl(intentions_before)
                 memory_cache_after = (
                     _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
                 )
@@ -4154,7 +4013,7 @@ async def conversation_turn(
                     apimw_payload,
                     conversation_id=cid,
                     persist_llm_state=True,
-                    llm_dedupe_baseline=retrieve_rag if isinstance(retrieve_rag, dict) else None,
+                    llm_dedupe_baseline=retrieve_rag,
                     allow_llm_method=True,
                 )
             )
@@ -4173,7 +4032,7 @@ async def conversation_turn(
             "conversation_id": cid,
             "response": _response_str,
             "apimw": apimw_status,
-            "prompt_override_used": prompt_override is not None,
+            "prompt_override_used": True,
             "final_turn_payload": {
                 "system_prompt": turn_system_prompt,
                 "user_prompt": turn_user_prompt,
