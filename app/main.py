@@ -4035,18 +4035,6 @@ async def conversation_turn(
                 str(state_row.get("last_chat_x") or "").strip() or None,
                 str(state_row.get("last_chat_x_prev") or "").strip() or None,
             )
-            if _chat_x_anchors:
-                _chat_x_anchor_set = set(_chat_x_anchors)
-                _has_chat_x_anchor = any(
-                    str(item.get("message_id") or "").strip() in _chat_x_anchor_set
-                    for item in history_full
-                )
-                if _has_chat_x_anchor:
-                    turn_prompt_history = _slice_history_from_chat_x(
-                        history_full,
-                        _chat_x_anchors,
-                        limit=None,
-                    )
             _history_from_chat_x = _slice_history_from_chat_x(
                 history_full,
                 _chat_x_anchors,
