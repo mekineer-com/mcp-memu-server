@@ -2011,7 +2011,8 @@ async def _run_retrieve(
             out_local["path"] = str(db_path)
         return out_local
 
-    if persist_llm_state:
+    lock_scope = persist_llm_state and method == "llm"
+    if lock_scope:
         async with _retrieve_scope_lock(user_id, soul_id):
             out = await _retrieve_and_maybe_persist(soul_id or None)
     else:
