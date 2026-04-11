@@ -332,6 +332,15 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
     return ("\n".join(lines) if lines else "(none)"), item_terms, category_terms
 
 
+def _render_empty_retrieve_label(result: Any) -> str:
+    if isinstance(result, dict):
+        if result.get("needs_retrieval") is False:
+            return "Retrieved memory context: (nothing this time; route said no retrieval needed)"
+        if result.get("needs_retrieval") is True:
+            return "Retrieved memory context: (nothing this time; retrieval ran but found no matches)"
+    return "Retrieved memory context: (nothing this time)"
+
+
 def _render_all_categories_summary(
     all_categories_summary: str | None,
     protected_terms: set[str],
@@ -428,7 +437,7 @@ def build_turn_prompt(
     if has_prior:
         context_blocks.extend(["Prior context:", prior_text, ""])
     if not context_blocks:
-        context_blocks.extend(["Retrieved memory context: (none this time)", ""])
+        context_blocks.extend([_render_empty_retrieve_label(retrieve_rag), ""])
 
     parts = [
         *context_blocks,
