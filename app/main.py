@@ -3724,9 +3724,55 @@ async def conversation_retrieve(
     if not cid:
         raise HTTPException(status_code=400, detail="conversation_id is required")
     try:
-        out = await _run_retrieve(payload, conversation_id=cid, persist_llm_state=True)
-
         safe = _safe_payload(payload if isinstance(payload, dict) else {})
+        if safe.get("queries") is None:
+            scope = _extract_scope(safe)
+            uid = str(scope.get("user_id") or "").strip()
+            soul_id = str(scope.get("soul_id") or "").strip()
+            message = _pick_str(safe, "message", "query") or ""
+            history = _normalize_turn_history(safe.get("history"))
+            if uid and soul_id and message.strip():
+                state_row, _soul_card, _db_path = _load_turn_state_and_soul_card(
+                    cid,
+                    user_id=uid,
+                    soul_id=soul_id,
+                )
+                memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
+                intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
+
+                soul_ctx_queries: list[dict[str, Any]] = []
+                identity_context = _build_retrieve_identity_context(soul_id)
+                if identity_context:
+                    soul_ctx_queries.append({"role": "identity_context", "content": {"text": identity_context}})
+                all_cats_summary = str(state_row.get("all_categories_summary") or "").strip()
+                if all_cats_summary:
+                    soul_ctx_queries.append({"role": "all_categories_summary", "content": {"text": all_cats_summary}})
+                cache_text = "\n".join(str(entry) for entry in (memory_cache or []))
+                if cache_text:
+                    soul_ctx_queries.append({"role": "memory_cache", "content": {"text": cache_text}})
+                intentions_text = _format_intentions_for_prompt(intentions_active) if intentions_active else ""
+                if intentions_text and intentions_text.strip() != "(none)":
+                    soul_ctx_queries.append({"role": "intentions", "content": {"text": intentions_text}})
+
+                chat_x_anchors = _compact_chat_x_anchors(
+                    str(state_row.get("last_chat_x") or "").strip() or None,
+                    str(state_row.get("last_chat_x_prev") or "").strip() or None,
+                )
+                history_from_chat_x = _slice_history_from_chat_x(history, chat_x_anchors)
+                history_two_text = _format_route_history(history_from_chat_x)
+                if history_two_text:
+                    soul_ctx_queries.append({"role": "history_from_chat_x", "content": {"text": history_two_text}})
+
+                history_from_last_chat_x = _slice_history_from_chat_x(history, chat_x_anchors[:1])
+                history_one_text = _format_route_history(history_from_last_chat_x)
+                if history_one_text:
+                    soul_ctx_queries.append({"role": "history_from_last_chat_x", "content": {"text": history_one_text}})
+
+                soul_ctx_queries.append({"role": "user", "content": {"text": message}})
+                safe["queries"] = soul_ctx_queries
+
+        out = await _run_retrieve(safe, conversation_id=cid, persist_llm_state=True)
+
         want_turn_prompt = bool(safe.get("build_turn_prompt", False))
 
         if want_turn_prompt:
