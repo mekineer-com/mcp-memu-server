@@ -1677,28 +1677,6 @@ def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _slice_history_after_recent_sleep_gap(
-    history: list[dict[str, Any]],
-    *,
-    min_gap_seconds: int,
-) -> list[dict[str, Any]]:
-    if len(history) < 2:
-        return history
-    gap_ms = int(max(1, min_gap_seconds) * 1000)
-    last_gap_start_idx: int | None = None
-    prev_ts: int | None = None
-    for idx, item in enumerate(history):
-        ts = _parse_turn_ts_ms(item.get("ts_ms"))
-        if ts is None:
-            continue
-        if prev_ts is not None and ts - prev_ts >= gap_ms:
-            last_gap_start_idx = idx
-        prev_ts = ts
-    if last_gap_start_idx is None:
-        return history
-    return history[last_gap_start_idx:]
-
-
 def _compact_chat_x_anchors(*anchors: str | None, max_count: int = 2) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -1717,16 +1695,17 @@ def _slice_history_from_chat_x(
     history: list[dict[str, Any]],
     chat_x_anchors: list[str] | None,
     *,
-    limit: int | None = 12,
+    limit: int = 12,
 ) -> list[dict[str, Any]]:
     if not history:
         return []
-    has_limit = isinstance(limit, int) and limit > 0
+    if limit <= 0:
+        return []
     if not chat_x_anchors:
-        return history[-limit:] if has_limit else list(history)
+        return history[-limit:]
     anchors = _compact_chat_x_anchors(*chat_x_anchors, max_count=2)
     if not anchors:
-        return history[-limit:] if has_limit else list(history)
+        return history[-limit:]
     anchor_set = set(anchors)
     start_idx = None
     for idx, item in enumerate(history):
@@ -1734,9 +1713,9 @@ def _slice_history_from_chat_x(
             start_idx = idx
             break
     if start_idx is None:
-        return history[-limit:] if has_limit else list(history)
+        return history[-limit:]
     sliced = history[start_idx:]
-    return sliced[-limit:] if has_limit else sliced
+    return sliced[-limit:]
 
 
 def _format_route_history(history: list[dict[str, Any]]) -> str:
@@ -4014,7 +3993,6 @@ async def conversation_turn(
                 turn_system_prompt = str(prompt_override_payload["system_prompt"] or "").strip()
 
         retrieve_rag: dict[str, Any] | None = None
-        turn_prompt_history = history_full
         _rag_ms = 0
         if prompt_override is None:
             # Build soul context for retrieval
@@ -4065,7 +4043,7 @@ async def conversation_turn(
             if prompt_override is not None
             else _build_turn_prompt(
                 user_message=message,
-                history=turn_prompt_history,
+                history=history_full,
                 history_token_budget=_TURN_HISTORY_TOKEN_BUDGET,
                 prior_context=prior_context,
                 retrieve_rag=retrieve_rag,

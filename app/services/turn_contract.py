@@ -413,16 +413,25 @@ def build_turn_prompt(
         safe_prior = None
     safe_prior = _dedupe_prior_context(safe_prior, blocked_terms) or None
 
+    retrieve_text = _text(rendered_retrieve)
+    all_categories_text = _text(rendered_all_categories)
+    prior_text = _text(safe_prior)
+    has_retrieve = bool(retrieve_text and retrieve_text != "(none)")
+    has_all_categories = bool(all_categories_text and all_categories_text != "(none)")
+    has_prior = bool(prior_text and prior_text != "(none)")
+
+    context_blocks: list[str] = []
+    if has_retrieve:
+        context_blocks.extend(["Retrieved memory context:", retrieve_text, ""])
+    if has_all_categories:
+        context_blocks.extend(["All categories summary:", all_categories_text, ""])
+    if has_prior:
+        context_blocks.extend(["Prior context:", prior_text, ""])
+    if not context_blocks:
+        context_blocks.extend(["Retrieved memory context: (none this time)", ""])
+
     parts = [
-        "All categories summary:",
-        rendered_all_categories,
-        "",
-        "Retrieved memory context:",
-        rendered_retrieve,
-        "",
-        "Prior context:",
-        _text(safe_prior) or "(none)",
-        "",
+        *context_blocks,
         "Conversation history:",
         _render_history(history or [], token_budget=history_token_budget),
         "",
