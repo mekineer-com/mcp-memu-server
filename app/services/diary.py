@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
+from memu.database.models import Triple
 from memu.prompts.diary import self_model_update as diary_self_model_update_prompt
 from memu.prompts.memory_type import diary as diary_memory_prompt
 
@@ -672,12 +673,29 @@ def write_diary_outputs(
             valid_ids = [x for x in clean_ids if x in memory_ids]
             for vid in valid_ids:
                 svc.database.memory_item_repo.update_item(item_id=vid, superseded_by=new_item.id)
+                svc.database.triple_repo.add(Triple(
+                    subject_id=vid,
+                    subject_kind="memory",
+                    predicate="evolved_into",
+                    object_id=new_item.id,
+                    object_kind="memory",
+                    source_memory_id=new_item.id,
+                ))
         shaped_by_ids = obs_dict.get("shaped_by_ids") or []
         if shaped_by_ids:
             memory_ids_set = set(memory_ids)
             valid_shaped = [str(x).strip() for x in shaped_by_ids if str(x).strip() and str(x).strip() in memory_ids_set]
             if valid_shaped:
                 svc.database.memory_item_repo.update_item(item_id=new_item.id, extra={"shaped_by_ids": valid_shaped})
+                for sid in valid_shaped:
+                    svc.database.triple_repo.add(Triple(
+                        subject_id=new_item.id,
+                        subject_kind="memory",
+                        predicate="shaped_by",
+                        object_id=sid,
+                        object_kind="memory",
+                        source_memory_id=new_item.id,
+                    ))
 
     narrative_self = (
         str(self_model_update.get("narrative_self") or "").strip()
