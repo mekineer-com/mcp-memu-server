@@ -686,7 +686,6 @@ def write_diary_outputs(
             memory_ids_set = set(memory_ids)
             valid_shaped = [str(x).strip() for x in shaped_by_ids if str(x).strip() and str(x).strip() in memory_ids_set]
             if valid_shaped:
-                svc.database.memory_item_repo.update_item(item_id=new_item.id, extra={"shaped_by_ids": valid_shaped})
                 for sid in valid_shaped:
                     svc.database.triple_repo.add(Triple(
                         subject_id=new_item.id,
