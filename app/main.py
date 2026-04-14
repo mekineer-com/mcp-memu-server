@@ -2187,7 +2187,11 @@ async def diag_sqlite_counts(
     ]
     con = _sqlite_connect(p)
     try:
-        _sqlite_ensure_conversation_state_schema(con)
+        table_names = {
+            str(row[0])
+            for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            if row and row[0]
+        }
         out: dict[str, Any] = {
             "ok": True,
             "path": str(p),
@@ -2195,6 +2199,9 @@ async def diag_sqlite_counts(
             "tables": {},
         }
         for t in allowed:
+            if t not in table_names:
+                out["tables"][t] = {"total": 0, "scoped": 0, "scope_cols": []}
+                continue
             cols = _sqlite_table_columns(con, t)
             where, params = _sqlite_build_scope_where(cols, user_id, soul_id, conversation_id)
             total = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
@@ -2239,8 +2246,13 @@ async def diag_sqlite_recent(
 
     con = _sqlite_connect(p)
     try:
-        if table in {"memu_conversation_state", "memu_self_model", "intentions_life_goals"}:
-            _sqlite_ensure_conversation_state_schema(con)
+        table_names = {
+            str(row[0])
+            for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            if row and row[0]
+        }
+        if table not in table_names:
+            return {"ok": True, "path": str(p), "table": table, "columns": [], "rows": []}
         cols = _sqlite_table_columns(con, table)
         scope_where, params = _sqlite_build_scope_where(cols, user_id, soul_id, conversation_id)
 

@@ -44,7 +44,7 @@ mcp-memu-server/
 | `/clear` | POST | Delete memories in scope |
 | `/config` | GET/POST | Read or update runtime config |
 | `/reload` | POST | Reload config from disk |
-| `/diag/*` | GET | Diagnostic pages (recent memories, SQLite browser) |
+| `/diag/*` | GET | Diagnostic pages (recent memories, SQLite browser); read-only introspection (no schema writes/migrations on diag reads) |
 
 ## Extracted Modules
 
