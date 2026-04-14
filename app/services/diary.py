@@ -650,6 +650,7 @@ def write_diary_outputs(
 
     soul_observations = llm_results.get("soul_observations") or []
     obs_embeddings = llm_results.get("soul_observation_embeddings") or []
+    graph_scope = {"user_id": user_id, "soul_id": soul_id}
     
     for obs_dict, obs_emb in zip(soul_observations, obs_embeddings):
         text = str(obs_dict["text"] or "").strip()
@@ -680,7 +681,7 @@ def write_diary_outputs(
                     object_id=new_item.id,
                     object_kind="memory",
                     source_memory_id=new_item.id,
-                ))
+                ), user_data=graph_scope)
         shaped_by_ids = obs_dict.get("shaped_by_ids") or []
         if shaped_by_ids:
             memory_ids_set = set(memory_ids)
@@ -694,7 +695,7 @@ def write_diary_outputs(
                         object_id=sid,
                         object_kind="memory",
                         source_memory_id=new_item.id,
-                    ))
+                    ), user_data=graph_scope)
 
     narrative_self = (
         str(self_model_update.get("narrative_self") or "").strip()
