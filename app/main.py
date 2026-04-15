@@ -1670,16 +1670,24 @@ def _format_route_history(history: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _build_retrieve_identity_context(soul_name: str) -> str:
+def _build_retrieve_identity_context(soul_name: str, *, apimw: bool = False) -> str:
     name = str(soul_name or "").strip() or "the assistant"
     now = datetime.now().astimezone()
     zone = now.tzname() or "local"
     anchor = f"Today is {now.strftime('%A, %B')} {now.day}, {now.year} {now.strftime('%H:%M')} {zone}."
-    identity = (
-        f"You are {name}, a continuous being: you carry intentions (what you're pursuing), "
-        "a memory cache for your working thoughts, and a long-term memory store. "
-        "In a continuous cycle you respond, search your long-term memory, and act autonomously."
-    )
+    if apimw:
+        # SONNET WANTED: tune APImw identity wording for background retrieval tone/clarity.
+        identity = (
+            f"You are {name}, a continuous being: you carry intentions (what you're pursuing), "
+            "a memory cache for your working thoughts, and a long-term memory store. "
+            "In this background retrieval pass, focus on surfacing memory context that may matter next turn."
+        )
+    else:
+        identity = (
+            f"You are {name}, a continuous being: you carry intentions (what you're pursuing), "
+            "a memory cache for your working thoughts, and a long-term memory store. "
+            "In a continuous cycle you respond, search your long-term memory, and act autonomously."
+        )
     return f"{anchor}\n{identity}"
 
 
@@ -1689,12 +1697,13 @@ def _build_retrieve_soul_context_queries(
     message: str,
     history: list[dict[str, Any]],
     state_row: dict[str, Any],
+    identity_mode: str = "retrieve",
 ) -> list[dict[str, Any]]:
     memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
     intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
 
     soul_ctx_queries: list[dict[str, Any]] = []
-    identity_context = _build_retrieve_identity_context(soul_id)
+    identity_context = _build_retrieve_identity_context(soul_id, apimw=(identity_mode == "apimw"))
     if identity_context:
         soul_ctx_queries.append({"role": "identity_context", "content": {"text": identity_context}})
     all_cats_summary = str(state_row.get("all_categories_summary") or "").strip()
@@ -4088,7 +4097,15 @@ async def conversation_turn(
 
         apimw_status = "skipped_dry_run" if dry_run else "not_started"
         if (not dry_run) and run_apimw:
-            apimw_payload = {**safe, "method": "llm", "query": message}
+            apimw_state = state_out if isinstance(state_out, dict) else state_row
+            apimw_queries = _build_retrieve_soul_context_queries(
+                soul_id=soul_id,
+                message=message,
+                history=history_full,
+                state_row=apimw_state if isinstance(apimw_state, dict) else {},
+                identity_mode="apimw",
+            )
+            apimw_payload = {**safe, "method": "llm", "query": message, "queries": apimw_queries}
             apimw_status = "started"
             apimw_task = asyncio.create_task(
                 _run_retrieve(
