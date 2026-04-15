@@ -436,13 +436,13 @@ def build_turn_prompt(
     safe_prior = _dedupe_prior_context(safe_prior, blocked_terms) or None
 
     retrieve_text = _text(rendered_retrieve)
-    raw_all_categories_text = _text(all_categories_summary)
     all_categories_text = _text(rendered_all_categories)
+    raw_all_categories_text = _text(all_categories_summary)
     if raw_all_categories_text and all_categories_text == "(none)":
-        all_categories_text = raw_all_categories_text
+        all_categories_text = "(already covered by retrieved memory context this turn)"
     prior_text = _text(safe_prior)
     has_retrieve = bool(retrieve_text and retrieve_text != "(none)")
-    has_all_categories = bool(all_categories_text)
+    has_all_categories = bool(raw_all_categories_text)
     has_prior = bool(prior_text and prior_text != "(none)")
 
     # Ordering contract for context blocks:
