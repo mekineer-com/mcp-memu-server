@@ -343,17 +343,6 @@ def _render_empty_retrieve_label(result: Any) -> str:
     return "Retrieved memory context: (nothing this time)"
 
 
-def _render_retrieval_status_line(result: Any, *, has_retrieve: bool) -> str | None:
-    if has_retrieve:
-        return None
-    if isinstance(result, dict):
-        if result.get("needs_retrieval") is False:
-            return "Retrieval status: route decided retrieval was not needed this turn."
-        if result.get("needs_retrieval") is True:
-            return "Retrieval status: retrieval ran but found no matching memories."
-    return "Retrieval status: no memory matches this turn."
-
-
 def _render_all_categories_summary(
     all_categories_summary: str | None,
     protected_terms: set[str],
@@ -456,9 +445,6 @@ def build_turn_prompt(
         retrieved_sections.append(all_categories_text)
     if has_retrieve:
         retrieved_sections.append(retrieve_text)
-    status_line = _render_retrieval_status_line(retrieve_rag, has_retrieve=has_retrieve)
-    if status_line:
-        retrieved_sections.append(status_line)
     if retrieved_sections:
         context_blocks.extend(["Retrieved memory context:", "\n\n".join(retrieved_sections), ""])
     if has_prior:
