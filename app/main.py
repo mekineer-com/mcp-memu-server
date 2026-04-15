@@ -109,6 +109,9 @@ from app.services.state import (
     write_conversation_state as _write_conversation_state_impl,
 )
 from app.services.turn_contract import (
+    _format_item_suffix as _format_turn_item_suffix,
+)
+from app.services.turn_contract import (
     build_turn_prompt as _build_turn_prompt,
 )
 from app.services.turn_contract import (
@@ -1973,7 +1976,8 @@ async def _run_retrieve(
                 user_id=user_id or None,
                 updates={
                     "prior_context": "\n".join(
-                        f"[{str(it.get('memory_type') or 'memory').strip()}] {str(it.get('summary') or '').strip()}"
+                        f"[{str(it.get('memory_type') or 'memory').strip()}]{_format_turn_item_suffix(it)} "
+                        f"{str(it.get('summary') or '').strip()}"
                         for it in (result.get("items") or [])[:8]
                         if isinstance(it, dict) and str(it.get("summary") or "").strip()
                     )

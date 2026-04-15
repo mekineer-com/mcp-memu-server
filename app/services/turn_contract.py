@@ -438,25 +438,29 @@ def build_turn_prompt(
     retrieve_text = _text(rendered_retrieve)
     all_categories_text = _text(rendered_all_categories)
     raw_all_categories_text = _text(all_categories_summary)
-    if raw_all_categories_text and all_categories_text == "(none)":
+    if not raw_all_categories_text:
+        all_categories_text = "(no stored category summary yet)"
+    elif all_categories_text == "(none)":
         all_categories_text = "(already covered by retrieved memory context this turn)"
     prior_text = _text(safe_prior)
     has_retrieve = bool(retrieve_text and retrieve_text != "(none)")
-    has_all_categories = bool(raw_all_categories_text)
+    has_all_categories = bool(all_categories_text)
     has_prior = bool(prior_text and prior_text != "(none)")
 
     # Ordering contract for context blocks:
-    # 1) all-categories summary (broad orientation),
-    # 2) retrieved memory context (specific recalls),
-    # 3) prior context (residual background).
+    # 1) Retrieved memory context (contains all-categories orientation first),
+    # 2) prior context (residual background).
     context_blocks: list[str] = []
+    retrieved_sections: list[str] = []
     if has_all_categories:
-        context_blocks.extend(["All categories summary:", all_categories_text, ""])
+        retrieved_sections.append(all_categories_text)
     if has_retrieve:
-        context_blocks.extend(["Retrieved memory context:", retrieve_text, ""])
+        retrieved_sections.append(retrieve_text)
     status_line = _render_retrieval_status_line(retrieve_rag, has_retrieve=has_retrieve)
     if status_line:
-        context_blocks.extend([status_line, ""])
+        retrieved_sections.append(status_line)
+    if retrieved_sections:
+        context_blocks.extend(["Retrieved memory context:", "\n\n".join(retrieved_sections), ""])
     if has_prior:
         context_blocks.extend(["Prior context:", prior_text, ""])
     if not context_blocks:
