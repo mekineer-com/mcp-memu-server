@@ -1716,10 +1716,10 @@ def _build_retrieve_soul_context_queries(
     if history_two_text:
         soul_ctx_queries.append({"role": "history_from_chat_x", "content": {"text": history_two_text}})
 
-    history_from_last_chat_x = _slice_history_from_chat_x(history, chat_x_anchors[:1])
-    history_one_text = _format_route_history(history_from_last_chat_x)
+    history_from_recent_chat_x = _slice_history_from_chat_x(history, chat_x_anchors[:1])
+    history_one_text = _format_route_history(history_from_recent_chat_x)
     if history_one_text:
-        soul_ctx_queries.append({"role": "history_from_last_chat_x", "content": {"text": history_one_text}})
+        soul_ctx_queries.append({"role": "history_from_recent_chat_x", "content": {"text": history_one_text}})
 
     soul_ctx_queries.append({"role": "user", "content": {"text": message}})
     return soul_ctx_queries
