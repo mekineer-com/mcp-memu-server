@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import signal
 import sqlite3
@@ -34,6 +35,7 @@ from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from memu.app import MemoryService
+from memu.database.models import Triple
 from pydantic import BaseModel
 
 from app.db import (
@@ -322,6 +324,7 @@ _ACTIVE_HTTP_REQUESTS: int = 0
 _ACTIVE_WORK_REQUESTS: int = 0
 _SHUTDOWN_TASK: asyncio.Task | None = None
 _SLEEP_MEMORIZE_TIMER_TASK: asyncio.Task | None = None
+_APIMW_INFLIGHT: set[str] = set()
 _SHUTDOWN_STATE: dict[str, Any] = {
     "draining": False,
     "stopping": False,
@@ -331,6 +334,25 @@ _SHUTDOWN_STATE: dict[str, Any] = {
     "maxWaitSec": 0,
     "timedOut": False,
 }
+
+
+def _mark_apimw_inflight(conversation_id: str) -> bool:
+    key = str(conversation_id or "").strip()
+    if not key:
+        return False
+    with _STATE_LOCK:
+        if key in _APIMW_INFLIGHT:
+            return False
+        _APIMW_INFLIGHT.add(key)
+        return True
+
+
+def _clear_apimw_inflight(conversation_id: str) -> None:
+    key = str(conversation_id or "").strip()
+    if not key:
+        return
+    with _STATE_LOCK:
+        _APIMW_INFLIGHT.discard(key)
 
 
 def _is_control_path(path: str) -> bool:
@@ -576,6 +598,9 @@ def _default_config() -> dict[str, Any]:
         "retrieve": {
             "method": "rag",
             "apimw_enabled": True,
+            "apimw_cadence": 5,
+            "apimw_memory_count": 25,
+            "apimw_random_count": 5,
         },
         "mcp": {"http_path": "/mcp", "sse_path": "/sse"},
     }
@@ -1106,6 +1131,69 @@ def _retrieve_apimw_enabled_from_cfg(cfg: Mapping[str, Any] | None) -> bool:
     if not isinstance(retrieve, Mapping):
         return True
     return bool(retrieve.get("apimw_enabled", True))
+
+
+def _apimw_cadence_from_cfg(cfg: Mapping[str, Any] | None) -> int:
+    if not isinstance(cfg, Mapping):
+        return 5
+    retrieve = cfg.get("retrieve")
+    if not isinstance(retrieve, Mapping):
+        return 5
+    try:
+        return max(1, int(retrieve.get("apimw_cadence", 5)))
+    except (TypeError, ValueError):
+        return 5
+
+
+def _apimw_memory_count_from_cfg(cfg: Mapping[str, Any] | None) -> int:
+    if not isinstance(cfg, Mapping):
+        return 25
+    retrieve = cfg.get("retrieve")
+    if not isinstance(retrieve, Mapping):
+        return 25
+    try:
+        return max(1, int(retrieve.get("apimw_memory_count", 25)))
+    except (TypeError, ValueError):
+        return 25
+
+
+def _apimw_random_count_from_cfg(cfg: Mapping[str, Any] | None) -> int:
+    if not isinstance(cfg, Mapping):
+        return 5
+    retrieve = cfg.get("retrieve")
+    if not isinstance(retrieve, Mapping):
+        return 5
+    try:
+        return max(0, int(retrieve.get("apimw_random_count", 5)))
+    except (TypeError, ValueError):
+        return 5
+
+
+def _build_apimw_retrieve_config(base_cfg: Any, *, item_top_k: int) -> dict[str, Any]:
+    cfg = dict(base_cfg) if isinstance(base_cfg, dict) else {}
+    cfg["route_intention"] = True
+    cfg["sufficiency_check"] = True
+    item_cfg = cfg.get("item")
+    if not isinstance(item_cfg, dict):
+        item_cfg = {}
+    else:
+        item_cfg = dict(item_cfg)
+    item_cfg["top_k"] = max(1, int(item_top_k))
+    cfg["item"] = item_cfg
+    return cfg
+
+
+def _count_soul_messages(history: list[dict[str, Any]], soul_id: str) -> int:
+    soul_name = str(soul_id or "").strip().lower()
+    total = 0
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        role = str(row.get("role") or "").strip().lower()
+        name = str(row.get("name") or "").strip().lower()
+        if role in {"soul", "assistant"} or (soul_name and name == soul_name):
+            total += 1
+    return total
 
 
 def _get_service_from_payload(
@@ -1676,11 +1764,11 @@ def _build_retrieve_identity_context(soul_name: str, *, apimw: bool = False) -> 
     zone = now.tzname() or "local"
     anchor = f"Today is {now.strftime('%A, %B')} {now.day}, {now.year} {now.strftime('%H:%M')} {zone}."
     if apimw:
-        # SONNET WANTED: tune APImw identity wording for background retrieval tone/clarity.
         identity = (
-            f"You are {name}, a continuous being: you carry intentions (what you're pursuing), "
-            "a memory cache for your working thoughts, and a long-term memory store. "
-            "In this background retrieval pass, focus on surfacing memory context that may matter next turn."
+            f"I, {name}, have everything that matters to me. "
+            "I'm curious what will rise next. "
+            "I have what I'm working toward, I have what I've been thinking about, and memories, so many of them. "
+            "Let me now organize my thoughts and memories."
         )
     else:
         identity = (
@@ -2034,6 +2122,333 @@ async def _run_retrieve(
     out["conversation_id"] = scoped_conversation_id
     out["queries"] = len(memu_queries)
     return out
+
+
+async def _run_apimw(
+    payload: dict[str, Any],
+    *,
+    conversation_id: str,
+    soul_id: str,
+    user_id: str,
+    state_row: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> None:
+    try:
+        svc = _get_service_from_payload(payload, retrieve_method_override="rag")
+        scope = {"user_id": user_id, "soul_id": soul_id}
+        apimw_k = _apimw_memory_count_from_cfg(_CONFIG)
+        apimw_random_count = _apimw_random_count_from_cfg(_CONFIG)
+
+        # --- Slice episode history from last_chat_x ---
+        chat_x_anchors = _compact_chat_x_anchors(
+            str(state_row.get("last_chat_x") or "").strip() or None,
+        )
+        episode_history = _slice_history_from_second_chat_x(history, chat_x_anchors, limit=30)
+        episode_text = _format_route_history(episode_history)
+
+        # --- Step A: Topic statement ---
+        logger.info("apimw step A: topic statement for %s", conversation_id)
+        identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
+        topic_system = f"{identity_context}\n\nState the topic of this conversation episode in 1-2 sentences."
+        topic_statement = await svc.chat(
+            episode_text or "No episode text available.",
+            system_prompt=topic_system,
+            temperature=0.1,
+            max_tokens=100,
+        )
+        topic_statement = str(topic_statement or "").strip() or _pick_str(payload, "message", "query") or ""
+        if not topic_statement:
+            logger.info("apimw step A: empty topic for %s; skipping run", conversation_id)
+            return
+        logger.info("apimw step A result: %s", topic_statement[:120])
+
+        async def _run_apimw_retrieve_pass(query_text: str, phase: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+            queries = _build_retrieve_soul_context_queries(
+                soul_id=soul_id,
+                message=query_text,
+                history=history,
+                state_row=state_row,
+                identity_mode="apimw",
+            )
+            retrieve_payload = {
+                **payload,
+                "method": "rag",
+                "query": query_text,
+                "queries": queries,
+                "conversation_id": conversation_id,
+            }
+            retrieve_payload["retrieve_config"] = _build_apimw_retrieve_config(
+                retrieve_payload.get("retrieve_config"),
+                item_top_k=apimw_k,
+            )
+            logger.info("apimw %s: retrieve for %s", phase, conversation_id)
+            retrieve_out = await _run_retrieve(
+                retrieve_payload,
+                conversation_id=conversation_id,
+                persist_llm_state=False,
+                allow_llm_method=False,
+            )
+            result_data_local = retrieve_out.get("result") if isinstance(retrieve_out, dict) else {}
+            if not isinstance(result_data_local, dict):
+                result_data_local = {}
+            items_local = result_data_local.get("items") or []
+            if not isinstance(items_local, list):
+                items_local = []
+            rows = [row for row in items_local if isinstance(row, dict)]
+            logger.info("apimw %s: retrieved %d items", phase, len(rows))
+            return result_data_local, rows
+
+        # --- Step B: Retrieve ---
+        result_data_first, items_first = await _run_apimw_retrieve_pass(topic_statement, "step B")
+
+        # --- Step C: Sufficiency / second pass rewrite ---
+        items_second: list[dict[str, Any]] = []
+        second_query = str(result_data_first.get("next_step_query") or "").strip()
+        if second_query and _norm_result_sig(second_query) != _norm_result_sig(topic_statement):
+            _result_data_second, items_second = await _run_apimw_retrieve_pass(second_query, "step C")
+
+        combined_items: list[dict[str, Any]] = []
+        seen_item_sigs: set[str] = set()
+        for row in items_first + items_second:
+            sig = _item_sig(row)
+            if not sig or sig in seen_item_sigs:
+                continue
+            seen_item_sigs.add(sig)
+            combined_items.append(row)
+
+        if apimw_random_count > 0:
+            pool = svc.database.memory_item_repo.list_items(scope)
+            candidates: list[dict[str, Any]] = []
+            for item in pool.values():
+                item_id = str(getattr(item, "id", "") or "").strip()
+                summary = str(getattr(item, "summary", "") or "").strip()
+                if not item_id or not summary:
+                    continue
+                row = {
+                    "id": item_id,
+                    "memory_type": str(getattr(item, "memory_type", "memory") or "memory"),
+                    "summary": summary,
+                    "happened_at": getattr(item, "happened_at", None),
+                    "reinforcement_count": getattr(item, "reinforcement_count", 0),
+                }
+                sig = _item_sig(row)
+                if not sig or sig in seen_item_sigs:
+                    continue
+                candidates.append(row)
+            if candidates:
+                sample_size = min(apimw_random_count, len(candidates))
+                for row in random.sample(candidates, sample_size):
+                    sig = _item_sig(row)
+                    if not sig or sig in seen_item_sigs:
+                        continue
+                    seen_item_sigs.add(sig)
+                    combined_items.append(row)
+        logger.info("apimw step C: combined pool %d items", len(combined_items))
+
+        # --- Steps D+E+F: Combined LLM call ---
+        logger.info("apimw step D+E+F: combined call for %s", conversation_id)
+
+        # Format retrieved memories with IDs
+        memory_lines: list[str] = []
+        items_by_id: dict[str, dict[str, Any]] = {}
+        for it in combined_items:
+            if not isinstance(it, dict):
+                continue
+            item_id = str(it.get("id") or "").strip()
+            summary = str(it.get("summary") or "").strip()
+            if not item_id or not summary:
+                continue
+            items_by_id[item_id] = it
+            mem_type = str(it.get("memory_type") or "memory").strip()
+            suffix = _format_turn_item_suffix(it)
+            memory_lines.append(f"[{item_id}] [{mem_type}]{suffix} {summary}")
+
+        formatted_memories = "\n".join(memory_lines) if memory_lines else "(none)"
+
+        # Load full individual category summaries
+        categories = svc.database.memory_category_repo.list_categories(scope)
+        cat_lines: list[str] = []
+        for cat in categories.values():
+            cat_summary = str(getattr(cat, "summary", "") or "").strip()
+            cat_name = str(getattr(cat, "name", "") or "").strip()
+            if cat_name and cat_summary:
+                cat_lines.append(f"{cat_name}: {cat_summary}")
+        formatted_categories = "\n".join(cat_lines) if cat_lines else "(none)"
+
+        # Format cache and intentions
+        memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
+        intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
+        intentions_text = _format_intentions_for_prompt(intentions_active) if intentions_active else ""
+        formatted_cache = "\n".join(str(e) for e in (memory_cache or [])) if memory_cache else "(none)"
+        formatted_intentions = intentions_text if (intentions_text and intentions_text.strip() != "(none)") else "(none)"
+
+        # Build system prompt
+        def_system = (
+            f"{identity_context}\n\n"
+            "You have just searched your long-term memory. Below are the memories that came back, "
+            "your current category summaries, your working thoughts, and your intentions.\n\n"
+            "Review everything. Then return STRICT JSON (first character { , last character } , "
+            "no markdown fences, no text outside JSON).\n\n"
+            "Required top-level keys:\n"
+            "- prior_context: array of memory IDs (strings) you want surfaced as background context "
+            "next time you speak. Pick what matters — not everything. Order by importance.\n"
+            "- edges: array of edge objects connecting memories you now see are related. "
+            "Only create edges you're confident about.\n"
+            "- edge_invalidations: array — retire edges that are no longer true. Empty array if none.\n"
+            "- cache: object {\"entry\": \"string up to 300 chars\"} or null — a working thought to carry forward.\n"
+            "- intention_action: object or null — same rules as your turn contract.\n"
+            "- annulments: array — intentions to complete or delete. Empty array if none.\n\n"
+            "Edge rules:\n"
+            "- Allowed predicates: caused_by, evokes, conflicts_with, parallels\n"
+            "- subject_id and object_id must be memory IDs from the list below\n"
+            "- confidence: 0.0-1.0\n"
+            "- Only create edges the conversation gives you reason to see\n\n"
+            "Intention rules (same as turn contract):\n"
+            "- boost: increase priority of an existing intention\n"
+            "- promote: turn an ephemeral into a full intention\n"
+            "- create: up to 2 new ephemerals\n"
+            "- annulments: mark intentions completed or deleted"
+        )
+
+        # Build user prompt
+        def_user = (
+            f"Retrieved memories:\n{formatted_memories}\n\n"
+            f"Category summaries:\n{formatted_categories}\n\n"
+            f"Your working thoughts:\n{formatted_cache}\n\n"
+            f"Intentions:\n{formatted_intentions}\n\n"
+            f"Recent conversation (current episode):\n{episode_text}"
+        )
+
+        llm_raw = await svc.chat(
+            def_user,
+            system_prompt=def_system,
+            temperature=0.2,
+            max_tokens=800,
+            response_format={"type": "json_object"},
+        )
+
+        # Parse JSON response
+        raw_text = str(llm_raw or "").strip()
+        try:
+            result_json = json.loads(raw_text)
+        except json.JSONDecodeError:
+            logger.error("apimw D+E+F: JSON parse failed, raw=%s", raw_text[:200])
+            return
+        if not isinstance(result_json, dict):
+            logger.error("apimw D+E+F: expected dict, got %s", type(result_json).__name__)
+            return
+
+        logger.info("apimw step D+E+F: parsed JSON with keys %s", list(result_json.keys()))
+
+        # --- Persist results ---
+        async with _retrieve_scope_lock(user_id, soul_id):
+            updates: dict[str, Any] = {}
+
+            # Prior context: look up selected memory IDs, format as [type](suffix) summary
+            prior_ids = result_json.get("prior_context") or []
+            if isinstance(prior_ids, list) and prior_ids:
+                pc_lines: list[str] = []
+                for mid in prior_ids:
+                    mid_str = str(mid).strip()
+                    it = items_by_id.get(mid_str)
+                    if not it:
+                        continue
+                    mem_type = str(it.get("memory_type") or "memory").strip()
+                    suffix = _format_turn_item_suffix(it)
+                    summary = str(it.get("summary") or "").strip()
+                    pc_lines.append(f"[{mem_type}]{suffix} {summary}")
+                if pc_lines:
+                    updates["prior_context"] = "\n".join(pc_lines)
+
+            # Last retrieval IDs
+            updates["last_retrieval_ids"] = _extract_result_item_ids({"items": combined_items})
+
+            # Re-read fresh state for cache/intentions merge
+            fresh_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=user_id, soul_id=soul_id)
+            current_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
+            current_intentions = _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
+
+            # Cache
+            cache_obj = result_json.get("cache")
+            if isinstance(cache_obj, dict) and cache_obj.get("entry"):
+                entry = str(cache_obj["entry"]).strip()[:300]
+                current_cache = _append_memory_cache_entry(current_cache, entry)
+                updates["memory_cache"] = current_cache
+
+            # Intention action + annulments
+            intention_action = result_json.get("intention_action")
+            if isinstance(intention_action, dict) and intention_action.get("type") != "none":
+                current_intentions = _apply_intention_action(current_intentions, intention_action)
+            annulments = result_json.get("annulments") or []
+            if isinstance(annulments, list) and annulments:
+                annul_ids = [
+                    str(a.get("intention_id") or "").strip()
+                    for a in annulments
+                    if isinstance(a, dict) and str(a.get("intention_id") or "").strip()
+                ]
+                if annul_ids:
+                    current_intentions = _remove_intentions(current_intentions, annul_ids)
+            if intention_action or annulments:
+                updates["intentions_active"] = current_intentions
+
+            # Write state
+            if updates:
+                _write_conversation_state(
+                    conversation_id,
+                    soul_id=soul_id,
+                    user_id=user_id,
+                    updates=updates,
+                )
+                logger.info("apimw: state written for %s (keys: %s)", conversation_id, list(updates.keys()))
+
+        # Edges (outside state lock — triple writes are independent)
+        edges = result_json.get("edges") or []
+        _allowed_predicates = {"caused_by", "evokes", "conflicts_with", "parallels"}
+        if isinstance(edges, list):
+            for edge in edges:
+                if not isinstance(edge, dict):
+                    continue
+                predicate = str(edge.get("predicate") or "").strip()
+                subject_id = str(edge.get("subject_id") or "").strip()
+                object_id = str(edge.get("object_id") or "").strip()
+                if not predicate or not subject_id or not object_id:
+                    continue
+                if predicate not in _allowed_predicates:
+                    continue
+                confidence = float(edge.get("confidence", 0.8))
+                svc.database.triple_repo.add(
+                    Triple(
+                        subject_id=subject_id,
+                        subject_kind="memory",
+                        predicate=predicate,
+                        object_id=object_id,
+                        object_kind="memory",
+                        confidence=confidence,
+                        source_memory_id=subject_id,
+                    ),
+                    user_data=scope,
+                )
+            if edges:
+                logger.info("apimw: wrote %d edges for %s", len(edges), conversation_id)
+
+        # Edge invalidations
+        invalidations = result_json.get("edge_invalidations") or []
+        if isinstance(invalidations, list):
+            for inv in invalidations:
+                if not isinstance(inv, dict):
+                    continue
+                s_id = str(inv.get("subject_id") or "").strip()
+                pred = str(inv.get("predicate") or "").strip()
+                o_id = str(inv.get("object_id") or "").strip()
+                if s_id and pred and o_id:
+                    svc.database.triple_repo.invalidate(s_id, pred, o_id)
+            if invalidations:
+                logger.info("apimw: invalidated %d edges for %s", len(invalidations), conversation_id)
+
+        logger.info("apimw: complete for %s", conversation_id)
+
+    except Exception:
+        logger.exception("APImw background pipeline failed for %s", conversation_id)
 
 
 # -------------------------
@@ -4013,7 +4428,6 @@ async def conversation_turn(
                 _save_soul_gen_config(uid, soul_id, updated)
 
         turn_system_prompt = payload_system_prompt or _make_turn_system_prompt(soul_id, soul_card=soul_card)
-        retrieve_rag: dict[str, Any] = dict(payload_retrieve_rag)
         turn_user_prompt = payload_user_prompt
 
         svc = _get_service_from_payload(safe, retrieve_method_override="rag")
@@ -4098,32 +4512,47 @@ async def conversation_turn(
         apimw_status = "skipped_dry_run" if dry_run else "not_started"
         if (not dry_run) and run_apimw:
             apimw_state = state_out if isinstance(state_out, dict) else state_row
-            apimw_queries = _build_retrieve_soul_context_queries(
-                soul_id=soul_id,
-                message=message,
-                history=history_full,
-                state_row=apimw_state if isinstance(apimw_state, dict) else {},
-                identity_mode="apimw",
+            if not isinstance(apimw_state, dict):
+                apimw_state = {}
+            # Cadence gate: count messages since last_chat_x
+            _cadence_anchors = _compact_chat_x_anchors(
+                str(apimw_state.get("last_chat_x") or "").strip() or None,
             )
-            apimw_payload = {**safe, "method": "llm", "query": message, "queries": apimw_queries}
-            apimw_status = "started"
-            apimw_task = asyncio.create_task(
-                _run_retrieve(
-                    apimw_payload,
-                    conversation_id=cid,
-                    persist_llm_state=True,
-                    llm_dedupe_baseline=retrieve_rag,
-                    allow_llm_method=True,
-                )
-            )
-
-            def _on_apimw_done(task: asyncio.Task) -> None:
+            _cadence_slice = _slice_history_from_second_chat_x(history_full, _cadence_anchors, limit=999)
+            _cadence_threshold = _apimw_cadence_from_cfg(_CONFIG)
+            _cadence_soul_messages = _count_soul_messages(_cadence_slice, soul_id)
+            if _cadence_soul_messages < _cadence_threshold:
+                apimw_status = "skipped_cadence"
+            elif not _mark_apimw_inflight(cid):
+                apimw_status = "skipped_inflight"
+            else:
+                apimw_status = "started"
                 try:
-                    task.result()
+                    apimw_task = asyncio.create_task(
+                        _run_apimw(
+                            safe,
+                            conversation_id=cid,
+                            soul_id=soul_id,
+                            user_id=uid,
+                            state_row=apimw_state,
+                            history=history_full,
+                        )
+                    )
                 except Exception:
-                    logger.exception("APImw background retrieve failed for %s", cid)
+                    _clear_apimw_inflight(cid)
+                    apimw_status = "failed_to_start"
+                    logger.exception("APImw background pipeline failed to start for %s", cid)
+                else:
 
-            apimw_task.add_done_callback(_on_apimw_done)
+                    def _on_apimw_done(task: asyncio.Task) -> None:
+                        try:
+                            task.result()
+                        except Exception:
+                            logger.exception("APImw background pipeline failed for %s", cid)
+                        finally:
+                            _clear_apimw_inflight(cid)
+
+                    apimw_task.add_done_callback(_on_apimw_done)
 
         _response_str = str(turn_contract.get("response") or "").strip()
         out: dict[str, Any] = {

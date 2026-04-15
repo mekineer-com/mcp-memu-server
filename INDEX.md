@@ -33,7 +33,7 @@ mcp-memu-server/
 | `/memorize` | POST | Extract memories from conversation text (also used by the optional sleep timer auto-digest worker); `force=true` batching via `_build_force_memorize_batches()` — prefers segment manifest ranges, fills gaps with `full.json`, falls back to token-window chunking |
 | `/retrieve` | POST | Query memories (`rag` method; `llm` is internal-only for background flows) |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt for chat path; when caller provides only `query` (no `queries`), server enriches retrieve context with identity/time anchor, `all_categories_summary`, `memory_cache`, `intentions`, and chat_x-based history slices before calling memu retrieve |
-| `/conversation/{id}/turn` | POST | Soul turn loop: requires extension-provided `prompt_override_payload` (prepared by `/conversation/{id}/retrieve`), runs LLM with turn contract, persists intentions + cache, and never re-runs retrieve inside turn; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self`); APImw dedupe baseline comes from payload `retrieve_rag`; APImw now assembles the same soul-context query stack as `/conversation/{id}/retrieve` (identity/time + all-categories-summary + cache + intentions + chat_x history), with an APImw-specific identity line; queues forced memorize when unmemorized chat tail exceeds `memorize.turn_history_token_budget` |
+| `/conversation/{id}/turn` | POST | Soul turn loop: requires extension-provided `prompt_override_payload` (prepared by `/conversation/{id}/retrieve`), runs LLM with turn contract, persists intentions + cache, and never re-runs retrieve inside turn; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self`); APImw fires background `_run_apimw()` pipeline when cadence is met (default: 5 soul messages since `last_chat_x`), skips when a prior APImw job is still in flight, runs step A topic statement + step B retrieve + step C second-pass rewrite retrieve when query changes + combined D+E+F selection/edges/intention+cache update, then writes `prior_context`, `last_retrieval_ids`, `memory_cache`, `intentions_active` and edge invalidations/additions; queues forced memorize when unmemorized chat tail exceeds `memorize.turn_history_token_budget` |
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn maintenance using `undo_snapshot` (single-step depth) |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/diary/generate` | POST | Generate diary entry from recent memories |
@@ -92,7 +92,7 @@ storage:    resources_dir, metadata_store (provider + dsn)
 listen:     host, port
 memu:       path (to memu/src)
 categories: defaults[], allow_dynamic, thresholds
-retrieve:   method (rag), apimw_enabled (bool; toggles turn-level APImw background retrieve)
+retrieve:   method (rag), apimw_enabled (bool; toggles APImw pipeline), apimw_cadence (int, default 5; min soul messages since chat_x before APImw fires), apimw_memory_count (int, default 25; APImw item.top_k), apimw_random_count (int, default 5; APImw random sample size)
 memorize:   min_chunk_tokens, turn_history_token_budget, auto_memorize_on_sleep, sleep_timer_interval_seconds, supersede_similarity_threshold (default 0.75), enable_item_reinforcement (default true — enables reinforcement count roll-up on semantic dedupe merge)
 debug:      log_prompts (bool) — dumps exact LLM prompt + response for memorize and diary steps to console
 ```
