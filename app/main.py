@@ -1680,6 +1680,48 @@ def _build_retrieve_identity_context(soul_name: str) -> str:
     return f"{anchor}\n{identity}"
 
 
+def _build_retrieve_soul_context_queries(
+    *,
+    soul_id: str,
+    message: str,
+    history: list[dict[str, Any]],
+    state_row: dict[str, Any],
+) -> list[dict[str, Any]]:
+    memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
+    intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
+
+    soul_ctx_queries: list[dict[str, Any]] = []
+    identity_context = _build_retrieve_identity_context(soul_id)
+    if identity_context:
+        soul_ctx_queries.append({"role": "identity_context", "content": {"text": identity_context}})
+    all_cats_summary = str(state_row.get("all_categories_summary") or "").strip()
+    if all_cats_summary:
+        soul_ctx_queries.append({"role": "all_categories_summary", "content": {"text": all_cats_summary}})
+    cache_text = "\n".join(str(entry) for entry in (memory_cache or []))
+    if cache_text:
+        soul_ctx_queries.append({"role": "memory_cache", "content": {"text": cache_text}})
+    intentions_text = _format_intentions_for_prompt(intentions_active) if intentions_active else ""
+    if intentions_text and intentions_text.strip() != "(none)":
+        soul_ctx_queries.append({"role": "intentions", "content": {"text": intentions_text}})
+
+    chat_x_anchors = _compact_chat_x_anchors(
+        str(state_row.get("last_chat_x") or "").strip() or None,
+        str(state_row.get("last_chat_x_prev") or "").strip() or None,
+    )
+    history_from_chat_x = _slice_history_from_chat_x(history, chat_x_anchors)
+    history_two_text = _format_route_history(history_from_chat_x)
+    if history_two_text:
+        soul_ctx_queries.append({"role": "history_from_chat_x", "content": {"text": history_two_text}})
+
+    history_from_last_chat_x = _slice_history_from_chat_x(history, chat_x_anchors[:1])
+    history_one_text = _format_route_history(history_from_last_chat_x)
+    if history_one_text:
+        soul_ctx_queries.append({"role": "history_from_last_chat_x", "content": {"text": history_one_text}})
+
+    soul_ctx_queries.append({"role": "user", "content": {"text": message}})
+    return soul_ctx_queries
+
+
 def _load_turn_state_and_soul_card(
     conversation_id: str,
     *,
@@ -3753,39 +3795,13 @@ async def conversation_retrieve(
                     user_id=uid,
                     soul_id=soul_id,
                 )
-                memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
-                intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
-
-                soul_ctx_queries: list[dict[str, Any]] = []
-                identity_context = _build_retrieve_identity_context(soul_id)
-                if identity_context:
-                    soul_ctx_queries.append({"role": "identity_context", "content": {"text": identity_context}})
-                all_cats_summary = str(state_row.get("all_categories_summary") or "").strip()
-                if all_cats_summary:
-                    soul_ctx_queries.append({"role": "all_categories_summary", "content": {"text": all_cats_summary}})
-                cache_text = "\n".join(str(entry) for entry in (memory_cache or []))
-                if cache_text:
-                    soul_ctx_queries.append({"role": "memory_cache", "content": {"text": cache_text}})
-                intentions_text = _format_intentions_for_prompt(intentions_active) if intentions_active else ""
-                if intentions_text and intentions_text.strip() != "(none)":
-                    soul_ctx_queries.append({"role": "intentions", "content": {"text": intentions_text}})
-
-                chat_x_anchors = _compact_chat_x_anchors(
-                    str(state_row.get("last_chat_x") or "").strip() or None,
-                    str(state_row.get("last_chat_x_prev") or "").strip() or None,
+                # Build route-intention context from state in a single named helper.
+                safe["queries"] = _build_retrieve_soul_context_queries(
+                    soul_id=soul_id,
+                    message=message,
+                    history=history,
+                    state_row=state_row,
                 )
-                history_from_chat_x = _slice_history_from_chat_x(history, chat_x_anchors)
-                history_two_text = _format_route_history(history_from_chat_x)
-                if history_two_text:
-                    soul_ctx_queries.append({"role": "history_from_chat_x", "content": {"text": history_two_text}})
-
-                history_from_last_chat_x = _slice_history_from_chat_x(history, chat_x_anchors[:1])
-                history_one_text = _format_route_history(history_from_last_chat_x)
-                if history_one_text:
-                    soul_ctx_queries.append({"role": "history_from_last_chat_x", "content": {"text": history_one_text}})
-
-                soul_ctx_queries.append({"role": "user", "content": {"text": message}})
-                safe["queries"] = soul_ctx_queries
 
         out = await _run_retrieve(safe, conversation_id=cid, persist_llm_state=True)
 

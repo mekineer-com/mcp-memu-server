@@ -271,6 +271,8 @@ def _format_item_suffix(item: dict[str, Any], *, now: datetime | None = None) ->
 
 
 def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, set[str], set[str]]:
+    # This block intentionally combines retrieved category summaries + item memories.
+    # Dedup term sets are returned so later blocks can avoid repeating the same facts.
     if not isinstance(result, dict):
         return "(none)", set(), set()
 
@@ -339,6 +341,17 @@ def _render_empty_retrieve_label(result: Any) -> str:
         if result.get("needs_retrieval") is True:
             return "Retrieved memory context: (nothing this time; retrieval ran but found no matches)"
     return "Retrieved memory context: (nothing this time)"
+
+
+def _render_retrieval_status_line(result: Any, *, has_retrieve: bool) -> str | None:
+    if has_retrieve:
+        return None
+    if isinstance(result, dict):
+        if result.get("needs_retrieval") is False:
+            return "Retrieval status: route decided retrieval was not needed this turn."
+        if result.get("needs_retrieval") is True:
+            return "Retrieval status: retrieval ran but found no matching memories."
+    return "Retrieval status: no memory matches this turn."
 
 
 def _render_all_categories_summary(
@@ -432,11 +445,18 @@ def build_turn_prompt(
     has_all_categories = bool(all_categories_text)
     has_prior = bool(prior_text and prior_text != "(none)")
 
+    # Ordering contract for context blocks:
+    # 1) all-categories summary (broad orientation),
+    # 2) retrieved memory context (specific recalls),
+    # 3) prior context (residual background).
     context_blocks: list[str] = []
     if has_all_categories:
         context_blocks.extend(["All categories summary:", all_categories_text, ""])
     if has_retrieve:
         context_blocks.extend(["Retrieved memory context:", retrieve_text, ""])
+    status_line = _render_retrieval_status_line(retrieve_rag, has_retrieve=has_retrieve)
+    if status_line:
+        context_blocks.extend([status_line, ""])
     if has_prior:
         context_blocks.extend(["Prior context:", prior_text, ""])
     if not context_blocks:
