@@ -1708,7 +1708,11 @@ def _compact_chat_x_anchors(*anchors: str | None, max_count: int = 2) -> list[st
     return out
 
 
-def _slice_history_from_second_chat_x(
+_ROUTE_HISTORY_ROLE_TWO_ANCHORS = "history_from_second_chat_x"
+_ROUTE_HISTORY_ROLE_ONE_ANCHOR = "history_from_chat_x"
+
+
+def _slice_history_from_chat_x_anchors(
     history: list[dict[str, Any]],
     chat_x_anchors: list[str] | None,
     *,
@@ -1733,6 +1737,20 @@ def _slice_history_from_second_chat_x(
         return history[-limit:]
     sliced = history[start_idx:]
     return sliced[-limit:]
+
+
+def _next_chat_x_state_values(
+    chat_x: str | None,
+    state_row: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    next_anchors = _compact_chat_x_anchors(
+        chat_x,
+        str(state_row.get("last_chat_x") or "").strip() or None,
+        str(state_row.get("last_chat_x_prev") or "").strip() or None,
+    )
+    next_last_chat_x = next_anchors[0] if next_anchors else None
+    next_last_chat_x_prev = next_anchors[1] if len(next_anchors) > 1 else None
+    return next_last_chat_x, next_last_chat_x_prev
 
 
 def _format_route_history(history: list[dict[str, Any]]) -> str:
@@ -1802,15 +1820,15 @@ def _build_retrieve_soul_context_queries(
         str(state_row.get("last_chat_x") or "").strip() or None,
         str(state_row.get("last_chat_x_prev") or "").strip() or None,
     )
-    history_from_second_chat_x = _slice_history_from_second_chat_x(history, chat_x_anchors)
+    history_from_second_chat_x = _slice_history_from_chat_x_anchors(history, chat_x_anchors)
     history_two_text = _format_route_history(history_from_second_chat_x)
     if history_two_text:
-        soul_ctx_queries.append({"role": "history_from_second_chat_x", "content": {"text": history_two_text}})
+        soul_ctx_queries.append({"role": _ROUTE_HISTORY_ROLE_TWO_ANCHORS, "content": {"text": history_two_text}})
 
-    history_from_chat_x = _slice_history_from_second_chat_x(history, chat_x_anchors[:1])
+    history_from_chat_x = _slice_history_from_chat_x_anchors(history, chat_x_anchors[:1])
     history_one_text = _format_route_history(history_from_chat_x)
     if history_one_text:
-        soul_ctx_queries.append({"role": "history_from_chat_x", "content": {"text": history_one_text}})
+        soul_ctx_queries.append({"role": _ROUTE_HISTORY_ROLE_ONE_ANCHOR, "content": {"text": history_one_text}})
 
     soul_ctx_queries.append({"role": "user", "content": {"text": message}})
     return soul_ctx_queries
@@ -2153,7 +2171,7 @@ async def _run_apimw(
         chat_x_anchors = _compact_chat_x_anchors(
             str(state_row.get("last_chat_x") or "").strip() or None,
         )
-        episode_history = _slice_history_from_second_chat_x(history, chat_x_anchors, limit=30)
+        episode_history = _slice_history_from_chat_x_anchors(history, chat_x_anchors, limit=30)
         episode_text = _format_route_history(episode_history)
 
         # --- Step A: Topic statement ---
@@ -4499,13 +4517,7 @@ async def conversation_turn(
                     intentions_after,
                     [item_id for item_id in annulment_ids if item_id],
                 )
-                _next_chat_x_anchors = _compact_chat_x_anchors(
-                    chat_x,
-                    str(fresh_row.get("last_chat_x") or "").strip() or None,
-                    str(fresh_row.get("last_chat_x_prev") or "").strip() or None,
-                )
-                _next_last_chat_x = _next_chat_x_anchors[0] if _next_chat_x_anchors else None
-                _next_last_chat_x_prev = _next_chat_x_anchors[1] if len(_next_chat_x_anchors) > 1 else None
+                _next_last_chat_x, _next_last_chat_x_prev = _next_chat_x_state_values(chat_x, fresh_row)
                 state_out, state_path = _write_conversation_state(
                     cid,
                     soul_id=soul_id,
@@ -4540,7 +4552,7 @@ async def conversation_turn(
             _cadence_anchors = _compact_chat_x_anchors(
                 str(apimw_state.get("last_chat_x") or "").strip() or None,
             )
-            _cadence_slice = _slice_history_from_second_chat_x(history_full, _cadence_anchors, limit=999)
+            _cadence_slice = _slice_history_from_chat_x_anchors(history_full, _cadence_anchors, limit=999)
             _cadence_threshold = _apimw_cadence_from_cfg(_CONFIG)
             _cadence_soul_messages = _count_soul_messages(_cadence_slice, soul_id)
             if _cadence_soul_messages < _cadence_threshold:

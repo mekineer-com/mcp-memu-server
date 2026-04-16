@@ -131,7 +131,7 @@ def test_compact_chat_x_anchors_keeps_two_unique_newest():
     assert anchors == ["m9", "m8"]
 
 
-def test_slice_history_from_chat_x_uses_two_anchors():
+def test_slice_history_from_chat_x_anchors_uses_two_anchors():
     try:
         from app import main
     except Exception as e:
@@ -145,11 +145,11 @@ def test_slice_history_from_chat_x_uses_two_anchors():
         {"message_id": "m5", "content": "5"},
         {"message_id": "m6", "content": "6"},
     ]
-    sliced = main._slice_history_from_chat_x(history, ["m5", "m3"], limit=12)
+    sliced = main._slice_history_from_chat_x_anchors(history, ["m5", "m3"], limit=12)
     assert [item.get("message_id") for item in sliced] == ["m3", "m4", "m5", "m6"]
 
 
-def test_slice_history_from_chat_x_uses_one_anchor():
+def test_slice_history_from_chat_x_anchors_uses_one_anchor():
     try:
         from app import main
     except Exception as e:
@@ -162,7 +162,7 @@ def test_slice_history_from_chat_x_uses_one_anchor():
         {"message_id": "m4", "content": "4"},
         {"message_id": "m5", "content": "5"},
     ]
-    sliced = main._slice_history_from_chat_x(history, ["m4"], limit=12)
+    sliced = main._slice_history_from_chat_x_anchors(history, ["m4"], limit=12)
     assert [item.get("message_id") for item in sliced] == ["m4", "m5"]
 
 
