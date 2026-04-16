@@ -60,9 +60,6 @@ from app.db import (
     sqlite_table_columns as _sqlite_table_columns,
 )
 from app.services.diary import (
-    build_all_categories_summary as _build_all_categories_summary,
-)
-from app.services.diary import (
     DiaryDeps,
 )
 from app.services.diary import (
@@ -144,9 +141,6 @@ _SLEEP_TIMER_INTERVAL_SECONDS: int = _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS
 _SLEEP_TIMER_MAX_JOBS: int = 1
 _LOG_PROMPTS: bool = False
 _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved", "removed"}
-_ALL_CATEGORIES_SUMMARY_PER_CATEGORY_TOKEN_CAP: int = 100
-
-
 def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
     """Rough token estimate: word_count / 0.75.  Good enough for gating."""
     words = sum(len(str(m.get("content") or m.get("mes") or "").split()) for m in messages)
@@ -2004,7 +1998,7 @@ def _merge_memorize_batch_results(
     return result
 
 
-def _compute_all_categories_summary_for_scope(
+async def _compute_holistic_categories_summary(
     *,
     svc: Any,
     soul_id: str,
@@ -2016,10 +2010,26 @@ def _compute_all_categories_summary_for_scope(
     if user_id:
         where["user_id"] = user_id
     categories = svc.database.memory_category_repo.list_categories(where)
-    return _build_all_categories_summary(
-        categories=list(categories.values()),
-        per_category_token_cap=_ALL_CATEGORIES_SUMMARY_PER_CATEGORY_TOKEN_CAP,
+    lines: list[str] = []
+    for cat in sorted(categories.values(), key=lambda c: str(getattr(c, "name", "")).casefold()):
+        name = str(getattr(cat, "name", "") or "").strip()
+        summary = str(getattr(cat, "summary", "") or "").strip()
+        if name and summary:
+            lines.append(f"## {name}\n{summary}")
+    if not lines:
+        return None
+
+    full_text = "\n\n".join(lines)
+    soul_name = str(soul_id or "").strip() or "the assistant"
+    # SONNET WANTED: holistic categories summary prompt (300-500 tokens, first-person, cross-category synthesis).
+    system_prompt = f"SONNET WANTED ({soul_name})"
+    result = await svc.chat(
+        full_text,
+        system_prompt=system_prompt,
+        temperature=0.3,
+        max_tokens=600,
     )
+    return str(result or "").strip() or None
 
 
 async def _run_retrieve(
@@ -3289,6 +3299,17 @@ async def _run_diary_pipeline_once(
             soul_id=soul_id,
             user_id=user_id,
         )
+        holistic_summary = await _compute_holistic_categories_summary(
+            svc=svc,
+            soul_id=soul_id,
+            user_id=user_id,
+        )
+        _write_conversation_state(
+            conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={"all_categories_summary": holistic_summary},
+        )
     return result, diary_inputs
 
 
@@ -3403,20 +3424,21 @@ async def _run_memorize_batches(
                 pending_diary_episode_ids.extend(_normalize_text_list(batch_result.get("pending_diary_episode_ids")))
                 processed_end_cursor = max(processed_end_cursor, batch_end)
                 if conversation_id:
-                    current_all_categories_summary = _compute_all_categories_summary_for_scope(
-                        svc=svc,
-                        soul_id=soul_id,
-                        user_id=uid,
-                    )
                     _write_conversation_state(
                         conversation_id,
                         soul_id=soul_id,
                         user_id=uid,
                         updates={
                             "digest_cursor": processed_end_cursor,
-                            "all_categories_summary": current_all_categories_summary,
                         },
                     )
+
+        if conversation_id and has_batch_results:
+            current_all_categories_summary = await _compute_holistic_categories_summary(
+                svc=svc,
+                soul_id=soul_id,
+                user_id=uid,
+            )
 
         if conversation_id and has_batch_results:
             try:

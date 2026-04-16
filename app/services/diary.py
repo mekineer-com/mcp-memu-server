@@ -129,35 +129,6 @@ def _format_categories_for_diary(rows: Sequence[sqlite3.Row]) -> str:
     return "\n".join(lines)
 
 
-def _truncate_text_to_token_cap(text: str, token_cap: int) -> str:
-    body = str(text or "").strip()
-    if not body:
-        return ""
-    cap = max(1, int(token_cap or 0))
-    max_words = max(1, int(cap * 0.75))
-    words = body.split()
-    if len(words) <= max_words:
-        return body
-    return " ".join(words[:max_words]).strip()
-
-
-def build_all_categories_summary(*, categories: Sequence[Any], per_category_token_cap: int = 100) -> str | None:
-    lines: list[str] = []
-    normalized: list[tuple[str, str]] = []
-    for category in categories:
-        name = str(getattr(category, "name", "") or "").strip()
-        summary = str(getattr(category, "summary", "") or "").strip()
-        if not name or not summary:
-            continue
-        normalized.append((name, summary))
-    normalized.sort(key=lambda item: item[0].casefold())
-    for name, summary in normalized:
-        clipped = _truncate_text_to_token_cap(summary, per_category_token_cap)
-        if clipped:
-            lines.append(f"{name}: {clipped}")
-    return "\n".join(lines) or None
-
-
 def _format_memory_rows_for_diary(rows: Sequence[sqlite3.Row], *, include_ids: bool = False) -> str:
     lines: list[str] = []
     for row in rows:
@@ -720,17 +691,6 @@ def write_diary_outputs(
     try:
         con.row_factory = sqlite3.Row
         deps.sqlite_ensure_conversation_state_schema(con)
-        where: dict[str, Any] = {}
-        if soul_id:
-            where["soul_id"] = soul_id
-        if user_id:
-            where["user_id"] = user_id
-        categories = svc.database.memory_category_repo.list_categories(where)
-        all_categories_summary = build_all_categories_summary(
-            categories=list(categories.values()),
-            per_category_token_cap=100,
-        )
-
         con.execute(
             """
 INSERT INTO memu_self_model (
@@ -815,8 +775,8 @@ INSERT INTO intentions_life_goals (
                 }
             )
 
-        assignments = ["self_model_id = ?", "all_categories_summary = ?", "updated_at = ?"]
-        params: list[Any] = [str(self_model_id).strip() or None, all_categories_summary, datetime.now(UTC).isoformat()]
+        assignments = ["self_model_id = ?", "updated_at = ?"]
+        params: list[Any] = [str(self_model_id).strip() or None, datetime.now(UTC).isoformat()]
         if intention_ids:
             current_state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id)) or {}
             merged_intentions_active = upsert_intentions_stack_entries(
@@ -837,7 +797,6 @@ INSERT INTO intentions_life_goals (
             "self_model_id": self_model_id,
             "intention_ids": intention_ids,
             "pending_diary_episode_ids_cleared": True,
-            "all_categories_summary": all_categories_summary,
             "state": updated_state,
         }
     finally:
