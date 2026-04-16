@@ -97,6 +97,35 @@ def _is_pid_alive(pid: int) -> bool:
     return True
 
 
+def _proc_cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except Exception:
+        return ""
+    if not raw:
+        return ""
+    return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+
+
+def _proc_cwd(pid: int) -> Path | None:
+    try:
+        return Path(f"/proc/{pid}/cwd").resolve()
+    except Exception:
+        return None
+
+
+def _is_our_server_process(pid: int) -> bool:
+    cmd = _proc_cmdline(pid).lower()
+    root_s = str(ROOT).lower()
+    if cmd and f"{root_s}/run.py" in cmd:
+        return True
+    if cmd and "uvicorn" in cmd and "app.main:app" in cmd:
+        cwd = _proc_cwd(pid)
+        if cwd is not None and cwd == ROOT:
+            return True
+    return False
+
+
 def _enforce_single_instance(cfg: dict) -> None:
     pf = _pidfile_path(cfg)
     if not pf.exists():
@@ -107,8 +136,14 @@ def _enforce_single_instance(cfg: dict) -> None:
     if existing == os.getpid():
         return
     if _is_pid_alive(existing):
-        print(f"mcp-memu-server already running (pid={existing}, pid_file={pf})", file=sys.stderr)
-        raise SystemExit(1)
+        if _is_our_server_process(existing):
+            print(f"mcp-memu-server already running (pid={existing}, pid_file={pf})", file=sys.stderr)
+            raise SystemExit(1)
+        try:
+            pf.unlink()
+        except Exception:
+            pass
+        return
     try:
         pf.unlink()
     except Exception:
