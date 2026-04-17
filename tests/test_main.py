@@ -235,3 +235,16 @@ def test_build_force_memorize_batches_fills_segment_gaps_with_full_path():
     assert batches[0][0].endswith("/tmp/days/day1.json")
     assert batches[1][0].endswith("/tmp/full.json")
     assert batches[2][0].endswith("/tmp/days/day2.json")
+
+
+def test_normalize_conversation_uses_created_at_when_timestamp_missing():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    conv = [{"role": "user", "content": "hello", "created_at": "2026-04-16T12:00:00Z"}]
+    out = main._normalize_conversation(conv)
+
+    assert isinstance(out, list) and out
+    assert out[0]["ts_ms"] == int(datetime(2026, 4, 16, 12, 0, tzinfo=UTC).timestamp() * 1000)

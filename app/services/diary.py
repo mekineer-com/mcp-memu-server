@@ -817,6 +817,7 @@ INSERT INTO intentions_life_goals (
             summary=f"I used to want: {desc}",
             embedding=embedding,
             user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
+            happened_at=episode_happened_at,
             conversation_id=conversation_id,
         )
     return result

@@ -1399,6 +1399,8 @@ def _normalize_conversation(conv: Any) -> Any:
             raw_ts = m.get("ts_ms") if isinstance(m, dict) else None
             if raw_ts is None:
                 raw_ts = m.get("timestamp") if isinstance(m, dict) else None
+            if raw_ts is None:
+                raw_ts = m.get("created_at") if isinstance(m, dict) else None
             if isinstance(raw_ts, (int, float)) and math.isfinite(raw_ts):
                 ts_ms = int(raw_ts)
             elif isinstance(raw_ts, str) and raw_ts.strip():
