@@ -121,6 +121,7 @@ from app.services.turn_contract import (
 )
 
 logger = logging.getLogger(__name__)
+_PROMPT_LOGGER = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title="mcp-memu-server", version="0.4.0")
 
@@ -834,7 +835,7 @@ def _refresh_runtime_limits() -> None:
 def _prompt_log_before(ctx: Any, request_view: Any) -> None:
     if getattr(request_view, "kind", None) == "embed":
         return
-    logger.info(
+    _PROMPT_LOGGER.info(
         "[PROMPT] op=%s step=%s model=%s\n%s",
         getattr(ctx, "operation", None) or "-",
         getattr(ctx, "step_id", None) or "-",
@@ -847,7 +848,7 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
     content = getattr(response_view, "content", None)
     if not content:
         return
-    logger.info(
+    _PROMPT_LOGGER.info(
         "[RESPONSE] op=%s step=%s\n%s",
         getattr(ctx, "operation", None) or "-",
         getattr(ctx, "step_id", None) or "-",
