@@ -346,13 +346,8 @@ ORDER BY name ASC
             start_idx, end_idx = _parse_episode_range(str(ep))
             episode_ranges.append((str(ep), start_idx, end_idx))
         episode_ranges.sort(key=lambda item: (item[1], item[2], item[0]))
-        episode_happened_at: datetime | None = None
-        if episode_ranges:
-            first_msg_idx = episode_ranges[0][1]
-            if first_msg_idx < len(full_messages):
-                ts_ms = full_messages[first_msg_idx].get("ts_ms")
-                if isinstance(ts_ms, (int, float)):
-                    episode_happened_at = datetime.fromtimestamp(float(ts_ms) / 1000.0, UTC)
+        ts_ms = full_messages[episode_ranges[0][1]].get("ts_ms")
+        episode_happened_at = datetime.fromtimestamp(float(ts_ms) / 1000.0, UTC) if isinstance(ts_ms, (int, float)) else None
         excerpt = _format_messages_for_diary(full_messages, episode_ranges)
         if not excerpt.strip():
             raise HTTPException(status_code=400, detail="diary source messages not found in resource")
