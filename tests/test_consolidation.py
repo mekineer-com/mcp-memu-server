@@ -1,40 +1,19 @@
 import pytest
 
-
-def _parse_consolidation_xml():
-    try:
-        from app.services.consolidation import _parse_consolidation_xml as parser
-    except Exception as exc:  # pragma: no cover - test env fallback
-        pytest.skip(f"Import test skipped due to compatibility issue: {exc}")
-    return parser
-
-
-def _format_episode_block_for_prompt():
-    try:
-        from app.services.consolidation import _format_episode_block_for_prompt as formatter
-    except Exception as exc:  # pragma: no cover - test env fallback
-        pytest.skip(f"Import test skipped due to compatibility issue: {exc}")
-    return formatter
-
-
-def _edge_helpers():
-    try:
-        from app.services.graph_edges import invalidate_memory_edges, write_memory_edges
-    except Exception as exc:  # pragma: no cover - test env fallback
-        pytest.skip(f"Import test skipped due to compatibility issue: {exc}")
-    return write_memory_edges, invalidate_memory_edges
-
+from app.services.consolidation import _format_episode_block_for_prompt
+from app.services.consolidation import _parse_consolidation_xml
+from app.services.graph_edges import invalidate_memory_edges, write_memory_edges
 
 def test_parse_consolidation_xml_requires_all_expected_episode_diaries() -> None:
     xml = """
-<consolidation>
+	<consolidation>
   <narrative_self>n</narrative_self>
   <life_goals></life_goals>
   <companion_memory>c</companion_memory>
     </consolidation>
-"""
+	"""
     with pytest.raises(ValueError, match="missing episode_ids"):
-        _parse_consolidation_xml()(xml, expected_episode_ids={"ep:1-2"})
+        _parse_consolidation_xml(xml, expected_episode_ids={"ep:1-2"})
 
 
 def test_parse_consolidation_xml_rejects_unexpected_episode_diary() -> None:
@@ -54,9 +33,9 @@ def test_parse_consolidation_xml_rejects_unexpected_episode_diary() -> None:
     </diary>
   </diaries>
     </consolidation>
-"""
+	"""
     with pytest.raises(ValueError, match="unknown consolidation diary episode_id"):
-        _parse_consolidation_xml()(xml, expected_episode_ids=set())
+        _parse_consolidation_xml(xml, expected_episode_ids=set())
 
 
 def test_parse_consolidation_xml_accepts_exact_episode_set() -> None:
@@ -77,9 +56,9 @@ def test_parse_consolidation_xml_accepts_exact_episode_set() -> None:
       <unresolved></unresolved>
     </diary>
   </diaries>
-</consolidation>
+	</consolidation>
 """
-    parsed = _parse_consolidation_xml()(xml, expected_episode_ids={"ep:1-2"})
+    parsed = _parse_consolidation_xml(xml, expected_episode_ids={"ep:1-2"})
 
     assert parsed["life_goal_add"] == ["g"]
     assert parsed["diaries"][0]["episode_id"] == "ep:1-2"
@@ -127,17 +106,15 @@ def test_parse_consolidation_xml_edges_and_write_helpers() -> None:
       <object_id>mem_y</object_id>
     </invalidate>
   </edges>
-</consolidation>
+	</consolidation>
 """
-    parsed = _parse_consolidation_xml()(xml, expected_episode_ids={"ep:1-2"})
+    parsed = _parse_consolidation_xml(xml, expected_episode_ids={"ep:1-2"})
     assert len(parsed["edges"]) == 2
     assert parsed["edges"][0]["confidence"] == 0.61
     assert "confidence" not in parsed["edges"][1]
     assert parsed["edge_invalidations"] == [
         {"subject_id": "mem_x", "predicate": "conflicts_with", "object_id": "mem_y"}
     ]
-
-    write_memory_edges, invalidate_memory_edges = _edge_helpers()
 
     class _TripleRepoStub:
         def __init__(self) -> None:
@@ -163,7 +140,7 @@ def test_parse_consolidation_xml_edges_and_write_helpers() -> None:
 
 
 def test_format_episode_block_for_prompt_shows_memory_ids() -> None:
-    out = _format_episode_block_for_prompt()(
+    out = _format_episode_block_for_prompt(
         [
             {
                 "episode_id": "ep:1-2",
