@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+# Intentions taxonomy:
+#   intentions_active  — per-conversation working stack; ephemeral, managed per turn,
+#                        stored as JSON in conversation state, never written to the DB table.
+#   intentions_life_goals — long-term DB table; consolidation-managed only, cap 3 entries.
+
 import uuid
 from datetime import UTC, datetime
 from typing import Any

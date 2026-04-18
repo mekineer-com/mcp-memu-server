@@ -424,6 +424,10 @@ async def run_consolidation_llm(
     intention_text = _format_intention_activity_for_prompt(list(inputs.get("intention_activity") or []))
     episodes_text = _format_episode_block_for_prompt(list(inputs.get("episode_inputs") or []))
 
+    # narrative_self (DB column name, populated by consolidation writes) and soul_card
+    # (in-prompt label used by turn_contract and memorize) refer to the same entity —
+    # the soul's self-description paragraph. Two names exist because the storage layer
+    # predates the prompt-layer rename; neither has been migrated to avoid cascade churn.
     soul_card = str(inputs.get("narrative_self") or "").strip() or DEFAULT_SOUL_CARD
     system_prompt = (
         f"Today is {format_time_anchor()}.\n\n"

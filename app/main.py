@@ -1216,6 +1216,9 @@ def _get_service_from_payload(
     allow_missing_llm_profiles: bool = False,
     retrieve_method_override: str | None = None,
 ) -> MemoryService:
+    """Returns the MemoryService for this payload; also mutates payload in place to inject
+    resolved config keys (database_config, blob_config, llm_profiles, retrieve_config,
+    memorize_config overrides) so that the returned service is consistent with the payload."""
     service_key_raw = _derive_service_key(payload)
 
     llm_profiles = payload.get("llm_profiles")
