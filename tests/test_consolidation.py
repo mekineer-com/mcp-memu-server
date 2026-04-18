@@ -125,12 +125,12 @@ def test_parse_consolidation_xml_edges_and_write_helpers() -> None:
             self.added.append(triple)
             return triple
 
-        def invalidate(self, subject_id: str, predicate: str, object_id: str) -> None:
+        def invalidate(self, subject_id: str, predicate: str, object_id: str, scope: dict | None = None) -> None:
             self.invalidated.append((subject_id, predicate, object_id))
 
     repo = _TripleRepoStub()
     wrote = write_memory_edges(repo, parsed["edges"], scope={"user_id": "u", "soul_id": "s"})
-    invalidated = invalidate_memory_edges(repo, parsed["edge_invalidations"])
+    invalidated = invalidate_memory_edges(repo, parsed["edge_invalidations"], scope={"user_id": "u", "soul_id": "s"})
 
     assert wrote == 2
     assert invalidated == 1

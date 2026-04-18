@@ -2550,7 +2550,7 @@ async def _run_apimw(
             logger.info("apimw: wrote %d edges for %s", wrote, conversation_id)
 
         # Edge invalidations
-        invalidated = _invalidate_memory_edges(svc.database.triple_repo, result_json.get("edge_invalidations"))
+        invalidated = _invalidate_memory_edges(svc.database.triple_repo, result_json.get("edge_invalidations"), scope=scope)
         if invalidated:
             logger.info("apimw: invalidated %d edges for %s", invalidated, conversation_id)
 

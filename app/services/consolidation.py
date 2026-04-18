@@ -684,7 +684,7 @@ INSERT INTO intentions_life_goals (
     )
     scope = {"user_id": user_id, "soul_id": soul_id}
     wrote = write_memory_edges(svc.database.triple_repo, llm_results.get("edges"), scope=scope)
-    invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results.get("edge_invalidations"))
+    invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results.get("edge_invalidations"), scope=scope)
 
     return {
         "conversation_id": conversation_id,

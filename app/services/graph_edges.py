@@ -1,3 +1,14 @@
+"""Shared edge normalization + write/invalidate helpers for APImw and consolidation.
+
+Confidence convention:
+- Mechanical triples (``mentions``, ``evolved_into``) are written directly by memorize.py
+  without an explicit confidence value, so they land at Triple's model default of 1.0
+  (certain by construction — no LLM judgment involved).
+- LLM-judgment triples (the five ALLOWED_EDGE_PREDICATES below) are written via
+  ``_normalize_edges``.  When the LLM omits confidence the fallback is 0.8, reflecting
+  that the relationship is inferred rather than directly observed.
+The two tiers should stay separate; do NOT unify the defaults.
+"""
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -55,8 +66,8 @@ def write_memory_edges(triple_repo: Any, payload: Any, *, scope: Mapping[str, An
     return len(edges)
 
 
-def invalidate_memory_edges(triple_repo: Any, payload: Any) -> int:
+def invalidate_memory_edges(triple_repo: Any, payload: Any, *, scope: Mapping[str, Any]) -> int:
     edges = _normalize_edges(payload)
     for edge in edges:
-        triple_repo.invalidate(edge["subject_id"], edge["predicate"], edge["object_id"])
+        triple_repo.invalidate(edge["subject_id"], edge["predicate"], edge["object_id"], scope=scope)
     return len(edges)
