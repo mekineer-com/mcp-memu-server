@@ -91,34 +91,34 @@ def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dic
                 life_goal_remove.append(text)
 
     diaries_root = root.find("diaries")
+    diary_nodes = diaries_root.findall("diary") if diaries_root is not None else []
     diaries: list[dict[str, Any]] = []
-    if diaries_root is not None:
-        seen_episode_ids: set[str] = set()
-        for diary_node in diaries_root.findall("diary"):
-            episode_id = str(_xml_text(diary_node, "episode_id") or "").strip()
-            if not episode_id:
-                raise ValueError("consolidation diary is missing <episode_id>")
-            if episode_id in seen_episode_ids:
-                raise ValueError(f"duplicate consolidation diary episode_id: {episode_id}")
-            if expected_episode_ids and episode_id not in expected_episode_ids:
-                raise ValueError(f"unknown consolidation diary episode_id: {episode_id}")
-            payload = parse_diary_element(diary_node)
-            prose = str(payload.get("prose") or "").strip()
-            if not prose:
-                raise ValueError(f"consolidation diary prose is empty for episode_id={episode_id}")
-            diaries.append(
-                {
-                    "episode_id": episode_id,
-                    "prose": prose,
-                    "affective_tags": payload.get("affective_tags"),
-                    "unresolved": payload.get("unresolved"),
-                }
-            )
-            seen_episode_ids.add(episode_id)
+    seen_episode_ids: set[str] = set()
+    for diary_node in diary_nodes:
+        episode_id = str(_xml_text(diary_node, "episode_id") or "").strip()
+        if not episode_id:
+            raise ValueError("consolidation diary is missing <episode_id>")
+        if episode_id in seen_episode_ids:
+            raise ValueError(f"duplicate consolidation diary episode_id: {episode_id}")
+        if episode_id not in expected_episode_ids:
+            raise ValueError(f"unknown consolidation diary episode_id: {episode_id}")
+        payload = parse_diary_element(diary_node)
+        prose = str(payload.get("prose") or "").strip()
+        if not prose:
+            raise ValueError(f"consolidation diary prose is empty for episode_id={episode_id}")
+        diaries.append(
+            {
+                "episode_id": episode_id,
+                "prose": prose,
+                "affective_tags": payload.get("affective_tags"),
+                "unresolved": payload.get("unresolved"),
+            }
+        )
+        seen_episode_ids.add(episode_id)
 
-        if expected_episode_ids and seen_episode_ids != expected_episode_ids:
-            missing = sorted(expected_episode_ids - seen_episode_ids)
-            raise ValueError(f"consolidation diary is missing episode_ids: {missing}")
+    if seen_episode_ids != expected_episode_ids:
+        missing = sorted(expected_episode_ids - seen_episode_ids)
+        raise ValueError(f"consolidation diary is missing episode_ids: {missing}")
 
     return {
         "narrative_self": _xml_text(root, "narrative_self"),
@@ -478,19 +478,20 @@ ORDER BY updated_at ASC, id ASC
             else:
                 removed_ids[description] = str(row["id"])
 
+        goals_to_mark_removed: list[str] = []
+        goals_to_delete: list[str] = []
+        goals_to_add: list[tuple[str, str]] = []
+
         for desc in llm_results.get("life_goal_remove") or []:
             text = str(desc or "").strip()
             if not text:
                 continue
             if text in active_ids:
-                con.execute(
-                    "UPDATE intentions_life_goals SET status = 'removed', updated_at = ? WHERE id = ?",
-                    (now_iso, active_ids[text]),
-                )
+                goals_to_mark_removed.append(active_ids[text])
                 removed_ids[text] = active_ids[text]
                 active_ids.pop(text, None)
             elif text in removed_ids:
-                con.execute("DELETE FROM intentions_life_goals WHERE id = ?", (removed_ids[text],))
+                goals_to_delete.append(removed_ids[text])
                 removed_ids.pop(text, None)
 
         active_goal_count = len(active_ids)
@@ -499,14 +500,7 @@ ORDER BY updated_at ASC, id ASC
             if not text or text in active_ids or active_goal_count >= 3:
                 continue
             goal_id = str(uuid.uuid4())
-            con.execute(
-                """
-INSERT INTO intentions_life_goals (
-    id, soul_id, user_id, description, status, source, confidence, target_date, related_memory_ids, updated_at
-) VALUES (?, ?, ?, ?, 'active', 'life_goal', NULL, NULL, ?, ?)
-""",
-                (goal_id, soul_id, user_id, text, deps.json_to_db([]), now_iso),
-            )
+            goals_to_add.append((goal_id, text))
             active_ids[text] = goal_id
             active_goal_count += 1
 
@@ -593,6 +587,22 @@ ON CONFLICT(id) DO UPDATE SET
                     now_iso,
                 ),
             )
+        for goal_id in goals_to_mark_removed:
+            con.execute(
+                "UPDATE intentions_life_goals SET status = 'removed', updated_at = ? WHERE id = ?",
+                (now_iso, goal_id),
+            )
+        for goal_id in goals_to_delete:
+            con.execute("DELETE FROM intentions_life_goals WHERE id = ?", (goal_id,))
+        for goal_id, text in goals_to_add:
+            con.execute(
+                """
+INSERT INTO intentions_life_goals (
+    id, soul_id, user_id, description, status, source, confidence, target_date, related_memory_ids, updated_at
+) VALUES (?, ?, ?, ?, 'active', 'life_goal', NULL, NULL, ?, ?)
+""",
+                (goal_id, soul_id, user_id, text, deps.json_to_db([]), now_iso),
+            )
         con.commit()
     finally:
         con.close()
@@ -620,4 +630,3 @@ ON CONFLICT(id) DO UPDATE SET
         "companion_memory_id": companion_memory_id,
         "state": state_after,
     }
-

@@ -3439,7 +3439,9 @@ async def _run_consolidation_task(
 ) -> None:
     deps = _make_consolidation_deps()
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
+    pipeline_started = False
     try:
+        pipeline_started = True
         out = await _run_consolidation_pipeline_once(
             svc=svc,
             deps=deps,
@@ -3456,12 +3458,13 @@ async def _run_consolidation_task(
         logger.info("consolidation complete: diary_count=%d", len(result.get("diary_memory_ids") or []))
     except Exception:
         logger.exception("consolidation failed (non-fatal)")
-        await _clear_consolidation_in_progress(
-            state_lock=state_lock,
-            conversation_id=conversation_id,
-            soul_id=soul_id,
-            user_id=uid,
-        )
+        if pipeline_started:
+            await _clear_consolidation_in_progress(
+                state_lock=state_lock,
+                conversation_id=conversation_id,
+                soul_id=soul_id,
+                user_id=uid,
+            )
 
 
 async def _run_memorize_batches(
@@ -3868,6 +3871,7 @@ async def force_consolidation(
     uid = ""
     soul_id = ""
     state_lock: asyncio.Lock | None = None
+    pipeline_started = False
     try:
         safe = _safe_payload(payload if isinstance(payload, dict) else {})
         if not isinstance(safe.get("llm_profiles"), dict):
@@ -3888,6 +3892,7 @@ async def force_consolidation(
         svc = _get_service_from_payload(safe)
 
         state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
+        pipeline_started = True
         out = await _run_consolidation_pipeline_once(
             svc=svc,
             deps=_make_consolidation_deps(),
@@ -3914,13 +3919,28 @@ async def force_consolidation(
             },
         )
         return {"ok": True, "status": "completed", "result": result}
-    except HTTPException:
+    except HTTPException as exc:
+        if (
+            pipeline_started
+            and
+            state_lock is not None
+            and uid
+            and soul_id
+            and exc.status_code >= 500
+            and not (exc.status_code == 409 and str(exc.detail or "") == "consolidation already in progress")
+        ):
+            await _clear_consolidation_in_progress(
+                state_lock=state_lock,
+                conversation_id=cid,
+                soul_id=soul_id,
+                user_id=uid,
+            )
         _record_call(
             "consolidation.force", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException"
         )
         raise
     except Exception as exc:
-        if state_lock is not None and uid and soul_id:
+        if pipeline_started and state_lock is not None and uid and soul_id:
             await _clear_consolidation_in_progress(
                 state_lock=state_lock,
                 conversation_id=cid,
