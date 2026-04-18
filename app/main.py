@@ -1719,6 +1719,7 @@ def _slice_history_from_chat_x_anchors(
     history: list[dict[str, Any]],
     chat_x_anchors: list[str] | None,
     *,
+    stop_at_message_id: str | None = None,
     limit: int = 12,
 ) -> list[dict[str, Any]]:
     if not history:
@@ -1738,7 +1739,15 @@ def _slice_history_from_chat_x_anchors(
             break
     if start_idx is None:
         return history[-limit:]
-    sliced = history[start_idx:]
+    stop_id = str(stop_at_message_id or "").strip()
+    stop_idx: int | None = None
+    if stop_id:
+        for idx, item in enumerate(history[start_idx:], start=start_idx):
+            if str(item.get("message_id") or "").strip() == stop_id:
+                stop_idx = idx
+                break
+    end_idx = stop_idx if stop_idx is not None else len(history)
+    sliced = history[start_idx:end_idx]
     return sliced[-limit:]
 
 
@@ -1823,7 +1832,11 @@ def _build_retrieve_soul_context_queries(
         str(state_row.get("last_chat_x") or "").strip() or None,
         str(state_row.get("last_chat_x_prev") or "").strip() or None,
     )
-    history_from_second_chat_x = _slice_history_from_chat_x_anchors(history, chat_x_anchors)
+    history_from_second_chat_x = _slice_history_from_chat_x_anchors(
+        history,
+        chat_x_anchors[1:2] if len(chat_x_anchors) > 1 else None,
+        stop_at_message_id=chat_x_anchors[0] if chat_x_anchors else None,
+    )
     history_two_text = _format_route_history(history_from_second_chat_x)
     if history_two_text:
         soul_ctx_queries.append({"role": _ROUTE_HISTORY_ROLE_TWO_ANCHORS, "content": {"text": history_two_text}})
