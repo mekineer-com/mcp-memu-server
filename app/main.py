@@ -143,6 +143,7 @@ _DEFAULT_MIN_CHUNK_TOKENS: int = 4000
 _DEFAULT_TURN_HISTORY_TOKEN_BUDGET: int = 3000
 _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS: int = 300
 _FORCE_MEMORIZE_MAX_CHUNK_TOKENS: int = 6000
+# If consolidation_in_progress is still set 1h after start, assume the process died — reset the lock on next trigger
 _CONSOLIDATION_STALE_SECONDS: int = 60 * 60
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS  # overridden by config memorize.min_chunk_tokens
 _TURN_HISTORY_TOKEN_BUDGET: int = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET  # overridden by config memorize.turn_history_token_budget
@@ -2094,7 +2095,6 @@ async def _run_retrieve(
     payload: dict[str, Any],
     *,
     conversation_id: str | None = None,
-    persist_llm_state: bool = False,
 ) -> dict[str, Any]:
     safe = _safe_payload(payload)
     scoped_conversation_id = str(conversation_id or _extract_conversation_id(safe) or "").strip() or None
@@ -2232,7 +2232,6 @@ async def _run_apimw(
             retrieve_out = await _run_retrieve(
                 retrieve_payload,
                 conversation_id=conversation_id,
-                persist_llm_state=False,
             )
             result_data_local = retrieve_out.get("result") if isinstance(retrieve_out, dict) else {}
             if not isinstance(result_data_local, dict):
@@ -3446,6 +3445,7 @@ async def _run_memorize_batches(
                 pending_diary_episode_ids.extend(_normalize_text_list(batch_result.get("pending_diary_episode_ids")))
                 processed_end_cursor = max(processed_end_cursor, batch_end)
                 if conversation_id:
+                    # per-batch advance — crash recovery needs the cursor to move after each successful batch
                     _write_conversation_state(
                         conversation_id,
                         soul_id=soul_id,
@@ -3469,6 +3469,7 @@ async def _run_memorize_batches(
                     soul_id=soul_id,
                     user_id=uid,
                     updates={
+                        # final flush once all batches commit — also writes the holistic summary atomically
                         "digest_cursor": max(0, processed_end_cursor),
                         "last_memorize_at": datetime.now(UTC).isoformat(),
                         "append_pending_diary_episode_ids": pending_diary_episode_ids,
@@ -4416,7 +4417,7 @@ async def conversation_retrieve(
                     state_row=state_row,
                 )
 
-        out = await _run_retrieve(safe, conversation_id=cid, persist_llm_state=True)
+        out = await _run_retrieve(safe, conversation_id=cid)
 
         want_turn_prompt = bool(safe.get("build_turn_prompt", False))
 
