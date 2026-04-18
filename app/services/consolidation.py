@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import re
 import sqlite3
 import uuid
-import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from xml.etree.ElementTree import Element
 
 from fastapi import HTTPException
 from memu.prompts.consolidation import consolidation as consolidation_prompt
@@ -19,6 +18,7 @@ from app.services.diary import (
     parse_diary_element,
     upsert_diary_entry_memory,
 )
+from app.services.xml_utils import extract_xml_fragment, xml_text
 from app.services.graph_edges import (
     invalidate_memory_edges,
     write_memory_edges,
@@ -60,26 +60,8 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     return dt.astimezone(UTC)
 
 
-def _extract_xml_fragment(raw: str, root_tag: str) -> ET.Element:
-    text = str(raw or "").strip()
-    match = re.search(rf"<{root_tag}>(.*)</{root_tag}>", text, re.DOTALL)
-    if match is None:
-        raise ValueError(f"Missing <{root_tag}> root")
-    return ET.fromstring(f"<{root_tag}>{match.group(1)}</{root_tag}>")
-
-
-def _xml_text(node: ET.Element | None, path: str) -> str | None:
-    if node is None:
-        return None
-    value = node.find(path)
-    if value is None or value.text is None:
-        return None
-    text = str(value.text).strip()
-    return text or None
-
-
 def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dict[str, Any]:
-    root = _extract_xml_fragment(raw, "consolidation")
+    root = extract_xml_fragment(raw, "consolidation")
 
     life_goals = root.find("life_goals")
     life_goal_add = []
@@ -99,7 +81,7 @@ def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dic
     diaries: list[dict[str, Any]] = []
     seen_episode_ids: set[str] = set()
     for diary_node in diary_nodes:
-        episode_id = str(_xml_text(diary_node, "episode_id") or "").strip()
+        episode_id = str(xml_text(diary_node, "episode_id") or "").strip()
         if not episode_id:
             raise ValueError("consolidation diary is missing <episode_id>")
         if episode_id in seen_episode_ids:
@@ -129,12 +111,12 @@ def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dic
     edges_root = root.find("edges")
     if edges_root is not None:
         for edge_node in edges_root.findall("edge"):
-            subject_id = str(_xml_text(edge_node, "subject_id") or "").strip()
-            predicate = str(_xml_text(edge_node, "predicate") or "").strip()
-            object_id = str(_xml_text(edge_node, "object_id") or "").strip()
+            subject_id = str(xml_text(edge_node, "subject_id") or "").strip()
+            predicate = str(xml_text(edge_node, "predicate") or "").strip()
+            object_id = str(xml_text(edge_node, "object_id") or "").strip()
             if not subject_id or not predicate or not object_id:
                 continue
-            confidence_text = _xml_text(edge_node, "confidence")
+            confidence_text = xml_text(edge_node, "confidence")
             confidence: float | None
             if confidence_text:
                 try:
@@ -152,9 +134,9 @@ def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dic
                 edge_payload["confidence"] = confidence
             edges.append(edge_payload)
         for invalidate_node in edges_root.findall("invalidate"):
-            subject_id = str(_xml_text(invalidate_node, "subject_id") or "").strip()
-            predicate = str(_xml_text(invalidate_node, "predicate") or "").strip()
-            object_id = str(_xml_text(invalidate_node, "object_id") or "").strip()
+            subject_id = str(xml_text(invalidate_node, "subject_id") or "").strip()
+            predicate = str(xml_text(invalidate_node, "predicate") or "").strip()
+            object_id = str(xml_text(invalidate_node, "object_id") or "").strip()
             if not subject_id or not predicate or not object_id:
                 continue
             edge_invalidations.append(
@@ -166,10 +148,10 @@ def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dic
             )
 
     return {
-        "narrative_self": _xml_text(root, "narrative_self"),
+        "narrative_self": xml_text(root, "narrative_self"),
         "life_goal_add": life_goal_add,
         "life_goal_remove": life_goal_remove,
-        "companion_memory": _xml_text(root, "companion_memory"),
+        "companion_memory": xml_text(root, "companion_memory"),
         "diaries": diaries,
         "edges": edges,
         "edge_invalidations": edge_invalidations,

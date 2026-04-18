@@ -593,7 +593,6 @@ def _default_config() -> dict[str, Any]:
         "categories": {
             "defaults": ["personal_info", "preferences", "relationships", "goals"],
             "max_total": 12,
-            "allow_dynamic": True,
             "allow_dynamic_categories": True,
             "dynamic_category_min_mentions": 10,
             "category_centroid_threshold": 0.65,

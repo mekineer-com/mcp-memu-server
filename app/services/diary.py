@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import re
-import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from xml.etree.ElementTree import Element
+
+from app.services.xml_utils import extract_xml_fragment, xml_text
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
@@ -110,24 +111,6 @@ def build_episode_inputs(
     return out
 
 
-def _extract_xml_fragment(raw: str, root_tag: str) -> ET.Element:
-    text = str(raw or "").strip()
-    match = re.search(rf"<{root_tag}>(.*)</{root_tag}>", text, re.DOTALL)
-    if match is None:
-        raise ValueError(f"Missing <{root_tag}> root")
-    return ET.fromstring(f"<{root_tag}>{match.group(1)}</{root_tag}>")
-
-
-def _xml_text(element: ET.Element | None, path: str) -> str | None:
-    if element is None:
-        return None
-    node = element.find(path)
-    if node is None or node.text is None:
-        return None
-    text = str(node.text).strip()
-    return text or None
-
-
 def _xml_float(text: str | None) -> float | None:
     if text is None:
         return None
@@ -137,23 +120,18 @@ def _xml_float(text: str | None) -> float | None:
         return None
 
 
-def parse_diary_xml(raw: str) -> dict[str, Any]:
-    root = _extract_xml_fragment(raw, "diary")
-    return parse_diary_element(root)
-
-
-def parse_diary_element(root: ET.Element) -> dict[str, Any]:
+def parse_diary_element(root: Element) -> dict[str, Any]:
     affect = root.find("affect")
     return {
-        "prose": _xml_text(root, "prose"),
+        "prose": xml_text(root, "prose"),
         "affective_tags": {
-            "emotion": _xml_text(affect, "emotion"),
-            "trigger": _xml_text(affect, "trigger"),
-            "valence": _xml_float(_xml_text(affect, "valence")),
-            "intensity": _xml_float(_xml_text(affect, "intensity")),
-            "what_helped": _xml_text(affect, "what_helped"),
+            "emotion": xml_text(affect, "emotion"),
+            "trigger": xml_text(affect, "trigger"),
+            "valence": _xml_float(xml_text(affect, "valence")),
+            "intensity": _xml_float(xml_text(affect, "intensity")),
+            "what_helped": xml_text(affect, "what_helped"),
         },
-        "unresolved": _xml_text(root, "unresolved"),
+        "unresolved": xml_text(root, "unresolved"),
     }
 
 
