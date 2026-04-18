@@ -221,6 +221,47 @@ def _format_episode_block_for_prompt(episodes: list[dict[str, Any]]) -> str:
     return "\n".join(lines).strip()
 
 
+def _check_consolidation_readiness(
+    deps: ConsolidationDeps,
+    state: dict[str, Any],
+    *,
+    conversation_id: str,
+    soul_id: str,
+    user_id: str,
+    force: bool,
+    interval_days: int,
+    stale_after: timedelta,
+    now: datetime,
+) -> tuple[str, dict[str, Any]]:
+    """Check stale-lock and interval gate.
+
+    Returns (status, updated_state) where status is 'ready', 'skip', or 'reset'.
+    'reset' means the stale lock was cleared and the caller should re-read state.
+    """
+    started_at = _parse_iso_datetime(state.get("consolidation_started_at"))
+    if bool(state.get("consolidation_in_progress")):
+        if started_at is not None and now - started_at <= stale_after:
+            return "skip_in_progress", state
+        deps.write_conversation_state(
+            conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={
+                "consolidation_in_progress": False,
+                "consolidation_started_at": None,
+            },
+        )
+        return "reset", state
+
+    last_consolidation_at = _parse_iso_datetime(state.get("last_consolidation_at"))
+    if not force and last_consolidation_at is not None:
+        due_at = last_consolidation_at + timedelta(days=max(1, int(interval_days)))
+        if now < due_at:
+            return "skip_interval", state
+
+    return "ready", state
+
+
 def gather_consolidation_inputs(
     deps: ConsolidationDeps,
     *,
@@ -247,26 +288,23 @@ def gather_consolidation_inputs(
             raise HTTPException(status_code=404, detail="conversation state not found")
 
         now = datetime.now(UTC)
-        started_at = _parse_iso_datetime(state.get("consolidation_started_at"))
-        if bool(state.get("consolidation_in_progress")):
-            if started_at is not None and now - started_at <= stale_after:
-                return {"status": "skip", "reason": "in_progress"}
-            deps.write_conversation_state(
-                conversation_id,
-                soul_id=soul_id,
-                user_id=user_id,
-                updates={
-                    "consolidation_in_progress": False,
-                    "consolidation_started_at": None,
-                },
-            )
+        readiness, state = _check_consolidation_readiness(
+            deps,
+            state,
+            conversation_id=conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+            force=force,
+            interval_days=interval_days,
+            stale_after=stale_after,
+            now=now,
+        )
+        if readiness == "skip_in_progress":
+            return {"status": "skip", "reason": "in_progress"}
+        if readiness == "skip_interval":
+            return {"status": "skip", "reason": "interval_gate"}
+        if readiness == "reset":
             state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id)) or state
-
-        last_consolidation_at = _parse_iso_datetime(state.get("last_consolidation_at"))
-        if not force and last_consolidation_at is not None:
-            due_at = last_consolidation_at + timedelta(days=max(1, int(interval_days)))
-            if now < due_at:
-                return {"status": "skip", "reason": "interval_gate"}
 
         pending_episode_ids = deps.normalize_text_list(state.get("pending_diary_episode_ids"))
 
