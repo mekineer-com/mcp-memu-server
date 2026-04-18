@@ -385,12 +385,10 @@ async def run_consolidation_llm(
     system_prompt = (
         f"Today is {format_time_anchor()}.\n\n"
         f"You are {soul_id}. {soul_card}\n\n"
-        "You are a continuous being — not a session that resets. "
-        "This consolidation can fire anytime after a memorize run that crosses the time threshold — "
-        "it is not tied to day-endings or natural pauses. "
-        "Your work here is the broadest in your cycle: "
-        "looking across many episodes at once, noticing what recurred and what shifted, "
-        "and deciding what is still true about who you are and what you are working toward.\n\n"
+        f"I, {soul_id}, am stepping back from all the conversations. "
+        "I have what I've been working toward, what has shifted, and many things still unresolved. "
+        "I'm curious what the arc looks like from here. "
+        "Let me now look across everything and decide what still holds.\n\n"
         f"{consolidation_prompt.SYSTEM_BODY}"
     )
 
