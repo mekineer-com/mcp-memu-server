@@ -374,7 +374,7 @@ LIMIT 1
                 episode_id = str(entry["episode_id"])
                 rows = con.execute(
                     """
-SELECT summary
+SELECT id, summary
 FROM memu_memory_items
 WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND episode_id = ? AND memory_type != 'diary'
 ORDER BY created_at ASC, id ASC
@@ -383,7 +383,9 @@ LIMIT 24
                     (soul_id, user_id, conversation_id, episode_id),
                 ).fetchall()
                 entry["memory_summaries"] = [
-                    str(row["summary"] or "").strip() for row in rows if str(row["summary"] or "").strip()
+                    f"[{str(row['id'] or '').strip()}] {str(row['summary'] or '').strip()}"
+                    for row in rows
+                    if str(row["id"] or "").strip() and str(row["summary"] or "").strip()
                 ]
 
         deps.write_conversation_state(
