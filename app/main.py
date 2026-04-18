@@ -1124,8 +1124,7 @@ def _retrieve_method_from_cfg(cfg: Mapping[str, Any] | None) -> str:
     retrieve = cfg.get("retrieve")
     if not isinstance(retrieve, Mapping):
         return "rag"
-    method = _normalize_retrieve_method(retrieve.get("method"), "rag")
-    return "rag" if method == "llm" else method
+    return _normalize_retrieve_method(retrieve.get("method"), "rag")
 
 
 def _retrieve_apimw_enabled_from_cfg(cfg: Mapping[str, Any] | None) -> bool:
@@ -1631,45 +1630,6 @@ def _resource_sig(row: Any) -> str:
     return ""
 
 
-def _dedupe_llm_result_against_rag(result: Any, retrieve_rag: Any | None) -> Any:
-    if not isinstance(result, dict) or not isinstance(retrieve_rag, dict):
-        return result
-
-    rag_item_sigs: set[str] = set()
-    for row in retrieve_rag.get("items") or []:
-        sig = _item_sig(row)
-        if sig:
-            rag_item_sigs.add(sig)
-
-    rag_resource_sigs: set[str] = set()
-    rag_resources = retrieve_rag.get("resources")
-    if isinstance(rag_resources, list):
-        for row in rag_resources:
-            sig = _resource_sig(row)
-            if sig:
-                rag_resource_sigs.add(sig)
-    rag_resource = retrieve_rag.get("resource")
-    sig_single = _resource_sig(rag_resource)
-    if sig_single:
-        rag_resource_sigs.add(sig_single)
-
-    out = dict(result)
-
-    llm_items = result.get("items")
-    if isinstance(llm_items, list) and rag_item_sigs:
-        out["items"] = [row for row in llm_items if (_item_sig(row) not in rag_item_sigs)]
-
-    llm_resources = result.get("resources")
-    if isinstance(llm_resources, list) and rag_resource_sigs:
-        out["resources"] = [row for row in llm_resources if (_resource_sig(row) not in rag_resource_sigs)]
-    elif "resources" in out and not isinstance(llm_resources, list):
-        out["resources"] = []
-
-    llm_resource = result.get("resource")
-    if rag_resource_sigs and _resource_sig(llm_resource) in rag_resource_sigs:
-        out.pop("resource", None)
-
-    return out
 
 
 def _parse_turn_ts_ms(value: Any) -> int | None:
@@ -2135,8 +2095,6 @@ async def _run_retrieve(
     *,
     conversation_id: str | None = None,
     persist_llm_state: bool = False,
-    llm_dedupe_baseline: Any | None = None,
-    allow_llm_method: bool = False,
 ) -> dict[str, Any]:
     safe = _safe_payload(payload)
     scoped_conversation_id = str(conversation_id or _extract_conversation_id(safe) or "").strip() or None
@@ -2144,21 +2102,8 @@ async def _run_retrieve(
         safe["conversation_id"] = scoped_conversation_id
 
     method = _normalize_retrieve_method(safe.get("method"), _retrieve_method_from_cfg(_CONFIG))
-    if method == "llm" and not allow_llm_method:
-        raise HTTPException(status_code=400, detail="method=llm is internal-only; use method=rag")
     if method == "llm":
-        retrieve_cfg = safe.get("retrieve_config")
-        if not isinstance(retrieve_cfg, dict):
-            retrieve_cfg = {}
-            safe["retrieve_config"] = retrieve_cfg
-        cat_cfg = retrieve_cfg.get("category")
-        if not isinstance(cat_cfg, dict):
-            cat_cfg = {}
-        else:
-            cat_cfg = dict(cat_cfg)
-        cat_cfg["enabled"] = False
-        cat_cfg["top_k"] = 0
-        retrieve_cfg["category"] = cat_cfg
+        raise HTTPException(status_code=400, detail="method=llm is internal-only; use method=rag")
     svc = _get_service_from_payload(safe, retrieve_method_override=method)
     scope = _extract_retrieve_where(safe)
     memu_queries = _extract_retrieve_queries(safe)
@@ -2171,36 +2116,10 @@ async def _run_retrieve(
         _t0 = time.monotonic()
         result = await svc.retrieve(memu_queries, where=scope, as_of=as_of)
         _retrieve_ms = int((time.monotonic() - _t0) * 1000)
-        if method == "llm" and isinstance(result, dict):
-            result = {**result, "categories": []}
-            result = _dedupe_llm_result_against_rag(result, llm_dedupe_baseline)
         out_local: dict[str, Any] = {"ok": True, "result": result, "retrieve_ms": _retrieve_ms}
-        if persist_llm_state and method == "llm" and scoped_conversation_id:
-            state_out, db_path = _write_conversation_state(
-                scoped_conversation_id,
-                soul_id=state_soul_id,
-                user_id=user_id or None,
-                updates={
-                    "prior_context": "\n".join(
-                        f"[{str(it.get('memory_type') or 'memory').strip()}]{_format_turn_item_suffix(it)} "
-                        f"{str(it.get('summary') or '').strip()}"
-                        for it in (result.get("items") or [])[:8]
-                        if isinstance(it, dict) and str(it.get("summary") or "").strip()
-                    )
-                    or None,
-                    "last_retrieval_ids": _extract_result_item_ids(result),
-                },
-            )
-            out_local["state"] = state_out
-            out_local["path"] = str(db_path)
         return out_local
 
-    lock_scope = persist_llm_state and method == "llm"
-    if lock_scope:
-        async with _retrieve_scope_lock(user_id, soul_id):
-            out = await _retrieve_and_maybe_persist(soul_id or None)
-    else:
-        out = await _retrieve_and_maybe_persist(soul_id or None)
+    out = await _retrieve_and_maybe_persist(soul_id or None)
 
     if scoped_conversation_id:
         state_out: dict[str, Any] | None = None
@@ -2314,7 +2233,6 @@ async def _run_apimw(
                 retrieve_payload,
                 conversation_id=conversation_id,
                 persist_llm_state=False,
-                allow_llm_method=False,
             )
             result_data_local = retrieve_out.get("result") if isinstance(retrieve_out, dict) else {}
             if not isinstance(result_data_local, dict):
