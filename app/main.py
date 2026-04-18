@@ -2852,7 +2852,6 @@ async def diag_sqlite_recent(
             "confidence",
             "source_message_ids",
             "reflection_salience",
-            "superseded_by",
             "happened_at",
             "digest_cursor",
             "prior_context",
