@@ -377,6 +377,13 @@ LIMIT 1
 SELECT id, summary
 FROM memu_memory_items
 WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND episode_id = ? AND memory_type != 'diary'
+  AND (merged_into IS NULL OR TRIM(merged_into) = '')
+  AND NOT EXISTS (
+    SELECT 1 FROM memu_triples t
+    WHERE t.subject_id = memu_memory_items.id
+      AND t.predicate = 'evolved_into'
+      AND t.valid_to IS NULL
+  )
 ORDER BY created_at ASC, id ASC
 LIMIT 24
 """,
