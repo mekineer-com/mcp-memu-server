@@ -401,7 +401,7 @@ def build_turn_prompt(
     history: list[dict[str, Any]] | None,
     history_token_budget: int = DEFAULT_HISTORY_TOKEN_BUDGET,
     prior_context: str | None,
-    retrieve_rag: Any,
+    retrieve_rag: Any,  # named retrieve_result would be cleaner; kept as-is because "retrieve_rag" is also a prompt_override_payload key used by the extension
     all_categories_summary: str | None,
     memory_cache: Any,
     intentions_active: Any,
@@ -420,7 +420,9 @@ def build_turn_prompt(
     )
     blocked_terms = item_terms | category_terms | all_categories_terms
 
-    # Discard routing JSON artifacts written by old code (pre-715256c)
+    # Discard values that look like JSON — these are stale routing artifacts from the
+    # pre-715256c contract when prior_context was sometimes serialized as a JSON blob.
+    # Current callers pass plain text; a leading "{" means we're looking at legacy state.
     safe_prior = prior_context
     if safe_prior and safe_prior.strip().startswith("{"):
         safe_prior = None

@@ -193,13 +193,13 @@ def normalize_intentions_stack(
         reverse=True,
     )
 
-    seen_top_ten = False
+    top_priority_slot_used = False
     for item in ranked:
         priority = _float(item.get("priority"), 0.0)
         if priority >= DEFAULT_INTENTION_PRIORITY:
-            if not seen_top_ten:
+            if not top_priority_slot_used:
                 item["priority"] = float(DEFAULT_INTENTION_PRIORITY)
-                seen_top_ten = True
+                top_priority_slot_used = True
             else:
                 item["priority"] = float(DEFAULT_INTENTION_PRIORITY - 0.1)
 

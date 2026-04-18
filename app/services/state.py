@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
+    # digest_cursor = index of last message already consumed by a memorize run; unmemorized tail = messages[cursor+1:]
     digest_cursor = int(row["digest_cursor"] or 0)
     prior_context = row["prior_context"]
     return {
