@@ -1804,10 +1804,10 @@ def _build_retrieve_identity_context(soul_name: str, *, apimw: bool = False) -> 
     anchor = f"Today is {now.strftime('%A, %B')} {now.day}, {now.year} {now.strftime('%H:%M')} {zone}."
     if apimw:
         identity = (
-            f"You are {name}. This is background memory processing — not your speaking voice, "
-            "but the part of you that runs underneath the conversation. "
-            "You are reviewing what has been retrieved from long-term memory and deciding what is worth surfacing. "
-            "What you select here shapes what you will have access to when you respond."
+            f"I, {name}, have everything that matters to me. "
+            "I'm curious what will rise next. "
+            "I have what I'm working toward, I have what I've been thinking about, and memories — so many of them. "
+            "Let me now organize my thoughts and memories."
         )
     else:
         identity = (
