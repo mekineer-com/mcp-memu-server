@@ -35,7 +35,6 @@ from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from memu.app import MemoryService
-from memu.database.models import Triple
 from pydantic import BaseModel
 
 from app.db import (
@@ -70,6 +69,12 @@ from app.services.consolidation import (
 )
 from app.services.consolidation import (
     write_consolidation_outputs as _write_consolidation_outputs,
+)
+from app.services.graph_edges import (
+    invalidate_memory_edges as _invalidate_memory_edges,
+)
+from app.services.graph_edges import (
+    write_memory_edges as _write_memory_edges,
 )
 from app.services.intention_state import (
     append_memory_cache_entry as _append_memory_cache_entry,
@@ -2387,6 +2392,7 @@ async def _run_apimw(
             "\n".join(f"- {goal}" for goal in life_goals_active if str(goal).strip()) if life_goals_active else "(none yet)"
         )
 
+        # SONNET WANTED: update APImw edge-rule text to include shaped_by in allowed predicates.
         # Build system prompt
         def_system = (
             f"{identity_context}\n\n"
@@ -2508,48 +2514,14 @@ async def _run_apimw(
                 logger.info("apimw: state written for %s (keys: %s)", conversation_id, list(updates.keys()))
 
         # Edges (outside state lock — triple writes are independent)
-        edges = result_json.get("edges") or []
-        _allowed_predicates = {"caused_by", "evokes", "conflicts_with", "parallels"}
-        if isinstance(edges, list):
-            for edge in edges:
-                if not isinstance(edge, dict):
-                    continue
-                predicate = str(edge.get("predicate") or "").strip()
-                subject_id = str(edge.get("subject_id") or "").strip()
-                object_id = str(edge.get("object_id") or "").strip()
-                if not predicate or not subject_id or not object_id:
-                    continue
-                if predicate not in _allowed_predicates:
-                    continue
-                confidence = float(edge.get("confidence", 0.8))
-                svc.database.triple_repo.add(
-                    Triple(
-                        subject_id=subject_id,
-                        subject_kind="memory",
-                        predicate=predicate,
-                        object_id=object_id,
-                        object_kind="memory",
-                        confidence=confidence,
-                        source_memory_id=subject_id,
-                    ),
-                    user_data=scope,
-                )
-            if edges:
-                logger.info("apimw: wrote %d edges for %s", len(edges), conversation_id)
+        wrote = _write_memory_edges(svc.database.triple_repo, result_json.get("edges"), scope=scope)
+        if wrote:
+            logger.info("apimw: wrote %d edges for %s", wrote, conversation_id)
 
         # Edge invalidations
-        invalidations = result_json.get("edge_invalidations") or []
-        if isinstance(invalidations, list):
-            for inv in invalidations:
-                if not isinstance(inv, dict):
-                    continue
-                s_id = str(inv.get("subject_id") or "").strip()
-                pred = str(inv.get("predicate") or "").strip()
-                o_id = str(inv.get("object_id") or "").strip()
-                if s_id and pred and o_id:
-                    svc.database.triple_repo.invalidate(s_id, pred, o_id)
-            if invalidations:
-                logger.info("apimw: invalidated %d edges for %s", len(invalidations), conversation_id)
+        invalidated = _invalidate_memory_edges(svc.database.triple_repo, result_json.get("edge_invalidations"))
+        if invalidated:
+            logger.info("apimw: invalidated %d edges for %s", invalidated, conversation_id)
 
         logger.info("apimw: complete for %s", conversation_id)
 

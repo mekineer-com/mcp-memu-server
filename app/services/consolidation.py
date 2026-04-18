@@ -19,6 +19,10 @@ from app.services.diary import (
     parse_diary_element,
     upsert_diary_entry_memory,
 )
+from app.services.graph_edges import (
+    invalidate_memory_edges,
+    write_memory_edges,
+)
 from app.services.turn_contract import DEFAULT_SOUL_CARD, format_time_anchor
 
 if TYPE_CHECKING:
@@ -120,12 +124,55 @@ def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dic
         missing = sorted(expected_episode_ids - seen_episode_ids)
         raise ValueError(f"consolidation diary is missing episode_ids: {missing}")
 
+    edges: list[dict[str, Any]] = []
+    edge_invalidations: list[dict[str, Any]] = []
+    edges_root = root.find("edges")
+    if edges_root is not None:
+        for edge_node in edges_root.findall("edge"):
+            subject_id = str(_xml_text(edge_node, "subject_id") or "").strip()
+            predicate = str(_xml_text(edge_node, "predicate") or "").strip()
+            object_id = str(_xml_text(edge_node, "object_id") or "").strip()
+            if not subject_id or not predicate or not object_id:
+                continue
+            confidence_text = _xml_text(edge_node, "confidence")
+            confidence: float | None
+            if confidence_text:
+                try:
+                    confidence = float(confidence_text)
+                except ValueError:
+                    confidence = None
+            else:
+                confidence = None
+            edge_payload: dict[str, Any] = {
+                "subject_id": subject_id,
+                "predicate": predicate,
+                "object_id": object_id,
+            }
+            if confidence is not None:
+                edge_payload["confidence"] = confidence
+            edges.append(edge_payload)
+        for invalidate_node in edges_root.findall("invalidate"):
+            subject_id = str(_xml_text(invalidate_node, "subject_id") or "").strip()
+            predicate = str(_xml_text(invalidate_node, "predicate") or "").strip()
+            object_id = str(_xml_text(invalidate_node, "object_id") or "").strip()
+            if not subject_id or not predicate or not object_id:
+                continue
+            edge_invalidations.append(
+                {
+                    "subject_id": subject_id,
+                    "predicate": predicate,
+                    "object_id": object_id,
+                }
+            )
+
     return {
         "narrative_self": _xml_text(root, "narrative_self"),
         "life_goal_add": life_goal_add,
         "life_goal_remove": life_goal_remove,
         "companion_memory": _xml_text(root, "companion_memory"),
         "diaries": diaries,
+        "edges": edges,
+        "edge_invalidations": edge_invalidations,
     }
 
 
@@ -436,6 +483,8 @@ async def run_consolidation_llm(
         "companion_memory": str(parsed.get("companion_memory") or "").strip() or None,
         "companion_embedding": companion_embedding,
         "diaries": diary_rows,
+        "edges": parsed.get("edges") or [],
+        "edge_invalidations": parsed.get("edge_invalidations") or [],
     }
 
 
@@ -624,6 +673,9 @@ INSERT INTO intentions_life_goals (
         user_id=user_id,
         updates=state_updates,
     )
+    scope = {"user_id": user_id, "soul_id": soul_id}
+    wrote = write_memory_edges(svc.database.triple_repo, llm_results.get("edges"), scope=scope)
+    invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results.get("edge_invalidations"))
 
     return {
         "conversation_id": conversation_id,
@@ -631,5 +683,7 @@ INSERT INTO intentions_life_goals (
         "pending_diary_episode_ids_cleared": True,
         "diary_memory_ids": diary_ids,
         "companion_memory_id": companion_memory_id,
+        "edges_written": wrote,
+        "edges_invalidated": invalidated,
         "state": state_after,
     }
