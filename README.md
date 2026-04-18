@@ -4,6 +4,8 @@ Local FastAPI server that wraps the `memu` memory engine and exposes it as an HT
 
 This is part of the memU local stack — a private fork, not affiliated with NevaMind-AI.
 
+> **Single conversation per soul.** Each soul should have exactly one conversation. Consolidation (the weekly self-review pipeline) is soul-scoped and tracks state per conversation; running multiple conversations under the same soul will produce divergent weekly reviews. Multi-conversation support is tracked as a "maybe" item in the roadmap.
+
 ---
 
 ## Requirements
