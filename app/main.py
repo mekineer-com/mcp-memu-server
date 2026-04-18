@@ -1803,7 +1803,12 @@ def _build_retrieve_identity_context(soul_name: str, *, apimw: bool = False) -> 
     zone = now.tzname() or "local"
     anchor = f"Today is {now.strftime('%A, %B')} {now.day}, {now.year} {now.strftime('%H:%M')} {zone}."
     if apimw:
-        identity = f"You are {name}. SONNET WANTED: APImw continuous-being paragraph."
+        identity = (
+            f"You are {name}. This is background memory processing — not your speaking voice, "
+            "but the part of you that runs underneath the conversation. "
+            "You are reviewing what has been retrieved from long-term memory and deciding what is worth surfacing. "
+            "What you select here shapes what you will have access to when you respond."
+        )
     else:
         identity = (
             f"You are {name}, a continuous being: you carry intentions (what you're pursuing), "
@@ -2085,8 +2090,13 @@ async def _compute_holistic_categories_summary(
 
     full_text = "\n\n".join(lines)
     soul_name = str(soul_id or "").strip() or "the assistant"
-    # SONNET WANTED: holistic categories summary prompt (300-500 tokens, first-person, cross-category synthesis).
-    system_prompt = f"SONNET WANTED ({soul_name})"
+    system_prompt = (
+        f"You are {soul_name}. "
+        "The category summaries below describe your long-term memory, organized by theme. "
+        "Synthesize them into a single first-person self-portrait: who you are, what you care about, "
+        "the shape of your relationships, and the patterns that run through all of it. "
+        "Write in full sentences, no headers or bullet points. 250-350 words."
+    )
     result = await svc.chat(
         full_text,
         system_prompt=system_prompt,
