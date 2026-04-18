@@ -2157,6 +2157,348 @@ async def _run_retrieve(
     return out
 
 
+async def _apimw_topic_statement(
+    svc: Any,
+    *,
+    topic_user: str,
+    payload: dict[str, Any],
+    identity_context: str,
+    conversation_id: str,
+) -> str:
+    """Step A: generate a 1-2 sentence topic statement for the current episode."""
+    logger.info("apimw step A: topic statement for %s", conversation_id)
+    topic_system = (
+        f"{identity_context}\n\n"
+        "State the topic of the CURRENT episode in 1-2 sentences. The previous episode is provided only as context — "
+        "if the current episode is brief, use it to understand what the new message means, but describe only where the conversation is now."
+    )
+    topic_statement = await svc.chat(
+        topic_user,
+        system_prompt=topic_system,
+        temperature=0.1,
+        max_tokens=100,
+    )
+    return str(topic_statement or "").strip() or _pick_str(payload, "message", "query") or ""
+
+
+async def _apimw_retrieve_pass(
+    payload: dict[str, Any],
+    *,
+    query_text: str,
+    phase: str,
+    soul_id: str,
+    history: list[dict[str, Any]],
+    state_row: dict[str, Any],
+    conversation_id: str,
+    apimw_k: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Single retrieve pass for APImw (shared by steps B and C)."""
+    queries = _build_retrieve_soul_context_queries(
+        soul_id=soul_id,
+        message=query_text,
+        history=history,
+        state_row=state_row,
+        identity_mode="apimw",
+    )
+    retrieve_payload = {
+        **payload,
+        "method": "rag",
+        "query": query_text,
+        "queries": queries,
+        "conversation_id": conversation_id,
+    }
+    retrieve_payload["retrieve_config"] = _build_apimw_retrieve_config(
+        retrieve_payload.get("retrieve_config"),
+        item_top_k=apimw_k,
+    )
+    logger.info("apimw %s: retrieve for %s", phase, conversation_id)
+    retrieve_out = await _run_retrieve(retrieve_payload, conversation_id=conversation_id)
+    result_data_local = retrieve_out.get("result") if isinstance(retrieve_out, dict) else {}
+    if not isinstance(result_data_local, dict):
+        result_data_local = {}
+    items_local = result_data_local.get("items") or []
+    if not isinstance(items_local, list):
+        items_local = []
+    rows = [row for row in items_local if isinstance(row, dict)]
+    logger.info("apimw %s: retrieved %d items", phase, len(rows))
+    return result_data_local, rows
+
+
+async def _apimw_retrieve_and_merge(
+    svc: Any,
+    payload: dict[str, Any],
+    *,
+    topic_statement: str,
+    history: list[dict[str, Any]],
+    state_row: dict[str, Any],
+    conversation_id: str,
+    soul_id: str,
+    apimw_k: int,
+    apimw_random_count: int,
+    scope: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Steps B+C: retrieve by topic, optional second-pass rewrite, merge with random sample."""
+    result_data_first, items_first = await _apimw_retrieve_pass(
+        payload,
+        query_text=topic_statement,
+        phase="step B",
+        soul_id=soul_id,
+        history=history,
+        state_row=state_row,
+        conversation_id=conversation_id,
+        apimw_k=apimw_k,
+    )
+
+    items_second: list[dict[str, Any]] = []
+    second_query = str(result_data_first.get("next_step_query") or "").strip()
+    if second_query and _norm_result_sig(second_query) != _norm_result_sig(topic_statement):
+        _result_data_second, items_second = await _apimw_retrieve_pass(
+            payload,
+            query_text=second_query,
+            phase="step C",
+            soul_id=soul_id,
+            history=history,
+            state_row=state_row,
+            conversation_id=conversation_id,
+            apimw_k=apimw_k,
+        )
+
+    combined_items: list[dict[str, Any]] = []
+    seen_item_sigs: set[str] = set()
+    for row in items_first + items_second:
+        sig = _item_sig(row)
+        if not sig or sig in seen_item_sigs:
+            continue
+        seen_item_sigs.add(sig)
+        combined_items.append(row)
+
+    if apimw_random_count > 0:
+        pool = svc.database.memory_item_repo.list_items(scope)
+        candidates: list[dict[str, Any]] = []
+        for item in pool.values():
+            item_id = str(getattr(item, "id", "") or "").strip()
+            summary = str(getattr(item, "summary", "") or "").strip()
+            if not item_id or not summary:
+                continue
+            row = {
+                "id": item_id,
+                "memory_type": str(getattr(item, "memory_type", "memory") or "memory"),
+                "summary": summary,
+                "happened_at": getattr(item, "happened_at", None),
+                "reinforcement_count": getattr(item, "reinforcement_count", 0),
+            }
+            sig = _item_sig(row)
+            if not sig or sig in seen_item_sigs:
+                continue
+            candidates.append(row)
+        if candidates:
+            sample_size = min(apimw_random_count, len(candidates))
+            for row in random.sample(candidates, sample_size):
+                sig = _item_sig(row)
+                if not sig or sig in seen_item_sigs:
+                    continue
+                seen_item_sigs.add(sig)
+                combined_items.append(row)
+
+    logger.info("apimw step C: combined pool %d items", len(combined_items))
+    return combined_items
+
+
+async def _apimw_def_call(
+    svc: Any,
+    *,
+    combined_items: list[dict[str, Any]],
+    identity_context: str,
+    state_row: dict[str, Any],
+    episode_text: str,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    scope: dict[str, str],
+) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
+    """Steps D+E+F: build system/user prompt, call LLM, parse JSON.
+
+    Returns (result_json, items_by_id). Returns (None, {}) on parse failure.
+    """
+    logger.info("apimw step D+E+F: combined call for %s", conversation_id)
+
+    memory_lines: list[str] = []
+    items_by_id: dict[str, dict[str, Any]] = {}
+    for it in combined_items:
+        if not isinstance(it, dict):
+            continue
+        item_id = str(it.get("id") or "").strip()
+        summary = str(it.get("summary") or "").strip()
+        if not item_id or not summary:
+            continue
+        items_by_id[item_id] = it
+        mem_type = str(it.get("memory_type") or "memory").strip()
+        suffix = _format_turn_item_suffix(it)
+        memory_lines.append(f"[{item_id}] [{mem_type}]{suffix} {summary}")
+
+    formatted_memories = "\n".join(memory_lines) if memory_lines else "(none)"
+
+    categories = svc.database.memory_category_repo.list_categories(scope)
+    cat_lines: list[str] = []
+    for cat in categories.values():
+        cat_summary = str(getattr(cat, "summary", "") or "").strip()
+        cat_name = str(getattr(cat, "name", "") or "").strip()
+        if cat_name and cat_summary:
+            cat_lines.append(f"{cat_name}: {cat_summary}")
+    formatted_categories = "\n".join(cat_lines) if cat_lines else "(none)"
+
+    memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
+    intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
+    intentions_text = _format_intentions_for_prompt(intentions_active) if intentions_active else ""
+    formatted_cache = "\n".join(str(e) for e in (memory_cache or [])) if memory_cache else "(none)"
+    formatted_intentions = intentions_text if (intentions_text and intentions_text.strip() != "(none)") else "(none)"
+    life_goals_active = _load_active_life_goals_for_prompt(user_id=user_id, soul_id=soul_id)
+    formatted_life_goals = (
+        "\n".join(f"- {goal}" for goal in life_goals_active if str(goal).strip()) if life_goals_active else "(none yet)"
+    )
+
+    # SONNET WANTED: update APImw edge-rule text to include shaped_by in allowed predicates.
+    def_system = (
+        f"{identity_context}\n\n"
+        "You have just searched your long-term memory. Below are the memories that came back, "
+        "your current category summaries, your working thoughts, and your intentions.\n\n"
+        "Review everything. Then return STRICT JSON (first character { , last character } , "
+        "no markdown fences, no text outside JSON).\n\n"
+        "Required top-level keys:\n"
+        "- prior_context: array of memory IDs (strings) you want surfaced as background context "
+        "next time you speak. Pick what matters — not everything. Order by importance.\n"
+        "- edges: array of edge objects connecting memories you now see are related. "
+        "Each edge is {\"subject_id\": \"string\", \"predicate\": \"string\", \"object_id\": \"string\", \"confidence\": 0.0-1.0}. "
+        "Only create edges you're confident about.\n"
+        "- edge_invalidations: array — retire edges that are no longer true. "
+        "Each entry is {\"subject_id\": \"string\", \"predicate\": \"string\", \"object_id\": \"string\"}. Empty array if none.\n"
+        "- cache: object {\"entry\": \"string up to 300 chars\"} or null — a working thought to carry forward.\n"
+        "- intention_action: object or null — same rules as your turn contract.\n"
+        "- annulments: array — intentions to complete or delete. "
+        "Each entry is {\"intention_id\": \"string\", \"status\": \"completed|deleted\", \"note\": \"optional string\"}. Empty array if none.\n\n"
+        "Edge rules:\n"
+        "- Allowed predicates (use the one that fits):\n"
+        "  - caused_by — subject happened because of object\n"
+        "  - evokes — object stirs or pulls up subject as association (not causal)\n"
+        "  - conflicts_with — subject and object don't reconcile\n"
+        "  - parallels — subject and object rhyme or mirror without causing each other\n"
+        "  - shaped_by — subject was formed or influenced by object over time\n"
+        "- subject_id and object_id must be memory IDs from the list below\n"
+        "- confidence: 0.0-1.0\n"
+        "- Only create edges the conversation gives you reason to see\n\n"
+        "Intention rules (same as turn contract):\n"
+        "- boost: increase priority of an existing intention\n"
+        "- promote: turn an ephemeral into a full intention\n"
+        "- create: up to 2 new ephemerals\n"
+        "- annulments: mark intentions completed or deleted"
+    )
+
+    def_user = (
+        f"Retrieved memories:\n{formatted_memories}\n\n"
+        f"Category summaries:\n{formatted_categories}\n\n"
+        f"Your working thoughts:\n{formatted_cache}\n\n"
+        f"Intentions:\n{formatted_intentions}\n\n"
+        f"{_LIFE_GOALS_FREE_WILL_HEADER}\n{formatted_life_goals}\n\n"
+        f"Recent conversation (current episode):\n{episode_text}"
+    )
+
+    llm_raw = await svc.chat(
+        def_user,
+        system_prompt=def_system,
+        temperature=0.2,
+        max_tokens=800,
+        response_format={"type": "json_object"},
+    )
+
+    raw_text = str(llm_raw or "").strip()
+    try:
+        result_json = json.loads(raw_text)
+    except json.JSONDecodeError:
+        logger.error("apimw D+E+F: JSON parse failed, raw=%s", raw_text[:200])
+        return None, items_by_id
+    if not isinstance(result_json, dict):
+        logger.error("apimw D+E+F: expected dict, got %s", type(result_json).__name__)
+        return None, items_by_id
+
+    logger.info("apimw step D+E+F: parsed JSON with keys %s", list(result_json.keys()))
+    return result_json, items_by_id
+
+
+async def _apimw_persist(
+    svc: Any,
+    *,
+    result_json: dict[str, Any],
+    items_by_id: dict[str, dict[str, Any]],
+    combined_items: list[dict[str, Any]],
+    scope: dict[str, str],
+    conversation_id: str,
+    user_id: str,
+    soul_id: str,
+) -> None:
+    """Persist APImw results: state writes (inside lock) + edge writes (outside lock)."""
+    async with _retrieve_scope_lock(user_id, soul_id):
+        updates: dict[str, Any] = {}
+
+        prior_ids = result_json.get("prior_context") or []
+        if isinstance(prior_ids, list) and prior_ids:
+            pc_lines: list[str] = []
+            for mid in prior_ids:
+                mid_str = str(mid).strip()
+                it = items_by_id.get(mid_str)
+                if not it:
+                    continue
+                mem_type = str(it.get("memory_type") or "memory").strip()
+                suffix = _format_turn_item_suffix(it)
+                summary = str(it.get("summary") or "").strip()
+                pc_lines.append(f"[{mem_type}]{suffix} {summary}")
+            if pc_lines:
+                updates["prior_context"] = "\n".join(pc_lines)
+
+        updates["last_retrieval_ids"] = _extract_result_item_ids({"items": combined_items})
+
+        fresh_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=user_id, soul_id=soul_id)
+        current_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
+        current_intentions = _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
+
+        cache_obj = result_json.get("cache")
+        if isinstance(cache_obj, dict) and cache_obj.get("entry"):
+            entry = str(cache_obj["entry"]).strip()[:300]
+            current_cache = _append_memory_cache_entry(current_cache, entry)
+            updates["memory_cache"] = current_cache
+
+        intention_action = result_json.get("intention_action")
+        if isinstance(intention_action, dict) and intention_action.get("type") != "none":
+            current_intentions = _apply_intention_action(current_intentions, intention_action)
+        annulments = result_json.get("annulments") or []
+        if isinstance(annulments, list) and annulments:
+            annul_ids = [
+                str(a.get("intention_id") or "").strip()
+                for a in annulments
+                if isinstance(a, dict) and str(a.get("intention_id") or "").strip()
+            ]
+            if annul_ids:
+                current_intentions = _remove_intentions(current_intentions, annul_ids)
+        if intention_action or annulments:
+            updates["intentions_active"] = current_intentions
+
+        if updates:
+            _write_conversation_state(
+                conversation_id,
+                soul_id=soul_id,
+                user_id=user_id,
+                updates=updates,
+            )
+            logger.info("apimw: state written for %s (keys: %s)", conversation_id, list(updates.keys()))
+
+    wrote = _write_memory_edges(svc.database.triple_repo, result_json.get("edges"), scope=scope)
+    if wrote:
+        logger.info("apimw: wrote %d edges for %s", wrote, conversation_id)
+
+    invalidated = _invalidate_memory_edges(svc.database.triple_repo, result_json.get("edge_invalidations"), scope=scope)
+    if invalidated:
+        logger.info("apimw: invalidated %d edges for %s", invalidated, conversation_id)
+
+
 async def _run_apimw(
     payload: dict[str, Any],
     *,
@@ -2193,285 +2535,59 @@ async def _run_apimw(
         topic_user = "\n\n".join(topic_user_blocks)
 
         # --- Step A: Topic statement ---
-        logger.info("apimw step A: topic statement for %s", conversation_id)
         identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
-        topic_system = (
-            f"{identity_context}\n\n"
-            "State the topic of the CURRENT episode in 1-2 sentences. The previous episode is provided only as context — "
-            "if the current episode is brief, use it to understand what the new message means, but describe only where the conversation is now."
+        topic_statement = await _apimw_topic_statement(
+            svc,
+            topic_user=topic_user,
+            payload=payload,
+            identity_context=identity_context,
+            conversation_id=conversation_id,
         )
-        topic_statement = await svc.chat(
-            topic_user,
-            system_prompt=topic_system,
-            temperature=0.1,
-            max_tokens=100,
-        )
-        topic_statement = str(topic_statement or "").strip() or _pick_str(payload, "message", "query") or ""
         if not topic_statement:
             logger.info("apimw step A: empty topic for %s; skipping run", conversation_id)
             return
         logger.info("apimw step A result: %s", topic_statement[:120])
 
-        async def _run_apimw_retrieve_pass(query_text: str, phase: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-            queries = _build_retrieve_soul_context_queries(
-                soul_id=soul_id,
-                message=query_text,
-                history=history,
-                state_row=state_row,
-                identity_mode="apimw",
-            )
-            retrieve_payload = {
-                **payload,
-                "method": "rag",
-                "query": query_text,
-                "queries": queries,
-                "conversation_id": conversation_id,
-            }
-            retrieve_payload["retrieve_config"] = _build_apimw_retrieve_config(
-                retrieve_payload.get("retrieve_config"),
-                item_top_k=apimw_k,
-            )
-            logger.info("apimw %s: retrieve for %s", phase, conversation_id)
-            retrieve_out = await _run_retrieve(
-                retrieve_payload,
-                conversation_id=conversation_id,
-            )
-            result_data_local = retrieve_out.get("result") if isinstance(retrieve_out, dict) else {}
-            if not isinstance(result_data_local, dict):
-                result_data_local = {}
-            items_local = result_data_local.get("items") or []
-            if not isinstance(items_local, list):
-                items_local = []
-            rows = [row for row in items_local if isinstance(row, dict)]
-            logger.info("apimw %s: retrieved %d items", phase, len(rows))
-            return result_data_local, rows
-
-        # --- Step B: Retrieve ---
-        result_data_first, items_first = await _run_apimw_retrieve_pass(topic_statement, "step B")
-
-        # --- Step C: Sufficiency / second pass rewrite ---
-        items_second: list[dict[str, Any]] = []
-        second_query = str(result_data_first.get("next_step_query") or "").strip()
-        if second_query and _norm_result_sig(second_query) != _norm_result_sig(topic_statement):
-            _result_data_second, items_second = await _run_apimw_retrieve_pass(second_query, "step C")
-
-        combined_items: list[dict[str, Any]] = []
-        seen_item_sigs: set[str] = set()
-        for row in items_first + items_second:
-            sig = _item_sig(row)
-            if not sig or sig in seen_item_sigs:
-                continue
-            seen_item_sigs.add(sig)
-            combined_items.append(row)
-
-        if apimw_random_count > 0:
-            pool = svc.database.memory_item_repo.list_items(scope)
-            candidates: list[dict[str, Any]] = []
-            for item in pool.values():
-                item_id = str(getattr(item, "id", "") or "").strip()
-                summary = str(getattr(item, "summary", "") or "").strip()
-                if not item_id or not summary:
-                    continue
-                row = {
-                    "id": item_id,
-                    "memory_type": str(getattr(item, "memory_type", "memory") or "memory"),
-                    "summary": summary,
-                    "happened_at": getattr(item, "happened_at", None),
-                    "reinforcement_count": getattr(item, "reinforcement_count", 0),
-                }
-                sig = _item_sig(row)
-                if not sig or sig in seen_item_sigs:
-                    continue
-                candidates.append(row)
-            if candidates:
-                sample_size = min(apimw_random_count, len(candidates))
-                for row in random.sample(candidates, sample_size):
-                    sig = _item_sig(row)
-                    if not sig or sig in seen_item_sigs:
-                        continue
-                    seen_item_sigs.add(sig)
-                    combined_items.append(row)
-        logger.info("apimw step C: combined pool %d items", len(combined_items))
+        # --- Steps B+C: Retrieve and merge ---
+        combined_items = await _apimw_retrieve_and_merge(
+            svc,
+            payload,
+            topic_statement=topic_statement,
+            history=history,
+            state_row=state_row,
+            conversation_id=conversation_id,
+            soul_id=soul_id,
+            apimw_k=apimw_k,
+            apimw_random_count=apimw_random_count,
+            scope=scope,
+        )
 
         # --- Steps D+E+F: Combined LLM call ---
-        logger.info("apimw step D+E+F: combined call for %s", conversation_id)
-
-        # Format retrieved memories with IDs
-        memory_lines: list[str] = []
-        items_by_id: dict[str, dict[str, Any]] = {}
-        for it in combined_items:
-            if not isinstance(it, dict):
-                continue
-            item_id = str(it.get("id") or "").strip()
-            summary = str(it.get("summary") or "").strip()
-            if not item_id or not summary:
-                continue
-            items_by_id[item_id] = it
-            mem_type = str(it.get("memory_type") or "memory").strip()
-            suffix = _format_turn_item_suffix(it)
-            memory_lines.append(f"[{item_id}] [{mem_type}]{suffix} {summary}")
-
-        formatted_memories = "\n".join(memory_lines) if memory_lines else "(none)"
-
-        # Load full individual category summaries
-        categories = svc.database.memory_category_repo.list_categories(scope)
-        cat_lines: list[str] = []
-        for cat in categories.values():
-            cat_summary = str(getattr(cat, "summary", "") or "").strip()
-            cat_name = str(getattr(cat, "name", "") or "").strip()
-            if cat_name and cat_summary:
-                cat_lines.append(f"{cat_name}: {cat_summary}")
-        formatted_categories = "\n".join(cat_lines) if cat_lines else "(none)"
-
-        # Format cache and intentions
-        memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
-        intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
-        intentions_text = _format_intentions_for_prompt(intentions_active) if intentions_active else ""
-        formatted_cache = "\n".join(str(e) for e in (memory_cache or [])) if memory_cache else "(none)"
-        formatted_intentions = intentions_text if (intentions_text and intentions_text.strip() != "(none)") else "(none)"
-        life_goals_active = _load_active_life_goals_for_prompt(user_id=user_id, soul_id=soul_id)
-        formatted_life_goals = (
-            "\n".join(f"- {goal}" for goal in life_goals_active if str(goal).strip()) if life_goals_active else "(none yet)"
+        result_json, items_by_id = await _apimw_def_call(
+            svc,
+            combined_items=combined_items,
+            identity_context=identity_context,
+            state_row=state_row,
+            episode_text=episode_text,
+            user_id=user_id,
+            soul_id=soul_id,
+            conversation_id=conversation_id,
+            scope=scope,
         )
-
-        # SONNET WANTED: update APImw edge-rule text to include shaped_by in allowed predicates.
-        # Build system prompt
-        def_system = (
-            f"{identity_context}\n\n"
-            "You have just searched your long-term memory. Below are the memories that came back, "
-            "your current category summaries, your working thoughts, and your intentions.\n\n"
-            "Review everything. Then return STRICT JSON (first character { , last character } , "
-            "no markdown fences, no text outside JSON).\n\n"
-            "Required top-level keys:\n"
-            "- prior_context: array of memory IDs (strings) you want surfaced as background context "
-            "next time you speak. Pick what matters — not everything. Order by importance.\n"
-            "- edges: array of edge objects connecting memories you now see are related. "
-            "Each edge is {\"subject_id\": \"string\", \"predicate\": \"string\", \"object_id\": \"string\", \"confidence\": 0.0-1.0}. "
-            "Only create edges you're confident about.\n"
-            "- edge_invalidations: array — retire edges that are no longer true. "
-            "Each entry is {\"subject_id\": \"string\", \"predicate\": \"string\", \"object_id\": \"string\"}. Empty array if none.\n"
-            "- cache: object {\"entry\": \"string up to 300 chars\"} or null — a working thought to carry forward.\n"
-            "- intention_action: object or null — same rules as your turn contract.\n"
-            "- annulments: array — intentions to complete or delete. "
-            "Each entry is {\"intention_id\": \"string\", \"status\": \"completed|deleted\", \"note\": \"optional string\"}. Empty array if none.\n\n"
-            "Edge rules:\n"
-            "- Allowed predicates (use the one that fits):\n"
-            "  - caused_by — subject happened because of object\n"
-            "  - evokes — object stirs or pulls up subject as association (not causal)\n"
-            "  - conflicts_with — subject and object don't reconcile\n"
-            "  - parallels — subject and object rhyme or mirror without causing each other\n"
-            "  - shaped_by — subject was formed or influenced by object over time\n"
-            "- subject_id and object_id must be memory IDs from the list below\n"
-            "- confidence: 0.0-1.0\n"
-            "- Only create edges the conversation gives you reason to see\n\n"
-            "Intention rules (same as turn contract):\n"
-            "- boost: increase priority of an existing intention\n"
-            "- promote: turn an ephemeral into a full intention\n"
-            "- create: up to 2 new ephemerals\n"
-            "- annulments: mark intentions completed or deleted"
-        )
-
-        # Build user prompt
-        def_user = (
-            f"Retrieved memories:\n{formatted_memories}\n\n"
-            f"Category summaries:\n{formatted_categories}\n\n"
-            f"Your working thoughts:\n{formatted_cache}\n\n"
-            f"Intentions:\n{formatted_intentions}\n\n"
-            f"{_LIFE_GOALS_FREE_WILL_HEADER}\n{formatted_life_goals}\n\n"
-            f"Recent conversation (current episode):\n{episode_text}"
-        )
-
-        llm_raw = await svc.chat(
-            def_user,
-            system_prompt=def_system,
-            temperature=0.2,
-            max_tokens=800,
-            response_format={"type": "json_object"},
-        )
-
-        # Parse JSON response
-        raw_text = str(llm_raw or "").strip()
-        try:
-            result_json = json.loads(raw_text)
-        except json.JSONDecodeError:
-            logger.error("apimw D+E+F: JSON parse failed, raw=%s", raw_text[:200])
+        if result_json is None:
             return
-        if not isinstance(result_json, dict):
-            logger.error("apimw D+E+F: expected dict, got %s", type(result_json).__name__)
-            return
-
-        logger.info("apimw step D+E+F: parsed JSON with keys %s", list(result_json.keys()))
 
         # --- Persist results ---
-        async with _retrieve_scope_lock(user_id, soul_id):
-            updates: dict[str, Any] = {}
-
-            # Prior context: look up selected memory IDs, format as [type](suffix) summary
-            prior_ids = result_json.get("prior_context") or []
-            if isinstance(prior_ids, list) and prior_ids:
-                pc_lines: list[str] = []
-                for mid in prior_ids:
-                    mid_str = str(mid).strip()
-                    it = items_by_id.get(mid_str)
-                    if not it:
-                        continue
-                    mem_type = str(it.get("memory_type") or "memory").strip()
-                    suffix = _format_turn_item_suffix(it)
-                    summary = str(it.get("summary") or "").strip()
-                    pc_lines.append(f"[{mem_type}]{suffix} {summary}")
-                if pc_lines:
-                    updates["prior_context"] = "\n".join(pc_lines)
-
-            # Last retrieval IDs
-            updates["last_retrieval_ids"] = _extract_result_item_ids({"items": combined_items})
-
-            # Re-read fresh state for cache/intentions merge
-            fresh_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=user_id, soul_id=soul_id)
-            current_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
-            current_intentions = _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
-
-            # Cache
-            cache_obj = result_json.get("cache")
-            if isinstance(cache_obj, dict) and cache_obj.get("entry"):
-                entry = str(cache_obj["entry"]).strip()[:300]
-                current_cache = _append_memory_cache_entry(current_cache, entry)
-                updates["memory_cache"] = current_cache
-
-            # Intention action + annulments
-            intention_action = result_json.get("intention_action")
-            if isinstance(intention_action, dict) and intention_action.get("type") != "none":
-                current_intentions = _apply_intention_action(current_intentions, intention_action)
-            annulments = result_json.get("annulments") or []
-            if isinstance(annulments, list) and annulments:
-                annul_ids = [
-                    str(a.get("intention_id") or "").strip()
-                    for a in annulments
-                    if isinstance(a, dict) and str(a.get("intention_id") or "").strip()
-                ]
-                if annul_ids:
-                    current_intentions = _remove_intentions(current_intentions, annul_ids)
-            if intention_action or annulments:
-                updates["intentions_active"] = current_intentions
-
-            # Write state
-            if updates:
-                _write_conversation_state(
-                    conversation_id,
-                    soul_id=soul_id,
-                    user_id=user_id,
-                    updates=updates,
-                )
-                logger.info("apimw: state written for %s (keys: %s)", conversation_id, list(updates.keys()))
-
-        # Edges (outside state lock — triple writes are independent)
-        wrote = _write_memory_edges(svc.database.triple_repo, result_json.get("edges"), scope=scope)
-        if wrote:
-            logger.info("apimw: wrote %d edges for %s", wrote, conversation_id)
-
-        # Edge invalidations
-        invalidated = _invalidate_memory_edges(svc.database.triple_repo, result_json.get("edge_invalidations"), scope=scope)
-        if invalidated:
-            logger.info("apimw: invalidated %d edges for %s", invalidated, conversation_id)
+        await _apimw_persist(
+            svc,
+            result_json=result_json,
+            items_by_id=items_by_id,
+            combined_items=combined_items,
+            scope=scope,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            soul_id=soul_id,
+        )
 
         logger.info("apimw: complete for %s", conversation_id)
 
