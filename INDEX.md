@@ -30,7 +30,6 @@ mcp-memu-server/
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/health` | GET | Health check |
-| `/ping` | GET | Plugin ping (returns ok + serverInstanceId) |
 | `/memorize` | POST | Extract memories from conversation text (also used by the optional sleep timer auto-digest worker); `force=true` batching via `_build_force_memorize_batches()` — prefers segment manifest ranges, fills gaps with `full.json`, falls back to token-window chunking |
 | `/retrieve` | POST | Query memories (`rag` method; `llm` is internal-only for background flows). Optional `as_of` applies temporal triple filtering (`valid_from`/`valid_to`) for graph retrieval. |
 | `/timeline` | GET | Entity relationship timeline (`entity`, `user_id`, `soul_id`, optional `as_of`) for chronological graph inspection |
@@ -64,7 +63,7 @@ mcp-memu-server/
 
 ```python
 from memu.app import MemoryService    # main facade
-from memu.prompts.diary import ...     # diary prompts
+from memu.prompts.consolidation import consolidation  # consolidation prompt
 from memu.prompts.memory_type import ...  # type prompts
 ```
 
@@ -97,7 +96,7 @@ listen:     host, port
 memu:       path (to memu/src)
 categories: defaults[], allow_dynamic, thresholds
 retrieve:   method (rag), apimw_enabled (bool; toggles APImw pipeline), apimw_cadence (int, default 5; min soul messages since chat_x before APImw fires), apimw_memory_count (int, default 25; APImw item.top_k), apimw_random_count (int, default 5; APImw random sample size)
-memorize:   min_chunk_tokens, turn_history_token_budget, auto_memorize_on_sleep, sleep_timer_interval_seconds, supersede_similarity_threshold (default 0.75), enable_item_reinforcement (default true — enables reinforcement count roll-up on semantic dedupe merge)
+memorize:   min_chunk_tokens, turn_history_token_budget, auto_memorize_on_sleep, sleep_timer_interval_seconds, enable_item_reinforcement (default true — enables reinforcement count roll-up on semantic dedupe merge)
 consolidation_interval_days: cadence gate for consolidation after successful memorize runs (default 7)
 debug:      log_prompts (bool) — dumps exact LLM prompt + response for memorize/consolidation steps to console
 ```
