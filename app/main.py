@@ -1692,6 +1692,26 @@ def _parse_turn_ts_ms(value: Any) -> int | None:
     return None
 
 
+def _parse_as_of_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="as_of must be ISO datetime/date") from exc
+    else:
+        raise HTTPException(status_code=400, detail="as_of must be ISO datetime/date")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
 def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -2143,13 +2163,14 @@ async def _run_retrieve(
     svc = _get_service_from_payload(safe, retrieve_method_override=method)
     scope = _extract_retrieve_where(safe)
     memu_queries = _extract_retrieve_queries(safe)
+    as_of = _parse_as_of_datetime(safe.get("as_of"))
 
     soul_id = str((scope or {}).get("soul_id") or "").strip()
     user_id = str((scope or {}).get("user_id") or "user").strip() or "user"
 
     async def _retrieve_and_maybe_persist(state_soul_id: str | None) -> dict[str, Any]:
         _t0 = time.monotonic()
-        result = await svc.retrieve(memu_queries, where=scope)
+        result = await svc.retrieve(memu_queries, where=scope, as_of=as_of)
         _retrieve_ms = int((time.monotonic() - _t0) * 1000)
         if method == "llm" and isinstance(result, dict):
             result = {**result, "categories": []}
@@ -2210,6 +2231,8 @@ async def _run_retrieve(
     out["method"] = method
     out["conversation_id"] = scoped_conversation_id
     out["queries"] = len(memu_queries)
+    if as_of is not None:
+        out["as_of"] = as_of.isoformat()
     return out
 
 
@@ -4322,6 +4345,120 @@ async def retrieve(payload: dict[str, Any]):
             error=f"{type(exc).__name__}: {exc}",
         )
         raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
+
+
+@app.get("/timeline", operation_id="timeline")
+async def timeline(
+    entity: str,
+    user_id: str,
+    soul_id: str,
+    as_of: str | None = None,
+    limit: int = 200,
+):
+    entity_name = str(entity or "").strip()
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not entity_name:
+        raise HTTPException(status_code=400, detail="entity is required")
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+
+    as_of_dt = _parse_as_of_datetime(as_of)
+    scope = {"user_id": uid, "soul_id": sid}
+    safe = {"user": scope}
+    svc = _get_service_from_payload(safe, allow_missing_llm_profiles=True)
+
+    entities = svc.database.entity_repo.list_all(where=scope)
+    query_norm = "_".join(entity_name.lower().split())
+    target = next(
+        (
+            e
+            for e in entities
+            if str(getattr(e, "normalized", "") or "").strip() == query_norm
+            or str(getattr(e, "name", "") or "").strip().lower() == entity_name.lower()
+        ),
+        None,
+    )
+    if target is None:
+        return {
+            "ok": True,
+            "entity": {"name": entity_name, "id": None},
+            "as_of": as_of_dt.isoformat() if as_of_dt is not None else None,
+            "timeline": [],
+            "count": 0,
+        }
+
+    outgoing = svc.database.triple_repo.get_edges_from(
+        target.id, current_only=False, where=scope, as_of=as_of_dt
+    )
+    incoming = svc.database.triple_repo.get_edges_to(
+        target.id, current_only=False, where=scope, as_of=as_of_dt
+    )
+
+    seen: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    for edge in [*outgoing, *incoming]:
+        edge_id = str(getattr(edge, "id", "") or "").strip()
+        if edge_id and edge_id in seen:
+            continue
+        if edge_id:
+            seen.add(edge_id)
+
+        event: dict[str, Any] = {
+            "edge_id": edge_id or None,
+            "predicate": edge.predicate,
+            "subject_id": edge.subject_id,
+            "subject_kind": edge.subject_kind,
+            "object_id": edge.object_id,
+            "object_kind": edge.object_kind,
+            "valid_from": edge.valid_from.isoformat() if isinstance(edge.valid_from, datetime) else None,
+            "valid_to": edge.valid_to.isoformat() if isinstance(edge.valid_to, datetime) else None,
+            "confidence": edge.confidence,
+            "source_memory_id": edge.source_memory_id,
+        }
+
+        related_memory_id = None
+        if edge.subject_kind == "memory":
+            related_memory_id = edge.subject_id
+        elif edge.object_kind == "memory":
+            related_memory_id = edge.object_id
+        elif isinstance(edge.source_memory_id, str) and edge.source_memory_id.strip():
+            related_memory_id = edge.source_memory_id.strip()
+        if related_memory_id:
+            memory_item = svc.database.memory_item_repo.get_item(related_memory_id)
+            if memory_item is not None:
+                event["memory"] = {
+                    "id": memory_item.id,
+                    "memory_type": memory_item.memory_type,
+                    "summary": memory_item.summary,
+                    "happened_at": (
+                        memory_item.happened_at.isoformat()
+                        if isinstance(memory_item.happened_at, datetime)
+                        else None
+                    ),
+                }
+
+        rows.append(event)
+
+    rows.sort(
+        key=lambda row: (
+            row.get("valid_from") or "",
+            row.get("edge_id") or "",
+        )
+    )
+    limit = max(1, min(int(limit or 200), 500))
+    timeline_rows = rows[:limit]
+    return {
+        "ok": True,
+        "entity": {
+            "id": target.id,
+            "name": target.name,
+            "entity_type": target.entity_type,
+        },
+        "as_of": as_of_dt.isoformat() if as_of_dt is not None else None,
+        "timeline": timeline_rows,
+        "count": len(timeline_rows),
+    }
 
 
 @app.post("/conversation/{conversation_id}/retrieve", operation_id="conversation_retrieve")

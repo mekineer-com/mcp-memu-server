@@ -5,8 +5,10 @@ as the project evolves. Currently using placeholder tests to ensure
 CI pipeline runs successfully.
 """
 
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -250,3 +252,97 @@ def test_normalize_conversation_uses_created_at_when_timestamp_missing():
 
     assert isinstance(out, list) and out
     assert out[0]["ts_ms"] == int(datetime(2026, 4, 16, 12, 0, tzinfo=UTC).timestamp() * 1000)
+
+
+def test_parse_as_of_datetime_accepts_iso_date_and_datetime():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    date_only = main._parse_as_of_datetime("2026-04-18")
+    assert date_only is not None
+    assert date_only.isoformat().startswith("2026-04-18T00:00:00")
+
+    zulu = main._parse_as_of_datetime("2026-04-18T10:15:00Z")
+    assert zulu is not None
+    assert zulu.tzinfo is not None
+    assert zulu.isoformat().startswith("2026-04-18T10:15:00")
+
+
+def test_parse_as_of_datetime_rejects_invalid():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    with pytest.raises(main.HTTPException):
+        main._parse_as_of_datetime("not-a-date")
+
+
+def test_timeline_endpoint_returns_entity_edges(monkeypatch: pytest.MonkeyPatch):
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    class _EntityRepo:
+        def list_all(self, where=None):
+            return [SimpleNamespace(id="ent_1", name="Marcos", entity_type="person", normalized="marcos")]
+
+    class _TripleRepo:
+        def __init__(self) -> None:
+            self.captured_as_of = None
+
+        def get_edges_from(self, *_args, **kwargs):
+            self.captured_as_of = kwargs.get("as_of")
+            return [
+                SimpleNamespace(
+                    id="edge_1",
+                    subject_id="ent_1",
+                    subject_kind="entity",
+                    predicate="parallels",
+                    object_id="mem_1",
+                    object_kind="memory",
+                    valid_from=datetime(2026, 4, 18, 8, 0, tzinfo=UTC),
+                    valid_to=None,
+                    confidence=0.9,
+                    source_memory_id="mem_1",
+                )
+            ]
+
+        def get_edges_to(self, *_args, **kwargs):
+            self.captured_as_of = kwargs.get("as_of")
+            return []
+
+    class _MemoryRepo:
+        def get_item(self, item_id: str):
+            if item_id != "mem_1":
+                return None
+            return SimpleNamespace(
+                id="mem_1",
+                memory_type="knowledge",
+                summary="Marcos values continuity.",
+                happened_at=datetime(2026, 4, 18, 7, 0, tzinfo=UTC),
+            )
+
+    triple_repo = _TripleRepo()
+    fake_db = SimpleNamespace(entity_repo=_EntityRepo(), triple_repo=triple_repo, memory_item_repo=_MemoryRepo())
+    fake_svc = SimpleNamespace(database=fake_db)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: fake_svc)
+
+    out = asyncio.run(
+        main.timeline(
+            entity="Marcos",
+            user_id="u",
+            soul_id="s",
+            as_of="2026-04-18T12:00:00Z",
+        )
+    )
+
+    assert out["ok"] is True
+    assert out["entity"]["id"] == "ent_1"
+    assert out["count"] == 1
+    assert out["timeline"][0]["predicate"] == "parallels"
+    assert out["timeline"][0]["memory"]["id"] == "mem_1"
+    assert triple_repo.captured_as_of is not None
