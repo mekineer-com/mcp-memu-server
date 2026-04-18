@@ -40,6 +40,9 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "self_model_id": row["self_model_id"],
         "last_retrieval_ids": json_from_db(row["last_retrieval_ids"]),
         "last_memorize_at": row["last_memorize_at"],
+        "last_consolidation_at": row["last_consolidation_at"] if "last_consolidation_at" in row.keys() else None,
+        "consolidation_in_progress": bool(row["consolidation_in_progress"]) if "consolidation_in_progress" in row.keys() else False,
+        "consolidation_started_at": row["consolidation_started_at"] if "consolidation_started_at" in row.keys() else None,
         "updated_at": row["updated_at"],
         "undo_snapshot": json_from_db(row["undo_snapshot"]),
         "all_categories_summary": row["all_categories_summary"] if "all_categories_summary" in row.keys() else None,
@@ -52,7 +55,8 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
     return con.execute(
         "SELECT conversation_id, soul_id, user_id, digest_cursor, prior_context, "
         "intentions_active, memory_cache, pending_diary_episode_ids, self_model_id, "
-        "last_retrieval_ids, last_memorize_at, updated_at, undo_snapshot, "
+        "last_retrieval_ids, last_memorize_at, last_consolidation_at, consolidation_in_progress, "
+        "consolidation_started_at, updated_at, undo_snapshot, "
         "all_categories_summary, last_chat_x, last_chat_x_prev "
         "FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
         (conversation_id,),
@@ -76,6 +80,9 @@ def conversation_state_empty(
         "self_model_id": None,
         "last_retrieval_ids": None,
         "last_memorize_at": None,
+        "last_consolidation_at": None,
+        "consolidation_in_progress": False,
+        "consolidation_started_at": None,
         "updated_at": None,
         "all_categories_summary": None,
         "last_chat_x": None,
@@ -159,11 +166,14 @@ INSERT OR IGNORE INTO memu_conversation_state (
     self_model_id,
     last_retrieval_ids,
     last_memorize_at,
+    last_consolidation_at,
+    consolidation_in_progress,
+    consolidation_started_at,
     updated_at,
     all_categories_summary,
     last_chat_x,
     last_chat_x_prev
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """,
                 (
                     seed["conversation_id"],
@@ -177,6 +187,9 @@ INSERT OR IGNORE INTO memu_conversation_state (
                     seed.get("self_model_id"),
                     json_to_db(seed.get("last_retrieval_ids")),
                     seed.get("last_memorize_at"),
+                    seed.get("last_consolidation_at"),
+                    1 if seed.get("consolidation_in_progress") else 0,
+                    seed.get("consolidation_started_at"),
                     seed.get("updated_at"),
                     seed.get("all_categories_summary"),
                     seed.get("last_chat_x"),
@@ -200,6 +213,9 @@ INSERT OR IGNORE INTO memu_conversation_state (
                 "self_model_id",
                 "last_retrieval_ids",
                 "last_memorize_at",
+                "last_consolidation_at",
+                "consolidation_in_progress",
+                "consolidation_started_at",
                 "undo_snapshot",
                 "all_categories_summary",
                 "last_chat_x",
@@ -224,6 +240,11 @@ INSERT OR IGNORE INTO memu_conversation_state (
         if "last_memorize_at" in field_updates:
             raw_last = field_updates.get("last_memorize_at")
             field_updates["last_memorize_at"] = None if raw_last is None else (str(raw_last).strip() or None)
+        if "last_consolidation_at" in field_updates:
+            raw_last_consolidation = field_updates.get("last_consolidation_at")
+            field_updates["last_consolidation_at"] = (
+                None if raw_last_consolidation is None else (str(raw_last_consolidation).strip() or None)
+            )
         if "prior_context" in field_updates:
             raw_prior_context = field_updates.get("prior_context")
             field_updates["prior_context"] = None if raw_prior_context is None else str(raw_prior_context)
@@ -249,6 +270,11 @@ INSERT OR IGNORE INTO memu_conversation_state (
             field_updates["self_model_id"] = (
                 None if raw_self_model_id is None else (str(raw_self_model_id).strip() or None)
             )
+        if "consolidation_in_progress" in field_updates:
+            field_updates["consolidation_in_progress"] = bool(field_updates.get("consolidation_in_progress"))
+        if "consolidation_started_at" in field_updates:
+            raw_started = field_updates.get("consolidation_started_at")
+            field_updates["consolidation_started_at"] = None if raw_started is None else (str(raw_started).strip() or None)
 
         if scoped_soul is not None:
             field_updates["soul_id"] = scoped_soul
@@ -271,6 +297,8 @@ INSERT OR IGNORE INTO memu_conversation_state (
                     params.append(json_to_db(value))
                 elif key == "digest_cursor":
                     params.append(int(value or 0))
+                elif key == "consolidation_in_progress":
+                    params.append(1 if value else 0)
                 else:
                     params.append(value)
             params.append(cid)

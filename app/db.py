@@ -141,6 +141,9 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
     self_model_id VARCHAR,
     last_retrieval_ids JSON,
     last_memorize_at DATETIME,
+    last_consolidation_at DATETIME,
+    consolidation_in_progress BOOLEAN DEFAULT 0,
+    consolidation_started_at DATETIME,
     updated_at DATETIME,
     undo_snapshot JSON
 )
@@ -170,6 +173,12 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_retrieval_ids JSON")
     if "last_memorize_at" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_memorize_at DATETIME")
+    if "last_consolidation_at" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_consolidation_at DATETIME")
+    if "consolidation_in_progress" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN consolidation_in_progress BOOLEAN DEFAULT 0")
+    if "consolidation_started_at" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN consolidation_started_at DATETIME")
     if "updated_at" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN updated_at DATETIME")
     if "undo_snapshot" not in cols:

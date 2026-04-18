@@ -1,6 +1,6 @@
 # mcp-memu-server
 
-Local FastAPI server that wraps the `memu` memory engine and exposes it as an HTTP API. Handles conversation state, diary generation, the soul turn loop, and all orchestration between clients and the engine.
+Local FastAPI server that wraps the `memu` memory engine and exposes it as an HTTP API. Handles conversation state, consolidation, the soul turn loop, and orchestration between clients and the engine.
 
 This is part of the memU local stack — a private fork, not affiliated with NevaMind-AI.
 
@@ -63,7 +63,8 @@ The server runs on `http://127.0.0.1:8099` by default.
     ],
     "allow_dynamic_categories": true
   },
-  "retrieve": { "method": "rag" }
+  "retrieve": { "method": "rag" },
+  "consolidation_interval_days": 7
 }
 ```
 
@@ -81,7 +82,7 @@ See `config.example.json` for the full reference. Relative paths in config are r
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt (RAG + prior context) |
 | `/conversation/{id}/turn` | POST | Soul turn loop: run LLM, persist intentions + cache |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
-| `/diary/generate` | POST | Generate diary entry from recent memories |
+| `/conversation/{id}/consolidation/force` | POST | Force consolidation now (bypass interval gate) |
 | `/intentions` | GET | List active intentions |
 | `/intentions/{id}` | PATCH | Update intention status/priority |
 | `/categories` | GET | List all categories |
@@ -100,7 +101,8 @@ mcp-memu-server/
 ├── app/main.py              # All endpoints + business logic
 ├── app/db.py                # SQLite helpers
 ├── app/database.py          # SQLAlchemy async engine
-├── app/services/diary.py    # Diary + self-model generation
+├── app/services/consolidation.py # Consolidation pipeline
+├── app/services/diary.py    # Diary helper primitives
 ├── app/services/state.py    # Conversation state management
 ├── app/services/turn_contract.py   # Soul turn prompt construction
 ├── app/services/intention_state.py # Intentions normalization

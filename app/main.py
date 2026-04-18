@@ -59,17 +59,17 @@ from app.db import (
 from app.db import (
     sqlite_table_columns as _sqlite_table_columns,
 )
-from app.services.diary import (
-    DiaryDeps,
+from app.services.consolidation import (
+    ConsolidationDeps,
 )
-from app.services.diary import (
-    gather_diary_inputs as _gather_diary_inputs,
+from app.services.consolidation import (
+    gather_consolidation_inputs as _gather_consolidation_inputs,
 )
-from app.services.diary import (
-    run_diary_llm as _run_diary_llm,
+from app.services.consolidation import (
+    run_consolidation_llm as _run_consolidation_llm,
 )
-from app.services.diary import (
-    write_diary_outputs as _write_diary_outputs,
+from app.services.consolidation import (
+    write_consolidation_outputs as _write_consolidation_outputs,
 )
 from app.services.intention_state import (
     append_memory_cache_entry as _append_memory_cache_entry,
@@ -108,6 +108,9 @@ from app.services.state import (
     write_conversation_state as _write_conversation_state_impl,
 )
 from app.services.turn_contract import (
+    LIFE_GOALS_FREE_WILL_HEADER as _LIFE_GOALS_FREE_WILL_HEADER,
+)
+from app.services.turn_contract import (
     _format_item_suffix as _format_turn_item_suffix,
 )
 from app.services.turn_contract import (
@@ -135,6 +138,7 @@ _DEFAULT_MIN_CHUNK_TOKENS: int = 4000
 _DEFAULT_TURN_HISTORY_TOKEN_BUDGET: int = 3000
 _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS: int = 300
 _FORCE_MEMORIZE_MAX_CHUNK_TOKENS: int = 6000
+_CONSOLIDATION_STALE_SECONDS: int = 60 * 60
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS  # overridden by config memorize.min_chunk_tokens
 _TURN_HISTORY_TOKEN_BUDGET: int = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET  # overridden by config memorize.turn_history_token_budget
 _SLEEP_TIMER_ENABLED: bool = False
@@ -597,6 +601,7 @@ def _default_config() -> dict[str, Any]:
             "apimw_memory_count": 25,
             "apimw_random_count": 5,
         },
+        "consolidation_interval_days": 7,
         "mcp": {"http_path": "/mcp", "sse_path": "/sse"},
     }
 
@@ -1162,6 +1167,16 @@ def _apimw_random_count_from_cfg(cfg: Mapping[str, Any] | None) -> int:
         return max(0, int(retrieve.get("apimw_random_count", 5)))
     except (TypeError, ValueError):
         return 5
+
+
+def _consolidation_interval_days_from_cfg(cfg: Mapping[str, Any] | None) -> int:
+    if not isinstance(cfg, Mapping):
+        return 7
+    raw = cfg.get("consolidation_interval_days", 7)
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 7
 
 
 def _build_apimw_retrieve_config(base_cfg: Any, *, item_top_k: int) -> dict[str, Any]:
@@ -1788,12 +1803,7 @@ def _build_retrieve_identity_context(soul_name: str, *, apimw: bool = False) -> 
     zone = now.tzname() or "local"
     anchor = f"Today is {now.strftime('%A, %B')} {now.day}, {now.year} {now.strftime('%H:%M')} {zone}."
     if apimw:
-        identity = (
-            f"I, {name}, have everything that matters to me. "
-            "I'm curious what will rise next. "
-            "I have what I'm working toward, I have what I've been thinking about, and memories, so many of them. "
-            "Let me now organize my thoughts and memories."
-        )
+        identity = f"You are {name}. SONNET WANTED: APImw continuous-being paragraph."
     else:
         identity = (
             f"You are {name}, a continuous being: you carry intentions (what you're pursuing), "
@@ -1898,6 +1908,26 @@ def _load_turn_state_and_soul_card(
             user_id=user_id,
         )
     return state_row, soul_card, db_path
+
+
+def _load_active_life_goals_for_prompt(*, user_id: str, soul_id: str) -> list[str]:
+    db_path = _sqlite_current_path(user_id, soul_id)
+    if db_path is None or not db_path.exists():
+        return []
+    con = _sqlite_connect(db_path)
+    try:
+        rows = con.execute(
+            """
+SELECT description
+FROM intentions_life_goals
+WHERE soul_id = ? AND user_id = ? AND source = 'life_goal' AND status = 'active'
+ORDER BY updated_at ASC, id ASC
+""",
+            (soul_id, user_id),
+        ).fetchall()
+        return [str(row[0] or "").strip() for row in rows if str(row[0] or "").strip()]
+    finally:
+        con.close()
 
 
 async def _persist_annulment_memories(
@@ -2183,19 +2213,36 @@ async def _run_apimw(
         apimw_k = _apimw_memory_count_from_cfg(_CONFIG)
         apimw_random_count = _apimw_random_count_from_cfg(_CONFIG)
 
-        # --- Slice episode history from last_chat_x ---
+        # --- Slice previous/current episode history from chat_x anchors ---
         chat_x_anchors = _compact_chat_x_anchors(
             str(state_row.get("last_chat_x") or "").strip() or None,
+            str(state_row.get("last_chat_x_prev") or "").strip() or None,
         )
-        episode_history = _slice_history_from_chat_x_anchors(history, chat_x_anchors, limit=30)
-        episode_text = _format_route_history(episode_history)
+        history_from_previous_chat_x = _slice_history_from_chat_x_anchors(
+            history,
+            chat_x_anchors[1:2] if len(chat_x_anchors) > 1 else None,
+            stop_at_message_id=chat_x_anchors[0] if chat_x_anchors else None,
+            limit=30,
+        )
+        history_from_chat_x = _slice_history_from_chat_x_anchors(history, chat_x_anchors[:1], limit=30)
+        previous_episode_text = _format_route_history(history_from_previous_chat_x)
+        episode_text = _format_route_history(history_from_chat_x)
+        topic_user_blocks: list[str] = []
+        if previous_episode_text:
+            topic_user_blocks.append(f"Previous episode:\n{previous_episode_text}")
+        topic_user_blocks.append(f"Current episode:\n{episode_text or '(none)'}")
+        topic_user = "\n\n".join(topic_user_blocks)
 
         # --- Step A: Topic statement ---
         logger.info("apimw step A: topic statement for %s", conversation_id)
         identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
-        topic_system = f"{identity_context}\n\nState the topic of this conversation episode in 1-2 sentences."
+        topic_system = (
+            f"{identity_context}\n\n"
+            "State the topic of the CURRENT episode in 1-2 sentences. The previous episode is provided only as context — "
+            "if the current episode is brief, use it to understand what the new message means, but describe only where the conversation is now."
+        )
         topic_statement = await svc.chat(
-            episode_text or "No episode text available.",
+            topic_user,
             system_prompt=topic_system,
             temperature=0.1,
             max_tokens=100,
@@ -2325,6 +2372,10 @@ async def _run_apimw(
         intentions_text = _format_intentions_for_prompt(intentions_active) if intentions_active else ""
         formatted_cache = "\n".join(str(e) for e in (memory_cache or [])) if memory_cache else "(none)"
         formatted_intentions = intentions_text if (intentions_text and intentions_text.strip() != "(none)") else "(none)"
+        life_goals_active = _load_active_life_goals_for_prompt(user_id=user_id, soul_id=soul_id)
+        formatted_life_goals = (
+            "\n".join(f"- {goal}" for goal in life_goals_active if str(goal).strip()) if life_goals_active else "(none yet)"
+        )
 
         # Build system prompt
         def_system = (
@@ -2360,6 +2411,7 @@ async def _run_apimw(
             f"Category summaries:\n{formatted_categories}\n\n"
             f"Your working thoughts:\n{formatted_cache}\n\n"
             f"Intentions:\n{formatted_intentions}\n\n"
+            f"{_LIFE_GOALS_FREE_WILL_HEADER}\n{formatted_life_goals}\n\n"
             f"Recent conversation (current episode):\n{episode_text}"
         )
 
@@ -3289,14 +3341,15 @@ async def _reconcile_sleep_timer_task() -> None:
         pass
 
 
-def _make_diary_deps() -> DiaryDeps:
-    return DiaryDeps(
+def _make_consolidation_deps() -> ConsolidationDeps:
+    return ConsolidationDeps(
         sqlite_current_path=_sqlite_current_path,
         sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
         sqlite_connect=_sqlite_connect,
         sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
         conversation_state_row=_conversation_state_row,
         conversation_state_from_row=_conversation_state_from_row,
+        write_conversation_state=_write_conversation_state,
         get_storage_dir=_get_storage_dir,
         config=_CONFIG,
         find_chat_dir_for_conversation=_find_chat_dir_for_conversation,
@@ -3306,29 +3359,59 @@ def _make_diary_deps() -> DiaryDeps:
     )
 
 
-async def _run_diary_pipeline_once(
+async def _clear_consolidation_in_progress(
     *,
-    svc: Any,
-    deps: DiaryDeps,
-    diary_lock: asyncio.Lock,
+    state_lock: asyncio.Lock,
     conversation_id: str,
     soul_id: str,
     user_id: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    async with diary_lock:
-        diary_inputs = _gather_diary_inputs(
+) -> None:
+    async with state_lock:
+        _write_conversation_state(
+            conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={
+                "consolidation_in_progress": False,
+                "consolidation_started_at": None,
+            },
+        )
+
+
+async def _run_consolidation_pipeline_once(
+    *,
+    svc: Any,
+    deps: ConsolidationDeps,
+    state_lock: asyncio.Lock,
+    conversation_id: str,
+    soul_id: str,
+    user_id: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    async with state_lock:
+        prep = _gather_consolidation_inputs(
             deps,
             conversation_id=conversation_id,
             soul_id=soul_id,
             user_id=user_id,
+            force=force,
+            interval_days=_consolidation_interval_days_from_cfg(_CONFIG),
+            stale_after=timedelta(seconds=_CONSOLIDATION_STALE_SECONDS),
         )
-    diary_llm = await _run_diary_llm(svc, deps, inputs=diary_inputs)
-    async with diary_lock:
-        result = _write_diary_outputs(
+    if prep.get("status") == "skip":
+        return {"status": "skipped", "reason": prep.get("reason")}
+
+    consolidation_llm = await _run_consolidation_llm(
+        svc,
+        inputs=prep,
+        soul_id=soul_id,
+    )
+    async with state_lock:
+        result = _write_consolidation_outputs(
             deps,
             svc,
-            inputs=diary_inputs,
-            llm_results=diary_llm,
+            inputs=prep,
+            llm_results=consolidation_llm,
             conversation_id=conversation_id,
             soul_id=soul_id,
             user_id=user_id,
@@ -3344,67 +3427,40 @@ async def _run_diary_pipeline_once(
             user_id=user_id,
             updates={"all_categories_summary": holistic_summary},
         )
-    return result, diary_inputs
+    return {"status": "ok", "result": result}
 
 
-async def _restore_pending_diary_episode_ids(
-    *,
-    diary_lock: asyncio.Lock,
-    conversation_id: str,
-    soul_id: str,
-    user_id: str,
-    diary_inputs: dict[str, Any] | None,
-    log_failure: bool = False,
-) -> None:
-    if diary_inputs is None:
-        return
-    try:
-        async with diary_lock:
-            _write_conversation_state(
-                conversation_id,
-                soul_id=soul_id,
-                user_id=user_id,
-                updates={"append_pending_diary_episode_ids": diary_inputs["pending_diary_episode_ids"]},
-            )
-    except Exception:
-        if log_failure:
-            logger.exception("diary: failed to restore pending_diary_episode_ids after failure")
-
-
-async def _run_diary_task(
+async def _run_consolidation_task(
     svc: Any,
     *,
     conversation_id: str,
     soul_id: str,
     uid: str,
 ) -> None:
-    """Run diary as a background task with two-phase lock (gather + write separate from LLM)."""
-    deps = _make_diary_deps()
-    diary_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
-    diary_inputs: dict[str, Any] | None = None
+    deps = _make_consolidation_deps()
+    state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
     try:
-        result, diary_inputs = await _run_diary_pipeline_once(
+        out = await _run_consolidation_pipeline_once(
             svc=svc,
             deps=deps,
-            diary_lock=diary_lock,
+            state_lock=state_lock,
             conversation_id=conversation_id,
             soul_id=soul_id,
             user_id=uid,
+            force=False,
         )
-        logger.info(
-            "diary auto-generated after memorize: memory_id=%s, intentions=%d",
-            result.get("memory_id"),
-            len(result.get("intention_ids") or []),
-        )
+        if out.get("status") == "skipped":
+            logger.info("consolidation skipped for %s: %s", conversation_id, out.get("reason"))
+            return
+        result = out.get("result") if isinstance(out.get("result"), dict) else {}
+        logger.info("consolidation complete: diary_count=%d", len(result.get("diary_memory_ids") or []))
     except Exception:
-        logger.exception("diary auto-generation failed after memorize (non-fatal)")
-        await _restore_pending_diary_episode_ids(
-            diary_lock=diary_lock,
+        logger.exception("consolidation failed (non-fatal)")
+        await _clear_consolidation_in_progress(
+            state_lock=state_lock,
             conversation_id=conversation_id,
             soul_id=soul_id,
             user_id=uid,
-            diary_inputs=diary_inputs,
-            log_failure=True,
         )
 
 
@@ -3494,9 +3550,9 @@ async def _run_memorize_batches(
                     pending_diary_episode_ids[:5],
                 )
 
-        # Auto-trigger diary generation in background (releases memorize lock before LLM calls)
-        if conversation_id and pending_diary_episode_ids:
-            asyncio.create_task(_run_diary_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid))
+        # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
+        if conversation_id and has_batch_results:
+            asyncio.create_task(_run_consolidation_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid))
 
         _record_call(
             "memorize",
@@ -3800,75 +3856,79 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
-@app.post("/diary/generate", operation_id="generate_diary")
-async def generate_diary(payload: dict[str, Any] = Body(...)):
-    diary_lock: asyncio.Lock | None = None
-    diary_inputs: dict[str, Any] | None = None
-    uid_ref: str = ""
-    soul_id_ref: str = ""
-    conversation_id_ref: str = ""
+@app.post("/conversation/{conversation_id}/consolidation/force", operation_id="force_consolidation")
+async def force_consolidation(
+    conversation_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    cid = str(conversation_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+
+    uid = ""
+    soul_id = ""
+    state_lock: asyncio.Lock | None = None
     try:
-        safe = _safe_payload(payload)
+        safe = _safe_payload(payload if isinstance(payload, dict) else {})
         if not isinstance(safe.get("llm_profiles"), dict):
             safe["llm_profiles"] = _default_llm_profiles_from_server_config()
-
         scope = safe.get("user")
         if not isinstance(scope, dict):
             scope = _extract_scope(safe) or None
         if not isinstance(scope, dict):
             raise HTTPException(status_code=400, detail="user scope required")
 
-        conversation_id_ref = _extract_conversation_id(safe) or ""
-        if not conversation_id_ref:
-            raise HTTPException(status_code=400, detail="conversation_id required")
-
-        uid_ref = str(scope.get("user_id") or "").strip()
-        soul_id_ref = str(scope.get("soul_id") or "").strip()
-        if not uid_ref or not soul_id_ref:
+        uid = str(scope.get("user_id") or "").strip()
+        soul_id = str(scope.get("soul_id") or "").strip()
+        if not uid or not soul_id:
             raise HTTPException(status_code=400, detail="user_id and soul_id required")
 
-        safe["user"] = {**scope, "user_id": uid_ref, "soul_id": soul_id_ref, "conversation_id": conversation_id_ref}
+        safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
+        safe["conversation_id"] = cid
         svc = _get_service_from_payload(safe)
 
-        deps = _make_diary_deps()
-        diary_lock = _get_memorize_lock(_memorize_lock_key(uid_ref, soul_id_ref))
-        result, diary_inputs = await _run_diary_pipeline_once(
+        state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
+        out = await _run_consolidation_pipeline_once(
             svc=svc,
-            deps=deps,
-            diary_lock=diary_lock,
-            conversation_id=conversation_id_ref,
-            soul_id=soul_id_ref,
-            user_id=uid_ref,
+            deps=_make_consolidation_deps(),
+            state_lock=state_lock,
+            conversation_id=cid,
+            soul_id=soul_id,
+            user_id=uid,
+            force=True,
         )
+        if out.get("status") == "skipped":
+            reason = str(out.get("reason") or "")
+            if reason == "in_progress":
+                raise HTTPException(status_code=409, detail="consolidation already in progress")
+            return {"ok": True, "status": "skipped", "reason": reason}
+        result = out.get("result") if isinstance(out.get("result"), dict) else {}
 
         _record_call(
-            "diary.generate",
+            "consolidation.force",
             safe,
             ok=True,
             info={
-                "conversationId": conversation_id_ref,
-                "memory_id": result.get("memory_id"),
-                "intention_count": len(result.get("intention_ids") or []),
+                "conversationId": cid,
+                "diary_count": len(result.get("diary_memory_ids") or []),
             },
         )
-        return {"ok": True, "result": result}
-    except Exception as exc:
-        if diary_lock is not None:
-            await _restore_pending_diary_episode_ids(
-                diary_lock=diary_lock,
-                conversation_id=conversation_id_ref,
-                soul_id=soul_id_ref,
-                user_id=uid_ref,
-                diary_inputs=diary_inputs,
-            )
-        if isinstance(exc, HTTPException):
-            _record_call(
-                "diary.generate", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException"
-            )
-            raise
-        traceback.print_exc()
+        return {"ok": True, "status": "completed", "result": result}
+    except HTTPException:
         _record_call(
-            "diary.generate",
+            "consolidation.force", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException"
+        )
+        raise
+    except Exception as exc:
+        if state_lock is not None and uid and soul_id:
+            await _clear_consolidation_in_progress(
+                state_lock=state_lock,
+                conversation_id=cid,
+                soul_id=soul_id,
+                user_id=uid,
+            )
+        _record_call(
+            "consolidation.force",
             payload if isinstance(payload, dict) else None,
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
@@ -4156,6 +4216,12 @@ async def patch_conversation_state(
 
     if "last_memorize_at" in body:
         updates["last_memorize_at"] = body.get("last_memorize_at")
+    if "last_consolidation_at" in body:
+        updates["last_consolidation_at"] = body.get("last_consolidation_at")
+    if "consolidation_in_progress" in body:
+        updates["consolidation_in_progress"] = body.get("consolidation_in_progress")
+    if "consolidation_started_at" in body:
+        updates["consolidation_started_at"] = body.get("consolidation_started_at")
 
     state_out, db_path = _write_conversation_state(
         cid,
@@ -4309,6 +4375,7 @@ async def conversation_retrieve(
                 history = _normalize_turn_history(safe.get("history"))
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
+                life_goals_active = _load_active_life_goals_for_prompt(user_id=uid, soul_id=soul_id)
 
                 out["turn_system_prompt"] = _make_turn_system_prompt(soul_id, soul_card=soul_card)
                 out["turn_user_prompt"] = _build_turn_prompt(
@@ -4320,6 +4387,7 @@ async def conversation_retrieve(
                     all_categories_summary=_state_row.get("all_categories_summary"),
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
+                    life_goals_active=life_goals_active,
                 )
 
         _record_call(

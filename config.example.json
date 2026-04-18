@@ -71,6 +71,7 @@
     "apimw_memory_count": 25,
     "apimw_random_count": 5
   },
+  "consolidation_interval_days": 7,
   "debug": {
     "log_prompts": false
   }

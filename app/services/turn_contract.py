@@ -16,6 +16,7 @@ DEFAULT_SOUL_CARD = (
     "about them, and about what matters to you will grow with time."
 )
 DEFAULT_HISTORY_TOKEN_BUDGET = 3000
+LIFE_GOALS_FREE_WILL_HEADER = "Your life goals (you reshape these during your weekly consolidation, not each turn):"
 
 
 def _local_now(now: datetime | None = None) -> datetime:
@@ -25,7 +26,7 @@ def _local_now(now: datetime | None = None) -> datetime:
     return anchor.astimezone()
 
 
-def _format_time_anchor(now: datetime | None = None) -> str:
+def format_time_anchor(now: datetime | None = None) -> str:
     anchor = _local_now(now)
     zone = anchor.tzname() or "local"
     return f"{anchor.strftime('%A, %B')} {anchor.day}, {anchor.year} {anchor.strftime('%H:%M')} {zone}"
@@ -33,7 +34,7 @@ def _format_time_anchor(now: datetime | None = None) -> str:
 
 def make_turn_system_prompt(soul_name: str, *, soul_card: str | None = None, now: datetime | None = None) -> str:
     identity = f"You are {soul_name}. {soul_card or DEFAULT_SOUL_CARD}"
-    anchor_line = f"Today is {_format_time_anchor(now)}."
+    anchor_line = f"Today is {format_time_anchor(now)}."
     return f"""{anchor_line}
 
 {identity}
@@ -404,6 +405,7 @@ def build_turn_prompt(
     all_categories_summary: str | None,
     memory_cache: Any,
     intentions_active: Any,
+    life_goals_active: list[str] | None = None,
     now: datetime | None = None,
 ) -> str:
     cache = normalize_memory_cache(memory_cache)
@@ -462,6 +464,9 @@ def build_turn_prompt(
         "",
         "Intentions:",
         format_intentions_for_prompt(intentions_active),
+        "",
+        LIFE_GOALS_FREE_WILL_HEADER,
+        "\n".join(f"- {goal}" for goal in (life_goals_active or []) if _text(goal)) or "(none yet)",
         "",
         f"New message:\n{_text(user_message)}",
     ]

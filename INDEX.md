@@ -11,7 +11,8 @@ mcp-memu-server/
 ├── app/db.py                # SQLite helpers, schema ensures, JSON marshalling
 ├── app/database.py          # SQLAlchemy async engine + session factory
 ├── app/models/base.py       # Declarative ORM base
-├── app/services/diary.py    # Diary generation, self-model update, intention creation
+├── app/services/consolidation.py # Weekly consolidation pipeline
+├── app/services/diary.py    # Diary helper primitives used by consolidation
 ├── app/services/state.py    # Conversation state read/write/search
 ├── app/api/v1/              # Empty — routes not yet split from main.py
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
@@ -36,8 +37,8 @@ mcp-memu-server/
 | `/conversation/{id}/turn` | POST | Soul turn loop: requires extension-provided `prompt_override_payload` (prepared by `/conversation/{id}/retrieve`), runs LLM with turn contract, persists intentions + cache, and never re-runs retrieve inside turn; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self`); APImw fires background `_run_apimw()` pipeline when cadence is met (default: 5 soul messages since `last_chat_x`), skips when a prior APImw job is still in flight, runs step A topic statement + step B retrieve + step C second-pass rewrite retrieve when query changes + combined D+E+F selection/edges/intention+cache update, then writes `prior_context`, `last_retrieval_ids`, `memory_cache`, `intentions_active` and edge invalidations/additions; queues forced memorize when unmemorized chat tail exceeds `memorize.turn_history_token_budget` |
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn maintenance using `undo_snapshot` (single-step depth) |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
-| `/diary/generate` | POST | Generate diary entry from recent memories |
-| `/intentions` | GET | List intentions from `intentions_life_goals` table (long-term, diary-managed) |
+| `/conversation/{id}/consolidation/force` | POST | Force consolidation now (bypasses interval gate, still lock-safe) |
+| `/intentions` | GET | List intentions from `intentions_life_goals` table (long-term, consolidation-managed) |
 | `/intentions/{id}` | PATCH | Update intention status/priority |
 | `/categories` | GET | List all categories |
 | `/categories/search` | POST | Search categories |
@@ -51,7 +52,8 @@ mcp-memu-server/
 | Module | Purpose |
 |--------|---------|
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
-| `app/services/diary.py` | Three-phase diary pipeline: `gather_diary_inputs()` builds anchor excerpt from queued episodes (with episode/time headers) and context (`memory_cache`, `intentions_active`, life goals); `run_diary_llm()` performs one forced-`method="llm"` `retrieve()` call per episode anchor to gather related background memories (IDs passed to self-model prompt), then writes diary/self-model prompts; `write_diary_outputs()` (lock-held) persists diary, self-model, intentions, life-goal updates, supersession writes for any `<supersedes>` IDs in soul observations (scope-validated; FTS-safe via `memory_item_repo.update_item()`; dual-write: `superseded_by` column kept as fast retrieval filter cache + `evolved_into` triple written to `memu_triples`), and `shaped_by` triples for `<shaped_by>` IDs (written to `memu_triples`; sole record — `extra.shaped_by_ids` removed in Phase 5). Holistic `all_categories_summary` generation now lives in `app/main.py` via `_compute_holistic_categories_summary()` and is refreshed after memorize batches and diary writes. |
+| `app/services/consolidation.py` | Consolidation pipeline: gather queue/context, run one consolidation LLM call, write narrative_self + life-goal edits + companion memory + per-episode diary rows, and clear queue/flags. |
+| `app/services/diary.py` | Diary helpers for consolidation: episode parsing/excerpts, diary XML parsing, and diary/companion memory write helpers. |
 | `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, `pending_diary_episode_ids` queue management |
 | `app/services/turn_contract.py` | `make_turn_system_prompt()`, `build_turn_prompt()`, `parse_turn_contract()` — soul turn prompt construction and JSON contract parsing; temporal awareness: system prompt includes `Today is [date].` anchor; `Retrieved memory context` section includes all-categories orientation first, then retrieved category/item hits; memory lines include relative-time labels from `happened_at` and `reinforced Nx` suffix from `reinforcement_count` |
 | `app/services/intention_state.py` | `normalize_intentions_stack()`, `format_intentions_for_prompt()`, `upsert_intentions_stack_entries()` — intentions normalization and prompt formatting |
@@ -76,10 +78,10 @@ from memu.prompts.memory_type import ...  # type prompts
 | Modify memorize flow | `app/main.py` → `_run_memorize()` (calls `svc.memorize()`) |
 | Modify retrieval flow | `app/main.py` → `_run_retrieve()` (calls `svc.retrieve()`) |
 | Modify soul turn loop | `app/main.py` → `conversation_turn()` + `app/services/turn_contract.py` |
-| Modify diary/self-model | `app/services/diary.py` |
+| Modify consolidation / diary writes | `app/services/consolidation.py`, `app/services/diary.py` |
 | Modify conversation state | `app/services/state.py` |
 | Modify turn intentions (working stack) | `app/services/intention_state.py` — reads/writes `intentions_active` JSON in conversation state |
-| Modify life goals (long-term) | `app/services/diary.py` — `intentions_life_goals` DB table, managed exclusively by diary |
+| Modify life goals (long-term) | `app/services/consolidation.py` — `intentions_life_goals` DB table updates during consolidation |
 | Modify DB schema/helpers | `app/db.py` |
 | Change config shape | `config.json` + `app/main.py` → `_load_config()` |
 | Add route group | Create `app/api/v1/{group}.py` with APIRouter, include in main.py |
@@ -94,7 +96,8 @@ memu:       path (to memu/src)
 categories: defaults[], allow_dynamic, thresholds
 retrieve:   method (rag), apimw_enabled (bool; toggles APImw pipeline), apimw_cadence (int, default 5; min soul messages since chat_x before APImw fires), apimw_memory_count (int, default 25; APImw item.top_k), apimw_random_count (int, default 5; APImw random sample size)
 memorize:   min_chunk_tokens, turn_history_token_budget, auto_memorize_on_sleep, sleep_timer_interval_seconds, supersede_similarity_threshold (default 0.75), enable_item_reinforcement (default true — enables reinforcement count roll-up on semantic dedupe merge)
-debug:      log_prompts (bool) — dumps exact LLM prompt + response for memorize and diary steps to console
+consolidation_interval_days: cadence gate for consolidation after successful memorize runs (default 7)
+debug:      log_prompts (bool) — dumps exact LLM prompt + response for memorize/consolidation steps to console
 ```
 
 ## Config-Only Runtime
