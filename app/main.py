@@ -3520,11 +3520,14 @@ async def _run_consolidation_pipeline_once(
             soul_id=soul_id,
             user_id=user_id,
         )
-        holistic_summary = await _compute_holistic_categories_summary(
-            svc=svc,
-            soul_id=soul_id,
-            user_id=user_id,
-        )
+    # LLM call outside the lock — can take several seconds.
+    holistic_summary = await _compute_holistic_categories_summary(
+        svc=svc,
+        soul_id=soul_id,
+        user_id=user_id,
+    )
+    async with state_lock:
+        # Re-read fresh state so we only stomp all_categories_summary (strictly newer).
         _write_conversation_state(
             conversation_id,
             soul_id=soul_id,
