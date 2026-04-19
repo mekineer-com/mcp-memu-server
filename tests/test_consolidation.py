@@ -139,6 +139,84 @@ def test_parse_consolidation_xml_edges_and_write_helpers() -> None:
     assert getattr(repo.added[1], "confidence") == 0.8
 
 
+def test_parse_consolidation_xml_shaped_by_hints_in_diary() -> None:
+    xml = """
+<consolidation>
+  <narrative_self>n</narrative_self>
+  <life_goals></life_goals>
+  <companion_memory>c</companion_memory>
+  <diaries>
+    <diary>
+      <episode_id>ep:1-2</episode_id>
+      <prose>p</prose>
+      <affect><emotion>e</emotion></affect>
+      <unresolved></unresolved>
+      <shaped_by_hints>
+        <memory_id>mem_aaa</memory_id>
+        <memory_id>mem_bbb</memory_id>
+        <memory_id>mem_aaa</memory_id>
+      </shaped_by_hints>
+    </diary>
+  </diaries>
+</consolidation>
+"""
+    parsed = _parse_consolidation_xml(xml, expected_episode_ids={"ep:1-2"})
+    diary = parsed["diaries"][0]
+    # deduped
+    assert diary["shaped_by_hints"] == ["mem_aaa", "mem_bbb"]
+    # companion hints absent → empty list
+    assert parsed["companion_shaped_by_hints"] == []
+
+
+def test_parse_consolidation_xml_companion_shaped_by_hints() -> None:
+    xml = """
+<consolidation>
+  <narrative_self>n</narrative_self>
+  <life_goals></life_goals>
+  <companion_memory>c</companion_memory>
+  <diaries>
+    <diary>
+      <episode_id>ep:3-4</episode_id>
+      <prose>p</prose>
+      <affect><emotion>e</emotion></affect>
+      <unresolved></unresolved>
+    </diary>
+  </diaries>
+  <companion_shaped_by_hints>
+    <memory_id>mem_x</memory_id>
+    <memory_id>  </memory_id>
+    <memory_id>mem_x</memory_id>
+  </companion_shaped_by_hints>
+</consolidation>
+"""
+    parsed = _parse_consolidation_xml(xml, expected_episode_ids={"ep:3-4"})
+    # empty / whitespace IDs dropped, dupes removed
+    assert parsed["companion_shaped_by_hints"] == ["mem_x"]
+    # diary entry with no hints block → empty list
+    assert parsed["diaries"][0]["shaped_by_hints"] == []
+
+
+def test_parse_consolidation_xml_missing_hints_blocks_give_empty_lists() -> None:
+    xml = """
+<consolidation>
+  <narrative_self>n</narrative_self>
+  <life_goals></life_goals>
+  <companion_memory>c</companion_memory>
+  <diaries>
+    <diary>
+      <episode_id>ep:5-6</episode_id>
+      <prose>p</prose>
+      <affect><emotion>e</emotion></affect>
+      <unresolved></unresolved>
+    </diary>
+  </diaries>
+</consolidation>
+"""
+    parsed = _parse_consolidation_xml(xml, expected_episode_ids={"ep:5-6"})
+    assert parsed["diaries"][0]["shaped_by_hints"] == []
+    assert parsed["companion_shaped_by_hints"] == []
+
+
 def test_format_episode_block_for_prompt_shows_memory_ids() -> None:
     out = _format_episode_block_for_prompt(
         [

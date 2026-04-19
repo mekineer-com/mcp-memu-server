@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import uuid
 from collections.abc import Callable
@@ -8,6 +9,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from xml.etree.ElementTree import Element
+
+log = logging.getLogger(__name__)
 
 from fastapi import HTTPException
 from memu.prompts.consolidation import consolidation as consolidation_prompt
@@ -97,12 +100,22 @@ def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dic
         prose = str(payload.get("prose") or "").strip()
         if not prose:
             raise ValueError(f"consolidation diary prose is empty for episode_id={episode_id}")
+        hints_node = diary_node.find("shaped_by_hints")
+        shaped_by_hints: list[str] = []
+        if hints_node is not None:
+            seen_hint: set[str] = set()
+            for mid in hints_node.findall("memory_id"):
+                val = str(mid.text or "").strip()
+                if val and val not in seen_hint:
+                    shaped_by_hints.append(val)
+                    seen_hint.add(val)
         diaries.append(
             {
                 "episode_id": episode_id,
                 "prose": prose,
                 "affective_tags": payload.get("affective_tags"),
                 "unresolved": payload.get("unresolved"),
+                "shaped_by_hints": shaped_by_hints,
             }
         )
         seen_episode_ids.add(episode_id)
@@ -152,11 +165,22 @@ def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dic
                 }
             )
 
+    comp_hints_node = root.find("companion_shaped_by_hints")
+    companion_shaped_by_hints: list[str] = []
+    if comp_hints_node is not None:
+        seen_hint: set[str] = set()
+        for mid in comp_hints_node.findall("memory_id"):
+            val = str(mid.text or "").strip()
+            if val and val not in seen_hint:
+                companion_shaped_by_hints.append(val)
+                seen_hint.add(val)
+
     return {
         "narrative_self": xml_text(root, "narrative_self"),
         "life_goal_add": life_goal_add,
         "life_goal_remove": life_goal_remove,
         "companion_memory": xml_text(root, "companion_memory"),
+        "companion_shaped_by_hints": companion_shaped_by_hints,
         "diaries": diaries,
         "edges": edges,
         "edge_invalidations": edge_invalidations,
@@ -525,6 +549,7 @@ async def run_consolidation_llm(
         "life_goal_add": [str(x).strip() for x in (parsed.get("life_goal_add") or []) if str(x).strip()],
         "life_goal_remove": [str(x).strip() for x in (parsed.get("life_goal_remove") or []) if str(x).strip()],
         "companion_memory": str(parsed.get("companion_memory") or "").strip() or None,
+        "companion_shaped_by_hints": parsed.get("companion_shaped_by_hints") or [],
         "companion_embedding": companion_embedding,
         "diaries": diary_rows,
         "edges": parsed.get("edges") or [],
@@ -602,6 +627,56 @@ def _write_consolidation_memories(
         )
 
     return diary_ids, companion_memory_id
+
+
+def _write_shaped_by_edges(
+    svc: MemoryService,
+    *,
+    diary_ids: list[str],
+    diary_rows: list[dict[str, Any]],
+    companion_memory_id: str | None,
+    companion_shaped_by_hints: list[str],
+    scope: dict[str, Any],
+) -> int:
+    """Write shaped_by edges from new diary/companion memory IDs to hint memory IDs.
+
+    Returns total edges written.
+    """
+    triple_repo = svc.database.triple_repo
+    memory_repo = svc.database.memory_item_repo
+    wrote = 0
+
+    # episode order: diary_ids and diary_rows are built in the same loop order
+    for new_id, row in zip(diary_ids, diary_rows):
+        hints = list(row.get("shaped_by_hints") or [])
+        for hint_id in hints:
+            if hint_id == new_id:
+                continue
+            if memory_repo.get_item(hint_id) is None:
+                log.debug("shaped_by_hints: skipping unknown hint_id=%s for diary_id=%s", hint_id, new_id)
+                continue
+            write_memory_edges(
+                triple_repo,
+                [{"subject_id": new_id, "predicate": "shaped_by", "object_id": hint_id, "confidence": 0.8}],
+                scope=scope,
+            )
+            wrote += 1
+
+    if companion_memory_id:
+        for hint_id in companion_shaped_by_hints:
+            if hint_id == companion_memory_id:
+                continue
+            if memory_repo.get_item(hint_id) is None:
+                log.debug("shaped_by_hints: skipping unknown hint_id=%s for companion_memory_id=%s", hint_id, companion_memory_id)
+                continue
+            write_memory_edges(
+                triple_repo,
+                [{"subject_id": companion_memory_id, "predicate": "shaped_by", "object_id": hint_id, "confidence": 0.8}],
+                scope=scope,
+            )
+            wrote += 1
+
+    return wrote
 
 
 def _write_consolidation_sqlite_state(
@@ -773,6 +848,14 @@ def write_consolidation_outputs(
     scope = {"user_id": user_id, "soul_id": soul_id}
     wrote = write_memory_edges(svc.database.triple_repo, llm_results.get("edges"), scope=scope)
     invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results.get("edge_invalidations"), scope=scope)
+    shaped_by_wrote = _write_shaped_by_edges(
+        svc,
+        diary_ids=diary_ids,
+        diary_rows=list(llm_results.get("diaries") or []),
+        companion_memory_id=companion_memory_id,
+        companion_shaped_by_hints=list(llm_results.get("companion_shaped_by_hints") or []),
+        scope=scope,
+    )
 
     return {
         "conversation_id": conversation_id,
@@ -780,7 +863,7 @@ def write_consolidation_outputs(
         "pending_diary_episode_ids_cleared": True,
         "diary_memory_ids": diary_ids,
         "companion_memory_id": companion_memory_id,
-        "edges_written": wrote,
+        "edges_written": wrote + shaped_by_wrote,
         "edges_invalidated": invalidated,
         "state": state_after,
     }
