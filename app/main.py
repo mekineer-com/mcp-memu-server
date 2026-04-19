@@ -4075,6 +4075,8 @@ ON CONFLICT(id) DO UPDATE SET
             con.close()
         return {"narrative_self": new_narrative}
 
+    if current_narrative:
+        return {"narrative_self": current_narrative}
     return {}
 
 
