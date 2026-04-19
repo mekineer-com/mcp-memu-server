@@ -150,7 +150,6 @@ def _normalize_stack_item(
     item["updated_at"] = updated_at or now_iso
 
     if item.get("ephemeral") is True:
-        # Ephemerals survive exactly one subsequent turn unless promoted.
         item["expires_at_turn"] = _int(raw.get("expires_at_turn"), current_turn)
 
     return item
@@ -240,8 +239,6 @@ def apply_intention_turn_maintenance(
 
     kept: list[dict[str, Any]] = []
     for item in stack.get("items") or []:
-        if not isinstance(item, dict):
-            continue
         if _text(item.get("id")) == RELAX_INTENTION_ID or _text(item.get("kind")) == "relax":
             continue
 
@@ -282,7 +279,7 @@ def upsert_intentions_stack_entries(
     by_id: dict[str, dict[str, Any]] = {
         _text(item.get("id")): dict(item)
         for item in stack.get("items") or []
-        if isinstance(item, dict) and _text(item.get("id")) and _text(item.get("id")) != RELAX_INTENTION_ID
+        if _text(item.get("id")) and _text(item.get("id")) != RELAX_INTENTION_ID
     }
 
     for entry in entries:
@@ -348,7 +345,7 @@ def remove_intentions(stack_value: Any, intention_ids: list[str]) -> dict[str, A
     kept = [
         item
         for item in (stack.get("items") or [])
-        if isinstance(item, dict) and _text(item.get("id")) not in remove_ids
+        if _text(item.get("id")) not in remove_ids
     ]
     return normalize_intentions_stack(
         {
@@ -374,7 +371,7 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
     by_id: dict[str, dict[str, Any]] = {
         _text(item.get("id")): dict(item)
         for item in stack.get("items") or []
-        if isinstance(item, dict) and _text(item.get("id")) and _text(item.get("id")) != RELAX_INTENTION_ID
+        if _text(item.get("id")) and _text(item.get("id")) != RELAX_INTENTION_ID
     }
 
     if action_type == "boost":
@@ -464,8 +461,6 @@ def format_intentions_for_prompt(stack_value: Any, *, max_items: int = 12) -> st
     stack = normalize_intentions_stack(stack_value)
     lines: list[str] = []
     for item in (stack.get("items") or [])[: max(1, int(max_items))]:
-        if not isinstance(item, dict):
-            continue
         item_id = _text(item.get("id"))
         text = _text(item.get("text"))
         ephemeral = bool(item.get("ephemeral") is True)

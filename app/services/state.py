@@ -41,14 +41,14 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "self_model_id": row["self_model_id"],
         "last_retrieval_ids": json_from_db(row["last_retrieval_ids"]),
         "last_memorize_at": row["last_memorize_at"],
-        "last_consolidation_at": row["last_consolidation_at"] if "last_consolidation_at" in row.keys() else None,
-        "consolidation_in_progress": bool(row["consolidation_in_progress"]) if "consolidation_in_progress" in row.keys() else False,
-        "consolidation_started_at": row["consolidation_started_at"] if "consolidation_started_at" in row.keys() else None,
+        "last_consolidation_at": row["last_consolidation_at"],
+        "consolidation_in_progress": bool(row["consolidation_in_progress"]),
+        "consolidation_started_at": row["consolidation_started_at"],
         "updated_at": row["updated_at"],
         "undo_snapshot": json_from_db(row["undo_snapshot"]),
-        "all_categories_summary": row["all_categories_summary"] if "all_categories_summary" in row.keys() else None,
-        "last_chat_x": row["last_chat_x"] if "last_chat_x" in row.keys() else None,
-        "last_chat_x_prev": row["last_chat_x_prev"] if "last_chat_x_prev" in row.keys() else None,
+        "all_categories_summary": row["all_categories_summary"],
+        "last_chat_x": row["last_chat_x"],
+        "last_chat_x_prev": row["last_chat_x_prev"],
     }
 
 
