@@ -481,6 +481,15 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
     if not text:
         raise ValueError("empty LLM response")
 
+    # Strip markdown code fences the LLM sometimes adds despite instruction.
+    if text.startswith("```"):
+        first_nl = text.find("\n")
+        if first_nl != -1:
+            text = text[first_nl + 1 :]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+
     parsed = json.loads(text)
     if not isinstance(parsed, dict):
         raise ValueError("turn response must be a JSON object")
