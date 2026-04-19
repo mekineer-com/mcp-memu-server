@@ -4093,7 +4093,7 @@ async def search_memory_categories(payload: dict[str, Any]):
     """Payload-driven category listing (matches SillyTavern plugin's local mode)."""
     try:
         safe = _safe_payload(payload)
-        svc = _get_service_from_payload(safe)
+        svc = _get_service_from_payload(safe, allow_missing_llm_profiles=True)
 
         scope = safe.get("scope") or safe.get("where")
         if scope is not None and not isinstance(scope, dict):
