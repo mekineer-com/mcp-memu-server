@@ -4073,6 +4073,7 @@ ON CONFLICT(id) DO UPDATE SET
             con.commit()
         finally:
             con.close()
+        return {"narrative_self": new_narrative}
 
     return {}
 
