@@ -145,7 +145,6 @@ _SLEEP_TIMER_MAX_JOBS: int = 1
 _LOG_PROMPTS: bool = False
 _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved", "removed"}
 def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
-    """Rough token estimate: word_count / 0.75.  Good enough for gating."""
     words = sum(len(str(m.get("content") or m.get("mes") or "").split()) for m in messages)
     return int(words / 0.75)
 
@@ -416,7 +415,6 @@ async def _shutdown_when_idle(max_wait_sec: int) -> None:
         _SHUTDOWN_STATE["stopping"] = True
         _SHUTDOWN_STATE["timedOut"] = timed_out
 
-    # Let the shutdown endpoint return before signalling the process.
     await asyncio.sleep(0.05)
     try:
         os.kill(os.getpid(), signal.SIGTERM)
@@ -441,7 +439,6 @@ async def _trace_requests(request: Request, call_next):
             _ACTIVE_WORK_REQUESTS += 1
 
     try:
-        # During drain, reject all new non-control requests.
         if draining and not is_control:
             status = 503
             return JSONResponse(
@@ -509,7 +506,6 @@ def _home_dir() -> Path:
 def _default_config() -> dict[str, Any]:
     home = _home_dir()
 
-    # If you keep memu source in a versioned folder (e.g. ~/apps/memu), default to that if present.
     memu_guess = None
     for cand in (home / "apps" / "memu-1.4.0", home / "apps" / "memu"):
         if cand.exists():
@@ -520,11 +516,9 @@ def _default_config() -> dict[str, Any]:
     resources_dir = home / "apps" / "memu" / "resources"
 
     return {
-        # Optional: where memu source lives. run.py can add this to sys.path.
         "memu": {
             "path": str(memu_guess) if memu_guess else "",
         },
-        # Optional: tell the plugin which python to spawn (e.g. memu's own venv).
         "python": {
             "executable": "",
             "force_venv": False,
@@ -544,7 +538,6 @@ def _default_config() -> dict[str, Any]:
             "resources_dir": str(resources_dir),
             "metadata_store": {
                 "provider": "sqlite",
-                # absolute path DSN form (4 slashes after sqlite:)
                 "dsn": "sqlite:///:memory:",
                 "ddl_mode": "create",
             },
@@ -669,7 +662,6 @@ def _normalize_sqlite_dsn(dsn_or_path: str) -> str:
         return f"sqlite:////{p.as_posix().lstrip('/')}"
 
     p = _resolve_cfg_path(raw)
-    # sqlite absolute path DSN needs 4 slashes after the scheme.
     return f"sqlite:////{p.as_posix().lstrip('/')}"
 
 
@@ -694,12 +686,10 @@ def _ensure_storage_paths(cfg: dict[str, Any]) -> None:
     try:
         storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
 
-        # resources_dir
         resources_dir = storage.get("resources_dir")
         if isinstance(resources_dir, str) and resources_dir.strip():
             _resolve_cfg_path(resources_dir).mkdir(parents=True, exist_ok=True)
 
-        # sqlite db file parent + file
         ms = storage.get("metadata_store") if isinstance(storage.get("metadata_store"), dict) else {}
         provider = str(ms.get("provider") or "").lower()
         dsn = str(ms.get("dsn") or "")
@@ -718,16 +708,12 @@ def _ensure_storage_paths(cfg: dict[str, Any]) -> None:
 
         if provider == "sqlite":
             dsn = _normalize_sqlite_dsn(dsn)
-            # Keep normalized DSN visible in /health.
             _STORAGE_STATUS["dsn"] = dsn or None
-            # Also persist normalization back into config in-memory (no disk write).
             ms["dsn"] = dsn
 
             sqlite_dir = _sqlite_dir_from_cfg(cfg, dsn)
             if sqlite_dir is not None:
                 sqlite_dir.mkdir(parents=True, exist_ok=True)
-            # KISS: do not create/open any DB at startup.
-            # Just ensure the directory exists and is writable.
             try:
                 test_path = (sqlite_dir / ".write_test") if sqlite_dir is not None else None
                 if test_path is not None:
@@ -896,11 +882,9 @@ def _sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, A
     sqlite_dir = _sqlite_dir_from_cfg(cfg, fallback_dsn=base_dsn)
     sqlite_dir.mkdir(parents=True, exist_ok=True)
 
-    # No scope provided: keep the base DSN (typically :memory:).
     if not soul_id:
         return base_dsn
 
-    # KISS: soul_id is the character scope key.
     basename = _sanitize_db_filename(soul_id)
     db_path = (sqlite_dir / f"{basename}.db").resolve()
     _sqlite_ensure_nonempty(db_path)
@@ -1157,7 +1141,6 @@ def _get_service_from_payload(
     database_config = payload.get("database_config")
     blob_config = payload.get("blob_config")
 
-    # Local-first UX: plugin sends llm_profiles + step routing, while storage paths live in server config.json.
     if not isinstance(llm_profiles, dict):
         if not allow_missing_llm_profiles:
             raise HTTPException(status_code=400, detail="llm_profiles required")
@@ -1173,8 +1156,6 @@ def _get_service_from_payload(
         blob_config = _blob_config_from_cfg(_CONFIG)
         payload["blob_config"] = blob_config
 
-    # Enforce per-soul sqlite isolation even if the payload provided a database_config.
-    # This prevents cross-character memory mixing at the storage boundary.
     if isinstance(database_config, dict):
         ms = database_config.get("metadata_store")
         if isinstance(ms, dict) and str(ms.get("provider") or "").lower() == "sqlite":
@@ -1190,7 +1171,6 @@ def _get_service_from_payload(
     blob_config = payload.get("blob_config") or {}
     memorize_config = payload.get("memorize_config") or {}
 
-    # Enforce categories + dynamic policy from server config.json.
     fixed_cats = _categories_from_cfg(_CONFIG)
     if isinstance(memorize_config, dict):
         cats_cfg = (_CONFIG.get("categories") or {}) if isinstance(_CONFIG.get("categories"), dict) else {}
@@ -1355,7 +1335,6 @@ def _normalize_conversation(conv: Any) -> Any:
             if isinstance(raw_ts, (int, float)) and math.isfinite(raw_ts):
                 ts_ms = int(raw_ts)
             elif isinstance(raw_ts, str) and raw_ts.strip():
-                # ISO send_date
                 try:
                     dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
                     ts_ms = int(dt.timestamp() * 1000)
@@ -2096,7 +2075,6 @@ async def _apimw_retrieve_pass(
     payload: dict[str, Any],
     *,
     query_text: str,
-    phase: str,
     soul_id: str,
     history: list[dict[str, Any]],
     state_row: dict[str, Any],
@@ -2143,7 +2121,6 @@ async def _apimw_retrieve_and_merge(
     result_data_first, items_first = await _apimw_retrieve_pass(
         payload,
         query_text=topic_statement,
-        phase="step B",
         soul_id=soul_id,
         history=history,
         state_row=state_row,
@@ -2157,7 +2134,6 @@ async def _apimw_retrieve_and_merge(
         _result_data_second, items_second = await _apimw_retrieve_pass(
             payload,
             query_text=second_query,
-            phase="step C",
             soul_id=soul_id,
             history=history,
             state_row=state_row,
@@ -2407,7 +2383,6 @@ async def _run_apimw(
         apimw_k = _apimw_memory_count_from_cfg(_CONFIG)
         apimw_random_count = _apimw_random_count_from_cfg(_CONFIG)
 
-        # --- Slice previous/current episode history from chat_x anchors ---
         chat_x_anchors = _compact_chat_x_anchors(
             str(state_row.get("last_chat_x") or "").strip() or None,
             str(state_row.get("last_chat_x_prev") or "").strip() or None,
@@ -2427,7 +2402,6 @@ async def _run_apimw(
         topic_user_blocks.append(f"Current episode:\n{episode_text or '(none)'}")
         topic_user = "\n\n".join(topic_user_blocks)
 
-        # --- Step A: Topic statement ---
         identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
         topic_statement = await _apimw_topic_statement(
             svc,
@@ -2437,11 +2411,8 @@ async def _run_apimw(
             conversation_id=conversation_id,
         )
         if not topic_statement:
-            logger.info("apimw step A: empty topic for %s; skipping run", conversation_id)
             return
-        logger.info("apimw step A result: %s", topic_statement[:120])
 
-        # --- Steps B+C: Retrieve and merge ---
         combined_items = await _apimw_retrieve_and_merge(
             svc,
             payload,
@@ -2455,7 +2426,6 @@ async def _run_apimw(
             scope=scope,
         )
 
-        # --- Steps D+E+F: Combined LLM call ---
         result_json, items_by_id = await _apimw_def_call(
             svc,
             combined_items=combined_items,
@@ -2470,7 +2440,6 @@ async def _run_apimw(
         if result_json is None:
             return
 
-        # --- Persist results ---
         await _apimw_persist(
             svc,
             result_json=result_json,
@@ -2485,10 +2454,6 @@ async def _run_apimw(
     except Exception:
         logger.exception("APImw background pipeline failed for %s", conversation_id)
 
-
-# -------------------------
-# Meta
-# -------------------------
 
 
 @app.on_event("startup")
@@ -2515,7 +2480,6 @@ async def health():
     except Exception:
         pass
     return {
-        # "ok" reflects whether storage paths look usable.
         "ok": (_STORAGE_STATUS.get("ok") is not False),
         "serverInstanceId": _SERVER_INSTANCE_ID,
         "buildId": _BUILD_ID,
@@ -2765,7 +2729,6 @@ async def diag_sqlite_recent(
         cols = _sqlite_table_columns(con, table)
         scope_where, params = _sqlite_build_scope_where(cols, user_id, soul_id, conversation_id)
 
-        # Avoid dumping big JSON embeddings/extras by default.
         prefer = [
             "id",
             "created_at",
@@ -2813,7 +2776,6 @@ async def diag_sqlite_recent(
         out_rows = []
         for r in rows:
             d = {sel[i]: r[i] for i in range(len(sel))}
-            # light truncation for readability
             for k, v in list(d.items()):
                 if isinstance(v, str) and len(v) > 400:
                     d[k] = v[:400] + "…"
@@ -2945,17 +2907,14 @@ def _merge_conv(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[di
         return new
     if not new:
         return old
-    # common prefix
     if len(new) >= len(old) and old == new[: len(old)]:
         return new
     if len(old) >= len(new) and new == old[: len(new)]:
         return old
-    # overlap on the end (cap to keep it cheap)
     max_k = min(len(old), len(new), 80)
     for k in range(max_k, 0, -1):
         if old[-k:] == new[:k]:
             return old + new[k:]
-    # fallback: append only unseen messages
     seen = {_msg_key(m) for m in old}
     out = list(old)
     for m in new:
@@ -2968,7 +2927,6 @@ def _merge_conv(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[di
 
 
 def _local_dt(ts_ms: int, zi: Any | None) -> datetime:
-    # ts_ms is UTC epoch ms
     dt_utc = datetime.fromtimestamp(ts_ms / 1000.0, tz=UTC)
     return dt_utc.astimezone(zi) if zi is not None else dt_utc
 
@@ -2985,9 +2943,6 @@ def _date_label(ts_ms: int | None, zi: Any | None) -> str:
 def _split_indices_by_sleep(
     msgs: list[dict[str, Any]], zi: Any | None, tz_ok: bool, min_lull_seconds: int
 ) -> tuple[list[int], dict[str, Any]]:
-    # Return split indices (start of a new day) within msgs.
-    # Choose the largest no-message gap overlapping the local night window (22:00 → 08:00),
-    # accepting only when overlap >= min_lull_seconds.
     if not tz_ok:
         return ([], {"tz_ok": False})
 
@@ -3014,7 +2969,6 @@ def _split_indices_by_sleep(
 
         d0 = t0.date() - timedelta(days=1)
         d1 = t1.date()
-        # Cap the day-iteration for extremely long gaps.
         max_days = min((d1 - d0).days, 14)
         for k in range(max_days + 1):
             d = d0 + timedelta(days=k)
@@ -3241,9 +3195,7 @@ async def _sleep_memorize_timer_worker() -> None:
     await asyncio.sleep(5)
     while True:
         try:
-            jobs = await _run_sleep_timer_tick()
-            if jobs:
-                logger.info("sleep timer memorize processed=%d", jobs)
+            await _run_sleep_timer_tick()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -3382,10 +3334,7 @@ async def _run_consolidation_task(
             force=False,
         )
         if out.get("status") == "skipped":
-            logger.info("consolidation skipped for %s: %s", conversation_id, out.get("reason"))
             return
-        result = out.get("result") if isinstance(out.get("result"), dict) else {}
-        logger.info("consolidation complete: diary_count=%d", len(result.get("diary_memory_ids") or []))
     except Exception:
         logger.exception("consolidation failed (non-fatal)")
         if pipeline_started:
@@ -3546,7 +3495,6 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         if conversation_id and isinstance(scope, dict):
             scope = {**scope, "conversation_id": conversation_id}
 
-        # Per-soul-only: SillyTavern traffic must include user.soul_id.
         if not isinstance(scope, dict):
             raise HTTPException(status_code=400, detail="Missing user scope (user.soul_id required)")
         soul_id = str(scope.get("soul_id") or "").strip()
@@ -3563,11 +3511,6 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
             raise HTTPException(status_code=400, detail="Missing or empty 'conversation' list")
 
         conv_norm = _normalize_conversation(conversation)
-
-        # Keep resources inside memU for traceability:
-        # - One canonical full log per chat (deduped)
-        # - Daily resources split by sleep gap (22:00–08:00 local)
-        #   using the largest no-chat gap intersecting that window.
 
         uid = str((scope or {}).get("user_id") or "user") if isinstance(scope, dict) else "user"
         soul_id = str((scope or {}).get("soul_id") or "soul") if isinstance(scope, dict) else "soul"
@@ -3611,7 +3554,6 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                 if state_out.get("last_memorize_at"):
                     processed_cursor = int(state_out.get("digest_cursor") or 0)
 
-            # Timezone hint (IANA) from client. Offset is only a fallback for logging.
             tz_name = _pick_str(safe, "time_zone")
             tz_off_raw = safe.get("time_zone_offset_min")
             tz_off_min = int(tz_off_raw) if isinstance(tz_off_raw, (int, float)) and math.isfinite(tz_off_raw) else None
@@ -3904,7 +3846,6 @@ async def force_consolidation(
 
 @app.get("/categories", operation_id="list_memory_categories")
 async def list_memory_categories(user_id: str = "", soul_id: str = "", include_empty: bool = False):
-    # Scope is required: this server runs per-soul SQLite databases (no shared DB by default).
     soul_id = soul_id.strip()
     if not soul_id:
         raise HTTPException(status_code=400, detail="soul_id required")
@@ -3912,8 +3853,6 @@ async def list_memory_categories(user_id: str = "", soul_id: str = "", include_e
     if user_id.strip():
         scope["user_id"] = user_id.strip()
 
-    # Build a minimal payload using server config so this GET endpoint can list categories
-    # without requiring the caller to send llm_profiles.
     default_profile = _default_llm_profiles_from_server_config()["default"]
 
     payload = {
@@ -4409,7 +4348,6 @@ async def conversation_retrieve(
                     user_id=uid,
                     soul_id=soul_id,
                 )
-                # Build route-intention context from state in a single named helper.
                 safe["queries"] = _build_retrieve_soul_context_queries(
                     soul_id=soul_id,
                     message=message,
@@ -4702,7 +4640,6 @@ async def conversation_turn(
 
         state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
 
-        # Phase 1: read state for prompt building (lock held only for this quick read)
         async with state_lock:
             (
                 state_row,
@@ -4717,8 +4654,6 @@ async def conversation_turn(
                 apply_turn_maintenance, dry_run, history_full,
             )
 
-        # Load soul generation config (persists across frontends).
-        # Frontend params update stored config when they differ.
         soul_gen = _load_soul_gen_config(uid, soul_id)
         turn_temperature: float = float(soul_gen.get("temperature", 0.2))
         turn_max_tokens: int = int(soul_gen.get("max_tokens", 1000))
@@ -4774,7 +4709,6 @@ async def conversation_turn(
         state_path = db_path
         annulment_memory_ids: list[str] = []
 
-        # Phase 2: re-read fresh state, merge this turn's updates, write (lock held only for this quick write)
         if not dry_run:
             async with state_lock:
                 state_out, state_path = _turn_state_write(
@@ -4908,10 +4842,6 @@ async def conversation_turn_undo(
     return {"status": "restored"}
 
 
-# -------------------------
-# MCP mounting (optional)
-# -------------------------
-
 _has_mcp = False
 try:
     from fastapi_mcp import FastApiMCP
@@ -4925,14 +4855,10 @@ except Exception:
     _has_mcp = False
 
 
-# -------------------------
-# Bundle UI mounting (optional)
-# -------------------------
 try:
     _BUNDLE_ROOT = Path(__file__).resolve().parents[2]
     _UI_DIST = _BUNDLE_ROOT / "memu-ui" / "dist"
     if _UI_DIST.exists():
-        # Serve SPA assets (e.g. /assets/*). API routes defined above still win.
         app.mount("/", StaticFiles(directory=str(_UI_DIST), html=True), name="ui")
 except Exception:
     pass

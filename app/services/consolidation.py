@@ -298,8 +298,6 @@ ORDER BY name ASC
             (soul_id, user_id),
         ).fetchall()
 
-        # updated_at is always written as datetime.now(UTC).isoformat() → "YYYY-MM-DDTHH:MM:SS.ffffff+00:00"
-        # Lexicographic ORDER BY is correct as long as all writers use that canonical form.
         life_goal_rows = con.execute(
             """
 SELECT id, description, status
@@ -445,10 +443,6 @@ async def run_consolidation_llm(
     intention_text = _format_intention_activity_for_prompt(inputs["intention_activity"])
     episodes_text = _format_episode_block_for_prompt(inputs["episode_inputs"])
 
-    # narrative_self (DB column name, populated by consolidation writes) and soul_card
-    # (in-prompt label used by turn_contract and memorize) refer to the same entity —
-    # the soul's self-description paragraph. Two names exist because the storage layer
-    # predates the prompt-layer rename; neither has been migrated to avoid cascade churn.
     soul_card = str(inputs.get("narrative_self") or "").strip() or DEFAULT_SOUL_CARD
     system_prompt = (
         f"Today is {format_time_anchor()}.\n\n"
@@ -523,7 +517,6 @@ def _write_shaped_by_edges(
     memory_repo = svc.database.memory_item_repo
     wrote = 0
 
-    # episode order: diary_ids and diary_rows are built in the same loop order
     for new_id, row in zip(diary_ids, diary_rows):
         hints = list(row.get("shaped_by_hints") or [])
         for hint_id in hints:
@@ -578,7 +571,6 @@ def write_consolidation_outputs(
         if str(row.get("episode_id") or "").strip()
     }
 
-    # svc engine-layer writes first — diary_ids feeds into the SQLite narrative_self upsert
     diary_ids: list[str] = []
     for row in llm_results["diaries"]:
         episode_id = str(row.get("episode_id") or "").strip()
