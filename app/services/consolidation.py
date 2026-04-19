@@ -26,6 +26,7 @@ from app.services.graph_edges import (
     invalidate_memory_edges,
     write_memory_edges,
 )
+from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services.turn_contract import DEFAULT_SOUL_CARD, format_time_anchor
 
 if TYPE_CHECKING:
@@ -605,35 +606,13 @@ def write_consolidation_outputs(
         )
 
     old_narrative_text = llm_results.get("old_narrative_text")
-    old_narrative_embedding = llm_results.get("old_narrative_embedding")
-    if old_narrative_text and isinstance(old_narrative_embedding, list):
-        scope = {"user_id": user_id, "soul_id": soul_id}
-        prev_snapshots = svc.database.memory_item_repo.list_items(
-            {"memory_type": "narrative_self", **scope}
+    if old_narrative_text:
+        snapshot_previous_narrative_self(
+            svc,
+            scope={"user_id": user_id, "soul_id": soul_id},
+            old_text=old_narrative_text,
+            old_embedding=llm_results["old_narrative_embedding"],
         )
-        prev_snapshot_id = next(iter(prev_snapshots.keys()), None)
-        snapshot_item = svc.database.memory_item_repo.create_item(
-            resource_id=None,
-            memory_type="narrative_self",
-            summary=old_narrative_text,
-            embedding=old_narrative_embedding,
-            user_data=scope,
-            source_role="soul",
-            happened_at=datetime.now(UTC),
-        )
-        if prev_snapshot_id:
-            from memu.database.models import Triple
-            svc.database.triple_repo.add(
-                Triple(
-                    subject_id=prev_snapshot_id,
-                    subject_kind="memory",
-                    predicate="evolved_into",
-                    object_id=str(snapshot_item.id),
-                    object_kind="memory",
-                    source_memory_id=str(snapshot_item.id),
-                ),
-                user_data=scope,
-            )
 
     companion_memory_id = None
     companion_text = str(llm_results.get("companion_memory") or "").strip()
