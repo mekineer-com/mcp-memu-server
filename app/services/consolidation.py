@@ -344,6 +344,7 @@ FROM intentions_life_goals
 WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
 """
         params: list[Any] = [soul_id, user_id]
+        last_consolidation_at = _parse_iso_datetime(state.get("last_consolidation_at"))
         if last_consolidation_at is not None:
             intention_sql += " AND updated_at >= ?"
             params.append(last_consolidation_at.isoformat())
