@@ -3629,25 +3629,18 @@ async def _run_memorize_batches(
             )
 
         if conversation_id and has_batch_results:
-            try:
-                _write_conversation_state(
-                    conversation_id,
-                    soul_id=soul_id,
-                    user_id=uid,
-                    updates={
-                        # final flush once all batches commit — also writes the holistic summary atomically
-                        "digest_cursor": max(0, processed_end_cursor),
-                        "last_memorize_at": datetime.now(UTC).isoformat(),
-                        "append_pending_diary_episode_ids": pending_diary_episode_ids,
-                        "all_categories_summary": current_all_categories_summary,
-                    },
-                )
-            except Exception:
-                logger.exception(
-                    "state write failed after memorize; %d diary IDs orphaned: %s",
-                    len(pending_diary_episode_ids),
-                    pending_diary_episode_ids[:5],
-                )
+            _write_conversation_state(
+                conversation_id,
+                soul_id=soul_id,
+                user_id=uid,
+                updates={
+                    # final flush once all batches commit — also writes the holistic summary atomically
+                    "digest_cursor": max(0, processed_end_cursor),
+                    "last_memorize_at": datetime.now(UTC).isoformat(),
+                    "append_pending_diary_episode_ids": pending_diary_episode_ids,
+                    "all_categories_summary": current_all_categories_summary,
+                },
+            )
 
         # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
         if conversation_id and has_batch_results:
