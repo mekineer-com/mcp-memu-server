@@ -111,26 +111,9 @@ def build_episode_inputs(
     return out
 
 
-def _xml_float(text: str | None) -> float | None:
-    if text is None:
-        return None
-    try:
-        return float(text)
-    except (TypeError, ValueError):
-        return None
-
-
 def parse_diary_element(root: Element) -> dict[str, Any]:
-    affect = root.find("affect")
     return {
         "prose": xml_text(root, "prose"),
-        "affective_tags": {
-            "emotion": xml_text(affect, "emotion"),
-            "trigger": xml_text(affect, "trigger"),
-            "valence": _xml_float(xml_text(affect, "valence")),
-            "intensity": _xml_float(xml_text(affect, "intensity")),
-            "what_helped": xml_text(affect, "what_helped"),
-        },
         "unresolved": xml_text(root, "unresolved"),
     }
 
@@ -144,7 +127,6 @@ def upsert_diary_entry_memory(
     episode_id: str,
     prose: str,
     embedding: list[float],
-    affective_tags: dict[str, Any] | None,
     unresolved: str | None,
     happened_at: datetime | None,
 ) -> str:
@@ -163,7 +145,6 @@ def upsert_diary_entry_memory(
             item_id=item.id,
             summary=prose,
             embedding=embedding,
-            affective_tags=affective_tags,
             unresolved=unresolved,
         )
         return str(updated.id)
@@ -177,7 +158,6 @@ def upsert_diary_entry_memory(
         conversation_id=conversation_id,
         episode_id=episode_id,
         happened_at=happened_at,
-        affective_tags=affective_tags,
         unresolved=unresolved,
     )
     return str(item.id)

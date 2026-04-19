@@ -113,7 +113,6 @@ def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dic
             {
                 "episode_id": episode_id,
                 "prose": prose,
-                "affective_tags": payload.get("affective_tags"),
                 "unresolved": payload.get("unresolved"),
                 "shaped_by_hints": shaped_by_hints,
             }
@@ -593,7 +592,6 @@ def _write_consolidation_memories(
                 episode_id=episode_id,
                 prose=prose,
                 embedding=embedding,
-                affective_tags=row.get("affective_tags"),
                 unresolved=row.get("unresolved"),
                 happened_at=happened_at if isinstance(happened_at, datetime) else None,
             )

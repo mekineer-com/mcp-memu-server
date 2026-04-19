@@ -26,9 +26,6 @@ def test_parse_consolidation_xml_rejects_unexpected_episode_diary() -> None:
     <diary>
       <episode_id>ep:1-2</episode_id>
       <prose>p</prose>
-      <affect>
-        <emotion>e</emotion>
-      </affect>
       <unresolved></unresolved>
     </diary>
   </diaries>
@@ -50,9 +47,6 @@ def test_parse_consolidation_xml_accepts_exact_episode_set() -> None:
     <diary>
       <episode_id>ep:1-2</episode_id>
       <prose>p</prose>
-      <affect>
-        <emotion>e</emotion>
-      </affect>
       <unresolved></unresolved>
     </diary>
   </diaries>
@@ -74,7 +68,6 @@ def test_parse_consolidation_xml_edges_and_write_helpers() -> None:
     <diary>
       <episode_id>ep:1-2</episode_id>
       <prose>p</prose>
-      <affect><emotion>e</emotion></affect>
       <unresolved></unresolved>
     </diary>
   </diaries>
@@ -149,7 +142,6 @@ def test_parse_consolidation_xml_shaped_by_hints_in_diary() -> None:
     <diary>
       <episode_id>ep:1-2</episode_id>
       <prose>p</prose>
-      <affect><emotion>e</emotion></affect>
       <unresolved></unresolved>
       <shaped_by_hints>
         <memory_id>mem_aaa</memory_id>
@@ -178,7 +170,6 @@ def test_parse_consolidation_xml_companion_shaped_by_hints() -> None:
     <diary>
       <episode_id>ep:3-4</episode_id>
       <prose>p</prose>
-      <affect><emotion>e</emotion></affect>
       <unresolved></unresolved>
     </diary>
   </diaries>
@@ -206,7 +197,6 @@ def test_parse_consolidation_xml_missing_hints_blocks_give_empty_lists() -> None
     <diary>
       <episode_id>ep:5-6</episode_id>
       <prose>p</prose>
-      <affect><emotion>e</emotion></affect>
       <unresolved></unresolved>
     </diary>
   </diaries>

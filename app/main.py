@@ -1996,7 +1996,7 @@ async def _persist_annulment_memories(
     }
 
     summaries: list[str] = []
-    metadata_rows: list[dict[str, Any]] = []
+    saliences: list[float] = []
     for row in annulments:
         intention_id = str(row.get("intention_id") or "").strip()
         status = str(row.get("status") or "").strip().lower()
@@ -2008,14 +2008,7 @@ async def _persist_annulment_memories(
         if note:
             summary = f"{summary}. Note: {note}"
         summaries.append(summary)
-        metadata_rows.append(
-            {
-                "intention_id": intention_id,
-                "status": status,
-                "note": note,
-                "reflection_salience": 0.8 if status == "completed" else 0.4,
-            }
-        )
+        saliences.append(0.8 if status == "completed" else 0.4)
 
     if not summaries:
         return []
@@ -2025,7 +2018,6 @@ async def _persist_annulment_memories(
     for idx, summary in enumerate(summaries):
         if idx >= len(embeddings):
             break
-        meta = metadata_rows[idx]
         item = svc.database.memory_item_repo.create_item(
             resource_id=None,
             memory_type="event",
@@ -2035,12 +2027,8 @@ async def _persist_annulment_memories(
             source_role="soul",
             confidence=1.0,
             happened_at=datetime.now(UTC),
-            reflection_salience=float(meta["reflection_salience"]),
+            reflection_salience=saliences[idx],
             conversation_id=conversation_id,
-            affective_tags={
-                "annulment_status": meta["status"],
-                "intention_id": meta["intention_id"],
-            },
         )
         created_ids.append(str(item.id))
     return created_ids
@@ -2959,7 +2947,6 @@ async def diag_sqlite_recent(
             "pending_diary_episode_ids",
             "self_model_id",
             "last_memorize_at",
-            "affective_tags",
             "unresolved",
             "resource_id",
             "url",
