@@ -2399,7 +2399,6 @@ async def _apimw_def_call(
         "\n".join(f"- {goal}" for goal in life_goals_active if str(goal).strip()) if life_goals_active else "(none yet)"
     )
 
-    # SONNET WANTED: update APImw edge-rule text to include shaped_by in allowed predicates.
     def_system = (
         f"{identity_context}\n\n"
         "You have just searched your long-term memory. Below are the memories that came back, "
