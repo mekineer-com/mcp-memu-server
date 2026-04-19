@@ -467,6 +467,8 @@ async def run_consolidation_llm(
         system_prompt=system_prompt,
         temperature=0.2,
         max_tokens=1800,
+        op="consolidation",
+        step="main",
     )
     expected_episode_ids = {
         str(row.get("episode_id") or "").strip()

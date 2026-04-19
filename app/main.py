@@ -1983,6 +1983,8 @@ async def _compute_holistic_categories_summary(
         system_prompt=system_prompt,
         temperature=0.3,
         max_tokens=600,
+        op="categories",
+        step="holistic_summary",
     )
     return str(result or "").strip() or None
 
@@ -2069,6 +2071,8 @@ async def _apimw_topic_statement(
         system_prompt=topic_system,
         temperature=0.1,
         max_tokens=100,
+        op="apimw",
+        step="topic_statement",
     )
     return str(topic_statement or "").strip() or _pick_str(payload, "message", "query") or ""
 
@@ -2284,6 +2288,8 @@ async def _apimw_def_call(
         temperature=0.2,
         max_tokens=800,
         response_format={"type": "json_object"},
+        op="apimw",
+        step="def_call",
     )
 
     raw_text = str(llm_raw or "").strip()
@@ -4016,7 +4022,7 @@ async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)
 
     svc_payload = {"llm_profiles": _default_llm_profiles_from_server_config(), "user": {"user_id": user_id, "soul_id": soul_id}}
     svc = _get_service_from_payload(svc_payload)
-    raw = await svc.chat(user_prompt, system_prompt=system_prompt, temperature=0.2, max_tokens=800, response_format={"type": "json_object"})
+    raw = await svc.chat(user_prompt, system_prompt=system_prompt, temperature=0.2, max_tokens=800, response_format={"type": "json_object"}, op="narrative_suggestion", step="respond")
 
     text = str(raw or "").strip()
     if text.startswith("```"):
