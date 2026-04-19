@@ -4070,17 +4070,13 @@ async def list_memory_categories(user_id: str = "", soul_id: str = "", include_e
     svc = _get_service_from_payload(payload)
 
     try:
-        cats = await svc.list_memory_categories(where=scope)
-        if isinstance(cats, dict):
-            cats = cats.get("categories")
+        cats_map = svc.database.memory_category_repo.list_categories(scope)
         out = []
-        for c in cats or []:
-            if not isinstance(c, dict):
+        for c in cats_map.values():
+            nm = str(getattr(c, "name", "") or "").strip()
+            if not nm:
                 continue
-            nm = c.get("name")
-            if not isinstance(nm, str) or not nm.strip():
-                continue
-            cc = {**c, "name": nm, "summary": str(c.get("summary") or "")}
+            cc = {"name": nm, "summary": str(getattr(c, "summary", "") or "")}
             if include_empty or _has_category_content(cc):
                 out.append(cc)
         return {"categories": out}
@@ -4104,17 +4100,13 @@ async def search_memory_categories(payload: dict[str, Any]):
 
         include_empty = bool(safe.get("include_empty"))
 
-        cats = await svc.list_memory_categories(where=scope)
-        if isinstance(cats, dict):
-            cats = cats.get("categories")
+        cats_map = svc.database.memory_category_repo.list_categories(scope)
         out = []
-        for c in cats or []:
-            if not isinstance(c, dict):
+        for c in cats_map.values():
+            nm = str(getattr(c, "name", "") or "").strip()
+            if not nm:
                 continue
-            nm = c.get("name")
-            if not isinstance(nm, str) or not nm.strip():
-                continue
-            cc = {**c, "name": nm, "summary": str(c.get("summary") or "")}
+            cc = {"name": nm, "summary": str(getattr(c, "summary", "") or "")}
             if include_empty or _has_category_content(cc):
                 out.append(cc)
         _record_call("categories.search", safe, ok=True, info={"returned": len(out)})
