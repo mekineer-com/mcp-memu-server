@@ -4685,8 +4685,8 @@ def _turn_state_write(
 ) -> tuple[dict[str, Any], Any]:
     """Phase 2 body: re-read fresh state, merge turn updates, write. Called inside state_lock."""
     fresh_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
-    fresh_cache = list(memory_cache_before)
-    fresh_intentions = _normalize_intentions_stack_impl(intentions_before)
+    fresh_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
+    fresh_intentions = _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
     memory_cache_after = (
         _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
     )
