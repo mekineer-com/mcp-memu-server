@@ -189,8 +189,8 @@ def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dic
 def _format_categories_for_prompt(rows: list[sqlite3.Row]) -> str:
     lines: list[str] = []
     for row in rows:
-        name = str(row["name"] or "").strip() if "name" in row.keys() else ""
-        summary = str(row["summary"] or "").strip() if "summary" in row.keys() else ""
+        name = str(row["name"] or "").strip()
+        summary = str(row["summary"] or "").strip()
         if not name or not summary:
             continue
         lines.append(f"- {name}: {summary}")
@@ -244,47 +244,6 @@ def _format_episode_block_for_prompt(episodes: list[dict[str, Any]]) -> str:
     return "\n".join(lines).strip()
 
 
-def _check_consolidation_readiness(
-    deps: ConsolidationDeps,
-    state: dict[str, Any],
-    *,
-    conversation_id: str,
-    soul_id: str,
-    user_id: str,
-    force: bool,
-    interval_days: int,
-    stale_after: timedelta,
-    now: datetime,
-) -> tuple[str, dict[str, Any]]:
-    """Check stale-lock and interval gate.
-
-    Returns (status, updated_state) where status is 'ready', 'skip', or 'reset'.
-    'reset' means the stale lock was cleared and the caller should re-read state.
-    """
-    started_at = _parse_iso_datetime(state.get("consolidation_started_at"))
-    if bool(state.get("consolidation_in_progress")):
-        if started_at is not None and now - started_at <= stale_after:
-            return "skip_in_progress", state
-        deps.write_conversation_state(
-            conversation_id,
-            soul_id=soul_id,
-            user_id=user_id,
-            updates={
-                "consolidation_in_progress": False,
-                "consolidation_started_at": None,
-            },
-        )
-        return "reset", state
-
-    last_consolidation_at = _parse_iso_datetime(state.get("last_consolidation_at"))
-    if not force and last_consolidation_at is not None:
-        due_at = last_consolidation_at + timedelta(days=max(1, int(interval_days)))
-        if now < due_at:
-            return "skip_interval", state
-
-    return "ready", state
-
-
 def gather_consolidation_inputs(
     deps: ConsolidationDeps,
     *,
@@ -311,26 +270,26 @@ def gather_consolidation_inputs(
             raise HTTPException(status_code=404, detail="conversation state not found")
 
         now = datetime.now(UTC)
-        readiness, state = _check_consolidation_readiness(
-            deps,
-            state,
-            conversation_id=conversation_id,
-            soul_id=soul_id,
-            user_id=user_id,
-            force=force,
-            interval_days=interval_days,
-            stale_after=stale_after,
-            now=now,
-        )
-        if readiness == "skip_in_progress":
-            return {"status": "skip", "reason": "in_progress"}
-        if readiness == "skip_interval":
-            return {"status": "skip", "reason": "interval_gate"}
-        if readiness == "reset":
+        started_at = _parse_iso_datetime(state.get("consolidation_started_at"))
+        if bool(state.get("consolidation_in_progress")):
+            if started_at is not None and now - started_at <= stale_after:
+                return {"status": "skip", "reason": "in_progress"}
+            deps.write_conversation_state(
+                conversation_id,
+                soul_id=soul_id,
+                user_id=user_id,
+                updates={"consolidation_in_progress": False, "consolidation_started_at": None},
+            )
             reread = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id))
             if reread is None:
                 raise HTTPException(404, "conversation state not found after stale-lock reset")
             state = reread
+        else:
+            last_consolidation_at = _parse_iso_datetime(state.get("last_consolidation_at"))
+            if not force and last_consolidation_at is not None:
+                due_at = last_consolidation_at + timedelta(days=max(1, int(interval_days)))
+                if now < due_at:
+                    return {"status": "skip", "reason": "interval_gate"}
 
         pending_episode_ids = deps.normalize_text_list(state.get("pending_diary_episode_ids"))
 
@@ -556,77 +515,6 @@ async def run_consolidation_llm(
     }
 
 
-def _write_consolidation_memories(
-    svc: MemoryService,
-    *,
-    llm_results: dict[str, Any],
-    episode_map: dict[str, Any],
-    conversation_id: str,
-    soul_id: str,
-    user_id: str,
-) -> tuple[list[str], str | None]:
-    """Write diary entries and companion memory via svc engine layer.
-
-    Returns (diary_ids, companion_memory_id).
-    diary_ids is consumed by the SQLite narrative_self upsert — must run before that commit.
-    """
-    diary_ids: list[str] = []
-    for row in llm_results.get("diaries") or []:
-        episode_id = str(row.get("episode_id") or "").strip()
-        prose = str(row.get("prose") or "").strip()
-        embedding = row.get("embedding")
-        if not episode_id or not prose:
-            continue
-        if not isinstance(embedding, list):
-            raise HTTPException(status_code=500, detail=f"missing diary embedding for episode {episode_id}")
-        happened_at = None
-        episode_meta = episode_map.get(episode_id)
-        if isinstance(episode_meta, dict):
-            happened_at = episode_meta.get("happened_at")
-        diary_ids.append(
-            upsert_diary_entry_memory(
-                svc,
-                user_id=user_id,
-                soul_id=soul_id,
-                conversation_id=conversation_id,
-                episode_id=episode_id,
-                prose=prose,
-                embedding=embedding,
-                unresolved=row.get("unresolved"),
-                happened_at=happened_at if isinstance(happened_at, datetime) else None,
-            )
-        )
-
-    companion_memory_id = None
-    companion_text = str(llm_results.get("companion_memory") or "").strip()
-    companion_embedding = llm_results.get("companion_embedding")
-    if companion_text:
-        if not isinstance(companion_embedding, list):
-            raise HTTPException(status_code=500, detail="missing companion memory embedding")
-        companion_happened_at = None
-        if episode_map:
-            first_episode = min(
-                episode_map.values(),
-                key=lambda row: int(row.get("start_idx") or 0),
-            )
-            candidate = first_episode.get("happened_at")
-            if isinstance(candidate, datetime):
-                companion_happened_at = candidate
-        if companion_happened_at is None:
-            companion_happened_at = datetime.now(UTC)
-        companion_memory_id = create_companion_memory(
-            svc,
-            user_id=user_id,
-            soul_id=soul_id,
-            conversation_id=conversation_id,
-            summary=companion_text,
-            embedding=companion_embedding,
-            happened_at=companion_happened_at,
-        )
-
-    return diary_ids, companion_memory_id
-
-
 def _write_shaped_by_edges(
     svc: MemoryService,
     *,
@@ -636,10 +524,6 @@ def _write_shaped_by_edges(
     companion_shaped_by_hints: list[str],
     scope: dict[str, Any],
 ) -> int:
-    """Write shaped_by edges from new diary/companion memory IDs to hint memory IDs.
-
-    Returns total edges written.
-    """
     triple_repo = svc.database.triple_repo
     memory_repo = svc.database.memory_item_repo
     wrote = 0
@@ -677,107 +561,6 @@ def _write_shaped_by_edges(
     return wrote
 
 
-def _write_consolidation_sqlite_state(
-    deps: ConsolidationDeps,
-    con: Any,
-    *,
-    soul_id: str,
-    user_id: str,
-    self_model_id: str,
-    narrative_self: str | None,
-    diary_ids: list[str],
-    llm_results: dict[str, Any],
-    now_iso: str,
-) -> None:
-    """Write narrative_self and life-goal mutations to SQLite and commit."""
-    if narrative_self:
-        con.execute(
-            """
-INSERT INTO memu_self_model (
-    id, soul_id, user_id, narrative_self, related_memory_ids, updated_at
-) VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
-    soul_id = excluded.soul_id,
-    user_id = excluded.user_id,
-    narrative_self = excluded.narrative_self,
-    related_memory_ids = excluded.related_memory_ids,
-    updated_at = excluded.updated_at
-""",
-            (
-                self_model_id,
-                soul_id,
-                user_id,
-                narrative_self,
-                deps.json_to_db(diary_ids),
-                now_iso,
-            ),
-        )
-
-    life_goal_rows = con.execute(
-        """
-SELECT id, description, status
-FROM intentions_life_goals
-WHERE soul_id = ? AND user_id = ? AND source = 'life_goal' AND status IN ('active', 'removed')
-ORDER BY updated_at ASC, id ASC
-""",
-        (soul_id, user_id),
-    ).fetchall()
-    active_ids: dict[str, str] = {}
-    removed_ids: dict[str, str] = {}
-    for row in life_goal_rows:
-        description = str(row["description"] or "").strip()
-        if not description:
-            continue
-        if str(row["status"] or "").strip() == "active":
-            active_ids[description] = str(row["id"])
-        else:
-            removed_ids[description] = str(row["id"])
-
-    goals_to_mark_removed: list[str] = []
-    goals_to_delete: list[str] = []
-    goals_to_add: list[tuple[str, str]] = []
-
-    for desc in llm_results.get("life_goal_remove") or []:
-        text = str(desc or "").strip()
-        if not text:
-            continue
-        if text in active_ids:
-            goals_to_mark_removed.append(active_ids[text])
-            removed_ids[text] = active_ids[text]
-            active_ids.pop(text, None)
-        elif text in removed_ids:
-            goals_to_delete.append(removed_ids[text])
-            removed_ids.pop(text, None)
-
-    active_goal_count = len(active_ids)
-    for desc in llm_results.get("life_goal_add") or []:
-        text = str(desc or "").strip()
-        if not text or text in active_ids or active_goal_count >= _ACTIVE_LIFE_GOAL_CAP:
-            continue
-        goal_id = str(uuid.uuid4())
-        goals_to_add.append((goal_id, text))
-        active_ids[text] = goal_id
-        active_goal_count += 1
-
-    for goal_id in goals_to_mark_removed:
-        con.execute(
-            "UPDATE intentions_life_goals SET status = 'removed', updated_at = ? WHERE id = ?",
-            (now_iso, goal_id),
-        )
-    for goal_id in goals_to_delete:
-        con.execute("DELETE FROM intentions_life_goals WHERE id = ?", (goal_id,))
-    for goal_id, text in goals_to_add:
-        con.execute(
-            """
-INSERT INTO intentions_life_goals (
-    id, soul_id, user_id, description, status, source, confidence, target_date, related_memory_ids, updated_at
-) VALUES (?, ?, ?, ?, 'active', 'life_goal', NULL, NULL, ?, ?)
-""",
-            (goal_id, soul_id, user_id, text, deps.json_to_db([]), now_iso),
-        )
-    con.commit()
-
-
 def write_consolidation_outputs(
     deps: ConsolidationDeps,
     svc: MemoryService,
@@ -801,31 +584,140 @@ def write_consolidation_outputs(
     }
 
     # svc engine-layer writes first — diary_ids feeds into the SQLite narrative_self upsert
-    diary_ids, companion_memory_id = _write_consolidation_memories(
-        svc,
-        llm_results=llm_results,
-        episode_map=episode_map,
-        conversation_id=conversation_id,
-        soul_id=soul_id,
-        user_id=user_id,
-    )
+    diary_ids: list[str] = []
+    for row in llm_results.get("diaries") or []:
+        episode_id = str(row.get("episode_id") or "").strip()
+        prose = str(row.get("prose") or "").strip()
+        embedding = row.get("embedding")
+        if not episode_id or not prose:
+            continue
+        if not isinstance(embedding, list):
+            raise HTTPException(status_code=500, detail=f"missing diary embedding for episode {episode_id}")
+        episode_meta = episode_map.get(episode_id)
+        happened_at = episode_meta.get("happened_at") if episode_meta else None
+        diary_ids.append(
+            upsert_diary_entry_memory(
+                svc,
+                user_id=user_id,
+                soul_id=soul_id,
+                conversation_id=conversation_id,
+                episode_id=episode_id,
+                prose=prose,
+                embedding=embedding,
+                unresolved=row.get("unresolved"),
+                happened_at=happened_at if isinstance(happened_at, datetime) else None,
+            )
+        )
+
+    companion_memory_id = None
+    companion_text = str(llm_results.get("companion_memory") or "").strip()
+    companion_embedding = llm_results.get("companion_embedding")
+    if companion_text:
+        if not isinstance(companion_embedding, list):
+            raise HTTPException(status_code=500, detail="missing companion memory embedding")
+        companion_happened_at = None
+        if episode_map:
+            first_episode = min(episode_map.values(), key=lambda r: int(r.get("start_idx") or 0))
+            candidate = first_episode.get("happened_at")
+            if isinstance(candidate, datetime):
+                companion_happened_at = candidate
+        if companion_happened_at is None:
+            companion_happened_at = datetime.now(UTC)
+        companion_memory_id = create_companion_memory(
+            svc,
+            user_id=user_id,
+            soul_id=soul_id,
+            conversation_id=conversation_id,
+            summary=companion_text,
+            embedding=companion_embedding,
+            happened_at=companion_happened_at,
+        )
 
     deps.sqlite_ensure_nonempty(db_path)
     con = deps.sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
         deps.sqlite_ensure_conversation_state_schema(con)
-        _write_consolidation_sqlite_state(
-            deps,
-            con,
-            soul_id=soul_id,
-            user_id=user_id,
-            self_model_id=self_model_id,
-            narrative_self=narrative_self,
-            diary_ids=diary_ids,
-            llm_results=llm_results,
-            now_iso=now_iso,
-        )
+
+        if narrative_self:
+            con.execute(
+                """
+INSERT INTO memu_self_model (
+    id, soul_id, user_id, narrative_self, related_memory_ids, updated_at
+) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    soul_id = excluded.soul_id,
+    user_id = excluded.user_id,
+    narrative_self = excluded.narrative_self,
+    related_memory_ids = excluded.related_memory_ids,
+    updated_at = excluded.updated_at
+""",
+                (self_model_id, soul_id, user_id, narrative_self, deps.json_to_db(diary_ids), now_iso),
+            )
+
+        life_goal_rows = con.execute(
+            """
+SELECT id, description, status
+FROM intentions_life_goals
+WHERE soul_id = ? AND user_id = ? AND source = 'life_goal' AND status IN ('active', 'removed')
+ORDER BY updated_at ASC, id ASC
+""",
+            (soul_id, user_id),
+        ).fetchall()
+        active_ids: dict[str, str] = {}
+        removed_ids: dict[str, str] = {}
+        for row in life_goal_rows:
+            description = str(row["description"] or "").strip()
+            if not description:
+                continue
+            if str(row["status"] or "").strip() == "active":
+                active_ids[description] = str(row["id"])
+            else:
+                removed_ids[description] = str(row["id"])
+
+        goals_to_mark_removed: list[str] = []
+        goals_to_delete: list[str] = []
+        goals_to_add: list[tuple[str, str]] = []
+
+        for desc in llm_results.get("life_goal_remove") or []:
+            text = str(desc or "").strip()
+            if not text:
+                continue
+            if text in active_ids:
+                goals_to_mark_removed.append(active_ids[text])
+                removed_ids[text] = active_ids[text]
+                active_ids.pop(text, None)
+            elif text in removed_ids:
+                goals_to_delete.append(removed_ids[text])
+                removed_ids.pop(text, None)
+
+        active_goal_count = len(active_ids)
+        for desc in llm_results.get("life_goal_add") or []:
+            text = str(desc or "").strip()
+            if not text or text in active_ids or active_goal_count >= _ACTIVE_LIFE_GOAL_CAP:
+                continue
+            goal_id = str(uuid.uuid4())
+            goals_to_add.append((goal_id, text))
+            active_ids[text] = goal_id
+            active_goal_count += 1
+
+        for goal_id in goals_to_mark_removed:
+            con.execute(
+                "UPDATE intentions_life_goals SET status = 'removed', updated_at = ? WHERE id = ?",
+                (now_iso, goal_id),
+            )
+        for goal_id in goals_to_delete:
+            con.execute("DELETE FROM intentions_life_goals WHERE id = ?", (goal_id,))
+        for goal_id, text in goals_to_add:
+            con.execute(
+                """
+INSERT INTO intentions_life_goals (
+    id, soul_id, user_id, description, status, source, confidence, target_date, related_memory_ids, updated_at
+) VALUES (?, ?, ?, ?, 'active', 'life_goal', NULL, NULL, ?, ?)
+""",
+                (goal_id, soul_id, user_id, text, deps.json_to_db([]), now_iso),
+            )
+        con.commit()
     finally:
         con.close()
 
