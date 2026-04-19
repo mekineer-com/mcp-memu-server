@@ -4019,9 +4019,15 @@ async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)
         _sqlite_ensure_nonempty(db_path)
         con = _sqlite_connect(db_path)
         try:
+            con.row_factory = sqlite3.Row
             _sqlite_ensure_conversation_state_schema(con)
+            existing = con.execute(
+                "SELECT id FROM memu_self_model WHERE soul_id = ? AND user_id = ? "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (soul_id, user_id),
+            ).fetchone()
+            self_model_id = str(existing["id"]) if existing is not None else str(uuid.uuid4())
             now_iso = datetime.now(UTC).isoformat()
-            self_model_id = str(uuid.uuid4())
             con.execute(
                 """
 INSERT INTO memu_self_model (id, soul_id, user_id, narrative_self, related_memory_ids, updated_at)
