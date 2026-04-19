@@ -281,12 +281,6 @@ def _build_segment_memorize_batches(
     resource_url: str,
     processed_cursor: int,
 ) -> list[tuple[str, list[dict[str, Any]], int]]:
-    """Build memorize batches from a segment manifest (non-force path).
-
-    Iterates segments in order, skips already-processed ones, carries forward
-    too-short segments to merge with the next, and flushes any leftover carry
-    at the end.
-    """
     memorize_batches: list[tuple[str, list[dict[str, Any]], int]] = []
     last_idx = len(merged) - 1
     carry: tuple[int, int] | None = None
@@ -2207,7 +2201,6 @@ async def _apimw_topic_statement(
     identity_context: str,
     conversation_id: str,
 ) -> str:
-    """Step A: generate a 1-2 sentence topic statement for the current episode."""
     logger.info("apimw step A: topic statement for %s", conversation_id)
     topic_system = (
         f"{identity_context}\n\n"
@@ -2234,7 +2227,6 @@ async def _apimw_retrieve_pass(
     conversation_id: str,
     apimw_k: int,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Single retrieve pass for APImw (shared by steps B and C)."""
     queries = _build_retrieve_soul_context_queries(
         soul_id=soul_id,
         message=query_text,
@@ -2255,13 +2247,8 @@ async def _apimw_retrieve_pass(
     )
     logger.info("apimw %s: retrieve for %s", phase, conversation_id)
     retrieve_out = await _run_retrieve(retrieve_payload, conversation_id=conversation_id)
-    result_data_local = retrieve_out.get("result") if isinstance(retrieve_out, dict) else {}
-    if not isinstance(result_data_local, dict):
-        result_data_local = {}
-    items_local = result_data_local.get("items") or []
-    if not isinstance(items_local, list):
-        items_local = []
-    rows = [row for row in items_local if isinstance(row, dict)]
+    result_data_local = retrieve_out.get("result") or {}
+    rows = [row for row in (result_data_local.get("items") or []) if isinstance(row, dict)]
     logger.info("apimw %s: retrieved %d items", phase, len(rows))
     return result_data_local, rows
 
@@ -2279,7 +2266,6 @@ async def _apimw_retrieve_and_merge(
     apimw_random_count: int,
     scope: dict[str, str],
 ) -> list[dict[str, Any]]:
-    """Steps B+C: retrieve by topic, optional second-pass rewrite, merge with random sample."""
     result_data_first, items_first = await _apimw_retrieve_pass(
         payload,
         query_text=topic_statement,
@@ -2318,16 +2304,16 @@ async def _apimw_retrieve_and_merge(
         pool = svc.database.memory_item_repo.list_items(scope)
         candidates: list[dict[str, Any]] = []
         for item in pool.values():
-            item_id = str(getattr(item, "id", "") or "").strip()
-            summary = str(getattr(item, "summary", "") or "").strip()
+            item_id = str(item.id or "").strip()
+            summary = str(item.summary or "").strip()
             if not item_id or not summary:
                 continue
             row = {
                 "id": item_id,
-                "memory_type": str(getattr(item, "memory_type", "memory") or "memory"),
+                "memory_type": str(item.memory_type or "memory"),
                 "summary": summary,
-                "happened_at": getattr(item, "happened_at", None),
-                "reinforcement_count": getattr(item, "reinforcement_count", 0),
+                "happened_at": item.happened_at,
+                "reinforcement_count": item.reinforcement_count,
             }
             sig = _item_sig(row)
             if not sig or sig in seen_item_sigs:
@@ -2358,10 +2344,6 @@ async def _apimw_def_call(
     conversation_id: str,
     scope: dict[str, str],
 ) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
-    """Steps D+E+F: build system/user prompt, call LLM, parse JSON.
-
-    Returns (result_json, items_by_id). Returns (None, {}) on parse failure.
-    """
     logger.info("apimw step D+E+F: combined call for %s", conversation_id)
 
     memory_lines: list[str] = []
@@ -2383,8 +2365,8 @@ async def _apimw_def_call(
     categories = svc.database.memory_category_repo.list_categories(scope)
     cat_lines: list[str] = []
     for cat in categories.values():
-        cat_summary = str(getattr(cat, "summary", "") or "").strip()
-        cat_name = str(getattr(cat, "name", "") or "").strip()
+        cat_summary = str(cat.summary or "").strip()
+        cat_name = cat.name
         if cat_name and cat_summary:
             cat_lines.append(f"{cat_name}: {cat_summary}")
     formatted_categories = "\n".join(cat_lines) if cat_lines else "(none)"
@@ -2476,7 +2458,6 @@ async def _apimw_persist(
     user_id: str,
     soul_id: str,
 ) -> None:
-    """Persist APImw results: state writes (inside lock) + edge writes (outside lock)."""
     async with _retrieve_scope_lock(user_id, soul_id):
         updates: dict[str, Any] = {}
 
@@ -4639,15 +4620,14 @@ def _turn_state_read(
     dry_run: bool,
     history_full: list[dict[str, Any]],
 ) -> tuple[
-    dict[str, Any],  # state_row
-    Any,             # soul_card
-    Any,             # db_path
-    list[str],       # memory_cache_before
-    dict[str, Any],  # intentions_before
-    int,             # force_memorize_unmemorized_tokens
-    "dict[str, Any] | None",  # force_memorize_payload
+    dict[str, Any],
+    Any,
+    Any,
+    list[str],
+    dict[str, Any],
+    int,
+    "dict[str, Any] | None",
 ]:
-    """Phase 1 body: read conversation state for prompt building. Called inside state_lock."""
     state_row, soul_card, db_path = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
     payload_soul_card = str(safe.get("soul_card") or "").strip() or None
     soul_card = payload_soul_card or soul_card
@@ -4692,7 +4672,6 @@ def _turn_state_write(
     chat_x: str | None,
     apply_turn_maintenance: bool,
 ) -> tuple[dict[str, Any], Any]:
-    """Phase 2 body: re-read fresh state, merge turn updates, write. Called inside state_lock."""
     fresh_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
     fresh_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
     fresh_intentions = _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
@@ -4736,10 +4715,7 @@ def _turn_launch_apimw(
     state_out: dict[str, Any],
     state_row: dict[str, Any],
 ) -> str:
-    """Launch APImw background task if cadence gate passes. Returns apimw_status string."""
-    apimw_state = state_out if isinstance(state_out, dict) else state_row
-    if not isinstance(apimw_state, dict):
-        apimw_state = {}
+    apimw_state = state_out
     _cadence_anchors = _compact_chat_x_anchors(
         str(apimw_state.get("last_chat_x") or "").strip() or None,
     )
@@ -4869,8 +4845,6 @@ async def conversation_turn(
                 cid, uid, soul_id, safe, state_override_cache, state_override_intentions,
                 apply_turn_maintenance, dry_run, history_full,
             )
-
-        # Turn LLM call outside lock (may take seconds; other operations can proceed)
 
         # Load soul generation config (persists across frontends).
         # Frontend params update stored config when they differ.
