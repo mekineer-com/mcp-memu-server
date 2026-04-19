@@ -297,7 +297,7 @@ def _build_segment_memorize_batches(
             end_idx = int(segment.get("end"))
         except Exception:
             continue
-        if end_idx < start_idx or end_idx >= last_idx or end_idx <= processed_cursor:
+        if end_idx < start_idx or end_idx > last_idx or end_idx <= processed_cursor:
             continue
         effective_start = carry[0] if carry is not None else max(start_idx, processed_cursor + 1)
         carry = None
