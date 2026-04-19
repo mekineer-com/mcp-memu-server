@@ -4015,7 +4015,39 @@ async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)
     parsed = json.loads(text)
     new_narrative = str(parsed.get("narrative_self") or "").strip()
 
-    if new_narrative and db_path is not None:
+    if new_narrative and db_path is not None and current_narrative != new_narrative:
+        scope = {"user_id": user_id, "soul_id": soul_id}
+        new_snapshot_id: str | None = None
+        if current_narrative:
+            prev_snapshots = svc.database.memory_item_repo.list_items(
+                {"memory_type": "narrative_self", **scope}
+            )
+            prev_snapshot_id = next(iter(prev_snapshots.keys()), None)
+            [old_embedding] = await svc.embed([current_narrative], profile="embedding")
+            new_item = svc.database.memory_item_repo.create_item(
+                resource_id=None,
+                memory_type="narrative_self",
+                summary=current_narrative,
+                embedding=old_embedding,
+                user_data=scope,
+                source_role="soul",
+                happened_at=datetime.now(UTC),
+            )
+            new_snapshot_id = str(new_item.id)
+            if prev_snapshot_id:
+                from memu.database.models import Triple
+                svc.database.triple_repo.add(
+                    Triple(
+                        subject_id=prev_snapshot_id,
+                        subject_kind="memory",
+                        predicate="evolved_into",
+                        object_id=new_snapshot_id,
+                        object_kind="memory",
+                        source_memory_id=new_snapshot_id,
+                    ),
+                    user_data=scope,
+                )
+
         _sqlite_ensure_nonempty(db_path)
         con = _sqlite_connect(db_path)
         try:
