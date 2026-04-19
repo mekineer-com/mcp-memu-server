@@ -20,7 +20,8 @@ LIFE_GOALS_FREE_WILL_HEADER = "Your life goals (you reshape these during your we
 
 
 def _local_now(now: datetime | None = None) -> datetime:
-    anchor = now if isinstance(now, datetime) else datetime.now().astimezone()
+    # Derive from UTC first so DST transitions on the host TZ never produce ambiguous times.
+    anchor = now if isinstance(now, datetime) else datetime.now(timezone.utc).astimezone()
     if anchor.tzinfo is None:
         return anchor.replace(tzinfo=timezone.utc).astimezone()
     return anchor.astimezone()
