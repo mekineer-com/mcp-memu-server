@@ -2163,7 +2163,7 @@ async def _apimw_retrieve_and_merge(
                 "memory_type": str(item.memory_type or "memory"),
                 "summary": summary,
                 "happened_at": item.happened_at,
-                "reinforcement_count": item.reinforcement_count,
+                "reinforcement_count": (item.extra or {}).get("reinforcement_count", 0),
             }
             sig = _item_sig(row)
             if not sig or sig in seen_item_sigs:
