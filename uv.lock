@@ -711,13 +711,17 @@ dependencies = [
     { name = "fastapi-mcp" },
     { name = "openai" },
     { name = "pendulum" },
-    { name = "pgvector" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "sqlmodel" },
     { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+postgres = [
+    { name = "pgvector" },
 ]
 
 [package.dev-dependencies]
@@ -741,7 +745,7 @@ requires-dist = [
     { name = "fastapi-mcp", specifier = ">=0.4.0" },
     { name = "openai", specifier = ">=1.54.4" },
     { name = "pendulum", specifier = ">=3.1.0" },
-    { name = "pgvector", specifier = ">=0.3.2" },
+    { name = "pgvector", marker = "extra == 'postgres'", specifier = ">=0.3.2" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2.9" },
     { name = "pydantic-settings", specifier = ">=2.10.1" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
@@ -749,7 +753,7 @@ requires-dist = [
     { name = "sqlmodel", specifier = ">=0.0.27" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35.0" },
 ]
-provides-extras = ["memu"]
+provides-extras = ["memu", "postgres"]
 
 [package.metadata.requires-dev]
 dev = [

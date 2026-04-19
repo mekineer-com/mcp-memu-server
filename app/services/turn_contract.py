@@ -421,13 +421,7 @@ def build_turn_prompt(
     )
     blocked_terms = item_terms | category_terms | all_categories_terms
 
-    # Discard values that look like JSON — these are stale routing artifacts from the
-    # pre-715256c contract when prior_context was sometimes serialized as a JSON blob.
-    # Current callers pass plain text; a leading "{" means we're looking at legacy state.
-    safe_prior = prior_context
-    if safe_prior and safe_prior.strip().startswith("{"):
-        safe_prior = None
-    safe_prior = _dedupe_prior_context(safe_prior, blocked_terms) or None
+    safe_prior = _dedupe_prior_context(prior_context, blocked_terms) or None
 
     retrieve_text = _text(rendered_retrieve)
     all_categories_text = _text(rendered_all_categories)
