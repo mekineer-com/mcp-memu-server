@@ -276,30 +276,14 @@ async def _run_forced_memorize_from_turn(payload: dict[str, Any]) -> None:
 
 
 def _has_category_content(c: dict[str, Any]) -> bool:
-    """Return True if this category has any user-visible content.
-
-    We intentionally do NOT fabricate content. We only consider fields that
-    already exist on the category object.
-    """
     summary = str(c.get("summary") or "").strip()
     desc = str(c.get("description") or "").strip()
     return bool(summary or desc)
 
 
-# -------------------------
-# Process identity (for restart detection)
-# -------------------------
-
 _SERVER_INSTANCE_ID: str = str(uuid.uuid4())
 _SERVER_STARTED_AT_UNIX: float = time.time()
-
-# -------------------------
-# Recent request trace (debug)
-# -------------------------
 _LAST_CALLS: list[dict[str, Any]] = []
-
-# Full HTTP trace (method/path/status/elapsed). This answers:
-# "Is anything reaching the server from the plugin?"
 _LAST_HTTP: list[dict[str, Any]] = []
 _MEMORIZE_LOCKS: dict[str, asyncio.Lock] = {}
 
@@ -311,10 +295,6 @@ def _get_memorize_lock(key: str) -> asyncio.Lock:
         _MEMORIZE_LOCKS[key] = lock
     return lock
 
-
-# -------------------------
-# Graceful shutdown state
-# -------------------------
 
 _STATE_LOCK = threading.Lock()
 _ACTIVE_HTTP_REQUESTS: int = 0
@@ -402,7 +382,6 @@ async def _retrieve_scope_lock(user_id: str, soul_id: str):
 
 
 def _begin_shutdown_drain(requested_by: str | None, reason: str | None, max_wait_sec: int) -> bool:
-    """Return True when this call transitioned the server into draining mode."""
     with _STATE_LOCK:
         already = bool(_SHUTDOWN_STATE.get("draining"))
         if already:
@@ -418,7 +397,6 @@ def _begin_shutdown_drain(requested_by: str | None, reason: str | None, max_wait
 
 
 async def _shutdown_when_idle(max_wait_sec: int) -> None:
-    """Drain in-flight work and then terminate this process."""
     global _SHUTDOWN_TASK
 
     deadline = (time.time() + max_wait_sec) if max_wait_sec > 0 else None
@@ -503,7 +481,6 @@ async def _trace_requests(request: Request, call_next):
 
 
 def _is_ephemeral_db(cfg: dict[str, Any]) -> bool:
-    """Return True when the metadata store is expected to be wiped on server restart."""
     try:
         storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
         ms = storage.get("metadata_store") if isinstance(storage.get("metadata_store"), dict) else {}
@@ -519,19 +496,9 @@ def _is_ephemeral_db(cfg: dict[str, Any]) -> bool:
     return False
 
 
-# -------------------------
-# User scoping (SillyTavern)
-# -------------------------
-# memU 1.4's DefaultUserModel includes user_id only. For SillyTavern we want per-user + per-soul
-# (+ optional session) isolation without patching memU itself.
 class STUserModel(BaseModel):
     user_id: str | None = None
     soul_id: str | None = None
-
-
-# -------------------------
-# Config file (single source of truth for "default" service)
-# -------------------------
 
 
 def _home_dir() -> Path:
@@ -640,13 +607,8 @@ def _load_config() -> dict[str, Any]:
         return cfg
 
 
-# -------------------------
-# Storage path helpers
-# -------------------------
-
 _STARTUP_WARNINGS: list[str] = []
 
-# Last known storage diagnostics (used by /health).
 _STORAGE_STATUS: dict[str, Any] = {
     "ok": None,
     "provider": None,
@@ -711,9 +673,6 @@ def _normalize_sqlite_dsn(dsn_or_path: str) -> str:
     return f"sqlite:////{p.as_posix().lstrip('/')}"
 
 
-# -------------------------
-# Per-agent SQLite isolation (always enabled)
-# -------------------------
 
 
 def _sqlite_dir_from_cfg(cfg: dict[str, Any], fallback_dsn: str | None = None) -> Path:
@@ -731,11 +690,6 @@ def _sqlite_dir_from_cfg(cfg: dict[str, Any], fallback_dsn: str | None = None) -
 
 
 def _ensure_storage_paths(cfg: dict[str, Any]) -> None:
-    """Create directories needed for resources + sqlite on-disk storage.
-
-    This keeps setup smooth (no manual mkdir) and converts a confusing
-    sqlite "unable to open database file" into a clear startup warning.
-    """
     global _STORAGE_STATUS
     try:
         storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
@@ -934,11 +888,6 @@ def _save_soul_gen_config(user_id: str, soul_id: str, cfg: dict[str, Any]) -> No
 
 
 def _sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, Any] | None) -> str:
-    """Resolve the sqlite DSN for this request.
-
-    Policy (minimal):
-      - Per-character DBs for SillyTavern traffic (soul_id scope key).
-    """
     if not isinstance(scope, dict):
         scope = {}
 
@@ -1017,17 +966,12 @@ def _default_llm_profiles_from_server_config() -> dict[str, Any]:
     }
 
 
-# -------------------------
-# Payload-based services (SillyTavern plugin)
-# -------------------------
-
 _SERVICES: dict[str, MemoryService] = {}
 _SERVICE_STORAGE_FP: dict[str, dict[str, Any]] = {}
 _SERVICES_LOCK: threading.Lock = threading.Lock()
 
 
 def _close_service_quiet(svc: MemoryService | None) -> None:
-    """Best-effort close of a cached MemoryService database handle."""
     if svc is None:
         return
     try:
@@ -1040,7 +984,6 @@ def _close_service_quiet(svc: MemoryService | None) -> None:
 
 
 def _clear_cached_services() -> None:
-    """Drop all cached services and release underlying DB handles."""
     for svc in list(_SERVICES.values()):
         _close_service_quiet(svc)
     _SERVICES.clear()
@@ -1048,12 +991,8 @@ def _clear_cached_services() -> None:
 
 
 def _service_storage_fingerprint(database_config: dict[str, Any] | None) -> dict[str, Any]:
-    """Small storage fingerprint used to invalidate stale cached services.
-
-    For sqlite we track file path + inode identity so deleting/recreating the
-    file forces a new service (otherwise SQLAlchemy may keep writing to an
-    unlinked inode through a pooled connection).
-    """
+    # For sqlite we track file path + inode so deleting/recreating the file forces a new service
+    # (otherwise SQLAlchemy may keep writing to an unlinked inode through a pooled connection).
     if not isinstance(database_config, dict):
         return {"provider": None}
 
@@ -1212,9 +1151,6 @@ def _get_service_from_payload(
     allow_missing_llm_profiles: bool = False,
     retrieve_method_override: str | None = None,
 ) -> MemoryService:
-    """Returns the MemoryService for this payload; also mutates payload in place to inject
-    resolved config keys (database_config, blob_config, llm_profiles, retrieve_config,
-    memorize_config overrides) so that the returned service is consistent with the payload."""
     service_key_raw = _derive_service_key(payload)
 
     llm_profiles = payload.get("llm_profiles")
@@ -1297,10 +1233,8 @@ def _get_service_from_payload(
             _SERVICES.pop(service_key, None)
             _SERVICE_STORAGE_FP.pop(service_key, None)
 
-        # Force STUserModel so soul_id filters are accepted.
         user_config = {**(user_config if isinstance(user_config, dict) else {}), "model": STUserModel}
 
-        # Small UX: disable conversation preprocess prompt unless explicitly set.
         mpp = dict(memorize_config.get("multimodal_preprocess_prompts") or {}) if isinstance(memorize_config, dict) else {}
         if "conversation" not in mpp:
             mpp["conversation"] = ""
@@ -1368,10 +1302,6 @@ def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _canonicalize_scope_where(where: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """Normalize scope aliases before handing filters to memU.
-
-    memU's current ST user model accepts `user_id` and `soul_id`.
-    """
     if where is None:
         return None
 
@@ -2148,7 +2078,6 @@ async def _apimw_topic_statement(
     identity_context: str,
     conversation_id: str,
 ) -> str:
-    logger.info("apimw step A: topic statement for %s", conversation_id)
     topic_system = (
         f"{identity_context}\n\n"
         "State the topic of the CURRENT episode in 1-2 sentences. The previous episode is provided only as context — "
@@ -2192,11 +2121,9 @@ async def _apimw_retrieve_pass(
         retrieve_payload.get("retrieve_config"),
         item_top_k=apimw_k,
     )
-    logger.info("apimw %s: retrieve for %s", phase, conversation_id)
     retrieve_out = await _run_retrieve(retrieve_payload, conversation_id=conversation_id)
     result_data_local = retrieve_out.get("result") or {}
     rows = [row for row in (result_data_local.get("items") or []) if isinstance(row, dict)]
-    logger.info("apimw %s: retrieved %d items", phase, len(rows))
     return result_data_local, rows
 
 
@@ -2275,7 +2202,6 @@ async def _apimw_retrieve_and_merge(
                 seen_item_sigs.add(sig)
                 combined_items.append(row)
 
-    logger.info("apimw step C: combined pool %d items", len(combined_items))
     return combined_items
 
 
@@ -2291,8 +2217,6 @@ async def _apimw_def_call(
     conversation_id: str,
     scope: dict[str, str],
 ) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
-    logger.info("apimw step D+E+F: combined call for %s", conversation_id)
-
     memory_lines: list[str] = []
     items_by_id: dict[str, dict[str, Any]] = {}
     for it in combined_items:
@@ -2390,7 +2314,6 @@ async def _apimw_def_call(
         logger.error("apimw D+E+F: expected dict, got %s", type(result_json).__name__)
         return None, items_by_id
 
-    logger.info("apimw step D+E+F: parsed JSON with keys %s", list(result_json.keys()))
     return result_json, items_by_id
 
 
@@ -2464,15 +2387,9 @@ async def _apimw_persist(
                 user_id=user_id,
                 updates=updates,
             )
-            logger.info("apimw: state written for %s (keys: %s)", conversation_id, list(updates.keys()))
 
-    wrote = _write_memory_edges(svc.database.triple_repo, result_json.get("edges"), scope=scope)
-    if wrote:
-        logger.info("apimw: wrote %d edges for %s", wrote, conversation_id)
-
-    invalidated = _invalidate_memory_edges(svc.database.triple_repo, result_json.get("edge_invalidations"), scope=scope)
-    if invalidated:
-        logger.info("apimw: invalidated %d edges for %s", invalidated, conversation_id)
+    _write_memory_edges(svc.database.triple_repo, result_json.get("edges"), scope=scope)
+    _invalidate_memory_edges(svc.database.triple_repo, result_json.get("edge_invalidations"), scope=scope)
 
 
 async def _run_apimw(
@@ -2564,8 +2481,6 @@ async def _run_apimw(
             user_id=user_id,
             soul_id=soul_id,
         )
-
-        logger.info("apimw: complete for %s", conversation_id)
 
     except Exception:
         logger.exception("APImw background pipeline failed for %s", conversation_id)
@@ -2958,16 +2873,6 @@ async def root():
     except Exception:
         pass
     return {"message": "mcp-memu-server", "mcp": "enabled" if _has_mcp else "disabled"}
-
-
-# -------------------------
-# SillyTavern plugin endpoints (payload-driven)
-# -------------------------
-
-
-# -----------------------------
-# ST conversation resource helpers
-# -----------------------------
 
 
 def _msg_key(m: dict[str, Any]) -> tuple[str, str, str, str]:

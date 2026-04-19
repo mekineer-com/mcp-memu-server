@@ -437,13 +437,13 @@ async def run_consolidation_llm(
     inputs: dict[str, Any],
     soul_id: str,
 ) -> dict[str, Any]:
-    categories_text = _format_categories_for_prompt(list(inputs.get("categories") or []))
+    categories_text = _format_categories_for_prompt(inputs["categories"])
     life_goals_text = _format_life_goals_for_prompt(
-        list(inputs.get("active_life_goals") or []),
-        list(inputs.get("removed_life_goals") or []),
+        inputs["active_life_goals"],
+        inputs["removed_life_goals"],
     )
-    intention_text = _format_intention_activity_for_prompt(list(inputs.get("intention_activity") or []))
-    episodes_text = _format_episode_block_for_prompt(list(inputs.get("episode_inputs") or []))
+    intention_text = _format_intention_activity_for_prompt(inputs["intention_activity"])
+    episodes_text = _format_episode_block_for_prompt(inputs["episode_inputs"])
 
     # narrative_self (DB column name, populated by consolidation writes) and soul_card
     # (in-prompt label used by turn_contract and memorize) refer to the same entity —
@@ -475,21 +475,21 @@ async def run_consolidation_llm(
     )
     expected_episode_ids = {
         str(row.get("episode_id") or "").strip()
-        for row in (inputs.get("episode_inputs") or [])
+        for row in inputs["episode_inputs"]
         if str(row.get("episode_id") or "").strip()
     }
     parsed = _parse_consolidation_xml(str(raw or ""), expected_episode_ids=expected_episode_ids)
 
-    diary_rows = list(parsed.get("diaries") or [])
+    diary_rows = list(parsed["diaries"])
     embed_inputs: list[str] = []
-    if str(parsed.get("companion_memory") or "").strip():
+    if str(parsed["companion_memory"] or "").strip():
         embed_inputs.append(str(parsed["companion_memory"]).strip())
     embed_inputs.extend(str(row.get("prose") or "").strip() for row in diary_rows)
     embeddings = await svc.embed(embed_inputs, profile="embedding") if embed_inputs else []
 
     cursor = 0
     companion_embedding = None
-    if str(parsed.get("companion_memory") or "").strip():
+    if str(parsed["companion_memory"] or "").strip():
         if cursor < len(embeddings):
             companion_embedding = embeddings[cursor]
         cursor += 1
@@ -498,15 +498,15 @@ async def run_consolidation_llm(
         cursor += 1
 
     return {
-        "narrative_self": str(parsed.get("narrative_self") or "").strip() or None,
-        "life_goal_add": [str(x).strip() for x in (parsed.get("life_goal_add") or []) if str(x).strip()],
-        "life_goal_remove": [str(x).strip() for x in (parsed.get("life_goal_remove") or []) if str(x).strip()],
-        "companion_memory": str(parsed.get("companion_memory") or "").strip() or None,
-        "companion_shaped_by_hints": parsed.get("companion_shaped_by_hints") or [],
+        "narrative_self": str(parsed["narrative_self"] or "").strip() or None,
+        "life_goal_add": [str(x).strip() for x in parsed["life_goal_add"] if str(x).strip()],
+        "life_goal_remove": [str(x).strip() for x in parsed["life_goal_remove"] if str(x).strip()],
+        "companion_memory": str(parsed["companion_memory"] or "").strip() or None,
+        "companion_shaped_by_hints": parsed["companion_shaped_by_hints"],
         "companion_embedding": companion_embedding,
         "diaries": diary_rows,
-        "edges": parsed.get("edges") or [],
-        "edge_invalidations": parsed.get("edge_invalidations") or [],
+        "edges": parsed["edges"],
+        "edge_invalidations": parsed["edge_invalidations"],
     }
 
 
@@ -574,13 +574,13 @@ def write_consolidation_outputs(
 
     episode_map = {
         str(row.get("episode_id") or "").strip(): row
-        for row in (inputs.get("episode_inputs") or [])
+        for row in inputs["episode_inputs"]
         if str(row.get("episode_id") or "").strip()
     }
 
     # svc engine-layer writes first — diary_ids feeds into the SQLite narrative_self upsert
     diary_ids: list[str] = []
-    for row in llm_results.get("diaries") or []:
+    for row in llm_results["diaries"]:
         episode_id = str(row.get("episode_id") or "").strip()
         prose = str(row.get("prose") or "").strip()
         embedding = row.get("embedding")
@@ -674,7 +674,7 @@ ORDER BY updated_at ASC, id ASC
         goals_to_delete: list[str] = []
         goals_to_add: list[tuple[str, str]] = []
 
-        for desc in llm_results.get("life_goal_remove") or []:
+        for desc in llm_results["life_goal_remove"]:
             text = str(desc or "").strip()
             if not text:
                 continue
@@ -687,7 +687,7 @@ ORDER BY updated_at ASC, id ASC
                 removed_ids.pop(text, None)
 
         active_goal_count = len(active_ids)
-        for desc in llm_results.get("life_goal_add") or []:
+        for desc in llm_results["life_goal_add"]:
             text = str(desc or "").strip()
             if not text or text in active_ids or active_goal_count >= 3:
                 continue
@@ -731,14 +731,14 @@ INSERT INTO intentions_life_goals (
         updates=state_updates,
     )
     scope = {"user_id": user_id, "soul_id": soul_id}
-    wrote = write_memory_edges(svc.database.triple_repo, llm_results.get("edges"), scope=scope)
-    invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results.get("edge_invalidations"), scope=scope)
+    wrote = write_memory_edges(svc.database.triple_repo, llm_results["edges"], scope=scope)
+    invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results["edge_invalidations"], scope=scope)
     shaped_by_wrote = _write_shaped_by_edges(
         svc,
         diary_ids=diary_ids,
-        diary_rows=list(llm_results.get("diaries") or []),
+        diary_rows=llm_results["diaries"],
         companion_memory_id=companion_memory_id,
-        companion_shaped_by_hints=list(llm_results.get("companion_shaped_by_hints") or []),
+        companion_shaped_by_hints=llm_results["companion_shaped_by_hints"],
         scope=scope,
     )
 
