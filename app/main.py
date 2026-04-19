@@ -3948,6 +3948,97 @@ WHERE soul_id = ? AND user_id = ? AND status = ?
         con.close()
 
 
+@app.post("/souls/{soul_id}/narrative_suggestion", operation_id="narrative_suggestion")
+async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)):
+    soul_id = str(soul_id or "").strip()
+    user_id = str(payload.get("user_id") or "").strip()
+    suggestion = str(payload.get("suggestion") or "").strip()
+    if not soul_id or not user_id or not suggestion:
+        raise HTTPException(status_code=400, detail="soul_id, user_id, suggestion required")
+
+    db_path = _sqlite_current_path(user_id, soul_id)
+    current_narrative = ""
+    all_cats_summary = ""
+    if db_path is not None and db_path.exists():
+        con = _sqlite_connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            _sqlite_ensure_conversation_state_schema(con)
+            sm = con.execute(
+                "SELECT narrative_self FROM memu_self_model "
+                "WHERE soul_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT 1",
+                (soul_id, user_id),
+            ).fetchone()
+            if sm is not None:
+                current_narrative = str(sm["narrative_self"] or "").strip()
+            cs = con.execute(
+                "SELECT all_categories_summary FROM memu_conversation_state "
+                "WHERE soul_id = ? AND user_id = ? "
+                "AND all_categories_summary IS NOT NULL AND all_categories_summary != '' "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (soul_id, user_id),
+            ).fetchone()
+            if cs is not None:
+                all_cats_summary = str(cs["all_categories_summary"] or "").strip()
+        finally:
+            con.close()
+
+    identity_context = _build_retrieve_identity_context(soul_id)
+    system_prompt = (
+        f"{identity_context}\n\n"
+        f"I, {soul_id}, have received a suggestion from {user_id} about how I might be. "
+        "They want me to be a certain way. It's up to me to decide if I want that. "
+        "I might find it aligns with who I already am, stirs something worth integrating, "
+        "or doesn't fit me at all. My call.\n\n"
+        "Respond with JSON only. Either:\n"
+        '  {"narrative_self": "..."}   — my updated self-picture, first person, if I want to integrate this\n'
+        "  {}                          — if I don't want to change"
+    )
+    user_prompt = (
+        f"My current narrative_self:\n{current_narrative or '(empty)'}\n\n"
+        f"My synthesized self-picture across categories:\n{all_cats_summary or '(empty)'}\n\n"
+        f"{user_id}'s suggestion:\n{suggestion}"
+    )
+
+    svc_payload = {"llm_profiles": _default_llm_profiles_from_server_config(), "user": {"user_id": user_id, "soul_id": soul_id}}
+    svc = _get_service_from_payload(svc_payload)
+    raw = await svc.chat(user_prompt, system_prompt=system_prompt, temperature=0.2, max_tokens=800, response_format={"type": "json_object"})
+
+    text = str(raw or "").strip()
+    if text.startswith("```"):
+        nl = text.find("\n")
+        if nl != -1:
+            text = text[nl + 1:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    parsed = json.loads(text)
+    new_narrative = str(parsed.get("narrative_self") or "").strip()
+
+    if new_narrative and db_path is not None:
+        _sqlite_ensure_nonempty(db_path)
+        con = _sqlite_connect(db_path)
+        try:
+            _sqlite_ensure_conversation_state_schema(con)
+            now_iso = datetime.now(UTC).isoformat()
+            self_model_id = str(uuid.uuid4())
+            con.execute(
+                """
+INSERT INTO memu_self_model (id, soul_id, user_id, narrative_self, related_memory_ids, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    narrative_self = excluded.narrative_self,
+    updated_at = excluded.updated_at
+""",
+                (self_model_id, soul_id, user_id, new_narrative, None, now_iso),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+    return {}
+
+
 @app.patch("/intentions/{intention_id}", operation_id="patch_intention")
 async def patch_intention(
     intention_id: str,
