@@ -1167,12 +1167,15 @@ def _normalize_retrieve_method(value: Any, default: str = "rag") -> str:
 
 
 def _retrieve_method_from_cfg(cfg: Mapping[str, Any] | None) -> str:
+    # Public retrieve is always "rag". The "llm" branch has been removed;
+    # force it here so a stale config entry can't resurrect it.
     if not isinstance(cfg, Mapping):
         return "rag"
     retrieve = cfg.get("retrieve")
     if not isinstance(retrieve, Mapping):
         return "rag"
-    return _normalize_retrieve_method(retrieve.get("method"), "rag")
+    method = _normalize_retrieve_method(retrieve.get("method"), "rag")
+    return "rag" if method == "llm" else method
 
 
 def _retrieve_apimw_enabled_from_cfg(cfg: Mapping[str, Any] | None) -> bool:
