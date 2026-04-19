@@ -2486,6 +2486,10 @@ async def _apimw_persist(
     async with _retrieve_scope_lock(user_id, soul_id):
         updates: dict[str, Any] = {}
 
+        fresh_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=user_id, soul_id=soul_id)
+        current_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
+        current_intentions = _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
+
         prior_ids = result_json.get("prior_context") or []
         if isinstance(prior_ids, list) and prior_ids:
             pc_lines: list[str] = []
@@ -2499,13 +2503,16 @@ async def _apimw_persist(
                 summary = str(it.get("summary") or "").strip()
                 pc_lines.append(f"[{mem_type}]{suffix} {summary}")
             if pc_lines:
-                updates["prior_context"] = "\n".join(pc_lines)
+                new_prior = "\n".join(pc_lines)
+                existing_prior = str(fresh_row.get("prior_context") or "").strip()
+                if existing_prior and existing_prior != new_prior:
+                    logger.warning(
+                        "apimw: overwriting non-empty prior_context for %s (may indicate concurrent turn write)",
+                        conversation_id,
+                    )
+                updates["prior_context"] = new_prior
 
         updates["last_retrieval_ids"] = _extract_result_item_ids({"items": combined_items})
-
-        fresh_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=user_id, soul_id=soul_id)
-        current_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
-        current_intentions = _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
 
         cache_obj = result_json.get("cache")
         if isinstance(cache_obj, dict) and cache_obj.get("entry"):
