@@ -3299,7 +3299,7 @@ def _resolve_sleep_timer_timezone(manifest: dict[str, Any]) -> tuple[Any | None,
             zi = None
     if zi is None and tz_off_min is not None:
         try:
-            zi = timezone(timedelta(minutes=-tz_off_min))
+            zi = timezone(timedelta(minutes=tz_off_min))
         except Exception:
             zi = None
     return zi, tz_name, tz_off_min
@@ -3777,7 +3777,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                     tz_ok = False
             if not tz_ok and tz_off_min is not None:
                 try:
-                    zi = timezone(timedelta(minutes=-tz_off_min))
+                    zi = timezone(timedelta(minutes=tz_off_min))
                     tz_ok = True
                     if not tz_name:
                         tz_name = f"offset({tz_off_min})"
