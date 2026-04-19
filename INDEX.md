@@ -18,7 +18,7 @@ mcp-memu-server/
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
 ├── config.json              # Runtime config (llm, storage, listen, categories, memu path)
 ├── config.example.json      # Template
-├── tests/test_main.py       # Minimal smoke test
+├── tests/                   # pytest suite — see `tests/README.md` for the working run command (Makefile assumes upstream `uv`, not local Alpine venv)
 ├── alembic/                 # DB migration scripts
 ├── storage/                 # Default SQLite DB + resource dir
 ├── Makefile                 # make install/run/test/check
