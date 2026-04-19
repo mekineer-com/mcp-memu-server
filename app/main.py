@@ -3596,12 +3596,15 @@ async def _run_memorize_batches(
     days_written: int,
     sleep_stats: Any,
 ) -> None:
-    async with _get_memorize_lock(_memorize_lock_key(uid, soul_id)):
-        has_batch_results = False
-        pending_diary_episode_ids: list[str] = []
-        processed_end_cursor = processed_cursor
-        current_all_categories_summary: str | None = None
-        soul_card_for_memorize: str | None = None
+    mem_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
+    has_batch_results = False
+    pending_diary_episode_ids: list[str] = []
+    processed_end_cursor = processed_cursor
+    current_all_categories_summary: str | None = None
+    soul_card_for_memorize: str | None = None
+
+    # Phase 1: read initial state under lock.
+    async with mem_lock:
         if conversation_id:
             state_row, soul_card_for_memorize, _ = _load_turn_state_and_soul_card(
                 conversation_id,
@@ -3609,38 +3612,56 @@ async def _run_memorize_batches(
                 soul_id=soul_id,
             )
             current_all_categories_summary = str(state_row.get("all_categories_summary") or "").strip() or None
-        for batch_url, batch_conv, batch_end in memorize_batches:
-            batch_result = await svc.memorize(
-                resource_url=batch_url,
-                modality="conversation",
-                user=scope,
-                raw_text=json.dumps(batch_conv, ensure_ascii=False),
-                local_path=batch_url,
-                all_categories_summary=current_all_categories_summary,
-                soul_card=soul_card_for_memorize,
-            )
-            if isinstance(batch_result, dict):
-                has_batch_results = True
-                pending_diary_episode_ids.extend(_normalize_text_list(batch_result.get("pending_diary_episode_ids")))
-                processed_end_cursor = max(processed_end_cursor, batch_end)
-                if conversation_id:
-                    # per-batch advance — crash recovery needs the cursor to move after each successful batch
-                    _write_conversation_state(
+
+    # Phase 2: run LLM batches outside the lock; re-acquire per batch to advance cursor.
+    for batch_url, batch_conv, batch_end in memorize_batches:
+        # LLM call outside the lock — can take several seconds.
+        batch_result = await svc.memorize(
+            resource_url=batch_url,
+            modality="conversation",
+            user=scope,
+            raw_text=json.dumps(batch_conv, ensure_ascii=False),
+            local_path=batch_url,
+            all_categories_summary=current_all_categories_summary,
+            soul_card=soul_card_for_memorize,
+        )
+        if isinstance(batch_result, dict):
+            has_batch_results = True
+            pending_diary_episode_ids.extend(_normalize_text_list(batch_result.get("pending_diary_episode_ids")))
+            if conversation_id:
+                # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
+                async with mem_lock:
+                    fresh_row, _, _ = _load_turn_state_and_soul_card(
                         conversation_id,
-                        soul_id=soul_id,
                         user_id=uid,
-                        updates={
-                            "digest_cursor": processed_end_cursor,
-                        },
+                        soul_id=soul_id,
                     )
+                    fresh_cursor = int(fresh_row.get("digest_cursor") or 0)
+                    if fresh_cursor <= batch_end:
+                        processed_end_cursor = max(processed_end_cursor, batch_end)
+                        # per-batch advance — crash recovery needs the cursor to move after each successful batch
+                        _write_conversation_state(
+                            conversation_id,
+                            soul_id=soul_id,
+                            user_id=uid,
+                            updates={
+                                "digest_cursor": processed_end_cursor,
+                            },
+                        )
+                    else:
+                        # Another runner advanced the cursor past our batch_end; honour the further value.
+                        processed_end_cursor = max(processed_end_cursor, fresh_cursor)
 
-        if conversation_id and has_batch_results:
-            current_all_categories_summary = await _compute_holistic_categories_summary(
-                svc=svc,
-                soul_id=soul_id,
-                user_id=uid,
-            )
+    # Phase 3: holistic summary LLM call — outside the lock.
+    if conversation_id and has_batch_results:
+        current_all_categories_summary = await _compute_holistic_categories_summary(
+            svc=svc,
+            soul_id=soul_id,
+            user_id=uid,
+        )
 
+    # Phase 4: final state flush + bookkeeping under lock.
+    async with mem_lock:
         if conversation_id and has_batch_results:
             _write_conversation_state(
                 conversation_id,
