@@ -1837,7 +1837,8 @@ def _format_route_history(history: list[dict[str, Any]]) -> str:
 
 def _build_retrieve_identity_context(soul_name: str, *, apimw: bool = False) -> str:
     name = str(soul_name or "").strip() or "the assistant"
-    now = datetime.now().astimezone()
+    # Derive from UTC first so DST transitions on the host TZ never produce ambiguous times.
+    now = datetime.now(UTC).astimezone()
     zone = now.tzname() or "local"
     anchor = f"Today is {now.strftime('%A, %B')} {now.day}, {now.year} {now.strftime('%H:%M')} {zone}."
     if apimw:
@@ -2093,7 +2094,7 @@ def _merge_memorize_batch_results(
         "items": _merge_record_list(flat_items),
         "categories": _merge_record_list(flat_categories, id_keys=("id", "name")),
         "relations": _merge_record_list(flat_relations, id_keys=("item_id", "category_id")),
-        "pending_diary_episode_ids": list(dict.fromkeys(_normalize_text_list(pending_diary_episode_ids))),
+        "pending_diary_episode_ids": _normalize_text_list(pending_diary_episode_ids),
     }
     merged_resources = _merge_record_list(flat_resources, id_keys=("id", "url", "local_path"))
     if len(merged_resources) == 1:
