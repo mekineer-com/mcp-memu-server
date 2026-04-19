@@ -14,7 +14,7 @@ def parse_episode_range(episode_id: str) -> tuple[int, int]:
     text = str(episode_id or "").strip()
     if not text or ":" not in text:
         raise ValueError(f"invalid episode_id: {episode_id}")
-    range_part = text.split(":", 1)[1]
+    range_part = text.rsplit(":", 1)[1]
     if "-" not in range_part:
         raise ValueError(f"invalid episode_id: {episode_id}")
     start_text, end_text = range_part.split("-", 1)
