@@ -2057,6 +2057,7 @@ async def _apimw_topic_statement(
     identity_context: str,
     conversation_id: str,
 ) -> str:
+    logger.info("apimw step A: topic statement for %s", conversation_id)
     topic_system = (
         f"{identity_context}\n\n"
         "State the topic of the CURRENT episode in 1-2 sentences. The previous episode is provided only as context — "
@@ -2099,9 +2100,11 @@ async def _apimw_retrieve_pass(
         retrieve_payload.get("retrieve_config"),
         item_top_k=apimw_k,
     )
+    logger.info("apimw retrieve for %s", conversation_id)
     retrieve_out = await _run_retrieve(retrieve_payload, conversation_id=conversation_id)
     result_data_local = retrieve_out.get("result") or {}
     rows = [row for row in (result_data_local.get("items") or []) if isinstance(row, dict)]
+    logger.info("apimw retrieved %d items for %s", len(rows), conversation_id)
     return result_data_local, rows
 
 
@@ -2178,6 +2181,7 @@ async def _apimw_retrieve_and_merge(
                 seen_item_sigs.add(sig)
                 combined_items.append(row)
 
+    logger.info("apimw combined pool %d items for %s", len(combined_items), conversation_id)
     return combined_items
 
 
@@ -2193,6 +2197,7 @@ async def _apimw_def_call(
     conversation_id: str,
     scope: dict[str, str],
 ) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
+    logger.info("apimw step D+E+F: combined call for %s", conversation_id)
     memory_lines: list[str] = []
     items_by_id: dict[str, dict[str, Any]] = {}
     for it in combined_items:
@@ -2290,6 +2295,7 @@ async def _apimw_def_call(
         logger.error("apimw D+E+F: expected dict, got %s", type(result_json).__name__)
         return None, items_by_id
 
+    logger.info("apimw D+E+F: parsed JSON with keys %s for %s", list(result_json.keys()), conversation_id)
     return result_json, items_by_id
 
 
@@ -2363,9 +2369,11 @@ async def _apimw_persist(
                 user_id=user_id,
                 updates=updates,
             )
+            logger.info("apimw state written for %s (keys: %s)", conversation_id, list(updates.keys()))
 
-    _write_memory_edges(svc.database.triple_repo, result_json.get("edges"), scope=scope)
-    _invalidate_memory_edges(svc.database.triple_repo, result_json.get("edge_invalidations"), scope=scope)
+    wrote = _write_memory_edges(svc.database.triple_repo, result_json.get("edges"), scope=scope)
+    invalidated = _invalidate_memory_edges(svc.database.triple_repo, result_json.get("edge_invalidations"), scope=scope)
+    logger.info("apimw wrote %d edges, invalidated %d for %s", wrote, invalidated, conversation_id)
 
 
 async def _run_apimw(

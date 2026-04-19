@@ -475,10 +475,15 @@ async def run_consolidation_llm(
     parsed = _parse_consolidation_xml(str(raw or ""), expected_episode_ids=expected_episode_ids)
 
     diary_rows = list(parsed["diaries"])
+    new_narrative = str(parsed["narrative_self"] or "").strip() or None
+    current_narrative = str(inputs.get("narrative_self") or "").strip() or None
+    snapshot_old_narrative = bool(current_narrative and new_narrative and current_narrative != new_narrative)
     embed_inputs: list[str] = []
     if str(parsed["companion_memory"] or "").strip():
         embed_inputs.append(str(parsed["companion_memory"]).strip())
     embed_inputs.extend(str(row.get("prose") or "").strip() for row in diary_rows)
+    if snapshot_old_narrative:
+        embed_inputs.append(current_narrative)
     embeddings = await svc.embed(embed_inputs, profile="embedding") if embed_inputs else []
 
     cursor = 0
@@ -490,14 +495,17 @@ async def run_consolidation_llm(
     for row in diary_rows:
         row["embedding"] = embeddings[cursor] if cursor < len(embeddings) else None
         cursor += 1
+    old_narrative_embedding = embeddings[cursor] if snapshot_old_narrative and cursor < len(embeddings) else None
 
     return {
-        "narrative_self": str(parsed["narrative_self"] or "").strip() or None,
+        "narrative_self": new_narrative,
         "life_goal_add": [str(x).strip() for x in parsed["life_goal_add"] if str(x).strip()],
         "life_goal_remove": [str(x).strip() for x in parsed["life_goal_remove"] if str(x).strip()],
         "companion_memory": str(parsed["companion_memory"] or "").strip() or None,
         "companion_shaped_by_hints": parsed["companion_shaped_by_hints"],
         "companion_embedding": companion_embedding,
+        "old_narrative_text": current_narrative if snapshot_old_narrative else None,
+        "old_narrative_embedding": old_narrative_embedding,
         "diaries": diary_rows,
         "edges": parsed["edges"],
         "edge_invalidations": parsed["edge_invalidations"],
@@ -595,6 +603,37 @@ def write_consolidation_outputs(
                 happened_at=happened_at if isinstance(happened_at, datetime) else None,
             )
         )
+
+    old_narrative_text = llm_results.get("old_narrative_text")
+    old_narrative_embedding = llm_results.get("old_narrative_embedding")
+    if old_narrative_text and isinstance(old_narrative_embedding, list):
+        scope = {"user_id": user_id, "soul_id": soul_id}
+        prev_snapshots = svc.database.memory_item_repo.list_items(
+            {"memory_type": "narrative_self", **scope}
+        )
+        prev_snapshot_id = next(iter(prev_snapshots.keys()), None)
+        snapshot_item = svc.database.memory_item_repo.create_item(
+            resource_id=None,
+            memory_type="narrative_self",
+            summary=old_narrative_text,
+            embedding=old_narrative_embedding,
+            user_data=scope,
+            source_role="soul",
+            happened_at=datetime.now(UTC),
+        )
+        if prev_snapshot_id:
+            from memu.database.models import Triple
+            svc.database.triple_repo.add(
+                Triple(
+                    subject_id=prev_snapshot_id,
+                    subject_kind="memory",
+                    predicate="evolved_into",
+                    object_id=str(snapshot_item.id),
+                    object_kind="memory",
+                    source_memory_id=str(snapshot_item.id),
+                ),
+                user_data=scope,
+            )
 
     companion_memory_id = None
     companion_text = str(llm_results.get("companion_memory") or "").strip()
