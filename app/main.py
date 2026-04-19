@@ -132,20 +132,13 @@ _PROMPT_LOGGER = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title="mcp-memu-server", version="0.4.0")
 
-# Build marker (helps verify you restarted into the expected code)
 _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
-
-# Sleep-based daily split guardrails
-_SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60  # 3 hours
-# Minimum chunk gate to avoid wasting extraction calls on tiny conversations
+_SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 4000
 _DEFAULT_TURN_HISTORY_TOKEN_BUDGET: int = 3000
 _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS: int = 300
-_FORCE_MEMORIZE_MAX_CHUNK_TOKENS: int = 6000
-# If consolidation_in_progress is still set 1h after start, assume the process died — reset the lock on next trigger
-_CONSOLIDATION_STALE_SECONDS: int = 60 * 60
-_MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS  # overridden by config memorize.min_chunk_tokens
-_TURN_HISTORY_TOKEN_BUDGET: int = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET  # overridden by config memorize.turn_history_token_budget
+_MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
+_TURN_HISTORY_TOKEN_BUDGET: int = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET
 _SLEEP_TIMER_ENABLED: bool = False
 _SLEEP_TIMER_INTERVAL_SECONDS: int = _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS
 _SLEEP_TIMER_MAX_JOBS: int = 1
@@ -271,47 +264,6 @@ def _build_force_memorize_batches(
 
     _append_chunked(out, str(full_path), start_idx, last_idx)
     return out
-
-
-def _build_segment_memorize_batches(
-    merged: list[dict[str, Any]],
-    *,
-    segments: list[dict[str, Any]],
-    days_dir: Path,
-    resource_url: str,
-    processed_cursor: int,
-) -> list[tuple[str, list[dict[str, Any]], int]]:
-    memorize_batches: list[tuple[str, list[dict[str, Any]], int]] = []
-    last_idx = len(merged) - 1
-    carry: tuple[int, int] | None = None
-    for segment in segments:
-        try:
-            start_idx = int(segment.get("start"))
-            end_idx = int(segment.get("end"))
-        except Exception:
-            continue
-        if end_idx < start_idx or end_idx > last_idx or end_idx <= processed_cursor:
-            continue
-        effective_start = carry[0] if carry is not None else max(start_idx, processed_cursor + 1)
-        carry = None
-        if effective_start > end_idx:
-            continue
-        batch_conv = merged[effective_start : end_idx + 1]
-        if not batch_conv:
-            continue
-        if _MIN_CHUNK_TOKENS > 0 and _estimate_tokens(batch_conv) < _MIN_CHUNK_TOKENS:
-            carry = (effective_start, end_idx)
-            continue
-        batch_file = segment.get("file")
-        batch_url = resource_url
-        if isinstance(batch_file, str) and batch_file:
-            batch_url = str((days_dir / batch_file).resolve())
-        memorize_batches.append((batch_url, batch_conv, end_idx))
-    if carry is not None:
-        batch_conv = merged[carry[0] : carry[1] + 1]
-        if batch_conv:
-            memorize_batches.append((resource_url, batch_conv, carry[1]))
-    return memorize_batches
 
 
 async def _run_forced_memorize_from_turn(payload: dict[str, Any]) -> None:
@@ -1513,7 +1465,6 @@ def _record_call(
             "error": error,
         }
         _LAST_CALLS.append(item)
-        # keep small
         if len(_LAST_CALLS) > 50:
             del _LAST_CALLS[0 : len(_LAST_CALLS) - 50]
     except Exception:
@@ -1761,10 +1712,6 @@ def _compact_chat_x_anchors(*anchors: str | None, max_count: int = 2) -> list[st
     return out
 
 
-_ROUTE_HISTORY_ROLE_TWO_ANCHORS = "history_from_second_chat_x"
-_ROUTE_HISTORY_ROLE_ONE_ANCHOR = "history_from_chat_x"
-
-
 def _slice_history_from_chat_x_anchors(
     history: list[dict[str, Any]],
     chat_x_anchors: list[str] | None,
@@ -1890,12 +1837,12 @@ def _build_retrieve_soul_context_queries(
     )
     history_two_text = _format_route_history(history_from_second_chat_x)
     if history_two_text:
-        soul_ctx_queries.append({"role": _ROUTE_HISTORY_ROLE_TWO_ANCHORS, "content": {"text": history_two_text}})
+        soul_ctx_queries.append({"role": "history_from_second_chat_x", "content": {"text": history_two_text}})
 
     history_from_chat_x = _slice_history_from_chat_x_anchors(history, chat_x_anchors[:1])
     history_one_text = _format_route_history(history_from_chat_x)
     if history_one_text:
-        soul_ctx_queries.append({"role": _ROUTE_HISTORY_ROLE_ONE_ANCHOR, "content": {"text": history_one_text}})
+        soul_ctx_queries.append({"role": "history_from_chat_x", "content": {"text": history_one_text}})
 
     soul_ctx_queries.append({"role": "user", "content": {"text": message}})
     return soul_ctx_queries
@@ -2104,9 +2051,9 @@ async def _compute_holistic_categories_summary(
         where["user_id"] = user_id
     categories = svc.database.memory_category_repo.list_categories(where)
     lines: list[str] = []
-    for cat in sorted(categories.values(), key=lambda c: str(getattr(c, "name", "")).casefold()):
-        name = str(getattr(cat, "name", "") or "").strip()
-        summary = str(getattr(cat, "summary", "") or "").strip()
+    for cat in sorted(categories.values(), key=lambda c: c.name.casefold()):
+        name = cat.name.strip()
+        summary = str(cat.summary or "").strip()
         if name and summary:
             lines.append(f"## {name}\n{summary}")
     if not lines:
@@ -3471,7 +3418,7 @@ async def _run_consolidation_pipeline_once(
             user_id=user_id,
             force=force,
             interval_days=_consolidation_interval_days_from_cfg(_CONFIG),
-            stale_after=timedelta(seconds=_CONSOLIDATION_STALE_SECONDS),
+            stale_after=timedelta(seconds=3600),
         )
     if prep.get("status") == "skip":
         return {"status": "skipped", "reason": prep.get("reason")}
@@ -3871,16 +3818,38 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                     days_dir=days_dir,
                     full_path=full_path,
                     resource_url=resource_url,
-                    max_chunk_tokens=_FORCE_MEMORIZE_MAX_CHUNK_TOKENS,
+                    max_chunk_tokens=6000,
                 )
             elif segments and isinstance(merged, list):
-                memorize_batches = _build_segment_memorize_batches(
-                    merged,
-                    segments=segments,
-                    days_dir=days_dir,
-                    resource_url=resource_url,
-                    processed_cursor=processed_cursor,
-                )
+                _last_idx = len(merged) - 1
+                _carry: tuple[int, int] | None = None
+                for _seg in segments:
+                    try:
+                        _si = int(_seg.get("start"))
+                        _ei = int(_seg.get("end"))
+                    except Exception:
+                        continue
+                    if _ei < _si or _ei > _last_idx or _ei <= processed_cursor:
+                        continue
+                    _eff = _carry[0] if _carry is not None else max(_si, processed_cursor + 1)
+                    _carry = None
+                    if _eff > _ei:
+                        continue
+                    _bc = merged[_eff : _ei + 1]
+                    if not _bc:
+                        continue
+                    if _MIN_CHUNK_TOKENS > 0 and _estimate_tokens(_bc) < _MIN_CHUNK_TOKENS:
+                        _carry = (_eff, _ei)
+                        continue
+                    _bf = _seg.get("file")
+                    _bu = resource_url
+                    if isinstance(_bf, str) and _bf:
+                        _bu = str((days_dir / _bf).resolve())
+                    memorize_batches.append((_bu, _bc, _ei))
+                if _carry is not None:
+                    _bc = merged[_carry[0] : _carry[1] + 1]
+                    if _bc:
+                        memorize_batches.append((resource_url, _bc, _carry[1]))
 
             expected_cursor = memorize_batches[-1][2] if memorize_batches else processed_cursor
             background_tasks.add_task(
@@ -4425,8 +4394,7 @@ async def timeline(
         (
             e
             for e in entities
-            if str(getattr(e, "normalized", "") or "").strip() == query_norm
-            or str(getattr(e, "name", "") or "").strip().lower() == entity_name.lower()
+            if e.normalized == query_norm or e.name.lower() == entity_name.lower()
         ),
         None,
     )
@@ -4449,7 +4417,7 @@ async def timeline(
     seen: set[str] = set()
     rows: list[dict[str, Any]] = []
     for edge in [*outgoing, *incoming]:
-        edge_id = str(getattr(edge, "id", "") or "").strip()
+        edge_id = str(edge.id or "").strip()
         if edge_id and edge_id in seen:
             continue
         if edge_id:
