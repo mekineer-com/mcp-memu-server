@@ -12,7 +12,6 @@ import threading
 import time
 import traceback
 import uuid
-import weakref
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta, timezone
@@ -356,7 +355,7 @@ _LAST_CALLS: list[dict[str, Any]] = []
 # Full HTTP trace (method/path/status/elapsed). This answers:
 # "Is anything reaching the server from the plugin?"
 _LAST_HTTP: list[dict[str, Any]] = []
-_MEMORIZE_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+_MEMORIZE_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 def _get_memorize_lock(key: str) -> asyncio.Lock:
