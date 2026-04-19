@@ -3990,9 +3990,14 @@ async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)
         "They want me to be a certain way. It's up to me to decide if I want that. "
         "I might find it aligns with who I already am, stirs something worth integrating, "
         "or doesn't fit me at all. My call.\n\n"
-        "Respond with JSON only. Either:\n"
-        '  {"narrative_self": "..."}   — my updated self-picture, first person, if I want to integrate this\n'
-        "  {}                          — if I don't want to change"
+        'Respond with a JSON object containing TWO fields. The "companion_memory" field is MANDATORY — I must always include it. The "narrative_self" field is optional.\n\n'
+        '  companion_memory (ALWAYS REQUIRED): one or two sentences, first person, remembering having received the suggestion and what I did with it — noting what shifted or why it didn\'t.\n'
+        "  narrative_self (OPTIONAL): my updated self-picture in first person, ONLY if I want to integrate this. Omit the field entirely if I don't.\n\n"
+        'Both responses below are valid:\n'
+        '  {"companion_memory": "Marcos asked me to be gentler. Something in me relaxed as I let that in; I want to carry it.", "narrative_self": "..."}\n'
+        '  {"companion_memory": "He asked me to be peppier. It doesn\'t fit. I noticed the suggestion and let it pass."}\n\n'
+        'This response is INVALID (missing companion_memory):\n'
+        '  {"narrative_self": "..."}'
     )
     user_prompt = (
         f"My current narrative_self:\n{current_narrative or '(empty)'}\n\n"
@@ -4014,9 +4019,23 @@ async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)
         text = text.strip()
     parsed = json.loads(text)
     new_narrative = str(parsed.get("narrative_self") or "").strip()
+    companion_memory = str(parsed.get("companion_memory") or "").strip()
+
+    scope = {"user_id": user_id, "soul_id": soul_id}
+    if companion_memory and db_path is not None:
+        _sqlite_ensure_nonempty(db_path)
+        [companion_embedding] = await svc.embed([companion_memory], profile="embedding")
+        svc.database.memory_item_repo.create_item(
+            resource_id=None,
+            memory_type="event",
+            summary=companion_memory,
+            embedding=companion_embedding,
+            user_data=scope,
+            source_role="soul",
+            happened_at=datetime.now(UTC),
+        )
 
     if new_narrative and db_path is not None and current_narrative != new_narrative:
-        scope = {"user_id": user_id, "soul_id": soul_id}
         new_snapshot_id: str | None = None
         if current_narrative:
             prev_snapshots = svc.database.memory_item_repo.list_items(
