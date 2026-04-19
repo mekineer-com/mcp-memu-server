@@ -1077,6 +1077,7 @@ def _default_llm_profiles_from_server_config() -> dict[str, Any]:
 
 _SERVICES: dict[str, MemoryService] = {}
 _SERVICE_STORAGE_FP: dict[str, dict[str, Any]] = {}
+_SERVICES_LOCK: threading.Lock = threading.Lock()
 
 
 def _close_service_quiet(svc: MemoryService | None) -> None:
@@ -1333,54 +1334,57 @@ def _get_service_from_payload(
     service_key = f"{service_key_raw}__{sig}"
     storage_fp = _service_storage_fingerprint(database_config if isinstance(database_config, dict) else None)
 
-    svc = _SERVICES.get(service_key)
-    if svc is not None:
-        prev_fp = _SERVICE_STORAGE_FP.get(service_key)
-        if prev_fp == storage_fp:
-            return svc
+    with _SERVICES_LOCK:
+        svc = _SERVICES.get(service_key)
+        if svc is not None:
+            prev_fp = _SERVICE_STORAGE_FP.get(service_key)
+            if prev_fp == storage_fp:
+                return svc
 
-        # Backing storage changed (e.g. sqlite file deleted+recreated): recycle
-        # this service so writes don't continue to an unlinked inode.
-        _close_service_quiet(svc)
-        _SERVICES.pop(service_key, None)
-        _SERVICE_STORAGE_FP.pop(service_key, None)
+            # Backing storage changed (e.g. sqlite file deleted+recreated): remove from
+            # cache so new callers get a fresh service.  Do NOT close here — concurrent
+            # callers may still hold a reference; the handle will be GC'd when the last
+            # ref drops.
+            _SERVICES.pop(service_key, None)
+            _SERVICE_STORAGE_FP.pop(service_key, None)
 
-    # Force STUserModel so soul_id filters are accepted.
-    user_config = {**(user_config if isinstance(user_config, dict) else {}), "model": STUserModel}
+        # Force STUserModel so soul_id filters are accepted.
+        user_config = {**(user_config if isinstance(user_config, dict) else {}), "model": STUserModel}
 
-    # Small UX: disable conversation preprocess prompt unless explicitly set.
-    mpp = dict(memorize_config.get("multimodal_preprocess_prompts") or {}) if isinstance(memorize_config, dict) else {}
-    if "conversation" not in mpp:
-        mpp["conversation"] = ""
-    if isinstance(memorize_config, dict):
-        memorize_config["multimodal_preprocess_prompts"] = mpp
+        # Small UX: disable conversation preprocess prompt unless explicitly set.
+        mpp = dict(memorize_config.get("multimodal_preprocess_prompts") or {}) if isinstance(memorize_config, dict) else {}
+        if "conversation" not in mpp:
+            mpp["conversation"] = ""
+        if isinstance(memorize_config, dict):
+            memorize_config["multimodal_preprocess_prompts"] = mpp
 
-    svc = MemoryService(
-        llm_profiles=llm_profiles,
-        blob_config=blob_config,
-        database_config=database_config,
-        memorize_config=memorize_config,
-        retrieve_config=retrieve_config,
-        user_config=user_config,
-    )
-    if _LOG_PROMPTS:
-        svc.intercept_before_llm_call(_prompt_log_before, name="prompt_logger")
-        svc.intercept_after_llm_call(_prompt_log_after, name="response_logger")
+        svc = MemoryService(
+            llm_profiles=llm_profiles,
+            blob_config=blob_config,
+            database_config=database_config,
+            memorize_config=memorize_config,
+            retrieve_config=retrieve_config,
+            user_config=user_config,
+        )
+        if _LOG_PROMPTS:
+            svc.intercept_before_llm_call(_prompt_log_before, name="prompt_logger")
+            svc.intercept_after_llm_call(_prompt_log_after, name="response_logger")
 
-    # Cap cached payload-services without a thundering-herd full wipe.
-    if len(_SERVICES) >= 50:
-        # Dict preserves insertion order in Python 3.7+; drop the oldest.
-        try:
-            oldest_key = next(iter(_SERVICES))
-            _close_service_quiet(_SERVICES.get(oldest_key))
-            _SERVICES.pop(oldest_key, None)
-            _SERVICE_STORAGE_FP.pop(oldest_key, None)
-        except Exception:
-            _clear_cached_services()
+        # Cap cached payload-services without a thundering-herd full wipe.
+        if len(_SERVICES) >= 50:
+            # Dict preserves insertion order in Python 3.7+; drop the oldest (no close —
+            # callers may still hold references; GC handles the handle).
+            try:
+                oldest_key = next(iter(_SERVICES))
+                _SERVICES.pop(oldest_key, None)
+                _SERVICE_STORAGE_FP.pop(oldest_key, None)
+            except Exception:
+                _SERVICES.clear()
+                _SERVICE_STORAGE_FP.clear()
 
-    _SERVICES[service_key] = svc
-    _SERVICE_STORAGE_FP[service_key] = storage_fp
-    return svc
+        _SERVICES[service_key] = svc
+        _SERVICE_STORAGE_FP[service_key] = storage_fp
+        return svc
 
 
 def _pick_str(payload: dict[str, Any], *keys: str) -> str | None:
