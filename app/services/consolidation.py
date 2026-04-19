@@ -203,12 +203,12 @@ def _format_life_goals_for_prompt(active: list[str], removed: list[str]) -> str:
             parts.append("")
         parts.append("Recently removed (remove again to extinguish permanently):")
         parts.extend(f"- {row}" for row in removed)
-    return "\n".join(parts) if parts else "(none)"
+    return "\n".join(parts) if parts else "You haven't established any life goals yet."
 
 
 def _format_intention_activity_for_prompt(rows: list[dict[str, str]]) -> str:
     if not rows:
-        return "(none)"
+        return "Nothing has shifted in your intention stack since last consolidation."
     lines = []
     for row in rows:
         description = str(row.get("description") or "").strip()
@@ -218,7 +218,7 @@ def _format_intention_activity_for_prompt(rows: list[dict[str, str]]) -> str:
             continue
         meta = ", ".join(part for part in (status, updated_at) if part)
         lines.append(f"- {description}" + (f" ({meta})" if meta else ""))
-    return "\n".join(lines) if lines else "(none)"
+    return "\n".join(lines) if lines else "Nothing has shifted in your intention stack since last consolidation."
 
 
 def _format_episode_block_for_prompt(episodes: list[dict[str, Any]]) -> str:
