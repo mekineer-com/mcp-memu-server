@@ -4572,6 +4572,8 @@ async def conversation_retrieve(
         raise HTTPException(status_code=400, detail="conversation_id is required")
     try:
         safe = _safe_payload(payload if isinstance(payload, dict) else {})
+        if not isinstance(safe.get("llm_profiles"), dict):
+            safe["llm_profiles"] = _default_llm_profiles_from_server_config()
         if safe.get("queries") is None:
             scope = _extract_scope(safe)
             uid = str(scope.get("user_id") or "").strip()
