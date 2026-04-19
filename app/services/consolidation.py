@@ -31,11 +31,6 @@ from app.services.turn_contract import DEFAULT_SOUL_CARD, format_time_anchor
 if TYPE_CHECKING:
     from memu.app import MemoryService
 
-# calibrated for ≤5 queued episodes + broad-block output
-_CONSOLIDATION_MAX_TOKENS = 1800
-# Design invariant: SOUL_CYCLE_PLAN caps active goals at 3 to preserve prompt signal
-_ACTIVE_LIFE_GOAL_CAP = 3
-
 
 @dataclass(frozen=True)
 class ConsolidationDeps:
@@ -476,7 +471,7 @@ async def run_consolidation_llm(
         user_prompt,
         system_prompt=system_prompt,
         temperature=0.2,
-        max_tokens=_CONSOLIDATION_MAX_TOKENS,
+        max_tokens=1800,
     )
     expected_episode_ids = {
         str(row.get("episode_id") or "").strip()
@@ -694,7 +689,7 @@ ORDER BY updated_at ASC, id ASC
         active_goal_count = len(active_ids)
         for desc in llm_results.get("life_goal_add") or []:
             text = str(desc or "").strip()
-            if not text or text in active_ids or active_goal_count >= _ACTIVE_LIFE_GOAL_CAP:
+            if not text or text in active_ids or active_goal_count >= 3:
                 continue
             goal_id = str(uuid.uuid4())
             goals_to_add.append((goal_id, text))
