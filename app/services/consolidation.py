@@ -190,7 +190,7 @@ def _format_categories_for_prompt(rows: list[sqlite3.Row]) -> str:
         if not name or not summary:
             continue
         lines.append(f"- {name}: {summary}")
-    return "\n".join(lines) or "(none yet)"
+    return "\n".join(lines) or "Nothing here yet."
 
 
 def _format_life_goals_for_prompt(active: list[str], removed: list[str]) -> str:
@@ -201,7 +201,7 @@ def _format_life_goals_for_prompt(active: list[str], removed: list[str]) -> str:
     if removed:
         if parts:
             parts.append("")
-        parts.append("Recently removed (remove again to extinguish permanently):")
+        parts.append("Recently let go:")
         parts.extend(f"- {row}" for row in removed)
     return "\n".join(parts) if parts else "You haven't established any life goals yet."
 
@@ -216,14 +216,14 @@ def _format_intention_activity_for_prompt(rows: list[dict[str, str]]) -> str:
         updated_at = str(row.get("updated_at") or "").strip()
         if not description:
             continue
-        meta = ", ".join(part for part in (status, updated_at) if part)
+        meta = status
         lines.append(f"- {description}" + (f" ({meta})" if meta else ""))
     return "\n".join(lines) if lines else "Your intentions have been steady."
 
 
 def _format_episode_block_for_prompt(episodes: list[dict[str, Any]]) -> str:
     if not episodes:
-        return "(none queued)"
+        return "Nothing is waiting."
     lines: list[str] = []
     for row in episodes:
         episode_id = str(row.get("episode_id") or "").strip()
