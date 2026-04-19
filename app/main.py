@@ -274,6 +274,53 @@ def _build_force_memorize_batches(
     return out
 
 
+def _build_segment_memorize_batches(
+    merged: list[dict[str, Any]],
+    *,
+    segments: list[dict[str, Any]],
+    days_dir: Path,
+    resource_url: str,
+    processed_cursor: int,
+) -> list[tuple[str, list[dict[str, Any]], int]]:
+    """Build memorize batches from a segment manifest (non-force path).
+
+    Iterates segments in order, skips already-processed ones, carries forward
+    too-short segments to merge with the next, and flushes any leftover carry
+    at the end.
+    """
+    memorize_batches: list[tuple[str, list[dict[str, Any]], int]] = []
+    last_idx = len(merged) - 1
+    carry: tuple[int, int] | None = None
+    for segment in segments:
+        try:
+            start_idx = int(segment.get("start"))
+            end_idx = int(segment.get("end"))
+        except Exception:
+            continue
+        if end_idx < start_idx or end_idx >= last_idx or end_idx <= processed_cursor:
+            continue
+        effective_start = carry[0] if carry is not None else max(start_idx, processed_cursor + 1)
+        carry = None
+        if effective_start > end_idx:
+            continue
+        batch_conv = merged[effective_start : end_idx + 1]
+        if not batch_conv:
+            continue
+        if _MIN_CHUNK_TOKENS > 0 and _estimate_tokens(batch_conv) < _MIN_CHUNK_TOKENS:
+            carry = (effective_start, end_idx)
+            continue
+        batch_file = segment.get("file")
+        batch_url = resource_url
+        if isinstance(batch_file, str) and batch_file:
+            batch_url = str((days_dir / batch_file).resolve())
+        memorize_batches.append((batch_url, batch_conv, end_idx))
+    if carry is not None:
+        batch_conv = merged[carry[0] : carry[1] + 1]
+        if batch_conv:
+            memorize_batches.append((resource_url, batch_conv, carry[1]))
+    return memorize_batches
+
+
 async def _run_forced_memorize_from_turn(payload: dict[str, Any]) -> None:
     try:
         background_tasks = BackgroundTasks()
@@ -3829,35 +3876,13 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                     max_chunk_tokens=_FORCE_MEMORIZE_MAX_CHUNK_TOKENS,
                 )
             elif segments and isinstance(merged, list):
-                last_idx = len(merged) - 1
-                carry: tuple[int, int] | None = None  # (effective_start, end_idx) of a too-short segment
-                for segment in segments:
-                    try:
-                        start_idx = int(segment.get("start"))
-                        end_idx = int(segment.get("end"))
-                    except Exception:
-                        continue
-                    if end_idx < start_idx or end_idx >= last_idx or end_idx <= processed_cursor:
-                        continue
-                    effective_start = carry[0] if carry is not None else max(start_idx, processed_cursor + 1)
-                    carry = None
-                    if effective_start > end_idx:
-                        continue
-                    batch_conv = merged[effective_start : end_idx + 1]
-                    if not batch_conv:
-                        continue
-                    if _MIN_CHUNK_TOKENS > 0 and _estimate_tokens(batch_conv) < _MIN_CHUNK_TOKENS:
-                        carry = (effective_start, end_idx)
-                        continue
-                    batch_file = segment.get("file")
-                    batch_url = resource_url
-                    if isinstance(batch_file, str) and batch_file:
-                        batch_url = str((days_dir / batch_file).resolve())
-                    memorize_batches.append((batch_url, batch_conv, end_idx))
-                if carry is not None:
-                    batch_conv = merged[carry[0] : carry[1] + 1]
-                    if batch_conv:
-                        memorize_batches.append((resource_url, batch_conv, carry[1]))
+                memorize_batches = _build_segment_memorize_batches(
+                    merged,
+                    segments=segments,
+                    days_dir=days_dir,
+                    resource_url=resource_url,
+                    processed_cursor=processed_cursor,
+                )
 
             expected_cursor = memorize_batches[-1][2] if memorize_batches else processed_cursor
             background_tasks.add_task(
@@ -4601,6 +4626,156 @@ async def conversation_retrieve(
         raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
+def _turn_state_read(
+    cid: str,
+    uid: str,
+    soul_id: str,
+    safe: dict[str, Any],
+    state_override_cache: list[str],
+    state_override_intentions: dict[str, Any],
+    apply_turn_maintenance: bool,
+    dry_run: bool,
+    history_full: list[dict[str, Any]],
+) -> tuple[
+    dict[str, Any],  # state_row
+    Any,             # soul_card
+    Any,             # db_path
+    list[str],       # memory_cache_before
+    dict[str, Any],  # intentions_before
+    int,             # force_memorize_unmemorized_tokens
+    "dict[str, Any] | None",  # force_memorize_payload
+]:
+    """Phase 1 body: read conversation state for prompt building. Called inside state_lock."""
+    state_row, soul_card, db_path = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
+    payload_soul_card = str(safe.get("soul_card") or "").strip() or None
+    soul_card = payload_soul_card or soul_card
+    memory_cache_before = list(state_override_cache)
+    intentions_before = (
+        _apply_intention_turn_maintenance_impl(state_override_intentions)
+        if apply_turn_maintenance
+        else _normalize_intentions_stack_impl(state_override_intentions)
+    )
+    digest_cursor_for_gate = state_row.get("digest_cursor") if state_row.get("last_memorize_at") else -1
+    force_memorize_unmemorized_tokens = _estimate_unmemorized_tokens(history_full, digest_cursor_for_gate)
+    force_memorize_payload: dict[str, Any] | None = None
+    if (not dry_run) and history_full and force_memorize_unmemorized_tokens > _TURN_HISTORY_TOKEN_BUDGET:
+        memorize_history = _normalize_conversation(history_full)
+        if memorize_history:
+            force_memorize_payload = {
+                **safe,
+                "conversation_id": cid,
+                "conversation": memorize_history,
+                "user": {"user_id": uid, "soul_id": soul_id, "conversation_id": cid},
+            }
+    return (
+        state_row,
+        soul_card,
+        db_path,
+        memory_cache_before,
+        intentions_before,
+        force_memorize_unmemorized_tokens,
+        force_memorize_payload,
+    )
+
+
+def _turn_state_write(
+    cid: str,
+    uid: str,
+    soul_id: str,
+    memory_cache_before: list[str],
+    intentions_before: dict[str, Any],
+    cache_entry: str,
+    intention_action: Any,
+    annulment_ids: list[str],
+    chat_x: str | None,
+    apply_turn_maintenance: bool,
+) -> tuple[dict[str, Any], Any]:
+    """Phase 2 body: re-read fresh state, merge turn updates, write. Called inside state_lock."""
+    fresh_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
+    fresh_cache = list(memory_cache_before)
+    fresh_intentions = _normalize_intentions_stack_impl(intentions_before)
+    memory_cache_after = (
+        _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
+    )
+    intentions_after = (
+        _apply_intention_action(fresh_intentions, intention_action)
+        if apply_turn_maintenance
+        else fresh_intentions
+    )
+    intentions_after = _remove_intentions(
+        intentions_after,
+        [item_id for item_id in annulment_ids if item_id],
+    )
+    _next_last_chat_x, _next_last_chat_x_prev = _next_chat_x_state_values(chat_x, fresh_row)
+    state_out, state_path = _write_conversation_state(
+        cid,
+        soul_id=soul_id,
+        user_id=uid,
+        updates={
+            "intentions_active": intentions_after,
+            "memory_cache": memory_cache_after,
+            "last_chat_x": _next_last_chat_x,
+            "last_chat_x_prev": _next_last_chat_x_prev,
+            "undo_snapshot": {
+                "memory_cache": fresh_cache,
+                "intentions_active": fresh_intentions,
+            },
+        },
+    )
+    return state_out, state_path
+
+
+def _turn_launch_apimw(
+    cid: str,
+    uid: str,
+    soul_id: str,
+    safe: dict[str, Any],
+    history_full: list[dict[str, Any]],
+    state_out: dict[str, Any],
+    state_row: dict[str, Any],
+) -> str:
+    """Launch APImw background task if cadence gate passes. Returns apimw_status string."""
+    apimw_state = state_out if isinstance(state_out, dict) else state_row
+    if not isinstance(apimw_state, dict):
+        apimw_state = {}
+    _cadence_anchors = _compact_chat_x_anchors(
+        str(apimw_state.get("last_chat_x") or "").strip() or None,
+    )
+    _cadence_slice = _slice_history_from_chat_x_anchors(history_full, _cadence_anchors, limit=999)
+    _cadence_threshold = _apimw_cadence_from_cfg(_CONFIG)
+    _cadence_soul_messages = _count_soul_messages(_cadence_slice, soul_id)
+    if _cadence_soul_messages < _cadence_threshold:
+        return "skipped_cadence"
+    if not _mark_apimw_inflight(cid):
+        return "skipped_inflight"
+    try:
+        apimw_task = asyncio.create_task(
+            _run_apimw(
+                safe,
+                conversation_id=cid,
+                soul_id=soul_id,
+                user_id=uid,
+                state_row=apimw_state,
+                history=history_full,
+            )
+        )
+    except Exception:
+        _clear_apimw_inflight(cid)
+        logger.exception("APImw background pipeline failed to start for %s", cid)
+        return "failed_to_start"
+
+    def _on_apimw_done(task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except Exception:
+            logger.exception("APImw background pipeline failed for %s", cid)
+        finally:
+            _clear_apimw_inflight(cid)
+
+    apimw_task.add_done_callback(_on_apimw_done)
+    return "started"
+
+
 @app.post("/conversation/{conversation_id}/turn", operation_id="conversation_turn")
 async def conversation_turn(
     conversation_id: str,
@@ -4677,35 +4852,21 @@ async def conversation_turn(
         safe["conversation_id"] = cid
 
         state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
-        force_memorize_payload: dict[str, Any] | None = None
-        force_memorize_unmemorized_tokens = 0
 
         # Phase 1: read state for prompt building (lock held only for this quick read)
         async with state_lock:
-            state_row, soul_card, db_path = _load_turn_state_and_soul_card(
-                cid,
-                user_id=uid,
-                soul_id=soul_id,
+            (
+                state_row,
+                soul_card,
+                db_path,
+                memory_cache_before,
+                intentions_before,
+                force_memorize_unmemorized_tokens,
+                force_memorize_payload,
+            ) = _turn_state_read(
+                cid, uid, soul_id, safe, state_override_cache, state_override_intentions,
+                apply_turn_maintenance, dry_run, history_full,
             )
-            payload_soul_card = str(safe.get("soul_card") or "").strip() or None
-            soul_card = payload_soul_card or soul_card
-            memory_cache_before = list(state_override_cache)
-            intentions_before = (
-                _apply_intention_turn_maintenance_impl(state_override_intentions)
-                if apply_turn_maintenance
-                else _normalize_intentions_stack_impl(state_override_intentions)
-            )
-            digest_cursor_for_gate = state_row.get("digest_cursor") if state_row.get("last_memorize_at") else -1
-            force_memorize_unmemorized_tokens = _estimate_unmemorized_tokens(history_full, digest_cursor_for_gate)
-            if (not dry_run) and history_full and force_memorize_unmemorized_tokens > _TURN_HISTORY_TOKEN_BUDGET:
-                memorize_history = _normalize_conversation(history_full)
-                if memorize_history:
-                    force_memorize_payload = {
-                        **safe,
-                        "conversation_id": cid,
-                        "conversation": memorize_history,
-                        "user": {"user_id": uid, "soul_id": soul_id, "conversation_id": cid},
-                    }
 
         # Turn LLM call outside lock (may take seconds; other operations can proceed)
 
@@ -4769,36 +4930,11 @@ async def conversation_turn(
         # Phase 2: re-read fresh state, merge this turn's updates, write (lock held only for this quick write)
         if not dry_run:
             async with state_lock:
-                fresh_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
-                fresh_cache = list(memory_cache_before)
-                fresh_intentions = _normalize_intentions_stack_impl(intentions_before)
-                memory_cache_after = (
-                    _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
-                )
-                intentions_after = (
-                    _apply_intention_action(fresh_intentions, intention_action)
-                    if apply_turn_maintenance
-                    else fresh_intentions
-                )
-                intentions_after = _remove_intentions(
-                    intentions_after,
-                    [item_id for item_id in annulment_ids if item_id],
-                )
-                _next_last_chat_x, _next_last_chat_x_prev = _next_chat_x_state_values(chat_x, fresh_row)
-                state_out, state_path = _write_conversation_state(
-                    cid,
-                    soul_id=soul_id,
-                    user_id=uid,
-                    updates={
-                        "intentions_active": intentions_after,
-                        "memory_cache": memory_cache_after,
-                        "last_chat_x": _next_last_chat_x,
-                        "last_chat_x_prev": _next_last_chat_x_prev,
-                        "undo_snapshot": {
-                            "memory_cache": fresh_cache,
-                            "intentions_active": fresh_intentions,
-                        },
-                    },
+                state_out, state_path = _turn_state_write(
+                    cid, uid, soul_id,
+                    memory_cache_before, intentions_before,
+                    cache_entry, intention_action, annulment_ids, chat_x,
+                    apply_turn_maintenance,
                 )
 
         if not dry_run:
@@ -4812,48 +4948,9 @@ async def conversation_turn(
 
         apimw_status = "skipped_dry_run" if dry_run else "not_started"
         if (not dry_run) and run_apimw:
-            apimw_state = state_out if isinstance(state_out, dict) else state_row
-            if not isinstance(apimw_state, dict):
-                apimw_state = {}
-            # Cadence gate: count messages since last_chat_x
-            _cadence_anchors = _compact_chat_x_anchors(
-                str(apimw_state.get("last_chat_x") or "").strip() or None,
+            apimw_status = _turn_launch_apimw(
+                cid, uid, soul_id, safe, history_full, state_out, state_row,
             )
-            _cadence_slice = _slice_history_from_chat_x_anchors(history_full, _cadence_anchors, limit=999)
-            _cadence_threshold = _apimw_cadence_from_cfg(_CONFIG)
-            _cadence_soul_messages = _count_soul_messages(_cadence_slice, soul_id)
-            if _cadence_soul_messages < _cadence_threshold:
-                apimw_status = "skipped_cadence"
-            elif not _mark_apimw_inflight(cid):
-                apimw_status = "skipped_inflight"
-            else:
-                apimw_status = "started"
-                try:
-                    apimw_task = asyncio.create_task(
-                        _run_apimw(
-                            safe,
-                            conversation_id=cid,
-                            soul_id=soul_id,
-                            user_id=uid,
-                            state_row=apimw_state,
-                            history=history_full,
-                        )
-                    )
-                except Exception:
-                    _clear_apimw_inflight(cid)
-                    apimw_status = "failed_to_start"
-                    logger.exception("APImw background pipeline failed to start for %s", cid)
-                else:
-
-                    def _on_apimw_done(task: asyncio.Task) -> None:
-                        try:
-                            task.result()
-                        except Exception:
-                            logger.exception("APImw background pipeline failed for %s", cid)
-                        finally:
-                            _clear_apimw_inflight(cid)
-
-                    apimw_task.add_done_callback(_on_apimw_done)
 
         _response_str = str(turn_contract.get("response") or "").strip()
         out: dict[str, Any] = {
