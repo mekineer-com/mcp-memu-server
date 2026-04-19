@@ -4069,19 +4069,13 @@ async def list_memory_categories(user_id: str = "", soul_id: str = "", include_e
     }
     svc = _get_service_from_payload(payload)
 
-    try:
-        cats_map = svc.database.memory_category_repo.list_categories(scope)
-        out = []
-        for c in cats_map.values():
-            nm = str(getattr(c, "name", "") or "").strip()
-            if not nm:
-                continue
-            cc = {"name": nm, "summary": str(getattr(c, "summary", "") or "")}
-            if include_empty or _has_category_content(cc):
-                out.append(cc)
-        return {"categories": out}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
+    cats_map = svc.database.memory_category_repo.list_categories(scope)
+    out = [
+        {"name": c.name, "summary": c.summary or ""}
+        for c in cats_map.values()
+        if c.name and (include_empty or _has_category_content({"name": c.name, "summary": c.summary or ""}))
+    ]
+    return {"categories": out}
 
 
 @app.post("/categories/search", operation_id="search_memory_categories")
@@ -4101,14 +4095,11 @@ async def search_memory_categories(payload: dict[str, Any]):
         include_empty = bool(safe.get("include_empty"))
 
         cats_map = svc.database.memory_category_repo.list_categories(scope)
-        out = []
-        for c in cats_map.values():
-            nm = str(getattr(c, "name", "") or "").strip()
-            if not nm:
-                continue
-            cc = {"name": nm, "summary": str(getattr(c, "summary", "") or "")}
-            if include_empty or _has_category_content(cc):
-                out.append(cc)
+        out = [
+            {"name": c.name, "summary": c.summary or ""}
+            for c in cats_map.values()
+            if c.name and (include_empty or _has_category_content({"name": c.name, "summary": c.summary or ""}))
+        ]
         _record_call("categories.search", safe, ok=True, info={"returned": len(out)})
         return {"categories": out}
     except HTTPException:
