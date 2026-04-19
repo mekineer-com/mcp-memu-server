@@ -4537,8 +4537,6 @@ def _turn_state_write(
     cid: str,
     uid: str,
     soul_id: str,
-    memory_cache_before: list[str],
-    intentions_before: dict[str, Any],
     cache_entry: str,
     intention_action: Any,
     annulment_ids: list[str],
@@ -4781,7 +4779,6 @@ async def conversation_turn(
             async with state_lock:
                 state_out, state_path = _turn_state_write(
                     cid, uid, soul_id,
-                    memory_cache_before, intentions_before,
                     cache_entry, intention_action, annulment_ids, chat_x,
                     apply_turn_maintenance,
                 )
