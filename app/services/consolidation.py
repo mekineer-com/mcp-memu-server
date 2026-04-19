@@ -304,7 +304,10 @@ def gather_consolidation_inputs(
         if readiness == "skip_interval":
             return {"status": "skip", "reason": "interval_gate"}
         if readiness == "reset":
-            state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id)) or state
+            reread = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id))
+            if reread is None:
+                raise HTTPException(404, "conversation state not found after stale-lock reset")
+            state = reread
 
         pending_episode_ids = deps.normalize_text_list(state.get("pending_diary_episode_ids"))
 
@@ -318,6 +321,8 @@ ORDER BY name ASC
             (soul_id, user_id),
         ).fetchall()
 
+        # updated_at is always written as datetime.now(UTC).isoformat() → "YYYY-MM-DDTHH:MM:SS.ffffff+00:00"
+        # Lexicographic ORDER BY is correct as long as all writers use that canonical form.
         life_goal_rows = con.execute(
             """
 SELECT id, description, status
