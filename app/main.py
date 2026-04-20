@@ -119,6 +119,9 @@ from app.services.turn_contract import (
     _format_item_suffix as _format_turn_item_suffix,
 )
 from app.services.turn_contract import (
+    format_shaped_by_line as _format_shaped_by_line,
+)
+from app.services.turn_contract import (
     build_turn_prompt as _build_turn_prompt,
 )
 from app.services.turn_contract import (
@@ -2214,6 +2217,9 @@ async def _apimw_def_call(
         mem_type = str(it.get("memory_type") or "memory").strip()
         suffix = _format_turn_item_suffix(it)
         memory_lines.append(f"[{item_id}] [{mem_type}]{suffix} {summary}")
+        shaped_by = it.get("shaped_by")
+        if isinstance(shaped_by, dict):
+            memory_lines.append(_format_shaped_by_line(shaped_by, with_id=True))
 
     formatted_memories = "\n".join(memory_lines) if memory_lines else "(none)"
 
@@ -2334,6 +2340,9 @@ async def _apimw_persist(
                 suffix = _format_turn_item_suffix(it)
                 summary = str(it.get("summary") or "").strip()
                 pc_lines.append(f"[{mem_type}]{suffix} {summary}")
+                shaped_by = it.get("shaped_by")
+                if isinstance(shaped_by, dict):
+                    pc_lines.append(_format_shaped_by_line(shaped_by))
             if pc_lines:
                 new_prior = "\n".join(pc_lines)
                 existing_prior = str(fresh_row.get("prior_context") or "").strip()

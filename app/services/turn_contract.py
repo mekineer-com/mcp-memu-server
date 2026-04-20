@@ -268,6 +268,11 @@ def _format_item_suffix(item: dict[str, Any], *, now: datetime | None = None) ->
     time_label = format_relative_time_label(item.get("happened_at"), now=now)
     if time_label:
         parts.append(time_label)
+    superseded_at = item.get("superseded_at")
+    if superseded_at:
+        s_label = format_relative_time_label(superseded_at, now=now)
+        if s_label:
+            parts.append(f"superseded {s_label}")
     reinforcement_count = _extract_reinforcement_count(item.get("extra"))
     if reinforcement_count > 1:
         parts.append(f"reinforced {reinforcement_count}x")
@@ -277,6 +282,24 @@ def _format_item_suffix(item: dict[str, Any], *, now: datetime | None = None) ->
     if not parts:
         return ""
     return f" ({', '.join(parts)})"
+
+
+def format_shaped_by_line(
+    shaped_by: dict[str, Any],
+    *,
+    indent: int = 4,
+    with_id: bool = False,
+    now: datetime | None = None,
+) -> str:
+    predicate = _text(shaped_by.get("predicate")) or "shaped_by"
+    memory_type = _text(shaped_by.get("memory_type")) or "memory"
+    summary = _text(shaped_by.get("summary"))
+    suffix = _format_item_suffix(shaped_by, now=now)
+    prefix = " " * indent + predicate
+    seed_id = _text(shaped_by.get("id"))
+    if with_id and seed_id:
+        return f"{prefix} [{seed_id}] [{memory_type}]{suffix} {summary}"
+    return f"{prefix} [{memory_type}]{suffix} {summary}"
 
 
 def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, set[str], set[str]]:
@@ -289,7 +312,7 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
     item_terms: set[str] = set()
     category_terms: set[str] = set()
 
-    item_rows: list[tuple[str, str, str]] = []
+    item_rows: list[tuple[dict[str, Any], str, str, str]] = []
     seen_items: set[str] = set()
     items = result.get("items")
     if isinstance(items, list):
@@ -305,7 +328,7 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
                 continue
             seen_items.add(summary_key)
             item_terms.add(summary_key)
-            item_rows.append((memory_type, _format_item_suffix(item, now=now), summary))
+            item_rows.append((item, memory_type, _format_item_suffix(item, now=now), summary))
 
     categories = result.get("categories")
     if isinstance(categories, list):
@@ -337,8 +360,11 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
         if lines:
             lines.append("")
         lines.append("Memories:")
-        for memory_type, suffix, summary in item_rows:
+        for item, memory_type, suffix, summary in item_rows:
             lines.append(f"- [{memory_type}]{suffix} {summary}")
+            shaped_by = item.get("shaped_by")
+            if isinstance(shaped_by, dict):
+                lines.append(format_shaped_by_line(shaped_by, now=now))
 
     return ("\n".join(lines) if lines else "(none)"), item_terms, category_terms
 

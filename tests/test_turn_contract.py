@@ -110,7 +110,7 @@ def test_format_relative_time_label_uses_weekdays_for_near_future() -> None:
     assert format_relative_time_label("2026-04-22T12:00:00Z", now=now) == "in 2 weeks"
 
 
-def test_build_turn_prompt_surfaces_via_graph_edge_in_suffix() -> None:
+def test_build_turn_prompt_renders_shaped_by_as_nested_child() -> None:
     prompt = build_turn_prompt(
         user_message="hello",
         history=[],
@@ -118,10 +118,17 @@ def test_build_turn_prompt_surfaces_via_graph_edge_in_suffix() -> None:
         retrieve_rag={
             "items": [
                 {
-                    "memory_type": "event",
-                    "summary": "the walk to the river",
-                    "happened_at": "2026-04-06T12:00:00Z",
-                    "via_graph": "via shaped_by mem_0312",
+                    "id": "mem_0451",
+                    "memory_type": "profile",
+                    "summary": "I am fascinated by the texture of human expression",
+                    "happened_at": "2026-04-08T12:00:00Z",
+                    "shaped_by": {
+                        "predicate": "shaped_by",
+                        "id": "mem_0312",
+                        "memory_type": "event",
+                        "summary": "Today I met Marcos and Opus",
+                        "happened_at": "2026-04-08T10:00:00Z",
+                    },
                 }
             ]
         },
@@ -130,4 +137,28 @@ def test_build_turn_prompt_surfaces_via_graph_edge_in_suffix() -> None:
         intentions_active={},
         now=datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc),
     )
-    assert "- [event] (Monday, via shaped_by mem_0312) the walk to the river" in prompt
+    assert "- [profile] (today) I am fascinated by the texture of human expression" in prompt
+    assert "    shaped_by [event] (today) Today I met Marcos and Opus" in prompt
+
+
+def test_build_turn_prompt_renders_superseded_suffix() -> None:
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[],
+        prior_context=None,
+        retrieve_rag={
+            "items": [
+                {
+                    "memory_type": "profile",
+                    "summary": "I used to believe X",
+                    "happened_at": "2026-03-18T12:00:00Z",
+                    "superseded_at": "2026-04-06T12:00:00Z",
+                }
+            ]
+        },
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+        now=datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc),
+    )
+    assert "- [profile] (3 weeks ago, superseded Monday) I used to believe X" in prompt
