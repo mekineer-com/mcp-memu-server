@@ -4576,7 +4576,6 @@ def _turn_state_read(
     safe: dict[str, Any],
     state_override_cache: list[str],
     state_override_intentions: dict[str, Any],
-    apply_turn_maintenance: bool,
     dry_run: bool,
     history_full: list[dict[str, Any]],
 ) -> tuple[
@@ -4592,11 +4591,7 @@ def _turn_state_read(
     payload_soul_card = str(safe.get("soul_card") or "").strip() or None
     soul_card = payload_soul_card or soul_card
     memory_cache_before = list(state_override_cache)
-    intentions_before = (
-        _apply_intention_turn_maintenance_impl(state_override_intentions)
-        if apply_turn_maintenance
-        else _normalize_intentions_stack_impl(state_override_intentions)
-    )
+    intentions_before = _normalize_intentions_stack_impl(state_override_intentions)
     digest_cursor_for_gate = state_row.get("digest_cursor") if state_row.get("last_memorize_at") else -1
     force_memorize_unmemorized_tokens = _estimate_unmemorized_tokens(history_full, digest_cursor_for_gate)
     force_memorize_payload: dict[str, Any] | None = None
@@ -4805,7 +4800,7 @@ async def conversation_turn(
                 force_memorize_payload,
             ) = _turn_state_read(
                 cid, uid, soul_id, safe, state_override_cache, state_override_intentions,
-                apply_turn_maintenance, dry_run, history_full,
+                dry_run, history_full,
             )
 
         soul_gen = _load_soul_gen_config(uid, soul_id)
