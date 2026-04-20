@@ -2240,8 +2240,8 @@ async def _apimw_def_call(
 
     def_system = (
         f"{identity_context}\n\n"
-        "You have just searched your long-term memory. Below are the memories that came back, "
-        "your current category summaries, your working thoughts, and your intentions.\n\n"
+        "You have just searched your long-term memory. Below are your summaries, your individual memories, "
+        "your working thoughts, and your intentions.\n\n"
         "Review everything. Then return STRICT JSON (first character { , last character } , "
         "no markdown fences, no text outside JSON).\n\n"
         "Required top-level keys:\n"
@@ -2253,7 +2253,7 @@ async def _apimw_def_call(
         "- edge_invalidations: array — retire edges that are no longer true. "
         "Each entry is {\"subject_id\": \"string\", \"predicate\": \"string\", \"object_id\": \"string\"}. Empty array if none.\n"
         "- cache: object {\"entry\": \"string up to 300 chars\"} or null — a working thought to carry forward.\n"
-        "- intention_action: object or null — same rules as your turn contract.\n"
+        "- intention_action: object or null — see Intention rules below.\n"
         "- annulments: array — intentions to complete or delete. "
         "Each entry is {\"intention_id\": \"string\", \"status\": \"completed|deleted\", \"note\": \"optional string\"}. Empty array if none.\n\n"
         "Edge rules:\n"
@@ -2266,7 +2266,7 @@ async def _apimw_def_call(
         "- subject_id and object_id must be memory IDs from the list below\n"
         "- confidence: 0.0-1.0\n"
         "- Only create edges the conversation gives you reason to see\n\n"
-        "Intention rules (same as turn contract):\n"
+        "Intention rules:\n"
         "- boost: increase priority of an existing intention\n"
         "- promote: turn an ephemeral into a full intention\n"
         "- create: up to 2 new ephemerals\n"
@@ -2274,12 +2274,12 @@ async def _apimw_def_call(
     )
 
     def_user = (
-        f"Retrieved memories:\n{formatted_memories}\n\n"
-        f"Category summaries:\n{formatted_categories}\n\n"
+        f"Summaries:\n{formatted_categories}\n\n"
+        f"Individual memories:\n{formatted_memories}\n\n"
         f"Your working thoughts:\n{formatted_cache}\n\n"
         f"Intentions:\n{formatted_intentions}\n\n"
         f"{_LIFE_GOALS_FREE_WILL_HEADER}\n{formatted_life_goals}\n\n"
-        f"Recent conversation (current episode):\n{episode_text}"
+        f"Recent conversation:\n{episode_text}"
     )
 
     llm_raw = await svc.chat(
