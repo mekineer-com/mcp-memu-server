@@ -200,7 +200,7 @@ def _parse_happened_at(raw: Any) -> datetime | None:
     return parsed.astimezone()
 
 
-def _format_relative_time_label(happened_at: Any, *, now: datetime | None = None) -> str | None:
+def format_relative_time_label(happened_at: Any, *, now: datetime | None = None) -> str | None:
     happened = _parse_happened_at(happened_at)
     if happened is None:
         return None
@@ -213,7 +213,9 @@ def _format_relative_time_label(happened_at: Any, *, now: datetime | None = None
         if day_delta == 1:
             return "yesterday"
         if day_delta <= 6:
-            return f"{day_delta} days ago"
+            return happened.strftime("%A")
+        if day_delta <= 13:
+            return f"last {happened.strftime('%A')}"
         if day_delta <= 29:
             weeks = max(1, day_delta // 7)
             return f"{weeks} week{'s' if weeks != 1 else ''} ago"
@@ -232,7 +234,9 @@ def _format_relative_time_label(happened_at: Any, *, now: datetime | None = None
     if future_days == 1:
         return "tomorrow"
     if future_days <= 6:
-        return f"in {future_days} days"
+        return happened.strftime("%A")
+    if future_days <= 13:
+        return f"next {happened.strftime('%A')}"
     if future_days <= 29:
         weeks = max(1, future_days // 7)
         return f"in {weeks} week{'s' if weeks != 1 else ''}"
@@ -261,7 +265,7 @@ def _extract_reinforcement_count(extra: Any) -> int:
 
 def _format_item_suffix(item: dict[str, Any], *, now: datetime | None = None) -> str:
     parts: list[str] = []
-    time_label = _format_relative_time_label(item.get("happened_at"), now=now)
+    time_label = format_relative_time_label(item.get("happened_at"), now=now)
     if time_label:
         parts.append(time_label)
     reinforcement_count = _extract_reinforcement_count(item.get("extra"))

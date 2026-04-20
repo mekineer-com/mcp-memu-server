@@ -2,7 +2,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.services.turn_contract import build_turn_prompt, make_turn_system_prompt, parse_turn_contract
+from app.services.turn_contract import (
+    build_turn_prompt,
+    format_relative_time_label,
+    make_turn_system_prompt,
+    parse_turn_contract,
+)
 
 
 def test_parse_turn_contract_valid_json():
@@ -84,3 +89,22 @@ def test_build_turn_prompt_renders_relative_time_and_reinforcement() -> None:
         now=datetime(2026, 4, 8, 9, 30, tzinfo=timezone.utc),
     )
     assert "- [profile] (3 weeks ago, reinforced 5x) Marcos journals every night" in prompt
+
+
+def test_format_relative_time_label_uses_weekdays_for_recent_days() -> None:
+    now = datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc)  # Wednesday
+    assert format_relative_time_label("2026-04-08T12:00:00Z", now=now) == "today"
+    assert format_relative_time_label("2026-04-07T12:00:00Z", now=now) == "yesterday"
+    assert format_relative_time_label("2026-04-06T12:00:00Z", now=now) == "Monday"
+    assert format_relative_time_label("2026-04-02T12:00:00Z", now=now) == "Thursday"
+    assert format_relative_time_label("2026-04-01T12:00:00Z", now=now) == "last Wednesday"
+    assert format_relative_time_label("2026-03-29T12:00:00Z", now=now) == "last Sunday"
+    assert format_relative_time_label("2026-03-25T12:00:00Z", now=now) == "2 weeks ago"
+
+
+def test_format_relative_time_label_uses_weekdays_for_near_future() -> None:
+    now = datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc)  # Wednesday
+    assert format_relative_time_label("2026-04-09T12:00:00Z", now=now) == "tomorrow"
+    assert format_relative_time_label("2026-04-11T12:00:00Z", now=now) == "Saturday"
+    assert format_relative_time_label("2026-04-15T12:00:00Z", now=now) == "next Wednesday"
+    assert format_relative_time_label("2026-04-22T12:00:00Z", now=now) == "in 2 weeks"

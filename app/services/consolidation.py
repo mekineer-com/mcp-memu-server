@@ -27,7 +27,7 @@ from app.services.graph_edges import (
     write_memory_edges,
 )
 from app.services.narrative_self import snapshot_previous_narrative_self
-from app.services.turn_contract import DEFAULT_SOUL_CARD, format_time_anchor
+from app.services.turn_contract import DEFAULT_SOUL_CARD, format_relative_time_label, format_time_anchor
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
@@ -216,7 +216,8 @@ def _format_intention_activity_for_prompt(rows: list[dict[str, str]]) -> str:
         updated_at = str(row.get("updated_at") or "").strip()
         if not description:
             continue
-        meta = ", ".join(part for part in (status, updated_at) if part)
+        time_label = format_relative_time_label(updated_at) if updated_at else None
+        meta = ", ".join(part for part in (status, time_label) if part)
         lines.append(f"- {description}" + (f" ({meta})" if meta else ""))
     return "\n".join(lines) if lines else "Your intentions have been steady."
 
