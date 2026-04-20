@@ -781,10 +781,14 @@ def _refresh_runtime_limits() -> None:
 def _prompt_log_before(ctx: Any, request_view: Any) -> None:
     if getattr(request_view, "kind", None) == "embed":
         return
+    op = getattr(ctx, "operation", None) or "-"
+    step = getattr(ctx, "step_id", None) or "-"
+    banner = f"===== {op.upper()} · {step} ".ljust(70, "=")
     _PROMPT_LOGGER.info(
-        "=" * 70 + "\n[PROMPT] op=%s step=%s model=%s\n%s",
-        getattr(ctx, "operation", None) or "-",
-        getattr(ctx, "step_id", None) or "-",
+        "%s\n[PROMPT] op=%s step=%s model=%s\n%s",
+        banner,
+        op,
+        step,
         getattr(ctx, "model", None) or "-",
         getattr(request_view, "content", None) or "",
     )
