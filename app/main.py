@@ -782,7 +782,7 @@ def _prompt_log_before(ctx: Any, request_view: Any) -> None:
     if getattr(request_view, "kind", None) == "embed":
         return
     _PROMPT_LOGGER.info(
-        "[PROMPT] op=%s step=%s model=%s\n%s",
+        "=" * 70 + "\n[PROMPT] op=%s step=%s model=%s\n%s",
         getattr(ctx, "operation", None) or "-",
         getattr(ctx, "step_id", None) or "-",
         getattr(ctx, "model", None) or "-",
