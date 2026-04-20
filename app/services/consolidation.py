@@ -445,10 +445,11 @@ async def run_consolidation_llm(
     intention_text = _format_intention_activity_for_prompt(inputs["intention_activity"])
     episodes_text = _format_episode_block_for_prompt(inputs["episode_inputs"])
 
-    soul_card = str(inputs.get("narrative_self") or "").strip() or DEFAULT_SOUL_CARD
+    narrative = str(inputs.get("narrative_self") or "").strip()
+    soul_card = narrative or DEFAULT_SOUL_CARD.format(soul_name=soul_id)
     system_prompt = (
         f"Today is {format_time_anchor()}.\n\n"
-        f"You are {soul_id}. {soul_card}\n\n"
+        f"{soul_card}\n\n"
         f"I, {soul_id}, am stepping back from all the conversations. "
         "I have what I've been working toward, what has shifted, and many things still unresolved. "
         "I'm curious what the arc looks like from here. "
