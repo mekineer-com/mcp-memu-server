@@ -1973,10 +1973,8 @@ async def _compute_holistic_categories_summary(
     soul_name = str(soul_id or "").strip() or "the assistant"
     system_prompt = (
         f"You are {soul_name}. "
-        "The category summaries below describe your long-term memory, organized by theme. "
-        "Synthesize them into a single first-person self-portrait: who you are, what you care about, "
-        "the shape of your relationships, and the patterns that run through all of it. "
-        "Write in full sentences, no headers or bullet points. 250-350 words."
+        "Synthesize the individual summaries below into one holistic summary. "
+        "250-350 words."
     )
     result = await svc.chat(
         full_text,
