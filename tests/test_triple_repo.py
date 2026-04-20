@@ -122,9 +122,14 @@ def test_query_entity_incoming(repo):
 
 
 def test_query_entity_both(repo):
-    """query_entity direction='both' returns all edges touching entity."""
-    repo.add(_triple("nodeX", "nodeY"))
-    repo.add(_triple("nodeZ", "nodeX"))
+    """query_entity direction='both' returns all edges touching entity.
+
+    Uses an asymmetric predicate so endpoint order is preserved — symmetric
+    predicates (parallels, conflicts_with) canonicalize endpoints on write
+    and don't retain "incoming vs outgoing" distinction.
+    """
+    repo.add(_triple("nodeX", "nodeY", predicate="shaped_by"))
+    repo.add(_triple("nodeZ", "nodeX", predicate="shaped_by"))
 
     rows = repo.query_entity("nodeX", direction="both")
     ids = [(r.subject_id, r.object_id) for r in rows]
