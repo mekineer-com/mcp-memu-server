@@ -1975,8 +1975,8 @@ async def _compute_holistic_categories_summary(
     full_text = "\n\n".join(lines)
     soul_name = str(soul_id or "").strip() or "the assistant"
     system_prompt = (
-        f"You are {soul_name}. Weave the summaries below — each already in your own voice — "
-        "into one holistic picture of yourself, in first person. 250-350 words."
+        f"You are {soul_name}. Weave the summaries below into one holistic overview "
+        "in first person. 250-350 words."
     )
     result = await svc.chat(
         full_text,
