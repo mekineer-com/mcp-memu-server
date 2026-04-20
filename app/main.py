@@ -2063,8 +2063,8 @@ async def _apimw_topic_statement(
     logger.info("apimw step A: topic statement for %s", conversation_id)
     topic_system = (
         f"{identity_context}\n\n"
-        "Describe what this conversation is about in 1-2 sentences. The previous conversation is provided only as context — "
-        "if the current exchange is brief, use it to understand what the new message means, but describe only where the conversation is now."
+        "State the topic of the CURRENT episode in 1-2 sentences. The previous episode is provided only as context — "
+        "if the current episode is brief, use it to understand what the new message means, but describe only where the conversation is now."
     )
     topic_statement = await svc.chat(
         topic_user,
@@ -2266,7 +2266,7 @@ async def _apimw_def_call(
         "- subject_id and object_id must be memory IDs from the list below\n"
         "- confidence: 0.0-1.0\n"
         "- Only create edges the conversation gives you reason to see\n\n"
-        "Intention rules:\n"
+        "Intention rules (same as turn contract):\n"
         "- boost: increase priority of an existing intention\n"
         "- promote: turn an ephemeral into a full intention\n"
         "- create: up to 2 new ephemerals\n"
@@ -2274,12 +2274,12 @@ async def _apimw_def_call(
     )
 
     def_user = (
-        f"Memories that came back:\n{formatted_memories}\n\n"
+        f"Retrieved memories:\n{formatted_memories}\n\n"
         f"Category summaries:\n{formatted_categories}\n\n"
         f"Your working thoughts:\n{formatted_cache}\n\n"
         f"Intentions:\n{formatted_intentions}\n\n"
         f"{_LIFE_GOALS_FREE_WILL_HEADER}\n{formatted_life_goals}\n\n"
-        f"Recent conversation:\n{episode_text}"
+        f"Recent conversation (current episode):\n{episode_text}"
     )
 
     llm_raw = await svc.chat(

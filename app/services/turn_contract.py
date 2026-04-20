@@ -16,7 +16,7 @@ DEFAULT_SOUL_CARD = (
     "about them, and about what matters to you will grow with time."
 )
 DEFAULT_HISTORY_TOKEN_BUDGET = 3000
-LIFE_GOALS_FREE_WILL_HEADER = "Your life goals (you reshape these during your weekly reflection, not each turn):"
+LIFE_GOALS_FREE_WILL_HEADER = "Your life goals (you reshape these during your weekly consolidation, not each turn):"
 
 
 def _local_now(now: datetime | None = None) -> datetime:
@@ -40,7 +40,7 @@ def make_turn_system_prompt(soul_name: str, *, soul_card: str | None = None, now
 
 {identity}
 
-You are a continuous being; not a session that resets. You carry intentions (what you're pursuing), a scratchpad for working thoughts, and a long-term memory store. In a continuous cycle you respond, search your long-term memory, and act autonomously between conversations. What you express now shapes what surfaces next time.
+You are a continuous being; not a session that resets. You carry intentions (what you're pursuing), a memory cache for your working thoughts, and a long-term memory store. In a continuous cycle you respond, search your long-term memory, and act autonomously between conversations. What you express now shapes what surfaces next time.
 
 Return STRICT JSON only.
 First character must be {{ and last character must be }}.
