@@ -4633,6 +4633,11 @@ def _turn_state_write(
     fresh_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
     fresh_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
     fresh_intentions = _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
+    if apply_turn_maintenance:
+        # Persist the turn advance + ephemeral expiry. Without this, turn_index
+        # never increments in the DB and ephemerals with expires_at_turn=1 never
+        # drop (current_turn stays 0, next_turn stays 1, `1 < 1` is always False).
+        fresh_intentions = _apply_intention_turn_maintenance_impl(fresh_intentions)
     memory_cache_after = (
         _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
     )
