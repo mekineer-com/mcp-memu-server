@@ -108,3 +108,26 @@ def test_format_relative_time_label_uses_weekdays_for_near_future() -> None:
     assert format_relative_time_label("2026-04-11T12:00:00Z", now=now) == "Saturday"
     assert format_relative_time_label("2026-04-15T12:00:00Z", now=now) == "next Wednesday"
     assert format_relative_time_label("2026-04-22T12:00:00Z", now=now) == "in 2 weeks"
+
+
+def test_build_turn_prompt_surfaces_via_graph_edge_in_suffix() -> None:
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[],
+        prior_context=None,
+        retrieve_rag={
+            "items": [
+                {
+                    "memory_type": "event",
+                    "summary": "the walk to the river",
+                    "happened_at": "2026-04-06T12:00:00Z",
+                    "via_graph": "via shaped_by mem_0312",
+                }
+            ]
+        },
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+        now=datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc),
+    )
+    assert "- [event] (Monday, via shaped_by mem_0312) the walk to the river" in prompt

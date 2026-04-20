@@ -271,6 +271,9 @@ def _format_item_suffix(item: dict[str, Any], *, now: datetime | None = None) ->
     reinforcement_count = _extract_reinforcement_count(item.get("extra"))
     if reinforcement_count > 1:
         parts.append(f"reinforced {reinforcement_count}x")
+    via_graph = _text(item.get("via_graph"))
+    if via_graph:
+        parts.append(via_graph)
     if not parts:
         return ""
     return f" ({', '.join(parts)})"
