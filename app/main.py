@@ -3134,6 +3134,47 @@ def _sleep_gap_complete_since_last_message(last_ts_ms: int, zi: Any, *, now_ms: 
     return bool(splits)
 
 
+def _resolve_turn_timezone(safe: dict[str, Any]) -> Any | None:
+    tz_name = str(safe.get("time_zone") or safe.get("timeZone") or "").strip() or None
+    raw_off = safe.get("time_zone_offset_min")
+    if raw_off is None:
+        raw_off = safe.get("timeZoneOffsetMin")
+    tz_off_min: int | None = None
+    if isinstance(raw_off, (int, float)) and math.isfinite(raw_off):
+        tz_off_min = int(raw_off)
+    if tz_name and ZoneInfo is not None:
+        try:
+            return ZoneInfo(str(tz_name))
+        except Exception:
+            pass
+    if tz_off_min is not None:
+        try:
+            return timezone(timedelta(minutes=tz_off_min))
+        except Exception:
+            pass
+    return None
+
+
+def _unmemorized_sleep_gap_detected(
+    history: list[dict[str, Any]],
+    digest_cursor: Any,
+    safe: dict[str, Any],
+) -> bool:
+    try:
+        cursor = int(digest_cursor)
+    except Exception:
+        cursor = -1
+    start = max(0, cursor + 1)
+    unproc = history[start:] if isinstance(history, list) else []
+    if len(unproc) < 2:
+        return False
+    zi = _resolve_turn_timezone(safe)
+    if zi is None:
+        return False
+    splits, _stats = _split_indices_by_sleep(unproc, zi, True, _SLEEP_SPLIT_MIN_LULL_SECONDS)
+    return bool(splits)
+
+
 def _build_sleep_timer_memorize_payload(chats_dir: Path, row: dict[str, Any]) -> dict[str, Any] | None:
     conversation_id = str(row.get("conversation_id") or "").strip()
     user_id = str(row.get("user_id") or "").strip()
@@ -4612,15 +4653,20 @@ def _turn_state_read(
     digest_cursor_for_gate = state_row.get("digest_cursor") if state_row.get("last_memorize_at") else -1
     force_memorize_unmemorized_tokens = _estimate_unmemorized_tokens(history_full, digest_cursor_for_gate)
     force_memorize_payload: dict[str, Any] | None = None
-    if (not dry_run) and history_full and force_memorize_unmemorized_tokens > _HISTORY_TAIL_AFTER_MEMORIZE:
-        memorize_history = _normalize_conversation(history_full)
-        if memorize_history:
-            force_memorize_payload = {
-                **safe,
-                "conversation_id": cid,
-                "conversation": memorize_history,
-                "user": {"user_id": uid, "soul_id": soul_id, "conversation_id": cid},
-            }
+    if (not dry_run) and history_full and force_memorize_unmemorized_tokens >= _MIN_CHUNK_TOKENS:
+        hit_ceiling = force_memorize_unmemorized_tokens >= _MAX_CHUNK_TOKENS
+        had_sleep_gap = hit_ceiling or _unmemorized_sleep_gap_detected(
+            history_full, digest_cursor_for_gate, safe
+        )
+        if hit_ceiling or had_sleep_gap:
+            memorize_history = _normalize_conversation(history_full)
+            if memorize_history:
+                force_memorize_payload = {
+                    **safe,
+                    "conversation_id": cid,
+                    "conversation": memorize_history,
+                    "user": {"user_id": uid, "soul_id": soul_id, "conversation_id": cid},
+                }
     return (
         state_row,
         soul_card,
@@ -4925,7 +4971,8 @@ async def conversation_turn(
             out["forced_memorize"] = {
                 "queued": bool(force_memorize_payload),
                 "unmemorized_tokens": force_memorize_unmemorized_tokens,
-                "history_tail_after_memorize": _HISTORY_TAIL_AFTER_MEMORIZE,
+                "min_chunk_tokens": _MIN_CHUNK_TOKENS,
+                "max_chunk_tokens": _MAX_CHUNK_TOKENS,
             }
 
         if force_memorize_payload is not None:
@@ -4941,7 +4988,8 @@ async def conversation_turn(
                 "apimw": apimw_status,
                 "forcedMemorizeQueued": bool(force_memorize_payload),
                 "unmemorizedTokens": force_memorize_unmemorized_tokens,
-                "historyTailAfterMemorize": _HISTORY_TAIL_AFTER_MEMORIZE,
+                "minChunkTokens": _MIN_CHUNK_TOKENS,
+                "maxChunkTokens": _MAX_CHUNK_TOKENS,
                 "responseLen": len(str(out.get("response") or "")),
             },
         )
