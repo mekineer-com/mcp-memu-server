@@ -449,7 +449,6 @@ def build_turn_prompt(
     all_categories_summary: str | None,
     memory_cache: Any,
     intentions_active: Any,
-    life_goals_active: list[str] | None = None,
     now: datetime | None = None,
 ) -> str:
     cache = normalize_memory_cache(memory_cache)
@@ -494,10 +493,19 @@ def build_turn_prompt(
     if not context_blocks:
         context_blocks.extend([_render_empty_retrieve_label(retrieve_rag), ""])
 
+    # Echo the current user message at the end of history so the soul reads
+    # history → new message as one continuous exchange. The cache + intentions
+    # blocks sit between the history block and the "New message:" footer, so
+    # without this echo the flow reads as interrupted.
+    history_for_render = list(history or [])
+    current_user_text = _text(user_message)
+    if current_user_text:
+        history_for_render.append({"role": "user", "content": current_user_text})
+
     parts = [
         *context_blocks,
         "Conversation history:",
-        _render_history(history or [], token_budget=history_tail_after_memorize),
+        _render_history(history_for_render, token_budget=history_tail_after_memorize),
         "",
         "Your working thoughts:",
         "\n".join(cache_lines) if cache_lines else "(empty)",
@@ -505,10 +513,7 @@ def build_turn_prompt(
         "Intentions:",
         format_intentions_for_prompt(intentions_active),
         "",
-        LIFE_GOALS_FREE_WILL_HEADER,
-        "\n".join(f"- {goal}" for goal in (life_goals_active or []) if _text(goal)) or "(none yet)",
-        "",
-        f"New message:\n{_text(user_message)}",
+        f"New message:\n{current_user_text}",
     ]
     return "\n".join(parts)
 

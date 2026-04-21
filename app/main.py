@@ -2994,6 +2994,9 @@ def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, con
     return None
 
 
+_MIN_HISTORY_MESSAGES_FOR_CONTINUITY = 8  # 4 turns × (user + soul)
+
+
 def _slice_history_after_last_memorized_segment(
     history: list[dict[str, Any]],
     *,
@@ -3004,27 +3007,30 @@ def _slice_history_after_last_memorized_segment(
 ) -> list[dict[str, Any]]:
     if not isinstance(history, list) or not history:
         return history
+    min_recent_start = max(0, len(history) - _MIN_HISTORY_MESSAGES_FOR_CONTINUITY)
     chat_dir = _find_chat_dir_for_conversation(chats_dir, uid, soul_id, conversation_id)
     if chat_dir is None:
-        return history
+        return history[min_recent_start:]
     manifest_path = (chat_dir / "manifest.json").resolve()
     if not manifest_path.exists():
-        return history
+        return history[min_recent_start:]
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception:
-        return history
+        return history[min_recent_start:]
     segments = manifest.get("segments") if isinstance(manifest, dict) else None
     if not isinstance(segments, list) or not segments:
-        return history
+        return history[min_recent_start:]
     last = segments[-1]
     if not isinstance(last, dict):
-        return history
+        return history[min_recent_start:]
     try:
         tail_start = int(last.get("end", -1)) + 1
     except Exception:
-        return history
-    tail_start = max(0, min(len(history), tail_start))
+        return history[min_recent_start:]
+    # Include the last memorized segment's successor + enough recent messages
+    # for continuity, whichever reaches further back.
+    tail_start = max(0, min(tail_start, min_recent_start))
     return history[tail_start:]
 
 
@@ -4357,7 +4363,6 @@ async def conversation_retrieve(
                 )
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
-                life_goals_active = _load_active_life_goals_for_prompt(user_id=uid, soul_id=soul_id)
 
                 out["turn_system_prompt"] = _make_turn_system_prompt(
                     soul_id,
@@ -4373,7 +4378,6 @@ async def conversation_retrieve(
                     all_categories_summary=_state_row.get("all_categories_summary"),
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
-                    life_goals_active=life_goals_active,
                 )
 
         _record_call(
