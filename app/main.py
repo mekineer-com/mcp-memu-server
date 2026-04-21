@@ -36,6 +36,7 @@ from fastapi.staticfiles import StaticFiles
 from memu.app import MemoryService
 from pydantic import BaseModel
 
+from app import procedural as _procedural
 from app.db import (
     json_to_db as _json_to_db,
 )
@@ -559,6 +560,10 @@ def _default_config() -> dict[str, Any]:
             "apimw_random_count": 5,
         },
         "consolidation_interval_days": 7,
+        "procedural": {
+            "yaml_dir": "../memu/procedural",
+            "db_path": "../memu/sqlite/procedural.db",
+        },
         "mcp": {"http_path": "/mcp", "sse_path": "/sse"},
     }
 
@@ -836,6 +841,25 @@ def _get_storage_dir(cfg: dict[str, Any]) -> Path:
     d = _resolve_cfg_path(str(cfg.get("storage", {}).get("resources_dir") or "./storage"))
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _procedural_yaml_dir(cfg: dict[str, Any]) -> Path:
+    raw = str((cfg.get("procedural") or {}).get("yaml_dir") or "../memu/procedural")
+    return _resolve_cfg_path(raw)
+
+
+def _procedural_db_path(cfg: dict[str, Any]) -> Path:
+    raw = str((cfg.get("procedural") or {}).get("db_path") or "../memu/sqlite/procedural.db")
+    return _resolve_cfg_path(raw)
+
+
+def _procedural_should_ingest(db_path: Path, yaml_dir: Path) -> bool:
+    if not yaml_dir.exists():
+        return False
+    if not db_path.exists():
+        return True
+    db_mtime = db_path.stat().st_mtime
+    return any(yf.stat().st_mtime > db_mtime for yf in yaml_dir.glob("*.yaml"))
 
 
 def _sanitize_db_filename(name: str) -> str:
@@ -2037,6 +2061,38 @@ async def _run_retrieve(
         return out_local
 
     out = await _retrieve_and_maybe_persist(soul_id or None)
+
+    # Mental-health procedural sidecar. The router gated this by writing
+    # mental_health_query only when the turn touches such a theme — if it
+    # stayed empty, nothing fires.
+    if bool(safe.get("mental_health_addon")) and isinstance(out.get("result"), dict):
+        mh_query = str(out["result"].get("mental_health_query") or "").strip()
+        if mh_query:
+            yaml_dir = _procedural_yaml_dir(_CONFIG)
+            procedural_db = _procedural_db_path(_CONFIG)
+            if _procedural_should_ingest(procedural_db, yaml_dir):
+                try:
+                    await _procedural.ingest(svc, procedural_db, yaml_dir)
+                except Exception:
+                    logger.exception("procedural ingest failed")
+            try:
+                embeds = await svc.embed([mh_query], profile="embedding")
+                qvec = list(embeds[0]) if embeds else []
+                hits = _procedural.lookup(
+                    procedural_db,
+                    domain="mental_health",
+                    query_vec=qvec,
+                    limit=1,
+                )
+                if hits:
+                    row, score = hits[0]
+                    out["result"].setdefault("items", []).append({
+                        **row,
+                        "memory_type": "procedural",
+                        "score": float(score),
+                    })
+            except Exception:
+                logger.exception("procedural lookup failed")
 
     # Advance the angle only on RETRIEVE verdicts (NO_RETRIEVE keeps it put).
     if (
