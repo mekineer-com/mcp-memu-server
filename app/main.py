@@ -1630,15 +1630,17 @@ def _slice_history_from_chat_x_anchors(
     stop_at_message_id: str | None = None,
     limit: int = 12,
 ) -> list[dict[str, Any]]:
-    if not history:
+    # With stop_at_message_id set, the returned slice must never include or
+    # extend past that message — the two slices (previous / current episode)
+    # must not overlap.
+    if not history or limit <= 0:
         return []
-    if limit <= 0:
-        return []
+    stop_id = str(stop_at_message_id or "").strip()
     if not chat_x_anchors:
-        return history[-limit:]
+        return [] if stop_id else history[-limit:]
     anchors = _compact_chat_x_anchors(*chat_x_anchors, max_count=2)
     if not anchors:
-        return history[-limit:]
+        return [] if stop_id else history[-limit:]
     anchor_set = set(anchors)
     start_idx = None
     for idx, item in enumerate(history):
@@ -1646,14 +1648,15 @@ def _slice_history_from_chat_x_anchors(
             start_idx = idx
             break
     if start_idx is None:
-        return history[-limit:]
-    stop_id = str(stop_at_message_id or "").strip()
+        return [] if stop_id else history[-limit:]
     stop_idx: int | None = None
     if stop_id:
-        for idx, item in enumerate(history[start_idx:], start=start_idx):
+        for idx, item in enumerate(history):
             if str(item.get("message_id") or "").strip() == stop_id:
                 stop_idx = idx
                 break
+        if stop_idx is None or stop_idx <= start_idx:
+            return []
     end_idx = stop_idx if stop_idx is not None else len(history)
     sliced = history[start_idx:end_idx]
     return sliced[-limit:]

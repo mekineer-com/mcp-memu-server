@@ -170,6 +170,54 @@ def test_slice_history_from_chat_x_anchors_uses_one_anchor():
     assert [item.get("message_id") for item in sliced] == ["m4", "m5"]
 
 
+def test_slice_history_from_chat_x_anchors_anchor_inversion_returns_empty():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    history = [
+        {"message_id": "m1", "content": "1"},
+        {"message_id": "m2", "content": "2"},
+        {"message_id": "m3", "content": "3"},
+        {"message_id": "m4", "content": "4"},
+        {"message_id": "m5", "content": "5"},
+    ]
+    # Previous anchor m4 lies AFTER the current anchor m2 in history:
+    # no valid previous-episode range. Must not overlap the m2+ slice.
+    sliced = main._slice_history_from_chat_x_anchors(
+        history, ["m4"], stop_at_message_id="m2", limit=12
+    )
+    assert sliced == []
+    # Equal case: same anchor on both slots.
+    sliced = main._slice_history_from_chat_x_anchors(
+        history, ["m3"], stop_at_message_id="m3", limit=12
+    )
+    assert sliced == []
+
+
+def test_slice_history_from_chat_x_anchors_missing_prev_with_stop_returns_empty():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    history = [
+        {"message_id": "m1", "content": "1"},
+        {"message_id": "m2", "content": "2"},
+        {"message_id": "m3", "content": "3"},
+    ]
+    # stop_at_message_id given but no anchor → no previous range, not tail.
+    sliced = main._slice_history_from_chat_x_anchors(
+        history, None, stop_at_message_id="m2", limit=12
+    )
+    assert sliced == []
+    sliced = main._slice_history_from_chat_x_anchors(
+        history, [], stop_at_message_id="m2", limit=12
+    )
+    assert sliced == []
+
+
 def test_build_force_memorize_batches_prefers_segments():
     try:
         from app import main
