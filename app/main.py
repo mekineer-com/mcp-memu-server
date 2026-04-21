@@ -2045,14 +2045,12 @@ async def _run_retrieve(
         and isinstance(out.get("result"), dict)
         and out["result"].get("needs_retrieval")
     ):
-        next_angle = (pre_retrieve_angle + 1) % 3
-        if next_angle != pre_retrieve_angle:
-            _write_conversation_state(
-                scoped_conversation_id,
-                soul_id=soul_id,
-                user_id=user_id,
-                updates={"retrieve_rewrite_angle": next_angle},
-            )
+        _write_conversation_state(
+            scoped_conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={"retrieve_rewrite_angle": (pre_retrieve_angle + 1) % 3},
+        )
 
     if scoped_conversation_id:
         state_out: dict[str, Any] | None = None
