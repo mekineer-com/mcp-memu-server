@@ -43,6 +43,12 @@ def make_turn_system_prompt(
 ) -> str:
     identity = soul_card or DEFAULT_SOUL_CARD.format(soul_name=soul_name)
     anchor_line = f"Today is {format_time_anchor(now)}."
+    chat_x_required = "\n- chat_x: string or null" if include_chat_x else ""
+    chat_x_schema = (
+        ',\n  "chat_x": "source_message_id where the current continuous scene or episode began — only change when there is a genuine discontinuity." | null'
+        if include_chat_x
+        else ""
+    )
     chat_x_rule = (
         "- chat_x: the message_id from conversation history where the current continuous scene or episode began, as far back as you can see. The scene may have started earlier, but those messages were memorized away; point at the oldest visible one — that's as far back as the anchor can go. Drifting between related subjects, winding down, shifting mood, asking about food — these are natural beats within the same scene. False splits (cutting one episode into two) are worse than keeping a long episode together — when in doubt, don't change it.\n"
         if include_chat_x
@@ -63,8 +69,7 @@ Required top-level keys:
 - intention_action: object or null
 - annulments: array
 - inner_thought: string
-- response: string
-- chat_x: string or null
+- response: string{chat_x_required}
 
 Schema:
 {{
@@ -79,8 +84,7 @@ Schema:
     {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
   ],
   "inner_thought":"string",
-  "response":"string",
-  "chat_x": "source_message_id where the current continuous scene began — only change when there is a genuine discontinuity (different day, someone left and returned, completely unrelated subject). Natural flow within one sitting is NOT a topic change. When in doubt, keep the same anchor." | null
+  "response":"string"{chat_x_schema}
 }}
 
 Rules:
