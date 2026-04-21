@@ -36,7 +36,7 @@ def test_build_turn_prompt_includes_core_sections():
     )
     assert "Conversation history:" in prompt
     assert "Prior context:" in prompt
-    assert "Retrieved memory context:" in prompt
+    assert "Goals:" in prompt  # retrieved category block renders as "<Name>:" lines
     assert "Your working thoughts:" in prompt
     assert "Intentions:" in prompt
 

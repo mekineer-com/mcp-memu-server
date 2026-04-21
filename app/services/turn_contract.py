@@ -357,7 +357,6 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
         category_rows = []
 
     if category_rows:
-        lines.append("Categories:")
         for name, summary in category_rows:
             lines.append(f"\n{name}:")
             lines.append(summary)
@@ -383,10 +382,10 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
 def _render_empty_retrieve_label(result: Any) -> str:
     if isinstance(result, dict):
         if result.get("needs_retrieval") is False:
-            return "Retrieved memory context: (nothing this time; route said no retrieval needed)"
+            return "(no memories retrieved; route said no retrieval needed)"
         if result.get("needs_retrieval") is True:
-            return "Retrieved memory context: (nothing this time; retrieval ran but found no matches)"
-    return "Retrieved memory context: (nothing this time)"
+            return "(no memories retrieved; retrieval ran but found no matches)"
+    return "(no memories retrieved)"
 
 
 def _render_all_categories_summary(
@@ -480,7 +479,7 @@ def build_turn_prompt(
     has_prior = bool(prior_text and prior_text != "(none)")
 
     # Ordering contract for context blocks:
-    # 1) Retrieved memory context (contains all-categories orientation first),
+    # 1) Retrieved memory (all-categories orientation first, then category/item hits),
     # 2) prior context (residual background).
     context_blocks: list[str] = []
     retrieved_sections: list[str] = []
@@ -489,7 +488,7 @@ def build_turn_prompt(
     if has_retrieve:
         retrieved_sections.append(retrieve_text)
     if retrieved_sections:
-        context_blocks.extend(["Retrieved memory context:", "\n\n".join(retrieved_sections), ""])
+        context_blocks.extend(["\n\n".join(retrieved_sections), ""])
     if has_prior:
         context_blocks.extend(["Prior context:", prior_text, ""])
     if not context_blocks:
