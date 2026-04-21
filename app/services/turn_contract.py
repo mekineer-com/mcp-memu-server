@@ -362,6 +362,8 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
             lines.append(f"\n{name}:")
             lines.append(summary)
 
+    main_item_ids = {_text(item.get("id")) for item, _, _, _ in item_rows if _text(item.get("id"))}
+
     if item_rows:
         if lines:
             lines.append("")
@@ -370,6 +372,9 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
             lines.append(f"- [{memory_type}]{suffix} {summary}")
             shaped_by = item.get("shaped_by")
             if isinstance(shaped_by, dict):
+                seed_id = _text(shaped_by.get("id"))
+                if seed_id and seed_id in main_item_ids:
+                    continue
                 lines.append(format_shaped_by_line(shaped_by, now=now))
 
     return ("\n".join(lines) if lines else "(none)"), item_terms, category_terms
