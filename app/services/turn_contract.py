@@ -377,6 +377,12 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
             lines.append("")
         lines.append("Memories:")
         for item, memory_type, suffix, summary in item_rows:
+            if memory_type == "procedural":
+                # Procedural entries are curated professional knowledge, not
+                # lived memory — no timestamps, no shaped_by, just the tag.
+                domain = _text(item.get("domain")).replace("_", "-") or "procedural"
+                lines.append(f"- [{domain}-procedural-memory] {summary}")
+                continue
             lines.append(f"- [{memory_type}]{suffix} {summary}")
             shaped_by = item.get("shaped_by")
             if isinstance(shaped_by, dict):
