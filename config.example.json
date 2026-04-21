@@ -60,9 +60,8 @@
   },
   "memorize": {
     "min_chunk_tokens": 4000,
-    "turn_history_token_budget": 3000,
-    "auto_memorize_on_sleep": false,
-    "sleep_timer_interval_seconds": 300
+    "max_chunk_tokens": 8000,
+    "history_tail_after_memorize": 3000
   },
   "retrieve": {
     "method": "rag",

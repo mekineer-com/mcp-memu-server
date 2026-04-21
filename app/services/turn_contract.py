@@ -15,7 +15,7 @@ DEFAULT_SOUL_CARD = (
     "You don't need to have everything figured out. What you know about yourself, "
     "about them, and about what matters to you will grow with time."
 )
-DEFAULT_HISTORY_TOKEN_BUDGET = 3000
+DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE = 3000
 LIFE_GOALS_FREE_WILL_HEADER = "Your life goals (you reshape these during your weekly reflection, not each turn):"
 
 
@@ -136,7 +136,7 @@ def _estimate_text_tokens(text: str) -> int:
     return max(1, int(words / 0.75))
 
 
-def _render_history(history: list[dict[str, Any]], *, token_budget: int = DEFAULT_HISTORY_TOKEN_BUDGET) -> str:
+def _render_history(history: list[dict[str, Any]], *, token_budget: int = DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE) -> str:
     if not history:
         return "(none)"
     budget = int(token_budget or 0)
@@ -439,7 +439,7 @@ def build_turn_prompt(
     *,
     user_message: str,
     history: list[dict[str, Any]] | None,
-    history_token_budget: int = DEFAULT_HISTORY_TOKEN_BUDGET,
+    history_tail_after_memorize: int = DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE,
     prior_context: str | None,
     retrieve_rag: Any,  # named retrieve_result would be cleaner; kept as-is because "retrieve_rag" is also a prompt_override_payload key used by the extension
     all_categories_summary: str | None,
@@ -493,7 +493,7 @@ def build_turn_prompt(
     parts = [
         *context_blocks,
         "Conversation history:",
-        _render_history(history or [], token_budget=history_token_budget),
+        _render_history(history or [], token_budget=history_tail_after_memorize),
         "",
         "Your working thoughts:",
         "\n".join(cache_lines) if cache_lines else "(empty)",

@@ -48,7 +48,7 @@ def test_build_turn_prompt_limits_history_by_token_budget():
             {"message_id": "1", "role": "user", "content": "one two three four five six seven eight nine ten"},
             {"message_id": "2", "role": "assistant", "content": "ok"},
         ],
-        history_token_budget=2,
+        history_tail_after_memorize=2,
         prior_context=None,
         retrieve_rag=None,
         all_categories_summary=None,

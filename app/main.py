@@ -139,10 +139,12 @@ app = FastAPI(title="mcp-memu-server", version="0.4.0")
 _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 4000
-_DEFAULT_TURN_HISTORY_TOKEN_BUDGET: int = 3000
+_DEFAULT_MAX_CHUNK_TOKENS: int = 8000
+_DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE: int = 3000
 _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS: int = 300
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
-_TURN_HISTORY_TOKEN_BUDGET: int = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET
+_MAX_CHUNK_TOKENS: int = _DEFAULT_MAX_CHUNK_TOKENS
+_HISTORY_TAIL_AFTER_MEMORIZE: int = _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE
 _SLEEP_TIMER_ENABLED: bool = False
 _SLEEP_TIMER_INTERVAL_SECONDS: int = _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS
 _SLEEP_TIMER_MAX_JOBS: int = 1
@@ -751,7 +753,7 @@ def _mask_config(cfg: dict[str, Any]) -> dict[str, Any]:
 _CONFIG: dict[str, Any] = _load_config()
 
 def _refresh_runtime_limits() -> None:
-    global _MIN_CHUNK_TOKENS, _TURN_HISTORY_TOKEN_BUDGET
+    global _MIN_CHUNK_TOKENS, _MAX_CHUNK_TOKENS, _HISTORY_TAIL_AFTER_MEMORIZE
     global _SLEEP_TIMER_ENABLED, _SLEEP_TIMER_INTERVAL_SECONDS
     global _LOG_PROMPTS
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
@@ -760,12 +762,19 @@ def _refresh_runtime_limits() -> None:
     except Exception:
         _MIN_CHUNK_TOKENS = _DEFAULT_MIN_CHUNK_TOKENS
     try:
-        _TURN_HISTORY_TOKEN_BUDGET = max(
-            1,
-            int(memorize_cfg.get("turn_history_token_budget", _DEFAULT_TURN_HISTORY_TOKEN_BUDGET)),
+        _MAX_CHUNK_TOKENS = max(
+            _MIN_CHUNK_TOKENS,
+            int(memorize_cfg.get("max_chunk_tokens", _DEFAULT_MAX_CHUNK_TOKENS)),
         )
     except Exception:
-        _TURN_HISTORY_TOKEN_BUDGET = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET
+        _MAX_CHUNK_TOKENS = _DEFAULT_MAX_CHUNK_TOKENS
+    try:
+        _HISTORY_TAIL_AFTER_MEMORIZE = max(
+            1,
+            int(memorize_cfg.get("history_tail_after_memorize", _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE)),
+        )
+    except Exception:
+        _HISTORY_TAIL_AFTER_MEMORIZE = _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE
     _SLEEP_TIMER_ENABLED = bool(memorize_cfg.get("auto_memorize_on_sleep", False))
     try:
         _SLEEP_TIMER_INTERVAL_SECONDS = max(
@@ -4540,7 +4549,7 @@ async def conversation_retrieve(
                 out["turn_user_prompt"] = _build_turn_prompt(
                     user_message=message,
                     history=history,
-                    history_token_budget=_TURN_HISTORY_TOKEN_BUDGET,
+                    history_tail_after_memorize=_HISTORY_TAIL_AFTER_MEMORIZE,
                     prior_context=out.get("prior_context"),
                     retrieve_rag=out.get("result"),
                     all_categories_summary=_state_row.get("all_categories_summary"),
@@ -4603,7 +4612,7 @@ def _turn_state_read(
     digest_cursor_for_gate = state_row.get("digest_cursor") if state_row.get("last_memorize_at") else -1
     force_memorize_unmemorized_tokens = _estimate_unmemorized_tokens(history_full, digest_cursor_for_gate)
     force_memorize_payload: dict[str, Any] | None = None
-    if (not dry_run) and history_full and force_memorize_unmemorized_tokens > _TURN_HISTORY_TOKEN_BUDGET:
+    if (not dry_run) and history_full and force_memorize_unmemorized_tokens > _HISTORY_TAIL_AFTER_MEMORIZE:
         memorize_history = _normalize_conversation(history_full)
         if memorize_history:
             force_memorize_payload = {
@@ -4916,7 +4925,7 @@ async def conversation_turn(
             out["forced_memorize"] = {
                 "queued": bool(force_memorize_payload),
                 "unmemorized_tokens": force_memorize_unmemorized_tokens,
-                "history_budget_tokens": _TURN_HISTORY_TOKEN_BUDGET,
+                "history_tail_after_memorize": _HISTORY_TAIL_AFTER_MEMORIZE,
             }
 
         if force_memorize_payload is not None:
@@ -4932,7 +4941,7 @@ async def conversation_turn(
                 "apimw": apimw_status,
                 "forcedMemorizeQueued": bool(force_memorize_payload),
                 "unmemorizedTokens": force_memorize_unmemorized_tokens,
-                "historyBudgetTokens": _TURN_HISTORY_TOKEN_BUDGET,
+                "historyTailAfterMemorize": _HISTORY_TAIL_AFTER_MEMORIZE,
                 "responseLen": len(str(out.get("response") or "")),
             },
         )
