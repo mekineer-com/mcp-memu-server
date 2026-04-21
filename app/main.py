@@ -141,10 +141,8 @@ _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 4000
 _DEFAULT_TURN_HISTORY_TOKEN_BUDGET: int = 3000
 _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS: int = 300
-_DEFAULT_TURN_RESPONSE_SENTENCES: int = 3
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
 _TURN_HISTORY_TOKEN_BUDGET: int = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET
-_TURN_RESPONSE_SENTENCES: int = _DEFAULT_TURN_RESPONSE_SENTENCES
 _SLEEP_TIMER_ENABLED: bool = False
 _SLEEP_TIMER_INTERVAL_SECONDS: int = _DEFAULT_SLEEP_TIMER_INTERVAL_SECONDS
 _SLEEP_TIMER_MAX_JOBS: int = 1
@@ -753,7 +751,7 @@ def _mask_config(cfg: dict[str, Any]) -> dict[str, Any]:
 _CONFIG: dict[str, Any] = _load_config()
 
 def _refresh_runtime_limits() -> None:
-    global _MIN_CHUNK_TOKENS, _TURN_HISTORY_TOKEN_BUDGET, _TURN_RESPONSE_SENTENCES
+    global _MIN_CHUNK_TOKENS, _TURN_HISTORY_TOKEN_BUDGET
     global _SLEEP_TIMER_ENABLED, _SLEEP_TIMER_INTERVAL_SECONDS
     global _LOG_PROMPTS
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
@@ -768,13 +766,6 @@ def _refresh_runtime_limits() -> None:
         )
     except Exception:
         _TURN_HISTORY_TOKEN_BUDGET = _DEFAULT_TURN_HISTORY_TOKEN_BUDGET
-    try:
-        _TURN_RESPONSE_SENTENCES = max(
-            1,
-            int(_CONFIG.get("turn_response_sentences", _DEFAULT_TURN_RESPONSE_SENTENCES)),
-        )
-    except Exception:
-        _TURN_RESPONSE_SENTENCES = _DEFAULT_TURN_RESPONSE_SENTENCES
     _SLEEP_TIMER_ENABLED = bool(memorize_cfg.get("auto_memorize_on_sleep", False))
     try:
         _SLEEP_TIMER_INTERVAL_SECONDS = max(
@@ -4544,7 +4535,7 @@ async def conversation_retrieve(
                 out["turn_system_prompt"] = _make_turn_system_prompt(
                     soul_id,
                     soul_card=soul_card,
-                    response_sentences=_TURN_RESPONSE_SENTENCES,
+                    response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
                 )
                 out["turn_user_prompt"] = _build_turn_prompt(
                     user_message=message,
@@ -4846,7 +4837,7 @@ async def conversation_turn(
         turn_system_prompt = payload_system_prompt or _make_turn_system_prompt(
             soul_id,
             soul_card=soul_card,
-            response_sentences=_TURN_RESPONSE_SENTENCES,
+            response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
         )
         turn_user_prompt = payload_user_prompt
 
