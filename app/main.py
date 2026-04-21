@@ -195,7 +195,6 @@ def _build_force_memorize_batches(
     start_idx: int,
     segments: list[dict[str, Any]],
     days_dir: Path,
-    full_path: Path,
     resource_url: str,
     max_chunk_tokens: int,
 ) -> list[tuple[str, list[dict[str, Any]], int]]:
@@ -250,7 +249,7 @@ def _build_force_memorize_batches(
             if b < next_idx:
                 continue
             if a > next_idx:
-                _append_chunked(out, str(full_path), next_idx, a - 1)
+                _append_chunked(out, resource_url, next_idx, a - 1)
             effective_start = max(a, next_idx)
             if effective_start > b:
                 continue
@@ -258,12 +257,12 @@ def _build_force_memorize_batches(
             next_idx = b + 1
 
         if next_idx <= last_idx:
-            _append_chunked(out, str(full_path), next_idx, last_idx)
+            _append_chunked(out, resource_url, next_idx, last_idx)
 
         if out:
             return out
 
-    _append_chunked(out, str(full_path), start_idx, last_idx)
+    _append_chunked(out, resource_url, start_idx, last_idx)
     return out
 
 
@@ -2836,16 +2835,6 @@ async def root():
     return {"message": "mcp-memu-server", "mcp": "enabled" if _has_mcp else "disabled"}
 
 
-def _msg_key(m: dict[str, Any]) -> tuple[str, str, str, str]:
-    # Include timestamp when present so identical text repeated at different times isn't dropped.
-    return (
-        str(m.get("role") or ""),
-        str(m.get("name") or ""),
-        str(m.get("content") or ""),
-        str(m.get("ts_ms") or ""),
-    )
-
-
 def _read_list(p: Path) -> list[dict[str, Any]]:
     if not p.exists():
         return []
@@ -2899,30 +2888,6 @@ def _resolve_chat_storage_dir(
                 return legacy_path, legacy_key, legacy_source
 
     return primary_path, primary_key, primary_source
-
-
-def _merge_conv(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if not old:
-        return new
-    if not new:
-        return old
-    if len(new) >= len(old) and old == new[: len(old)]:
-        return new
-    if len(old) >= len(new) and new == old[: len(new)]:
-        return old
-    max_k = min(len(old), len(new), 80)
-    for k in range(max_k, 0, -1):
-        if old[-k:] == new[:k]:
-            return old + new[k:]
-    seen = {_msg_key(m) for m in old}
-    out = list(old)
-    for m in new:
-        k = _msg_key(m)
-        if k in seen:
-            continue
-        seen.add(k)
-        out.append(m)
-    return out
 
 
 def _local_dt(ts_ms: int, zi: Any | None) -> datetime:
@@ -3012,7 +2977,7 @@ def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, con
         None,
         None,
     )
-    if (primary_dir / "full.json").exists():
+    if (primary_dir / "manifest.json").exists():
         return primary_dir
 
     agent_slug = _sanitize_db_filename(soul_id)
@@ -3381,17 +3346,11 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
             chat_dir.mkdir(parents=True, exist_ok=True)
             days_dir.mkdir(parents=True, exist_ok=True)
 
-            full_path = (chat_dir / "full.json").resolve()
             manifest_path = (chat_dir / "manifest.json").resolve()
 
-            prev_full = _read_list(full_path)
-            prev_len = len(prev_full)
-            merged_len = len(conv_norm) if isinstance(conv_norm, list) else 0
-            merged = prev_full
-            if isinstance(conv_norm, list):
-                merged = _merge_conv(prev_full, conv_norm)
-                merged_len = len(merged)
-                _write_list_if_changed(full_path, prev_full, merged)
+            merged: list[dict[str, Any]] = conv_norm if isinstance(conv_norm, list) else []
+            prev_len = 0
+            merged_len = len(merged)
 
             processed_cursor = -1
             if conversation_id:
@@ -3433,7 +3392,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                 manifest.get("segments") if isinstance(manifest.get("segments"), list) else []
             )
 
-            resource_url = str(full_path)
+            resource_url = str(chat_dir)
             days_written = 0
             sleep_stats: Any | None = None
             new_segments: list[dict[str, Any]] = []
@@ -3513,7 +3472,6 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                     start_idx=start_idx,
                     segments=segments,
                     days_dir=days_dir,
-                    full_path=full_path,
                     resource_url=resource_url,
                     max_chunk_tokens=6000,
                 )
