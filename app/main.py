@@ -3767,10 +3767,6 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                     if isinstance(_bf, str) and _bf:
                         _bu = str((days_dir / _bf).resolve())
                     memorize_batches.append((_bu, _bc, _ei))
-                if _carry is not None:
-                    _bc = merged[_carry[0] : _carry[1] + 1]
-                    if _bc:
-                        memorize_batches.append((resource_url, _bc, _carry[1]))
 
             expected_cursor = memorize_batches[-1][2] if memorize_batches else processed_cursor
             background_tasks.add_task(
