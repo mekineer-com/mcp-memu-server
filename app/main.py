@@ -2994,6 +2994,40 @@ def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, con
     return None
 
 
+def _slice_history_after_last_memorized_segment(
+    history: list[dict[str, Any]],
+    *,
+    chats_dir: Path,
+    uid: str,
+    soul_id: str,
+    conversation_id: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(history, list) or not history:
+        return history
+    chat_dir = _find_chat_dir_for_conversation(chats_dir, uid, soul_id, conversation_id)
+    if chat_dir is None:
+        return history
+    manifest_path = (chat_dir / "manifest.json").resolve()
+    if not manifest_path.exists():
+        return history
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return history
+    segments = manifest.get("segments") if isinstance(manifest, dict) else None
+    if not isinstance(segments, list) or not segments:
+        return history
+    last = segments[-1]
+    if not isinstance(last, dict):
+        return history
+    try:
+        tail_start = int(last.get("end", -1)) + 1
+    except Exception:
+        return history
+    tail_start = max(0, min(len(history), tail_start))
+    return history[tail_start:]
+
+
 def _resolve_turn_timezone(safe: dict[str, Any]) -> Any | None:
     tz_name = str(safe.get("time_zone") or safe.get("timeZone") or "").strip() or None
     raw_off = safe.get("time_zone_offset_min")
@@ -4308,22 +4342,19 @@ async def conversation_retrieve(
 
                 message = _pick_str(safe, "message", "query") or ""
                 history = _normalize_turn_history(safe.get("history"))
-                # 2*chat_x cut: keep the current scene + the previous one so
-                # the soul has enough context when the current chat_x is brand
-                # new (one message in). Older episodes live in memorized day
-                # chunks. history_tail_after_memorize caps token count inside
-                # _render_history as a safety ceiling.
-                _chat_x_anchors = _compact_chat_x_anchors(
-                    str(_state_row.get("last_chat_x") or "").strip() or None,
-                    str(_state_row.get("last_chat_x_prev") or "").strip() or None,
+                # Tail = whatever hasn't been memorized yet. The most recent
+                # memorized segment (per manifest.json) marks the boundary;
+                # everything before it lives in day-chunk files + category
+                # summaries, and the soul reads those through the retrieved
+                # memory context. history_tail_after_memorize is the token
+                # ceiling applied inside _render_history as a safety cap.
+                history = _slice_history_after_last_memorized_segment(
+                    history,
+                    chats_dir=(_get_storage_dir(_CONFIG) / "st_chats").resolve(),
+                    uid=uid,
+                    soul_id=soul_id,
+                    conversation_id=cid,
                 )
-                if _chat_x_anchors and any(
-                    str(item.get("message_id") or "").strip() in set(_chat_x_anchors)
-                    for item in history
-                ):
-                    history = _slice_history_from_chat_x_anchors(
-                        history, _chat_x_anchors, limit=max(1, len(history))
-                    )
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
                 life_goals_active = _load_active_life_goals_for_prompt(user_id=uid, soul_id=soul_id)
