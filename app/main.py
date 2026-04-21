@@ -779,7 +779,7 @@ def _prompt_log_before(ctx: Any, request_view: Any) -> None:
     step = getattr(ctx, "step_id", None) or "-"
     banner = f"===== {op.upper()} · {step} ".ljust(70, "=")
     _PROMPT_LOGGER.info(
-        "%s\n[PROMPT] op=%s step=%s model=%s\n%s",
+        "\n\n\n%s\n\n[PROMPT] op=%s step=%s model=%s\n%s",
         banner,
         op,
         step,
@@ -4684,6 +4684,8 @@ async def conversation_turn(
             temperature=turn_temperature,
             max_tokens=turn_max_tokens,
             response_format=turn_response_format,
+            op="turn",
+            step="respond",
         )
         _turn_ms = int((time.monotonic() - _turn_t0) * 1000)
         try:
