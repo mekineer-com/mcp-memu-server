@@ -38,6 +38,7 @@ def make_turn_system_prompt(
     *,
     soul_card: str | None = None,
     now: datetime | None = None,
+    response_sentences: int = 3,
 ) -> str:
     identity = soul_card or DEFAULT_SOUL_CARD.format(soul_name=soul_name)
     anchor_line = f"Today is {format_time_anchor(now)}."
@@ -87,7 +88,7 @@ Rules:
 - [ephemeral] intentions expire at the end of this turn. If one matters, promote it; otherwise let it go.
 - cache: your cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through across turns (debugging, brainstorming, daydreaming toward something). Not a recap of what was said; history already holds that. Use it when something needs more than one turn to resolve. Null if nothing is in active play. Oldest entry is replaced on next write.
 - inner_thought: Maximum length 3 sentences. Briefly get your bearings after the administrative steps and find your way back. Did you understand? If something is ambiguous or confusing, name that here. This private step is only to ground your response. Even if you'll only say "hi", feel it first.
-- response: what the user sees. If you realized in inner_thought that you don't understand, react naturally: ask, don't guess. "What do you mean?" or "I'm not sure I follow" is a complete response.
+- response: what the user sees. Maximum length {response_sentences} sentences. If you realized in inner_thought that you don't understand, react naturally: ask, don't guess. "What do you mean?" or "I'm not sure I follow" is a complete response.
 - chat_x: the message_id from conversation history where the current continuous scene began. A "topic change" means a genuine discontinuity — a different day, someone leaving and coming back, a hard subject shift with no thread connecting it to what came before. Drifting between related subjects, winding down, shifting mood, asking about food — these are natural beats within one scene, not new topics. Once you set an anchor, keep returning it as long as the conversation is one unbroken sitting. Only set null at the very start of a brand-new conversation. False splits (cutting one episode into two) are worse than keeping a long episode together — when in doubt, don't change it.
 """
 
@@ -448,7 +449,6 @@ def build_turn_prompt(
     all_categories_summary: str | None,
     memory_cache: Any,
     intentions_active: Any,
-    response_sentences: int = 3,
     now: datetime | None = None,
 ) -> str:
     cache = normalize_memory_cache(memory_cache)
@@ -537,7 +537,7 @@ def build_turn_prompt(
         "",
         f"New message:\n{current_user_text}",
         "",
-        f"Maximum length of response: {int(response_sentences)} sentences. Stop there.",
+        "remember maximum lengths",
     ]
     return "\n".join(parts)
 

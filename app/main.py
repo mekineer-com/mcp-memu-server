@@ -4367,6 +4367,7 @@ async def conversation_retrieve(
                 out["turn_system_prompt"] = _make_turn_system_prompt(
                     soul_id,
                     soul_card=soul_card,
+                    response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
                 )
                 out["turn_user_prompt"] = _build_turn_prompt(
                     user_message=message,
@@ -4377,7 +4378,6 @@ async def conversation_retrieve(
                     all_categories_summary=_state_row.get("all_categories_summary"),
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
-                    response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
                 )
 
         _record_call(
@@ -4668,6 +4668,7 @@ async def conversation_turn(
         turn_system_prompt = payload_system_prompt or _make_turn_system_prompt(
             soul_id,
             soul_card=soul_card,
+            response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
         )
         turn_user_prompt = payload_user_prompt
 
