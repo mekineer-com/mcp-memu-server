@@ -4578,6 +4578,22 @@ async def conversation_retrieve(
 
                 message = _pick_str(safe, "message", "query") or ""
                 history = _normalize_turn_history(safe.get("history"))
+                # 2*chat_x cut: keep the current scene + the previous one so
+                # the soul has enough context when the current chat_x is brand
+                # new (one message in). Older episodes live in memorized day
+                # chunks. history_tail_after_memorize caps token count inside
+                # _render_history as a safety ceiling.
+                _chat_x_anchors = _compact_chat_x_anchors(
+                    str(_state_row.get("last_chat_x") or "").strip() or None,
+                    str(_state_row.get("last_chat_x_prev") or "").strip() or None,
+                )
+                if _chat_x_anchors and any(
+                    str(item.get("message_id") or "").strip() in set(_chat_x_anchors)
+                    for item in history
+                ):
+                    history = _slice_history_from_chat_x_anchors(
+                        history, _chat_x_anchors, limit=max(1, len(history))
+                    )
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
                 life_goals_active = _load_active_life_goals_for_prompt(user_id=uid, soul_id=soul_id)
