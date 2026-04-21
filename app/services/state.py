@@ -49,6 +49,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "all_categories_summary": row["all_categories_summary"],
         "last_chat_x": row["last_chat_x"],
         "last_chat_x_prev": row["last_chat_x_prev"],
+        "retrieve_rewrite_angle": int(row["retrieve_rewrite_angle"] or 0) if "retrieve_rewrite_angle" in row.keys() else 0,
     }
 
 
@@ -58,7 +59,7 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
         "intentions_active, memory_cache, pending_diary_episode_ids, self_model_id, "
         "last_retrieval_ids, last_memorize_at, last_consolidation_at, consolidation_in_progress, "
         "consolidation_started_at, updated_at, undo_snapshot, "
-        "all_categories_summary, last_chat_x, last_chat_x_prev "
+        "all_categories_summary, last_chat_x, last_chat_x_prev, retrieve_rewrite_angle "
         "FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
         (conversation_id,),
     ).fetchone()
@@ -88,6 +89,7 @@ def conversation_state_empty(
         "all_categories_summary": None,
         "last_chat_x": None,
         "last_chat_x_prev": None,
+        "retrieve_rewrite_angle": 0,
     }
 
 
@@ -221,6 +223,7 @@ INSERT OR IGNORE INTO memu_conversation_state (
                 "all_categories_summary",
                 "last_chat_x",
                 "last_chat_x_prev",
+                "retrieve_rewrite_angle",
             }:
                 field_updates[key] = value
 
@@ -297,6 +300,8 @@ INSERT OR IGNORE INTO memu_conversation_state (
                 }:
                     params.append(json_to_db(value))
                 elif key == "digest_cursor":
+                    params.append(int(value or 0))
+                elif key == "retrieve_rewrite_angle":
                     params.append(int(value or 0))
                 elif key == "consolidation_in_progress":
                     params.append(1 if value else 0)

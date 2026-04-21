@@ -2010,14 +2010,49 @@ async def _run_retrieve(
     soul_id = str((scope or {}).get("soul_id") or "").strip()
     user_id = str((scope or {}).get("user_id") or "user").strip() or "user"
 
+    # Prompt-diversity: read the rotating rewrite angle so the router
+    # uses a different lens (topic / relation / counterpoint-hint) on
+    # consecutive RETRIEVE turns.
+    pre_retrieve_angle = 0
+    if scoped_conversation_id and soul_id:
+        db_path = _sqlite_current_path(user_id or None, soul_id)
+        if db_path is not None and db_path.exists():
+            con = _sqlite_connect(db_path)
+            try:
+                con.row_factory = sqlite3.Row
+                _sqlite_ensure_conversation_state_schema(con)
+                pre_row = _conversation_state_from_row(_conversation_state_row(con, scoped_conversation_id))
+                if pre_row:
+                    pre_retrieve_angle = int(pre_row.get("retrieve_rewrite_angle") or 0)
+            finally:
+                con.close()
+
     async def _retrieve_and_maybe_persist(state_soul_id: str | None) -> dict[str, Any]:
         _t0 = time.monotonic()
-        result = await svc.retrieve(memu_queries, where=scope, as_of=as_of)
+        result = await svc.retrieve(
+            memu_queries, where=scope, as_of=as_of, rewrite_angle=pre_retrieve_angle
+        )
         _retrieve_ms = int((time.monotonic() - _t0) * 1000)
         out_local: dict[str, Any] = {"ok": True, "result": result, "retrieve_ms": _retrieve_ms}
         return out_local
 
     out = await _retrieve_and_maybe_persist(soul_id or None)
+
+    # Advance the angle only on RETRIEVE verdicts (NO_RETRIEVE keeps it put).
+    if (
+        scoped_conversation_id
+        and soul_id
+        and isinstance(out.get("result"), dict)
+        and out["result"].get("needs_retrieval")
+    ):
+        next_angle = (pre_retrieve_angle + 1) % 3
+        if next_angle != pre_retrieve_angle:
+            _write_conversation_state(
+                scoped_conversation_id,
+                soul_id=soul_id,
+                user_id=user_id,
+                updates={"retrieve_rewrite_angle": next_angle},
+            )
 
     if scoped_conversation_id:
         state_out: dict[str, Any] | None = None
@@ -4494,20 +4529,26 @@ def _turn_state_write(
         [item_id for item_id in annulment_ids if item_id],
     )
     _next_last_chat_x, _next_last_chat_x_prev = _next_chat_x_state_values(chat_x, fresh_row)
+    updates: dict[str, Any] = {
+        "intentions_active": intentions_after,
+        "memory_cache": memory_cache_after,
+        "last_chat_x": _next_last_chat_x,
+        "last_chat_x_prev": _next_last_chat_x_prev,
+        "undo_snapshot": {
+            "memory_cache": fresh_cache,
+            "intentions_active": fresh_intentions,
+        },
+    }
+    # Scene break resets the rewrite angle so the next RETRIEVE starts at the
+    # topic lens instead of mid-rotation.
+    prev_chat_x = str(fresh_row.get("last_chat_x") or "").strip() or None
+    if _next_last_chat_x != prev_chat_x:
+        updates["retrieve_rewrite_angle"] = 0
     state_out, state_path = _write_conversation_state(
         cid,
         soul_id=soul_id,
         user_id=uid,
-        updates={
-            "intentions_active": intentions_after,
-            "memory_cache": memory_cache_after,
-            "last_chat_x": _next_last_chat_x,
-            "last_chat_x_prev": _next_last_chat_x_prev,
-            "undo_snapshot": {
-                "memory_cache": fresh_cache,
-                "intentions_active": fresh_intentions,
-            },
-        },
+        updates=updates,
     )
     return state_out, state_path
 
