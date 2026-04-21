@@ -547,9 +547,9 @@ def _default_config() -> dict[str, Any]:
             "defaults": ["personal_info", "preferences", "relationships", "goals"],
             "max_total": 12,
             "allow_dynamic_categories": True,
-            "dynamic_category_min_mentions": 10,
+            "dynamic_category_cluster_size": 3,
             "category_centroid_threshold": 0.65,
-            "homeless_trigger_count": 20,
+            "homeless_trigger_count": 10,
         },
         "retrieve": {
             "method": "rag",
@@ -1180,11 +1180,11 @@ def _get_service_from_payload(
         if fixed_cats:
             memorize_config["memory_categories"] = fixed_cats
         memorize_config["allow_dynamic_categories"] = bool(cats_cfg.get("allow_dynamic_categories", True))
-        memorize_config["dynamic_category_min_mentions"] = int(cats_cfg.get("dynamic_category_min_mentions", 10) or 10)
+        memorize_config["dynamic_category_cluster_size"] = int(cats_cfg.get("dynamic_category_cluster_size", 3) or 3)
         memorize_config["category_centroid_threshold"] = float(
             cats_cfg.get("category_centroid_threshold", 0.65) or 0.65
         )
-        memorize_config["homeless_trigger_count"] = int(cats_cfg.get("homeless_trigger_count", 20) or 20)
+        memorize_config["homeless_trigger_count"] = int(cats_cfg.get("homeless_trigger_count", 10) or 10)
         memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
         memorize_config["enable_item_reinforcement"] = bool(memo_cfg.get("enable_item_reinforcement", True))
     retrieve_config = payload.get("retrieve_config")
