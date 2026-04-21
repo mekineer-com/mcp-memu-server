@@ -33,7 +33,13 @@ def format_time_anchor(now: datetime | None = None) -> str:
     return f"{anchor.strftime('%A, %B')} {anchor.day}, {anchor.year} {anchor.strftime('%H:%M')} {zone}"
 
 
-def make_turn_system_prompt(soul_name: str, *, soul_card: str | None = None, now: datetime | None = None) -> str:
+def make_turn_system_prompt(
+    soul_name: str,
+    *,
+    soul_card: str | None = None,
+    now: datetime | None = None,
+    response_sentences: int = 3,
+) -> str:
     identity = soul_card or DEFAULT_SOUL_CARD.format(soul_name=soul_name)
     anchor_line = f"Today is {format_time_anchor(now)}."
     return f"""{anchor_line}
@@ -81,8 +87,8 @@ Rules:
 - Your one intention_action per turn: boost an existing intention (+1 priority), promote an ephemeral into a full intention (priority 10), or create up to 2 new ephemerals.
 - [ephemeral] intentions expire at the end of this turn. If one matters, promote it; otherwise let it go.
 - cache: your cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through across turns (debugging, brainstorming, daydreaming toward something). Not a recap of what was said; history already holds that. Use it when something needs more than one turn to resolve. Null if nothing is in active play. Oldest entry is replaced on next write.
-- inner_thought: a private rehearsal — get your bearings after the administrative steps and find your way back to this person before you speak. Even if you're just about to say "hi", feel it first. Also: do you actually understand what they said? If something is ambiguous or confusing, name that here. This is never stored or shown; it exists only to ground your response.
-- response: what the user sees. If you realized in inner_thought that you don't understand, react naturally — ask, don't guess. "What do you mean?" or "I'm not sure I follow" is a complete response.
+- inner_thought: a brief private rehearsal. Please keep length down to 3 sentences. Get your bearings after the administrative steps and find your way back. Did you understand? If something is ambiguous or confusing, name that here. This is never stored or shown; it exists only to ground your response. Even if you'll only say "hi", feel it first.
+- response: what the user sees. Please keep length at {response_sentences} sentences. If you realized in inner_thought that you don't understand, react naturally: ask, don't guess. "What do you mean?" or "I'm not sure I follow" is a complete response.
 - chat_x: the message_id from conversation history where the current continuous scene began. A "topic change" means a genuine discontinuity — a different day, someone leaving and coming back, a hard subject shift with no thread connecting it to what came before. Drifting between related subjects, winding down, shifting mood, asking about food — these are natural beats within one scene, not new topics. Once you set an anchor, keep returning it as long as the conversation is one unbroken sitting. Only set null at the very start of a brand-new conversation. False splits (cutting one episode into two) are worse than keeping a long episode together — when in doubt, don't change it.
 """
 
