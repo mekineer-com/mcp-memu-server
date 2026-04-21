@@ -4813,26 +4813,21 @@ async def conversation_turn(
 
         soul_gen = _load_soul_gen_config(uid, soul_id)
         turn_temperature: float = float(soul_gen.get("temperature", 0.2))
-        turn_max_tokens: int = int(soul_gen.get("max_tokens", 3000))
+        # max_tokens is a server-level concern (the JSON turn contract needs
+        # predictable headroom), not a per-soul or per-client setting. Ignore
+        # whatever the ST payload carries — memU is not ST here.
+        turn_max_tokens: int = int(_CONFIG.get("turn_max_tokens", 8000))
         turn_response_format: Any = {"type": "json_object"}
         req_temperature = safe.get("temperature")
-        req_max_tokens = safe.get("max_tokens")
-        if req_temperature is not None or req_max_tokens is not None:
-            updated = dict(soul_gen)
-            if req_temperature is not None:
-                try:
-                    updated["temperature"] = float(req_temperature)
-                    turn_temperature = updated["temperature"]
-                except (TypeError, ValueError):
-                    pass
-            if req_max_tokens is not None:
-                try:
-                    updated["max_tokens"] = int(req_max_tokens)
-                    turn_max_tokens = updated["max_tokens"]
-                except (TypeError, ValueError):
-                    pass
-            if updated != soul_gen:
-                _save_soul_gen_config(uid, soul_id, updated)
+        if req_temperature is not None:
+            try:
+                updated = dict(soul_gen)
+                updated["temperature"] = float(req_temperature)
+                turn_temperature = updated["temperature"]
+                if updated != soul_gen:
+                    _save_soul_gen_config(uid, soul_id, updated)
+            except (TypeError, ValueError):
+                pass
 
         turn_system_prompt = payload_system_prompt or _make_turn_system_prompt(
             soul_id,
