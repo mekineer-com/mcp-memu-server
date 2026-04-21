@@ -4368,7 +4368,7 @@ async def conversation_retrieve(
                     soul_id,
                     soul_card=soul_card,
                     response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
-                    include_chat_x=len(history) > 8,
+                    include_chat_x=(len(history) > 8 and len(history) % 6 == 0),
                 )
                 out["turn_user_prompt"] = _build_turn_prompt(
                     user_message=message,
