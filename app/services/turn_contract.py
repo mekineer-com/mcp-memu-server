@@ -39,9 +39,15 @@ def make_turn_system_prompt(
     soul_card: str | None = None,
     now: datetime | None = None,
     response_sentences: int = 3,
+    include_chat_x: bool = True,
 ) -> str:
     identity = soul_card or DEFAULT_SOUL_CARD.format(soul_name=soul_name)
     anchor_line = f"Today is {format_time_anchor(now)}."
+    chat_x_rule = (
+        "- chat_x: the message_id from conversation history where the current continuous scene or episode began, as far back as you can see. The scene may have started earlier, but those messages were memorized away; point at the oldest visible one — that's as far back as the anchor can go. Drifting between related subjects, winding down, shifting mood, asking about food — these are natural beats within the same scene. False splits (cutting one episode into two) are worse than keeping a long episode together — when in doubt, don't change it.\n"
+        if include_chat_x
+        else ""
+    )
     return f"""{anchor_line}
 
 {identity}
@@ -89,8 +95,7 @@ Rules:
 - cache: your cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through across turns (debugging, brainstorming, daydreaming toward something). Not a recap of what was said; history already holds that. Use it when something needs more than one turn to resolve. Null if nothing is in active play. Oldest entry is replaced on next write.
 - inner_thought: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand? If something is ambiguous or confusing, name that here. This private step is only to ground your response. Even if you'll only say "hi", feel it first.
 - response: what the user sees. Maximum length {response_sentences} sentences or fewer. If you realized in inner_thought that you don't understand, react naturally: ask, don't guess. "What do you mean?" or "I'm not sure I follow" is a complete response.
-- chat_x: the message_id in history where this unbroken sitting began, as far back as you can see. Find the first visible message of the current scene and put its id here. If the scene actually started earlier but those messages were memorized away, point at the oldest visible one — that's as far back as the anchor can go. A real break means a genuine discontinuity: a different day, someone leaving and coming back, or a subject with no thread to what came before. Drifting between related subjects, winding down, shifting mood, asking about food — these are natural beats within one scene, not new topics. False splits (cutting one episode into two) are worse than keeping a long episode together — when in doubt, don't change it. Only put null if there is no prior history at all.
-"""
+{chat_x_rule}"""
 
 
 def _text(value: Any) -> str:

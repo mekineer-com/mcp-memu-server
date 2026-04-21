@@ -4368,6 +4368,7 @@ async def conversation_retrieve(
                     soul_id,
                     soul_card=soul_card,
                     response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
+                    include_chat_x=len(history) > 8,
                 )
                 out["turn_user_prompt"] = _build_turn_prompt(
                     user_message=message,
@@ -4696,6 +4697,14 @@ async def conversation_turn(
         annulments = turn_contract.get("annulments") if isinstance(turn_contract.get("annulments"), list) else []
         annulment_ids = [str(row.get("intention_id") or "").strip() for row in annulments if isinstance(row, dict)]
         chat_x = str(turn_contract.get("chat_x") or "").strip() or None
+        if chat_x:
+            anchor_index: int | None = None
+            for _idx, _msg in enumerate(history_full):
+                if str(_msg.get("message_id") or "").strip() == chat_x:
+                    anchor_index = _idx
+                    break
+            if anchor_index is None or (len(history_full) - anchor_index) < 6:
+                chat_x = None
 
         state_out = state_row
         state_path = db_path
