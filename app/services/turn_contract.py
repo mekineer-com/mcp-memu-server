@@ -38,7 +38,6 @@ def make_turn_system_prompt(
     *,
     soul_card: str | None = None,
     now: datetime | None = None,
-    response_sentences: int = 3,
 ) -> str:
     identity = soul_card or DEFAULT_SOUL_CARD.format(soul_name=soul_name)
     anchor_line = f"Today is {format_time_anchor(now)}."
@@ -90,8 +89,6 @@ Rules:
 - inner_thought: Maximum length 3 sentences. Briefly get your bearings after the administrative steps and find your way back. Did you understand? If something is ambiguous or confusing, name that here. This private step is only to ground your response. Even if you'll only say "hi", feel it first.
 - response: what the user sees. If you realized in inner_thought that you don't understand, react naturally: ask, don't guess. "What do you mean?" or "I'm not sure I follow" is a complete response.
 - chat_x: the message_id from conversation history where the current continuous scene began. A "topic change" means a genuine discontinuity — a different day, someone leaving and coming back, a hard subject shift with no thread connecting it to what came before. Drifting between related subjects, winding down, shifting mood, asking about food — these are natural beats within one scene, not new topics. Once you set an anchor, keep returning it as long as the conversation is one unbroken sitting. Only set null at the very start of a brand-new conversation. False splits (cutting one episode into two) are worse than keeping a long episode together — when in doubt, don't change it.
-
-Maximum length of response: {response_sentences} sentences. Stop there.
 """
 
 
@@ -451,6 +448,7 @@ def build_turn_prompt(
     all_categories_summary: str | None,
     memory_cache: Any,
     intentions_active: Any,
+    response_sentences: int = 3,
     now: datetime | None = None,
 ) -> str:
     cache = normalize_memory_cache(memory_cache)
@@ -538,6 +536,8 @@ def build_turn_prompt(
         format_intentions_for_prompt(intentions_active),
         "",
         f"New message:\n{current_user_text}",
+        "",
+        f"Maximum length of response: {int(response_sentences)} sentences. Stop there.",
     ]
     return "\n".join(parts)
 
