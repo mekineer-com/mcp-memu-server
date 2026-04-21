@@ -496,11 +496,33 @@ def build_turn_prompt(
     # Echo the current user message at the end of history so the soul reads
     # history → new message as one continuous exchange. The cache + intentions
     # blocks sit between the history block and the "New message:" footer, so
-    # without this echo the flow reads as interrupted.
+    # without this echo the flow reads as interrupted. Carry the prior user
+    # item's name + next message_id so the echo renders identically to the
+    # rest of the history ("[46] [Marcos] ..." not "[user] ...").
     history_for_render = list(history or [])
     current_user_text = _text(user_message)
     if current_user_text:
-        history_for_render.append({"role": "user", "content": current_user_text})
+        last_user_name = ""
+        last_msg_id = -1
+        for item in history_for_render:
+            if not isinstance(item, dict):
+                continue
+            if _text(item.get("role")).lower() == "user":
+                name = _text(item.get("name"))
+                if name:
+                    last_user_name = name
+            mid = item.get("message_id") or item.get("source_message_id") or item.get("id")
+            if mid is not None:
+                try:
+                    last_msg_id = max(last_msg_id, int(str(mid).strip()))
+                except (TypeError, ValueError):
+                    pass
+        synthetic: dict[str, Any] = {"role": "user", "content": current_user_text}
+        if last_user_name:
+            synthetic["name"] = last_user_name
+        if last_msg_id >= 0:
+            synthetic["source_message_id"] = str(last_msg_id + 1)
+        history_for_render.append(synthetic)
 
     parts = [
         *context_blocks,
