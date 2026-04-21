@@ -4809,7 +4809,7 @@ async def conversation_turn(
 
         soul_gen = _load_soul_gen_config(uid, soul_id)
         turn_temperature: float = float(soul_gen.get("temperature", 0.2))
-        turn_max_tokens: int = int(soul_gen.get("max_tokens", 1000))
+        turn_max_tokens: int = int(soul_gen.get("max_tokens", 3000))
         turn_response_format: Any = {"type": "json_object"}
         req_temperature = safe.get("temperature")
         req_max_tokens = safe.get("max_tokens")
