@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import uuid
@@ -373,7 +374,26 @@ LIMIT 1
             chat_dir = deps.find_chat_dir_for_conversation(chats_dir, user_id, soul_id, conversation_id)
             if chat_dir is None:
                 raise HTTPException(status_code=404, detail="conversation resource not found")
-            messages = deps.read_list((chat_dir / "full.json").resolve())
+            manifest_path = (chat_dir / "manifest.json").resolve()
+            if not manifest_path.exists():
+                raise HTTPException(status_code=404, detail="conversation manifest not found")
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail="conversation manifest unreadable") from exc
+            raw_segments = manifest.get("segments") if isinstance(manifest, dict) else None
+            if not isinstance(raw_segments, list) or not raw_segments:
+                raise HTTPException(status_code=400, detail="conversation manifest has no segments")
+            days_dir = (chat_dir / "days").resolve()
+            messages: list[dict[str, Any]] = []
+            for seg in sorted(
+                (s for s in raw_segments if isinstance(s, dict)),
+                key=lambda s: int(s.get("start", 0)),
+            ):
+                fn = seg.get("file")
+                if not isinstance(fn, str) or not fn:
+                    continue
+                messages.extend(deps.read_list((days_dir / fn).resolve()))
             episode_inputs = build_episode_inputs(messages, pending_episode_ids)
             if len(episode_inputs) != len(pending_episode_ids):
                 raise HTTPException(status_code=400, detail="queued episodes are not present in conversation history")
