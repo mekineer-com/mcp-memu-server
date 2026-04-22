@@ -162,3 +162,57 @@ def test_build_turn_prompt_renders_superseded_suffix() -> None:
         now=datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc),
     )
     assert "- [profile] (3 weeks ago, superseded Monday) I used to believe X" in prompt
+
+
+def test_build_turn_prompt_renders_speakers_block_and_labels() -> None:
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[],
+        prior_context=None,
+        retrieve_rag={
+            "items": [
+                {
+                    "memory_type": "event",
+                    "summary": "Marcos reminded me to pause before replying",
+                    "speaker_id": "user:marcos",
+                    "speaker_label": "Marcos",
+                },
+                {
+                    "memory_type": "behavior",
+                    "summary": "I stayed gentle when things felt tense",
+                    "speaker_id": "soul:siri",
+                    "speaker_label": "Siri",
+                },
+            ]
+        },
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+    )
+    assert "Speakers:" in prompt
+    assert "- Marcos = user:marcos" in prompt
+    assert "- Siri = soul:siri" in prompt
+    assert "- [event][Marcos] Marcos reminded me to pause before replying" in prompt
+    assert "- [behavior][Siri] I stayed gentle when things felt tense" in prompt
+
+
+def test_build_turn_prompt_omits_speakers_block_without_labels() -> None:
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[],
+        prior_context=None,
+        retrieve_rag={
+            "items": [
+                {
+                    "memory_type": "event",
+                    "summary": "A memory without a speaker label",
+                    "speaker_id": "user:marcos",
+                }
+            ]
+        },
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+    )
+    assert "Speakers:" not in prompt
+    assert "- [event] A memory without a speaker label" in prompt

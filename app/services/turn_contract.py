@@ -338,11 +338,12 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
             summary = _text(item.get("summary"))
             if not summary:
                 continue
-            summary_key = _norm_text(summary)
+            speaker_key = _norm_text(_text(item.get("speaker_id")))
+            summary_key = f"{_norm_text(summary)}|{speaker_key}"
             if not summary_key or summary_key in seen_items:
                 continue
             seen_items.add(summary_key)
-            item_terms.add(summary_key)
+            item_terms.add(_norm_text(summary))
             item_rows.append((item, memory_type, _format_item_suffix(item, now=now), summary))
 
     categories = result.get("categories")
@@ -375,15 +376,37 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
     if item_rows:
         if lines:
             lines.append("")
+        speaker_rows: list[tuple[str, str]] = []
+        seen_speakers: set[tuple[str, str]] = set()
+        for item, _, _, _ in item_rows:
+            speaker_label = _text(item.get("speaker_label"))
+            if not speaker_label:
+                continue
+            speaker_id = _text(item.get("speaker_id"))
+            speaker_key = (_norm_text(speaker_label), _norm_text(speaker_id))
+            if speaker_key in seen_speakers:
+                continue
+            seen_speakers.add(speaker_key)
+            speaker_rows.append((speaker_label, speaker_id))
+        if speaker_rows:
+            lines.append("Speakers:")
+            for speaker_label, speaker_id in speaker_rows:
+                if speaker_id:
+                    lines.append(f"- {speaker_label} = {speaker_id}")
+                else:
+                    lines.append(f"- {speaker_label}")
+            lines.append("")
         lines.append("Memories:")
         for item, memory_type, suffix, summary in item_rows:
+            speaker_label = _text(item.get("speaker_label"))
+            speaker_tag = f"[{speaker_label}]" if speaker_label else ""
             if memory_type == "procedural":
                 # Procedural entries are curated professional knowledge, not
                 # lived memory — no timestamps, no shaped_by, just the tag.
                 domain = _text(item.get("domain")).replace("_", "-") or "procedural"
-                lines.append(f"- [{domain}-procedural-memory] {summary}")
+                lines.append(f"- [{domain}-procedural-memory]{speaker_tag} {summary}")
                 continue
-            lines.append(f"- [{memory_type}]{suffix} {summary}")
+            lines.append(f"- [{memory_type}]{speaker_tag}{suffix} {summary}")
             shaped_by = item.get("shaped_by")
             if isinstance(shaped_by, dict):
                 seed_id = _text(shaped_by.get("id"))
