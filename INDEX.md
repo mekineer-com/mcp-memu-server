@@ -40,6 +40,8 @@ mcp-memu-server/
 | `/conversation/{id}/consolidation/force` | POST | Force consolidation now (bypasses interval gate, still lock-safe) |
 | `/intentions` | GET | List intentions from `intentions_life_goals` table (long-term, consolidation-managed) |
 | `/intentions/{id}` | PATCH | Update intention status/priority |
+| `/souls/{soul_id}/relationships` | GET/POST | List or create user-declared relationship entities (`memu_entities` rows with `properties.origin=user_declared`) |
+| `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or soft-delete one relationship entity (`entity:*` only; reserved prefixes rejected) |
 | `/categories` | GET | List all categories |
 | `/categories/search` | POST | Search categories |
 | `/clear` | POST | Delete memories in scope |

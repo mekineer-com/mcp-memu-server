@@ -394,3 +394,46 @@ def test_timeline_endpoint_returns_entity_edges(monkeypatch: pytest.MonkeyPatch)
     assert out["timeline"][0]["predicate"] == "parallels"
     assert out["timeline"][0]["memory"]["id"] == "mem_1"
     assert triple_repo.captured_as_of is not None
+
+
+def test_validate_relationship_speaker_id_rejects_reserved_prefixes():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    assert main._validate_relationship_speaker_id("entity:brother") == "brother"
+    with pytest.raises(main.HTTPException):
+        main._validate_relationship_speaker_id("user:marcos")
+    with pytest.raises(main.HTTPException):
+        main._validate_relationship_speaker_id("entity:brother!")
+
+
+def test_relationship_item_from_values_filters_non_declared_or_inactive():
+    try:
+        from app import main
+    except Exception as e:
+        pytest.skip(f"Import test skipped due to compatibility issue: {e}")
+
+    item = main._relationship_item_from_values(
+        normalized="brother",
+        name="Brother",
+        entity_type="person",
+        properties={"origin": "user_declared", "relationship": "sibling", "active": True},
+    )
+    assert item is not None
+    assert item["speaker_id"] == "entity:brother"
+    assert item["relationship"] == "sibling"
+
+    assert main._relationship_item_from_values(
+        normalized="brother",
+        name="Brother",
+        entity_type="person",
+        properties={"origin": "extracted", "relationship": "sibling", "active": True},
+    ) is None
+    assert main._relationship_item_from_values(
+        normalized="brother",
+        name="Brother",
+        entity_type="person",
+        properties={"origin": "user_declared", "active": False},
+    ) is None

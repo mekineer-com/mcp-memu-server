@@ -38,6 +38,9 @@ from pydantic import BaseModel
 
 from app import procedural as _procedural
 from app.db import (
+    json_from_db as _json_from_db,
+)
+from app.db import (
     json_to_db as _json_to_db,
 )
 from app.db import (
@@ -1854,6 +1857,144 @@ ORDER BY updated_at ASC, id ASC
         return [str(row[0] or "").strip() for row in rows if str(row[0] or "").strip()]
     finally:
         con.close()
+
+
+_RELATIONSHIP_NAME_MAX_CHARS = 50
+_RELATIONSHIP_TEXT_MAX_CHARS = 50
+_RELATIONSHIP_RESERVED_PREFIXES = ("user:", "soul:", "peer:", "environment:")
+_RELATIONSHIP_ORIGIN_USER_DECLARED = "user_declared"
+
+
+def _normalize_relationship_name(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="name required")
+    if len(text) > _RELATIONSHIP_NAME_MAX_CHARS:
+        raise HTTPException(status_code=400, detail=f"name must be <= {_RELATIONSHIP_NAME_MAX_CHARS} chars")
+    return text
+
+
+def _normalize_relationship_text(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if len(text) > _RELATIONSHIP_TEXT_MAX_CHARS:
+        raise HTTPException(status_code=400, detail=f"relationship must be <= {_RELATIONSHIP_TEXT_MAX_CHARS} chars")
+    return text
+
+
+def _slugify_relationship_name(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", str(name or "").strip().lower()).strip("_")
+    if not slug:
+        raise HTTPException(status_code=400, detail="name does not contain usable slug characters")
+    return slug
+
+
+def _relationship_speaker_id_from_normalized(normalized: str) -> str:
+    return f"entity:{normalized}"
+
+
+def _validate_relationship_speaker_id(raw: Any) -> str:
+    speaker_id = str(raw or "").strip().lower()
+    if not speaker_id:
+        raise HTTPException(status_code=400, detail="speaker_id required")
+    if any(speaker_id.startswith(prefix) for prefix in _RELATIONSHIP_RESERVED_PREFIXES):
+        raise HTTPException(status_code=400, detail="reserved speaker prefix")
+    if not speaker_id.startswith("entity:"):
+        raise HTTPException(status_code=400, detail="speaker_id must start with entity:")
+    normalized = speaker_id[len("entity:") :].strip()
+    if not normalized or re.search(r"[^a-z0-9_]", normalized):
+        raise HTTPException(status_code=400, detail="speaker_id slug is invalid")
+    return normalized
+
+
+def _relationship_properties(value: Any) -> dict[str, Any]:
+    parsed = value
+    if not isinstance(parsed, dict):
+        parsed = _json_from_db(value)
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def _relationship_item_from_values(
+    *,
+    normalized: str,
+    name: str,
+    entity_type: str,
+    properties: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    props = dict(properties or {})
+    if str(props.get("origin") or "").strip() != _RELATIONSHIP_ORIGIN_USER_DECLARED:
+        return None
+    if props.get("active") is False:
+        return None
+    return {
+        "speaker_id": _relationship_speaker_id_from_normalized(normalized),
+        "name": str(name or "").strip(),
+        "relationship": str(props.get("relationship") or "").strip(),
+        "entity_type": str(entity_type or "person").strip() or "person",
+    }
+
+
+def _relationship_item_from_entity(entity: Any) -> dict[str, Any] | None:
+    normalized = str(getattr(entity, "normalized", "") or "").strip()
+    if not normalized:
+        return None
+    return _relationship_item_from_values(
+        normalized=normalized,
+        name=str(getattr(entity, "name", "") or ""),
+        entity_type=str(getattr(entity, "entity_type", "") or ""),
+        properties=getattr(entity, "properties", None),
+    )
+
+
+def _relationship_scope_clause(
+    *,
+    cols: set[str],
+    user_id: str,
+    soul_id: str,
+) -> tuple[str, list[Any]]:
+    where_parts = ["normalized = ?"]
+    if "user_id" in cols:
+        where_parts.append("user_id = ?")
+    if "soul_id" in cols:
+        where_parts.append("soul_id = ?")
+
+    params: list[Any] = []
+    params.append(None)  # caller fills normalized as params[0]
+    if "user_id" in cols:
+        params.append(user_id)
+    if "soul_id" in cols:
+        params.append(soul_id)
+    return " AND ".join(where_parts), params
+
+
+def _select_relationship_row(
+    con: sqlite3.Connection,
+    *,
+    normalized: str,
+    user_id: str,
+    soul_id: str,
+) -> sqlite3.Row | None:
+    cols = set(_sqlite_table_columns(con, "memu_entities"))
+    clause, params = _relationship_scope_clause(cols=cols, user_id=user_id, soul_id=soul_id)
+    params[0] = normalized
+    return con.execute(
+        f"""
+SELECT id, name, entity_type, normalized, properties
+FROM memu_entities
+WHERE {clause}
+LIMIT 1
+""",
+        tuple(params),
+    ).fetchone()
+
+
+def _assert_relationship_write_path(user_id: str, soul_id: str) -> tuple[MemoryService, Path]:
+    scope = {"user_id": user_id, "soul_id": soul_id}
+    svc = _get_service_from_payload({"user": scope}, allow_missing_llm_profiles=True)
+    db_path = _sqlite_current_path(user_id, soul_id)
+    if db_path is None:
+        raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
+    _sqlite_ensure_nonempty(db_path)
+    return svc, db_path
 
 
 async def _persist_annulment_memories(
@@ -3880,6 +4021,239 @@ WHERE soul_id = ? AND user_id = ? AND status = ?
             (soul_id, user_id, scoped_status),
         ).fetchall()
         return [_intention_row_to_dict(row) for row in rows]
+    finally:
+        con.close()
+
+
+@app.get("/souls/{soul_id}/relationships", operation_id="list_relationships")
+async def list_relationships(
+    soul_id: str,
+    user_id: str,
+):
+    soul_id = str(soul_id or "").strip()
+    user_id = str(user_id or "").strip()
+    if not soul_id:
+        raise HTTPException(status_code=400, detail="soul_id required")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+
+    svc, _db_path = _assert_relationship_write_path(user_id, soul_id)
+    scope = {"user_id": user_id, "soul_id": soul_id}
+    entities = svc.database.entity_repo.list_all(where=scope)
+    rows = [
+        item
+        for item in (_relationship_item_from_entity(entity) for entity in entities)
+        if item is not None
+    ]
+    rows.sort(key=lambda item: str(item.get("name") or "").lower())
+    return {"relationships": rows}
+
+
+@app.post("/souls/{soul_id}/relationships", operation_id="create_relationship")
+async def create_relationship(
+    soul_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    soul_id = str(soul_id or "").strip()
+    user_id = str(payload.get("user_id") or "").strip()
+    name = _normalize_relationship_name(payload.get("name"))
+    relationship = _normalize_relationship_text(payload.get("relationship"))
+    entity_type = str(payload.get("entity_type") or "person").strip().lower() or "person"
+    if entity_type not in {"person", "topic", "place", "project"}:
+        raise HTTPException(status_code=400, detail="entity_type must be person/topic/place/project")
+    if not soul_id:
+        raise HTTPException(status_code=400, detail="soul_id required")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+
+    normalized = _slugify_relationship_name(name)
+    _validate_relationship_speaker_id(_relationship_speaker_id_from_normalized(normalized))
+    scope = {"user_id": user_id, "soul_id": soul_id}
+    svc, db_path = _assert_relationship_write_path(user_id, soul_id)
+    svc.database.entity_repo.get_or_create(
+        name=name,
+        entity_type=entity_type,
+        user_data=scope,
+    )
+
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        row = _select_relationship_row(
+            con,
+            normalized=normalized,
+            user_id=user_id,
+            soul_id=soul_id,
+        )
+        if row is None:
+            raise HTTPException(status_code=500, detail="failed to materialize relationship entity")
+        props = _relationship_properties(row["properties"])
+        props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
+        props["active"] = True
+        if relationship:
+            props["relationship"] = relationship
+        else:
+            props.pop("relationship", None)
+        now_iso = datetime.now(UTC).isoformat()
+        con.execute(
+            """
+UPDATE memu_entities
+SET name = ?, entity_type = ?, properties = ?, updated_at = ?
+WHERE id = ?
+""",
+            (
+                name,
+                entity_type,
+                _json_to_db(props),
+                now_iso,
+                str(row["id"]),
+            ),
+        )
+        con.commit()
+        row = _select_relationship_row(
+            con,
+            normalized=normalized,
+            user_id=user_id,
+            soul_id=soul_id,
+        )
+        if row is None:
+            raise HTTPException(status_code=500, detail="failed to reload relationship entity")
+        item = _relationship_item_from_values(
+            normalized=str(row["normalized"] or "").strip(),
+            name=str(row["name"] or "").strip(),
+            entity_type=str(row["entity_type"] or "").strip(),
+            properties=_relationship_properties(row["properties"]),
+        )
+        if item is None:
+            raise HTTPException(status_code=500, detail="relationship row became non-declared")
+        return item
+    finally:
+        con.close()
+
+
+@app.patch("/souls/{soul_id}/relationships/{speaker_id}", operation_id="update_relationship")
+async def update_relationship(
+    soul_id: str,
+    speaker_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    soul_id = str(soul_id or "").strip()
+    user_id = str(payload.get("user_id") or "").strip()
+    if not soul_id:
+        raise HTTPException(status_code=400, detail="soul_id required")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    normalized = _validate_relationship_speaker_id(speaker_id)
+
+    name_raw = payload.get("name")
+    relationship_raw = payload.get("relationship")
+    if name_raw is None and relationship_raw is None:
+        raise HTTPException(status_code=400, detail="name or relationship required")
+    next_name = _normalize_relationship_name(name_raw) if name_raw is not None else None
+    next_relationship = _normalize_relationship_text(relationship_raw) if relationship_raw is not None else None
+    _svc, db_path = _assert_relationship_write_path(user_id, soul_id)
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        row = _select_relationship_row(
+            con,
+            normalized=normalized,
+            user_id=user_id,
+            soul_id=soul_id,
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="relationship not found")
+
+        props = _relationship_properties(row["properties"])
+        if str(props.get("origin") or "").strip() not in {"", _RELATIONSHIP_ORIGIN_USER_DECLARED}:
+            raise HTTPException(status_code=409, detail="entity is not user-declared")
+        props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
+        props["active"] = True
+        if relationship_raw is not None:
+            if next_relationship:
+                props["relationship"] = next_relationship
+            else:
+                props.pop("relationship", None)
+        now_iso = datetime.now(UTC).isoformat()
+        con.execute(
+            """
+UPDATE memu_entities
+SET name = ?, properties = ?, updated_at = ?
+WHERE id = ?
+""",
+            (
+                next_name or str(row["name"] or "").strip(),
+                _json_to_db(props),
+                now_iso,
+                str(row["id"]),
+            ),
+        )
+        con.commit()
+        row = _select_relationship_row(
+            con,
+            normalized=normalized,
+            user_id=user_id,
+            soul_id=soul_id,
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="relationship not found")
+        item = _relationship_item_from_values(
+            normalized=str(row["normalized"] or "").strip(),
+            name=str(row["name"] or "").strip(),
+            entity_type=str(row["entity_type"] or "").strip(),
+            properties=_relationship_properties(row["properties"]),
+        )
+        if item is None:
+            raise HTTPException(status_code=404, detail="relationship not found")
+        return item
+    finally:
+        con.close()
+
+
+@app.delete("/souls/{soul_id}/relationships/{speaker_id}", operation_id="delete_relationship")
+async def delete_relationship(
+    soul_id: str,
+    speaker_id: str,
+    user_id: str,
+):
+    soul_id = str(soul_id or "").strip()
+    user_id = str(user_id or "").strip()
+    if not soul_id:
+        raise HTTPException(status_code=400, detail="soul_id required")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    normalized = _validate_relationship_speaker_id(speaker_id)
+
+    _svc, db_path = _assert_relationship_write_path(user_id, soul_id)
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        row = _select_relationship_row(
+            con,
+            normalized=normalized,
+            user_id=user_id,
+            soul_id=soul_id,
+        )
+        if row is None:
+            return {"ok": True, "speaker_id": _relationship_speaker_id_from_normalized(normalized)}
+        props = _relationship_properties(row["properties"])
+        props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
+        props["active"] = False
+        props["deleted_at"] = datetime.now(UTC).isoformat()
+        con.execute(
+            """
+UPDATE memu_entities
+SET properties = ?, updated_at = ?
+WHERE id = ?
+""",
+            (
+                _json_to_db(props),
+                datetime.now(UTC).isoformat(),
+                str(row["id"]),
+            ),
+        )
+        con.commit()
+        return {"ok": True, "speaker_id": _relationship_speaker_id_from_normalized(normalized)}
     finally:
         con.close()
 
