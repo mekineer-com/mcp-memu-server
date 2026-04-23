@@ -30,6 +30,9 @@ mcp-memu-server/
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/health` | GET | Health check |
+| `/version` | GET | Build / server instance identity |
+| `/admin/shutdown` | POST | Request graceful shutdown (drain mode) |
+| `/admin/shutdown/status` | GET | Shutdown progress + active request counts |
 | `/memorize` | POST | Extract memories from conversation text. User-initiated only ("Memorize Now" / "Re-memorize chat" buttons, `force=true`). `force=true` batching via `_build_force_memorize_batches()` — prefers segment manifest ranges, falls back to token-window chunking. Auto-memorize is triggered server-side inside `/conversation/{id}/turn` (see that row). |
 | `/retrieve` | POST | Query memories (`rag` method; `llm` is internal-only for background flows). Optional `as_of` applies temporal triple filtering (`valid_from`/`valid_to`) for graph retrieval. |
 | `/timeline` | GET | Entity relationship timeline (`entity`, `user_id`, `soul_id`, optional `as_of`) for chronological graph inspection |
@@ -38,16 +41,17 @@ mcp-memu-server/
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn maintenance using `undo_snapshot` (single-step depth) |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/conversation/{id}/consolidation/force` | POST | Force consolidation now (bypasses interval gate, still lock-safe) |
-| `/intentions` | GET | List intentions from `intentions_life_goals` table (long-term, consolidation-managed) |
+| `/souls/{soul_id}/intentions` | GET | List intentions from `intentions_life_goals` table (long-term, consolidation-managed) |
 | `/intentions/{id}` | PATCH | Update intention status/priority |
 | `/souls/{soul_id}/relationships` | GET/POST | List or create user-declared relationship entities (`memu_entities` rows with `properties.origin=user_declared`) |
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or soft-delete one relationship entity (`entity:*` only; reserved prefixes rejected) |
+| `/souls/{soul_id}/narrative_suggestion` | POST | Snapshot previous `narrative_self` with `evolved_into` chain before overwrite; extension surfaces this via the Memorize Now menu |
 | `/categories` | GET | List all categories |
 | `/categories/search` | POST | Search categories |
 | `/clear` | POST | Delete memories in scope |
 | `/config` | GET/POST | Read or update runtime config |
 | `/reload` | POST | Reload config from disk |
-| `/diag/*` | GET | Diagnostic pages (recent memories, SQLite browser); read-only introspection (no schema writes/migrations on diag reads; never use diag calls for DB bootstrap) |
+| `/diag`, `/diag/calls`, `/diag/http`, `/diag/sqlite`, `/diag/sqlite/counts`, `/diag/sqlite/recent` | GET | Diagnostic pages (recent memories, SQLite browser, last 50 memorize/retrieve calls, HTTP introspection). Read-only (no schema writes/migrations on diag reads; never use diag calls for DB bootstrap) |
 
 ## Extracted Modules
 
