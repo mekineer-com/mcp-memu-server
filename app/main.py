@@ -3787,8 +3787,10 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                 days_written=days_written,
                 sleep_stats=sleep_stats if "sleep_stats" in locals() else None,
             )
-            from fastapi.responses import JSONResponse
-
+            # background=background_tasks is REQUIRED: when an endpoint returns a
+            # Response object directly, FastAPI does not auto-attach the tasks from
+            # the injected BackgroundTasks parameter. Without this, add_task above
+            # is silently a no-op and the batches never run.
             return JSONResponse(
                 status_code=202,
                 content={
@@ -3799,6 +3801,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                     "batch_count": len(memorize_batches),
                     "resource_url": resource_url,
                 },
+                background=background_tasks,
             )
     except HTTPException:
         raise
