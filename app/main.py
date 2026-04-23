@@ -1945,27 +1945,6 @@ def _relationship_item_from_entity(entity: Any) -> dict[str, Any] | None:
     )
 
 
-def _relationship_scope_clause(
-    *,
-    cols: set[str],
-    user_id: str,
-    soul_id: str,
-) -> tuple[str, list[Any]]:
-    where_parts = ["normalized = ?"]
-    if "user_id" in cols:
-        where_parts.append("user_id = ?")
-    if "soul_id" in cols:
-        where_parts.append("soul_id = ?")
-
-    params: list[Any] = []
-    params.append(None)  # caller fills normalized as params[0]
-    if "user_id" in cols:
-        params.append(user_id)
-    if "soul_id" in cols:
-        params.append(soul_id)
-    return " AND ".join(where_parts), params
-
-
 def _select_relationship_row(
     con: sqlite3.Connection,
     *,
@@ -1973,17 +1952,14 @@ def _select_relationship_row(
     user_id: str,
     soul_id: str,
 ) -> sqlite3.Row | None:
-    cols = set(_sqlite_table_columns(con, "memu_entities"))
-    clause, params = _relationship_scope_clause(cols=cols, user_id=user_id, soul_id=soul_id)
-    params[0] = normalized
     return con.execute(
-        f"""
+        """
 SELECT id, name, entity_type, normalized, properties
 FROM memu_entities
-WHERE {clause}
+WHERE normalized = ? AND user_id = ? AND soul_id = ?
 LIMIT 1
 """,
-        tuple(params),
+        (normalized, user_id, soul_id),
     ).fetchone()
 
 
@@ -4085,8 +4061,6 @@ async def create_relationship(
             user_id=user_id,
             soul_id=soul_id,
         )
-        if row is None:
-            raise HTTPException(status_code=500, detail="failed to materialize relationship entity")
         props = _relationship_properties(row["properties"])
         props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
         props["active"] = True
@@ -4094,7 +4068,6 @@ async def create_relationship(
             props["relationship"] = relationship
         else:
             props.pop("relationship", None)
-        now_iso = datetime.now(UTC).isoformat()
         con.execute(
             """
 UPDATE memu_entities
@@ -4105,28 +4078,17 @@ WHERE id = ?
                 name,
                 entity_type,
                 _json_to_db(props),
-                now_iso,
+                datetime.now(UTC).isoformat(),
                 str(row["id"]),
             ),
         )
         con.commit()
-        row = _select_relationship_row(
-            con,
+        return _relationship_item_from_values(
             normalized=normalized,
-            user_id=user_id,
-            soul_id=soul_id,
+            name=name,
+            entity_type=entity_type,
+            properties=props,
         )
-        if row is None:
-            raise HTTPException(status_code=500, detail="failed to reload relationship entity")
-        item = _relationship_item_from_values(
-            normalized=str(row["normalized"] or "").strip(),
-            name=str(row["name"] or "").strip(),
-            entity_type=str(row["entity_type"] or "").strip(),
-            properties=_relationship_properties(row["properties"]),
-        )
-        if item is None:
-            raise HTTPException(status_code=500, detail="relationship row became non-declared")
-        return item
     finally:
         con.close()
 
@@ -4174,7 +4136,7 @@ async def update_relationship(
                 props["relationship"] = next_relationship
             else:
                 props.pop("relationship", None)
-        now_iso = datetime.now(UTC).isoformat()
+        final_name = next_name or str(row["name"] or "").strip()
         con.execute(
             """
 UPDATE memu_entities
@@ -4182,30 +4144,19 @@ SET name = ?, properties = ?, updated_at = ?
 WHERE id = ?
 """,
             (
-                next_name or str(row["name"] or "").strip(),
+                final_name,
                 _json_to_db(props),
-                now_iso,
+                datetime.now(UTC).isoformat(),
                 str(row["id"]),
             ),
         )
         con.commit()
-        row = _select_relationship_row(
-            con,
+        return _relationship_item_from_values(
             normalized=normalized,
-            user_id=user_id,
-            soul_id=soul_id,
+            name=final_name,
+            entity_type=str(row["entity_type"] or "").strip() or "person",
+            properties=props,
         )
-        if row is None:
-            raise HTTPException(status_code=404, detail="relationship not found")
-        item = _relationship_item_from_values(
-            normalized=str(row["normalized"] or "").strip(),
-            name=str(row["name"] or "").strip(),
-            entity_type=str(row["entity_type"] or "").strip(),
-            properties=_relationship_properties(row["properties"]),
-        )
-        if item is None:
-            raise HTTPException(status_code=404, detail="relationship not found")
-        return item
     finally:
         con.close()
 
@@ -4239,7 +4190,8 @@ async def delete_relationship(
         props = _relationship_properties(row["properties"])
         props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
         props["active"] = False
-        props["deleted_at"] = datetime.now(UTC).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
+        props["deleted_at"] = now_iso
         con.execute(
             """
 UPDATE memu_entities
@@ -4248,7 +4200,7 @@ WHERE id = ?
 """,
             (
                 _json_to_db(props),
-                datetime.now(UTC).isoformat(),
+                now_iso,
                 str(row["id"]),
             ),
         )
