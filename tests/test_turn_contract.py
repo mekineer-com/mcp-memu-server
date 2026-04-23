@@ -38,7 +38,7 @@ def test_build_turn_prompt_includes_core_sections():
     assert "Prior context:" in prompt
     assert "Goals:" in prompt  # retrieved category block renders as "<Name>:" lines
     assert "Your working thoughts:" in prompt
-    assert "Intentions:" in prompt
+    assert "Your intentions:" in prompt
 
 
 def test_build_turn_prompt_limits_history_by_token_budget():
