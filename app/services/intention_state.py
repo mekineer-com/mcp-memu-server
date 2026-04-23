@@ -465,14 +465,11 @@ def format_intentions_for_prompt(stack_value: Any, *, max_items: int = 12) -> st
         text = _text(item.get("text"))
         ephemeral = bool(item.get("ephemeral") is True)
         priority = _float(item.get("priority"), 0.0)
-        active = bool(item.get("active") is True)
         tags = []
         if item_id == RELAX_INTENTION_ID:
             tags.append("threshold")
         elif ephemeral:
             tags.append("ephemeral")
-        else:
-            tags.append("active" if active else "inactive")
         tag_suffix = f" [{', '.join(tags)}]" if tags else ""
         if ephemeral:
             lines.append(f"- {item_id}: {text}{tag_suffix}")
