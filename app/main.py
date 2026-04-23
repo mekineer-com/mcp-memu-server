@@ -242,15 +242,17 @@ async def _run_forced_memorize_from_turn(payload: dict[str, Any]) -> None:
             soul_id = str(scope.get("soul_id") or "").strip() or None
             user_id = str(scope.get("user_id") or "").strip() or None
             if conversation_id and soul_id:
-                _write_conversation_state(
-                    conversation_id,
-                    soul_id=soul_id,
-                    user_id=user_id,
-                    updates={
-                        "last_background_error": f"forced_memorize: {type(exc).__name__}: {str(exc)[:300]}",
-                        "last_background_error_at": datetime.now(UTC).isoformat(),
-                    },
-                )
+                lock_user_id = user_id or "user"
+                async with _get_memorize_lock(_memorize_lock_key(lock_user_id, soul_id)):
+                    _write_conversation_state(
+                        conversation_id,
+                        soul_id=soul_id,
+                        user_id=user_id,
+                        updates={
+                            "last_background_error": f"forced_memorize: {type(exc).__name__}: {str(exc)[:300]}",
+                            "last_background_error_at": datetime.now(UTC).isoformat(),
+                        },
+                    )
         except Exception:
             logger.exception("failed to record background error on conversation state")
 
@@ -3865,15 +3867,7 @@ async def force_consolidation(
         )
         return {"ok": True, "status": "completed", "result": result}
     except HTTPException as exc:
-        if (
-            pipeline_started
-            and
-            state_lock is not None
-            and uid
-            and soul_id
-            and exc.status_code >= 500
-            and not (exc.status_code == 409 and str(exc.detail or "") == "consolidation already in progress")
-        ):
+        if pipeline_started and exc.status_code >= 500:
             await _clear_consolidation_in_progress(
                 state_lock=state_lock,
                 conversation_id=cid,
@@ -3885,7 +3879,7 @@ async def force_consolidation(
         )
         raise
     except Exception as exc:
-        if pipeline_started and state_lock is not None and uid and soul_id:
+        if pipeline_started:
             await _clear_consolidation_in_progress(
                 state_lock=state_lock,
                 conversation_id=cid,
