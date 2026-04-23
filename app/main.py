@@ -3573,8 +3573,6 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         conversation = safe.get("conversation")
         if conversation is None:
             conversation = safe.get("content")
-        if conversation is None and isinstance(payload, list):
-            conversation = payload
         if not isinstance(conversation, list) or not conversation:
             raise HTTPException(status_code=400, detail="Missing or empty 'conversation' list")
 
@@ -3797,7 +3795,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         traceback.print_exc()
         _record_call(
             "memorize",
-            payload if isinstance(payload, dict) else None,
+            payload,
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
         )
@@ -3820,7 +3818,7 @@ async def force_consolidation(
     state_lock: asyncio.Lock | None = None
     pipeline_started = False
     try:
-        safe = _safe_payload(payload if isinstance(payload, dict) else {})
+        safe = _safe_payload(payload)
         if not isinstance(safe.get("llm_profiles"), dict):
             safe["llm_profiles"] = _default_llm_profiles_from_server_config()
         scope = safe.get("user")
@@ -3883,7 +3881,7 @@ async def force_consolidation(
                 user_id=uid,
             )
         _record_call(
-            "consolidation.force", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException"
+            "consolidation.force", payload, ok=False, error="HTTPException"
         )
         raise
     except Exception as exc:
@@ -3896,7 +3894,7 @@ async def force_consolidation(
             )
         _record_call(
             "consolidation.force",
-            payload if isinstance(payload, dict) else None,
+            payload,
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
         )
@@ -3959,13 +3957,13 @@ async def search_memory_categories(payload: dict[str, Any]):
         return {"categories": out}
     except HTTPException:
         _record_call(
-            "categories.search", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException"
+            "categories.search", payload, ok=False, error="HTTPException"
         )
         raise
     except Exception as exc:
         _record_call(
             "categories.search",
-            payload if isinstance(payload, dict) else None,
+            payload,
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
         )
@@ -4418,8 +4416,6 @@ async def patch_intention(
                 (iid,),
             ).fetchone()
 
-        if row is None:
-            raise HTTPException(status_code=404, detail="intention not found")
         return _intention_row_to_dict(row)
     finally:
         con.close()
@@ -4570,11 +4566,11 @@ async def clear_memory(payload: dict[str, Any]):
         _record_call("clear", safe, ok=True, info={"where": scope, "purged": out["purged"]})
         return out
     except HTTPException:
-        _record_call("clear", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException")
+        _record_call("clear", payload, ok=False, error="HTTPException")
         raise
     except Exception as exc:
         _record_call(
-            "clear", payload if isinstance(payload, dict) else None, ok=False, error=f"{type(exc).__name__}: {exc}"
+            "clear", payload, ok=False, error=f"{type(exc).__name__}: {exc}"
         )
         raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
@@ -4600,7 +4596,7 @@ async def retrieve(payload: dict[str, Any]):
     except HTTPException as he:
         _record_call(
             "retrieve",
-            payload if isinstance(payload, dict) else None,
+            payload,
             ok=False,
             error=str(getattr(he, "detail", he)),
         )
@@ -4608,7 +4604,7 @@ async def retrieve(payload: dict[str, Any]):
     except Exception as exc:
         _record_call(
             "retrieve",
-            payload if isinstance(payload, dict) else None,
+            payload,
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
         )
@@ -4737,7 +4733,7 @@ async def conversation_retrieve(
     if not cid:
         raise HTTPException(status_code=400, detail="conversation_id is required")
     try:
-        safe = _safe_payload(payload if isinstance(payload, dict) else {})
+        safe = _safe_payload(payload)
         if not isinstance(safe.get("llm_profiles"), dict):
             safe["llm_profiles"] = _default_llm_profiles_from_server_config()
         if safe.get("queries") is None:
@@ -4827,13 +4823,13 @@ async def conversation_retrieve(
         return out
     except HTTPException:
         _record_call(
-            "conversation.retrieve", payload if isinstance(payload, dict) else None, ok=False, error="HTTPException"
+            "conversation.retrieve", payload, ok=False, error="HTTPException"
         )
         raise
     except Exception as exc:
         _record_call(
             "conversation.retrieve",
-            payload if isinstance(payload, dict) else None,
+            payload,
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
         )
@@ -5006,7 +5002,7 @@ async def conversation_turn(
         if not cid:
             raise HTTPException(status_code=400, detail="conversation_id is required")
 
-        safe = _safe_payload(payload if isinstance(payload, dict) else {})
+        safe = _safe_payload(payload)
         if not isinstance(safe.get("llm_profiles"), dict):
             safe["llm_profiles"] = _default_llm_profiles_from_server_config()
 
@@ -5228,7 +5224,7 @@ async def conversation_turn(
     except HTTPException:
         _record_call(
             "conversation.turn",
-            payload if isinstance(payload, dict) else None,
+            payload,
             ok=False,
             info={"conversationId": cid or None},
             error="HTTPException",
@@ -5237,7 +5233,7 @@ async def conversation_turn(
     except Exception as exc:
         _record_call(
             "conversation.turn",
-            payload if isinstance(payload, dict) else None,
+            payload,
             ok=False,
             info={"conversationId": cid or None},
             error=f"{type(exc).__name__}: {exc}",
@@ -5254,7 +5250,7 @@ async def conversation_turn_undo(
     if not cid:
         raise HTTPException(status_code=400, detail="conversation_id is required")
 
-    safe = _safe_payload(payload if isinstance(payload, dict) else {})
+    safe = _safe_payload(payload)
     scope = safe.get("user")
     if not isinstance(scope, dict):
         scope = _extract_scope(safe) or None
