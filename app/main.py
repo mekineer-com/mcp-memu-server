@@ -39,101 +39,52 @@ from pydantic import BaseModel
 from app import procedural as _procedural
 from app.db import (
     json_from_db as _json_from_db,
-)
-from app.db import (
     json_to_db as _json_to_db,
-)
-from app.db import (
     normalize_text_list as _normalize_text_list,
-)
-from app.db import (
     sqlite_connect as _sqlite_connect,
-)
-from app.db import (
     sqlite_ensure_conversation_state_schema as _sqlite_ensure_conversation_state_schema,
-)
-from app.db import (
     sqlite_ensure_nonempty as _sqlite_ensure_nonempty,
-)
-from app.db import (
     sqlite_pragmas as _sqlite_pragmas,
-)
-from app.db import (
     sqlite_table_columns as _sqlite_table_columns,
 )
 from app.services.consolidation import (
     ConsolidationDeps,
-)
-from app.services.consolidation import (
     gather_consolidation_inputs as _gather_consolidation_inputs,
-)
-from app.services.consolidation import (
     run_consolidation_llm as _run_consolidation_llm,
-)
-from app.services.consolidation import (
     write_consolidation_outputs as _write_consolidation_outputs,
 )
 from app.services.graph_edges import (
     invalidate_memory_edges as _invalidate_memory_edges,
-)
-from app.services.graph_edges import (
     write_memory_edges as _write_memory_edges,
 )
 from app.services.intention_state import (
     append_memory_cache_entry as _append_memory_cache_entry,
-)
-from app.services.intention_state import (
     apply_intention_action as _apply_intention_action,
-)
-from app.services.intention_state import (
     apply_intention_turn_maintenance as _apply_intention_turn_maintenance_impl,
-)
-from app.services.intention_state import (
     format_intentions_for_prompt as _format_intentions_for_prompt,
-)
-from app.services.intention_state import (
     normalize_intentions_stack as _normalize_intentions_stack_impl,
-)
-from app.services.intention_state import (
     normalize_memory_cache as _normalize_memory_cache_impl,
-)
-from app.services.intention_state import (
     remove_intentions as _remove_intentions,
 )
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services.state import (
     conversation_state_empty as _conversation_state_empty,
-)
-from app.services.state import (
     conversation_state_from_row as _conversation_state_from_row_impl,
-)
-from app.services.state import (
     conversation_state_row as _conversation_state_row,
-)
-from app.services.state import (
     find_conversation_state_across_dbs as _find_conversation_state_across_dbs_impl,
-)
-from app.services.state import (
     write_conversation_state as _write_conversation_state_impl,
 )
 from app.services.turn_contract import (
     LIFE_GOALS_FREE_WILL_HEADER as _LIFE_GOALS_FREE_WILL_HEADER,
-)
-from app.services.turn_contract import (
     _format_item_suffix as _format_turn_item_suffix,
-)
-from app.services.turn_contract import (
-    format_shaped_by_line as _format_shaped_by_line,
-)
-from app.services.turn_contract import (
     build_turn_prompt as _build_turn_prompt,
-)
-from app.services.turn_contract import (
+    format_shaped_by_line as _format_shaped_by_line,
     make_turn_system_prompt as _make_turn_system_prompt,
-)
-from app.services.turn_contract import (
     parse_turn_contract as _parse_turn_contract,
 )
+
+
+# ==== Module state & constants ====
 
 logger = logging.getLogger(__name__)
 _PROMPT_LOGGER = logging.getLogger("uvicorn.error")
@@ -150,6 +101,10 @@ _MAX_CHUNK_TOKENS: int = _DEFAULT_MAX_CHUNK_TOKENS
 _HISTORY_TAIL_AFTER_MEMORIZE: int = _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE
 _LOG_PROMPTS: bool = False
 _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved", "removed"}
+
+
+# ==== Token estimation & chunk planning ====
+
 def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
     words = sum(len(str(m.get("content") or m.get("mes") or "").split()) for m in messages)
     return int(words / 0.75)
@@ -270,6 +225,8 @@ def _build_force_memorize_batches(
     return out
 
 
+# ==== Memorize background orchestration ====
+
 async def _run_forced_memorize_from_turn(payload: dict[str, Any]) -> None:
     try:
         background_tasks = BackgroundTasks()
@@ -303,6 +260,8 @@ def _has_category_content(c: dict[str, Any]) -> bool:
     desc = str(c.get("description") or "").strip()
     return bool(summary or desc)
 
+
+# ==== Server state (locks, inflight, shutdown) ====
 
 _SERVER_INSTANCE_ID: str = str(uuid.uuid4())
 _SERVER_STARTED_AT_UNIX: float = time.time()
@@ -447,6 +406,8 @@ async def _shutdown_when_idle(max_wait_sec: int) -> None:
     _SHUTDOWN_TASK = None
 
 
+# ==== HTTP middleware ====
+
 @app.middleware("http")
 async def _trace_requests(request: Request, call_next):
     global _ACTIVE_HTTP_REQUESTS, _ACTIVE_WORK_REQUESTS
@@ -499,6 +460,8 @@ async def _trace_requests(request: Request, call_next):
         except Exception:
             pass
 
+
+# ==== Config loading & storage paths ====
 
 def _is_ephemeral_db(cfg: dict[str, Any]) -> bool:
     try:
@@ -835,6 +798,8 @@ if _DIAG_PREFIX == "":
     _DIAG_PREFIX = "/mcp"
 
 
+# ==== Categories & procedural paths ====
+
 def _categories_from_cfg(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     cats_cfg = cfg.get("categories") if isinstance(cfg.get("categories"), dict) else {}
     raw = cats_cfg.get("defaults") if isinstance(cats_cfg.get("defaults"), list) else []
@@ -893,6 +858,8 @@ def _sanitize_db_filename(name: str) -> str:
     return s[:80]
 
 
+# ==== Soul generation config ====
+
 def _soul_gen_config_path(user_id: str, soul_id: str) -> Path:
     user_part = _sanitize_db_filename(user_id)
     soul_part = _sanitize_db_filename(soul_id)
@@ -920,6 +887,8 @@ def _load_soul_gen_config(user_id: str, soul_id: str) -> dict[str, Any]:
 def _save_soul_gen_config(user_id: str, soul_id: str, cfg: dict[str, Any]) -> None:
     _soul_gen_config_path(user_id, soul_id).write_text(json.dumps(cfg, indent=2))
 
+
+# ==== Service resolution & caching ====
 
 def _sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, Any] | None) -> str:
     if not isinstance(scope, dict):
@@ -1298,6 +1267,8 @@ def _get_service_from_payload(
         return svc
 
 
+# ==== Payload & scope extraction ====
+
 def _pick_str(payload: dict[str, Any], *keys: str) -> str | None:
     for k in keys:
         v = payload.get(k)
@@ -1428,6 +1399,8 @@ def _record_call(
         pass
 
 
+# ==== SQLite scope helpers ====
+
 def _sqlite_current_path(
     user_id: str | None = None,
     soul_id: str | None = None,
@@ -1510,6 +1483,8 @@ def _find_conversation_state_across_dbs(conversation_id: str) -> tuple[Path | No
     sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, str(_STORAGE_STATUS.get("dsn") or ""))
     return _find_conversation_state_across_dbs_impl(conversation_id, sqlite_dir)
 
+
+# ==== Retrieve payload helpers ====
 
 def _extract_retrieve_where(payload: dict[str, Any]) -> dict[str, Any] | None:
     scope = payload.get("scope") or payload.get("where")
@@ -1722,6 +1697,8 @@ def _next_chat_x_state_values(
     return next_last_chat_x, next_last_chat_x_prev
 
 
+# ==== Turn prompt context builders ====
+
 def _format_route_history(history: list[dict[str, Any]]) -> str:
     if not history:
         return ""
@@ -1884,6 +1861,8 @@ _RELATIONSHIP_RESERVED_PREFIXES = ("user:", "soul:", "peer:", "environment:")
 _RELATIONSHIP_ORIGIN_USER_DECLARED = "user_declared"
 
 
+# ==== Relationship helpers ====
+
 def _normalize_relationship_name(raw: Any) -> str:
     text = str(raw or "").strip()
     if not text:
@@ -1991,6 +1970,8 @@ def _assert_relationship_write_path(user_id: str, soul_id: str) -> tuple[MemoryS
     _sqlite_ensure_nonempty(db_path)
     return svc, db_path
 
+
+# ==== Memorize execution helpers ====
 
 async def _persist_annulment_memories(
     *,
@@ -2148,6 +2129,8 @@ async def _compute_holistic_categories_summary(
     )
     return str(result or "").strip() or None
 
+
+# ==== Retrieve & APIMW pipeline ====
 
 async def _run_retrieve(
     payload: dict[str, Any],
@@ -2702,6 +2685,13 @@ async def _run_apimw(
 
 
 
+# =============================================================================
+# HTTP ENDPOINTS
+# =============================================================================
+
+
+# ---- Health, version, diag, shutdown ----
+
 @app.get("/health", operation_id="health")
 async def health():
     storage_dir = _get_storage_dir(_CONFIG)
@@ -2751,18 +2741,7 @@ async def shutdown_status():
 
 @app.post("/admin/shutdown", operation_id="shutdown")
 async def shutdown_server(payload: dict[str, Any] | None = Body(default=None)):
-    """Request local graceful shutdown.
-
-    Behavior:
-    - enter draining mode (reject new non-control requests),
-    - wait for active work requests to finish,
-    - then terminate this process.
-
-    Optional body fields:
-    - requested_by: free-form caller id
-    - reason: free-form reason
-    - max_wait_sec: 0 means wait indefinitely; otherwise timeout before forced stop
-    """
+    # Body fields: requested_by, reason, max_wait_sec (0 = wait forever).
     global _SHUTDOWN_TASK
 
     body = payload if isinstance(payload, dict) else {}
@@ -3013,6 +2992,8 @@ async def diag_sqlite_recent(
         con.close()
 
 
+# ---- Config endpoints ----
+
 @app.get("/config", operation_id="get_config")
 async def get_config(include_secrets: bool = False):
     return JSONResponse(content={"ok": True, "config": _CONFIG if include_secrets else _mask_config(_CONFIG)})
@@ -3062,6 +3043,8 @@ async def root():
         pass
     return {"message": "mcp-memu-server", "mcp": "enabled" if _has_mcp else "disabled"}
 
+
+# ---- Chat storage & sleep-gap helpers ----
 
 def _read_list(p: Path) -> list[dict[str, Any]]:
     if not p.exists():
@@ -3561,6 +3544,8 @@ async def _run_memorize_batches(
         )
 
 
+# ---- Memorize endpoint ----
+
 @app.post("/memorize", operation_id="memorize")
 async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool = False):
     """Memorize a SillyTavern conversation.
@@ -3819,6 +3804,8 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
+# ---- Consolidation endpoint ----
+
 @app.post("/conversation/{conversation_id}/consolidation/force", operation_id="force_consolidation")
 async def force_consolidation(
     conversation_id: str,
@@ -3916,6 +3903,8 @@ async def force_consolidation(
         raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
+# ---- Categories endpoints ----
+
 @app.get("/categories", operation_id="list_memory_categories")
 async def list_memory_categories(user_id: str = "", soul_id: str = "", include_empty: bool = False):
     soul_id = soul_id.strip()
@@ -3982,6 +3971,8 @@ async def search_memory_categories(payload: dict[str, Any]):
         )
         raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
+
+# ---- Intentions & relationships endpoints ----
 
 @app.get("/souls/{soul_id}/intentions", operation_id="list_intentions")
 async def list_intentions(
@@ -4229,6 +4220,8 @@ WHERE id = ?
         con.close()
 
 
+# ---- Narrative suggestion endpoint ----
+
 @app.post("/souls/{soul_id}/narrative_suggestion", operation_id="narrative_suggestion")
 async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)):
     soul_id = str(soul_id or "").strip()
@@ -4432,6 +4425,8 @@ async def patch_intention(
         con.close()
 
 
+# ---- Conversation state endpoints ----
+
 @app.get("/conversation/{conversation_id}/state", operation_id="get_conversation_state")
 async def get_conversation_state(
     conversation_id: str,
@@ -4530,14 +4525,11 @@ async def patch_conversation_state(
     return {"ok": True, "state": state_out, "path": str(db_path)}
 
 
+# ---- Clear memory endpoint ----
+
 @app.post("/clear", operation_id="clear_memory")
 async def clear_memory(payload: dict[str, Any]):
-    """Clear stored memory for a single scoped relationship.
-
-    Safety default:
-      - requires both user_id and soul_id
-      - does not allow unscoped/global clear
-    """
+    # Requires both user_id and soul_id. Unscoped/global clear is not allowed.
     try:
         safe = _safe_payload(payload)
 
@@ -4586,6 +4578,8 @@ async def clear_memory(payload: dict[str, Any]):
         )
         raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
+
+# ---- Retrieve & timeline endpoints ----
 
 @app.post("/retrieve", operation_id="retrieve")
 async def retrieve(payload: dict[str, Any]):
@@ -4845,6 +4839,8 @@ async def conversation_retrieve(
         )
         raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
+
+# ---- Turn state helpers + conversation turn endpoints ----
 
 def _turn_state_read(
     cid: str,
@@ -5289,6 +5285,10 @@ async def conversation_turn_undo(
         )
     return {"status": "restored"}
 
+
+# =============================================================================
+# Optional MCP mount & static UI
+# =============================================================================
 
 _has_mcp = False
 try:
