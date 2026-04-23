@@ -3595,8 +3595,8 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
 
         conv_norm = _normalize_conversation(conversation)
 
-        uid = str((scope or {}).get("user_id") or "user") if isinstance(scope, dict) else "user"
-        soul_id = str((scope or {}).get("soul_id") or "soul") if isinstance(scope, dict) else "soul"
+        # scope is validated dict with non-empty soul_id above; no need to re-guard.
+        uid = str(scope.get("user_id") or "user")
         async with _get_memorize_lock(_memorize_lock_key(uid, soul_id)):
             storage_dir = _get_storage_dir(_CONFIG)
             chats_dir = (storage_dir / "st_chats").resolve()
