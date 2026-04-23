@@ -191,6 +191,10 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_chat_x_prev TEXT")
     if "retrieve_rewrite_angle" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN retrieve_rewrite_angle INTEGER DEFAULT 0")
+    if "last_background_error" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_background_error TEXT")
+    if "last_background_error_at" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_background_error_at DATETIME")
     for stmt in alters:
         try:
             con.execute(stmt)

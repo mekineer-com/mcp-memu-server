@@ -275,8 +275,27 @@ async def _run_forced_memorize_from_turn(payload: dict[str, Any]) -> None:
         background_tasks = BackgroundTasks()
         await memorize(payload, background_tasks=background_tasks, force=True)
         await background_tasks()
-    except Exception:
+    except Exception as exc:
         logger.exception("forced memorize from turn failed")
+        # Surface the failure on conversation state so operator + soul can see it.
+        # Log-only failures silently lose episodes; the state field gives a trail.
+        try:
+            scope = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+            conversation_id = str(scope.get("conversation_id") or payload.get("conversation_id") or "").strip()
+            soul_id = str(scope.get("soul_id") or "").strip() or None
+            user_id = str(scope.get("user_id") or "").strip() or None
+            if conversation_id and soul_id:
+                _write_conversation_state(
+                    conversation_id,
+                    soul_id=soul_id,
+                    user_id=user_id,
+                    updates={
+                        "last_background_error": f"forced_memorize: {type(exc).__name__}: {str(exc)[:300]}",
+                        "last_background_error_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+        except Exception:
+            logger.exception("failed to record background error on conversation state")
 
 
 def _has_category_content(c: dict[str, Any]) -> bool:

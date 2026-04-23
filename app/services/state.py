@@ -50,6 +50,8 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "last_chat_x": row["last_chat_x"],
         "last_chat_x_prev": row["last_chat_x_prev"],
         "retrieve_rewrite_angle": int(row["retrieve_rewrite_angle"] or 0) if "retrieve_rewrite_angle" in row.keys() else 0,
+        "last_background_error": row["last_background_error"] if "last_background_error" in row.keys() else None,
+        "last_background_error_at": row["last_background_error_at"] if "last_background_error_at" in row.keys() else None,
     }
 
 
@@ -59,7 +61,8 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
         "intentions_active, memory_cache, pending_diary_episode_ids, self_model_id, "
         "last_retrieval_ids, last_memorize_at, last_consolidation_at, consolidation_in_progress, "
         "consolidation_started_at, updated_at, undo_snapshot, "
-        "all_categories_summary, last_chat_x, last_chat_x_prev, retrieve_rewrite_angle "
+        "all_categories_summary, last_chat_x, last_chat_x_prev, retrieve_rewrite_angle, "
+        "last_background_error, last_background_error_at "
         "FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
         (conversation_id,),
     ).fetchone()
@@ -90,6 +93,8 @@ def conversation_state_empty(
         "last_chat_x": None,
         "last_chat_x_prev": None,
         "retrieve_rewrite_angle": 0,
+        "last_background_error": None,
+        "last_background_error_at": None,
     }
 
 
@@ -224,6 +229,8 @@ INSERT OR IGNORE INTO memu_conversation_state (
                 "last_chat_x",
                 "last_chat_x_prev",
                 "retrieve_rewrite_angle",
+                "last_background_error",
+                "last_background_error_at",
             }:
                 field_updates[key] = value
 
