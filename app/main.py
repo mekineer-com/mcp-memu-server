@@ -733,7 +733,7 @@ def _mask_config(cfg: dict[str, Any]) -> dict[str, Any]:
     out = json.loads(json.dumps(cfg))
     key = out.get("llm", {}).get("api_key", "")
     if isinstance(key, str) and key:
-        out["llm"]["api_key"] = key[:4] + "…" + key[-4:]
+        out["llm"]["api_key"] = key[:4] + "..." + key[-4:]
     return out
 
 
