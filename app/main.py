@@ -4928,6 +4928,11 @@ def _turn_state_write(
     fresh_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
     fresh_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
     fresh_intentions = _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
+    # Snapshot PRE-maintenance state for undo. If we snapshot post-maintenance,
+    # undo can't reverse the ephemeral expiry that maintenance performed, so
+    # items that were about to expire are permanently lost even when the soul's
+    # turn is undone. A swipe must reverse the whole turn, not just the action.
+    undo_snapshot_intentions = fresh_intentions
     if apply_turn_maintenance:
         # Persist the turn advance + ephemeral expiry. Without this, turn_index
         # never increments in the DB and ephemerals with expires_at_turn=1 never
@@ -4953,7 +4958,7 @@ def _turn_state_write(
         "last_chat_x_prev": _next_last_chat_x_prev,
         "undo_snapshot": {
             "memory_cache": fresh_cache,
-            "intentions_active": fresh_intentions,
+            "intentions_active": undo_snapshot_intentions,
         },
     }
     # Scene break resets the rewrite angle so the next RETRIEVE starts at the
