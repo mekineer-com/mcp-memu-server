@@ -570,7 +570,7 @@ def build_turn_prompt(
         "Your working thoughts:",
         "\n".join(cache_lines) if cache_lines else "(empty)",
         "",
-        "Intentions:",
+        "Your intentions:",
         format_intentions_for_prompt(intentions_active),
         "",
         f"New message:\n{current_user_text}",
