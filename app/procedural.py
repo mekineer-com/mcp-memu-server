@@ -12,6 +12,7 @@ import hashlib
 import json
 import sqlite3
 import struct
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,7 @@ import yaml
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS procedural_memory_items (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     domain TEXT NOT NULL,
     framework TEXT,
     summary TEXT NOT NULL,
@@ -31,7 +32,8 @@ CREATE TABLE IF NOT EXISTS procedural_memory_items (
     embedding BLOB,
     embedding_model TEXT,
     source_hash TEXT,
-    updated_at TEXT
+    updated_at TEXT,
+    PRIMARY KEY (id, domain)
 );
 CREATE INDEX IF NOT EXISTS idx_procedural_domain ON procedural_memory_items(domain);
 """
@@ -39,6 +41,25 @@ CREATE INDEX IF NOT EXISTS idx_procedural_domain ON procedural_memory_items(doma
 
 def ensure_schema(con: sqlite3.Connection) -> None:
     con.executescript(_SCHEMA_SQL)
+    cols = con.execute("PRAGMA table_info(procedural_memory_items)").fetchall()
+    pk_map = {str(row[1]): int(row[5] or 0) for row in cols if len(row) > 5}
+    if pk_map.get("id") == 1 and pk_map.get("domain") == 2:
+        return
+
+    con.execute("ALTER TABLE procedural_memory_items RENAME TO procedural_memory_items__old")
+    con.executescript(_SCHEMA_SQL)
+    con.execute(
+        """
+INSERT INTO procedural_memory_items (
+    id, domain, framework, summary, applicable_when, source, tags, embedding, embedding_model, source_hash, updated_at
+)
+SELECT
+    id, domain, framework, summary, applicable_when, source, tags, embedding, embedding_model, source_hash, updated_at
+FROM procedural_memory_items__old
+"""
+    )
+    con.execute("DROP TABLE procedural_memory_items__old")
+    con.commit()
 
 
 def _entry_hash(entry: dict[str, Any]) -> str:
@@ -65,21 +86,42 @@ def _unpack_embedding(blob: bytes) -> list[float]:
     return list(struct.unpack(f"{n}f", blob))
 
 
-def _load_yaml_entries(yaml_dir: Path) -> list[dict[str, Any]]:
+def _load_yaml_entries(yaml_dir: Path) -> tuple[list[dict[str, Any]], set[str]]:
     entries: list[dict[str, Any]] = []
+    active_domains: set[str] = set()
     for yf in sorted(yaml_dir.glob("*.yaml")):
+        file_domain = str(yf.stem or "").strip()
+        if file_domain:
+            active_domains.add(file_domain)
         with yf.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or []
         for row in data:
             if isinstance(row, dict) and row.get("id") and row.get("summary"):
-                entries.append(row)
-    return entries
+                entry = dict(row)
+                domain = str(entry.get("domain") or "").strip() or file_domain
+                if domain:
+                    entry["domain"] = domain
+                    active_domains.add(domain)
+                entries.append(entry)
+    return entries, active_domains
+
+
+def _embedding_model_label(svc: Any) -> str:
+    profiles = getattr(svc, "llm_profiles", None)
+    profiles_map = getattr(profiles, "profiles", None)
+    if isinstance(profiles_map, Mapping):
+        cfg = profiles_map.get("embedding")
+        for attr in ("embed_model", "chat_model"):
+            value = str(getattr(cfg, attr, "") or "").strip()
+            if value:
+                return value
+    return "embedding"
 
 
 async def ingest(svc: Any, db_path: Path, yaml_dir: Path) -> dict[str, int]:
     """Embed + upsert any new or changed entries from YAML. Idempotent."""
-    entries = _load_yaml_entries(yaml_dir)
-    if not entries:
+    entries, active_domains = _load_yaml_entries(yaml_dir)
+    if not entries and not active_domains:
         return {"scanned": 0, "added": 0, "updated": 0, "unchanged": 0}
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -88,16 +130,25 @@ async def ingest(svc: Any, db_path: Path, yaml_dir: Path) -> dict[str, int]:
     try:
         ensure_schema(con)
         prior = {
-            row["id"]: row["source_hash"]
+            (str(row["domain"] or "").strip(), str(row["id"] or "").strip()): (
+                str(row["source_hash"] or "").strip(),
+                str(row["embedding_model"] or "").strip(),
+            )
             for row in con.execute(
-                "SELECT id, source_hash FROM procedural_memory_items"
+                "SELECT id, domain, source_hash, embedding_model FROM procedural_memory_items"
             ).fetchall()
         }
 
         fresh: list[tuple[dict[str, Any], str]] = []
+        embedding_model = _embedding_model_label(svc)
         for entry in entries:
             h = _entry_hash(entry)
-            if prior.get(str(entry["id"])) != h:
+            domain = str(entry.get("domain") or "").strip()
+            eid = str(entry["id"] or "").strip()
+            if not domain or not eid:
+                continue
+            prev_hash, prev_model = prior.get((domain, eid), ("", ""))
+            if prev_hash != h or prev_model != embedding_model:
                 fresh.append((entry, h))
 
         added = 0
@@ -113,8 +164,7 @@ async def ingest(svc: Any, db_path: Path, yaml_dir: Path) -> dict[str, int]:
 INSERT INTO procedural_memory_items
   (id, domain, framework, summary, applicable_when, source, tags, embedding, embedding_model, source_hash, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
-  domain=excluded.domain,
+ON CONFLICT(id, domain) DO UPDATE SET
   framework=excluded.framework,
   summary=excluded.summary,
   applicable_when=excluded.applicable_when,
@@ -134,15 +184,34 @@ ON CONFLICT(id) DO UPDATE SET
                         str(entry.get("source") or "").strip() or None,
                         json.dumps(entry.get("tags") or [], ensure_ascii=False),
                         _pack_embedding(list(vec)),
-                        "embedding",
+                        embedding_model,
                         h,
                         now,
                     ),
                 )
-                if eid in prior:
+                if (str(entry.get("domain") or "").strip(), eid) in prior:
                     updated += 1
                 else:
                     added += 1
+
+        desired_ids_by_domain: dict[str, set[str]] = {}
+        for entry in entries:
+            domain = str(entry.get("domain") or "").strip()
+            eid = str(entry.get("id") or "").strip()
+            if not domain or not eid:
+                continue
+            desired_ids_by_domain.setdefault(domain, set()).add(eid)
+        for domain in active_domains:
+            desired = desired_ids_by_domain.get(domain, set())
+            if desired:
+                placeholders = ",".join("?" for _ in desired)
+                con.execute(
+                    f"DELETE FROM procedural_memory_items WHERE domain = ? AND id NOT IN ({placeholders})",
+                    (domain, *sorted(desired)),
+                )
+            else:
+                con.execute("DELETE FROM procedural_memory_items WHERE domain = ?", (domain,))
+
         con.commit()
         return {
             "scanned": len(entries),
@@ -159,7 +228,7 @@ def _cosine_prenorm(a: list[float], b: list[float]) -> float:
     mag = sum(x * x for x in b) ** 0.5
     if mag == 0.0:
         return 0.0
-    return sum(ax * bx for ax, bx in zip(a, b, strict=False)) / mag
+    return sum(ax * bx for ax, bx in zip(a, b, strict=True)) / mag
 
 
 def _normalize(v: list[float]) -> list[float]:
@@ -174,6 +243,7 @@ def lookup(
     *,
     domain: str,
     query_vec: list[float],
+    expected_embedding_model: str | None = None,
     limit: int = 1,
 ) -> list[tuple[dict[str, Any], float]]:
     if not db_path.exists() or not query_vec:
@@ -183,7 +253,7 @@ def lookup(
     try:
         ensure_schema(con)
         rows = con.execute(
-            "SELECT id, domain, framework, summary, applicable_when, source, tags, embedding "
+            "SELECT id, domain, framework, summary, applicable_when, source, tags, embedding, embedding_model "
             "FROM procedural_memory_items WHERE domain = ?",
             (domain,),
         ).fetchall()
@@ -197,6 +267,18 @@ def lookup(
         emb = _unpack_embedding(r["embedding"])
         if not emb:
             continue
+        if len(emb) != len(qn):
+            raise ValueError(
+                f"procedural embedding dimension mismatch for {r['domain']}:{r['id']} "
+                f"(query={len(qn)} item={len(emb)})"
+            )
+        if expected_embedding_model is not None:
+            row_model = str(r["embedding_model"] or "").strip()
+            if row_model and row_model != expected_embedding_model:
+                raise ValueError(
+                    f"procedural embedding model mismatch for {r['domain']}:{r['id']} "
+                    f"(expected={expected_embedding_model} item={row_model})"
+                )
         sim = _cosine_prenorm(qn, emb)
         scored.append(
             (

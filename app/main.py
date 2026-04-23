@@ -1945,6 +1945,12 @@ def _relationship_item_from_entity(entity: Any) -> dict[str, Any] | None:
     )
 
 
+def _assert_user_declared_relationship(props: Mapping[str, Any] | None) -> None:
+    origin = str((props or {}).get("origin") or "").strip()
+    if origin != _RELATIONSHIP_ORIGIN_USER_DECLARED:
+        raise HTTPException(status_code=409, detail="entity is not user-declared")
+
+
 def _select_relationship_row(
     con: sqlite3.Connection,
     *,
@@ -2199,10 +2205,12 @@ async def _run_retrieve(
             try:
                 embeds = await svc.embed([mh_query], profile="embedding")
                 qvec = list(embeds[0]) if embeds else []
+                expected_embedding_model = str((_CONFIG.get("llm") or {}).get("embed_model") or "").strip() or None
                 hits = _procedural.lookup(
                     procedural_db,
                     domain="mental_health",
                     query_vec=qvec,
+                    expected_embedding_model=expected_embedding_model,
                     limit=1,
                 )
                 if hits:
@@ -4048,11 +4056,6 @@ async def create_relationship(
     _validate_relationship_speaker_id(_relationship_speaker_id_from_normalized(normalized))
     scope = {"user_id": user_id, "soul_id": soul_id}
     svc, db_path = _assert_relationship_write_path(user_id, soul_id)
-    svc.database.entity_repo.get_or_create(
-        name=name,
-        entity_type=entity_type,
-        user_data=scope,
-    )
 
     con = _sqlite_connect(db_path)
     try:
@@ -4063,7 +4066,23 @@ async def create_relationship(
             user_id=user_id,
             soul_id=soul_id,
         )
+        if row is None:
+            svc.database.entity_repo.get_or_create(
+                name=name,
+                entity_type=entity_type,
+                user_data=scope,
+            )
+            row = _select_relationship_row(
+                con,
+                normalized=normalized,
+                user_id=user_id,
+                soul_id=soul_id,
+            )
+            if row is None:
+                raise HTTPException(status_code=500, detail="failed to create relationship")
         props = _relationship_properties(row["properties"])
+        if str(props.get("origin") or "").strip():
+            _assert_user_declared_relationship(props)
         props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
         props["active"] = True
         if relationship:
@@ -4129,8 +4148,7 @@ async def update_relationship(
             raise HTTPException(status_code=404, detail="relationship not found")
 
         props = _relationship_properties(row["properties"])
-        if str(props.get("origin") or "").strip() not in {"", _RELATIONSHIP_ORIGIN_USER_DECLARED}:
-            raise HTTPException(status_code=409, detail="entity is not user-declared")
+        _assert_user_declared_relationship(props)
         props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
         props["active"] = True
         if relationship_raw is not None:
@@ -4190,6 +4208,7 @@ async def delete_relationship(
         if row is None:
             return {"ok": True, "speaker_id": _relationship_speaker_id_from_normalized(normalized)}
         props = _relationship_properties(row["properties"])
+        _assert_user_declared_relationship(props)
         props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
         props["active"] = False
         now_iso = datetime.now(UTC).isoformat()

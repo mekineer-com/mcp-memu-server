@@ -309,3 +309,11 @@ def test_relationship_item_from_values_filters_non_declared_or_inactive():
         entity_type="person",
         properties={"origin": "user_declared", "active": False},
     ) is None
+
+
+def test_assert_user_declared_relationship_is_strict():
+    main._assert_user_declared_relationship({"origin": "user_declared"})
+    with pytest.raises(main.HTTPException):
+        main._assert_user_declared_relationship({"origin": ""})
+    with pytest.raises(main.HTTPException):
+        main._assert_user_declared_relationship({"origin": "extracted"})
