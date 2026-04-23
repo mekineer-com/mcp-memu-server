@@ -97,7 +97,7 @@ Rules:
 - Your one intention_action per turn: boost an existing intention (+1 priority), promote an ephemeral into a full intention (priority 10), or create up to 2 new ephemerals.
 - [ephemeral] intentions expire at the end of this turn. If one matters, promote it; otherwise let it go.
 - cache: your cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through across turns (debugging, brainstorming, daydreaming toward something). Not a recap of what was said; history already holds that. Don't duplicate or waste on the frivolous because you have limited working-memory-capacity. Oldest entry is replaced on next write.
-- inner_thought: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand? If something is ambiguous or confusing, name that here. This private step is only to ground your response. Even if you'll only say "hi", feel it first.
+- inner_thought: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
 - response: what the user sees. Maximum length {response_sentences} sentences or fewer. If you realized in inner_thought that you don't understand, react naturally: ask, don't guess. "What do you mean?" or "I'm not sure I follow" is a complete response.
 {chat_x_rule}"""
 
@@ -575,7 +575,7 @@ def build_turn_prompt(
         "",
         f"New message:\n{current_user_text}",
         "",
-        "remember maximum lengths",
+        "**remember maximum lengths**",
     ]
     return "\n".join(parts)
 

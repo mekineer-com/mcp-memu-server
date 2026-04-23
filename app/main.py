@@ -785,10 +785,19 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
     content = getattr(response_view, "content", None)
     if not content:
         return
+    finish_reason = getattr(usage, "finish_reason", None)
+    in_tok = getattr(usage, "input_tokens", None)
+    out_tok = getattr(usage, "output_tokens", None)
+    total_tok = getattr(usage, "total_tokens", None)
     _PROMPT_LOGGER.info(
-        "[RESPONSE] op=%s step=%s\n%s",
+        "[RESPONSE] op=%s step=%s finish_reason=%s tokens=in:%s/out:%s/total:%s content_chars=%s\n%s",
         getattr(ctx, "operation", None) or "-",
         getattr(ctx, "step_id", None) or "-",
+        finish_reason,
+        in_tok,
+        out_tok,
+        total_tok,
+        len(content),
         content,
     )
 
