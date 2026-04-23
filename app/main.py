@@ -12,6 +12,7 @@ import threading
 import time
 import traceback
 import uuid
+import warnings
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta, timezone
@@ -5301,7 +5302,16 @@ async def conversation_turn_undo(
 
 _has_mcp = False
 try:
-    from fastapi_mcp import FastApiMCP
+    # fastapi_mcp currently triggers a pydantic v2.11+ deprecation warning
+    # at import-time; keep runtime clean while preserving optional MCP mount.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The `__get_pydantic_core_schema__` method of the `BaseModel` class is deprecated.*",
+            category=DeprecationWarning,
+            module=r"pydantic\._internal\._generate_schema",
+        )
+        from fastapi_mcp import FastApiMCP
 
     mcp = FastApiMCP(app)
     http_path = str(_CONFIG.get("mcp", {}).get("http_path") or "/mcp")
