@@ -456,6 +456,7 @@ async def run_consolidation_llm(
     *,
     inputs: dict[str, Any],
     soul_id: str,
+    llm_profile: str | None = None,
 ) -> dict[str, Any]:
     categories_text = _format_categories_for_prompt(inputs["categories"])
     life_goals_text = _format_life_goals_for_prompt(
@@ -486,6 +487,7 @@ async def run_consolidation_llm(
 
     raw = await svc.chat(
         user_prompt,
+        profile=llm_profile,
         system_prompt=system_prompt,
         temperature=0.2,
         max_tokens=4000,  # PIPELINE_MAX_TOKENS (kept in main.py; see comment there)

@@ -2438,6 +2438,7 @@ async def _apimw_def_call(
     soul_id: str,
     conversation_id: str,
     scope: dict[str, str],
+    llm_profile: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
     logger.info("apimw step D+E+F: combined call for %s", conversation_id)
     memory_lines: list[str] = []
@@ -2524,6 +2525,7 @@ async def _apimw_def_call(
 
     llm_raw = await svc.chat(
         def_user,
+        profile=llm_profile,
         system_prompt=def_system,
         temperature=0.2,
         max_tokens=PIPELINE_MAX_TOKENS,
@@ -2684,6 +2686,7 @@ async def _run_apimw(
             scope=scope,
         )
 
+        _heavy_profile = getattr(svc.memorize_config, "memory_extract_llm_profile", None)
         result_json, items_by_id = await _apimw_def_call(
             svc,
             combined_items=combined_items,
@@ -2694,6 +2697,7 @@ async def _run_apimw(
             soul_id=soul_id,
             conversation_id=conversation_id,
             scope=scope,
+            llm_profile=_heavy_profile,
         )
         if result_json is None:
             return
@@ -3375,10 +3379,12 @@ async def _run_consolidation_pipeline_once(
     if prep.get("status") == "skip":
         return {"status": "skipped", "reason": prep.get("reason")}
 
+    _heavy_profile = getattr(svc.memorize_config, "memory_extract_llm_profile", None)
     consolidation_llm = await _run_consolidation_llm(
         svc,
         inputs=prep,
         soul_id=soul_id,
+        llm_profile=_heavy_profile,
     )
     async with state_lock:
         result = _write_consolidation_outputs(
