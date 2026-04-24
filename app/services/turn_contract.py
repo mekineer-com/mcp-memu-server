@@ -641,6 +641,9 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
         note = _text(row.get("note"))
         if not intention_id or status not in {"completed", "deleted"}:
             raise ValueError("annulment requires intention_id (or id) and status completed|deleted")
+        if intention_id.lower() == "relax":
+            _logger.warning("turn_contract: soul tried to annul 'relax' threshold; ignored")
+            continue
         annulments.append({"intention_id": intention_id, "status": status, "note": note})
 
     inner_thought = _text(parsed.get("inner_thought"))

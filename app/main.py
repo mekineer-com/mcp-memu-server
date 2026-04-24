@@ -2033,6 +2033,8 @@ async def _persist_annulment_memories(
         return []
 
     embeddings = await svc.embed(summaries, profile="embedding")
+    soul_label = str(scope.get("soul_id") or "").strip()
+    soul_slug = re.sub(r"[^a-z0-9]+", "_", soul_label.lower()).strip("_") or "soul"
     created_ids: list[str] = []
     for idx, summary in enumerate(summaries):
         if idx >= len(embeddings):
@@ -2044,6 +2046,8 @@ async def _persist_annulment_memories(
             embedding=embeddings[idx],
             user_data=scope,
             source_role="soul",
+            speaker_id=f"soul:{soul_slug}",
+            speaker_label=soul_label or "soul",
             confidence=1.0,
             happened_at=datetime.now(UTC),
             reflection_salience=saliences[idx],
