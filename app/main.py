@@ -100,6 +100,11 @@ _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE: int = 3000
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
 _MAX_CHUNK_TOKENS: int = _DEFAULT_MAX_CHUNK_TOKENS
 _HISTORY_TAIL_AFTER_MEMORIZE: int = _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE
+# Uniform runaway-protection caps for LLM calls. Not business logic —
+# these are floors against pathological generation, not content limits.
+# DB-storage limits are enforced separately at the storage write path.
+PIPELINE_MAX_TOKENS: int = 4000  # turn/memorize/retrieve/apimw/consolidation
+UTILITY_MAX_TOKENS: int = 1000   # holistic_summary/topic_statement/narrative_suggestion
 _LOG_PROMPTS: bool = False
 _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved", "removed"}
 
@@ -2141,7 +2146,7 @@ async def _compute_holistic_categories_summary(
         full_text,
         system_prompt=system_prompt,
         temperature=0.3,
-        max_tokens=600,
+        max_tokens=UTILITY_MAX_TOKENS,
         op="categories",
         step="holistic_summary",
     )
@@ -2298,7 +2303,7 @@ async def _apimw_topic_statement(
         topic_user,
         system_prompt=topic_system,
         temperature=0.1,
-        max_tokens=100,
+        max_tokens=UTILITY_MAX_TOKENS,
         op="apimw",
         step="topic_statement",
     )
@@ -2517,7 +2522,7 @@ async def _apimw_def_call(
         def_user,
         system_prompt=def_system,
         temperature=0.2,
-        max_tokens=800,
+        max_tokens=PIPELINE_MAX_TOKENS,
         response_format={"type": "json_object"},
         op="apimw",
         step="def_call",
@@ -4305,7 +4310,7 @@ async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)
 
     svc_payload = {"llm_profiles": _default_llm_profiles_from_server_config(), "user": {"user_id": user_id, "soul_id": soul_id}}
     svc = _get_service_from_payload(svc_payload)
-    raw = await svc.chat(user_prompt, system_prompt=system_prompt, temperature=0.2, max_tokens=800, response_format={"type": "json_object"}, op="narrative_suggestion", step="respond")
+    raw = await svc.chat(user_prompt, system_prompt=system_prompt, temperature=0.2, max_tokens=UTILITY_MAX_TOKENS, response_format={"type": "json_object"}, op="narrative_suggestion", step="respond")
 
     text = str(raw or "").strip()
     if text.startswith("```"):
@@ -5116,10 +5121,6 @@ async def conversation_turn(
 
         soul_gen = _load_soul_gen_config(uid, soul_id)
         turn_temperature: float = float(soul_gen.get("temperature", 0.2))
-        # max_tokens is a server-level concern (the JSON turn contract needs
-        # predictable headroom), not a per-soul or per-client setting. Ignore
-        # whatever the ST payload carries — memU is not ST here.
-        turn_max_tokens: int = int(_CONFIG.get("turn_max_tokens", 8000))
         turn_response_format: Any = {"type": "json_object"}
         req_temperature = safe.get("temperature")
         if req_temperature is not None:
@@ -5145,7 +5146,7 @@ async def conversation_turn(
             turn_user_prompt,
             system_prompt=turn_system_prompt,
             temperature=turn_temperature,
-            max_tokens=turn_max_tokens,
+            max_tokens=PIPELINE_MAX_TOKENS,
             response_format=turn_response_format,
             op="turn",
             step="respond",

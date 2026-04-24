@@ -71,7 +71,6 @@
     "apimw_random_count": 5
   },
   "consolidation_interval_days": 7,
-  "turn_max_tokens": 8000,
   "turn_response_sentences": 4,
   "debug": {
     "log_prompts": false

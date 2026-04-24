@@ -24,6 +24,19 @@ def test_parse_turn_contract_rejects_non_json_text():
         parse_turn_contract("```json\\n{}\\n```")
 
 
+def test_parse_turn_contract_accepts_bare_string_cache(caplog):
+    # Observed drift: some models emit cache as a bare string instead of
+    # {"entry": "..."}. Auto-wrap for flow; WARN-log for drift visibility.
+    import logging
+    caplog.set_level(logging.WARNING, logger="uvicorn.error")
+    parsed = parse_turn_contract(
+        '{"response":"hi","cache":"a stray thought","intention_action":{"type":"none"},"annulments":[],"inner_thought":"ok"}'
+    )
+    assert parsed["cache_entry"] == "a stray thought"
+    warnings = [r for r in caplog.records if "bare string" in r.getMessage()]
+    assert warnings, "expected a WARN log when cache is auto-wrapped"
+
+
 def test_build_turn_prompt_includes_core_sections():
     prompt = build_turn_prompt(
         user_message="hello",

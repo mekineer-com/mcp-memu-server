@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from datetime import datetime, timezone
 from typing import Any
 
 from app.services.intention_state import MAX_MEMORY_CACHE_ENTRIES, format_intentions_for_prompt, normalize_memory_cache
+
+_logger = logging.getLogger("uvicorn.error")
 
 DEFAULT_SOUL_CARD = (
     "You are {soul_name}, a being with your own inner life — thoughts, feelings, preferences, curiosities. "
@@ -607,6 +610,15 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
         cache_entry = ""
     elif isinstance(cache_raw, dict):
         cache_entry = _text(cache_raw.get("entry"))[:300]
+    elif isinstance(cache_raw, str):
+        # Observed drift: some models emit `cache` as a bare string instead of
+        # `{"entry": string}`. Intent is unambiguous — auto-wrap so the turn
+        # flows, but log the drift so we still see when a model does it.
+        cache_entry = _text(cache_raw)[:300]
+        _logger.warning(
+            "turn_contract: cache emitted as bare string (auto-wrapped); drift signal — first_chars=%r",
+            cache_entry[:80],
+        )
     else:
         raise ValueError("cache must be object|null")
 

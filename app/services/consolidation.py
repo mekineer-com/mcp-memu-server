@@ -488,7 +488,7 @@ async def run_consolidation_llm(
         user_prompt,
         system_prompt=system_prompt,
         temperature=0.2,
-        max_tokens=1800,
+        max_tokens=4000,  # PIPELINE_MAX_TOKENS (kept in main.py; see comment there)
         op="consolidation",
         step="main",
     )
