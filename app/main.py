@@ -4588,19 +4588,22 @@ async def clear_memory(payload: dict[str, Any]):
         safe["user"] = scope
 
         svc = _get_service_from_payload(safe, allow_missing_llm_profiles=True)
-        result = await svc.clear_memory(where=scope)
-
-        deleted_categories = result.get("deleted_categories") if isinstance(result, dict) else []
-        deleted_items = result.get("deleted_items") if isinstance(result, dict) else []
-        deleted_resources = result.get("deleted_resources") if isinstance(result, dict) else []
+        deleted_categories = svc.database.memory_category_repo.clear_categories(where=scope)
+        deleted_items = svc.database.memory_item_repo.clear_items(where=scope)
+        deleted_resources = svc.database.resource_repo.clear_resources(where=scope)
+        result = {
+            "deleted_categories": [row.model_dump(exclude={"embedding"}) for row in deleted_categories.values()],
+            "deleted_items": [row.model_dump(exclude={"embedding"}) for row in deleted_items.values()],
+            "deleted_resources": [row.model_dump(exclude={"embedding"}) for row in deleted_resources.values()],
+        }
 
         out = {
             "ok": True,
             "result": result,
             "purged": {
-                "categories": len(deleted_categories) if isinstance(deleted_categories, list) else 0,
-                "items": len(deleted_items) if isinstance(deleted_items, list) else 0,
-                "resources": len(deleted_resources) if isinstance(deleted_resources, list) else 0,
+                "categories": len(result["deleted_categories"]),
+                "items": len(result["deleted_items"]),
+                "resources": len(result["deleted_resources"]),
             },
             "where": scope,
         }
