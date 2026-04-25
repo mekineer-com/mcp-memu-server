@@ -2503,7 +2503,7 @@ async def _apimw_def_call(
         "  - evokes — subject is an affective/emotional state that object surfaces; use only when object carries real emotional charge (a person, moment, or topic that pulls up feeling), not for generic association\n"
         "  - conflicts_with — subject (the claim in focus) doesn't reconcile with object (the earlier claim being contradicted)\n"
         "  - parallels — subject (the memory in current focus) echoes object (an earlier memory sharing the same thematic or emotional resonance); neither caused the other\n"
-        "  - shaped_by — subject was formed or influenced by object gradually over time (distinct from caused_by, which is a single event)\n"
+        "  - shaped_by — object is something that formed or influenced the subject over time — a trait, a relationship, a pattern that left a mark. Look at the dates on each memory: object should be older. If they're the same age or you can't tell which influenced which, use parallels instead. Not for single events (that's caused_by) or loose thematic connections (skip those)\n"
         "- subject_id and object_id must be memory IDs from the list below\n"
         "- confidence: 0.0-1.0\n"
         "- Only create edges the conversation gives you reason to see\n\n"
