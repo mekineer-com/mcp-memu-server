@@ -1138,8 +1138,6 @@ def _consolidation_interval_days_from_cfg(cfg: Mapping[str, Any] | None) -> int:
 
 def _build_apimw_retrieve_config(base_cfg: Any, *, item_top_k: int) -> dict[str, Any]:
     cfg = dict(base_cfg) if isinstance(base_cfg, dict) else {}
-    cfg["route_intention"] = True
-    cfg["sufficiency_check"] = True
     item_cfg = cfg.get("item")
     if not isinstance(item_cfg, dict):
         item_cfg = {}
