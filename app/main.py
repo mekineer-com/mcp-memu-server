@@ -2592,6 +2592,10 @@ async def _apimw_persist(
             current_cache = _append_memory_cache_entry(current_cache, f"[subconscious] {message_to_self[:300]}")
             updates["memory_cache"] = current_cache
 
+        prior_context_ids = [str(mid).strip() for mid in prior_ids if isinstance(mid, str) and str(mid).strip()] if isinstance(prior_ids, list) else []
+        if prior_context_ids:
+            updates["append_prior_context_ids_since_consolidation"] = prior_context_ids
+
         if updates:
             _write_conversation_state(
                 conversation_id,
@@ -3467,6 +3471,10 @@ async def _run_memorize_batches(
             raw_ret_ids = state_row.get("retrieval_ids_since_consolidation")
             if isinstance(raw_ret_ids, list):
                 cached_retrieval_ids = [str(rid).strip() for rid in raw_ret_ids if str(rid).strip()]
+            cached_prior_context_ids: list[str] = []
+            raw_pc_ids = state_row.get("prior_context_ids_since_consolidation")
+            if isinstance(raw_pc_ids, list):
+                cached_prior_context_ids = [str(rid).strip() for rid in raw_pc_ids if str(rid).strip()]
 
     # Phase 2: run LLM batches outside the lock; re-acquire per batch to advance cursor.
     for batch_url, batch_conv, batch_end in memorize_batches:
@@ -3480,6 +3488,7 @@ async def _run_memorize_batches(
             all_categories_summary=current_all_categories_summary,
             soul_card=soul_card_for_memorize,
             memory_retrieve_history=cached_retrieval_ids or None,
+            memory_prior_context=cached_prior_context_ids or None,
         )
         if isinstance(batch_result, dict):
             has_batch_results = True

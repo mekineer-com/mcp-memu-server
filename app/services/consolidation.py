@@ -424,20 +424,23 @@ LIMIT 24
                 ]
 
         retrieved_memory_summaries: list[str] = []
-        all_retrieval_ids: list[str] = []
+        all_prior_context_ids: list[str] = []
         try:
             res_rows = con.execute(
-                "SELECT memory_retrieve_history FROM memu_resources WHERE soul_id = ? AND user_id = ? AND memory_retrieve_history IS NOT NULL",
+                "SELECT memory_prior_context, memory_retrieve_history FROM memu_resources WHERE soul_id = ? AND user_id = ? AND (memory_prior_context IS NOT NULL OR memory_retrieve_history IS NOT NULL)",
                 (soul_id, user_id),
             ).fetchall()
             for rr in res_rows:
-                raw = rr["memory_retrieve_history"]
-                ids = json.loads(raw) if isinstance(raw, str) else raw
-                if isinstance(ids, list):
-                    all_retrieval_ids.extend(str(rid).strip() for rid in ids if str(rid).strip())
+                for col in ("memory_prior_context", "memory_retrieve_history"):
+                    raw = rr[col]
+                    if raw is None:
+                        continue
+                    ids = json.loads(raw) if isinstance(raw, str) else raw
+                    if isinstance(ids, list):
+                        all_prior_context_ids.extend(str(rid).strip() for rid in ids if str(rid).strip())
         except Exception:
             pass
-        clean_ids = list(dict.fromkeys(all_retrieval_ids))
+        clean_ids = list(dict.fromkeys(all_prior_context_ids))
         if clean_ids:
             placeholders = ",".join("?" for _ in clean_ids)
             ret_rows = con.execute(
