@@ -2479,8 +2479,11 @@ async def _apimw_def_call(
 
     def_system = (
         f"{identity_context}\n\n"
+        "This is your subconscious — a background process that runs between your turns. "
         "You have just searched your long-term memory. Below are your summaries, your individual memories, "
-        "your working thoughts, and your intentions.\n\n"
+        "your working thoughts, your intentions, and your life goals. "
+        "Your working thoughts, intentions, and life goals are READ-ONLY here — you cannot change them from the subconscious. "
+        "You can only observe them and let them inform your choices.\n\n"
         "Review everything. Then return STRICT JSON (first character { , last character } , "
         "no markdown fences, no text outside JSON).\n\n"
         "Required top-level keys:\n"
@@ -2491,10 +2494,8 @@ async def _apimw_def_call(
         "Only create edges you're confident about.\n"
         "- edge_invalidations: array — retire edges that are no longer true. "
         "Each entry is {\"subject_id\": \"string\", \"predicate\": \"string\", \"object_id\": \"string\"}. Empty array if none.\n"
-        "- cache: object {\"entry\": \"string up to 300 chars\"} or null — a working thought to carry forward.\n"
-        "- intention_action: object or null — see Intention rules below.\n"
-        "- annulments: array — intentions to complete or delete. "
-        "Each entry is {\"intention_id\": \"string\", \"status\": \"completed|deleted\", \"note\": \"optional string\"}. Empty array if none.\n\n"
+        "- message_to_self: string or null — a brief thought you want to surface in your working memory for one turn. "
+        "Use this when something you noticed in the background feels important enough to bring to your own attention next time you speak. One sentence.\n\n"
         "Edge rules:\n"
         "- Allowed predicates (use the one that fits):\n"
         "  - caused_by — subject happened because of object. A specific event or moment that triggered the other — 'couldn't sleep' caused_by 'conflict at work.' If the influence was gradual over time, use shaped_by instead.\n"
@@ -2504,12 +2505,7 @@ async def _apimw_def_call(
         "  - shaped_by — object is something that formed or influenced the subject over time — a trait, a relationship, a pattern that left a mark. Look at the dates on each memory: object should be older. If they're the same age or you can't tell which influenced which, use parallels instead. Not for single events (that's caused_by) or loose thematic connections (skip those).\n"
         "- subject_id and object_id must be memory IDs from the list below\n"
         "- confidence: 0.0-1.0\n"
-        "- Only create edges the conversation gives you reason to see\n\n"
-        "Intention rules:\n"
-        "- boost: increase priority of an existing intention\n"
-        "- promote: turn an ephemeral into a full intention\n"
-        "- create: up to 2 new ephemerals\n"
-        "- annulments: mark intentions completed or deleted"
+        "- Only create edges the conversation gives you reason to see"
     )
 
     def_user = (
@@ -2591,26 +2587,10 @@ async def _apimw_persist(
 
         updates["last_retrieval_ids"] = _extract_result_item_ids({"items": combined_items})
 
-        cache_obj = result_json.get("cache")
-        if isinstance(cache_obj, dict) and cache_obj.get("entry"):
-            entry = str(cache_obj["entry"]).strip()[:300]
-            current_cache = _append_memory_cache_entry(current_cache, entry)
+        message_to_self = str(result_json.get("message_to_self") or "").strip()
+        if message_to_self:
+            current_cache = _append_memory_cache_entry(current_cache, f"[subconscious] {message_to_self[:300]}")
             updates["memory_cache"] = current_cache
-
-        intention_action = result_json.get("intention_action")
-        if isinstance(intention_action, dict) and intention_action.get("type") != "none":
-            current_intentions = _apply_intention_action(current_intentions, intention_action)
-        annulments = result_json.get("annulments") or []
-        if isinstance(annulments, list) and annulments:
-            annul_ids = [
-                str(a.get("intention_id") or "").strip()
-                for a in annulments
-                if isinstance(a, dict) and str(a.get("intention_id") or "").strip()
-            ]
-            if annul_ids:
-                current_intentions = _remove_intentions(current_intentions, annul_ids)
-        if intention_action or annulments:
-            updates["intentions_active"] = current_intentions
 
         if updates:
             _write_conversation_state(
