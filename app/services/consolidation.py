@@ -172,6 +172,29 @@ def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dic
                 companion_shaped_by_hints.append(val)
                 seen_hint.add(val)
 
+    intention_actions: list[dict[str, Any]] = []
+    intentions_node = root.find("intentions")
+    if intentions_node is not None:
+        for boost in intentions_node.findall("boost"):
+            target = str(boost.get("target_id") or "").strip()
+            if target:
+                intention_actions.append({"type": "boost", "target_id": target, "amount": 1})
+        for promote in intentions_node.findall("promote"):
+            target = str(promote.get("target_id") or "").strip()
+            if target:
+                intention_actions.append({"type": "promote", "target_id": target})
+        for create in intentions_node.findall("create"):
+            cid = str(create.get("id") or "").strip()
+            ctext = str(create.get("text") or "").strip()
+            if cid and ctext:
+                intention_actions.append({"type": "create", "id": cid, "text": ctext})
+        for annul in intentions_node.findall("annul"):
+            aid = str(annul.get("intention_id") or "").strip()
+            astatus = str(annul.get("status") or "completed").strip().lower()
+            anote = str(annul.get("note") or "").strip()
+            if aid:
+                intention_actions.append({"type": "annul", "intention_id": aid, "status": astatus, "note": anote})
+
     return {
         "narrative_self": xml_text(root, "narrative_self"),
         "life_goal_add": life_goal_add,
@@ -181,6 +204,7 @@ def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dic
         "diaries": diaries,
         "edges": edges,
         "edge_invalidations": edge_invalidations,
+        "intention_actions": intention_actions,
     }
 
 
@@ -576,6 +600,7 @@ async def run_consolidation_llm(
         "diaries": diary_rows,
         "edges": parsed["edges"],
         "edge_invalidations": parsed["edge_invalidations"],
+        "intention_actions": parsed["intention_actions"],
     }
 
 
@@ -792,11 +817,38 @@ INSERT INTO intentions_life_goals (
     finally:
         con.close()
 
+    from app.services.intention_state import (
+        apply_intention_action,
+        remove_intentions,
+        upsert_intentions_stack_entries,
+    )
+    current_state = deps.conversation_state_from_row(
+        deps.conversation_state_row(deps.sqlite_connect(db_path), conversation_id)
+    ) or {}
+    current_intentions = current_state.get("intentions_active")
+
+    for action in llm_results.get("intention_actions") or []:
+        atype = str(action.get("type") or "").strip()
+        if atype == "boost":
+            current_intentions = apply_intention_action(current_intentions, action)
+        elif atype == "promote":
+            current_intentions = apply_intention_action(current_intentions, action)
+        elif atype == "create":
+            current_intentions = upsert_intentions_stack_entries(
+                current_intentions,
+                [{"id": action.get("id"), "text": action.get("text"), "ephemeral": True}],
+            )
+        elif atype == "annul":
+            aid = str(action.get("intention_id") or "").strip()
+            if aid and aid.lower() != "relax":
+                current_intentions = remove_intentions(current_intentions, [aid])
+
     state_updates: dict[str, Any] = {
         "pending_diary_episode_ids": [],
         "last_consolidation_at": now_iso,
         "consolidation_in_progress": False,
         "consolidation_started_at": None,
+        "intentions_active": current_intentions,
     }
     if llm_results.get("narrative_self"):
         state_updates["self_model_id"] = self_model_id
