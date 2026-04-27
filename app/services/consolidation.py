@@ -19,8 +19,6 @@ from memu.prompts.consolidation import consolidation as consolidation_prompt
 from app.services.diary import (
     build_episode_inputs,
     create_companion_memory,
-    parse_diary_element,
-    upsert_diary_entry_memory,
 )
 from app.services.xml_utils import extract_xml_fragment, xml_text
 from app.services.graph_edges import (
@@ -66,7 +64,7 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     return dt.astimezone(UTC)
 
 
-def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dict[str, Any]:
+def _parse_consolidation_xml(raw: str) -> dict[str, Any]:
     root = extract_xml_fragment(raw, "consolidation")
 
     life_goals = root.find("life_goals")
@@ -81,45 +79,6 @@ def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dic
             text = str(item.text or "").strip()
             if text:
                 life_goal_remove.append(text)
-
-    diaries_root = root.find("diaries")
-    diary_nodes = diaries_root.findall("diary") if diaries_root is not None else []
-    diaries: list[dict[str, Any]] = []
-    seen_episode_ids: set[str] = set()
-    for diary_node in diary_nodes:
-        episode_id = str(xml_text(diary_node, "episode_id") or "").strip()
-        if not episode_id:
-            raise ValueError("consolidation diary is missing <episode_id>")
-        if episode_id in seen_episode_ids:
-            raise ValueError(f"duplicate consolidation diary episode_id: {episode_id}")
-        if episode_id not in expected_episode_ids:
-            raise ValueError(f"unknown consolidation diary episode_id: {episode_id}")
-        payload = parse_diary_element(diary_node)
-        prose = str(payload.get("prose") or "").strip()
-        if not prose:
-            raise ValueError(f"consolidation diary prose is empty for episode_id={episode_id}")
-        hints_node = diary_node.find("shaped_by_hints")
-        shaped_by_hints: list[str] = []
-        if hints_node is not None:
-            seen_hint: set[str] = set()
-            for mid in hints_node.findall("memory_id"):
-                val = str(mid.text or "").strip()
-                if val and val not in seen_hint:
-                    shaped_by_hints.append(val)
-                    seen_hint.add(val)
-        diaries.append(
-            {
-                "episode_id": episode_id,
-                "prose": prose,
-                "unresolved": payload.get("unresolved"),
-                "shaped_by_hints": shaped_by_hints,
-            }
-        )
-        seen_episode_ids.add(episode_id)
-
-    if seen_episode_ids != expected_episode_ids:
-        missing = sorted(expected_episode_ids - seen_episode_ids)
-        raise ValueError(f"consolidation diary is missing episode_ids: {missing}")
 
     edges: list[dict[str, Any]] = []
     edge_invalidations: list[dict[str, Any]] = []
@@ -201,7 +160,6 @@ def _parse_consolidation_xml(raw: str, *, expected_episode_ids: set[str]) -> dic
         "life_goal_remove": life_goal_remove,
         "companion_memory": xml_text(root, "companion_memory"),
         "companion_shaped_by_hints": companion_shaped_by_hints,
-        "diaries": diaries,
         "edges": edges,
         "edge_invalidations": edge_invalidations,
         "intention_actions": intention_actions,
@@ -497,7 +455,7 @@ LIMIT 24
             "status": "ready",
             "db_path": db_path,
             "state": state,
-            "pending_diary_episode_ids": pending_episode_ids,
+            "episode_ids": pending_episode_ids,
             "categories": category_rows,
             "active_life_goals": active_goals,
             "removed_life_goals": removed_goals,
@@ -564,21 +522,14 @@ async def run_consolidation_llm(
         op="consolidation",
         step="main",
     )
-    expected_episode_ids = {
-        str(row.get("episode_id") or "").strip()
-        for row in inputs["episode_inputs"]
-        if str(row.get("episode_id") or "").strip()
-    }
-    parsed = _parse_consolidation_xml(str(raw or ""), expected_episode_ids=expected_episode_ids)
+    parsed = _parse_consolidation_xml(str(raw or ""))
 
-    diary_rows = list(parsed["diaries"])
     new_narrative = str(parsed["narrative_self"] or "").strip() or None
     current_narrative = str(inputs.get("narrative_self") or "").strip() or None
     snapshot_old_narrative = bool(current_narrative and new_narrative and current_narrative != new_narrative)
     embed_inputs: list[str] = []
     if str(parsed["companion_memory"] or "").strip():
         embed_inputs.append(str(parsed["companion_memory"]).strip())
-    embed_inputs.extend(str(row.get("prose") or "").strip() for row in diary_rows)
     if snapshot_old_narrative:
         embed_inputs.append(current_narrative)
     embeddings = await svc.embed(embed_inputs, profile="embedding") if embed_inputs else []
@@ -588,9 +539,6 @@ async def run_consolidation_llm(
     if str(parsed["companion_memory"] or "").strip():
         if cursor < len(embeddings):
             companion_embedding = embeddings[cursor]
-        cursor += 1
-    for row in diary_rows:
-        row["embedding"] = embeddings[cursor] if cursor < len(embeddings) else None
         cursor += 1
     old_narrative_embedding = embeddings[cursor] if snapshot_old_narrative and cursor < len(embeddings) else None
 
@@ -603,56 +551,10 @@ async def run_consolidation_llm(
         "companion_embedding": companion_embedding,
         "old_narrative_text": current_narrative if snapshot_old_narrative else None,
         "old_narrative_embedding": old_narrative_embedding,
-        "diaries": diary_rows,
         "edges": parsed["edges"],
         "edge_invalidations": parsed["edge_invalidations"],
         "intention_actions": parsed["intention_actions"],
     }
-
-
-def _write_shaped_by_edges(
-    svc: MemoryService,
-    *,
-    diary_ids: list[str],
-    diary_rows: list[dict[str, Any]],
-    companion_memory_id: str | None,
-    companion_shaped_by_hints: list[str],
-    scope: dict[str, Any],
-) -> int:
-    triple_repo = svc.database.triple_repo
-    memory_repo = svc.database.memory_item_repo
-    wrote = 0
-
-    for new_id, row in zip(diary_ids, diary_rows):
-        hints = list(row.get("shaped_by_hints") or [])
-        for hint_id in hints:
-            if hint_id == new_id:
-                continue
-            if memory_repo.get_item(hint_id) is None:
-                log.debug("shaped_by_hints: skipping unknown hint_id=%s for diary_id=%s", hint_id, new_id)
-                continue
-            write_memory_edges(
-                triple_repo,
-                [{"subject_id": new_id, "predicate": "shaped_by", "object_id": hint_id, "confidence": 0.8}],
-                scope=scope,
-            )
-            wrote += 1
-
-    if companion_memory_id:
-        for hint_id in companion_shaped_by_hints:
-            if hint_id == companion_memory_id:
-                continue
-            if memory_repo.get_item(hint_id) is None:
-                log.debug("shaped_by_hints: skipping unknown hint_id=%s for companion_memory_id=%s", hint_id, companion_memory_id)
-                continue
-            write_memory_edges(
-                triple_repo,
-                [{"subject_id": companion_memory_id, "predicate": "shaped_by", "object_id": hint_id, "confidence": 0.8}],
-                scope=scope,
-            )
-            wrote += 1
-
-    return wrote
 
 
 def write_consolidation_outputs(
@@ -670,37 +572,6 @@ def write_consolidation_outputs(
 
     self_model_id = str(inputs.get("self_model_id") or "").strip() or str(uuid.uuid4())
     narrative_self = str(llm_results.get("narrative_self") or "").strip() or None
-
-    episode_map = {
-        str(row.get("episode_id") or "").strip(): row
-        for row in inputs["episode_inputs"]
-        if str(row.get("episode_id") or "").strip()
-    }
-
-    diary_ids: list[str] = []
-    for row in llm_results["diaries"]:
-        episode_id = str(row.get("episode_id") or "").strip()
-        prose = str(row.get("prose") or "").strip()
-        embedding = row.get("embedding")
-        if not episode_id or not prose:
-            continue
-        if not isinstance(embedding, list):
-            raise HTTPException(status_code=500, detail=f"missing diary embedding for episode {episode_id}")
-        episode_meta = episode_map.get(episode_id)
-        happened_at = episode_meta.get("happened_at") if episode_meta else None
-        diary_ids.append(
-            upsert_diary_entry_memory(
-                svc,
-                user_id=user_id,
-                soul_id=soul_id,
-                conversation_id=conversation_id,
-                episode_id=episode_id,
-                prose=prose,
-                embedding=embedding,
-                unresolved=row.get("unresolved"),
-                happened_at=happened_at if isinstance(happened_at, datetime) else None,
-            )
-        )
 
     old_narrative_text = llm_results.get("old_narrative_text")
     if old_narrative_text:
@@ -754,7 +625,7 @@ ON CONFLICT(id) DO UPDATE SET
     related_memory_ids = excluded.related_memory_ids,
     updated_at = excluded.updated_at
 """,
-                (self_model_id, soul_id, user_id, narrative_self, deps.json_to_db(diary_ids), now_iso),
+                (self_model_id, soul_id, user_id, narrative_self, deps.json_to_db([]), now_iso),
             )
 
         life_goal_rows = con.execute(
@@ -853,7 +724,6 @@ INSERT INTO intentions_life_goals (
                 current_intentions = remove_intentions(current_intentions, [aid])
 
     state_updates: dict[str, Any] = {
-        "pending_diary_episode_ids": [],
         "last_consolidation_at": now_iso,
         "consolidation_in_progress": False,
         "consolidation_started_at": None,
@@ -870,22 +740,12 @@ INSERT INTO intentions_life_goals (
     scope = {"user_id": user_id, "soul_id": soul_id}
     wrote = write_memory_edges(svc.database.triple_repo, llm_results["edges"], scope=scope)
     invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results["edge_invalidations"], scope=scope)
-    shaped_by_wrote = _write_shaped_by_edges(
-        svc,
-        diary_ids=diary_ids,
-        diary_rows=llm_results["diaries"],
-        companion_memory_id=companion_memory_id,
-        companion_shaped_by_hints=llm_results["companion_shaped_by_hints"],
-        scope=scope,
-    )
 
     return {
         "conversation_id": conversation_id,
         "self_model_id": self_model_id if llm_results.get("narrative_self") else None,
-        "pending_diary_episode_ids_cleared": True,
-        "diary_memory_ids": diary_ids,
         "companion_memory_id": companion_memory_id,
-        "edges_written": wrote + shaped_by_wrote,
+        "edges_written": wrote,
         "edges_invalidated": invalidated,
         "state": state_after,
     }
