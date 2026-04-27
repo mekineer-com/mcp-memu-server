@@ -450,11 +450,18 @@ LIMIT 24
 
         retrieved_memory_summaries: list[str] = []
         all_prior_context_ids: list[str] = []
+        last_consol = state.get("last_consolidation_at")
         try:
-            res_rows = con.execute(
-                "SELECT memory_prior_context, memory_retrieve_history FROM memu_resources WHERE soul_id = ? AND user_id = ? AND (memory_prior_context IS NOT NULL OR memory_retrieve_history IS NOT NULL)",
-                (soul_id, user_id),
-            ).fetchall()
+            if last_consol:
+                res_rows = con.execute(
+                    "SELECT memory_prior_context, memory_retrieve_history FROM memu_resources WHERE soul_id = ? AND user_id = ? AND created_at >= ? AND (memory_prior_context IS NOT NULL OR memory_retrieve_history IS NOT NULL)",
+                    (soul_id, user_id, last_consol),
+                ).fetchall()
+            else:
+                res_rows = con.execute(
+                    "SELECT memory_prior_context, memory_retrieve_history FROM memu_resources WHERE soul_id = ? AND user_id = ? AND (memory_prior_context IS NOT NULL OR memory_retrieve_history IS NOT NULL)",
+                    (soul_id, user_id),
+                ).fetchall()
             for rr in res_rows:
                 for col in ("memory_prior_context", "memory_retrieve_history"):
                     raw = rr[col]
