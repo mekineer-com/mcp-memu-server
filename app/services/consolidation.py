@@ -454,22 +454,21 @@ LIMIT 24
         try:
             if last_consol:
                 res_rows = con.execute(
-                    "SELECT memory_prior_context, memory_retrieve_history FROM memu_resources WHERE soul_id = ? AND user_id = ? AND created_at >= ? AND (memory_prior_context IS NOT NULL OR memory_retrieve_history IS NOT NULL)",
+                    "SELECT memory_prior_context FROM memu_resources WHERE soul_id = ? AND user_id = ? AND created_at >= ? AND memory_prior_context IS NOT NULL",
                     (soul_id, user_id, last_consol),
                 ).fetchall()
             else:
                 res_rows = con.execute(
-                    "SELECT memory_prior_context, memory_retrieve_history FROM memu_resources WHERE soul_id = ? AND user_id = ? AND (memory_prior_context IS NOT NULL OR memory_retrieve_history IS NOT NULL)",
+                    "SELECT memory_prior_context FROM memu_resources WHERE soul_id = ? AND user_id = ? AND memory_prior_context IS NOT NULL",
                     (soul_id, user_id),
                 ).fetchall()
             for rr in res_rows:
-                for col in ("memory_prior_context", "memory_retrieve_history"):
-                    raw = rr[col]
-                    if raw is None:
-                        continue
-                    ids = json.loads(raw) if isinstance(raw, str) else raw
-                    if isinstance(ids, list):
-                        all_prior_context_ids.extend(str(rid).strip() for rid in ids if str(rid).strip())
+                raw = rr["memory_prior_context"]
+                if raw is None:
+                    continue
+                ids = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(ids, list):
+                    all_prior_context_ids.extend(str(rid).strip() for rid in ids if str(rid).strip())
         except Exception:
             pass
         clean_ids = list(dict.fromkeys(all_prior_context_ids))
