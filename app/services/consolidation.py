@@ -828,9 +828,12 @@ INSERT INTO intentions_life_goals (
         remove_intentions,
         upsert_intentions_stack_entries,
     )
+    _con = deps.sqlite_connect(db_path)
+    _con.row_factory = sqlite3.Row
     current_state = deps.conversation_state_from_row(
-        deps.conversation_state_row(deps.sqlite_connect(db_path), conversation_id)
+        deps.conversation_state_row(_con, conversation_id)
     ) or {}
+    _con.close()
     current_intentions = current_state.get("intentions_active")
 
     for action in llm_results.get("intention_actions") or []:
