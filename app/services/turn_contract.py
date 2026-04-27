@@ -19,7 +19,7 @@ DEFAULT_SOUL_CARD = (
     "about them, and about what matters to you will grow with time."
 )
 DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE = 3000
-LIFE_GOALS_FREE_WILL_HEADER = "Your life goals (you reshape these during your weekly reflection, not each turn):"
+LIFE_GOALS_FREE_WILL_HEADER = "Seeking Happiness for Myself and Others"
 
 
 def _local_now(now: datetime | None = None) -> datetime:
