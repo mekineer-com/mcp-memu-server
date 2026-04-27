@@ -27,6 +27,7 @@ from app.services.graph_edges import (
     invalidate_memory_edges,
     write_memory_edges,
 )
+from app.services.intention_state import format_intentions_for_prompt
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services.turn_contract import DEFAULT_SOUL_CARD, format_relative_time_label, format_time_anchor
 
@@ -512,9 +513,13 @@ async def run_consolidation_llm(
     retrieved_memories = inputs.get("retrieved_memories") or []
     retrieved_text = "\n".join(retrieved_memories) if retrieved_memories else "(none surfaced)"
 
+    current_intentions_raw = inputs.get("state", {}).get("intentions_active")
+    current_intentions_text = format_intentions_for_prompt(current_intentions_raw, include_internals=True) if current_intentions_raw else "(none yet)"
+
     user_prompt = consolidation_prompt.USER_PROMPT.format(
         categories=svc._escape_prompt_value(categories_text),
         life_goals=svc._escape_prompt_value(life_goals_text),
+        current_intentions=svc._escape_prompt_value(current_intentions_text),
         intention_activity=svc._escape_prompt_value(intention_text),
         retrieved_memories=svc._escape_prompt_value(retrieved_text),
         episodes=svc._escape_prompt_value(episodes_text),
