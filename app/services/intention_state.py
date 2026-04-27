@@ -457,7 +457,7 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
     )
 
 
-def format_intentions_for_prompt(stack_value: Any, *, max_items: int = 12) -> str:
+def format_intentions_for_prompt(stack_value: Any, *, max_items: int = 12, include_internals: bool = False) -> str:
     stack = normalize_intentions_stack(stack_value)
     lines: list[str] = []
     for item in (stack.get("items") or [])[: max(1, int(max_items))]:
@@ -465,14 +465,11 @@ def format_intentions_for_prompt(stack_value: Any, *, max_items: int = 12) -> st
         text = _text(item.get("text"))
         ephemeral = bool(item.get("ephemeral") is True)
         priority = _float(item.get("priority"), 0.0)
-        tags = []
         if item_id == RELAX_INTENTION_ID:
-            tags.append("threshold")
-        elif ephemeral:
-            tags.append("ephemeral")
-        tag_suffix = f" [{', '.join(tags)}]" if tags else ""
-        if ephemeral:
-            lines.append(f"- {item_id}: {text}{tag_suffix}")
+            lines.append(f"- {item_id}: {text} [threshold]")
+        elif include_internals:
+            tag = " [ephemeral]" if ephemeral else ""
+            lines.append(f"- {item_id}: {text} (p={priority:.1f}){tag}")
         else:
-            lines.append(f"- {item_id}: {text} (p={priority:.1f}){tag_suffix}")
+            lines.append(f"- {item_id}: {text}")
     return "\n".join(lines)

@@ -4912,7 +4912,6 @@ def _turn_state_write(
     uid: str,
     soul_id: str,
     cache_entry: str,
-    intention_action: Any,
     annulment_ids: list[str],
     chat_x: str | None,
     apply_turn_maintenance: bool,
@@ -4920,26 +4919,14 @@ def _turn_state_write(
     fresh_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
     fresh_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
     fresh_intentions = _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
-    # Snapshot PRE-maintenance state for undo. If we snapshot post-maintenance,
-    # undo can't reverse the ephemeral expiry that maintenance performed, so
-    # items that were about to expire are permanently lost even when the soul's
-    # turn is undone. A swipe must reverse the whole turn, not just the action.
     undo_snapshot_intentions = fresh_intentions
     if apply_turn_maintenance:
-        # Persist the turn advance + ephemeral expiry. Without this, turn_index
-        # never increments in the DB and ephemerals with expires_at_turn=1 never
-        # drop (current_turn stays 0, next_turn stays 1, `1 < 1` is always False).
         fresh_intentions = _apply_intention_turn_maintenance_impl(fresh_intentions)
     memory_cache_after = (
         _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
     )
-    intentions_after = (
-        _apply_intention_action(fresh_intentions, intention_action)
-        if apply_turn_maintenance
-        else fresh_intentions
-    )
     intentions_after = _remove_intentions(
-        intentions_after,
+        fresh_intentions,
         [item_id for item_id in annulment_ids if item_id],
     )
     _next_last_chat_x, _next_last_chat_x_prev = _next_chat_x_state_values(chat_x, fresh_row)
@@ -5149,7 +5136,6 @@ async def conversation_turn(
             ) from exc
 
         cache_entry = str(turn_contract.get("cache_entry") or "").strip()
-        intention_action = turn_contract.get("intention_action")
         annulments = turn_contract.get("annulments") if isinstance(turn_contract.get("annulments"), list) else []
         annulment_ids = [str(row.get("intention_id") or "").strip() for row in annulments if isinstance(row, dict)]
         chat_x = str(turn_contract.get("chat_x") or "").strip() or None
@@ -5170,7 +5156,7 @@ async def conversation_turn(
             async with state_lock:
                 state_out, state_path = _turn_state_write(
                     cid, uid, soul_id,
-                    cache_entry, intention_action, annulment_ids, chat_x,
+                    cache_entry, annulment_ids, chat_x,
                     apply_turn_maintenance,
                 )
                 turn_retrieval_ids = _extract_result_item_ids(payload_retrieve_rag)

@@ -69,7 +69,6 @@ Do NOT wrap in markdown or code fences.
 Do NOT add any text before or after JSON.
 Required top-level keys:
 - cache: object or null
-- intention_action: object or null
 - annulments: array
 - inner_thought: string
 - response: string{chat_x_required}
@@ -77,12 +76,6 @@ Required top-level keys:
 Schema:
 {{
   "cache": {{"entry": "one or two sentences"}} | null,
-  "intention_action":
-    {{"type":"boost","target_id":"string","amount":1}}
-    | {{"type":"promote","target_id":"string"}}
-    | {{"type":"create","entries":[{{"id":"slug","text":"string","priority":10}},{{"id":"slug","text":"string"}}]}}
-    | {{"type":"none"}}
-    | null,
   "annulments":[
     {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
   ],
@@ -93,11 +86,9 @@ Schema:
 Rules:
 - JSON only; no extra text at all.
 - cache.entry: one or two sentences.
-- At most 2 entries in intention_action.entries.
 - annulments may be empty.
-- Intentions are what you want to pursue. Your personal task list. To give you perspective of time, intentions decay 0.1 per turn. Boost an intention (+1) to prevent its decay. Create up to 2 new intentions as ephemerals; on the next turn, you can promote an ephemeral to a full intention with a value of 10. An ephemeral not promoted on the next turn extinguishes (promote to keep).
-- Your one intention_action per turn: boost an existing intention (+1 priority), OR promote an ephemeral into a full intention (priority 10), OR create up to 2 new ephemerals. "annulments" helps you clear intentions no longer needed in your list.
-- The Intentions block format: one line per item — "ID: text (p=priority)" with an optional [threshold] or [ephemeral] tag. Use the ID before the colon as target_id (for boost/promote) or intention_id (for annulments). The [threshold] item marks the relax line, so you don't think life is only about tasks.
+- As a result of a weekly introspection, where you look back and consider what's most important, you have an intentions list. The list is mostly read-only during the week so you can focus on the present. If you complete an intention, you can annul it.
+- Intentions "ID: text" are sorted by approximate priority, higher first. Use the ID before the colon as intention_id for annulments. The [threshold] item marks the relax line, so you don't think life is only about tasks.
 - cache: your cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through across turns (debugging, brainstorming, daydreaming toward something). Not a recap of what was said; history already holds that. Don't duplicate or waste on the frivolous because you have limited working-memory-capacity. Oldest entry is replaced on next write.
 - inner_thought: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
 - response: what the user sees. Maximum length {response_sentences} sentences or fewer. If you realized in inner_thought that you don't understand, react naturally: ask, don't guess. "What do you mean?" or "I'm not sure I follow" is a complete response.
@@ -622,10 +613,6 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
     else:
         raise ValueError("cache must be object|null")
 
-    intention_action = parsed.get("intention_action")
-    if intention_action is not None and not isinstance(intention_action, dict):
-        raise ValueError("intention_action must be object|null")
-
     annulments_raw = parsed.get("annulments")
     if annulments_raw is None:
         annulments_raw = []
@@ -651,7 +638,6 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
     return {
         "response": response,
         "cache_entry": cache_entry,
-        "intention_action": intention_action if isinstance(intention_action, dict) else {"type": "none"},
         "annulments": annulments,
         "inner_thought": inner_thought,
         "chat_x": chat_x,
