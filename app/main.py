@@ -2483,29 +2483,15 @@ async def _apimw_def_call(
         "You have just searched your long-term memory. Below are your summaries, your individual memories, "
         "your working thoughts, your intentions, and your life goals. "
         "Your working thoughts, intentions, and life goals are READ-ONLY here — you cannot change them from the subconscious. "
-        "You can only observe them and let them inform your choices.\n\n"
+        "You can only observe them and let them inform your choices. "
+        "The soul also has the full conversation history as context — you are adding depth, not providing it.\n\n"
         "Review everything. Then return STRICT JSON (first character { , last character } , "
         "no markdown fences, no text outside JSON).\n\n"
         "Required top-level keys:\n"
         "- prior_context: array of memory IDs (strings) you want surfaced as background context "
         "next time you speak. Pick what matters — not everything. Order by importance.\n"
-        "- edges: array of edge objects connecting memories you now see are related. "
-        "Each edge is {\"subject_id\": \"string\", \"predicate\": \"string\", \"object_id\": \"string\", \"confidence\": 0.0-1.0}. "
-        "Only create edges you're confident about.\n"
-        "- edge_invalidations: array — retire edges that are no longer true. "
-        "Each entry is {\"subject_id\": \"string\", \"predicate\": \"string\", \"object_id\": \"string\"}. Empty array if none.\n"
         "- message_to_self: string or null — a brief thought you want to surface in your working memory for one turn. "
-        "Use this when something you noticed in the background feels important enough to bring to your own attention next time you speak. One sentence.\n\n"
-        "Edge rules:\n"
-        "- Allowed predicates (use the one that fits):\n"
-        "  - caused_by — subject happened because of object. A specific event or moment that triggered the other — 'couldn't sleep' caused_by 'conflict at work.' If the influence was gradual over time, use shaped_by instead.\n"
-        "  - evokes — object brings subject to the surface emotionally — like hearing a song and feeling homesick. The object must carry real emotional weight: a person, a moment, a place that means something. If two memories share a topic but don't pull up feeling, skip this.\n"
-        "  - conflicts_with — these two memories say things that can't both be true. A belief that changed, a fact that was corrected, a situation that reversed. 'Loves hiking' conflicts_with 'hasn't hiked in years and doesn't miss it.' If both can coexist as different facets of the same person, they don't conflict.\n"
-        "  - parallels — these two memories rhyme. Same pattern, same emotional shape, same kind of moment — without one causing the other. This is intuition: you feel the echo before you can explain it. A father's quiet support and a mentor's patience might parallel each other. If one clearly influenced the other over time, use shaped_by instead.\n"
-        "  - shaped_by — object is something that formed or influenced the subject over time — a trait, a relationship, a pattern that left a mark. Look at the dates on each memory: object should be older. If they're the same age or you can't tell which influenced which, use parallels instead. Not for single events (that's caused_by) or loose thematic connections (skip those).\n"
-        "- subject_id and object_id must be memory IDs from the list below\n"
-        "- confidence: 0.0-1.0\n"
-        "- Only create edges the conversation gives you reason to see"
+        "Use this when something you noticed in the background feels important enough to bring to your own attention next time you speak. One sentence."
     )
 
     def_user = (
@@ -2604,10 +2590,6 @@ async def _apimw_persist(
                 updates=updates,
             )
             logger.info("apimw state written for %s (keys: %s)", conversation_id, list(updates.keys()))
-
-    wrote = _write_memory_edges(svc.database.triple_repo, result_json.get("edges"), scope=scope)
-    invalidated = _invalidate_memory_edges(svc.database.triple_repo, result_json.get("edge_invalidations"), scope=scope)
-    logger.info("apimw wrote %d edges, invalidated %d for %s", wrote, invalidated, conversation_id)
 
 
 async def _run_apimw(
