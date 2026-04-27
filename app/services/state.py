@@ -209,6 +209,7 @@ INSERT OR IGNORE INTO memu_conversation_state (
 
         raw_updates = dict(updates) if updates else {}
         append_pending_diary_episode_ids = raw_updates.pop("append_pending_diary_episode_ids", None)
+        append_retrieval_ids = raw_updates.pop("append_retrieval_ids_since_consolidation", None)
         field_updates: dict[str, Any] = {}
 
         for key, value in raw_updates.items():
@@ -231,8 +232,18 @@ INSERT OR IGNORE INTO memu_conversation_state (
                 "retrieve_rewrite_angle",
                 "last_background_error",
                 "last_background_error_at",
+                "retrieval_ids_since_consolidation",
             }:
                 field_updates[key] = value
+
+        if append_retrieval_ids is not None:
+            base_ids = field_updates.get(
+                "retrieval_ids_since_consolidation", existing_state.get("retrieval_ids_since_consolidation")
+            )
+            field_updates["retrieval_ids_since_consolidation"] = merge_unique_text_lists(
+                base_ids,
+                append_retrieval_ids,
+            )
 
         if append_pending_diary_episode_ids is not None:
             base_pending = field_updates.get(

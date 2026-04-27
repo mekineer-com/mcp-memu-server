@@ -423,6 +423,22 @@ LIMIT 24
                     if str(row["id"] or "").strip() and str(row["summary"] or "").strip()
                 ]
 
+        retrieved_memory_summaries: list[str] = []
+        cached_retrieval_ids = state.get("retrieval_ids_since_consolidation")
+        if isinstance(cached_retrieval_ids, list) and cached_retrieval_ids:
+            clean_ids = [str(rid).strip() for rid in cached_retrieval_ids if str(rid).strip()]
+            if clean_ids:
+                placeholders = ",".join("?" for _ in clean_ids)
+                ret_rows = con.execute(
+                    f"SELECT id, memory_type, summary FROM memu_memory_items WHERE id IN ({placeholders})",
+                    tuple(clean_ids),
+                ).fetchall()
+                retrieved_memory_summaries = [
+                    f"[{str(row['id']).strip()}] [{str(row['memory_type']).strip()}] {str(row['summary']).strip()}"
+                    for row in ret_rows
+                    if str(row["id"] or "").strip() and str(row["summary"] or "").strip()
+                ]
+
         deps.write_conversation_state(
             conversation_id,
             soul_id=soul_id,
@@ -446,6 +462,7 @@ LIMIT 24
             "self_model_id": self_model_id,
             "last_consolidation_at": state.get("last_consolidation_at"),
             "started_at": now.isoformat(),
+            "retrieved_memories": retrieved_memory_summaries,
         }
     finally:
         con.close()
@@ -478,10 +495,14 @@ async def run_consolidation_llm(
         f"{consolidation_prompt.SYSTEM_BODY}"
     )
 
+    retrieved_memories = inputs.get("retrieved_memories") or []
+    retrieved_text = "\n".join(retrieved_memories) if retrieved_memories else "(none surfaced)"
+
     user_prompt = consolidation_prompt.USER_PROMPT.format(
         categories=svc._escape_prompt_value(categories_text),
         life_goals=svc._escape_prompt_value(life_goals_text),
         intention_activity=svc._escape_prompt_value(intention_text),
+        retrieved_memories=svc._escape_prompt_value(retrieved_text),
         episodes=svc._escape_prompt_value(episodes_text),
     )
 

@@ -5177,6 +5177,12 @@ async def conversation_turn(
                     cache_entry, intention_action, annulment_ids, chat_x,
                     apply_turn_maintenance,
                 )
+                turn_retrieval_ids = _extract_result_item_ids(payload_retrieve_rag)
+                if turn_retrieval_ids:
+                    _write_conversation_state(
+                        cid, soul_id=soul_id, user_id=uid,
+                        updates={"append_retrieval_ids_since_consolidation": turn_retrieval_ids},
+                    )
 
         if not dry_run:
             annulment_memory_ids = await _persist_annulment_memories(
