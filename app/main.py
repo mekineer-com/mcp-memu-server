@@ -3328,6 +3328,7 @@ async def _run_consolidation_pipeline_once(
     soul_id: str,
     user_id: str,
     force: bool = False,
+    consolidation_llm_profile: str | None = None,
 ) -> dict[str, Any]:
     async with state_lock:
         prep = _gather_consolidation_inputs(
@@ -3342,12 +3343,12 @@ async def _run_consolidation_pipeline_once(
     if prep.get("status") == "skip":
         return {"status": "skipped", "reason": prep.get("reason")}
 
-    _heavy_profile = getattr(svc.memorize_config, "memory_extract_llm_profile", None)
+    _consol_profile = consolidation_llm_profile or getattr(svc.memorize_config, "memory_extract_llm_profile", None)
     consolidation_llm = await _run_consolidation_llm(
         svc,
         inputs=prep,
         soul_id=soul_id,
-        llm_profile=_heavy_profile,
+        llm_profile=_consol_profile,
     )
     async with state_lock:
         result = _write_consolidation_outputs(
@@ -3382,6 +3383,7 @@ async def _run_consolidation_task(
     conversation_id: str,
     soul_id: str,
     uid: str,
+    consolidation_llm_profile: str | None = None,
 ) -> None:
     deps = _make_consolidation_deps()
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
@@ -3396,6 +3398,7 @@ async def _run_consolidation_task(
             soul_id=soul_id,
             user_id=uid,
             force=False,
+            consolidation_llm_profile=consolidation_llm_profile,
         )
         if out.get("status") == "skipped":
             return
@@ -3524,7 +3527,8 @@ async def _run_memorize_batches(
 
         # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
         if conversation_id and has_batch_results:
-            asyncio.create_task(_run_consolidation_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid))
+            _consol_profile = str(safe.get("consolidation_llm_profile") or "").strip() or None
+            asyncio.create_task(_run_consolidation_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid, consolidation_llm_profile=_consol_profile))
 
         _record_call(
             "memorize",
@@ -3849,6 +3853,7 @@ async def force_consolidation(
 
         state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
         pipeline_started = True
+        _consol_profile = str(safe.get("consolidation_llm_profile") or "").strip() or None
         out = await _run_consolidation_pipeline_once(
             svc=svc,
             deps=_make_consolidation_deps(),
@@ -3857,6 +3862,7 @@ async def force_consolidation(
             soul_id=soul_id,
             user_id=uid,
             force=True,
+            consolidation_llm_profile=_consol_profile,
         )
         if out.get("status") == "skipped":
             reason = str(out.get("reason") or "")
