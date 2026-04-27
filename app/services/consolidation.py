@@ -424,20 +424,31 @@ LIMIT 24
                 ]
 
         retrieved_memory_summaries: list[str] = []
-        cached_retrieval_ids = state.get("retrieval_ids_since_consolidation")
-        if isinstance(cached_retrieval_ids, list) and cached_retrieval_ids:
-            clean_ids = [str(rid).strip() for rid in cached_retrieval_ids if str(rid).strip()]
-            if clean_ids:
-                placeholders = ",".join("?" for _ in clean_ids)
-                ret_rows = con.execute(
-                    f"SELECT id, memory_type, summary FROM memu_memory_items WHERE id IN ({placeholders})",
-                    tuple(clean_ids),
-                ).fetchall()
-                retrieved_memory_summaries = [
-                    f"[{str(row['id']).strip()}] [{str(row['memory_type']).strip()}] {str(row['summary']).strip()}"
-                    for row in ret_rows
-                    if str(row["id"] or "").strip() and str(row["summary"] or "").strip()
-                ]
+        all_retrieval_ids: list[str] = []
+        try:
+            res_rows = con.execute(
+                "SELECT memory_retrieve_history FROM memu_resources WHERE soul_id = ? AND user_id = ? AND memory_retrieve_history IS NOT NULL",
+                (soul_id, user_id),
+            ).fetchall()
+            for rr in res_rows:
+                raw = rr["memory_retrieve_history"]
+                ids = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(ids, list):
+                    all_retrieval_ids.extend(str(rid).strip() for rid in ids if str(rid).strip())
+        except Exception:
+            pass
+        clean_ids = list(dict.fromkeys(all_retrieval_ids))
+        if clean_ids:
+            placeholders = ",".join("?" for _ in clean_ids)
+            ret_rows = con.execute(
+                f"SELECT id, memory_type, summary FROM memu_memory_items WHERE id IN ({placeholders})",
+                tuple(clean_ids),
+            ).fetchall()
+            retrieved_memory_summaries = [
+                f"[{str(row['id']).strip()}] [{str(row['memory_type']).strip()}] {str(row['summary']).strip()}"
+                for row in ret_rows
+                if str(row["id"] or "").strip() and str(row["summary"] or "").strip()
+            ]
 
         deps.write_conversation_state(
             conversation_id,

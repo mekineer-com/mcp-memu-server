@@ -3463,6 +3463,10 @@ async def _run_memorize_batches(
                 soul_id=soul_id,
             )
             current_all_categories_summary = str(state_row.get("all_categories_summary") or "").strip() or None
+            cached_retrieval_ids: list[str] = []
+            raw_ret_ids = state_row.get("retrieval_ids_since_consolidation")
+            if isinstance(raw_ret_ids, list):
+                cached_retrieval_ids = [str(rid).strip() for rid in raw_ret_ids if str(rid).strip()]
 
     # Phase 2: run LLM batches outside the lock; re-acquire per batch to advance cursor.
     for batch_url, batch_conv, batch_end in memorize_batches:
@@ -3475,6 +3479,7 @@ async def _run_memorize_batches(
             local_path=batch_url,
             all_categories_summary=current_all_categories_summary,
             soul_card=soul_card_for_memorize,
+            memory_retrieve_history=cached_retrieval_ids or None,
         )
         if isinstance(batch_result, dict):
             has_batch_results = True
