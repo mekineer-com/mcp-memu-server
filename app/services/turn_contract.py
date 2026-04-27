@@ -476,10 +476,11 @@ def build_turn_prompt(
     history: list[dict[str, Any]] | None,
     history_tail_after_memorize: int = DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE,
     prior_context: str | None,
-    retrieve_rag: Any,  # named retrieve_result would be cleaner; kept as-is because "retrieve_rag" is also a prompt_override_payload key used by the extension
+    retrieve_rag: Any,
     all_categories_summary: str | None,
     memory_cache: Any,
     intentions_active: Any,
+    subconscious_message: str | None = None,
     now: datetime | None = None,
 ) -> str:
     cache = normalize_memory_cache(memory_cache)
@@ -562,6 +563,7 @@ def build_turn_prompt(
         "",
         "Your working thoughts:",
         "\n".join(cache_lines) if cache_lines else "(empty)",
+        *([ f"  {subconscious_message}" ] if subconscious_message else []),
         "",
         "Your intentions:",
         format_intentions_for_prompt(intentions_active),

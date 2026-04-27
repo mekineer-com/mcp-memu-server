@@ -240,6 +240,7 @@ INSERT OR IGNORE INTO memu_conversation_state (
                 "last_background_error_at",
                 "retrieval_ids_since_consolidation",
                 "prior_context_ids_since_consolidation",
+                "subconscious_message",
             }:
                 field_updates[key] = value
 

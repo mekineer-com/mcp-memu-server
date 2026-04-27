@@ -2575,8 +2575,7 @@ async def _apimw_persist(
 
         message_to_self = str(result_json.get("message_to_self") or "").strip()
         if message_to_self:
-            current_cache = _append_memory_cache_entry(current_cache, f"[subconscious] {message_to_self[:300]}")
-            updates["memory_cache"] = current_cache
+            updates["subconscious_message"] = f"[subconscious] {message_to_self[:300]}"
 
         prior_context_ids = [str(mid).strip() for mid in prior_ids if isinstance(mid, str) and str(mid).strip()] if isinstance(prior_ids, list) else []
         if prior_context_ids:
@@ -4815,6 +4814,7 @@ async def conversation_retrieve(
                     response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
                     include_chat_x=(len(history) > 8 and len(history) % 6 == 0),
                 )
+                _subconscious_msg = str(_state_row.get("subconscious_message") or "").strip() or None
                 out["turn_user_prompt"] = _build_turn_prompt(
                     user_message=message,
                     history=history,
@@ -4824,7 +4824,13 @@ async def conversation_retrieve(
                     all_categories_summary=_state_row.get("all_categories_summary"),
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
+                    subconscious_message=_subconscious_msg,
                 )
+                if _subconscious_msg:
+                    _write_conversation_state(
+                        cid, soul_id=soul_id, user_id=uid,
+                        updates={"subconscious_message": None},
+                    )
 
         _record_call(
             "conversation.retrieve",
