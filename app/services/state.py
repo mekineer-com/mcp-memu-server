@@ -52,6 +52,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "retrieve_rewrite_angle": int(row["retrieve_rewrite_angle"] or 0) if "retrieve_rewrite_angle" in row.keys() else 0,
         "retrieval_ids_since_consolidation": normalize_text_list(row["retrieval_ids_since_consolidation"]),
         "prior_context_ids_since_consolidation": normalize_text_list(row["prior_context_ids_since_consolidation"]),
+        "subconscious_message": row["subconscious_message"] if "subconscious_message" in row.keys() else None,
         "last_background_error": row["last_background_error"] if "last_background_error" in row.keys() else None,
         "last_background_error_at": row["last_background_error_at"] if "last_background_error_at" in row.keys() else None,
     }
@@ -65,6 +66,7 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
         "consolidation_started_at, updated_at, undo_snapshot, "
         "all_categories_summary, last_chat_x, last_chat_x_prev, retrieve_rewrite_angle, "
         "retrieval_ids_since_consolidation, prior_context_ids_since_consolidation, "
+        "subconscious_message, "
         "last_background_error, last_background_error_at "
         "FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
         (conversation_id,),
@@ -98,6 +100,7 @@ def conversation_state_empty(
         "retrieve_rewrite_angle": 0,
         "retrieval_ids_since_consolidation": [],
         "prior_context_ids_since_consolidation": [],
+        "subconscious_message": None,
         "last_background_error": None,
         "last_background_error_at": None,
     }

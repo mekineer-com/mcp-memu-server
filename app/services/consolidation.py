@@ -717,6 +717,7 @@ INSERT INTO intentions_life_goals (
                 current_intentions = remove_intentions(current_intentions, [aid])
 
     state_updates: dict[str, Any] = {
+        "pending_episode_ids": [],
         "last_consolidation_at": now_iso,
         "consolidation_in_progress": False,
         "consolidation_started_at": None,

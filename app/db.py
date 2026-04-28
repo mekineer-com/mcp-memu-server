@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
     last_consolidation_at DATETIME,
     consolidation_in_progress BOOLEAN DEFAULT 0,
     consolidation_started_at DATETIME,
+    subconscious_message TEXT,
     updated_at DATETIME,
     undo_snapshot JSON
 )
@@ -198,6 +199,8 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN retrieval_ids_since_consolidation JSON")
     if "prior_context_ids_since_consolidation" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN prior_context_ids_since_consolidation JSON")
+    if "subconscious_message" not in cols:
+        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN subconscious_message TEXT")
     if "last_background_error" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_background_error TEXT")
     if "last_background_error_at" not in cols:

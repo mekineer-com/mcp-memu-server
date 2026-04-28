@@ -1223,7 +1223,6 @@ def _get_service_from_payload(
     fixed_cats = _categories_from_cfg(_CONFIG)
     if isinstance(memorize_config, dict):
         cats_cfg = (_CONFIG.get("categories") or {}) if isinstance(_CONFIG.get("categories"), dict) else {}
-        memo_cfg = (_CONFIG.get("memorize") or {}) if isinstance(_CONFIG.get("memorize"), dict) else {}
         if fixed_cats:
             memorize_config["memory_categories"] = fixed_cats
         memorize_config["allow_dynamic_categories"] = bool(cats_cfg.get("allow_dynamic_categories", True))
@@ -1233,7 +1232,6 @@ def _get_service_from_payload(
         )
         memorize_config["homeless_trigger_count"] = int(cats_cfg.get("homeless_trigger_count", 10) or 10)
         memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
-        memorize_config["enable_item_reinforcement"] = bool(memo_cfg.get("enable_item_reinforcement", True))
     retrieve_config = payload.get("retrieve_config")
     if not isinstance(retrieve_config, dict):
         retrieve_config = {}

@@ -87,3 +87,32 @@ def test_empty_background_error_state_defaults_to_none() -> None:
         )
         assert state["last_background_error"] is None
         assert state["last_background_error_at"] is None
+
+
+def test_subconscious_message_round_trip_through_state() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        db_path, sqlite_dir = _tmp_sqlite_setup(tmp_dir, soul_id="SoulC")
+
+        cid = "conv-subconscious"
+        state, _ = write_conversation_state(
+            cid,
+            sqlite_current_path=lambda _user, _soul: db_path,
+            sqlite_dir=sqlite_dir,
+            soul_id="SoulC",
+            user_id="UserC",
+            updates={"subconscious_message": "[subconscious] remember this"},
+        )
+        assert state["subconscious_message"] == "[subconscious] remember this"
+
+        con = sqlite3.connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            row = conversation_state_row(con, cid)
+            assert row is not None
+            loaded = conversation_state_from_row(row)
+        finally:
+            con.close()
+
+        assert loaded is not None
+        assert loaded["subconscious_message"] == "[subconscious] remember this"
