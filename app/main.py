@@ -2576,6 +2576,20 @@ async def _apimw_persist(
         message_to_self = str(result_json.get("message_to_self") or "").strip()
         if message_to_self:
             updates["subconscious_message"] = f"[subconscious] {message_to_self[:300]}"
+            try:
+                sc_text = message_to_self[:300]
+                sc_embedding = (await svc.embed([sc_text], profile="embedding"))[0]
+                svc.database.memory_item_repo.create_item(
+                    resource_id=None,
+                    memory_type="subconscious",
+                    source_role="soul",
+                    summary=sc_text,
+                    embedding=sc_embedding,
+                    user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
+                    conversation_id=conversation_id,
+                )
+            except Exception:
+                logger.warning("failed to persist subconscious memory item", exc_info=True)
 
         prior_context_ids = [str(mid).strip() for mid in prior_ids if isinstance(mid, str) and str(mid).strip()] if isinstance(prior_ids, list) else []
         if prior_context_ids:

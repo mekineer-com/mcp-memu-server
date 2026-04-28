@@ -175,7 +175,7 @@ def create_companion_memory(
 ) -> str:
     item = svc.database.memory_item_repo.create_item(
         resource_id=None,
-        memory_type="event",
+        memory_type="reflection",
         source_role="soul",
         summary=summary,
         embedding=embedding,
