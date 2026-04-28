@@ -276,6 +276,8 @@ _SERVER_STARTED_AT_UNIX: float = time.time()
 _LAST_CALLS: list[dict[str, Any]] = []
 _LAST_HTTP: list[dict[str, Any]] = []
 _MEMORIZE_LOCKS: dict[str, asyncio.Lock] = {}
+_MEMORIZE_PROGRESS: dict[str, dict[str, Any]] = {}
+_MEMORIZE_CANCEL: set[str] = set()
 
 
 def _get_memorize_lock(key: str) -> asyncio.Lock:
@@ -3507,7 +3509,15 @@ async def _run_memorize_batches(
                 cached_prior_context_ids = [str(rid).strip() for rid in raw_pc_ids if str(rid).strip()]
 
     # Phase 2: run LLM batches outside the lock; re-acquire per batch to advance cursor.
-    for batch_url, batch_conv, batch_end in memorize_batches:
+    total_batches = len(memorize_batches)
+    progress_key = _memorize_lock_key(uid, soul_id)
+    _MEMORIZE_PROGRESS[progress_key] = {"current": 0, "total": total_batches}
+    for batch_idx, (batch_url, batch_conv, batch_end) in enumerate(memorize_batches):
+        if progress_key in _MEMORIZE_CANCEL:
+            _MEMORIZE_CANCEL.discard(progress_key)
+            logger.info("memorize cancelled after batch %d/%d", batch_idx, total_batches)
+            break
+        _MEMORIZE_PROGRESS[progress_key] = {"current": batch_idx + 1, "total": total_batches}
         # LLM call outside the lock — can take several seconds.
         batch_result = await svc.memorize(
             resource_url=batch_url,
@@ -3575,6 +3585,9 @@ async def _run_memorize_batches(
         if conversation_id and has_batch_results:
             _consol_profile = str(safe.get("consolidation_llm_profile") or "").strip() or None
             asyncio.create_task(_run_consolidation_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid, consolidation_llm_profile=_consol_profile))
+
+        _MEMORIZE_PROGRESS.pop(progress_key, None)
+        _MEMORIZE_CANCEL.discard(progress_key)
 
         _record_call(
             "memorize",
@@ -3873,6 +3886,26 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
             error=f"{type(exc).__name__}: {exc}",
         )
         raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
+
+
+@app.get("/memorize/progress", operation_id="memorize_progress")
+async def memorize_progress(user_id: str = "", soul_id: str = ""):
+    key = _memorize_lock_key(user_id, soul_id)
+    progress = _MEMORIZE_PROGRESS.get(key)
+    if progress is None:
+        return {"active": False}
+    return {"active": True, **progress}
+
+
+@app.post("/memorize/cancel", operation_id="memorize_cancel")
+async def memorize_cancel(payload: dict[str, Any] = Body(...)):
+    uid = str(payload.get("user_id") or "").strip()
+    sid = str(payload.get("soul_id") or "").strip()
+    key = _memorize_lock_key(uid, sid)
+    if key in _MEMORIZE_PROGRESS:
+        _MEMORIZE_CANCEL.add(key)
+        return {"ok": True, "status": "cancel_requested"}
+    return {"ok": False, "status": "no_active_memorize"}
 
 
 # ---- Consolidation endpoint ----
