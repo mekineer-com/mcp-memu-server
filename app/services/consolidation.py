@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 from fastapi import HTTPException
 from memu.prompts.consolidation import consolidation as consolidation_prompt
 
-from app.services.diary import (
+from app.services.episode import (
     build_episode_inputs,
     create_companion_memory,
 )

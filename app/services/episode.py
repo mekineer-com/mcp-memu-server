@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
-from xml.etree.ElementTree import Element
-
-from app.services.xml_utils import extract_xml_fragment, xml_text
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
@@ -109,58 +106,6 @@ def build_episode_inputs(
         )
     out.sort(key=lambda row: (int(row.get("start_idx") or 0), int(row.get("end_idx") or 0), str(row.get("episode_id") or "")))
     return out
-
-
-def parse_diary_element(root: Element) -> dict[str, Any]:
-    return {
-        "prose": xml_text(root, "prose"),
-        "unresolved": xml_text(root, "unresolved"),
-    }
-
-
-def upsert_diary_entry_memory(
-    svc: MemoryService,
-    *,
-    user_id: str,
-    soul_id: str,
-    conversation_id: str,
-    episode_id: str,
-    prose: str,
-    embedding: list[float],
-    unresolved: str | None,
-    happened_at: datetime | None,
-) -> str:
-    existing = svc.database.memory_item_repo.list_items(
-        {
-            "episode_id": episode_id,
-            "memory_type": "diary",
-            "user_id": user_id,
-            "soul_id": soul_id,
-            "conversation_id": conversation_id,
-        }
-    )
-    if existing:
-        item = next(iter(existing.values()))
-        updated = svc.database.memory_item_repo.update_item(
-            item_id=item.id,
-            summary=prose,
-            embedding=embedding,
-            unresolved=unresolved,
-        )
-        return str(updated.id)
-
-    item = svc.database.memory_item_repo.create_item(
-        resource_id=None,
-        memory_type="diary",
-        summary=prose,
-        embedding=embedding,
-        user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
-        conversation_id=conversation_id,
-        episode_id=episode_id,
-        happened_at=happened_at,
-        unresolved=unresolved,
-    )
-    return str(item.id)
 
 
 def create_companion_memory(
