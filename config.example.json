@@ -8,13 +8,12 @@
     "client_backend": "httpx",
     "endpoint_overrides": {},
     "step_models": {
+      "preprocess": "",
       "memory_extract": "",
-      "router": "",
       "category_update": "",
-      "apimw": "",
-      "consolidation": "",
       "reflection": "",
-      "ranking": ""
+      "ranking": "",
+      "consolidation": ""
     }
   },
   "storage": {
