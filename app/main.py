@@ -3907,6 +3907,7 @@ async def force_consolidation(
         )
         raise
     except Exception as exc:
+        logger.exception("consolidation.force failed: %s", exc)
         if pipeline_started:
             await _clear_consolidation_in_progress(
                 state_lock=state_lock,

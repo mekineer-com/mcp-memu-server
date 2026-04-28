@@ -588,14 +588,7 @@ def write_consolidation_outputs(
     if companion_text:
         if not isinstance(companion_embedding, list):
             raise HTTPException(status_code=500, detail="missing companion memory embedding")
-        companion_happened_at = None
-        if episode_map:
-            first_episode = min(episode_map.values(), key=lambda r: int(r.get("start_idx") or 0))
-            candidate = first_episode.get("happened_at")
-            if isinstance(candidate, datetime):
-                companion_happened_at = candidate
-        if companion_happened_at is None:
-            companion_happened_at = datetime.now(UTC)
+        companion_happened_at = datetime.now(UTC)
         companion_memory_id = create_companion_memory(
             svc,
             user_id=user_id,

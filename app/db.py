@@ -166,7 +166,10 @@ CREATE TABLE IF NOT EXISTS memu_conversation_state (
     if "memory_cache" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN memory_cache JSON DEFAULT '[]'")
     if "pending_episode_ids" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN pending_episode_ids JSON DEFAULT '[]'")
+        if "pending_diary_episode_ids" in cols:
+            alters.append("ALTER TABLE memu_conversation_state RENAME COLUMN pending_diary_episode_ids TO pending_episode_ids")
+        else:
+            alters.append("ALTER TABLE memu_conversation_state ADD COLUMN pending_episode_ids JSON DEFAULT '[]'")
     if "self_model_id" not in cols:
         alters.append("ALTER TABLE memu_conversation_state ADD COLUMN self_model_id VARCHAR")
     if "last_retrieval_ids" not in cols:
