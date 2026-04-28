@@ -3645,6 +3645,10 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                     ts = datetime.now(UTC).strftime("%y%m%d-%H%M%S")
                     archive_path = db_path.with_suffix(f".bak-{ts}")
                     db_path.rename(archive_path)
+                    for wal_suffix in ("-wal", "-shm"):
+                        wal_file = db_path.with_name(db_path.name + wal_suffix)
+                        if wal_file.exists():
+                            wal_file.unlink()
                     logger.info("re-memorize: archived %s → %s", db_path.name, archive_path.name)
                     _clear_cached_services()
             storage_dir = _get_storage_dir(_CONFIG)
