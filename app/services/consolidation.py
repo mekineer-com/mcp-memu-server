@@ -361,7 +361,7 @@ LIMIT 1
                 raise HTTPException(status_code=404, detail="conversation manifest not found")
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except Exception as exc:
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                 raise HTTPException(status_code=400, detail="conversation manifest unreadable") from exc
             raw_segments = manifest.get("segments") if isinstance(manifest, dict) else None
             if not isinstance(raw_segments, list) or not raw_segments:
@@ -426,8 +426,8 @@ LIMIT 24
                 ids = json.loads(raw) if isinstance(raw, str) else raw
                 if isinstance(ids, list):
                     all_prior_context_ids.extend(str(rid).strip() for rid in ids if str(rid).strip())
-        except Exception:
-            pass
+        except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+            log.warning("consolidation: failed loading resource prior_context history", exc_info=True)
         clean_ids = list(dict.fromkeys(all_prior_context_ids))
         if clean_ids:
             placeholders = ",".join("?" for _ in clean_ids)

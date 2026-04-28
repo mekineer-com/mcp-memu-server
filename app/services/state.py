@@ -124,7 +124,7 @@ def find_conversation_state_across_dbs(
             row = conversation_state_row(con, conversation_id)
             if row is not None:
                 return db_path, conversation_state_from_row(row)
-        except Exception as exc:
+        except (sqlite3.Error, OSError, TypeError, ValueError) as exc:
             logger.warning("Skipping unreadable sqlite db during state scan: %s (%s)", db_path, exc)
         finally:
             con.close()
@@ -277,7 +277,7 @@ INSERT OR IGNORE INTO memu_conversation_state (
         if "digest_cursor" in field_updates:
             try:
                 field_updates["digest_cursor"] = max(0, int(field_updates.get("digest_cursor") or 0))
-            except Exception as exc:
+            except (TypeError, ValueError, OverflowError) as exc:
                 raise HTTPException(status_code=400, detail="digest_cursor must be an integer") from exc
         if "last_memorize_at" in field_updates:
             raw_last = field_updates.get("last_memorize_at")
