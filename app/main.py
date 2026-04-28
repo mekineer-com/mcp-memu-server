@@ -3648,7 +3648,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                     for wal_suffix in ("-wal", "-shm"):
                         wal_file = db_path.with_name(db_path.name + wal_suffix)
                         if wal_file.exists():
-                            wal_file.unlink()
+                            wal_file.rename(archive_path.with_name(archive_path.name + wal_suffix))
                     logger.info("re-memorize: archived %s → %s", db_path.name, archive_path.name)
                     _clear_cached_services()
             storage_dir = _get_storage_dir(_CONFIG)
