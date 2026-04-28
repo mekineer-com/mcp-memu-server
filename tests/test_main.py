@@ -55,7 +55,7 @@ def test_merge_memorize_batch_results_flattens_top_level_lists():
     assert out["batch_count"] == 2
     assert [item["id"] for item in out["items"]] == ["m1", "m2"]
     assert [cat["id"] for cat in out["categories"]] == ["c1", "c2"]
-    assert out["pending_diary_episode_ids"] == ["m2", "m1"]
+    assert out["pending_episode_ids"] == ["m2", "m1"]
     assert out["skipped_reasons"] == ["skip-a", "skip-b"]
     assert "results" in out
     assert [res["id"] for res in out["resources"]] == ["r1", "r2"]

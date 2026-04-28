@@ -272,7 +272,7 @@ def gather_consolidation_inputs(
                 if now < due_at:
                     return {"status": "skip", "reason": "interval_gate"}
 
-        pending_episode_ids = deps.normalize_text_list(state.get("pending_diary_episode_ids"))
+        pending_episode_ids = deps.normalize_text_list(state.get("pending_episode_ids"))
 
         category_rows = con.execute(
             """
@@ -387,7 +387,7 @@ LIMIT 1
                     """
 SELECT id, summary
 FROM memu_memory_items
-WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND episode_id = ? AND memory_type != 'diary'
+WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND episode_id = ? AND memory_type NOT IN ('narrative_self')
   AND (merged_into IS NULL OR TRIM(merged_into) = '')
   AND NOT EXISTS (
     SELECT 1 FROM memu_triples t

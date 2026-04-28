@@ -2057,7 +2057,7 @@ async def _persist_annulment_memories(
 
 def _merge_memorize_batch_results(
     batch_results: list[dict[str, Any]],
-    pending_diary_episode_ids: list[str] | None = None,
+    pending_episode_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     def _merge_record_list(values: list[Any], *, id_keys: tuple[str, ...] = ("id",)) -> list[Any]:
         out: list[Any] = []
@@ -2106,7 +2106,7 @@ def _merge_memorize_batch_results(
         "items": _merge_record_list(flat_items),
         "categories": _merge_record_list(flat_categories, id_keys=("id", "name")),
         "relations": _merge_record_list(flat_relations, id_keys=("item_id", "category_id")),
-        "pending_diary_episode_ids": _normalize_text_list(pending_diary_episode_ids),
+        "pending_episode_ids": _normalize_text_list(pending_episode_ids),
     }
     merged_resources = _merge_record_list(flat_resources, id_keys=("id", "url", "local_path"))
     if len(merged_resources) == 1:
@@ -2966,7 +2966,7 @@ async def diag_sqlite_recent(
             "prior_context",
             "intentions_active",
             "memory_cache",
-            "pending_diary_episode_ids",
+            "pending_episode_ids",
             "self_model_id",
             "last_memorize_at",
             "unresolved",
@@ -3451,7 +3451,7 @@ async def _run_memorize_batches(
 ) -> None:
     mem_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
     has_batch_results = False
-    pending_diary_episode_ids: list[str] = []
+    pending_episode_ids: list[str] = []
     processed_end_cursor = processed_cursor
     current_all_categories_summary: str | None = None
     soul_card_for_memorize: str | None = None
@@ -3490,7 +3490,7 @@ async def _run_memorize_batches(
         )
         if isinstance(batch_result, dict):
             has_batch_results = True
-            pending_diary_episode_ids.extend(_normalize_text_list(batch_result.get("pending_diary_episode_ids")))
+            pending_episode_ids.extend(_normalize_text_list(batch_result.get("pending_episode_ids")))
             if conversation_id:
                 # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
                 async with mem_lock:
@@ -3534,7 +3534,7 @@ async def _run_memorize_batches(
                     # final flush once all batches commit — also writes the holistic summary atomically
                     "digest_cursor": max(0, processed_end_cursor),
                     "last_memorize_at": datetime.now(UTC).isoformat(),
-                    "append_pending_diary_episode_ids": pending_diary_episode_ids,
+                    "append_pending_episode_ids": pending_episode_ids,
                     "all_categories_summary": current_all_categories_summary,
                 },
             )
@@ -3891,7 +3891,6 @@ async def force_consolidation(
             ok=True,
             info={
                 "conversationId": cid,
-                "diary_count": len(result.get("diary_memory_ids") or []),
             },
         )
         return {"ok": True, "status": "completed", "result": result}
@@ -4528,8 +4527,8 @@ async def patch_conversation_state(
     if "memory_cache" in body:
         updates["memory_cache"] = body.get("memory_cache")
 
-    if "pending_diary_episode_ids" in body:
-        updates["pending_diary_episode_ids"] = body.get("pending_diary_episode_ids")
+    if "pending_episode_ids" in body:
+        updates["pending_episode_ids"] = body.get("pending_episode_ids")
 
     if "self_model_id" in body:
         updates["self_model_id"] = body.get("self_model_id")

@@ -37,7 +37,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "prior_context": None if prior_context is None else str(prior_context),
         "intentions_active": normalize_intentions_stack(json_from_db(row["intentions_active"])),
         "memory_cache": normalize_memory_cache(json_from_db(row["memory_cache"])),
-        "pending_diary_episode_ids": normalize_text_list(row["pending_diary_episode_ids"]),
+        "pending_episode_ids": normalize_text_list(row["pending_episode_ids"]),
         "self_model_id": row["self_model_id"],
         "last_retrieval_ids": json_from_db(row["last_retrieval_ids"]),
         "last_memorize_at": row["last_memorize_at"],
@@ -60,7 +60,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
 def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
     return con.execute(
         "SELECT conversation_id, soul_id, user_id, digest_cursor, prior_context, "
-        "intentions_active, memory_cache, pending_diary_episode_ids, self_model_id, "
+        "intentions_active, memory_cache, pending_episode_ids, self_model_id, "
         "last_retrieval_ids, last_memorize_at, last_consolidation_at, consolidation_in_progress, "
         "consolidation_started_at, updated_at, undo_snapshot, "
         "all_categories_summary, last_chat_x, last_chat_x_prev, retrieve_rewrite_angle, "
@@ -84,7 +84,7 @@ def conversation_state_empty(
         "prior_context": None,
         "intentions_active": normalize_intentions_stack(None),
         "memory_cache": [],
-        "pending_diary_episode_ids": [],
+        "pending_episode_ids": [],
         "self_model_id": None,
         "last_retrieval_ids": None,
         "last_memorize_at": None,
@@ -175,7 +175,7 @@ INSERT OR IGNORE INTO memu_conversation_state (
     prior_context,
     intentions_active,
     memory_cache,
-    pending_diary_episode_ids,
+    pending_episode_ids,
     self_model_id,
     last_retrieval_ids,
     last_memorize_at,
@@ -196,7 +196,7 @@ INSERT OR IGNORE INTO memu_conversation_state (
                     seed.get("prior_context"),
                     json_to_db(seed.get("intentions_active")),
                     json_to_db(seed.get("memory_cache") or []),
-                    json_to_db(seed.get("pending_diary_episode_ids") or []),
+                    json_to_db(seed.get("pending_episode_ids") or []),
                     seed.get("self_model_id"),
                     json_to_db(seed.get("last_retrieval_ids")),
                     seed.get("last_memorize_at"),
@@ -213,7 +213,7 @@ INSERT OR IGNORE INTO memu_conversation_state (
             existing_state = conversation_state_from_row(conversation_state_row(con, cid)) or seed
 
         raw_updates = dict(updates) if updates else {}
-        append_pending_diary_episode_ids = raw_updates.pop("append_pending_diary_episode_ids", None)
+        append_pending_episode_ids = raw_updates.pop("append_pending_episode_ids", None)
         append_retrieval_ids = raw_updates.pop("append_retrieval_ids_since_consolidation", None)
         append_prior_context_ids = raw_updates.pop("append_prior_context_ids_since_consolidation", None)
         field_updates: dict[str, Any] = {}
@@ -224,7 +224,7 @@ INSERT OR IGNORE INTO memu_conversation_state (
                 "prior_context",
                 "intentions_active",
                 "memory_cache",
-                "pending_diary_episode_ids",
+                "pending_episode_ids",
                 "self_model_id",
                 "last_retrieval_ids",
                 "last_memorize_at",
@@ -262,13 +262,13 @@ INSERT OR IGNORE INTO memu_conversation_state (
                 append_retrieval_ids,
             )
 
-        if append_pending_diary_episode_ids is not None:
+        if append_pending_episode_ids is not None:
             base_pending = field_updates.get(
-                "pending_diary_episode_ids", existing_state.get("pending_diary_episode_ids")
+                "pending_episode_ids", existing_state.get("pending_episode_ids")
             )
-            field_updates["pending_diary_episode_ids"] = merge_unique_text_lists(
+            field_updates["pending_episode_ids"] = merge_unique_text_lists(
                 base_pending,
-                append_pending_diary_episode_ids,
+                append_pending_episode_ids,
             )
 
         if "digest_cursor" in field_updates:
@@ -300,9 +300,9 @@ INSERT OR IGNORE INTO memu_conversation_state (
             field_updates["intentions_active"] = normalize_intentions_stack(field_updates.get("intentions_active"))
         if "memory_cache" in field_updates:
             field_updates["memory_cache"] = normalize_memory_cache(field_updates.get("memory_cache"))
-        if "pending_diary_episode_ids" in field_updates:
-            field_updates["pending_diary_episode_ids"] = normalize_text_list(
-                field_updates.get("pending_diary_episode_ids")
+        if "pending_episode_ids" in field_updates:
+            field_updates["pending_episode_ids"] = normalize_text_list(
+                field_updates.get("pending_episode_ids")
             )
         if "retrieval_ids_since_consolidation" in field_updates:
             field_updates["retrieval_ids_since_consolidation"] = normalize_text_list(
@@ -337,7 +337,7 @@ INSERT OR IGNORE INTO memu_conversation_state (
                 if key in {
                     "intentions_active",
                     "memory_cache",
-                    "pending_diary_episode_ids",
+                    "pending_episode_ids",
                     "retrieval_ids_since_consolidation",
                     "prior_context_ids_since_consolidation",
                     "last_retrieval_ids",
