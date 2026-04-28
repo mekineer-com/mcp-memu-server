@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from xml.etree.ElementTree import Element
 
 log = logging.getLogger(__name__)
 
