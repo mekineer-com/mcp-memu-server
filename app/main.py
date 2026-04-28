@@ -978,10 +978,27 @@ def _default_llm_profiles_from_server_config() -> dict[str, Any]:
         "client_backend": client_backend,
         "endpoint_overrides": endpoint_overrides,
     }
-    return {
+    profiles = {
         "default": default_profile,
-        "embedding": {**default_profile, "chat_model": chat_model, "embed_model": embed_model},
+        "embedding": {**default_profile},
     }
+    step_models = llm.get("step_models")
+    if isinstance(step_models, dict):
+        for step_name, model in step_models.items():
+            model_str = str(model or "").strip()
+            if model_str:
+                profiles[step_name] = {**default_profile, "chat_model": model_str}
+    return profiles
+
+
+def _resolve_profile(svc: Any, name: str | None) -> str | None:
+    """Return *name* if the service has that profile, else fall back to None (default)."""
+    if not name:
+        return None
+    if hasattr(svc, "llm_profiles") and hasattr(svc.llm_profiles, "profiles"):
+        if name in svc.llm_profiles.profiles:
+            return name
+    return None
 
 
 _SERVICES: dict[str, MemoryService] = {}
@@ -2663,7 +2680,7 @@ async def _run_apimw(
             scope=scope,
         )
 
-        _heavy_profile = getattr(svc.memorize_config, "memory_extract_llm_profile", None)
+        _heavy_profile = _resolve_profile(svc, "apimw") or getattr(svc.memorize_config, "memory_extract_llm_profile", None)
         result_json, items_by_id = await _apimw_def_call(
             svc,
             combined_items=combined_items,
@@ -3357,7 +3374,7 @@ async def _run_consolidation_pipeline_once(
     if prep.get("status") == "skip":
         return {"status": "skipped", "reason": prep.get("reason")}
 
-    _consol_profile = consolidation_llm_profile or getattr(svc.memorize_config, "memory_extract_llm_profile", None)
+    _consol_profile = _resolve_profile(svc, consolidation_llm_profile) or _resolve_profile(svc, "consolidation")
     consolidation_llm = await _run_consolidation_llm(
         svc,
         inputs=prep,

@@ -6,7 +6,16 @@
     "chat_model": "YOUR_CHAT_MODEL",
     "embed_model": "YOUR_EMBED_MODEL",
     "client_backend": "httpx",
-    "endpoint_overrides": {}
+    "endpoint_overrides": {},
+    "step_models": {
+      "memory_extract": "",
+      "router": "",
+      "category_update": "",
+      "apimw": "",
+      "consolidation": "",
+      "reflection": "",
+      "ranking": ""
+    }
   },
   "storage": {
     "resources_dir": "./resources",
