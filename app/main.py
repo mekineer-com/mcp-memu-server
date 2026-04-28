@@ -1231,6 +1231,15 @@ def _get_service_from_payload(
         )
         memorize_config["homeless_trigger_count"] = int(cats_cfg.get("homeless_trigger_count", 10) or 10)
         memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
+        step_models = (_CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}).get("step_models", {})
+        if isinstance(step_models, dict):
+            for cfg_key, profile_field in (
+                ("preprocess", "preprocess_llm_profile"),
+                ("memory_extract", "memory_extract_llm_profile"),
+                ("category_update", "category_update_llm_profile"),
+            ):
+                if profile_field not in memorize_config and str(step_models.get(cfg_key) or "").strip():
+                    memorize_config[profile_field] = cfg_key
     retrieve_config = payload.get("retrieve_config")
     if not isinstance(retrieve_config, dict):
         retrieve_config = {}
@@ -1239,6 +1248,14 @@ def _get_service_from_payload(
         retrieve_method_override,
         _retrieve_method_from_cfg(_CONFIG),
     )
+    step_models_r = (_CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}).get("step_models", {})
+    if isinstance(step_models_r, dict):
+        for cfg_key, profile_field in (
+            ("reflection", "sufficiency_check_llm_profile"),
+            ("ranking", "llm_ranking_llm_profile"),
+        ):
+            if profile_field not in retrieve_config and str(step_models_r.get(cfg_key) or "").strip():
+                retrieve_config[profile_field] = cfg_key
     user_config = payload.get("user_config") or {}
 
     sig = _payload_signature(payload)
