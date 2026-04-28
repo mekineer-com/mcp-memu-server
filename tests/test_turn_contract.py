@@ -81,7 +81,7 @@ def test_make_turn_system_prompt_includes_time_anchor() -> None:
     assert "2026" in prompt
 
 
-def test_build_turn_prompt_renders_relative_time_and_reinforcement() -> None:
+def test_build_turn_prompt_renders_relative_time() -> None:
     prompt = build_turn_prompt(
         user_message="hello",
         history=[],
@@ -92,7 +92,6 @@ def test_build_turn_prompt_renders_relative_time_and_reinforcement() -> None:
                     "memory_type": "profile",
                     "summary": "Marcos journals every night",
                     "happened_at": "2026-03-18T07:00:00Z",
-                    "extra": {"reinforcement_count": 5},
                 }
             ]
         },
@@ -101,7 +100,7 @@ def test_build_turn_prompt_renders_relative_time_and_reinforcement() -> None:
         intentions_active={},
         now=datetime(2026, 4, 8, 9, 30, tzinfo=timezone.utc),
     )
-    assert "- [profile] (3 weeks ago, reinforced 5x) Marcos journals every night" in prompt
+    assert "- [profile] (3 weeks ago) Marcos journals every night" in prompt
 
 
 def test_format_relative_time_label_uses_weekdays_for_recent_days() -> None:

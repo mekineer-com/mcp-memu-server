@@ -260,17 +260,6 @@ def format_relative_time_label(happened_at: Any, *, now: datetime | None = None)
     return f"in {years} year{'s' if years != 1 else ''}"
 
 
-def _extract_reinforcement_count(extra: Any) -> int:
-    if not isinstance(extra, dict):
-        return 1
-    raw = extra.get("reinforcement_count")
-    try:
-        count = int(raw)
-    except (TypeError, ValueError):
-        return 1
-    return count if count > 1 else 1
-
-
 def _format_item_suffix(item: dict[str, Any], *, now: datetime | None = None) -> str:
     parts: list[str] = []
     time_label = format_relative_time_label(item.get("happened_at"), now=now)
@@ -281,9 +270,6 @@ def _format_item_suffix(item: dict[str, Any], *, now: datetime | None = None) ->
         s_label = format_relative_time_label(superseded_at, now=now)
         if s_label:
             parts.append(f"superseded {s_label}")
-    reinforcement_count = _extract_reinforcement_count(item.get("extra"))
-    if reinforcement_count > 1:
-        parts.append(f"reinforced {reinforcement_count}x")
     via_graph = _text(item.get("via_graph"))
     if via_graph:
         parts.append(via_graph)
