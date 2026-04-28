@@ -121,7 +121,7 @@ def _estimate_unmemorized_tokens(messages: list[dict[str, Any]], digest_cursor: 
         return 0
     try:
         cursor = int(digest_cursor)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         cursor = -1
     start = max(0, cursor + 1)
     if start >= len(messages):
@@ -472,18 +472,17 @@ async def _trace_requests(request: Request, call_next):
 # ==== Config loading & storage paths ====
 
 def _is_ephemeral_db(cfg: dict[str, Any]) -> bool:
-    try:
-        storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
-        ms = storage.get("metadata_store") if isinstance(storage.get("metadata_store"), dict) else {}
-        provider = str(ms.get("provider") or "").lower()
-        dsn = str(ms.get("dsn") or "")
+    if not isinstance(cfg, dict):
+        return False
+    storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
+    ms = storage.get("metadata_store") if isinstance(storage.get("metadata_store"), dict) else {}
+    provider = str(ms.get("provider") or "").lower()
+    dsn = str(ms.get("dsn") or "")
 
-        if provider in ("memory", "inmemory", "in-memory"):
-            return True
-        if provider == "sqlite" and ":memory:" in dsn:
-            return True
-    except Exception:
-        pass
+    if provider in ("memory", "inmemory", "in-memory"):
+        return True
+    if provider == "sqlite" and ":memory:" in dsn:
+        return True
     return False
 
 
@@ -750,21 +749,21 @@ def _refresh_runtime_limits() -> None:
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
     try:
         _MIN_CHUNK_TOKENS = max(0, int(memorize_cfg.get("min_chunk_tokens", _DEFAULT_MIN_CHUNK_TOKENS)))
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         _MIN_CHUNK_TOKENS = _DEFAULT_MIN_CHUNK_TOKENS
     try:
         _MAX_CHUNK_TOKENS = max(
             _MIN_CHUNK_TOKENS,
             int(memorize_cfg.get("max_chunk_tokens", _DEFAULT_MAX_CHUNK_TOKENS)),
         )
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         _MAX_CHUNK_TOKENS = _DEFAULT_MAX_CHUNK_TOKENS
     try:
         _HISTORY_TAIL_AFTER_MEMORIZE = max(
             1,
             int(memorize_cfg.get("history_tail_after_memorize", _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE)),
         )
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         _HISTORY_TAIL_AFTER_MEMORIZE = _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE
     debug_cfg = _CONFIG.get("debug") if isinstance(_CONFIG.get("debug"), dict) else {}
     _LOG_PROMPTS = bool(debug_cfg.get("log_prompts", False))
@@ -1051,7 +1050,7 @@ def _service_storage_fingerprint(database_config: dict[str, Any] | None) -> dict
         st = p.stat()
         dev = int(st.st_dev)
         ino = int(st.st_ino)
-    except Exception:
+    except OSError:
         pass
 
     return {"provider": "sqlite", "dsn": dsn, "path": str(p), "dev": dev, "ino": ino}
@@ -1605,7 +1604,7 @@ def _parse_turn_ts_ms(value: Any) -> int | None:
             return None
         try:
             return int(float(s))
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             pass
         try:
             dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
@@ -2725,7 +2724,7 @@ async def health():
     try:
         if uid is not None and pwd is not None:
             user = pwd.getpwuid(uid).pw_name
-    except Exception:
+    except (KeyError, OSError):
         pass
     return {
         "ok": (_STORAGE_STATUS.get("ok") is not False),
@@ -2775,7 +2774,7 @@ async def shutdown_server(payload: dict[str, Any] | None = Body(default=None)):
     max_wait_raw = body.get("max_wait_sec", body.get("maxWaitSec", 0))
     try:
         max_wait_sec = int(max_wait_raw)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         max_wait_sec = 0
     max_wait_sec = max(0, min(max_wait_sec, 3600))
 
@@ -3063,7 +3062,7 @@ async def root():
         ui_index = bundle_root / "memu-ui" / "dist" / "index.html"
         if ui_index.exists():
             return FileResponse(str(ui_index))
-    except Exception:
+    except OSError:
         pass
     return {"message": "mcp-memu-server", "mcp": "enabled" if _has_mcp else "disabled"}
 
@@ -3280,12 +3279,12 @@ def _resolve_turn_timezone(safe: dict[str, Any]) -> Any | None:
     if tz_name and ZoneInfo is not None:
         try:
             return ZoneInfo(str(tz_name))
-        except Exception:
+        except (KeyError, OSError, ValueError):
             pass
     if tz_off_min is not None:
         try:
             return timezone(timedelta(minutes=tz_off_min))
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             pass
     return None
 
@@ -3297,7 +3296,7 @@ def _unmemorized_sleep_gap_detected(
 ) -> bool:
     try:
         cursor = int(digest_cursor)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         cursor = -1
     start = max(0, cursor + 1)
     unproc = history[start:] if isinstance(history, list) else []
