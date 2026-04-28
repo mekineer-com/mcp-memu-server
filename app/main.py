@@ -3639,6 +3639,14 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         # scope is validated dict with non-empty soul_id above; no need to re-guard.
         uid = str(scope.get("user_id") or "user")
         async with _get_memorize_lock(_memorize_lock_key(uid, soul_id)):
+            if force:
+                db_path = _sqlite_current_path(uid, soul_id)
+                if db_path is not None and db_path.exists():
+                    ts = datetime.now(UTC).strftime("%y%m%d-%H%M%S")
+                    archive_path = db_path.with_suffix(f".bak-{ts}")
+                    db_path.rename(archive_path)
+                    logger.info("re-memorize: archived %s → %s", db_path.name, archive_path.name)
+                    _clear_cached_services()
             storage_dir = _get_storage_dir(_CONFIG)
             chats_dir = (storage_dir / "st_chats").resolve()
             chat_file = _pick_str(safe, "chat_file_name")
