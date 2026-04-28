@@ -466,7 +466,7 @@ async def _trace_requests(request: Request, call_next):
             if len(_LAST_HTTP) > 200:
                 del _LAST_HTTP[0 : len(_LAST_HTTP) - 200]
         except Exception:
-            pass
+            logger.debug("request trace append failed", exc_info=True)
 
 
 # ==== Config loading & storage paths ====
@@ -1014,7 +1014,7 @@ def _close_service_quiet(svc: MemoryService | None) -> None:
         if callable(close_fn):
             close_fn()
     except Exception:
-        pass
+        logger.debug("service close failed", exc_info=True)
 
 
 def _clear_cached_services() -> None:
@@ -1051,7 +1051,7 @@ def _service_storage_fingerprint(database_config: dict[str, Any] | None) -> dict
         dev = int(st.st_dev)
         ino = int(st.st_ino)
     except OSError:
-        pass
+        logger.debug("service storage fingerprint stat failed for %s", p, exc_info=True)
 
     return {"provider": "sqlite", "dsn": dsn, "path": str(p), "dev": dev, "ino": ino}
 
@@ -1425,7 +1425,7 @@ def _record_call(
         if len(_LAST_CALLS) > 50:
             del _LAST_CALLS[0 : len(_LAST_CALLS) - 50]
     except Exception:
-        pass
+        logger.debug("record_call telemetry append failed", exc_info=True)
 
 
 # ==== SQLite scope helpers ====
@@ -1603,9 +1603,11 @@ def _parse_turn_ts_ms(value: Any) -> int | None:
         if not s:
             return None
         try:
-            return int(float(s))
+            parsed_num = float(s)
         except (TypeError, ValueError, OverflowError):
-            pass
+            parsed_num = None
+        if parsed_num is not None:
+            return int(parsed_num)
         try:
             dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
             return int(dt.timestamp() * 1000)
@@ -2725,7 +2727,7 @@ async def health():
         if uid is not None and pwd is not None:
             user = pwd.getpwuid(uid).pw_name
     except (KeyError, OSError):
-        pass
+        logger.debug("health user lookup failed for uid=%s", uid, exc_info=True)
     return {
         "ok": (_STORAGE_STATUS.get("ok") is not False),
         "serverInstanceId": _SERVER_INSTANCE_ID,
@@ -3063,7 +3065,7 @@ async def root():
         if ui_index.exists():
             return FileResponse(str(ui_index))
     except OSError:
-        pass
+        logger.debug("root UI index lookup failed", exc_info=True)
     return {"message": "mcp-memu-server", "mcp": "enabled" if _has_mcp else "disabled"}
 
 
@@ -3280,12 +3282,12 @@ def _resolve_turn_timezone(safe: dict[str, Any]) -> Any | None:
         try:
             return ZoneInfo(str(tz_name))
         except (KeyError, OSError, ValueError):
-            pass
+            logger.debug("invalid time zone name: %s", tz_name, exc_info=True)
     if tz_off_min is not None:
         try:
             return timezone(timedelta(minutes=tz_off_min))
         except (TypeError, ValueError, OverflowError):
-            pass
+            logger.debug("invalid time zone offset minutes: %s", tz_off_min, exc_info=True)
     return None
 
 
@@ -5144,7 +5146,7 @@ async def conversation_turn(
                 if updated != soul_gen:
                     _save_soul_gen_config(uid, soul_id, updated)
             except (TypeError, ValueError):
-                pass
+                logger.debug("ignoring invalid temperature override: %r", req_temperature, exc_info=True)
 
         turn_system_prompt = payload_system_prompt or _make_turn_system_prompt(
             soul_id,
@@ -5364,4 +5366,4 @@ try:
     if _UI_DIST.exists():
         app.mount("/", StaticFiles(directory=str(_UI_DIST), html=True), name="ui")
 except Exception:
-    pass
+    logger.debug("static UI mount skipped", exc_info=True)
