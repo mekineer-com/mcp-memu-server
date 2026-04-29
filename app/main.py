@@ -1180,20 +1180,18 @@ def _count_soul_messages(history: list[dict[str, Any]], soul_id: str) -> int:
 def _get_service_from_payload(
     payload: dict[str, Any],
     *,
-    allow_missing_llm_profiles: bool = False,
     retrieve_method_override: str | None = None,
 ) -> MemoryService:
     service_key_raw = _derive_service_key(payload)
 
-    llm_profiles = payload.get("llm_profiles")
+    # Profile pool: server defaults from config.json are always loaded; client-supplied
+    # profiles merge on top per-key. Clients can send nothing, one override, or the full
+    # set. Same path for ST plugin, MCP clients, PicoClaw, test tools.
+    client_profiles = payload.get("llm_profiles") if isinstance(payload.get("llm_profiles"), dict) else {}
+    llm_profiles = {**_default_llm_profiles_from_server_config(), **client_profiles}
+    payload["llm_profiles"] = llm_profiles
     database_config = payload.get("database_config")
     blob_config = payload.get("blob_config")
-
-    if not isinstance(llm_profiles, dict):
-        if not allow_missing_llm_profiles:
-            raise HTTPException(status_code=400, detail="llm_profiles required")
-        llm_profiles = {}
-        payload["llm_profiles"] = llm_profiles
 
     if not isinstance(database_config, dict):
         scope_hint = _extract_scope(payload) if isinstance(payload, dict) else None
@@ -2013,7 +2011,7 @@ LIMIT 1
 
 def _assert_relationship_write_path(user_id: str, soul_id: str) -> tuple[MemoryService, Path]:
     scope = {"user_id": user_id, "soul_id": soul_id}
-    svc = _get_service_from_payload({"user": scope}, allow_missing_llm_profiles=True)
+    svc = _get_service_from_payload({"user": scope})
     db_path = _sqlite_current_path(user_id, soul_id)
     if db_path is None:
         raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
@@ -3920,8 +3918,6 @@ async def force_consolidation(
     pipeline_started = False
     try:
         safe = _safe_payload(payload)
-        if not isinstance(safe.get("llm_profiles"), dict):
-            safe["llm_profiles"] = _default_llm_profiles_from_server_config()
         scope = safe.get("user")
         if not isinstance(scope, dict):
             scope = _extract_scope(safe) or None
@@ -4031,7 +4027,7 @@ async def search_memory_categories(payload: dict[str, Any]):
     """Payload-driven category listing (matches SillyTavern plugin's local mode)."""
     try:
         safe = _safe_payload(payload)
-        svc = _get_service_from_payload(safe, allow_missing_llm_profiles=True)
+        svc = _get_service_from_payload(safe)
 
         scope = safe.get("scope") or safe.get("where")
         if scope is not None and not isinstance(scope, dict):
@@ -4383,8 +4379,7 @@ async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)
         f"{user_id}'s suggestion:\n{suggestion}"
     )
 
-    svc_payload = {"llm_profiles": _default_llm_profiles_from_server_config(), "user": {"user_id": user_id, "soul_id": soul_id}}
-    svc = _get_service_from_payload(svc_payload)
+    svc = _get_service_from_payload({"user": {"user_id": user_id, "soul_id": soul_id}})
     raw = await svc.chat(user_prompt, system_prompt=system_prompt, temperature=0.2, max_tokens=UTILITY_MAX_TOKENS, response_format={"type": "json_object"}, op="narrative_suggestion", step="respond")
 
     text = str(raw or "").strip()
@@ -4652,7 +4647,7 @@ async def clear_memory(payload: dict[str, Any]):
 
         safe["user"] = scope
 
-        svc = _get_service_from_payload(safe, allow_missing_llm_profiles=True)
+        svc = _get_service_from_payload(safe)
         deleted_categories = svc.database.memory_category_repo.clear_categories(where=scope)
         deleted_items = svc.database.memory_item_repo.clear_items(where=scope)
         deleted_resources = svc.database.resource_repo.clear_resources(where=scope)
@@ -4739,7 +4734,7 @@ async def timeline(
     as_of_dt = _parse_as_of_datetime(as_of)
     scope = {"user_id": uid, "soul_id": sid}
     safe = {"user": scope}
-    svc = _get_service_from_payload(safe, allow_missing_llm_profiles=True)
+    svc = _get_service_from_payload(safe)
 
     entities = svc.database.entity_repo.list_all(where=scope)
     query_norm = "_".join(entity_name.lower().split())
@@ -4843,8 +4838,6 @@ async def conversation_retrieve(
         raise HTTPException(status_code=400, detail="conversation_id is required")
     try:
         safe = _safe_payload(payload)
-        if not isinstance(safe.get("llm_profiles"), dict):
-            safe["llm_profiles"] = _default_llm_profiles_from_server_config()
         if safe.get("queries") is None:
             scope = _extract_scope(safe)
             uid = str(scope.get("user_id") or "").strip()
@@ -5111,8 +5104,6 @@ async def conversation_turn(
             raise HTTPException(status_code=400, detail="conversation_id is required")
 
         safe = _safe_payload(payload)
-        if not isinstance(safe.get("llm_profiles"), dict):
-            safe["llm_profiles"] = _default_llm_profiles_from_server_config()
 
         scope = safe.get("user")
         if not isinstance(scope, dict):
