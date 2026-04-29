@@ -541,7 +541,6 @@ def _default_config() -> dict[str, Any]:
         "categories": {
             "defaults": ["personal_info", "preferences", "relationships", "goals"],
             "max_total": 12,
-            "allow_dynamic_categories": True,
             "dynamic_category_cluster_size": 3,
         },
         "retrieve": {
@@ -1091,19 +1090,17 @@ def _derive_service_key(payload: dict[str, Any]) -> str:
 
 def _normalize_retrieve_method(value: Any, default: str = "rag") -> str:
     method = str(value or "").strip().lower()
-    return method if method in {"rag", "llm"} else default
+    return "rag" if method == "rag" else default
 
 
 def _retrieve_method_from_cfg(cfg: Mapping[str, Any] | None) -> str:
-    # Public retrieve is always "rag". The "llm" branch has been removed;
-    # force it here so a stale config entry can't resurrect it.
+    # Single-path retrieve: always rag.
     if not isinstance(cfg, Mapping):
         return "rag"
     retrieve = cfg.get("retrieve")
     if not isinstance(retrieve, Mapping):
         return "rag"
-    method = _normalize_retrieve_method(retrieve.get("method"), "rag")
-    return "rag" if method == "llm" else method
+    return _normalize_retrieve_method(retrieve.get("method"), "rag")
 
 
 def _retrieve_apimw_enabled_from_cfg(cfg: Mapping[str, Any] | None) -> bool:
@@ -1231,7 +1228,6 @@ def _get_service_from_payload(
         cats_cfg = (_CONFIG.get("categories") or {}) if isinstance(_CONFIG.get("categories"), dict) else {}
         if fixed_cats:
             memorize_config["memory_categories"] = fixed_cats
-        memorize_config["allow_dynamic_categories"] = bool(cats_cfg.get("allow_dynamic_categories", True))
         memorize_config["dynamic_category_cluster_size"] = int(cats_cfg.get("dynamic_category_cluster_size", 3) or 3)
         memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
         step_models = (_CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}).get("step_models", {})
@@ -2204,8 +2200,6 @@ async def _run_retrieve(
         safe["conversation_id"] = scoped_conversation_id
 
     method = _normalize_retrieve_method(safe.get("method"), _retrieve_method_from_cfg(_CONFIG))
-    if method == "llm":
-        raise HTTPException(status_code=400, detail="method=llm is internal-only; use method=rag")
     svc = _get_service_from_payload(safe, retrieve_method_override=method)
     scope = _extract_retrieve_where(safe)
     memu_queries = _extract_retrieve_queries(safe)

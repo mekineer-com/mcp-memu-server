@@ -60,8 +60,7 @@ The server runs on `http://127.0.0.1:8099` by default.
       { "name": "Preferences", "description": "..." },
       { "name": "Relationships", "description": "..." },
       { "name": "Experiences", "description": "..." }
-    ],
-    "allow_dynamic_categories": true
+    ]
   },
   "retrieve": { "method": "rag" },
   "consolidation_interval_days": 7

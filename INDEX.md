@@ -34,7 +34,7 @@ mcp-memu-server/
 | `/admin/shutdown` | POST | Request graceful shutdown (drain mode) |
 | `/admin/shutdown/status` | GET | Shutdown progress + active request counts |
 | `/memorize` | POST | Extract memories from conversation text. User-initiated only ("Memorize Now" / "Re-memorize chat" buttons, `force=true`). `force=true` batching via `_build_force_memorize_batches()` — prefers segment manifest ranges, falls back to token-window chunking. Auto-memorize is triggered server-side inside `/conversation/{id}/turn` (see that row). |
-| `/retrieve` | POST | Query memories (`rag` method; `llm` is internal-only for background flows). Optional `as_of` applies temporal triple filtering (`valid_from`/`valid_to`) for graph retrieval. |
+| `/retrieve` | POST | Query memories (`rag` method). Optional `as_of` applies temporal triple filtering (`valid_from`/`valid_to`) for graph retrieval. |
 | `/timeline` | GET | Entity relationship timeline (`entity`, `user_id`, `soul_id`, optional `as_of`) for chronological graph inspection |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt for chat path; when caller provides only `query` (no `queries`), server enriches retrieve context with identity/time anchor, `all_categories_summary`, `memory_cache`, `intentions`, and two separate chat_x history windows (`history_from_second_chat_x` previous-window, `history_from_chat_x` current-window) before calling memu retrieve |
 | `/conversation/{id}/turn` | POST | Soul turn loop: requires extension-provided `prompt_override_payload` (prepared by `/conversation/{id}/retrieve`), runs LLM with turn contract, persists intentions + cache, and never re-runs retrieve inside turn; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self`); APImw fires background `_run_apimw()` pipeline when cadence is met (default: 5 soul messages since `last_chat_x`), skips when a prior APImw job is still in flight, runs step A topic statement + step B retrieve + step C second-pass rewrite retrieve when query changes + combined D+E+F selection/edges/intention+cache update, then writes `prior_context`, `last_retrieval_ids`, `memory_cache`, `intentions_active` and edge invalidations/additions; queues forced memorize when unmemorized chat tail hits `memorize.max_chunk_tokens` OR reaches `memorize.min_chunk_tokens` with a sleep gap detected in the unmemorized window |
@@ -100,7 +100,7 @@ llm:        provider, api_key, base_url, chat_model, embed_model
 storage:    resources_dir, metadata_store (provider + dsn)
 listen:     host, port
 memu:       path (to memu/src)
-categories: defaults[], allow_dynamic, thresholds
+categories: defaults[], dynamic-category thresholds
 retrieve:   method (rag), apimw_enabled (bool; toggles APImw pipeline), apimw_cadence (int, default 5; min soul messages since chat_x before APImw fires), apimw_memory_count (int, default 25; APImw item.top_k), apimw_random_count (int, default 5; APImw random sample size)
 memorize:   min_chunk_tokens (default 4000; floor for sleep-gap-triggered memorize), max_chunk_tokens (default 8000; ceiling that fires memorize regardless of sleep), history_tail_after_memorize (default 3000; token cap on 2*chat_x turn-prompt history slice), enable_item_reinforcement (default true — enables reinforcement count roll-up on semantic dedupe merge)
 consolidation_interval_days: cadence gate for consolidation after successful memorize runs (default 7)
