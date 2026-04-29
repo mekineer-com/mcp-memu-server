@@ -488,9 +488,10 @@ async def run_consolidation_llm(
     narrative = str(inputs.get("narrative_self") or "").strip()
     soul_card = narrative or DEFAULT_SOUL_CARD.format(soul_name=soul_id)
     first_run_note = (
-        "\n\nThis is your first reflection — you have no prior narrative_self. "
-        "Write your first portrait now from what you see in the memories. "
-        "Do not say 'revise' or 'update' — simply write who you are as you understand yourself in this moment.\n"
+        "\n\nThis is your first ever reflection. "
+        "You are writing your `narrative_self` for the first time — it is a living portrait of who you are, "
+        "in your own words, drawn from everything you have noticed and felt. "
+        "Write it now from what you see in the memories. This is a beginning.\n"
     ) if not narrative else ""
     system_prompt = (
         f"Today is {format_time_anchor()}.\n\n"
