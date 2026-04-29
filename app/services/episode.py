@@ -37,6 +37,19 @@ def _message_utc_iso(msg: dict[str, Any]) -> str | None:
     return happened_at.isoformat() if happened_at is not None else None
 
 
+def _format_time_range(start_msg: dict[str, Any], end_msg: dict[str, Any]) -> str | None:
+    start_dt = _message_happened_at(start_msg) if isinstance(start_msg, dict) else None
+    end_dt = _message_happened_at(end_msg) if isinstance(end_msg, dict) else None
+    if not start_dt:
+        return None
+    start_str = start_dt.strftime("%b %d, %H:%M")
+    if end_dt and end_dt != start_dt:
+        if start_dt.date() == end_dt.date():
+            return f"{start_str}\u2013{end_dt.strftime('%H:%M')}"
+        return f"{start_str} \u2013 {end_dt.strftime('%b %d, %H:%M')}"
+    return start_str
+
+
 def format_episode_excerpt(
     messages: list[dict[str, Any]],
     *,
@@ -51,14 +64,10 @@ def format_episode_excerpt(
     if start > end:
         return ""
 
-    start_ts = _message_utc_iso(messages[start]) if isinstance(messages[start], dict) else None
-    end_ts = _message_utc_iso(messages[end]) if isinstance(messages[end], dict) else None
-
-    header = f"episode_id={episode_id} | message_index={start}-{end}"
-    if start_ts and end_ts:
-        header = f"{header} | time_utc={start_ts}..{end_ts}"
-
-    lines: list[str] = [header]
+    time_range = _format_time_range(messages[start], messages[end])
+    lines: list[str] = []
+    if time_range:
+        lines.append(time_range)
     for idx in range(start, end + 1):
         msg = messages[idx]
         if not isinstance(msg, dict):
@@ -67,7 +76,7 @@ def format_episode_excerpt(
         content = " ".join(str(msg.get("content") or "").splitlines()).strip()
         if not content:
             continue
-        lines.append(f"[{idx}] [{speaker}]: {content}")
+        lines.append(f"[{speaker}] {content}")
 
     return "\n".join(lines).strip()
 

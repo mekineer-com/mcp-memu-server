@@ -209,17 +209,15 @@ def _format_episode_block_for_prompt(episodes: list[dict[str, Any]]) -> str:
     if not episodes:
         return "(none queued)"
     lines: list[str] = []
-    for row in episodes:
-        episode_id = str(row.get("episode_id") or "").strip()
+    for idx, row in enumerate(episodes, 1):
         excerpt = str(row.get("excerpt") or "").strip()
         summaries = row.get("memory_summaries") or []
-        lines.append(f"Episode {episode_id}")
-        lines.append(excerpt or "(no excerpt)")
+        lines.append(f"Episode {idx}")
+        if excerpt:
+            lines.append(excerpt)
         if summaries:
-            lines.append("Extracted memory summaries:")
-            lines.extend(f"- {summary}" for summary in summaries if str(summary).strip())
-        else:
-            lines.append("Extracted memory summaries: (none)")
+            lines.append("What was extracted:")
+            lines.extend(f"- {s}" for s in summaries if str(s).strip())
         lines.append("")
     return "\n".join(lines).strip()
 
