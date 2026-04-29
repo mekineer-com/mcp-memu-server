@@ -62,8 +62,7 @@
     ],
     "max_total": 12,
     "allow_dynamic_categories": true,
-    "dynamic_category_cluster_size": 3,
-    "homeless_trigger_count": 10
+    "dynamic_category_cluster_size": 3
   },
   "memorize": {
     "min_chunk_tokens": 4000,

@@ -215,6 +215,45 @@ def test_parse_as_of_datetime_rejects_invalid():
         main._parse_as_of_datetime("not-a-date")
 
 
+@pytest.mark.asyncio
+async def test_run_memorize_batches_clears_progress_on_exception():
+    class _FailingService:
+        async def memorize(self, **_kwargs):
+            raise RuntimeError("boom")
+
+    user_id = "u"
+    soul_id = "s"
+    key = main._memorize_lock_key(user_id, soul_id)
+    main._MEMORIZE_PROGRESS.pop(key, None)
+    main._MEMORIZE_CANCEL.discard(key)
+
+    with pytest.raises(RuntimeError):
+        await main._run_memorize_batches(
+            memorize_batches=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0)],
+            svc=_FailingService(),
+            scope={"user_id": user_id, "soul_id": soul_id},
+            conversation_id=None,
+            soul_id=soul_id,
+            uid=user_id,
+            processed_cursor=-1,
+            safe={},
+            resource_url="/tmp/day.json",
+            chat_file=None,
+            resource_url_in=None,
+            chat_key=None,
+            chat_key_source=None,
+            tz_name=None,
+            prev_len=0,
+            merged_len=1,
+            force=True,
+            days_written=0,
+            sleep_stats=None,
+        )
+
+    assert key not in main._MEMORIZE_PROGRESS
+    assert key not in main._MEMORIZE_CANCEL
+
+
 def test_timeline_endpoint_returns_entity_edges(monkeypatch: pytest.MonkeyPatch):
     class _EntityRepo:
         def list_all(self, where=None):

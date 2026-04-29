@@ -543,8 +543,6 @@ def _default_config() -> dict[str, Any]:
             "max_total": 12,
             "allow_dynamic_categories": True,
             "dynamic_category_cluster_size": 3,
-            "category_centroid_threshold": 0.65,
-            "homeless_trigger_count": 10,
         },
         "retrieve": {
             "method": "rag",
@@ -1228,10 +1226,6 @@ def _get_service_from_payload(
             memorize_config["memory_categories"] = fixed_cats
         memorize_config["allow_dynamic_categories"] = bool(cats_cfg.get("allow_dynamic_categories", True))
         memorize_config["dynamic_category_cluster_size"] = int(cats_cfg.get("dynamic_category_cluster_size", 3) or 3)
-        memorize_config["category_centroid_threshold"] = float(
-            cats_cfg.get("category_centroid_threshold", 0.65) or 0.65
-        )
-        memorize_config["homeless_trigger_count"] = int(cats_cfg.get("homeless_trigger_count", 10) or 10)
         memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
         step_models = (_CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}).get("step_models", {})
         if isinstance(step_models, dict):
@@ -3489,6 +3483,8 @@ async def _run_memorize_batches(
     processed_end_cursor = processed_cursor
     current_all_categories_summary: str | None = None
     soul_card_for_memorize: str | None = None
+    cached_retrieval_ids: list[str] = []
+    cached_prior_context_ids: list[str] = []
 
     # Phase 1: read initial state under lock.
     async with mem_lock:
@@ -3499,11 +3495,9 @@ async def _run_memorize_batches(
                 soul_id=soul_id,
             )
             current_all_categories_summary = str(state_row.get("all_categories_summary") or "").strip() or None
-            cached_retrieval_ids: list[str] = []
             raw_ret_ids = state_row.get("retrieval_ids_since_consolidation")
             if isinstance(raw_ret_ids, list):
                 cached_retrieval_ids = [str(rid).strip() for rid in raw_ret_ids if str(rid).strip()]
-            cached_prior_context_ids: list[str] = []
             raw_pc_ids = state_row.get("prior_context_ids_since_consolidation")
             if isinstance(raw_pc_ids, list):
                 cached_prior_context_ids = [str(rid).strip() for rid in raw_pc_ids if str(rid).strip()]
@@ -3512,107 +3506,108 @@ async def _run_memorize_batches(
     total_batches = len(memorize_batches)
     progress_key = _memorize_lock_key(uid, soul_id)
     _MEMORIZE_PROGRESS[progress_key] = {"current": 0, "total": total_batches}
-    for batch_idx, (batch_url, batch_conv, batch_end) in enumerate(memorize_batches):
-        if progress_key in _MEMORIZE_CANCEL:
-            _MEMORIZE_CANCEL.discard(progress_key)
-            logger.info("memorize cancelled after batch %d/%d", batch_idx, total_batches)
-            break
-        _MEMORIZE_PROGRESS[progress_key] = {"current": batch_idx + 1, "total": total_batches}
-        # LLM call outside the lock — can take several seconds.
-        batch_result = await svc.memorize(
-            resource_url=batch_url,
-            modality="conversation",
-            user=scope,
-            raw_text=json.dumps(batch_conv, ensure_ascii=False),
-            local_path=batch_url,
-            all_categories_summary=current_all_categories_summary,
-            soul_card=soul_card_for_memorize,
-            memory_retrieve_history=cached_retrieval_ids or None,
-            memory_prior_context=cached_prior_context_ids or None,
-        )
-        if isinstance(batch_result, dict):
-            has_batch_results = True
-            pending_episode_ids.extend(_normalize_text_list(batch_result.get("pending_episode_ids")))
-            if conversation_id:
-                # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
-                async with mem_lock:
-                    fresh_row, _, _ = _load_turn_state_and_soul_card(
-                        conversation_id,
-                        user_id=uid,
-                        soul_id=soul_id,
-                    )
-                    fresh_cursor = int(fresh_row.get("digest_cursor") or 0)
-                    if fresh_cursor <= batch_end:
-                        processed_end_cursor = max(processed_end_cursor, batch_end)
-                        # per-batch advance — crash recovery needs the cursor to move after each successful batch
-                        _write_conversation_state(
+    try:
+        for batch_idx, (batch_url, batch_conv, batch_end) in enumerate(memorize_batches):
+            if progress_key in _MEMORIZE_CANCEL:
+                _MEMORIZE_CANCEL.discard(progress_key)
+                logger.info("memorize cancelled after batch %d/%d", batch_idx, total_batches)
+                break
+            _MEMORIZE_PROGRESS[progress_key] = {"current": batch_idx + 1, "total": total_batches}
+            # LLM call outside the lock — can take several seconds.
+            batch_result = await svc.memorize(
+                resource_url=batch_url,
+                modality="conversation",
+                user=scope,
+                raw_text=json.dumps(batch_conv, ensure_ascii=False),
+                local_path=batch_url,
+                all_categories_summary=current_all_categories_summary,
+                soul_card=soul_card_for_memorize,
+                memory_retrieve_history=cached_retrieval_ids or None,
+                memory_prior_context=cached_prior_context_ids or None,
+            )
+            if isinstance(batch_result, dict):
+                has_batch_results = True
+                pending_episode_ids.extend(_normalize_text_list(batch_result.get("pending_episode_ids")))
+                if conversation_id:
+                    # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
+                    async with mem_lock:
+                        fresh_row, _, _ = _load_turn_state_and_soul_card(
                             conversation_id,
-                            soul_id=soul_id,
                             user_id=uid,
-                            updates={
-                                "digest_cursor": processed_end_cursor,
-                            },
+                            soul_id=soul_id,
                         )
-                    else:
-                        # Another runner advanced the cursor past our batch_end; honour the further value.
-                        processed_end_cursor = max(processed_end_cursor, fresh_cursor)
+                        fresh_cursor = int(fresh_row.get("digest_cursor") or 0)
+                        if fresh_cursor <= batch_end:
+                            processed_end_cursor = max(processed_end_cursor, batch_end)
+                            # per-batch advance — crash recovery needs the cursor to move after each successful batch
+                            _write_conversation_state(
+                                conversation_id,
+                                soul_id=soul_id,
+                                user_id=uid,
+                                updates={
+                                    "digest_cursor": processed_end_cursor,
+                                },
+                            )
+                        else:
+                            # Another runner advanced the cursor past our batch_end; honour the further value.
+                            processed_end_cursor = max(processed_end_cursor, fresh_cursor)
 
-    # Phase 3: holistic summary LLM call — outside the lock.
-    if conversation_id and has_batch_results:
-        current_all_categories_summary = await _compute_holistic_categories_summary(
-            svc=svc,
-            soul_id=soul_id,
-            user_id=uid,
-        )
-
-    # Phase 4: final state flush + bookkeeping under lock.
-    async with mem_lock:
+        # Phase 3: holistic summary LLM call — outside the lock.
         if conversation_id and has_batch_results:
-            _write_conversation_state(
-                conversation_id,
+            current_all_categories_summary = await _compute_holistic_categories_summary(
+                svc=svc,
                 soul_id=soul_id,
                 user_id=uid,
-                updates={
-                    # final flush once all batches commit — also writes the holistic summary atomically
-                    "digest_cursor": max(0, processed_end_cursor),
-                    "last_memorize_at": datetime.now(UTC).isoformat(),
-                    "append_pending_episode_ids": pending_episode_ids,
-                    "all_categories_summary": current_all_categories_summary,
-                },
             )
 
-        # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
-        if conversation_id and has_batch_results:
-            _consol_profile = str(safe.get("consolidation_llm_profile") or "").strip() or None
-            asyncio.create_task(_run_consolidation_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid, consolidation_llm_profile=_consol_profile))
+        # Phase 4: final state flush + bookkeeping under lock.
+        async with mem_lock:
+            if conversation_id and has_batch_results:
+                _write_conversation_state(
+                    conversation_id,
+                    soul_id=soul_id,
+                    user_id=uid,
+                    updates={
+                        # final flush once all batches commit — also writes the holistic summary atomically
+                        "digest_cursor": max(0, processed_end_cursor),
+                        "last_memorize_at": datetime.now(UTC).isoformat(),
+                        "append_pending_episode_ids": pending_episode_ids,
+                        "all_categories_summary": current_all_categories_summary,
+                    },
+                )
 
+            # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
+            if conversation_id and has_batch_results:
+                _consol_profile = str(safe.get("consolidation_llm_profile") or "").strip() or None
+                asyncio.create_task(_run_consolidation_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid, consolidation_llm_profile=_consol_profile))
+
+            _record_call(
+                "memorize",
+                safe,
+                ok=True,
+                info={
+                    "resource_url": resource_url,
+                    "conversationId": conversation_id,
+                    "chatFileName": chat_file,
+                    "resourceUrlIn": resource_url_in,
+                    "chatKey": chat_key,
+                    "chatKeySource": chat_key_source or "",
+                    "timeZone": tz_name,
+                    "messages_prev": prev_len,
+                    "messages_in": merged_len,
+                    "messages_merged": merged_len,
+                    "force": force,
+                    "memorizeBatchCount": len(memorize_batches),
+                    "minChunkTokens": _MIN_CHUNK_TOKENS,
+                    "memorizeDeferred": not force and not has_batch_results,
+                    "days_written": days_written,
+                    "sleepSplitMinLullSeconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
+                    "sleepSplitStats": sleep_stats,
+                },
+            )
+    finally:
         _MEMORIZE_PROGRESS.pop(progress_key, None)
         _MEMORIZE_CANCEL.discard(progress_key)
-
-        _record_call(
-            "memorize",
-            safe,
-            ok=True,
-            info={
-                "resource_url": resource_url,
-                "conversationId": conversation_id,
-                "chatFileName": chat_file,
-                "resourceUrlIn": resource_url_in,
-                "chatKey": chat_key,
-                "chatKeySource": chat_key_source or "",
-                "timeZone": tz_name,
-                "messages_prev": prev_len,
-                "messages_in": merged_len,
-                "messages_merged": merged_len,
-                "force": force,
-                "memorizeBatchCount": len(memorize_batches),
-                "minChunkTokens": _MIN_CHUNK_TOKENS,
-                "memorizeDeferred": not force and not has_batch_results,
-                "days_written": days_written,
-                "sleepSplitMinLullSeconds": _SLEEP_SPLIT_MIN_LULL_SECONDS,
-                "sleepSplitStats": sleep_stats,
-            },
-        )
 
 
 # ---- Memorize endpoint ----
