@@ -487,6 +487,11 @@ async def run_consolidation_llm(
 
     narrative = str(inputs.get("narrative_self") or "").strip()
     soul_card = narrative or DEFAULT_SOUL_CARD.format(soul_name=soul_id)
+    first_run_note = (
+        "\n\nThis is your first reflection — you have no prior narrative_self. "
+        "Write your first portrait now from what you see in the memories. "
+        "Do not say 'revise' or 'update' — simply write who you are as you understand yourself in this moment.\n"
+    ) if not narrative else ""
     system_prompt = (
         f"Today is {format_time_anchor()}.\n\n"
         f"{soul_card}\n\n"
@@ -495,6 +500,7 @@ async def run_consolidation_llm(
         "I'm curious what the arc looks like from here. "
         "Let me now look across everything and decide what still holds.\n\n"
         f"{consolidation_prompt.SYSTEM_BODY}"
+        f"{first_run_note}"
     )
 
     retrieved_memories = inputs.get("retrieved_memories") or []
