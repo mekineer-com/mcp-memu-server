@@ -216,7 +216,7 @@ def _format_episode_block_for_prompt(episodes: list[dict[str, Any]]) -> str:
         if excerpt:
             lines.append(excerpt)
         if summaries:
-            lines.append("What was extracted:")
+            lines.append(f"Episode {idx} memories:")
             lines.extend(f"- {s}" for s in summaries if str(s).strip())
         lines.append("")
     return "\n".join(lines).strip()
