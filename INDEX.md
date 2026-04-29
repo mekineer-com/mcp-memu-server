@@ -14,6 +14,7 @@ mcp-memu-server/
 ├── app/models/base.py       # Declarative ORM base
 ├── app/services/consolidation.py # Weekly consolidation pipeline
 ├── app/services/diary.py    # Diary helper primitives used by consolidation
+├── app/services/memorize_endpoint.py # /memorize orchestration + sleep-gap/token batching helpers
 ├── app/services/state.py    # Conversation state read/write/search
 ├── app/api/v1/              # Empty — routes not yet split from main.py
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
@@ -63,6 +64,7 @@ mcp-memu-server/
 | `app/services/consolidation.py` | Consolidation pipeline: gather queue/context, run one consolidation LLM call, write narrative_self + life-goal edits + companion memory + per-episode diary rows, and clear queue/flags. |
 | `app/services/diary.py` | Diary helpers for consolidation: episode parsing/excerpts, diary XML parsing, and diary/companion memory write helpers. |
 | `app/services/graph_edges.py` | Shared edge normalization + write/invalidate helpers used by APImw and consolidation (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`). |
+| `app/services/memorize_endpoint.py` | `/memorize` endpoint core, forced-memorize background runner, batch execution, progress/cancel handlers, and chat sleep-gap/token chunking helpers. |
 | `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, `pending_diary_episode_ids` queue management |
 | `app/services/turn_contract.py` | `make_turn_system_prompt()`, `build_turn_prompt()`, `parse_turn_contract()` — soul turn prompt construction and JSON contract parsing; temporal awareness: system prompt includes `Today is [date].` anchor; `Retrieved memory context` section includes all-categories orientation first, then retrieved category/item hits; when retrieved items include speaker metadata it renders a compact `Speakers:` block and memory lines as `[memory_type][speaker_label]`; memory lines include relative-time labels from `happened_at` and `reinforced Nx` suffix from `reinforcement_count` |
 | `app/services/intention_state.py` | `normalize_intentions_stack()`, `format_intentions_for_prompt()`, `upsert_intentions_stack_entries()` — intentions normalization and prompt formatting |
