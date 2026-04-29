@@ -38,6 +38,31 @@ from memu.app import MemoryService
 from pydantic import BaseModel
 
 from app import procedural as _procedural
+from app.config import (
+    STARTUP_WARNINGS as _STARTUP_WARNINGS,
+    STORAGE_STATUS as _STORAGE_STATUS,
+    blob_config_from_cfg as _blob_config_from_cfg,
+    categories_from_cfg as _categories_from_cfg,
+    config_path as _config_path,
+    database_config_from_cfg as _database_config_from_cfg,
+    default_llm_profiles_from_server_config as _default_llm_profiles_from_server_config,
+    ensure_storage_paths as _ensure_storage_paths,
+    get_storage_dir as _get_storage_dir,
+    is_ephemeral_db as _is_ephemeral_db,
+    load_config as _load_config,
+    load_soul_gen_config as _load_soul_gen_config,
+    mask_config as _mask_config,
+    normalize_sqlite_dsn as _normalize_sqlite_dsn,
+    procedural_db_path as _procedural_db_path,
+    procedural_should_ingest as _procedural_should_ingest,
+    procedural_yaml_dir as _procedural_yaml_dir,
+    sanitize_db_filename as _sanitize_db_filename,
+    save_config as _save_config,
+    save_soul_gen_config as _save_soul_gen_config,
+    sqlite_dir_from_cfg as _sqlite_dir_from_cfg,
+    sqlite_dsn_for_scope as _sqlite_dsn_for_scope,
+    sqlite_file_from_dsn as _sqlite_file_from_dsn,
+)
 from app.db import (
     json_from_db as _json_from_db,
     json_to_db as _json_to_db,
@@ -473,271 +498,10 @@ async def _trace_requests(request: Request, call_next):
 
 # ==== Config loading & storage paths ====
 
-def _is_ephemeral_db(cfg: dict[str, Any]) -> bool:
-    if not isinstance(cfg, dict):
-        return False
-    storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
-    ms = storage.get("metadata_store") if isinstance(storage.get("metadata_store"), dict) else {}
-    provider = str(ms.get("provider") or "").lower()
-    dsn = str(ms.get("dsn") or "")
-
-    if provider in ("memory", "inmemory", "in-memory"):
-        return True
-    if provider == "sqlite" and ":memory:" in dsn:
-        return True
-    return False
-
 
 class STUserModel(BaseModel):
     user_id: str | None = None
     soul_id: str | None = None
-
-
-def _home_dir() -> Path:
-    h = os.getenv("HOME") or os.getenv("USERPROFILE") or "."
-    return Path(h).expanduser().resolve()
-
-
-def _default_config() -> dict[str, Any]:
-    home = _home_dir()
-
-    memu_guess = None
-    for cand in (home / "apps" / "memu-1.4.0", home / "apps" / "memu"):
-        if cand.exists():
-            memu_guess = cand
-            break
-
-    sqlite_path = Path(":memory:")  # placeholder; per-soul dbs resolved per-request
-    resources_dir = home / "apps" / "memu" / "resources"
-
-    return {
-        "memu": {
-            "path": str(memu_guess) if memu_guess else "",
-        },
-        "python": {
-            "executable": "",
-            "force_venv": False,
-        },
-        "pid_file": str(home / "apps" / "mcp-memu-server" / ".memu-server.pid"),
-        "listen": {"host": "127.0.0.1", "port": 8099},
-        "llm": {
-            "provider": "openai",
-            "api_key": "",
-            "base_url": "https://api.openai.com/v1",
-            "chat_model": "",
-            "embed_model": "",
-            "client_backend": "httpx",
-            "endpoint_overrides": {},
-        },
-        "storage": {
-            "resources_dir": str(resources_dir),
-            "metadata_store": {
-                "provider": "sqlite",
-                "dsn": "sqlite:///:memory:",
-                "ddl_mode": "create",
-            },
-            "sqlite_dir": str(sqlite_path.parent),
-        },
-        "categories": {
-            "defaults": ["personal_info", "preferences", "relationships", "goals"],
-            "max_total": 12,
-            "dynamic_category_cluster_size": 3,
-        },
-        "retrieve": {
-            "method": "rag",
-            "apimw_enabled": True,
-            "apimw_cadence": 5,
-            "apimw_memory_count": 25,
-            "apimw_random_count": 5,
-        },
-        "consolidation_interval_days": 7,
-        "procedural": {
-            "yaml_dir": "../memu/procedural",
-            "db_path": "../memu/sqlite/procedural.db",
-        },
-        "mcp": {"http_path": "/mcp", "sse_path": "/sse"},
-    }
-
-
-def _config_path() -> Path:
-    return (Path(__file__).resolve().parents[1] / "config.json").resolve()
-
-
-def _config_dir() -> Path:
-    return _config_path().parent
-
-
-def _resolve_cfg_path(raw: str) -> Path:
-    p = Path(str(raw or "")).expanduser()
-    if p.is_absolute():
-        return p.resolve()
-    return (_config_dir() / p).resolve()
-
-
-def _load_config() -> dict[str, Any]:
-    p = _config_path()
-    if not p.exists():
-        p.parent.mkdir(parents=True, exist_ok=True)
-        cfg = _default_config()
-        p.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-        _ensure_storage_paths(cfg)
-        return cfg
-    try:
-        raw = p.read_text(encoding="utf-8")
-        cfg = json.loads(raw) if raw.strip() else _default_config()
-        if not isinstance(cfg, dict):
-            cfg = _default_config()
-        _ensure_storage_paths(cfg)
-        return cfg
-    except Exception:
-        traceback.print_exc()
-        cfg = _default_config()
-        _ensure_storage_paths(cfg)
-        return cfg
-
-
-_STARTUP_WARNINGS: list[str] = []
-
-_STORAGE_STATUS: dict[str, Any] = {
-    "ok": None,
-    "provider": None,
-    "dsn": None,
-    "sqlite_path": None,
-    "sqlite_parent": None,
-    "sqlite_exists": None,
-    "sqlite_open_ok": None,
-    "sqlite_dir": None,
-    "error": None,
-}
-
-
-def _sqlite_file_from_dsn(dsn: str) -> Path | None:
-    """Parse a sqlite DSN into a filesystem path (minimal).
-
-    Supports:
-      sqlite:////abs/path.db
-      sqlite:////abs/path.db?query
-      sqlite:///abs-or-relative.db
-
-    Returns None for :memory: or unknown formats.
-    """
-    if not isinstance(dsn, str):
-        return None
-    dsn = dsn.strip()
-    if not dsn or ":memory:" in dsn:
-        return None
-
-    base = dsn.split("?", 1)[0]
-    if base.startswith("sqlite:////"):
-        return Path("/" + base[len("sqlite:////") :])
-    if base.startswith("sqlite:///"):
-        return Path(base[len("sqlite:///") :])
-    return None
-
-
-def _normalize_sqlite_dsn(dsn_or_path: str) -> str:
-    """Accept either a sqlite DSN or a plain filesystem path.
-
-    Users frequently paste a path like "/home/.../memu.db" instead of a DSN.
-    This converts it into a correct absolute sqlite DSN.
-    """
-    raw = str(dsn_or_path or "").strip()
-    if not raw:
-        return raw
-    if raw == ":memory:" or raw.lower() == "memory":
-        return "sqlite:///:memory:"
-    if raw.startswith("sqlite:"):
-        f = _sqlite_file_from_dsn(raw)
-        if f is None:
-            return raw
-        p = f.expanduser()
-        if not p.is_absolute():
-            p = (_config_dir() / p).resolve()
-        else:
-            p = p.resolve()
-        return f"sqlite:////{p.as_posix().lstrip('/')}"
-
-    p = _resolve_cfg_path(raw)
-    return f"sqlite:////{p.as_posix().lstrip('/')}"
-
-
-
-
-def _sqlite_dir_from_cfg(cfg: dict[str, Any], fallback_dsn: str | None = None) -> Path:
-    storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
-    d = storage.get("sqlite_dir")
-    if isinstance(d, str) and d.strip():
-        return _resolve_cfg_path(d)
-
-    if fallback_dsn:
-        f = _sqlite_file_from_dsn(str(fallback_dsn))
-        if f is not None:
-            return f.expanduser().resolve().parent
-
-    return (_config_dir() / "sqlite").resolve()
-
-
-def _ensure_storage_paths(cfg: dict[str, Any]) -> None:
-    global _STORAGE_STATUS
-    try:
-        storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
-
-        resources_dir = storage.get("resources_dir")
-        if isinstance(resources_dir, str) and resources_dir.strip():
-            _resolve_cfg_path(resources_dir).mkdir(parents=True, exist_ok=True)
-
-        ms = storage.get("metadata_store") if isinstance(storage.get("metadata_store"), dict) else {}
-        provider = str(ms.get("provider") or "").lower()
-        dsn = str(ms.get("dsn") or "")
-
-        _STORAGE_STATUS = {
-            "ok": True,
-            "provider": provider or None,
-            "dsn": dsn or None,
-            "sqlite_path": None,
-            "sqlite_parent": None,
-            "sqlite_exists": None,
-            "sqlite_open_ok": None,
-            "sqlite_dir": str(_sqlite_dir_from_cfg(cfg, dsn)),
-            "error": None,
-        }
-
-        if provider == "sqlite":
-            dsn = _normalize_sqlite_dsn(dsn)
-            _STORAGE_STATUS["dsn"] = dsn or None
-            ms["dsn"] = dsn
-
-            sqlite_dir = _sqlite_dir_from_cfg(cfg, dsn)
-            if sqlite_dir is not None:
-                sqlite_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                test_path = (sqlite_dir / ".write_test") if sqlite_dir is not None else None
-                if test_path is not None:
-                    test_path.write_text("ok", encoding="utf-8")
-                    test_path.unlink(missing_ok=True)
-            except Exception as e:
-                _STORAGE_STATUS["sqlite_open_ok"] = False
-                _STORAGE_STATUS["ok"] = False
-                _STORAGE_STATUS["error"] = f"sqlite_dir_write: {type(e).__name__}: {e}"
-                _STARTUP_WARNINGS.append(_STORAGE_STATUS["error"])
-    except Exception as e:
-        _STORAGE_STATUS["ok"] = False
-        _STORAGE_STATUS["error"] = f"storage_paths: {type(e).__name__}: {e}"
-        _STARTUP_WARNINGS.append(_STORAGE_STATUS["error"])
-
-
-def _save_config(cfg: dict[str, Any]) -> None:
-    p = _config_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-
-
-def _mask_config(cfg: dict[str, Any]) -> dict[str, Any]:
-    out = json.loads(json.dumps(cfg))
-    key = out.get("llm", {}).get("api_key", "")
-    if isinstance(key, str) and key:
-        out["llm"]["api_key"] = key[:4] + "..." + key[-4:]
-    return out
 
 
 _CONFIG: dict[str, Any] = _load_config()
@@ -820,182 +584,6 @@ _refresh_runtime_limits()
 _DIAG_PREFIX: str = str(_CONFIG.get("mcp", {}).get("http_path") or "/mcp").rstrip("/")
 if _DIAG_PREFIX == "":
     _DIAG_PREFIX = "/mcp"
-
-
-# ==== Categories & procedural paths ====
-
-def _categories_from_cfg(cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    cats_cfg = cfg.get("categories") if isinstance(cfg.get("categories"), dict) else {}
-    raw = cats_cfg.get("defaults") if isinstance(cats_cfg.get("defaults"), list) else []
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    for c in raw:
-        name = None
-        desc = ""
-        if isinstance(c, str):
-            name = c.strip()
-        elif isinstance(c, dict):
-            name = str(c.get("name") or "").strip()
-            desc = str(c.get("description") or "").strip()
-        if not name:
-            continue
-        key = name.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({"name": name, "description": desc})
-    return out
-
-
-def _get_storage_dir(cfg: dict[str, Any]) -> Path:
-    d = _resolve_cfg_path(str(cfg.get("storage", {}).get("resources_dir") or "./storage"))
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _procedural_yaml_dir(cfg: dict[str, Any]) -> Path:
-    raw = str((cfg.get("procedural") or {}).get("yaml_dir") or "../memu/procedural")
-    return _resolve_cfg_path(raw)
-
-
-def _procedural_db_path(cfg: dict[str, Any]) -> Path:
-    raw = str((cfg.get("procedural") or {}).get("db_path") or "../memu/sqlite/procedural.db")
-    return _resolve_cfg_path(raw)
-
-
-def _procedural_should_ingest(db_path: Path, yaml_dir: Path) -> bool:
-    if not yaml_dir.exists():
-        return False
-    if not db_path.exists():
-        return True
-    db_mtime = db_path.stat().st_mtime
-    return any(yf.stat().st_mtime > db_mtime for yf in yaml_dir.glob("*.yaml"))
-
-
-def _sanitize_db_filename(name: str) -> str:
-    s = str(name or "").strip()
-    s = re.sub(r"[^A-Za-z0-9._-]+", "_", s)
-    s = s.strip("._-")
-    if not s:
-        s = "unknown"
-    return s[:80]
-
-
-# ==== Soul generation config ====
-
-def _soul_gen_config_path(user_id: str, soul_id: str) -> Path:
-    user_part = _sanitize_db_filename(user_id)
-    soul_part = _sanitize_db_filename(soul_id)
-    return _sqlite_dir_from_cfg(_CONFIG) / f"{user_part}__{soul_part}.gen.json"
-
-
-def _load_soul_gen_config(user_id: str, soul_id: str) -> dict[str, Any]:
-    p = _soul_gen_config_path(user_id, soul_id)
-    if not p.exists():
-        return {}
-    raw = p.read_text(encoding="utf-8")
-    if not raw.strip():
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except Exception:
-        logger.warning("Ignoring invalid soul generation config at %s", p, exc_info=True)
-        return {}
-    if not isinstance(parsed, dict):
-        logger.warning("Ignoring non-object soul generation config at %s (type=%s)", p, type(parsed).__name__)
-        return {}
-    return parsed
-
-
-def _save_soul_gen_config(user_id: str, soul_id: str, cfg: dict[str, Any]) -> None:
-    _soul_gen_config_path(user_id, soul_id).write_text(json.dumps(cfg, indent=2))
-
-
-# ==== Service resolution & caching ====
-
-def _sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, Any] | None) -> str:
-    if not isinstance(scope, dict):
-        scope = {}
-
-    soul_id = str(scope.get("soul_id") or "").strip()
-
-    sqlite_dir = _sqlite_dir_from_cfg(cfg, fallback_dsn=base_dsn)
-    sqlite_dir.mkdir(parents=True, exist_ok=True)
-
-    if not soul_id:
-        return base_dsn
-
-    basename = _sanitize_db_filename(soul_id)
-    db_path = (sqlite_dir / f"{basename}.db").resolve()
-    _sqlite_ensure_nonempty(db_path)
-    return f"sqlite:////{db_path.as_posix().lstrip('/')}"
-
-
-def _database_config_from_cfg(cfg: dict[str, Any], scope: dict[str, Any] | None = None) -> dict[str, Any]:
-    storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
-    meta = storage.get("metadata_store") if isinstance(storage.get("metadata_store"), dict) else {}
-
-    provider = meta.get("provider") or "sqlite"
-    provider = str(provider).strip().lower() or "sqlite"
-    if provider == "inmemory":
-        provider = "sqlite"
-
-    dsn = meta.get("dsn")
-    if not dsn:
-        if provider == "sqlite":
-            dsn = _default_config()["storage"]["metadata_store"]["dsn"]
-        else:
-            raise RuntimeError("Postgres selected but no DSN set (storage.metadata_store.dsn).")
-
-    if provider == "sqlite":
-        dsn = _normalize_sqlite_dsn(str(dsn))
-        dsn = _sqlite_dsn_for_scope(cfg, dsn, scope or {})
-
-    ddl_mode = meta.get("ddl_mode") or "create"
-
-    return {
-        "metadata_store": {
-            "provider": provider,
-            "dsn": dsn,
-            "ddl_mode": ddl_mode,
-        }
-    }
-
-
-def _blob_config_from_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
-    return {"resources_dir": str(_get_storage_dir(cfg))}
-
-
-def _default_llm_profiles_from_server_config() -> dict[str, Any]:
-    llm = _CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}
-    api_key = str(llm.get("api_key") or "")
-    base_url = str(llm.get("base_url") or "https://api.openai.com/v1")
-    chat_model = str(llm.get("chat_model") or "")
-    embed_model = str(llm.get("embed_model") or "")
-    provider = str(llm.get("provider") or "openai")
-    client_backend = str(llm.get("client_backend") or "httpx")
-    endpoint_overrides = llm.get("endpoint_overrides") or {}
-    default_profile = {
-        "provider": provider,
-        "api_key": api_key,
-        "base_url": base_url,
-        "chat_model": chat_model,
-        "embed_model": embed_model,
-        "client_backend": client_backend,
-        "endpoint_overrides": endpoint_overrides,
-    }
-    profiles = {
-        "default": default_profile,
-        "embedding": {**default_profile},
-    }
-    step_models = llm.get("step_models")
-    if isinstance(step_models, dict):
-        for step_name, model in step_models.items():
-            model_str = str(model or "").strip()
-            if model_str:
-                profiles[step_name] = {**default_profile, "chat_model": model_str}
-    return profiles
 
 
 def _resolve_profile(svc: Any, name: str | None) -> str | None:
@@ -1194,7 +782,7 @@ def _get_service_from_payload(
     # profiles merge on top per-key. Clients can send nothing, one override, or the full
     # set. Same path for ST plugin, MCP clients, PicoClaw, test tools.
     client_profiles = payload.get("llm_profiles") if isinstance(payload.get("llm_profiles"), dict) else {}
-    llm_profiles = {**_default_llm_profiles_from_server_config(), **client_profiles}
+    llm_profiles = {**_default_llm_profiles_from_server_config(_CONFIG), **client_profiles}
     payload["llm_profiles"] = llm_profiles
     database_config = payload.get("database_config")
     blob_config = payload.get("blob_config")
@@ -4002,7 +3590,7 @@ async def list_memory_categories(user_id: str = "", soul_id: str = "", include_e
     if user_id.strip():
         scope["user_id"] = user_id.strip()
 
-    default_profile = _default_llm_profiles_from_server_config()["default"]
+    default_profile = _default_llm_profiles_from_server_config(_CONFIG)["default"]
 
     payload = {
         "llm_profiles": {
@@ -5181,7 +4769,7 @@ async def conversation_turn(
                 dry_run, history_full,
             )
 
-        soul_gen = _load_soul_gen_config(uid, soul_id)
+        soul_gen = _load_soul_gen_config(_CONFIG, uid, soul_id, logger=logger)
         turn_temperature: float = float(soul_gen.get("temperature", 0.2))
         turn_response_format: Any = {"type": "json_object"}
         req_temperature = safe.get("temperature")
@@ -5191,7 +4779,7 @@ async def conversation_turn(
                 updated["temperature"] = float(req_temperature)
                 turn_temperature = updated["temperature"]
                 if updated != soul_gen:
-                    _save_soul_gen_config(uid, soul_id, updated)
+                    _save_soul_gen_config(_CONFIG, uid, soul_id, updated)
             except (TypeError, ValueError):
                 logger.debug("ignoring invalid temperature override: %r", req_temperature, exc_info=True)
 

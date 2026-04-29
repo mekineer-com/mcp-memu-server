@@ -8,6 +8,7 @@
 ```
 mcp-memu-server/
 ├── app/main.py              # Endpoints + remaining business logic (~3,000 lines)
+├── app/config.py            # Runtime config load/save/mask + path + sqlite DSN helpers
 ├── app/db.py                # SQLite helpers, schema ensures, JSON marshalling
 ├── app/database.py          # SQLAlchemy async engine + session factory
 ├── app/models/base.py       # Declarative ORM base
@@ -57,6 +58,7 @@ mcp-memu-server/
 
 | Module | Purpose |
 |--------|---------|
+| `app/config.py` | Config/runtime helpers: `load_config()`, `save_config()`, `mask_config()`, storage path normalization, sqlite DSN scoping, default llm profile assembly, soul generation config I/O |
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
 | `app/services/consolidation.py` | Consolidation pipeline: gather queue/context, run one consolidation LLM call, write narrative_self + life-goal edits + companion memory + per-episode diary rows, and clear queue/flags. |
 | `app/services/diary.py` | Diary helpers for consolidation: episode parsing/excerpts, diary XML parsing, and diary/companion memory write helpers. |
@@ -90,7 +92,7 @@ from memu.prompts.memory_type import ...  # type prompts
 | Modify turn intentions (working stack) | `app/services/intention_state.py` — reads/writes `intentions_active` JSON in conversation state |
 | Modify life goals (long-term) | `app/services/consolidation.py` — `intentions_life_goals` DB table updates during consolidation |
 | Modify DB schema/helpers | `app/db.py` |
-| Change config shape | `config.json` + `app/main.py` → `_load_config()` |
+| Change config shape | `config.json` + `app/config.py` |
 | Add route group | Create `app/api/v1/{group}.py` with APIRouter, include in main.py |
 
 ## Config (`config.json`)
