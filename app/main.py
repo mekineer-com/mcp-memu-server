@@ -2173,7 +2173,6 @@ async def _compute_holistic_categories_summary(
     )
     result = await svc.chat(
         full_text,
-        profile=_resolve_profile(svc, "category_update"),
         system_prompt=system_prompt,
         temperature=0.3,
         max_tokens=UTILITY_MAX_TOKENS,
@@ -2331,7 +2330,6 @@ async def _apimw_topic_statement(
     )
     topic_statement = await svc.chat(
         topic_user,
-        profile=_resolve_profile(svc, "apimw") or _resolve_profile(svc, "reflection"),
         system_prompt=topic_system,
         temperature=0.1,
         max_tokens=UTILITY_MAX_TOKENS,
@@ -4383,7 +4381,7 @@ async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)
     )
 
     svc = _get_service_from_payload({"user": {"user_id": user_id, "soul_id": soul_id}})
-    raw = await svc.chat(user_prompt, profile=_resolve_profile(svc, "consolidation"), system_prompt=system_prompt, temperature=0.2, max_tokens=UTILITY_MAX_TOKENS, response_format={"type": "json_object"}, op="narrative_suggestion", step="respond")
+    raw = await svc.chat(user_prompt, system_prompt=system_prompt, temperature=0.2, max_tokens=UTILITY_MAX_TOKENS, response_format={"type": "json_object"}, op="narrative_suggestion", step="respond")
 
     text = str(raw or "").strip()
     if text.startswith("```"):
@@ -5210,7 +5208,6 @@ async def conversation_turn(
         _turn_t0 = time.monotonic()
         llm_raw = await svc.chat(
             turn_user_prompt,
-            profile=_resolve_profile(svc, "turn"),
             system_prompt=turn_system_prompt,
             temperature=turn_temperature,
             max_tokens=PIPELINE_MAX_TOKENS,

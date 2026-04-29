@@ -8,7 +8,6 @@
     "client_backend": "httpx",
     "endpoint_overrides": {},
     "step_models": {
-      "turn": "",
       "preprocess": "",
       "memory_extract": "",
       "category_update": "",
