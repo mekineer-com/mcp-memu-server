@@ -3856,6 +3856,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
             # Response object directly, FastAPI does not auto-attach the tasks from
             # the injected BackgroundTasks parameter. Without this, add_task above
             # is silently a no-op and the batches never run.
+            _MEMORIZE_PROGRESS[_memorize_lock_key(uid, soul_id)] = {"current": 0, "total": len(memorize_batches)}
             return JSONResponse(
                 status_code=202,
                 content={
