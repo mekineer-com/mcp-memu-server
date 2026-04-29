@@ -770,6 +770,8 @@ def _refresh_runtime_limits() -> None:
 
 
 def _prompt_log_before(ctx: Any, request_view: Any) -> None:
+    import time as _time
+    ctx._llm_start = _time.monotonic()
     if getattr(request_view, "kind", None) == "embed":
         return
     op = getattr(ctx, "operation", None) or "-"
@@ -786,7 +788,13 @@ def _prompt_log_before(ctx: Any, request_view: Any) -> None:
 
 
 def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: Any) -> None:
+    import time as _time
+    elapsed = _time.monotonic() - getattr(ctx, "_llm_start", _time.monotonic())
     content = getattr(response_view, "content", None)
+    kind = getattr(request_view, "kind", None)
+    if kind == "embed":
+        logger.info("[EMBED] elapsed=%.1fs", elapsed)
+        return
     if not content:
         return
     finish_reason = getattr(usage, "finish_reason", None)
@@ -794,9 +802,10 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
     out_tok = getattr(usage, "output_tokens", None)
     total_tok = getattr(usage, "total_tokens", None)
     _PROMPT_LOGGER.info(
-        "[RESPONSE] op=%s step=%s finish_reason=%s tokens=in:%s/out:%s/total:%s content_chars=%s\n%s",
+        "[RESPONSE] op=%s step=%s elapsed=%.1fs finish_reason=%s tokens=in:%s/out:%s/total:%s content_chars=%s\n%s",
         getattr(ctx, "operation", None) or "-",
         getattr(ctx, "step_id", None) or "-",
+        elapsed,
         finish_reason,
         in_tok,
         out_tok,
@@ -3501,13 +3510,14 @@ async def _run_memorize_batches(
     progress_key = _memorize_lock_key(uid, soul_id)
     _MEMORIZE_PROGRESS[progress_key] = {"current": 0, "total": total_batches}
     try:
+        import time as _time
         for batch_idx, (batch_url, batch_conv, batch_end) in enumerate(memorize_batches):
             if progress_key in _MEMORIZE_CANCEL:
                 _MEMORIZE_CANCEL.discard(progress_key)
                 logger.info("memorize cancelled after batch %d/%d", batch_idx, total_batches)
                 break
             _MEMORIZE_PROGRESS[progress_key] = {"current": batch_idx + 1, "total": total_batches}
-            # LLM call outside the lock — can take several seconds.
+            batch_start = _time.monotonic()
             batch_result = await svc.memorize(
                 resource_url=batch_url,
                 modality="conversation",
@@ -3519,6 +3529,7 @@ async def _run_memorize_batches(
                 memory_retrieve_history=cached_retrieval_ids or None,
                 memory_prior_context=cached_prior_context_ids or None,
             )
+            logger.info("memorize batch %d/%d elapsed=%.1fs", batch_idx + 1, total_batches, _time.monotonic() - batch_start)
             if isinstance(batch_result, dict):
                 has_batch_results = True
                 pending_episode_ids.extend(_normalize_text_list(batch_result.get("pending_episode_ids")))

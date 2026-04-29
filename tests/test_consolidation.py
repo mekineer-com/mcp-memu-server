@@ -86,7 +86,7 @@ def test_format_episode_block_for_prompt_shows_memory_ids() -> None:
             }
         ]
     )
-    assert "Extracted memory summaries:" in out
+    assert "What was extracted:" in out
     assert "- [mem_1] one" in out
     assert "- [mem_2] two" in out
 
