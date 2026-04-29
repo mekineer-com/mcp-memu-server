@@ -468,7 +468,7 @@ def format_intentions_for_prompt(stack_value: Any, *, max_items: int = 12, inclu
         if item_id == RELAX_INTENTION_ID:
             lines.append(f"- {item_id}: {text} (reminder to breathe)")
         elif include_internals:
-            tag = " [ephemeral]" if ephemeral else ""
+            tag = " (ephemeral)" if ephemeral else ""
             lines.append(f"- {item_id}: {text} (p={priority:.1f}){tag}")
         else:
             lines.append(f"- {item_id}: {text}")
