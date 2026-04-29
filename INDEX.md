@@ -15,6 +15,8 @@ mcp-memu-server/
 ├── app/services/consolidation.py # Weekly consolidation pipeline
 ├── app/services/diary.py    # Diary helper primitives used by consolidation
 ├── app/services/memorize_endpoint.py # /memorize orchestration + sleep-gap/token batching helpers
+├── app/services/sqlite_scope.py # SQLite scoped-path/status helpers shared by endpoints
+├── app/services/crud_endpoints.py # Categories/intentions/relationships/state/clear endpoint logic
 ├── app/services/state.py    # Conversation state read/write/search
 ├── app/api/v1/              # Empty — routes not yet split from main.py
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
@@ -65,6 +67,8 @@ mcp-memu-server/
 | `app/services/diary.py` | Diary helpers for consolidation: episode parsing/excerpts, diary XML parsing, and diary/companion memory write helpers. |
 | `app/services/graph_edges.py` | Shared edge normalization + write/invalidate helpers used by APImw and consolidation (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`). |
 | `app/services/memorize_endpoint.py` | `/memorize` endpoint core, forced-memorize background runner, batch execution, progress/cancel handlers, and chat sleep-gap/token chunking helpers. |
+| `app/services/sqlite_scope.py` | SQLite scope plumbing used across endpoints: scoped db-path resolution, scope `WHERE` builder, state-db lookup/write wrappers, and lightweight file info/intention row helpers. |
+| `app/services/crud_endpoints.py` | CRUD endpoint logic extracted from `main.py`: categories search/list, intentions, relationships, narrative suggestion, conversation state get/patch, clear-memory. |
 | `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, `pending_diary_episode_ids` queue management |
 | `app/services/turn_contract.py` | `make_turn_system_prompt()`, `build_turn_prompt()`, `parse_turn_contract()` — soul turn prompt construction and JSON contract parsing; temporal awareness: system prompt includes `Today is [date].` anchor; `Retrieved memory context` section includes all-categories orientation first, then retrieved category/item hits; when retrieved items include speaker metadata it renders a compact `Speakers:` block and memory lines as `[memory_type][speaker_label]`; memory lines include relative-time labels from `happened_at` and `reinforced Nx` suffix from `reinforcement_count` |
 | `app/services/intention_state.py` | `normalize_intentions_stack()`, `format_intentions_for_prompt()`, `upsert_intentions_stack_entries()` — intentions normalization and prompt formatting |
@@ -85,7 +89,7 @@ from memu.prompts.memory_type import ...  # type prompts
 
 | Task | File |
 |------|------|
-| Add API endpoint | `app/main.py` — add `@app.post/get` handler, use `_get_service_from_payload()` |
+| Add API endpoint | `app/main.py` — add `@app.post/get` handler (thin delegator); keep core logic in `app/services/*_endpoint.py` |
 | Modify memorize flow | `app/main.py` → `_run_memorize()` (calls `svc.memorize()`) |
 | Modify retrieval flow | `app/main.py` → `_run_retrieve()` (calls `svc.retrieve()`) |
 | Modify soul turn loop | `app/main.py` → `conversation_turn()` + `app/services/turn_contract.py` |

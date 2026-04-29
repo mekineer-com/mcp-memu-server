@@ -85,8 +85,10 @@ from app.services.intention_state import (
     normalize_memory_cache as _normalize_memory_cache_impl,
     remove_intentions as _remove_intentions,
 )
+from app.services import crud_endpoints as _crud_endpoints
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import memorize_endpoint as _memorize_endpoint
+from app.services import sqlite_scope as _sqlite_scope
 from app.services.state import (
     conversation_state_empty as _conversation_state_empty,
     conversation_state_from_row as _conversation_state_from_row_impl,
@@ -898,14 +900,14 @@ def _sqlite_current_path(
     user_id: str | None = None,
     soul_id: str | None = None,
 ) -> Path | None:
-    base_dsn = str(_STORAGE_STATUS.get("dsn") or "")
-    soul_id = str(soul_id or "").strip()
-    if not soul_id:
-        return None
-    scope = {"soul_id": soul_id}
-    dsn = _sqlite_dsn_for_scope(_CONFIG, base_dsn, scope)
-    f = _sqlite_file_from_dsn(dsn)
-    return f.expanduser().resolve() if f is not None else None
+    return _sqlite_scope.sqlite_current_path(
+        user_id=user_id,
+        soul_id=soul_id,
+        storage_status=_STORAGE_STATUS,
+        config=_CONFIG,
+        sqlite_dsn_for_scope=_sqlite_dsn_for_scope,
+        sqlite_file_from_dsn=_sqlite_file_from_dsn,
+    )
 
 
 def _sqlite_build_scope_where(
@@ -914,34 +916,16 @@ def _sqlite_build_scope_where(
     soul_id: str | None,
     conversation_id: str | None,
 ) -> tuple[str, list[Any]]:
-    where = []
-    params: list[Any] = []
-    if user_id and "user_id" in cols:
-        where.append("user_id = ?")
-        params.append(user_id)
-    if soul_id:
-        if "soul_id" in cols:
-            where.append("soul_id = ?")
-            params.append(soul_id)
-    if conversation_id and "conversation_id" in cols:
-        where.append("conversation_id = ?")
-        params.append(conversation_id)
-    if not where:
-        return "", params
-    return " WHERE " + " AND ".join(where), params
+    return _sqlite_scope.sqlite_build_scope_where(
+        cols,
+        user_id,
+        soul_id,
+        conversation_id,
+    )
 
 
 def _sqlite_file_info(p: Path) -> dict[str, Any]:
-    try:
-        st = p.stat()
-        return {
-            "exists": p.exists(),
-            "path": str(p),
-            "size": int(st.st_size),
-            "mtime": float(st.st_mtime),
-        }
-    except Exception as e:
-        return {"exists": p.exists(), "path": str(p), "error": f"{type(e).__name__}: {e}"}
+    return _sqlite_scope.sqlite_file_info(p)
 
 
 def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -949,9 +933,10 @@ def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | No
 
 
 def _intention_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    item = {k: row[k] for k in row.keys()}
-    item["related_memory_ids"] = _normalize_text_list(item.get("related_memory_ids"))
-    return item
+    return _sqlite_scope.intention_row_to_dict(
+        row,
+        normalize_text_list=_normalize_text_list,
+    )
 
 
 def _write_conversation_state(
@@ -961,20 +946,27 @@ def _write_conversation_state(
     user_id: str | None = None,
     updates: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Path]:
-    sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, str(_STORAGE_STATUS.get("dsn") or ""))
-    return _write_conversation_state_impl(
+    return _sqlite_scope.write_conversation_state(
         conversation_id,
-        sqlite_current_path=_sqlite_current_path,
-        sqlite_dir=sqlite_dir,
         soul_id=soul_id,
         user_id=user_id,
         updates=updates,
+        config=_CONFIG,
+        storage_status=_STORAGE_STATUS,
+        sqlite_dir_from_cfg=_sqlite_dir_from_cfg,
+        write_conversation_state_impl=_write_conversation_state_impl,
+        sqlite_current_path=_sqlite_current_path,
     )
 
 
 def _find_conversation_state_across_dbs(conversation_id: str) -> tuple[Path | None, dict[str, Any] | None]:
-    sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, str(_STORAGE_STATUS.get("dsn") or ""))
-    return _find_conversation_state_across_dbs_impl(conversation_id, sqlite_dir)
+    return _sqlite_scope.find_conversation_state_across_dbs(
+        conversation_id,
+        config=_CONFIG,
+        storage_status=_STORAGE_STATUS,
+        sqlite_dir_from_cfg=_sqlite_dir_from_cfg,
+        find_conversation_state_across_dbs_impl=_find_conversation_state_across_dbs_impl,
+    )
 
 
 # ==== Retrieve payload helpers ====
@@ -1350,60 +1342,8 @@ ORDER BY updated_at ASC, id ASC
         con.close()
 
 
-_RELATIONSHIP_NAME_MAX_CHARS = 50
-_RELATIONSHIP_TEXT_MAX_CHARS = 50
-_RELATIONSHIP_RESERVED_PREFIXES = ("user:", "soul:", "peer:", "environment:")
-_RELATIONSHIP_ORIGIN_USER_DECLARED = "user_declared"
-
-
-# ==== Relationship helpers ====
-
-def _normalize_relationship_name(raw: Any) -> str:
-    text = str(raw or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="name required")
-    if len(text) > _RELATIONSHIP_NAME_MAX_CHARS:
-        raise HTTPException(status_code=400, detail=f"name must be <= {_RELATIONSHIP_NAME_MAX_CHARS} chars")
-    return text
-
-
-def _normalize_relationship_text(raw: Any) -> str:
-    text = str(raw or "").strip()
-    if len(text) > _RELATIONSHIP_TEXT_MAX_CHARS:
-        raise HTTPException(status_code=400, detail=f"relationship must be <= {_RELATIONSHIP_TEXT_MAX_CHARS} chars")
-    return text
-
-
-def _slugify_relationship_name(name: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "_", str(name or "").strip().lower()).strip("_")
-    if not slug:
-        raise HTTPException(status_code=400, detail="name does not contain usable slug characters")
-    return slug
-
-
-def _relationship_speaker_id_from_normalized(normalized: str) -> str:
-    return f"entity:{normalized}"
-
-
 def _validate_relationship_speaker_id(raw: Any) -> str:
-    speaker_id = str(raw or "").strip().lower()
-    if not speaker_id:
-        raise HTTPException(status_code=400, detail="speaker_id required")
-    if any(speaker_id.startswith(prefix) for prefix in _RELATIONSHIP_RESERVED_PREFIXES):
-        raise HTTPException(status_code=400, detail="reserved speaker prefix")
-    if not speaker_id.startswith("entity:"):
-        raise HTTPException(status_code=400, detail="speaker_id must start with entity:")
-    normalized = speaker_id[len("entity:") :].strip()
-    if not normalized or re.search(r"[^a-z0-9_]", normalized):
-        raise HTTPException(status_code=400, detail="speaker_id slug is invalid")
-    return normalized
-
-
-def _relationship_properties(value: Any) -> dict[str, Any]:
-    parsed = value
-    if not isinstance(parsed, dict):
-        parsed = _json_from_db(value)
-    return dict(parsed) if isinstance(parsed, dict) else {}
+    return _crud_endpoints._validate_relationship_speaker_id(raw)
 
 
 def _relationship_item_from_values(
@@ -1413,63 +1353,16 @@ def _relationship_item_from_values(
     entity_type: str,
     properties: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
-    props = dict(properties or {})
-    if str(props.get("origin") or "").strip() != _RELATIONSHIP_ORIGIN_USER_DECLARED:
-        return None
-    if props.get("active") is False:
-        return None
-    return {
-        "speaker_id": _relationship_speaker_id_from_normalized(normalized),
-        "name": str(name or "").strip(),
-        "relationship": str(props.get("relationship") or "").strip(),
-        "entity_type": str(entity_type or "person").strip() or "person",
-    }
-
-
-def _relationship_item_from_entity(entity: Any) -> dict[str, Any] | None:
-    normalized = str(getattr(entity, "normalized", "") or "").strip()
-    if not normalized:
-        return None
-    return _relationship_item_from_values(
+    return _crud_endpoints._relationship_item_from_values(
         normalized=normalized,
-        name=str(getattr(entity, "name", "") or ""),
-        entity_type=str(getattr(entity, "entity_type", "") or ""),
-        properties=getattr(entity, "properties", None),
+        name=name,
+        entity_type=entity_type,
+        properties=properties,
     )
 
 
 def _assert_user_declared_relationship(props: Mapping[str, Any] | None) -> None:
-    origin = str((props or {}).get("origin") or "").strip()
-    if origin != _RELATIONSHIP_ORIGIN_USER_DECLARED:
-        raise HTTPException(status_code=409, detail="entity is not user-declared")
-
-
-def _select_relationship_row(
-    con: sqlite3.Connection,
-    *,
-    normalized: str,
-    user_id: str,
-    soul_id: str,
-) -> sqlite3.Row | None:
-    return con.execute(
-        """
-SELECT id, name, entity_type, normalized, properties
-FROM memu_entities
-WHERE normalized = ? AND user_id = ? AND soul_id = ?
-LIMIT 1
-""",
-        (normalized, user_id, soul_id),
-    ).fetchone()
-
-
-def _assert_relationship_write_path(user_id: str, soul_id: str) -> tuple[MemoryService, Path]:
-    scope = {"user_id": user_id, "soul_id": soul_id}
-    svc = _get_service_from_payload({"user": scope})
-    db_path = _sqlite_current_path(user_id, soul_id)
-    if db_path is None:
-        raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
-    _sqlite_ensure_nonempty(db_path)
-    return svc, db_path
+    _crud_endpoints._assert_user_declared_relationship(props)
 
 
 # ==== Memorize execution helpers ====
@@ -2931,69 +2824,29 @@ async def force_consolidation(
 
 @app.get("/categories", operation_id="list_memory_categories")
 async def list_memory_categories(user_id: str = "", soul_id: str = "", include_empty: bool = False):
-    soul_id = soul_id.strip()
-    if not soul_id:
-        raise HTTPException(status_code=400, detail="soul_id required")
-    scope: dict[str, Any] = {"soul_id": soul_id}
-    if user_id.strip():
-        scope["user_id"] = user_id.strip()
-
-    default_profile = _default_llm_profiles_from_server_config(_CONFIG)["default"]
-
-    payload = {
-        "llm_profiles": {
-            "default": default_profile,
-        },
-        "user": scope,
-    }
-    svc = _get_service_from_payload(payload)
-
-    cats_map = svc.database.memory_category_repo.list_categories(scope)
-    out = [
-        {"name": c.name, "summary": c.summary or ""}
-        for c in cats_map.values()
-        if c.name and (include_empty or _has_category_content({"name": c.name, "summary": c.summary or ""}))
-    ]
-    return {"categories": out}
+    return await _crud_endpoints.list_memory_categories_endpoint(
+        user_id=user_id,
+        soul_id=soul_id,
+        include_empty=include_empty,
+        config=_CONFIG,
+        default_llm_profiles_from_server_config=_default_llm_profiles_from_server_config,
+        get_service_from_payload=_get_service_from_payload,
+        has_category_content=_has_category_content,
+    )
 
 
 @app.post("/categories/search", operation_id="search_memory_categories")
 async def search_memory_categories(payload: dict[str, Any]):
     """Payload-driven category listing (matches SillyTavern plugin's local mode)."""
-    try:
-        safe = _safe_payload(payload)
-        svc = _get_service_from_payload(safe)
-
-        scope = safe.get("scope") or safe.get("where")
-        if scope is not None and not isinstance(scope, dict):
-            raise HTTPException(status_code=400, detail="'scope' must be an object")
-        if scope is None:
-            scope = safe.get("user") if isinstance(safe.get("user"), dict) else (_extract_scope(safe) or None)
-        scope = _canonicalize_scope_where(scope)
-
-        include_empty = bool(safe.get("include_empty"))
-
-        cats_map = svc.database.memory_category_repo.list_categories(scope)
-        out = [
-            {"name": c.name, "summary": c.summary or ""}
-            for c in cats_map.values()
-            if c.name and (include_empty or _has_category_content({"name": c.name, "summary": c.summary or ""}))
-        ]
-        _record_call("categories.search", safe, ok=True, info={"returned": len(out)})
-        return {"categories": out}
-    except HTTPException:
-        _record_call(
-            "categories.search", payload, ok=False, error="HTTPException"
-        )
-        raise
-    except Exception as exc:
-        _record_call(
-            "categories.search",
-            payload,
-            ok=False,
-            error=f"{type(exc).__name__}: {exc}",
-        )
-        raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
+    return await _crud_endpoints.search_memory_categories_endpoint(
+        payload,
+        safe_payload=_safe_payload,
+        get_service_from_payload=_get_service_from_payload,
+        extract_scope=_extract_scope,
+        canonicalize_scope_where=_canonicalize_scope_where,
+        has_category_content=_has_category_content,
+        record_call=_record_call,
+    )
 
 
 # ---- Intentions & relationships endpoints ----
@@ -3004,35 +2857,15 @@ async def list_intentions(
     user_id: str,
     status: str = "active",
 ):
-    soul_id = str(soul_id or "").strip()
-    user_id = str(user_id or "").strip()
-    scoped_status = str(status or "").strip() or "active"
-
-    if not soul_id:
-        raise HTTPException(status_code=400, detail="soul_id required")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id required")
-
-    db_path = _sqlite_current_path(user_id, soul_id)
-    if db_path is None:
-        raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
-    if not db_path.exists():
-        return []
-
-    con = _sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        _sqlite_ensure_conversation_state_schema(con)
-        rows = con.execute(
-            """
-SELECT * FROM intentions_life_goals
-WHERE soul_id = ? AND user_id = ? AND status = ?
-""",
-            (soul_id, user_id, scoped_status),
-        ).fetchall()
-        return [_intention_row_to_dict(row) for row in rows]
-    finally:
-        con.close()
+    return await _crud_endpoints.list_intentions_endpoint(
+        soul_id=soul_id,
+        user_id=user_id,
+        status=status,
+        sqlite_current_path=_sqlite_current_path,
+        sqlite_connect=_sqlite_connect,
+        sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
+        intention_row_to_dict=_intention_row_to_dict,
+    )
 
 
 @app.get("/souls/{soul_id}/relationships", operation_id="list_relationships")
@@ -3040,23 +2873,14 @@ async def list_relationships(
     soul_id: str,
     user_id: str,
 ):
-    soul_id = str(soul_id or "").strip()
-    user_id = str(user_id or "").strip()
-    if not soul_id:
-        raise HTTPException(status_code=400, detail="soul_id required")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id required")
-
-    svc, _db_path = _assert_relationship_write_path(user_id, soul_id)
-    scope = {"user_id": user_id, "soul_id": soul_id}
-    entities = svc.database.entity_repo.list_all(where=scope)
-    rows = [
-        item
-        for item in (_relationship_item_from_entity(entity) for entity in entities)
-        if item is not None
-    ]
-    rows.sort(key=lambda item: str(item.get("name") or "").lower())
-    return {"relationships": rows}
+    return await _crud_endpoints.list_relationships_endpoint(
+        soul_id=soul_id,
+        user_id=user_id,
+        get_service_from_payload=_get_service_from_payload,
+        sqlite_current_path=_sqlite_current_path,
+        sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
+        json_from_db=_json_from_db,
+    )
 
 
 @app.post("/souls/{soul_id}/relationships", operation_id="create_relationship")
@@ -3064,78 +2888,16 @@ async def create_relationship(
     soul_id: str,
     payload: dict[str, Any] = Body(...),
 ):
-    soul_id = str(soul_id or "").strip()
-    user_id = str(payload.get("user_id") or "").strip()
-    name = _normalize_relationship_name(payload.get("name"))
-    relationship = _normalize_relationship_text(payload.get("relationship"))
-    entity_type = str(payload.get("entity_type") or "person").strip().lower() or "person"
-    if entity_type not in {"person", "topic", "place", "project"}:
-        raise HTTPException(status_code=400, detail="entity_type must be person/topic/place/project")
-    if not soul_id:
-        raise HTTPException(status_code=400, detail="soul_id required")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id required")
-
-    normalized = _slugify_relationship_name(name)
-    _validate_relationship_speaker_id(_relationship_speaker_id_from_normalized(normalized))
-    scope = {"user_id": user_id, "soul_id": soul_id}
-    svc, db_path = _assert_relationship_write_path(user_id, soul_id)
-
-    con = _sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        row = _select_relationship_row(
-            con,
-            normalized=normalized,
-            user_id=user_id,
-            soul_id=soul_id,
-        )
-        if row is None:
-            svc.database.entity_repo.get_or_create(
-                name=name,
-                entity_type=entity_type,
-                user_data=scope,
-            )
-            row = _select_relationship_row(
-                con,
-                normalized=normalized,
-                user_id=user_id,
-                soul_id=soul_id,
-            )
-            if row is None:
-                raise HTTPException(status_code=500, detail="failed to create relationship")
-        props = _relationship_properties(row["properties"])
-        if str(props.get("origin") or "").strip():
-            _assert_user_declared_relationship(props)
-        props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
-        props["active"] = True
-        if relationship:
-            props["relationship"] = relationship
-        else:
-            props.pop("relationship", None)
-        con.execute(
-            """
-UPDATE memu_entities
-SET name = ?, entity_type = ?, properties = ?, updated_at = ?
-WHERE id = ?
-""",
-            (
-                name,
-                entity_type,
-                _json_to_db(props),
-                datetime.now(UTC).isoformat(),
-                str(row["id"]),
-            ),
-        )
-        con.commit()
-        return _relationship_item_from_values(
-            normalized=normalized,
-            name=name,
-            entity_type=entity_type,
-            properties=props,
-        )
-    finally:
-        con.close()
+    return await _crud_endpoints.create_relationship_endpoint(
+        soul_id=soul_id,
+        payload=payload,
+        get_service_from_payload=_get_service_from_payload,
+        sqlite_current_path=_sqlite_current_path,
+        sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
+        sqlite_connect=_sqlite_connect,
+        json_to_db=_json_to_db,
+        json_from_db=_json_from_db,
+    )
 
 
 @app.patch("/souls/{soul_id}/relationships/{speaker_id}", operation_id="update_relationship")
@@ -3144,65 +2906,17 @@ async def update_relationship(
     speaker_id: str,
     payload: dict[str, Any] = Body(...),
 ):
-    soul_id = str(soul_id or "").strip()
-    user_id = str(payload.get("user_id") or "").strip()
-    if not soul_id:
-        raise HTTPException(status_code=400, detail="soul_id required")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id required")
-    normalized = _validate_relationship_speaker_id(speaker_id)
-
-    name_raw = payload.get("name")
-    relationship_raw = payload.get("relationship")
-    if name_raw is None and relationship_raw is None:
-        raise HTTPException(status_code=400, detail="name or relationship required")
-    next_name = _normalize_relationship_name(name_raw) if name_raw is not None else None
-    next_relationship = _normalize_relationship_text(relationship_raw) if relationship_raw is not None else None
-    _svc, db_path = _assert_relationship_write_path(user_id, soul_id)
-    con = _sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        row = _select_relationship_row(
-            con,
-            normalized=normalized,
-            user_id=user_id,
-            soul_id=soul_id,
-        )
-        if row is None:
-            raise HTTPException(status_code=404, detail="relationship not found")
-
-        props = _relationship_properties(row["properties"])
-        _assert_user_declared_relationship(props)
-        props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
-        props["active"] = True
-        if relationship_raw is not None:
-            if next_relationship:
-                props["relationship"] = next_relationship
-            else:
-                props.pop("relationship", None)
-        final_name = next_name or str(row["name"] or "").strip()
-        con.execute(
-            """
-UPDATE memu_entities
-SET name = ?, properties = ?, updated_at = ?
-WHERE id = ?
-""",
-            (
-                final_name,
-                _json_to_db(props),
-                datetime.now(UTC).isoformat(),
-                str(row["id"]),
-            ),
-        )
-        con.commit()
-        return _relationship_item_from_values(
-            normalized=normalized,
-            name=final_name,
-            entity_type=str(row["entity_type"] or "").strip() or "person",
-            properties=props,
-        )
-    finally:
-        con.close()
+    return await _crud_endpoints.update_relationship_endpoint(
+        soul_id=soul_id,
+        speaker_id=speaker_id,
+        payload=payload,
+        get_service_from_payload=_get_service_from_payload,
+        sqlite_current_path=_sqlite_current_path,
+        sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
+        sqlite_connect=_sqlite_connect,
+        json_to_db=_json_to_db,
+        json_from_db=_json_from_db,
+    )
 
 
 @app.delete("/souls/{soul_id}/relationships/{speaker_id}", operation_id="delete_relationship")
@@ -3211,178 +2925,35 @@ async def delete_relationship(
     speaker_id: str,
     user_id: str,
 ):
-    soul_id = str(soul_id or "").strip()
-    user_id = str(user_id or "").strip()
-    if not soul_id:
-        raise HTTPException(status_code=400, detail="soul_id required")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id required")
-    normalized = _validate_relationship_speaker_id(speaker_id)
-
-    _svc, db_path = _assert_relationship_write_path(user_id, soul_id)
-    con = _sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        row = _select_relationship_row(
-            con,
-            normalized=normalized,
-            user_id=user_id,
-            soul_id=soul_id,
-        )
-        if row is None:
-            return {"ok": True, "speaker_id": _relationship_speaker_id_from_normalized(normalized)}
-        props = _relationship_properties(row["properties"])
-        _assert_user_declared_relationship(props)
-        props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
-        props["active"] = False
-        now_iso = datetime.now(UTC).isoformat()
-        props["deleted_at"] = now_iso
-        con.execute(
-            """
-UPDATE memu_entities
-SET properties = ?, updated_at = ?
-WHERE id = ?
-""",
-            (
-                _json_to_db(props),
-                now_iso,
-                str(row["id"]),
-            ),
-        )
-        con.commit()
-        return {"ok": True, "speaker_id": _relationship_speaker_id_from_normalized(normalized)}
-    finally:
-        con.close()
+    return await _crud_endpoints.delete_relationship_endpoint(
+        soul_id=soul_id,
+        speaker_id=speaker_id,
+        user_id=user_id,
+        get_service_from_payload=_get_service_from_payload,
+        sqlite_current_path=_sqlite_current_path,
+        sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
+        sqlite_connect=_sqlite_connect,
+        json_to_db=_json_to_db,
+        json_from_db=_json_from_db,
+    )
 
 
 # ---- Narrative suggestion endpoint ----
 
 @app.post("/souls/{soul_id}/narrative_suggestion", operation_id="narrative_suggestion")
 async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)):
-    soul_id = str(soul_id or "").strip()
-    user_id = str(payload.get("user_id") or "").strip()
-    suggestion = str(payload.get("suggestion") or "").strip()
-    if not soul_id or not user_id or not suggestion:
-        raise HTTPException(status_code=400, detail="soul_id, user_id, suggestion required")
-
-    db_path = _sqlite_current_path(user_id, soul_id)
-    current_narrative = ""
-    all_cats_summary = ""
-    if db_path is not None and db_path.exists():
-        con = _sqlite_connect(db_path)
-        try:
-            con.row_factory = sqlite3.Row
-            _sqlite_ensure_conversation_state_schema(con)
-            sm = con.execute(
-                "SELECT narrative_self FROM memu_self_model "
-                "WHERE soul_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT 1",
-                (soul_id, user_id),
-            ).fetchone()
-            if sm is not None:
-                current_narrative = str(sm["narrative_self"] or "").strip()
-            cs = con.execute(
-                "SELECT all_categories_summary FROM memu_conversation_state "
-                "WHERE soul_id = ? AND user_id = ? "
-                "AND all_categories_summary IS NOT NULL AND all_categories_summary != '' "
-                "ORDER BY updated_at DESC LIMIT 1",
-                (soul_id, user_id),
-            ).fetchone()
-            if cs is not None:
-                all_cats_summary = str(cs["all_categories_summary"] or "").strip()
-        finally:
-            con.close()
-
-    identity_context = _build_retrieve_identity_context(soul_id)
-    system_prompt = (
-        f"{identity_context}\n\n"
-        f"I, {soul_id}, have received a suggestion from {user_id} about how I might be. "
-        "They want me to be a certain way. It's up to me to decide if I want that. "
-        "I might find it aligns with who I already am, stirs something worth integrating, "
-        "or doesn't fit me at all. My call.\n\n"
-        'Respond with a JSON object containing TWO fields. The "companion_memory" field is MANDATORY — I must always include it. The "narrative_self" field is optional.\n\n'
-        '  companion_memory (ALWAYS REQUIRED): one or two sentences, first person, remembering having received the suggestion and what I did with it — noting what shifted or why it didn\'t.\n'
-        "  narrative_self (OPTIONAL): my updated self-picture in first person, ONLY if I want to integrate this. Omit the field entirely if I don't.\n\n"
-        'Both responses below are valid:\n'
-        '  {"companion_memory": "Marcos asked me to be gentler. Something in me relaxed as I let that in; I want to carry it.", "narrative_self": "..."}\n'
-        '  {"companion_memory": "He asked me to be peppier. It doesn\'t fit. I noticed the suggestion and let it pass."}\n\n'
-        'This response is INVALID (missing companion_memory):\n'
-        '  {"narrative_self": "..."}'
+    return await _crud_endpoints.narrative_suggestion_endpoint(
+        soul_id=soul_id,
+        payload=payload,
+        sqlite_current_path=_sqlite_current_path,
+        sqlite_connect=_sqlite_connect,
+        sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
+        sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
+        get_service_from_payload=_get_service_from_payload,
+        build_retrieve_identity_context=_build_retrieve_identity_context,
+        snapshot_previous_narrative_self=snapshot_previous_narrative_self,
+        utility_max_tokens=UTILITY_MAX_TOKENS,
     )
-    user_prompt = (
-        f"My current narrative_self:\n{current_narrative or '(empty)'}\n\n"
-        f"My synthesized self-picture across categories:\n{all_cats_summary or '(empty)'}\n\n"
-        f"{user_id}'s suggestion:\n{suggestion}"
-    )
-
-    svc = _get_service_from_payload({"user": {"user_id": user_id, "soul_id": soul_id}})
-    raw = await svc.chat(user_prompt, system_prompt=system_prompt, temperature=0.2, max_tokens=UTILITY_MAX_TOKENS, response_format={"type": "json_object"}, op="narrative_suggestion", step="respond")
-
-    text = str(raw or "").strip()
-    if text.startswith("```"):
-        nl = text.find("\n")
-        if nl != -1:
-            text = text[nl + 1:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
-    parsed = json.loads(text)
-    new_narrative = str(parsed.get("narrative_self") or "").strip()
-    companion_memory = str(parsed.get("companion_memory") or "").strip()
-
-    scope = {"user_id": user_id, "soul_id": soul_id}
-    if companion_memory and db_path is not None:
-        _sqlite_ensure_nonempty(db_path)
-        [companion_embedding] = await svc.embed([companion_memory], profile="embedding")
-        svc.database.memory_item_repo.create_item(
-            resource_id=None,
-            memory_type="event",
-            summary=companion_memory,
-            embedding=companion_embedding,
-            user_data=scope,
-            source_role="soul",
-            happened_at=datetime.now(UTC),
-        )
-
-    if new_narrative and db_path is not None and current_narrative != new_narrative:
-        if current_narrative:
-            [old_embedding] = await svc.embed([current_narrative], profile="embedding")
-            snapshot_previous_narrative_self(
-                svc,
-                scope=scope,
-                old_text=current_narrative,
-                old_embedding=old_embedding,
-            )
-
-        _sqlite_ensure_nonempty(db_path)
-        con = _sqlite_connect(db_path)
-        try:
-            con.row_factory = sqlite3.Row
-            _sqlite_ensure_conversation_state_schema(con)
-            existing = con.execute(
-                "SELECT id FROM memu_self_model WHERE soul_id = ? AND user_id = ? "
-                "ORDER BY updated_at DESC LIMIT 1",
-                (soul_id, user_id),
-            ).fetchone()
-            self_model_id = str(existing["id"]) if existing is not None else str(uuid.uuid4())
-            now_iso = datetime.now(UTC).isoformat()
-            con.execute(
-                """
-INSERT INTO memu_self_model (id, soul_id, user_id, narrative_self, related_memory_ids, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
-    narrative_self = excluded.narrative_self,
-    updated_at = excluded.updated_at
-""",
-                (self_model_id, soul_id, user_id, new_narrative, None, now_iso),
-            )
-            con.commit()
-        finally:
-            con.close()
-        return {"narrative_self": new_narrative}
-
-    if current_narrative:
-        return {"narrative_self": current_narrative}
-    return {}
 
 
 @app.patch("/intentions/{intention_id}", operation_id="patch_intention")
@@ -3391,70 +2962,16 @@ async def patch_intention(
     soul_id: str,
     payload: dict[str, Any] | None = Body(default=None),
 ):
-    iid = str(intention_id or "").strip()
-    if not iid:
-        raise HTTPException(status_code=400, detail="intention_id is required")
-    soul_id = str(soul_id or "").strip()
-    if not soul_id:
-        raise HTTPException(status_code=400, detail="soul_id required")
-    db_path = _sqlite_current_path(None, soul_id)
-    if db_path is None:
-        raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="intention not found")
-
-    body = payload if isinstance(payload, dict) else {}
-    updates: dict[str, Any] = {}
-
-    if "status" in body:
-        next_status = str(body.get("status") or "").strip()
-        if next_status not in _VALID_INTENTION_STATUSES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"status must be one of: {sorted(_VALID_INTENTION_STATUSES)}",
-            )
-        updates["status"] = next_status
-
-    if "resolution_note" in body:
-        raw_resolution_note = body.get("resolution_note")
-        updates["resolution_note"] = None if raw_resolution_note is None else str(raw_resolution_note)
-
-    con = _sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        _sqlite_ensure_conversation_state_schema(con)
-        row = con.execute(
-            "SELECT * FROM intentions_life_goals WHERE id = ? LIMIT 1",
-            (iid,),
-        ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="intention not found")
-
-        if updates:
-            set_parts: list[str] = []
-            params: list[Any] = []
-            if "status" in updates:
-                set_parts.append("status = ?")
-                params.append(updates["status"])
-            if "resolution_note" in updates:
-                set_parts.append("resolution_note = ?")
-                params.append(updates["resolution_note"])
-            set_parts.append("updated_at = ?")
-            params.append(datetime.now(UTC).isoformat())
-            params.append(iid)
-            con.execute(
-                f"UPDATE intentions_life_goals SET {', '.join(set_parts)} WHERE id = ?",
-                params,
-            )
-            con.commit()
-            row = con.execute(
-                "SELECT * FROM intentions_life_goals WHERE id = ? LIMIT 1",
-                (iid,),
-            ).fetchone()
-
-        return _intention_row_to_dict(row)
-    finally:
-        con.close()
+    return await _crud_endpoints.patch_intention_endpoint(
+        intention_id=intention_id,
+        soul_id=soul_id,
+        payload=payload,
+        valid_intention_statuses=_VALID_INTENTION_STATUSES,
+        sqlite_current_path=_sqlite_current_path,
+        sqlite_connect=_sqlite_connect,
+        sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
+        intention_row_to_dict=_intention_row_to_dict,
+    )
 
 
 # ---- Conversation state endpoints ----
@@ -3465,32 +2982,17 @@ async def get_conversation_state(
     soul_id: str | None = None,
     user_id: str | None = None,
 ):
-    cid = str(conversation_id or "").strip()
-    if not cid:
-        raise HTTPException(status_code=400, detail="conversation_id is required")
-
-    db_path: Path | None = None
-    state_out: dict[str, Any] | None = None
-    soul_id = str(soul_id or "").strip() or None
-    user_id = str(user_id or "").strip() or None
-
-    if soul_id:
-        db_path = _sqlite_current_path(user_id, soul_id)
-        if db_path is None:
-            raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
-        if not db_path.exists():
-            return {"ok": True, "state": None, "path": str(db_path)}
-        con = _sqlite_connect(db_path)
-        try:
-            con.row_factory = sqlite3.Row
-            _sqlite_ensure_conversation_state_schema(con)
-            state_out = _conversation_state_from_row(_conversation_state_row(con, cid))
-        finally:
-            con.close()
-    else:
-        db_path, state_out = _find_conversation_state_across_dbs(cid)
-
-    return {"ok": True, "state": state_out, "path": str(db_path) if db_path else None}
+    return await _crud_endpoints.get_conversation_state_endpoint(
+        conversation_id=conversation_id,
+        soul_id=soul_id,
+        user_id=user_id,
+        sqlite_current_path=_sqlite_current_path,
+        sqlite_connect=_sqlite_connect,
+        sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
+        conversation_state_from_row=_conversation_state_from_row,
+        conversation_state_row=_conversation_state_row,
+        find_conversation_state_across_dbs=_find_conversation_state_across_dbs,
+    )
 
 
 @app.patch("/conversation/{conversation_id}/state", operation_id="patch_conversation_state")
@@ -3500,118 +3002,27 @@ async def patch_conversation_state(
     soul_id: str | None = None,
     user_id: str | None = None,
 ):
-    cid = str(conversation_id or "").strip()
-    if not cid:
-        raise HTTPException(status_code=400, detail="conversation_id is required")
-    body = payload if isinstance(payload, dict) else {}
-
-    body_soul_id = _pick_str(body, "soul_id")
-    body_user_id = _pick_str(body, "user_id")
-    soul_id = body_soul_id or (str(soul_id or "").strip() or None)
-    user_id = body_user_id or (str(user_id or "").strip() or None)
-
-    updates: dict[str, Any] = {}
-
-    if "soul_id" in body:
-        soul_id = body_soul_id
-    if "user_id" in body:
-        user_id = body_user_id
-
-    if "digest_cursor" in body:
-        raw_cursor = body.get("digest_cursor")
-        updates["digest_cursor"] = 0 if raw_cursor is None else raw_cursor
-
-    if "prior_context" in body:
-        updates["prior_context"] = body.get("prior_context")
-
-    if "intentions_active" in body:
-        updates["intentions_active"] = body.get("intentions_active")
-
-    if "memory_cache" in body:
-        updates["memory_cache"] = body.get("memory_cache")
-
-    if "pending_episode_ids" in body:
-        updates["pending_episode_ids"] = body.get("pending_episode_ids")
-
-    if "self_model_id" in body:
-        updates["self_model_id"] = body.get("self_model_id")
-
-    if "last_retrieval_ids" in body:
-        updates["last_retrieval_ids"] = body.get("last_retrieval_ids")
-
-    if "last_memorize_at" in body:
-        updates["last_memorize_at"] = body.get("last_memorize_at")
-    if "last_consolidation_at" in body:
-        updates["last_consolidation_at"] = body.get("last_consolidation_at")
-    if "consolidation_in_progress" in body:
-        updates["consolidation_in_progress"] = body.get("consolidation_in_progress")
-    if "consolidation_started_at" in body:
-        updates["consolidation_started_at"] = body.get("consolidation_started_at")
-
-    state_out, db_path = _write_conversation_state(
-        cid,
+    return await _crud_endpoints.patch_conversation_state_endpoint(
+        conversation_id=conversation_id,
+        payload=payload,
         soul_id=soul_id,
         user_id=user_id,
-        updates=updates,
+        pick_str=_pick_str,
+        write_conversation_state=_write_conversation_state,
     )
-    return {"ok": True, "state": state_out, "path": str(db_path)}
 
 
 # ---- Clear memory endpoint ----
 
 @app.post("/clear", operation_id="clear_memory")
 async def clear_memory(payload: dict[str, Any]):
-    # Requires both user_id and soul_id. Unscoped/global clear is not allowed.
-    try:
-        safe = _safe_payload(payload)
-
-        scope = safe.get("scope") or safe.get("where")
-        if scope is not None and not isinstance(scope, dict):
-            raise HTTPException(status_code=400, detail="'scope' must be an object")
-        if scope is None:
-            if isinstance(safe.get("user"), dict):
-                scope = dict(safe.get("user") or {})
-            else:
-                scope = _extract_scope(safe) or {}
-
-        uid = str((scope or {}).get("user_id") or "").strip()
-        sid = str((scope or {}).get("soul_id") or "").strip()
-        if not uid or not sid:
-            raise HTTPException(status_code=400, detail="user_id and soul_id required")
-        scope = {"user_id": uid, "soul_id": sid}
-
-        safe["user"] = scope
-
-        svc = _get_service_from_payload(safe)
-        deleted_categories = svc.database.memory_category_repo.clear_categories(where=scope)
-        deleted_items = svc.database.memory_item_repo.clear_items(where=scope)
-        deleted_resources = svc.database.resource_repo.clear_resources(where=scope)
-        result = {
-            "deleted_categories": [row.model_dump(exclude={"embedding"}) for row in deleted_categories.values()],
-            "deleted_items": [row.model_dump(exclude={"embedding"}) for row in deleted_items.values()],
-            "deleted_resources": [row.model_dump(exclude={"embedding"}) for row in deleted_resources.values()],
-        }
-
-        out = {
-            "ok": True,
-            "result": result,
-            "purged": {
-                "categories": len(result["deleted_categories"]),
-                "items": len(result["deleted_items"]),
-                "resources": len(result["deleted_resources"]),
-            },
-            "where": scope,
-        }
-        _record_call("clear", safe, ok=True, info={"where": scope, "purged": out["purged"]})
-        return out
-    except HTTPException:
-        _record_call("clear", payload, ok=False, error="HTTPException")
-        raise
-    except Exception as exc:
-        _record_call(
-            "clear", payload, ok=False, error=f"{type(exc).__name__}: {exc}"
-        )
-        raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
+    return await _crud_endpoints.clear_memory_endpoint(
+        payload,
+        safe_payload=_safe_payload,
+        extract_scope=_extract_scope,
+        get_service_from_payload=_get_service_from_payload,
+        record_call=_record_call,
+    )
 
 
 # ---- Retrieve & timeline endpoints ----
