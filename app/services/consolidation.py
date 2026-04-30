@@ -172,8 +172,8 @@ def _format_categories_for_prompt(rows: list[sqlite3.Row]) -> str:
         summary = str(row["summary"] or "").strip()
         if not name or not summary:
             continue
-        lines.append(f"- {name}: {summary}")
-    return "\n".join(lines) or "(none yet)"
+        lines.append(f"\n# {name}\n{summary}")
+    return "\n".join(lines).strip() or "(none yet)"
 
 
 def _format_life_goals_for_prompt(active: list[str], removed: list[str]) -> str:

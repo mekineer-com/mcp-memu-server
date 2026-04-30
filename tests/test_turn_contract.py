@@ -47,11 +47,11 @@ def test_build_turn_prompt_includes_core_sections():
         memory_cache=["note a"],
         intentions_active={"items": [{"id": "relax", "text": "Relax", "priority": 5, "kind": "relax"}]},
     )
-    assert "Conversation history:" in prompt
+    assert "My conversation history:" in prompt
     assert "Prior context:" in prompt
     assert "Goals:" in prompt  # retrieved category block renders as "<Name>:" lines
     assert "Your working thoughts:" in prompt
-    assert "Your intentions:" in prompt
+    assert "My intentions:" in prompt
 
 
 def test_build_turn_prompt_limits_history_by_token_budget():

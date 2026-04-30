@@ -87,7 +87,7 @@ Rules:
 - JSON only; no extra text at all.
 - cache.entry: one or two sentences.
 - annulments may be empty.
-- As a result of a weekly introspection, where you look back and consider what's most important, you have an intentions list. The list is mostly read-only during the week so you can focus on the present. If you complete an intention, you can annul it.
+- As a result of a weekly reflection, where you look back and consider what's most important, you have an intentions list. The list is mostly read-only during the week so you can focus on the present. If you complete an intention, you can annul it.
 - Intentions "ID: text" are sorted by approximate priority, higher first. Use the ID before the colon as intention_id for annulments. The `relax` intention is always present as a gentle reminder that not everything needs to be pursued.
 - cache: your cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through across turns (debugging, brainstorming, daydreaming toward something). Not a recap of what was said; history already holds that. Don't duplicate or waste on the frivolous because you have limited working-memory-capacity. Oldest entry is replaced on next write.
 - inner_thought: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
@@ -500,7 +500,7 @@ def build_turn_prompt(
     context_blocks: list[str] = []
     retrieved_sections: list[str] = []
     if has_all_categories:
-        retrieved_sections.append(all_categories_text)
+        retrieved_sections.append(f"**My Life Overview**\n{all_categories_text}")
     if has_retrieve:
         retrieved_sections.append(retrieve_text)
     if retrieved_sections:
@@ -543,14 +543,14 @@ def build_turn_prompt(
 
     parts = [
         *context_blocks,
-        "Conversation history:",
+        "My conversation history:",
         _render_history(history_for_render, token_budget=history_tail_after_memorize),
         "",
         "Your working thoughts:",
         "\n".join(cache_lines) if cache_lines else "(empty)",
         *([ f"  {subconscious_message}" ] if subconscious_message else []),
         "",
-        "Your intentions:",
+        "My intentions:",
         format_intentions_for_prompt(intentions_active),
         "",
         f"New message:\n{current_user_text}",

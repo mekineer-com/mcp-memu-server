@@ -1515,8 +1515,7 @@ async def _compute_holistic_categories_summary(
 
     full_text = "\n\n".join(lines)
     system_prompt = (
-        "Weave the summaries below into one holistic overview "
-        "in first person. 250-350 words."
+        "Write a 250-350 word overview of your life from the summaries below."
     )
     result = await svc.chat(
         full_text,
