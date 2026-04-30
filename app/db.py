@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def sqlite_ensure_nonempty(path: Path) -> None:
@@ -21,7 +24,7 @@ def sqlite_ensure_nonempty(path: Path) -> None:
         con.commit()
         con.close()
     except Exception:
-        pass
+        logger.warning("sqlite_ensure_nonempty failed for %s", path, exc_info=True)
 
 
 def sqlite_connect(path: Path) -> sqlite3.Connection:

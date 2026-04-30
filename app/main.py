@@ -749,13 +749,10 @@ def _get_service_from_payload(
         if len(_SERVICES) >= 50:
             # Dict preserves insertion order in Python 3.7+; drop the oldest (no close —
             # callers may still hold references; GC handles the handle).
-            try:
-                oldest_key = next(iter(_SERVICES))
+            oldest_key = next(iter(_SERVICES), None)
+            if oldest_key is not None:
                 _SERVICES.pop(oldest_key, None)
                 _SERVICE_STORAGE_FP.pop(oldest_key, None)
-            except Exception:
-                _SERVICES.clear()
-                _SERVICE_STORAGE_FP.clear()
 
         _SERVICES[service_key] = svc
         _SERVICE_STORAGE_FP[service_key] = storage_fp
