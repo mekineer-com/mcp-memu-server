@@ -15,6 +15,7 @@ import atexit
 import json
 import os
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -204,6 +205,40 @@ def _listen(cfg: dict) -> tuple[str, int]:
     return host, port
 
 
+def _log_file_path(cfg: dict) -> Path:
+    debug = cfg.get("debug") if isinstance(cfg.get("debug"), dict) else {}
+    raw = debug.get("log_file") if isinstance(debug.get("log_file"), str) else ""
+    if raw.strip():
+        return _resolve_cfg_path(raw)
+    return (ROOT / "mcp-memu-server.log").resolve()
+
+
+def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
+    log_cfg = deepcopy(getattr(uvicorn_module.config, "LOGGING_CONFIG"))
+    log_path = _log_file_path(cfg)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    handlers = log_cfg.setdefault("handlers", {})
+    handlers["memu_file"] = {
+        "class": "logging.FileHandler",
+        "formatter": "default",
+        "filename": str(log_path),
+        "encoding": "utf-8",
+    }
+
+    loggers = log_cfg.setdefault("loggers", {})
+    for logger_name in ("uvicorn", "uvicorn.access"):
+        logger_cfg = loggers.setdefault(logger_name, {})
+        existing_handlers = logger_cfg.get("handlers")
+        handlers_list = list(existing_handlers) if isinstance(existing_handlers, list) else []
+        if "memu_file" not in handlers_list:
+            handlers_list.append("memu_file")
+        logger_cfg["handlers"] = handlers_list
+        logger_cfg.setdefault("level", "INFO")
+
+    return log_cfg
+
+
 def main() -> None:
     os.chdir(str(ROOT))
 
@@ -233,7 +268,13 @@ def main() -> None:
         print("  .venv/bin/pip install -e .", file=sys.stderr)
         raise
 
-    uvicorn.run("app.main:app", host=host, port=port)
+    uvicorn.run(
+        "app.main:app",
+        host=host,
+        port=port,
+        log_level="info",
+        log_config=_build_uvicorn_log_config(uvicorn, cfg),
+    )
 
 
 if __name__ == "__main__":
