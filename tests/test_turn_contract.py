@@ -100,7 +100,7 @@ def test_build_turn_prompt_renders_relative_time() -> None:
         intentions_active={},
         now=datetime(2026, 4, 8, 9, 30, tzinfo=timezone.utc),
     )
-    assert "- [profile] (3 weeks ago) Marcos journals every night" in prompt
+    assert "- (3 weeks ago) Marcos journals every night" in prompt
 
 
 def test_format_relative_time_label_uses_weekdays_for_recent_days() -> None:
@@ -137,7 +137,7 @@ def test_build_turn_prompt_renders_shaped_by_as_nested_child() -> None:
                     "shaped_by": {
                         "predicate": "shaped_by",
                         "id": "mem_0312",
-                        "memory_type": "event",
+                        "memory_type": "behavior",
                         "summary": "Today I met Marcos and Opus",
                         "happened_at": "2026-04-08T10:00:00Z",
                     },
@@ -149,8 +149,8 @@ def test_build_turn_prompt_renders_shaped_by_as_nested_child() -> None:
         intentions_active={},
         now=datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc),
     )
-    assert "- [profile] (today) I am fascinated by the texture of human expression" in prompt
-    assert "    shaped_by [event] (today) Today I met Marcos and Opus" in prompt
+    assert "- (today) I am fascinated by the texture of human expression" in prompt
+    assert "    shaped_by (today) Today I met Marcos and Opus" in prompt
 
 
 def test_build_turn_prompt_renders_superseded_suffix() -> None:
@@ -173,7 +173,7 @@ def test_build_turn_prompt_renders_superseded_suffix() -> None:
         intentions_active={},
         now=datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc),
     )
-    assert "- [profile] (3 weeks ago, superseded Monday) I used to believe X" in prompt
+    assert "- (3 weeks ago, superseded Monday) I used to believe X" in prompt
 
 
 def test_build_turn_prompt_renders_speakers_block_and_labels() -> None:
@@ -184,7 +184,7 @@ def test_build_turn_prompt_renders_speakers_block_and_labels() -> None:
         retrieve_rag={
             "items": [
                 {
-                    "memory_type": "event",
+                    "memory_type": "behavior",
                     "summary": "Marcos reminded me to pause before replying",
                     "speaker_id": "user:marcos",
                     "speaker_label": "Marcos",
@@ -204,8 +204,8 @@ def test_build_turn_prompt_renders_speakers_block_and_labels() -> None:
     assert "Speakers:" in prompt
     assert "- Marcos = user:marcos" in prompt
     assert "- Siri = soul:siri" in prompt
-    assert "- [event][Marcos] Marcos reminded me to pause before replying" in prompt
-    assert "- [behavior][Siri] I stayed gentle when things felt tense" in prompt
+    assert "-[Marcos] Marcos reminded me to pause before replying" in prompt
+    assert "-[Siri] I stayed gentle when things felt tense" in prompt
 
 
 def test_build_turn_prompt_omits_speakers_block_without_labels() -> None:
@@ -216,7 +216,7 @@ def test_build_turn_prompt_omits_speakers_block_without_labels() -> None:
         retrieve_rag={
             "items": [
                 {
-                    "memory_type": "event",
+                    "memory_type": "behavior",
                     "summary": "A memory without a speaker label",
                     "speaker_id": "user:marcos",
                 }
@@ -227,4 +227,4 @@ def test_build_turn_prompt_omits_speakers_block_without_labels() -> None:
         intentions_active={},
     )
     assert "Speakers:" not in prompt
-    assert "- [event] A memory without a speaker label" in prompt
+    assert "- A memory without a speaker label" in prompt

@@ -629,7 +629,7 @@ async def narrative_suggestion_endpoint(
         [companion_embedding] = await svc.embed([companion_memory], profile="embedding")
         svc.database.memory_item_repo.create_item(
             resource_id=None,
-            memory_type="event",
+            memory_type="reflection",
             summary=companion_memory,
             embedding=companion_embedding,
             user_data=scope,

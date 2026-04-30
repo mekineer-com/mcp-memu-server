@@ -1409,7 +1409,7 @@ async def _persist_annulment_memories(
             break
         item = svc.database.memory_item_repo.create_item(
             resource_id=None,
-            memory_type="event",
+            memory_type="reflection",
             summary=summary,
             embedding=embeddings[idx],
             user_data=scope,

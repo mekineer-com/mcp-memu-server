@@ -286,14 +286,13 @@ def format_shaped_by_line(
     now: datetime | None = None,
 ) -> str:
     predicate = _text(shaped_by.get("predicate")) or "shaped_by"
-    memory_type = _text(shaped_by.get("memory_type")) or "memory"
     summary = _text(shaped_by.get("summary"))
     suffix = _format_item_suffix(shaped_by, now=now)
     prefix = " " * indent + predicate
     seed_id = _text(shaped_by.get("id"))
     if with_id and seed_id:
-        return f"{prefix} [{seed_id}] [{memory_type}]{suffix} {summary}"
-    return f"{prefix} [{memory_type}]{suffix} {summary}"
+        return f"{prefix} [{seed_id}]{suffix} {summary}"
+    return f"{prefix}{suffix} {summary}"
 
 
 def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, set[str], set[str]]:
@@ -385,7 +384,7 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
                 domain = _text(item.get("domain")).replace("_", "-") or "procedural"
                 lines.append(f"- [{domain}-procedural-memory]{speaker_tag} {summary}")
                 continue
-            lines.append(f"- [{memory_type}]{speaker_tag}{suffix} {summary}")
+            lines.append(f"-{speaker_tag}{suffix} {summary}")
             shaped_by = item.get("shaped_by")
             if isinstance(shaped_by, dict):
                 seed_id = _text(shaped_by.get("id"))
