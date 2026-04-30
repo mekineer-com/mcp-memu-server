@@ -402,13 +402,17 @@ def _prompt_log_before(ctx: Any, request_view: Any) -> None:
     op = getattr(ctx, "operation", None) or "-"
     step = getattr(ctx, "step_id", None) or "-"
     banner = f"===== {op.upper()} · {step} ".ljust(70, "=")
+    meta = getattr(request_view, "metadata", None) or {}
+    sys_prompt = meta.get("system_prompt", "")
+    user_content = getattr(request_view, "content", None) or ""
+    prompt_text = f"== SYSTEM ==\n{sys_prompt}\n\n== USER ==\n{user_content}" if sys_prompt else user_content
     _PROMPT_LOGGER.info(
         "\n\n\n%s\n\n[PROMPT] op=%s step=%s model=%s\n%s",
         banner,
         op,
         step,
         getattr(ctx, "model", None) or "-",
-        getattr(request_view, "content", None) or "",
+        prompt_text,
     )
 
 
