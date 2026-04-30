@@ -407,7 +407,7 @@ def _prompt_log_before(ctx: Any, request_view: Any) -> None:
     user_content = getattr(request_view, "content", None) or ""
     prompt_text = f"== SYSTEM ==\n{sys_prompt}\n\n== USER ==\n{user_content}" if sys_prompt else user_content
     _PROMPT_LOGGER.info(
-        "\n\n\n%s\n\n[PROMPT] op=%s step=%s model=%s\n%s",
+        "\n\n\n%s\n\n[PROMPT] op=%s step=%s model=%s\n%s\n\n",
         banner,
         op,
         step,
@@ -431,7 +431,7 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
     out_tok = getattr(usage, "output_tokens", None)
     total_tok = getattr(usage, "total_tokens", None)
     _PROMPT_LOGGER.info(
-        "[RESPONSE] op=%s step=%s elapsed=%.1fs finish_reason=%s tokens=in:%s/out:%s/total:%s content_chars=%s\n%s",
+        "[RESPONSE] op=%s step=%s elapsed=%.1fs finish_reason=%s tokens=in:%s/out:%s/total:%s content_chars=%s\n\n%s",
         getattr(ctx, "operation", None) or "-",
         getattr(ctx, "step_id", None) or "-",
         elapsed,
