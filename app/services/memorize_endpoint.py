@@ -463,13 +463,17 @@ def split_indices_by_sleep(
     nights_total = len(best)
     nights_qual = sum(1 for (score, _idx) in best.values() if isinstance(score, (int, float)) and score >= min_lull)
 
-    splits = sorted(
+    raw_splits = sorted(
         {
             idx
             for (score, idx) in best.values()
             if isinstance(idx, int) and 0 < idx < len(msgs) and isinstance(score, (int, float)) and score >= min_lull
         }
     )
+    max_episodes = 3
+    splits = list(raw_splits)
+    if len(splits) >= max_episodes:
+        splits = splits[:max_episodes - 1]
     return (
         splits,
         {
