@@ -77,18 +77,26 @@ def test_parse_consolidation_xml_edges_and_write_helpers() -> None:
 
 
 def test_format_episode_block_for_prompt_shows_memory_ids() -> None:
+    id_map: dict[str, int] = {}
+    counter: list[int] = [1]
     out = _format_episode_block_for_prompt(
         [
             {
                 "episode_id": "ep:1-2",
                 "excerpt": "hello",
-                "memory_summaries": ["[mem_1] one", "[mem_2] two"],
+                "memory_summaries": [
+                    {"id": "mem_1", "summary": "one"},
+                    {"id": "mem_2", "summary": "two"},
+                ],
             }
-        ]
+        ],
+        id_map,
+        counter,
     )
     assert "memories:" in out
-    assert "- [mem_1] one" in out
-    assert "- [mem_2] two" in out
+    assert "- [1] one" in out
+    assert "- [2] two" in out
+    assert id_map == {"1": "mem_1", "2": "mem_2"}
 
 
 def test_write_consolidation_outputs_clears_pending_episode_ids() -> None:

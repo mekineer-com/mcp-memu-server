@@ -205,7 +205,11 @@ def _format_intention_activity_for_prompt(rows: list[dict[str, str]]) -> str:
     return "\n".join(lines) if lines else "Your intentions have been steady."
 
 
-def _format_episode_block_for_prompt(episodes: list[dict[str, Any]]) -> str:
+def _format_episode_block_for_prompt(
+    episodes: list[dict[str, Any]],
+    id_map: dict[str, int],
+    counter: list[int],
+) -> str:
     if not episodes:
         return "(none queued)"
     lines: list[str] = []
@@ -217,7 +221,15 @@ def _format_episode_block_for_prompt(episodes: list[dict[str, Any]]) -> str:
             lines.append(excerpt)
         if summaries:
             lines.append(f"Episode {idx} memories:")
-            lines.extend(f"- {s}" for s in summaries if str(s).strip())
+            for s in summaries:
+                if isinstance(s, dict):
+                    mid = s["id"]
+                    n = counter[0]
+                    counter[0] += 1
+                    id_map[str(n)] = mid
+                    lines.append(f"- [{n}] {s['summary']}")
+                elif str(s).strip():
+                    lines.append(f"- {s}")
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -398,7 +410,7 @@ LIMIT 24
                     (soul_id, user_id, conversation_id, episode_id),
                 ).fetchall()
                 entry["memory_summaries"] = [
-                    f"[{str(row['id'] or '').strip()}] {str(row['summary'] or '').strip()}"
+                    {"id": str(row["id"] or "").strip(), "summary": str(row["summary"] or "").strip()}
                     for row in rows
                     if str(row["id"] or "").strip() and str(row["summary"] or "").strip()
                 ]
@@ -434,7 +446,7 @@ LIMIT 24
                 tuple(clean_ids),
             ).fetchall()
             retrieved_memory_summaries = [
-                f"[{str(row['id']).strip()}] [{str(row['memory_type']).strip()}] {str(row['summary']).strip()}"
+                {"id": str(row["id"]).strip(), "summary": str(row["summary"]).strip()}
                 for row in ret_rows
                 if str(row["id"] or "").strip() and str(row["summary"] or "").strip()
             ]
@@ -481,7 +493,9 @@ async def run_consolidation_llm(
         inputs["removed_life_goals"],
     )
     intention_text = _format_intention_activity_for_prompt(inputs["intention_activity"])
-    episodes_text = _format_episode_block_for_prompt(inputs["episode_inputs"])
+    id_map: dict[str, int] = {}
+    counter: list[int] = [1]
+    episodes_text = _format_episode_block_for_prompt(inputs["episode_inputs"], id_map, counter)
 
     narrative = str(inputs.get("narrative_self") or "").strip()
     soul_card = narrative or DEFAULT_SOUL_CARD.format(soul_name=soul_id)
@@ -503,7 +517,21 @@ async def run_consolidation_llm(
     )
 
     retrieved_memories = inputs.get("retrieved_memories") or []
-    retrieved_text = "\n".join(retrieved_memories) if retrieved_memories else "(none surfaced)"
+    if retrieved_memories:
+        ret_lines: list[str] = []
+        for s in retrieved_memories:
+            if isinstance(s, dict):
+                mid = s["id"]
+                n = counter[0]
+                counter[0] += 1
+                id_map[str(n)] = mid
+                ret_lines.append(f"[{n}] {s['summary']}")
+            elif str(s).strip():
+                ret_lines.append(str(s))
+        retrieved_text = "\n".join(ret_lines)
+    else:
+        retrieved_text = "(none surfaced)"
+    num_to_hex = id_map
 
     current_intentions_raw = inputs.get("state", {}).get("intentions_active")
     current_intentions_text = format_intentions_for_prompt(current_intentions_raw, include_internals=True) if current_intentions_raw else "(none yet)"
@@ -555,8 +583,16 @@ async def run_consolidation_llm(
         "companion_embedding": companion_embedding,
         "old_narrative_text": current_narrative if snapshot_old_narrative else None,
         "old_narrative_embedding": old_narrative_embedding,
-        "edges": parsed["edges"],
-        "edge_invalidations": parsed["edge_invalidations"],
+        "edges": [
+            {**e, "subject_id": num_to_hex.get(e["subject_id"], e["subject_id"]),
+                   "object_id": num_to_hex.get(e["object_id"], e["object_id"])}
+            for e in parsed["edges"]
+        ],
+        "edge_invalidations": [
+            {**e, "subject_id": num_to_hex.get(e["subject_id"], e["subject_id"]),
+                   "object_id": num_to_hex.get(e["object_id"], e["object_id"])}
+            for e in parsed["edge_invalidations"]
+        ],
         "intention_actions": parsed["intention_actions"],
     }
 
