@@ -180,7 +180,7 @@ async def run_memorize_episodes(
     sleep_split_min_lull_seconds: int,
 ) -> None:
     mem_lock = get_memorize_lock(memorize_lock_key(uid, soul_id))
-    has_seg_results = False
+    has_results = False
     pending_episode_ids: list[str] = []
     processed_end_cursor = processed_cursor
     current_all_categories_summary: str | None = None
@@ -248,7 +248,7 @@ async def run_memorize_episodes(
             )
             logger.info("memorize episode %d/%d elapsed=%.1fs", ep_num, total_episodes, _time.monotonic() - ep_start)
             if isinstance(ep_result, dict):
-                has_seg_results = True
+                has_results = True
                 pending_episode_ids.extend(normalize_text_list(ep_result.get("pending_episode_ids")))
             next_seg_end = all_episodes[ep_num][4] if ep_num < total_episodes else None
             segment_done = (next_seg_end != seg_end)
@@ -278,7 +278,7 @@ async def run_memorize_episodes(
                         processed_end_cursor = max(processed_end_cursor, fresh_cursor)
 
         # Phase 3: holistic summary LLM call — outside the lock.
-        if conversation_id and has_seg_results:
+        if conversation_id and has_results:
             current_all_categories_summary = await compute_holistic_categories_summary(
                 svc=svc,
                 soul_id=soul_id,
@@ -287,7 +287,7 @@ async def run_memorize_episodes(
 
         # Phase 4: final state flush + bookkeeping under lock.
         async with mem_lock:
-            if conversation_id and has_seg_results:
+            if conversation_id and has_results:
                 write_conversation_state(
                     conversation_id,
                     soul_id=soul_id,
@@ -302,7 +302,7 @@ async def run_memorize_episodes(
                 )
 
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
-            if conversation_id and has_seg_results:
+            if conversation_id and has_results:
                 asyncio.create_task(run_consolidation_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid))
 
             record_call(
@@ -324,7 +324,7 @@ async def run_memorize_episodes(
                     "memorizeSegmentCount": len(memorize_segments),
                     "memorizeEpisodeCount": total_episodes,
                     "minChunkTokens": min_chunk_tokens,
-                    "memorizeDeferred": not force and not has_seg_results,
+                    "memorizeDeferred": not force and not has_results,
                     "days_written": days_written,
                     "sleepSplitMinLullSeconds": sleep_split_min_lull_seconds,
                     "sleepSplitStats": sleep_stats,

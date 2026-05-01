@@ -3225,7 +3225,7 @@ async def conversation_retrieve(
                 history = _normalize_turn_history(safe.get("history"))
                 # Tail = whatever hasn't been memorized yet. The most recent
                 # memorized segment (per manifest.json) marks the boundary;
-                # everything before it lives in day-chunk files + category
+                # everything before it lives in segment files + category
                 # summaries, and the soul reads those through the retrieved
                 # memory context. history_tail_after_memorize is the token
                 # ceiling applied inside _render_history as a safety cap.
