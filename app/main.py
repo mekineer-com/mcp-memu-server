@@ -130,11 +130,11 @@ _LOG_PROMPTS: bool = False
 _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved", "removed"}
 
 
-# ==== Token estimation & chunk planning ====
+# ==== Token estimation & segment planning ====
 
 _estimate_tokens = _memorize_endpoint.estimate_tokens
 _estimate_unmemorized_tokens = _memorize_endpoint.estimate_unmemorized_tokens
-_build_force_memorize_chunks = _memorize_endpoint.build_force_memorize_chunks
+_build_force_memorize_segments = _memorize_endpoint.build_force_memorize_segments
 
 
 # ==== Memorize background orchestration ====
@@ -1429,8 +1429,8 @@ async def _persist_annulment_memories(
     return created_ids
 
 
-def _merge_memorize_chunk_results(
-    chunk_results: list[dict[str, Any]],
+def _merge_memorize_segment_results(
+    segment_results: list[dict[str, Any]],
     pending_episode_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     def _merge_record_list(values: list[Any], *, id_keys: tuple[str, ...] = ("id",)) -> list[Any]:
@@ -1463,7 +1463,7 @@ def _merge_memorize_chunk_results(
     flat_resources: list[Any] = []
     skipped_reasons: list[str] = []
 
-    for batch_result in chunk_results:
+    for batch_result in segment_results:
         flat_items.extend(batch_result.get("items") or [])
         flat_categories.extend(batch_result.get("categories") or [])
         flat_relations.extend(batch_result.get("relations") or [])
@@ -1475,8 +1475,8 @@ def _merge_memorize_chunk_results(
         skipped_reasons.extend(_normalize_text_list(batch_result.get("skipped_reasons")))
 
     result: dict[str, Any] = {
-        "results": chunk_results,
-        "chunk_count": len(chunk_results),
+        "results": segment_results,
+        "segment_count": len(segment_results),
         "items": _merge_record_list(flat_items),
         "categories": _merge_record_list(flat_categories, id_keys=("id", "name")),
         "relations": _merge_record_list(flat_relations, id_keys=("item_id", "category_id")),
@@ -2622,9 +2622,9 @@ async def _run_consolidation_task(
             )
 
 
-async def _run_memorize_chunks(
+async def _run_memorize_segments(
     *,
-    memorize_chunks: list[tuple[str, list[dict[str, Any]], int]],
+    memorize_segments: list[tuple[str, list[dict[str, Any]], int]],
     svc: Any,
     scope: dict[str, Any],
     conversation_id: str | None,
@@ -2644,8 +2644,8 @@ async def _run_memorize_chunks(
     days_written: int,
     sleep_stats: Any,
 ) -> None:
-    await _memorize_endpoint.run_memorize_chunks(
-        memorize_chunks=memorize_chunks,
+    await _memorize_endpoint.run_memorize_segments(
+        memorize_segments=memorize_segments,
         svc=svc,
         scope=scope,
         conversation_id=conversation_id,
@@ -2700,7 +2700,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         clear_cached_services=_clear_cached_services,
         get_storage_dir=_get_storage_dir,
         write_conversation_state=_write_conversation_state,
-        run_memorize_chunks=_run_memorize_chunks,
+        run_memorize_segments=_run_memorize_segments,
         get_config=lambda: _CONFIG,
         sanitize_db_filename=_sanitize_db_filename,
         min_chunk_tokens=_MIN_CHUNK_TOKENS,

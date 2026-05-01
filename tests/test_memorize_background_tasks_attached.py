@@ -1,6 +1,6 @@
 """Contract test for /memorize: the endpoint's BackgroundTasks must actually run.
 
-History: the endpoint adds `_run_memorize_chunks` via `background_tasks.add_task(...)`
+History: the endpoint adds `_run_memorize_segments` via `background_tasks.add_task(...)`
 but returns a `JSONResponse(status_code=202, ...)` built inline. In FastAPI,
 when an endpoint returns a Response object directly, tasks on the injected
 `BackgroundTasks` parameter are NOT auto-attached — you have to pass
@@ -12,7 +12,7 @@ creates its own BackgroundTasks and awaits it manually, so it's unaffected.
 Only direct `POST /memorize` calls (Re-memorize chat button, st-api.sh, and
 every agent smoke-test driver) hit this hole.
 
-This test is the regression guard: it stubs `_run_memorize_chunks` with a
+This test is the regression guard: it stubs `_run_memorize_segments` with a
 recorder, posts to /memorize, and asserts the task actually ran.
 """
 from __future__ import annotations
@@ -36,10 +36,10 @@ def test_memorize_background_task_runs(client: TestClient, monkeypatch: pytest.M
     recorded: list[dict] = []
 
     async def fake_run(**kwargs) -> None:
-        recorded.append({"ran": True, "batch_count": len(kwargs.get("memorize_chunks") or [])})
+        recorded.append({"ran": True, "segment_count": len(kwargs.get("memorize_segments") or [])})
 
     # Stub the heavy work so we can verify the task fires without LLM calls.
-    monkeypatch.setattr(main_module, "_run_memorize_chunks", fake_run)
+    monkeypatch.setattr(main_module, "_run_memorize_segments", fake_run)
 
     # Stub _get_service_from_payload to avoid real service construction.
     class _FakeSvc:
@@ -60,7 +60,7 @@ def test_memorize_background_task_runs(client: TestClient, monkeypatch: pytest.M
     assert resp.status_code == 202, f"unexpected status: {resp.status_code} body={resp.text[:300]}"
     body = resp.json()
     assert body.get("status") == "accepted"
-    assert body.get("chunk_count") == 1
+    assert body.get("segment_count") == 1
 
     # TestClient blocks until BackgroundTasks complete, so by the time .post()
     # returns, our fake_run should have been invoked.
@@ -69,4 +69,4 @@ def test_memorize_background_task_runs(client: TestClient, monkeypatch: pytest.M
         "check app/main.py memorize endpoint return"
     )
     assert recorded[0]["ran"] is True
-    assert recorded[0]["batch_count"] >= 1
+    assert recorded[0]["segment_count"] >= 1

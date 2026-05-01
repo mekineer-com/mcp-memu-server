@@ -35,39 +35,14 @@ def estimate_unmemorized_tokens(messages: list[dict[str, Any]], digest_cursor: A
     return estimate_tokens(messages[start:])
 
 
-def chunk_index_ranges_by_token_budget(
-    messages: list[dict[str, Any]],
-    *,
-    start_idx: int,
-    end_idx: int,
-    max_chunk_tokens: int,
-) -> list[tuple[int, int]]:
-    if start_idx > end_idx:
-        return []
-    if max_chunk_tokens <= 0:
-        return [(start_idx, end_idx)]
-    ranges: list[tuple[int, int]] = []
-    chunk_start = start_idx
-    chunk_tokens = 0
-    for idx in range(start_idx, end_idx + 1):
-        msg_tokens = estimate_tokens([messages[idx]])
-        if chunk_tokens > 0 and (chunk_tokens + msg_tokens) > max_chunk_tokens:
-            ranges.append((chunk_start, idx - 1))
-            chunk_start = idx
-            chunk_tokens = 0
-        chunk_tokens += msg_tokens
-    ranges.append((chunk_start, end_idx))
-    return ranges
 
-
-def build_force_memorize_chunks(
+def build_force_memorize_segments(
     merged: list[dict[str, Any]],
     *,
     start_idx: int,
     segments: list[dict[str, Any]],
     days_dir: Path,
     resource_url: str,
-    max_chunk_tokens: int,
 ) -> list[tuple[str, list[dict[str, Any]], int]]:
     if not merged:
         return []
@@ -76,21 +51,15 @@ def build_force_memorize_chunks(
     if start_idx > last_idx:
         return []
 
-    def _append_chunked(
+    def _append_whole(
         out: list[tuple[str, list[dict[str, Any]], int]],
-        segment_url: str,
+        url: str,
         range_start: int,
         range_end: int,
     ) -> None:
-        for sub_start, sub_end in chunk_index_ranges_by_token_budget(
-            merged,
-            start_idx=range_start,
-            end_idx=range_end,
-            max_chunk_tokens=max_chunk_tokens,
-        ):
-            chunk_conv = merged[sub_start : sub_end + 1]
-            if chunk_conv:
-                out.append((segment_url, chunk_conv, sub_end))
+        conv = merged[range_start : range_end + 1]
+        if conv:
+            out.append((url, conv, range_end))
 
     out: list[tuple[str, list[dict[str, Any]], int]] = []
 
@@ -108,32 +77,32 @@ def build_force_memorize_chunks(
             b = min(seg_end, last_idx)
             if a > b:
                 continue
-            segment_url = resource_url
+            seg_url = resource_url
             segment_file = segment.get("file")
             if isinstance(segment_file, str) and segment_file:
-                segment_url = str((days_dir / segment_file).resolve())
-            segment_ranges.append((a, b, segment_url))
+                seg_url = str((days_dir / segment_file).resolve())
+            segment_ranges.append((a, b, seg_url))
         segment_ranges.sort(key=lambda row: (row[0], row[1]))
 
         next_idx = start_idx
-        for a, b, segment_url in segment_ranges:
+        for a, b, seg_url in segment_ranges:
             if b < next_idx:
                 continue
             if a > next_idx:
-                _append_chunked(out, resource_url, next_idx, a - 1)
+                _append_whole(out, resource_url, next_idx, a - 1)
             effective_start = max(a, next_idx)
             if effective_start > b:
                 continue
-            _append_chunked(out, segment_url, effective_start, b)
+            _append_whole(out, seg_url, effective_start, b)
             next_idx = b + 1
 
         if next_idx <= last_idx:
-            _append_chunked(out, resource_url, next_idx, last_idx)
+            _append_whole(out, resource_url, next_idx, last_idx)
 
         if out:
             return out
 
-    _append_chunked(out, resource_url, start_idx, last_idx)
+    _append_whole(out, resource_url, start_idx, last_idx)
     return out
 
 
@@ -175,9 +144,9 @@ async def run_forced_memorize_from_turn(
             logger.exception("failed to record background error on conversation state")
 
 
-async def run_memorize_chunks(
+async def run_memorize_segments(
     *,
-    memorize_chunks: list[tuple[str, list[dict[str, Any]], int]],
+    memorize_segments: list[tuple[str, list[dict[str, Any]], int]],
     svc: Any,
     scope: dict[str, Any],
     conversation_id: str | None,
@@ -211,7 +180,7 @@ async def run_memorize_chunks(
     sleep_split_min_lull_seconds: int,
 ) -> None:
     mem_lock = get_memorize_lock(memorize_lock_key(uid, soul_id))
-    has_chunk_results = False
+    has_seg_results = False
     pending_episode_ids: list[str] = []
     processed_end_cursor = processed_cursor
     current_all_categories_summary: str | None = None
@@ -235,35 +204,35 @@ async def run_memorize_chunks(
             if isinstance(raw_pc_ids, list):
                 cached_prior_context_ids = [str(rid).strip() for rid in raw_pc_ids if str(rid).strip()]
 
-    # Phase 2: run LLM chunks outside the lock; re-acquire per chunk to advance cursor.
-    total_chunks = len(memorize_chunks)
+    # Phase 2: run LLM segments outside the lock; re-acquire per segment to advance cursor.
+    total_segments = len(memorize_segments)
     progress_key = memorize_lock_key(uid, soul_id)
-    memorize_progress[progress_key] = {"current": 0, "total": total_chunks}
+    memorize_progress[progress_key] = {"current": 0, "total": total_segments}
     try:
         import time as _time
 
-        for chunk_idx, (chunk_url, chunk_conv, chunk_end) in enumerate(memorize_chunks):
+        for seg_idx, (seg_url, seg_conv, seg_end) in enumerate(memorize_segments):
             if progress_key in memorize_cancel:
                 memorize_cancel.discard(progress_key)
-                logger.info("memorize cancelled after chunk %d/%d", chunk_idx, total_chunks)
+                logger.info("memorize cancelled after segment %d/%d", seg_idx, total_segments)
                 break
-            memorize_progress[progress_key] = {"current": chunk_idx + 1, "total": total_chunks}
-            chunk_start = _time.monotonic()
-            chunk_result = await svc.memorize(
-                resource_url=chunk_url,
+            memorize_progress[progress_key] = {"current": seg_idx + 1, "total": total_segments}
+            seg_start = _time.monotonic()
+            seg_result = await svc.memorize(
+                resource_url=seg_url,
                 modality="conversation",
                 user=scope,
-                raw_text=json.dumps(chunk_conv, ensure_ascii=False),
-                local_path=chunk_url,
+                raw_text=json.dumps(seg_conv, ensure_ascii=False),
+                local_path=seg_url,
                 all_categories_summary=current_all_categories_summary,
                 soul_card=soul_card_for_memorize,
                 memory_retrieve_history=cached_retrieval_ids or None,
                 memory_prior_context=cached_prior_context_ids or None,
             )
-            logger.info("memorize chunk %d/%d elapsed=%.1fs", chunk_idx + 1, total_chunks, _time.monotonic() - chunk_start)
-            if isinstance(chunk_result, dict):
-                has_chunk_results = True
-                pending_episode_ids.extend(normalize_text_list(chunk_result.get("pending_episode_ids")))
+            logger.info("memorize segment %d/%d elapsed=%.1fs", seg_idx + 1, total_segments, _time.monotonic() - seg_start)
+            if isinstance(seg_result, dict):
+                has_seg_results = True
+                pending_episode_ids.extend(normalize_text_list(seg_result.get("pending_episode_ids")))
                 if conversation_id:
                     # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
                     async with mem_lock:
@@ -273,9 +242,9 @@ async def run_memorize_chunks(
                             soul_id=soul_id,
                         )
                         fresh_cursor = int(fresh_row.get("digest_cursor") or 0)
-                        if fresh_cursor <= chunk_end:
-                            processed_end_cursor = max(processed_end_cursor, chunk_end)
-                            # per-chunk advance — crash recovery needs the cursor to move after each successful chunk
+                        if fresh_cursor <= seg_end:
+                            processed_end_cursor = max(processed_end_cursor, seg_end)
+                            # per-segment advance — crash recovery needs the cursor to move after each successful segment
                             write_conversation_state(
                                 conversation_id,
                                 soul_id=soul_id,
@@ -285,11 +254,11 @@ async def run_memorize_chunks(
                                 },
                             )
                         else:
-                            # Another runner advanced the cursor past our chunk_end; honour the further value.
+                            # Another runner advanced the cursor past our seg_end; honour the further value.
                             processed_end_cursor = max(processed_end_cursor, fresh_cursor)
 
         # Phase 3: holistic summary LLM call — outside the lock.
-        if conversation_id and has_chunk_results:
+        if conversation_id and has_seg_results:
             current_all_categories_summary = await compute_holistic_categories_summary(
                 svc=svc,
                 soul_id=soul_id,
@@ -298,13 +267,13 @@ async def run_memorize_chunks(
 
         # Phase 4: final state flush + bookkeeping under lock.
         async with mem_lock:
-            if conversation_id and has_chunk_results:
+            if conversation_id and has_seg_results:
                 write_conversation_state(
                     conversation_id,
                     soul_id=soul_id,
                     user_id=uid,
                     updates={
-                        # final flush once all chunks commit — also writes the holistic summary atomically
+                        # final flush once all segments commit — also writes the holistic summary atomically
                         "digest_cursor": max(0, processed_end_cursor),
                         "last_memorize_at": datetime.now(UTC).isoformat(),
                         "append_pending_episode_ids": pending_episode_ids,
@@ -313,7 +282,7 @@ async def run_memorize_chunks(
                 )
 
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
-            if conversation_id and has_chunk_results:
+            if conversation_id and has_seg_results:
                 asyncio.create_task(run_consolidation_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid))
 
             record_call(
@@ -332,9 +301,9 @@ async def run_memorize_chunks(
                     "messages_in": merged_len,
                     "messages_merged": merged_len,
                     "force": force,
-                    "memorizeBatchCount": len(memorize_chunks),
+                    "memorizeBatchCount": len(memorize_segments),
                     "minChunkTokens": min_chunk_tokens,
-                    "memorizeDeferred": not force and not has_chunk_results,
+                    "memorizeDeferred": not force and not has_seg_results,
                     "days_written": days_written,
                     "sleepSplitMinLullSeconds": sleep_split_min_lull_seconds,
                     "sleepSplitStats": sleep_stats,
@@ -627,7 +596,7 @@ async def memorize_endpoint(
     clear_cached_services: Callable[[], None],
     get_storage_dir: Callable[[dict[str, Any]], Path],
     write_conversation_state: Callable[..., tuple[dict[str, Any], Any]],
-    run_memorize_chunks: Callable[..., Awaitable[None]],
+    run_memorize_segments: Callable[..., Awaitable[None]],
     get_config: Callable[[], dict[str, Any]],
     sanitize_db_filename: Callable[[str], str],
     min_chunk_tokens: int,
@@ -815,16 +784,15 @@ async def memorize_endpoint(
                 if isinstance(last_file, str) and last_file:
                     resource_url = str((days_dir / last_file).resolve())
 
-            memorize_chunks: list[tuple[str, list[dict[str, Any]], int]] = []
+            memorize_segments: list[tuple[str, list[dict[str, Any]], int]] = []
             if force and isinstance(merged, list):
                 start_idx = max(0, processed_cursor + 1)
-                memorize_chunks = build_force_memorize_chunks(
+                memorize_segments = build_force_memorize_segments(
                     merged,
                     start_idx=start_idx,
                     segments=segments,
                     days_dir=days_dir,
                     resource_url=resource_url,
-                    max_chunk_tokens=6000,
                 )
             elif segments and isinstance(merged, list):
                 _last_idx = len(merged) - 1
@@ -851,12 +819,12 @@ async def memorize_endpoint(
                     _bu = resource_url
                     if isinstance(_bf, str) and _bf:
                         _bu = str((days_dir / _bf).resolve())
-                    memorize_chunks.append((_bu, _bc, _ei))
+                    memorize_segments.append((_bu, _bc, _ei))
 
-            expected_cursor = memorize_chunks[-1][2] if memorize_chunks else processed_cursor
+            expected_cursor = memorize_segments[-1][2] if memorize_segments else processed_cursor
             background_tasks.add_task(
-                run_memorize_chunks,
-                memorize_chunks=memorize_chunks,
+                run_memorize_segments,
+                memorize_segments=memorize_segments,
                 svc=svc,
                 scope=scope,
                 conversation_id=conversation_id,
@@ -879,8 +847,8 @@ async def memorize_endpoint(
             # background=background_tasks is REQUIRED: when an endpoint returns a
             # Response object directly, FastAPI does not auto-attach the tasks from
             # the injected BackgroundTasks parameter. Without this, add_task above
-            # is silently a no-op and the chunks never run.
-            memorize_progress[memorize_lock_key(uid, soul_id)] = {"current": 0, "total": len(memorize_chunks)}
+            # is silently a no-op and the segments never run.
+            memorize_progress[memorize_lock_key(uid, soul_id)] = {"current": 0, "total": len(memorize_segments)}
             return JSONResponse(
                 status_code=202,
                 content={
@@ -888,7 +856,7 @@ async def memorize_endpoint(
                     "status": "accepted",
                     "conversation_id": conversation_id,
                     "expected_cursor": expected_cursor,
-                    "chunk_count": len(memorize_chunks),
+                    "segment_count": len(memorize_segments),
                     "resource_url": resource_url,
                 },
                 background=background_tasks,

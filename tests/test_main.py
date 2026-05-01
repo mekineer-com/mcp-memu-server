@@ -31,8 +31,8 @@ def test_imports():
     assert hasattr(main, "app")
 
 
-def test_merge_memorize_chunk_results_flattens_top_level_lists():
-    out = main._merge_memorize_chunk_results(
+def test_merge_memorize_segment_results_flattens_top_level_lists():
+    out = main._merge_memorize_segment_results(
         [
             {
                 "resource": {"id": "r1", "url": "file://a"},
@@ -52,7 +52,7 @@ def test_merge_memorize_chunk_results_flattens_top_level_lists():
         ["m2", "m1", "m2"],
     )
 
-    assert out["chunk_count"] == 2
+    assert out["segment_count"] == 2
     assert [item["id"] for item in out["items"]] == ["m1", "m2"]
     assert [cat["id"] for cat in out["categories"]] == ["c1", "c2"]
     assert out["pending_episode_ids"] == ["m2", "m1"]
@@ -138,57 +138,55 @@ def test_slice_history_from_chat_x_anchors_missing_prev_with_stop_returns_empty(
     assert sliced == []
 
 
-def test_build_force_memorize_chunks_prefers_segments():
+def test_build_force_memorize_segments_uses_manifest():
     merged = [{"content": f"m{i}"} for i in range(1, 7)]
     segments = [
         {"start": 0, "end": 2, "file": "day1.json"},
         {"start": 3, "end": 5, "file": "day2.json"},
     ]
-    batches = main._build_force_memorize_chunks(
+    result = main._build_force_memorize_segments(
         merged,
         start_idx=0,
         segments=segments,
         days_dir=Path("/tmp/days"),
         resource_url="/tmp/day-latest.json",
-        max_chunk_tokens=999,
     )
-    assert [end for _url, _conv, end in batches] == [2, 5]
-    assert batches[0][0].endswith("/tmp/days/day1.json")
-    assert batches[1][0].endswith("/tmp/days/day2.json")
+    assert [end for _url, _conv, end in result] == [2, 5]
+    assert result[0][0].endswith("/tmp/days/day1.json")
+    assert result[1][0].endswith("/tmp/days/day2.json")
 
 
-def test_build_force_memorize_chunks_falls_back_to_token_windows():
+def test_build_force_memorize_segments_whole_when_no_manifest():
     merged = [{"content": "one"} for _ in range(7)]
-    batches = main._build_force_memorize_chunks(
+    result = main._build_force_memorize_segments(
         merged,
         start_idx=0,
         segments=[],
         days_dir=Path("/tmp/days"),
         resource_url="/tmp/day-latest.json",
-        max_chunk_tokens=3,
     )
-    assert [end for _url, _conv, end in batches] == [2, 5, 6]
-    assert all(url.endswith("/tmp/day-latest.json") for url, _conv, _end in batches)
+    assert len(result) == 1
+    assert result[0][2] == 6
+    assert result[0][0].endswith("/tmp/day-latest.json")
 
 
-def test_build_force_memorize_chunks_fills_segment_gaps_with_resource_url():
+def test_build_force_memorize_segments_fills_gaps_with_resource_url():
     merged = [{"content": f"m{i}"} for i in range(1, 7)]
     segments = [
         {"start": 0, "end": 1, "file": "day1.json"},
         {"start": 4, "end": 5, "file": "day2.json"},
     ]
-    batches = main._build_force_memorize_chunks(
+    result = main._build_force_memorize_segments(
         merged,
         start_idx=0,
         segments=segments,
         days_dir=Path("/tmp/days"),
         resource_url="/tmp/day-latest.json",
-        max_chunk_tokens=999,
     )
-    assert [end for _url, _conv, end in batches] == [1, 3, 5]
-    assert batches[0][0].endswith("/tmp/days/day1.json")
-    assert batches[1][0].endswith("/tmp/day-latest.json")
-    assert batches[2][0].endswith("/tmp/days/day2.json")
+    assert [end for _url, _conv, end in result] == [1, 3, 5]
+    assert result[0][0].endswith("/tmp/days/day1.json")
+    assert result[1][0].endswith("/tmp/day-latest.json")
+    assert result[2][0].endswith("/tmp/days/day2.json")
 
 
 def test_normalize_conversation_uses_created_at_when_timestamp_missing():
@@ -216,7 +214,7 @@ def test_parse_as_of_datetime_rejects_invalid():
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_chunks_clears_progress_on_exception():
+async def test_run_memorize_segments_clears_progress_on_exception():
     class _FailingService:
         async def memorize(self, **_kwargs):
             raise RuntimeError("boom")
@@ -228,8 +226,8 @@ async def test_run_memorize_chunks_clears_progress_on_exception():
     main._MEMORIZE_CANCEL.discard(key)
 
     with pytest.raises(RuntimeError):
-        await main._run_memorize_chunks(
-            memorize_chunks=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0)],
+        await main._run_memorize_segments(
+            memorize_segments=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0)],
             svc=_FailingService(),
             scope={"user_id": user_id, "soul_id": soul_id},
             conversation_id=None,
