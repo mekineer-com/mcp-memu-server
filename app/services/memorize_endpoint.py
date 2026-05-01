@@ -158,8 +158,11 @@ async def run_memorize_episodes(
             if not episodes:
                 episodes = [{"text": seg_raw_text, "caption": None}]
             for ep_idx, episode in enumerate(episodes):
-                ep_text = episode.get("text") or ""
-                ep_msgs = json.loads(ep_text) if ep_text.strip().startswith("[") else seg_conv
+                ep_indices = episode.get("message_indices")
+                if isinstance(ep_indices, list) and ep_indices:
+                    ep_msgs = [seg_conv[i] for i in ep_indices if 0 <= i < len(seg_conv)]
+                else:
+                    ep_msgs = seg_conv
                 if episodes_dir and isinstance(ep_msgs, list) and ep_msgs:
                     first_ts = ep_msgs[0].get("ts_ms") if isinstance(ep_msgs[0], dict) else None
                     last_ts = ep_msgs[-1].get("ts_ms") if isinstance(ep_msgs[-1], dict) else None
@@ -207,7 +210,7 @@ async def run_memorize_episodes(
                 if isinstance(ep_result, dict):
                     has_results = True
                     pending_episode_ids.extend(normalize_text_list(ep_result.get("pending_episode_ids")))
-                next_seg_end = all_episodes[ep_num][4] if ep_num < total_episodes else None
+                next_seg_end = all_episodes[ep_num][3] if ep_num < total_episodes else None
                 segment_done = (next_seg_end != seg_end)
                 if segment_done and conversation_id:
                     # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
