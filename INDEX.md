@@ -37,7 +37,7 @@ mcp-memu-server/
 | `/version` | GET | Build / server instance identity |
 | `/admin/shutdown` | POST | Request graceful shutdown (drain mode) |
 | `/admin/shutdown/status` | GET | Shutdown progress + active request counts |
-| `/memorize` | POST | Extract memories from conversation text. User-initiated only ("Memorize Now" / "Re-memorize chat" buttons, `force=true`). `force=true` batching via `_build_force_memorize_batches()` — prefers segment manifest ranges, falls back to token-window chunking. Auto-memorize is triggered server-side inside `/conversation/{id}/turn` (see that row). |
+| `/memorize` | POST | Extract memories from conversation text. User-initiated only ("Memorize Now" / "Re-memorize chat" buttons, `force=true`). `force=true` batching via `_build_force_memorize_batches()` — prefers segment manifest ranges, falls back to token-window chunking. Runtime progress now tracks episodes (not segment files): server splits each selected segment into episodes via memu and runs one `memorize_episode` call per episode/resource. Auto-memorize is triggered server-side inside `/conversation/{id}/turn` (see that row). |
 | `/retrieve` | POST | Query memories (`rag` method). Optional `as_of` applies temporal triple filtering (`valid_from`/`valid_to`) for graph retrieval. |
 | `/timeline` | GET | Entity relationship timeline (`entity`, `user_id`, `soul_id`, optional `as_of`) for chronological graph inspection |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt for chat path; when caller provides only `query` (no `queries`), server enriches retrieve context with identity/time anchor, `all_categories_summary`, `memory_cache`, `intentions`, and two separate chat_x history windows (`history_from_second_chat_x` previous-window, `history_from_chat_x` current-window) before calling memu retrieve |
@@ -66,7 +66,7 @@ mcp-memu-server/
 | `app/services/consolidation.py` | Consolidation pipeline: gather queue/context, run one consolidation LLM call, write narrative_self + life-goal edits + companion memory + per-episode diary rows, and clear queue/flags. |
 | `app/services/diary.py` | Diary helpers for consolidation: episode parsing/excerpts, diary XML parsing, and diary/companion memory write helpers. |
 | `app/services/graph_edges.py` | Shared edge normalization + write/invalidate helpers used by APImw and consolidation (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`). |
-| `app/services/memorize_endpoint.py` | `/memorize` endpoint core, forced-memorize background runner, batch execution, progress/cancel handlers, and chat sleep-gap/token chunking helpers. |
+| `app/services/memorize_endpoint.py` | `/memorize` endpoint core, forced-memorize background runner (`run_memorize_episodes`), progress/cancel handlers, and chat sleep-gap/token chunking helpers. |
 | `app/services/sqlite_scope.py` | SQLite scope plumbing used across endpoints: scoped db-path resolution, scope `WHERE` builder, state-db lookup/write wrappers, and lightweight file info/intention row helpers. |
 | `app/services/crud_endpoints.py` | CRUD endpoint logic extracted from `main.py`: categories search/list, intentions, relationships, narrative suggestion, conversation state get/patch, clear-memory. |
 | `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, `pending_diary_episode_ids` queue management |

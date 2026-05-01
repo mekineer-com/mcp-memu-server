@@ -2622,7 +2622,7 @@ async def _run_consolidation_task(
             )
 
 
-async def _run_memorize_segments(
+async def _run_memorize_episodes(
     *,
     memorize_segments: list[tuple[str, list[dict[str, Any]], int]],
     svc: Any,
@@ -2644,7 +2644,7 @@ async def _run_memorize_segments(
     days_written: int,
     sleep_stats: Any,
 ) -> None:
-    await _memorize_endpoint.run_memorize_segments(
+    await _memorize_endpoint.run_memorize_episodes(
         memorize_segments=memorize_segments,
         svc=svc,
         scope=scope,
@@ -2700,7 +2700,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         clear_cached_services=_clear_cached_services,
         get_storage_dir=_get_storage_dir,
         write_conversation_state=_write_conversation_state,
-        run_memorize_segments=_run_memorize_segments,
+        run_memorize_episodes=_run_memorize_episodes,
         get_config=lambda: _CONFIG,
         sanitize_db_filename=_sanitize_db_filename,
         min_chunk_tokens=_MIN_CHUNK_TOKENS,

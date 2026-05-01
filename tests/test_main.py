@@ -214,9 +214,12 @@ def test_parse_as_of_datetime_rejects_invalid():
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_segments_clears_progress_on_exception():
+async def test_run_memorize_episodes_clears_progress_on_exception():
     class _FailingService:
-        async def memorize(self, **_kwargs):
+        async def split_segment_into_episodes(self, **_kwargs):
+            return [{"text": "episode text", "caption": "episode"}]
+
+        async def memorize_episode(self, **_kwargs):
             raise RuntimeError("boom")
 
     user_id = "u"
@@ -226,7 +229,7 @@ async def test_run_memorize_segments_clears_progress_on_exception():
     main._MEMORIZE_CANCEL.discard(key)
 
     with pytest.raises(RuntimeError):
-        await main._run_memorize_segments(
+        await main._run_memorize_episodes(
             memorize_segments=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0)],
             svc=_FailingService(),
             scope={"user_id": user_id, "soul_id": soul_id},

@@ -144,7 +144,7 @@ async def run_forced_memorize_from_turn(
             logger.exception("failed to record background error on conversation state")
 
 
-async def run_memorize_segments(
+async def run_memorize_episodes(
     *,
     memorize_segments: list[tuple[str, list[dict[str, Any]], int]],
     svc: Any,
@@ -204,58 +204,123 @@ async def run_memorize_segments(
             if isinstance(raw_pc_ids, list):
                 cached_prior_context_ids = [str(rid).strip() for rid in raw_pc_ids if str(rid).strip()]
 
-    # Phase 2: run LLM segments outside the lock; re-acquire per segment to advance cursor.
-    total_segments = len(memorize_segments)
+    # Phase 2: split segments into episodes, then run one memorize call per episode.
+    segment_runs: list[dict[str, Any]] = []
+    total_episodes = 0
+    for seg_idx, (seg_url, seg_conv, seg_end) in enumerate(memorize_segments):
+        seg_raw_text = json.dumps(seg_conv, ensure_ascii=False)
+        episodes = await svc.split_segment_into_episodes(
+            local_path=seg_url,
+            raw_text=seg_raw_text,
+            modality="conversation",
+        )
+        if not episodes:
+            episodes = [{"text": seg_raw_text, "caption": None}]
+        episode_runs: list[dict[str, Any]] = []
+        for episode_idx, episode in enumerate(episodes):
+            episode_url = seg_url if len(episodes) == 1 else f"{seg_url}#episode:{episode_idx + 1}"
+            episode_runs.append(
+                {
+                    "episode": episode,
+                    "episode_url": episode_url,
+                    "episode_idx": episode_idx,
+                }
+            )
+        segment_runs.append(
+            {
+                "seg_idx": seg_idx,
+                "seg_url": seg_url,
+                "seg_end": seg_end,
+                "seg_raw_text": seg_raw_text,
+                "episodes": episode_runs,
+            }
+        )
+        total_episodes += len(episode_runs)
+
     progress_key = memorize_lock_key(uid, soul_id)
-    memorize_progress[progress_key] = {"current": 0, "total": total_segments}
+    memorize_progress[progress_key] = {"current": 0, "total": total_episodes}
     try:
         import time as _time
 
-        for seg_idx, (seg_url, seg_conv, seg_end) in enumerate(memorize_segments):
-            if progress_key in memorize_cancel:
-                memorize_cancel.discard(progress_key)
-                logger.info("memorize cancelled after segment %d/%d", seg_idx, total_segments)
+        cancelled = False
+        episode_cursor = 0
+        for segment_run in segment_runs:
+            seg_idx = int(segment_run.get("seg_idx", 0))
+            seg_url = str(segment_run.get("seg_url") or "")
+            seg_end = int(segment_run.get("seg_end", processed_end_cursor))
+            seg_raw_text = str(segment_run.get("seg_raw_text") or "")
+            episodes = segment_run.get("episodes") if isinstance(segment_run.get("episodes"), list) else []
+            episodes_total = len(episodes)
+            episodes_done = 0
+            for episode_run in episodes:
+                episode_cursor += 1
+                episode_idx = int(episode_run.get("episode_idx", 0))
+                episode_url = str(episode_run.get("episode_url") or seg_url)
+                episode_payload = episode_run.get("episode")
+                if not isinstance(episode_payload, dict):
+                    msg = "split_segment_into_episodes returned non-dict episode payload"
+                    raise ValueError(msg)
+                if progress_key in memorize_cancel:
+                    logger.info("memorize cancelled after episode %d/%d", episode_cursor - 1, total_episodes)
+                    cancelled = True
+                    break
+                memorize_progress[progress_key] = {"current": episode_cursor, "total": total_episodes}
+                ep_start = _time.monotonic()
+                ep_result = await svc.memorize_episode(
+                    resource_url=episode_url,
+                    modality="conversation",
+                    episode=episode_payload,
+                    user=scope,
+                    raw_text=seg_raw_text,
+                    local_path=seg_url,
+                    all_categories_summary=current_all_categories_summary,
+                    soul_card=soul_card_for_memorize,
+                    memory_retrieve_history=cached_retrieval_ids or None,
+                    memory_prior_context=cached_prior_context_ids or None,
+                    conversation_id=conversation_id,
+                )
+                logger.info(
+                    "memorize episode %d/%d (segment %d episode %d/%d) elapsed=%.1fs",
+                    episode_cursor,
+                    total_episodes,
+                    seg_idx + 1,
+                    episode_idx + 1,
+                    episodes_total,
+                    _time.monotonic() - ep_start,
+                )
+                if isinstance(ep_result, dict):
+                    has_seg_results = True
+                    pending_episode_ids.extend(normalize_text_list(ep_result.get("pending_episode_ids")))
+                episodes_done += 1
+            if cancelled:
                 break
-            memorize_progress[progress_key] = {"current": seg_idx + 1, "total": total_segments}
-            seg_start = _time.monotonic()
-            seg_result = await svc.memorize(
-                resource_url=seg_url,
-                modality="conversation",
-                user=scope,
-                raw_text=json.dumps(seg_conv, ensure_ascii=False),
-                local_path=seg_url,
-                all_categories_summary=current_all_categories_summary,
-                soul_card=soul_card_for_memorize,
-                memory_retrieve_history=cached_retrieval_ids or None,
-                memory_prior_context=cached_prior_context_ids or None,
-            )
-            logger.info("memorize segment %d/%d elapsed=%.1fs", seg_idx + 1, total_segments, _time.monotonic() - seg_start)
-            if isinstance(seg_result, dict):
-                has_seg_results = True
-                pending_episode_ids.extend(normalize_text_list(seg_result.get("pending_episode_ids")))
-                if conversation_id:
-                    # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
-                    async with mem_lock:
-                        fresh_row, _, _ = load_turn_state_and_soul_card(
+            if episodes_done >= episodes_total and conversation_id:
+                # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
+                async with mem_lock:
+                    fresh_row, _, _ = load_turn_state_and_soul_card(
+                        conversation_id,
+                        user_id=uid,
+                        soul_id=soul_id,
+                    )
+                    fresh_cursor = int(fresh_row.get("digest_cursor") or 0)
+                    if fresh_cursor <= seg_end:
+                        processed_end_cursor = max(processed_end_cursor, seg_end)
+                        # per-segment advance — crash recovery needs the cursor to move
+                        # only after all episodes in a segment complete.
+                        write_conversation_state(
                             conversation_id,
-                            user_id=uid,
                             soul_id=soul_id,
+                            user_id=uid,
+                            updates={
+                                "digest_cursor": processed_end_cursor,
+                            },
                         )
-                        fresh_cursor = int(fresh_row.get("digest_cursor") or 0)
-                        if fresh_cursor <= seg_end:
-                            processed_end_cursor = max(processed_end_cursor, seg_end)
-                            # per-segment advance — crash recovery needs the cursor to move after each successful segment
-                            write_conversation_state(
-                                conversation_id,
-                                soul_id=soul_id,
-                                user_id=uid,
-                                updates={
-                                    "digest_cursor": processed_end_cursor,
-                                },
-                            )
-                        else:
-                            # Another runner advanced the cursor past our seg_end; honour the further value.
-                            processed_end_cursor = max(processed_end_cursor, fresh_cursor)
+                    else:
+                        # Another runner advanced the cursor past our seg_end; honour the further value.
+                        processed_end_cursor = max(processed_end_cursor, fresh_cursor)
+
+        if cancelled:
+            logger.info("memorize cancelled before completion")
 
         # Phase 3: holistic summary LLM call — outside the lock.
         if conversation_id and has_seg_results:
@@ -301,7 +366,8 @@ async def run_memorize_segments(
                     "messages_in": merged_len,
                     "messages_merged": merged_len,
                     "force": force,
-                    "memorizeBatchCount": len(memorize_segments),
+                    "memorizeBatchCount": len(segment_runs),
+                    "memorizeEpisodeCount": total_episodes,
                     "minChunkTokens": min_chunk_tokens,
                     "memorizeDeferred": not force and not has_seg_results,
                     "days_written": days_written,
@@ -596,7 +662,7 @@ async def memorize_endpoint(
     clear_cached_services: Callable[[], None],
     get_storage_dir: Callable[[dict[str, Any]], Path],
     write_conversation_state: Callable[..., tuple[dict[str, Any], Any]],
-    run_memorize_segments: Callable[..., Awaitable[None]],
+    run_memorize_episodes: Callable[..., Awaitable[None]],
     get_config: Callable[[], dict[str, Any]],
     sanitize_db_filename: Callable[[str], str],
     min_chunk_tokens: int,
@@ -823,7 +889,7 @@ async def memorize_endpoint(
 
             expected_cursor = memorize_segments[-1][2] if memorize_segments else processed_cursor
             background_tasks.add_task(
-                run_memorize_segments,
+                run_memorize_episodes,
                 memorize_segments=memorize_segments,
                 svc=svc,
                 scope=scope,
@@ -857,6 +923,7 @@ async def memorize_endpoint(
                     "conversation_id": conversation_id,
                     "expected_cursor": expected_cursor,
                     "segment_count": len(memorize_segments),
+                    "progress_unit": "episode",
                     "resource_url": resource_url,
                 },
                 background=background_tasks,
