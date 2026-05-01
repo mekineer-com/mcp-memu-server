@@ -758,7 +758,7 @@ async def memorize_endpoint(
                     _bc = merged[_eff : _ei + 1]
                     if not _bc:
                         continue
-                    if min_chunk_tokens > 0 and estimate_tokens(_bc) < min_chunk_tokens:
+                    if not force and min_chunk_tokens > 0 and estimate_tokens(_bc) < min_chunk_tokens:
                         _carry = (_eff, _ei)
                         continue
                     memorize_segments.append((resource_url, _bc, _ei))
