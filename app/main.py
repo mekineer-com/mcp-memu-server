@@ -116,8 +116,10 @@ app = FastAPI(title="mcp-memu-server", version="0.4.0")
 _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 4000
+_DEFAULT_EPISODES_PER_SEGMENT: int = 3
 _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE: int = 3000
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
+_EPISODES_PER_SEGMENT: int = _DEFAULT_EPISODES_PER_SEGMENT
 _HISTORY_TAIL_AFTER_MEMORIZE: int = _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE
 # Uniform runaway-protection caps for LLM calls. Not business logic —
 # these are floors against pathological generation, not content limits.
@@ -366,13 +368,17 @@ class STUserModel(BaseModel):
 _CONFIG: dict[str, Any] = _load_config()
 
 def _refresh_runtime_limits() -> None:
-    global _MIN_CHUNK_TOKENS, _HISTORY_TAIL_AFTER_MEMORIZE
+    global _MIN_CHUNK_TOKENS, _EPISODES_PER_SEGMENT, _HISTORY_TAIL_AFTER_MEMORIZE
     global _LOG_PROMPTS
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
     try:
         _MIN_CHUNK_TOKENS = max(0, int(memorize_cfg.get("min_chunk_tokens", _DEFAULT_MIN_CHUNK_TOKENS)))
     except (TypeError, ValueError, OverflowError):
         _MIN_CHUNK_TOKENS = _DEFAULT_MIN_CHUNK_TOKENS
+    try:
+        _EPISODES_PER_SEGMENT = max(1, int(memorize_cfg.get("episodes_per_segment", _DEFAULT_EPISODES_PER_SEGMENT)))
+    except (TypeError, ValueError, OverflowError):
+        _EPISODES_PER_SEGMENT = _DEFAULT_EPISODES_PER_SEGMENT
     try:
         _HISTORY_TAIL_AFTER_MEMORIZE = max(
             1,
@@ -674,6 +680,7 @@ def _get_service_from_payload(
             memorize_config["memory_categories"] = fixed_cats
         memorize_config["dynamic_category_cluster_size"] = int(cats_cfg.get("dynamic_category_cluster_size", 3) or 3)
         memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
+        memorize_config["episodes_per_segment"] = _EPISODES_PER_SEGMENT
         step_models = (_CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}).get("step_models", {})
         if isinstance(step_models, dict):
             for cfg_key, profile_field in (
@@ -2699,6 +2706,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         sanitize_db_filename=_sanitize_db_filename,
         min_chunk_tokens=_MIN_CHUNK_TOKENS,
         sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
+        episodes_per_segment=_EPISODES_PER_SEGMENT,
         memorize_progress=_MEMORIZE_PROGRESS,
         record_call=_record_call,
         logger=logger,

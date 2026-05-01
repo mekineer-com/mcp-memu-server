@@ -65,7 +65,7 @@
   },
   "memorize": {
     "min_chunk_tokens": 4000,
-    "max_chunk_tokens": 8000,
+    "episodes_per_segment": 3,
     "history_tail_after_memorize": 3000
   },
   "retrieve": {
