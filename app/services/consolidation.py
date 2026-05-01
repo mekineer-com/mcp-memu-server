@@ -602,29 +602,6 @@ async def run_consolidation_llm(
         retrieved_text = "\n".join(ret_lines)
     else:
         retrieved_text = "(none surfaced)"
-    remapped_edges = _remap_edges_with_memory_ids(parsed["edges"], id_map=id_map, include_confidence=True)
-    remapped_invalidations = _remap_edges_with_memory_ids(
-        parsed["edge_invalidations"],
-        id_map=id_map,
-        include_confidence=False,
-    )
-    if parsed["edges"] and not remapped_edges:
-        log.warning(
-            "consolidation: dropped all parsed edges due unresolved ids (parsed=%d)",
-            len(parsed["edges"]),
-        )
-    elif len(remapped_edges) < len(parsed["edges"]):
-        log.warning(
-            "consolidation: dropped %d/%d edges due unresolved ids",
-            len(parsed["edges"]) - len(remapped_edges),
-            len(parsed["edges"]),
-        )
-    if parsed["edge_invalidations"] and not remapped_invalidations:
-        log.warning(
-            "consolidation: dropped all parsed edge invalidations due unresolved ids (parsed=%d)",
-            len(parsed["edge_invalidations"]),
-        )
-
     current_intentions_raw = inputs.get("state", {}).get("intentions_active")
     current_intentions_text = format_intentions_for_prompt(current_intentions_raw, include_internals=True) if current_intentions_raw else "(none yet)"
 
@@ -647,6 +624,28 @@ async def run_consolidation_llm(
         step="main",
     )
     parsed = _parse_consolidation_xml(str(raw or ""))
+    remapped_edges = _remap_edges_with_memory_ids(parsed["edges"], id_map=id_map, include_confidence=True)
+    remapped_invalidations = _remap_edges_with_memory_ids(
+        parsed["edge_invalidations"],
+        id_map=id_map,
+        include_confidence=False,
+    )
+    if parsed["edges"] and not remapped_edges:
+        log.warning(
+            "consolidation: dropped all parsed edges due unresolved ids (parsed=%d)",
+            len(parsed["edges"]),
+        )
+    elif len(remapped_edges) < len(parsed["edges"]):
+        log.warning(
+            "consolidation: dropped %d/%d edges due unresolved ids",
+            len(parsed["edges"]) - len(remapped_edges),
+            len(parsed["edges"]),
+        )
+    if parsed["edge_invalidations"] and not remapped_invalidations:
+        log.warning(
+            "consolidation: dropped all parsed edge invalidations due unresolved ids (parsed=%d)",
+            len(parsed["edge_invalidations"]),
+        )
 
     new_narrative = str(parsed["narrative_self"] or "").strip() or None
     current_narrative = str(inputs.get("narrative_self") or "").strip() or None
