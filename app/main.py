@@ -728,12 +728,6 @@ def _get_service_from_payload(
 
         user_config = {**(user_config if isinstance(user_config, dict) else {}), "model": STUserModel}
 
-        mpp = dict(memorize_config.get("multimodal_preprocess_prompts") or {}) if isinstance(memorize_config, dict) else {}
-        if "conversation" not in mpp:
-            mpp["conversation"] = ""
-        if isinstance(memorize_config, dict):
-            memorize_config["multimodal_preprocess_prompts"] = mpp
-
         svc = MemoryService(
             llm_profiles=llm_profiles,
             blob_config=blob_config,
