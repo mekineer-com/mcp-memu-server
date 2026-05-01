@@ -754,6 +754,9 @@ async def memorize_endpoint(
             memorize_segments: list[tuple[str, list[dict[str, Any]], int]] = []
             if force:
                 processed_cursor = -1
+                if episodes_dir and episodes_dir.exists():
+                    for old_ep in episodes_dir.glob("*.json"):
+                        old_ep.unlink(missing_ok=True)
             if not segments and force and isinstance(merged, list) and merged:
                 memorize_segments.append((resource_url, merged, len(merged) - 1))
             elif segments and isinstance(merged, list):
