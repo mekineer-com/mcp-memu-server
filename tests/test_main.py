@@ -31,8 +31,8 @@ def test_imports():
     assert hasattr(main, "app")
 
 
-def test_merge_memorize_batch_results_flattens_top_level_lists():
-    out = main._merge_memorize_batch_results(
+def test_merge_memorize_chunk_results_flattens_top_level_lists():
+    out = main._merge_memorize_chunk_results(
         [
             {
                 "resource": {"id": "r1", "url": "file://a"},
@@ -52,7 +52,7 @@ def test_merge_memorize_batch_results_flattens_top_level_lists():
         ["m2", "m1", "m2"],
     )
 
-    assert out["batch_count"] == 2
+    assert out["chunk_count"] == 2
     assert [item["id"] for item in out["items"]] == ["m1", "m2"]
     assert [cat["id"] for cat in out["categories"]] == ["c1", "c2"]
     assert out["pending_episode_ids"] == ["m2", "m1"]
@@ -138,13 +138,13 @@ def test_slice_history_from_chat_x_anchors_missing_prev_with_stop_returns_empty(
     assert sliced == []
 
 
-def test_build_force_memorize_batches_prefers_segments():
+def test_build_force_memorize_chunks_prefers_segments():
     merged = [{"content": f"m{i}"} for i in range(1, 7)]
     segments = [
         {"start": 0, "end": 2, "file": "day1.json"},
         {"start": 3, "end": 5, "file": "day2.json"},
     ]
-    batches = main._build_force_memorize_batches(
+    batches = main._build_force_memorize_chunks(
         merged,
         start_idx=0,
         segments=segments,
@@ -157,9 +157,9 @@ def test_build_force_memorize_batches_prefers_segments():
     assert batches[1][0].endswith("/tmp/days/day2.json")
 
 
-def test_build_force_memorize_batches_falls_back_to_token_windows():
+def test_build_force_memorize_chunks_falls_back_to_token_windows():
     merged = [{"content": "one"} for _ in range(7)]
-    batches = main._build_force_memorize_batches(
+    batches = main._build_force_memorize_chunks(
         merged,
         start_idx=0,
         segments=[],
@@ -171,13 +171,13 @@ def test_build_force_memorize_batches_falls_back_to_token_windows():
     assert all(url.endswith("/tmp/day-latest.json") for url, _conv, _end in batches)
 
 
-def test_build_force_memorize_batches_fills_segment_gaps_with_resource_url():
+def test_build_force_memorize_chunks_fills_segment_gaps_with_resource_url():
     merged = [{"content": f"m{i}"} for i in range(1, 7)]
     segments = [
         {"start": 0, "end": 1, "file": "day1.json"},
         {"start": 4, "end": 5, "file": "day2.json"},
     ]
-    batches = main._build_force_memorize_batches(
+    batches = main._build_force_memorize_chunks(
         merged,
         start_idx=0,
         segments=segments,
@@ -216,7 +216,7 @@ def test_parse_as_of_datetime_rejects_invalid():
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_batches_clears_progress_on_exception():
+async def test_run_memorize_chunks_clears_progress_on_exception():
     class _FailingService:
         async def memorize(self, **_kwargs):
             raise RuntimeError("boom")
@@ -228,8 +228,8 @@ async def test_run_memorize_batches_clears_progress_on_exception():
     main._MEMORIZE_CANCEL.discard(key)
 
     with pytest.raises(RuntimeError):
-        await main._run_memorize_batches(
-            memorize_batches=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0)],
+        await main._run_memorize_chunks(
+            memorize_chunks=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0)],
             svc=_FailingService(),
             scope={"user_id": user_id, "soul_id": soul_id},
             conversation_id=None,
