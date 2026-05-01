@@ -138,56 +138,6 @@ def test_slice_history_from_chat_x_anchors_missing_prev_with_stop_returns_empty(
     assert sliced == []
 
 
-def test_build_force_memorize_segments_uses_manifest():
-    merged = [{"content": f"m{i}"} for i in range(1, 7)]
-    segments = [
-        {"start": 0, "end": 2, "file": "day1.json"},
-        {"start": 3, "end": 5, "file": "day2.json"},
-    ]
-    result = main._build_force_memorize_segments(
-        merged,
-        start_idx=0,
-        segments=segments,
-        days_dir=Path("/tmp/days"),
-        resource_url="/tmp/day-latest.json",
-    )
-    assert [end for _url, _conv, end in result] == [2, 5]
-    assert result[0][0].endswith("/tmp/days/day1.json")
-    assert result[1][0].endswith("/tmp/days/day2.json")
-
-
-def test_build_force_memorize_segments_whole_when_no_manifest():
-    merged = [{"content": "one"} for _ in range(7)]
-    result = main._build_force_memorize_segments(
-        merged,
-        start_idx=0,
-        segments=[],
-        days_dir=Path("/tmp/days"),
-        resource_url="/tmp/day-latest.json",
-    )
-    assert len(result) == 1
-    assert result[0][2] == 6
-    assert result[0][0].endswith("/tmp/day-latest.json")
-
-
-def test_build_force_memorize_segments_fills_gaps_with_resource_url():
-    merged = [{"content": f"m{i}"} for i in range(1, 7)]
-    segments = [
-        {"start": 0, "end": 1, "file": "day1.json"},
-        {"start": 4, "end": 5, "file": "day2.json"},
-    ]
-    result = main._build_force_memorize_segments(
-        merged,
-        start_idx=0,
-        segments=segments,
-        days_dir=Path("/tmp/days"),
-        resource_url="/tmp/day-latest.json",
-    )
-    assert [end for _url, _conv, end in result] == [1, 3, 5]
-    assert result[0][0].endswith("/tmp/days/day1.json")
-    assert result[1][0].endswith("/tmp/day-latest.json")
-    assert result[2][0].endswith("/tmp/days/day2.json")
-
 
 def test_normalize_conversation_uses_created_at_when_timestamp_missing():
     conv = [{"role": "user", "content": "hello", "created_at": "2026-04-16T12:00:00Z"}]

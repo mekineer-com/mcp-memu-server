@@ -116,10 +116,8 @@ app = FastAPI(title="mcp-memu-server", version="0.4.0")
 _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 4000
-_DEFAULT_MAX_CHUNK_TOKENS: int = 8000
 _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE: int = 3000
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
-_MAX_CHUNK_TOKENS: int = _DEFAULT_MAX_CHUNK_TOKENS
 _HISTORY_TAIL_AFTER_MEMORIZE: int = _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE
 # Uniform runaway-protection caps for LLM calls. Not business logic —
 # these are floors against pathological generation, not content limits.
@@ -134,7 +132,6 @@ _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferre
 
 _estimate_tokens = _memorize_endpoint.estimate_tokens
 _estimate_unmemorized_tokens = _memorize_endpoint.estimate_unmemorized_tokens
-_build_force_memorize_segments = _memorize_endpoint.build_force_memorize_segments
 
 
 # ==== Memorize background orchestration ====
@@ -369,20 +366,13 @@ class STUserModel(BaseModel):
 _CONFIG: dict[str, Any] = _load_config()
 
 def _refresh_runtime_limits() -> None:
-    global _MIN_CHUNK_TOKENS, _MAX_CHUNK_TOKENS, _HISTORY_TAIL_AFTER_MEMORIZE
+    global _MIN_CHUNK_TOKENS, _HISTORY_TAIL_AFTER_MEMORIZE
     global _LOG_PROMPTS
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
     try:
         _MIN_CHUNK_TOKENS = max(0, int(memorize_cfg.get("min_chunk_tokens", _DEFAULT_MIN_CHUNK_TOKENS)))
     except (TypeError, ValueError, OverflowError):
         _MIN_CHUNK_TOKENS = _DEFAULT_MIN_CHUNK_TOKENS
-    try:
-        _MAX_CHUNK_TOKENS = max(
-            _MIN_CHUNK_TOKENS,
-            int(memorize_cfg.get("max_chunk_tokens", _DEFAULT_MAX_CHUNK_TOKENS)),
-        )
-    except (TypeError, ValueError, OverflowError):
-        _MAX_CHUNK_TOKENS = _DEFAULT_MAX_CHUNK_TOKENS
     try:
         _HISTORY_TAIL_AFTER_MEMORIZE = max(
             1,
@@ -3320,11 +3310,10 @@ def _turn_state_read(
     force_memorize_unmemorized_tokens = _estimate_unmemorized_tokens(history_full, digest_cursor_for_gate)
     force_memorize_payload: dict[str, Any] | None = None
     if (not dry_run) and history_full and force_memorize_unmemorized_tokens >= _MIN_CHUNK_TOKENS:
-        hit_ceiling = force_memorize_unmemorized_tokens >= _MAX_CHUNK_TOKENS
-        had_sleep_gap = hit_ceiling or _unmemorized_sleep_gap_detected(
+        had_sleep_gap = _unmemorized_sleep_gap_detected(
             history_full, digest_cursor_for_gate, safe
         )
-        if hit_ceiling or had_sleep_gap:
+        if had_sleep_gap:
             memorize_history = _normalize_conversation(history_full)
             if memorize_history:
                 force_memorize_payload = {
@@ -3645,7 +3634,6 @@ async def conversation_turn(
                 "queued": bool(force_memorize_payload),
                 "unmemorized_tokens": force_memorize_unmemorized_tokens,
                 "min_chunk_tokens": _MIN_CHUNK_TOKENS,
-                "max_chunk_tokens": _MAX_CHUNK_TOKENS,
             }
 
         if force_memorize_payload is not None:
@@ -3662,7 +3650,6 @@ async def conversation_turn(
                 "forcedMemorizeQueued": bool(force_memorize_payload),
                 "unmemorizedTokens": force_memorize_unmemorized_tokens,
                 "minChunkTokens": _MIN_CHUNK_TOKENS,
-                "maxChunkTokens": _MAX_CHUNK_TOKENS,
                 "responseLen": len(str(out.get("response") or "")),
             },
         )

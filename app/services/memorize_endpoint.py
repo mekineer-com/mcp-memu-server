@@ -36,75 +36,6 @@ def estimate_unmemorized_tokens(messages: list[dict[str, Any]], digest_cursor: A
 
 
 
-def build_force_memorize_segments(
-    merged: list[dict[str, Any]],
-    *,
-    start_idx: int,
-    segments: list[dict[str, Any]],
-    days_dir: Path,
-    resource_url: str,
-) -> list[tuple[str, list[dict[str, Any]], int]]:
-    if not merged:
-        return []
-    start_idx = max(0, int(start_idx))
-    last_idx = len(merged) - 1
-    if start_idx > last_idx:
-        return []
-
-    def _append_whole(
-        out: list[tuple[str, list[dict[str, Any]], int]],
-        url: str,
-        range_start: int,
-        range_end: int,
-    ) -> None:
-        conv = merged[range_start : range_end + 1]
-        if conv:
-            out.append((url, conv, range_end))
-
-    out: list[tuple[str, list[dict[str, Any]], int]] = []
-
-    if segments:
-        segment_ranges: list[tuple[int, int, str]] = []
-        for segment in segments:
-            try:
-                seg_start = int(segment.get("start"))
-                seg_end = int(segment.get("end"))
-            except Exception:
-                continue
-            if seg_end < seg_start or seg_end < start_idx or seg_start > last_idx:
-                continue
-            a = max(seg_start, start_idx)
-            b = min(seg_end, last_idx)
-            if a > b:
-                continue
-            seg_url = resource_url
-            segment_file = segment.get("file")
-            if isinstance(segment_file, str) and segment_file:
-                seg_url = str((days_dir / segment_file).resolve())
-            segment_ranges.append((a, b, seg_url))
-        segment_ranges.sort(key=lambda row: (row[0], row[1]))
-
-        next_idx = start_idx
-        for a, b, seg_url in segment_ranges:
-            if b < next_idx:
-                continue
-            if a > next_idx:
-                _append_whole(out, resource_url, next_idx, a - 1)
-            effective_start = max(a, next_idx)
-            if effective_start > b:
-                continue
-            _append_whole(out, seg_url, effective_start, b)
-            next_idx = b + 1
-
-        if next_idx <= last_idx:
-            _append_whole(out, resource_url, next_idx, last_idx)
-
-        if out:
-            return out
-
-    _append_whole(out, resource_url, start_idx, last_idx)
-    return out
-
 
 async def run_forced_memorize_from_turn(
     payload: dict[str, Any],
@@ -813,15 +744,10 @@ async def memorize_endpoint(
                     resource_url = str((days_dir / last_file).resolve())
 
             memorize_segments: list[tuple[str, list[dict[str, Any]], int]] = []
-            if force and isinstance(merged, list):
-                start_idx = max(0, processed_cursor + 1)
-                memorize_segments = build_force_memorize_segments(
-                    merged,
-                    start_idx=start_idx,
-                    segments=segments,
-                    days_dir=days_dir,
-                    resource_url=resource_url,
-                )
+            if force:
+                processed_cursor = -1
+            if not segments and force and isinstance(merged, list) and merged:
+                memorize_segments.append((resource_url, merged, len(merged) - 1))
             elif segments and isinstance(merged, list):
                 _last_idx = len(merged) - 1
                 _carry: tuple[int, int] | None = None
@@ -848,6 +774,11 @@ async def memorize_endpoint(
                     if isinstance(_bf, str) and _bf:
                         _bu = str((days_dir / _bf).resolve())
                     memorize_segments.append((_bu, _bc, _ei))
+                if _carry is not None:
+                    _cf, _ce = _carry
+                    _cc = merged[_cf : _ce + 1]
+                    if _cc:
+                        memorize_segments.append((resource_url, _cc, _ce))
 
             expected_cursor = memorize_segments[-1][2] if memorize_segments else processed_cursor
             background_tasks.add_task(
