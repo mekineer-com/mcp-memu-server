@@ -164,7 +164,10 @@ def test_parse_as_of_datetime_rejects_invalid():
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_episodes_clears_progress_on_exception():
+async def test_run_memorize_episodes_clears_progress_on_exception(tmp_path):
+    episodes_dir = tmp_path / "episodes"
+    episodes_dir.mkdir()
+
     class _FailingService:
         async def split_segment_into_episodes(self, **_kwargs):
             return [{"text": "episode text", "caption": "episode"}]
@@ -198,6 +201,7 @@ async def test_run_memorize_episodes_clears_progress_on_exception():
             merged_len=1,
             force=True,
             sleep_stats=None,
+            episodes_dir=episodes_dir,
         )
 
     assert key not in main._MEMORIZE_PROGRESS

@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import math
+import time as _time
 import traceback
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, time as dtime, timedelta, timezone
@@ -108,7 +109,7 @@ async def run_memorize_episodes(
     memorize_cancel: set[str],
     min_chunk_tokens: int,
     sleep_split_min_lull_seconds: int,
-    episodes_dir: Path | None = None,
+    episodes_dir: Path,
     zi: Any | None = None,
 ) -> None:
     progress_key = memorize_lock_key(uid, soul_id)
@@ -139,8 +140,7 @@ async def run_memorize_episodes(
                     cached_prior_context_ids = [str(rid).strip() for rid in raw_pc_ids if str(rid).strip()]
 
         # Phase 2: split segments into episodes, write each episode as its own file.
-        EpisodeWork = tuple[dict[str, Any], str, str, int]  # (episode, ep_url, seg_raw_text, seg_end)
-        all_episodes: list[EpisodeWork] = []
+        all_episodes: list[tuple[dict[str, Any], str, str, int]] = []
         cancelled = False
         for _seg_idx, (seg_url, seg_conv, seg_end) in enumerate(memorize_segments):
             if progress_key in memorize_cancel:
@@ -162,27 +162,23 @@ async def run_memorize_episodes(
                     ep_msgs = [seg_conv[i] for i in ep_indices if 0 <= i < len(seg_conv)]
                 else:
                     ep_msgs = seg_conv
-                if episodes_dir and isinstance(ep_msgs, list) and ep_msgs:
-                    first_ts = ep_msgs[0].get("ts_ms") if isinstance(ep_msgs[0], dict) else None
-                    last_ts = ep_msgs[-1].get("ts_ms") if isinstance(ep_msgs[-1], dict) else None
-                    d1 = date_label(first_ts if isinstance(first_ts, int) else None, zi)
-                    d2 = date_label(last_ts if isinstance(last_ts, int) else None, zi)
-                    fn = f"{d1}.json" if d1 == d2 else f"{d1}__{d2}.json"
-                    ep_path = (episodes_dir / fn).resolve()
-                    n = 1
-                    while ep_path.exists():
-                        n += 1
-                        fn_base = f"{d1}" if d1 == d2 else f"{d1}__{d2}"
-                        ep_path = (episodes_dir / f"{fn_base}_{n}.json").resolve()
-                    ep_path.write_text(json.dumps(ep_msgs, ensure_ascii=False), encoding="utf-8")
-                    ep_url = str(ep_path)
-                else:
-                    ep_url = seg_url if len(episodes) == 1 else f"{seg_url}#episode:{ep_idx + 1}"
+                first_ts = ep_msgs[0].get("ts_ms") if ep_msgs and isinstance(ep_msgs[0], dict) else None
+                last_ts = ep_msgs[-1].get("ts_ms") if ep_msgs and isinstance(ep_msgs[-1], dict) else None
+                d1 = date_label(first_ts if isinstance(first_ts, int) else None, zi)
+                d2 = date_label(last_ts if isinstance(last_ts, int) else None, zi)
+                fn = f"{d1}.json" if d1 == d2 else f"{d1}__{d2}.json"
+                ep_path = (episodes_dir / fn).resolve()
+                n = 1
+                while ep_path.exists():
+                    n += 1
+                    fn_base = f"{d1}" if d1 == d2 else f"{d1}__{d2}"
+                    ep_path = (episodes_dir / f"{fn_base}_{n}.json").resolve()
+                ep_path.write_text(json.dumps(ep_msgs, ensure_ascii=False), encoding="utf-8")
+                ep_url = str(ep_path)
                 all_episodes.append((episode, ep_url, seg_raw_text, seg_end))
 
         total_episodes = len(all_episodes)
         memorize_progress[progress_key] = {"current": 0, "total": total_episodes}
-        import time as _time
 
         if not cancelled:
             for ep_num, (episode, ep_url, seg_raw_text, seg_end) in enumerate(all_episodes, 1):
