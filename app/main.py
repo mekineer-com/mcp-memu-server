@@ -2637,7 +2637,7 @@ async def _run_memorize_episodes(
     merged_len: int,
     force: bool,
     sleep_stats: Any,
-    episodes_dir: Any = None,
+    episodes_dir: Path,
     zi: Any = None,
 ) -> None:
     await _memorize_endpoint.run_memorize_episodes(
