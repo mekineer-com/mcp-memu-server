@@ -172,7 +172,10 @@ def _format_categories_for_prompt(rows: list[sqlite3.Row]) -> str:
         summary = str(row["summary"] or "").strip()
         if not name or not summary:
             continue
-        lines.append(f"\n# {name}\n{summary}")
+        if summary.startswith(f"# {name}"):
+            lines.append(f"\n{summary}")
+        else:
+            lines.append(f"\n# {name}\n{summary}")
     return "\n".join(lines).strip() or "(none yet)"
 
 
