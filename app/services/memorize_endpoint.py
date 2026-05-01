@@ -94,7 +94,6 @@ async def run_memorize_episodes(
     prev_len: int,
     merged_len: int,
     force: bool,
-    days_written: int,
     sleep_stats: Any,
     get_memorize_lock: Callable[[str], asyncio.Lock],
     memorize_lock_key: Callable[[str, str], str],
@@ -185,7 +184,6 @@ async def run_memorize_episodes(
         memorize_progress[progress_key] = {"current": 0, "total": total_episodes}
         import time as _time
 
-        prev_seg_end = -1
         if not cancelled:
             for ep_num, (episode, ep_url, seg_raw_text, seg_end) in enumerate(all_episodes, 1):
                 if progress_key in memorize_cancel:
@@ -286,7 +284,6 @@ async def run_memorize_episodes(
                     "memorizeEpisodeCount": total_episodes,
                     "minChunkTokens": min_chunk_tokens,
                     "memorizeDeferred": not force and not has_results,
-                    "days_written": days_written,
                     "sleepSplitMinLullSeconds": sleep_split_min_lull_seconds,
                     "sleepSplitStats": sleep_stats,
                 },
@@ -294,20 +291,6 @@ async def run_memorize_episodes(
     finally:
         memorize_progress.pop(progress_key, None)
         memorize_cancel.discard(progress_key)
-
-
-def read_list(p: Path) -> list[dict[str, Any]]:
-    if not p.exists():
-        return []
-    raw = p.read_text(encoding="utf-8")
-    obj = json.loads(raw) if raw.strip() else []
-    return [m for m in obj if isinstance(m, dict)] if isinstance(obj, list) else []
-
-
-def write_list_if_changed(p: Path, old: list[dict[str, Any]], new: list[dict[str, Any]]) -> None:
-    if new == old:
-        return
-    p.write_text(json.dumps(new, ensure_ascii=False), encoding="utf-8")
 
 
 def chat_storage_hash(uid: str, aid: str, key: str) -> str:
@@ -696,7 +679,6 @@ async def memorize_endpoint(
             )
 
             resource_url = str(chat_dir)
-            days_written = 0
             sleep_stats: Any | None = None
             new_segments: list[dict[str, Any]] = []
             if tz_ok and isinstance(merged, list) and any(isinstance(m.get("ts_ms"), int) for m in merged):
@@ -810,7 +792,6 @@ async def memorize_endpoint(
                 prev_len=prev_len,
                 merged_len=len(merged) if isinstance(merged, list) else 0,
                 force=force,
-                days_written=days_written,
                 sleep_stats=sleep_stats if "sleep_stats" in locals() else None,
                 episodes_dir=episodes_dir,
                 zi=zi if "zi" in locals() else None,

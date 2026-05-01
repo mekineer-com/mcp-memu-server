@@ -197,7 +197,6 @@ async def test_run_memorize_episodes_clears_progress_on_exception():
             prev_len=0,
             merged_len=1,
             force=True,
-            days_written=0,
             sleep_stats=None,
         )
 

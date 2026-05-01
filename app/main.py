@@ -2423,8 +2423,12 @@ async def root():
 
 # ---- Chat storage & sleep-gap helpers ----
 
-_read_list = _memorize_endpoint.read_list
-_write_list_if_changed = _memorize_endpoint.write_list_if_changed
+def _read_list(p: Path) -> list[dict[str, Any]]:
+    if not p.exists():
+        return []
+    raw = p.read_text(encoding="utf-8")
+    obj = json.loads(raw) if raw.strip() else []
+    return [m for m in obj if isinstance(m, dict)] if isinstance(obj, list) else []
 
 
 def _resolve_chat_storage_dir(
@@ -2638,7 +2642,6 @@ async def _run_memorize_episodes(
     prev_len: int,
     merged_len: int,
     force: bool,
-    days_written: int,
     sleep_stats: Any,
     episodes_dir: Any = None,
     zi: Any = None,
@@ -2661,7 +2664,6 @@ async def _run_memorize_episodes(
         prev_len=prev_len,
         merged_len=merged_len,
         force=force,
-        days_written=days_written,
         sleep_stats=sleep_stats,
         episodes_dir=episodes_dir,
         zi=zi,
