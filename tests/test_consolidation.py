@@ -1,4 +1,5 @@
 from app.services.consolidation import _format_episode_block_for_prompt
+from app.services.consolidation import _remap_edges_with_memory_ids
 from app.services.consolidation import _parse_consolidation_xml
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
 from app.services.graph_edges import invalidate_memory_edges, write_memory_edges
@@ -77,7 +78,7 @@ def test_parse_consolidation_xml_edges_and_write_helpers() -> None:
 
 
 def test_format_episode_block_for_prompt_shows_memory_ids() -> None:
-    id_map: dict[str, int] = {}
+    id_map: dict[str, str] = {}
     counter: list[int] = [1]
     out = _format_episode_block_for_prompt(
         [
@@ -97,6 +98,28 @@ def test_format_episode_block_for_prompt_shows_memory_ids() -> None:
     assert "- [1] one" in out
     assert "- [2] two" in out
     assert id_map == {"1": "mem_1", "2": "mem_2"}
+
+
+def test_remap_edges_with_memory_ids_accepts_numbered_and_bracketed_refs() -> None:
+    payload = [
+        {"subject_id": "1", "predicate": "parallels", "object_id": "2", "confidence": 0.9},
+        {"subject_id": "[2]", "predicate": "evokes", "object_id": "#1"},
+    ]
+    mapped = _remap_edges_with_memory_ids(
+        payload,
+        id_map={"1": "deadbeef", "2": "cafebabe"},
+        include_confidence=True,
+    )
+    assert mapped == [
+        {"subject_id": "deadbeef", "predicate": "parallels", "object_id": "cafebabe", "confidence": 0.9},
+        {"subject_id": "cafebabe", "predicate": "evokes", "object_id": "deadbeef"},
+    ]
+
+
+def test_remap_edges_with_memory_ids_drops_unresolved_ids() -> None:
+    payload = [{"subject_id": "partner-marker", "predicate": "shaped_by", "object_id": "52"}]
+    mapped = _remap_edges_with_memory_ids(payload, id_map={}, include_confidence=False)
+    assert mapped == []
 
 
 def test_write_consolidation_outputs_clears_pending_episode_ids() -> None:

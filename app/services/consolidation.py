@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import uuid
 from collections.abc import Callable
@@ -30,6 +31,13 @@ from app.services.turn_contract import DEFAULT_SOUL_CARD, format_relative_time_l
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
+
+
+_HEX_MEMORY_ID_RE = re.compile(r"^[0-9a-f]{8}$|^[0-9a-f]{16}$|^[0-9a-f]{32}$", re.IGNORECASE)
+_UUID_MEMORY_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -210,7 +218,7 @@ def _format_intention_activity_for_prompt(rows: list[dict[str, str]]) -> str:
 
 def _format_episode_block_for_prompt(
     episodes: list[dict[str, Any]],
-    id_map: dict[str, int],
+    id_map: dict[str, str],
     counter: list[int],
 ) -> str:
     if not episodes:
@@ -235,6 +243,66 @@ def _format_episode_block_for_prompt(
                     lines.append(f"- {s}")
         lines.append("")
     return "\n".join(lines).strip()
+
+
+def _looks_like_memory_id(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return bool(_HEX_MEMORY_ID_RE.fullmatch(text) or _UUID_MEMORY_ID_RE.fullmatch(text))
+
+
+def _resolve_memory_ref(raw_value: Any, id_map: dict[str, str]) -> str | None:
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+
+    # Most common case: numbered prompt references like "16".
+    mapped = id_map.get(text)
+    if mapped:
+        return mapped
+
+    # Allow bracketed references like "[16]".
+    if text.startswith("[") and text.endswith("]"):
+        inner = text[1:-1].strip()
+        if inner:
+            mapped_inner = id_map.get(inner)
+            if mapped_inner:
+                return mapped_inner
+            text = inner
+
+    # Some models prepend "#" to numbered references ("#16").
+    if text.startswith("#"):
+        mapped_hash = id_map.get(text[1:].strip())
+        if mapped_hash:
+            return mapped_hash
+
+    # Fall back to direct memory IDs when model emits raw IDs from context.
+    if _looks_like_memory_id(text):
+        return text
+    return None
+
+
+def _remap_edges_with_memory_ids(
+    payload: list[dict[str, Any]],
+    *,
+    id_map: dict[str, str],
+    include_confidence: bool,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for edge in payload:
+        if not isinstance(edge, dict):
+            continue
+        subject_id = _resolve_memory_ref(edge.get("subject_id"), id_map)
+        object_id = _resolve_memory_ref(edge.get("object_id"), id_map)
+        predicate = str(edge.get("predicate") or "").strip()
+        if not subject_id or not object_id or not predicate:
+            continue
+        mapped = {"subject_id": subject_id, "predicate": predicate, "object_id": object_id}
+        if include_confidence and "confidence" in edge:
+            mapped["confidence"] = edge["confidence"]
+        out.append(mapped)
+    return out
 
 
 def gather_consolidation_inputs(
@@ -496,7 +564,7 @@ async def run_consolidation_llm(
         inputs["removed_life_goals"],
     )
     intention_text = _format_intention_activity_for_prompt(inputs["intention_activity"])
-    id_map: dict[str, int] = {}
+    id_map: dict[str, str] = {}
     counter: list[int] = [1]
     episodes_text = _format_episode_block_for_prompt(inputs["episode_inputs"], id_map, counter)
 
@@ -534,7 +602,28 @@ async def run_consolidation_llm(
         retrieved_text = "\n".join(ret_lines)
     else:
         retrieved_text = "(none surfaced)"
-    num_to_hex = id_map
+    remapped_edges = _remap_edges_with_memory_ids(parsed["edges"], id_map=id_map, include_confidence=True)
+    remapped_invalidations = _remap_edges_with_memory_ids(
+        parsed["edge_invalidations"],
+        id_map=id_map,
+        include_confidence=False,
+    )
+    if parsed["edges"] and not remapped_edges:
+        log.warning(
+            "consolidation: dropped all parsed edges due unresolved ids (parsed=%d)",
+            len(parsed["edges"]),
+        )
+    elif len(remapped_edges) < len(parsed["edges"]):
+        log.warning(
+            "consolidation: dropped %d/%d edges due unresolved ids",
+            len(parsed["edges"]) - len(remapped_edges),
+            len(parsed["edges"]),
+        )
+    if parsed["edge_invalidations"] and not remapped_invalidations:
+        log.warning(
+            "consolidation: dropped all parsed edge invalidations due unresolved ids (parsed=%d)",
+            len(parsed["edge_invalidations"]),
+        )
 
     current_intentions_raw = inputs.get("state", {}).get("intentions_active")
     current_intentions_text = format_intentions_for_prompt(current_intentions_raw, include_internals=True) if current_intentions_raw else "(none yet)"
@@ -586,16 +675,8 @@ async def run_consolidation_llm(
         "companion_embedding": companion_embedding,
         "old_narrative_text": current_narrative if snapshot_old_narrative else None,
         "old_narrative_embedding": old_narrative_embedding,
-        "edges": [
-            {**e, "subject_id": num_to_hex.get(e["subject_id"], e["subject_id"]),
-                   "object_id": num_to_hex.get(e["object_id"], e["object_id"])}
-            for e in parsed["edges"]
-        ],
-        "edge_invalidations": [
-            {**e, "subject_id": num_to_hex.get(e["subject_id"], e["subject_id"]),
-                   "object_id": num_to_hex.get(e["object_id"], e["object_id"])}
-            for e in parsed["edge_invalidations"]
-        ],
+        "edges": remapped_edges,
+        "edge_invalidations": remapped_invalidations,
         "intention_actions": parsed["intention_actions"],
     }
 
