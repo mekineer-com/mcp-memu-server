@@ -2633,6 +2633,8 @@ async def _run_memorize_episodes(
     force: bool,
     days_written: int,
     sleep_stats: Any,
+    episodes_dir: Any = None,
+    zi: Any = None,
 ) -> None:
     await _memorize_endpoint.run_memorize_episodes(
         memorize_segments=memorize_segments,
@@ -2654,6 +2656,8 @@ async def _run_memorize_episodes(
         force=force,
         days_written=days_written,
         sleep_stats=sleep_stats,
+        episodes_dir=episodes_dir,
+        zi=zi,
         get_memorize_lock=_get_memorize_lock,
         memorize_lock_key=_memorize_lock_key,
         write_conversation_state=_write_conversation_state,

@@ -109,6 +109,8 @@ async def run_memorize_episodes(
     memorize_cancel: set[str],
     min_chunk_tokens: int,
     sleep_split_min_lull_seconds: int,
+    episodes_dir: Path | None = None,
+    zi: Any | None = None,
 ) -> None:
     progress_key = memorize_lock_key(uid, soul_id)
     mem_lock = get_memorize_lock(progress_key)
@@ -137,8 +139,8 @@ async def run_memorize_episodes(
                 if isinstance(raw_pc_ids, list):
                     cached_prior_context_ids = [str(rid).strip() for rid in raw_pc_ids if str(rid).strip()]
 
-        # Phase 2: split segments into episodes, build flat episode list.
-        EpisodeWork = tuple[dict[str, Any], str, str, str, int]  # (episode, url, seg_url, seg_raw_text, seg_end)
+        # Phase 2: split segments into episodes, write each episode as its own file.
+        EpisodeWork = tuple[dict[str, Any], str, str, int]  # (episode, ep_url, seg_raw_text, seg_end)
         all_episodes: list[EpisodeWork] = []
         cancelled = False
         for _seg_idx, (seg_url, seg_conv, seg_end) in enumerate(memorize_segments):
@@ -156,15 +158,32 @@ async def run_memorize_episodes(
             if not episodes:
                 episodes = [{"text": seg_raw_text, "caption": None}]
             for ep_idx, episode in enumerate(episodes):
-                ep_url = seg_url if len(episodes) == 1 else f"{seg_url}#episode:{ep_idx + 1}"
-                all_episodes.append((episode, ep_url, seg_url, seg_raw_text, seg_end))
+                ep_text = episode.get("text") or ""
+                ep_msgs = json.loads(ep_text) if ep_text.strip().startswith("[") else seg_conv
+                if episodes_dir and isinstance(ep_msgs, list) and ep_msgs:
+                    first_ts = ep_msgs[0].get("ts_ms") if isinstance(ep_msgs[0], dict) else None
+                    last_ts = ep_msgs[-1].get("ts_ms") if isinstance(ep_msgs[-1], dict) else None
+                    d1 = date_label(first_ts if isinstance(first_ts, int) else None, zi)
+                    d2 = date_label(last_ts if isinstance(last_ts, int) else None, zi)
+                    fn = f"{d1}.json" if d1 == d2 else f"{d1}__{d2}.json"
+                    ep_path = (episodes_dir / fn).resolve()
+                    n = 1
+                    while ep_path.exists():
+                        n += 1
+                        fn_base = f"{d1}" if d1 == d2 else f"{d1}__{d2}"
+                        ep_path = (episodes_dir / f"{fn_base}_{n}.json").resolve()
+                    ep_path.write_text(json.dumps(ep_msgs, ensure_ascii=False), encoding="utf-8")
+                    ep_url = str(ep_path)
+                else:
+                    ep_url = seg_url if len(episodes) == 1 else f"{seg_url}#episode:{ep_idx + 1}"
+                all_episodes.append((episode, ep_url, seg_raw_text, seg_end))
 
         total_episodes = len(all_episodes)
         memorize_progress[progress_key] = {"current": 0, "total": total_episodes}
         import time as _time
 
         if not cancelled:
-            for ep_num, (episode, ep_url, seg_url, seg_raw_text, seg_end) in enumerate(all_episodes, 1):
+            for ep_num, (episode, ep_url, seg_raw_text, seg_end) in enumerate(all_episodes, 1):
                 if progress_key in memorize_cancel:
                     memorize_cancel.discard(progress_key)
                     logger.info("memorize cancelled after episode %d/%d", ep_num - 1, total_episodes)
@@ -177,7 +196,7 @@ async def run_memorize_episodes(
                     episode=episode,
                     user=scope,
                     raw_text=seg_raw_text,
-                    local_path=seg_url,
+                    local_path=ep_url,
                     all_categories_summary=current_all_categories_summary,
                     soul_card=soul_card_for_memorize,
                     memory_retrieve_history=cached_retrieval_ids or None,
@@ -622,9 +641,9 @@ async def memorize_endpoint(
                 resource_url_in,
                 sanitize_db_filename,
             )
-            days_dir = (chat_dir / "days").resolve()
+            episodes_dir = (chat_dir / "episodes").resolve()
             chat_dir.mkdir(parents=True, exist_ok=True)
-            days_dir.mkdir(parents=True, exist_ok=True)
+            episodes_dir.mkdir(parents=True, exist_ok=True)
 
             manifest_path = (chat_dir / "manifest.json").resolve()
 
@@ -708,16 +727,7 @@ async def memorize_endpoint(
                     seg = merged[a_i:b_i]
                     if not seg:
                         continue
-                    first_ts = seg[0].get("ts_ms") if isinstance(seg[0], dict) else None
-                    last_ts = seg[-1].get("ts_ms") if isinstance(seg[-1], dict) else None
-                    date = date_label(first_ts if isinstance(first_ts, int) else None, zi)
-                    end_date = date_label(last_ts if isinstance(last_ts, int) else None, zi)
-                    fn = f"{date}.json" if end_date == date else f"{date}__{end_date}.json"
-                    fp = (days_dir / fn).resolve()
-                    old_seg = read_list(fp)
-                    write_list_if_changed(fp, old_seg, seg)
-                    days_written += 1 if seg != old_seg else 0
-                    new_segments.append({"date": date, "end_date": end_date, "start": a_i, "end": b_i - 1, "file": fn})
+                    new_segments.append({"start": a_i, "end": b_i - 1})
 
                 segments = keep_segments + new_segments
                 manifest_out = {
@@ -737,11 +747,6 @@ async def memorize_endpoint(
                     },
                 }
                 manifest_path.write_text(json.dumps(manifest_out, ensure_ascii=False, indent=2), encoding="utf-8")
-
-            if segments:
-                last_file = segments[-1].get("file")
-                if isinstance(last_file, str) and last_file:
-                    resource_url = str((days_dir / last_file).resolve())
 
             memorize_segments: list[tuple[str, list[dict[str, Any]], int]] = []
             if force:
@@ -769,11 +774,7 @@ async def memorize_endpoint(
                     if min_chunk_tokens > 0 and estimate_tokens(_bc) < min_chunk_tokens:
                         _carry = (_eff, _ei)
                         continue
-                    _bf = _seg.get("file")
-                    _bu = resource_url
-                    if isinstance(_bf, str) and _bf:
-                        _bu = str((days_dir / _bf).resolve())
-                    memorize_segments.append((_bu, _bc, _ei))
+                    memorize_segments.append((resource_url, _bc, _ei))
                 if _carry is not None:
                     _cf, _ce = _carry
                     _cc = merged[_cf : _ce + 1]
@@ -802,6 +803,8 @@ async def memorize_endpoint(
                 force=force,
                 days_written=days_written,
                 sleep_stats=sleep_stats if "sleep_stats" in locals() else None,
+                episodes_dir=episodes_dir,
+                zi=zi if "zi" in locals() else None,
             )
             # background=background_tasks is REQUIRED: when an endpoint returns a
             # Response object directly, FastAPI does not auto-attach the tasks from
