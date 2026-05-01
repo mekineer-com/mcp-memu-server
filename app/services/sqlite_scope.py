@@ -55,7 +55,7 @@ def sqlite_file_info(p: Path) -> dict[str, Any]:
             "size": int(st.st_size),
             "mtime": float(st.st_mtime),
         }
-    except Exception as e:
+    except OSError as e:
         return {"exists": p.exists(), "path": str(p), "error": f"{type(e).__name__}: {e}"}
 
 

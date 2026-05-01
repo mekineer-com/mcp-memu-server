@@ -30,14 +30,14 @@ def _text(value: Any) -> str:
 def _float(value: Any, default: float) -> float:
     try:
         return float(value)
-    except Exception:
+    except (TypeError, ValueError):
         return float(default)
 
 
 def _int(value: Any, default: int) -> int:
     try:
         return int(value)
-    except Exception:
+    except (TypeError, ValueError):
         return int(default)
 
 

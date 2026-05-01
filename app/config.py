@@ -224,12 +224,12 @@ def ensure_storage_paths(cfg: dict[str, Any]) -> None:
                 test_path = sqlite_dir / ".write_test"
                 test_path.write_text("ok", encoding="utf-8")
                 test_path.unlink(missing_ok=True)
-            except Exception as e:
+            except OSError as e:
                 STORAGE_STATUS["sqlite_open_ok"] = False
                 STORAGE_STATUS["ok"] = False
                 STORAGE_STATUS["error"] = f"sqlite_dir_write: {type(e).__name__}: {e}"
                 STARTUP_WARNINGS.append(STORAGE_STATUS["error"])
-    except Exception as e:
+    except OSError as e:
         STORAGE_STATUS["ok"] = False
         STORAGE_STATUS["error"] = f"storage_paths: {type(e).__name__}: {e}"
         STARTUP_WARNINGS.append(STORAGE_STATUS["error"])
@@ -250,7 +250,7 @@ def load_config() -> dict[str, Any]:
             cfg = default_config()
         ensure_storage_paths(cfg)
         return cfg
-    except Exception:
+    except (json.JSONDecodeError, OSError):
         traceback.print_exc()
         cfg = default_config()
         ensure_storage_paths(cfg)
@@ -344,7 +344,7 @@ def load_soul_gen_config(cfg: dict[str, Any], user_id: str, soul_id: str, logger
         return {}
     try:
         parsed = json.loads(raw)
-    except Exception:
+    except json.JSONDecodeError:
         if logger is not None:
             logger.warning("Ignoring invalid soul generation config at %s", p, exc_info=True)
         return {}

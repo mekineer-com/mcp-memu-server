@@ -21,7 +21,7 @@ from typing import Any
 
 try:
     import pwd
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     pwd = None  # type: ignore
 
 from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request
@@ -242,7 +242,7 @@ def _memorize_lock_key(user_id: str, soul_id: str) -> str:
         p = _sqlite_current_path(user_id, soul_id)
         if p is not None:
             return str(p)
-    except Exception:
+    except OSError:
         logger.warning(
             "_memorize_lock_key: path lookup failed for soul_id=%r, using fallback key", soul_id, exc_info=True
         )
@@ -296,7 +296,7 @@ async def _shutdown_when_idle(max_wait_sec: int) -> None:
     await asyncio.sleep(0.05)
     try:
         os.kill(os.getpid(), signal.SIGTERM)
-    except Exception:
+    except OSError:
         os._exit(0)
 
     _SHUTDOWN_TASK = None
@@ -832,22 +832,19 @@ def _normalize_conversation(conv: Any) -> Any:
 
         # Preserve timestamps when available (epoch ms preferred).
         ts_ms: int | None = None
-        try:
-            raw_ts = m.get("ts_ms") if isinstance(m, dict) else None
-            if raw_ts is None:
-                raw_ts = m.get("timestamp") if isinstance(m, dict) else None
-            if raw_ts is None:
-                raw_ts = m.get("created_at") if isinstance(m, dict) else None
-            if isinstance(raw_ts, (int, float)) and math.isfinite(raw_ts):
-                ts_ms = int(raw_ts)
-            elif isinstance(raw_ts, str) and raw_ts.strip():
-                try:
-                    dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
-                    ts_ms = int(dt.timestamp() * 1000)
-                except Exception:
-                    ts_ms = None
-        except Exception:
-            ts_ms = None
+        raw_ts = m.get("ts_ms") if isinstance(m, dict) else None
+        if raw_ts is None:
+            raw_ts = m.get("timestamp") if isinstance(m, dict) else None
+        if raw_ts is None:
+            raw_ts = m.get("created_at") if isinstance(m, dict) else None
+        if isinstance(raw_ts, (int, float)) and math.isfinite(raw_ts):
+            ts_ms = int(raw_ts)
+        elif isinstance(raw_ts, str) and raw_ts.strip():
+            try:
+                dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+                ts_ms = int(dt.timestamp() * 1000)
+            except (ValueError, OverflowError):
+                ts_ms = None
 
         out.append(
             {
@@ -1059,7 +1056,7 @@ def _parse_turn_ts_ms(value: Any) -> int | None:
         try:
             dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
             return int(dt.timestamp() * 1000)
-        except Exception:
+        except (ValueError, OverflowError):
             return None
     return None
 
@@ -1440,7 +1437,7 @@ def _merge_memorize_segment_results(
             if not dedupe_key:
                 try:
                     dedupe_key = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
-                except Exception:
+                except (TypeError, ValueError):
                     dedupe_key = repr(value)
             if dedupe_key in seen:
                 continue
@@ -3745,7 +3742,7 @@ try:
     sse_path = str(_CONFIG.get("mcp", {}).get("sse_path") or "/sse")
     mcp.mount(http_path=http_path, sse_path=sse_path)
     _has_mcp = True
-except Exception:
+except (ImportError, TypeError):
     _has_mcp = False
 
 
@@ -3754,5 +3751,5 @@ try:
     _UI_DIST = _BUNDLE_ROOT / "memu-ui" / "dist"
     if _UI_DIST.exists():
         app.mount("/", StaticFiles(directory=str(_UI_DIST), html=True), name="ui")
-except Exception:
+except (ImportError, OSError):
     logger.debug("static UI mount skipped", exc_info=True)

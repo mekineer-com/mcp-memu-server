@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 try:
     from zoneinfo import ZoneInfo
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore
 
 
@@ -341,7 +341,7 @@ def date_label(ts_ms: int | None, zi: Any | None) -> str:
         return "undated"
     try:
         return _local_dt(ts_ms, zi).date().isoformat()
-    except Exception:
+    except (ValueError, OverflowError, OSError):
         return "undated"
 
 
@@ -439,7 +439,7 @@ def find_chat_dir_for_conversation(
     for manifest_path in sorted(chats_dir.glob(f"{agent_slug}_*/manifest.json")):
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
+        except (json.JSONDecodeError, OSError):
             continue
         source = manifest.get("source") if isinstance(manifest, dict) else {}
         if not isinstance(source, dict):
@@ -478,7 +478,7 @@ def slice_history_after_last_memorized_segment(
         return history[min_recent_start:]
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except Exception:
+    except (json.JSONDecodeError, OSError):
         return history[min_recent_start:]
     segments = manifest.get("segments") if isinstance(manifest, dict) else None
     if not isinstance(segments, list) or not segments:
@@ -488,7 +488,7 @@ def slice_history_after_last_memorized_segment(
         return history[min_recent_start:]
     try:
         tail_start = int(last.get("end", -1)) + 1
-    except Exception:
+    except (TypeError, ValueError):
         return history[min_recent_start:]
     # Include the last memorized segment's successor + enough recent messages
     # for continuity, whichever reaches further back.
@@ -655,7 +655,7 @@ async def memorize_endpoint(
                 try:
                     zi = ZoneInfo(str(tz_name))
                     tz_ok = True
-                except Exception:
+                except (KeyError, ValueError):
                     zi = None
                     tz_ok = False
             if not tz_ok and tz_off_min is not None:
@@ -664,7 +664,7 @@ async def memorize_endpoint(
                     tz_ok = True
                     if not tz_name:
                         tz_name = f"offset({tz_off_min})"
-                except Exception:
+                except (ValueError, OverflowError):
                     zi = None
                     tz_ok = False
 
@@ -690,12 +690,12 @@ async def memorize_endpoint(
                         try:
                             st_i = int(s.get("start"))
                             en_i = int(s.get("end"))
-                            if st_i <= tail_start <= en_i:
-                                rebuild_from = st_i
-                            if st_i < rebuild_from:
-                                keep_segments.append(s)
-                        except Exception:
+                        except (TypeError, ValueError):
                             continue
+                        if st_i <= tail_start <= en_i:
+                            rebuild_from = st_i
+                        if st_i < rebuild_from:
+                            keep_segments.append(s)
 
                 ctx_start = max(0, rebuild_from - 1)
                 splits_rel, sleep_stats = split_indices_by_sleep(
@@ -747,7 +747,7 @@ async def memorize_endpoint(
                     try:
                         _si = int(_seg.get("start"))
                         _ei = int(_seg.get("end"))
-                    except Exception:
+                    except (TypeError, ValueError):
                         continue
                     if _ei < _si or _ei > _last_idx or _ei <= processed_cursor:
                         continue

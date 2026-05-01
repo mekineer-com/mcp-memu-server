@@ -17,13 +17,13 @@ def sqlite_ensure_nonempty(path: Path) -> None:
             try:
                 if path.stat().st_size > 0:
                     return
-            except Exception:
+            except OSError:
                 pass
         con = sqlite3.connect(str(path), timeout=5.0)
         con.execute("PRAGMA user_version=1")
         con.commit()
         con.close()
-    except Exception:
+    except (OSError, sqlite3.Error):
         logger.warning("sqlite_ensure_nonempty failed for %s", path, exc_info=True)
 
 
@@ -46,7 +46,7 @@ def sqlite_pragmas(con: sqlite3.Connection) -> dict[str, Any]:
         try:
             r = con.execute(f"PRAGMA {k}").fetchone()
             out[k] = r[0] if r else None
-        except Exception:
+        except sqlite3.Error:
             out[k] = None
     return out
 
@@ -252,6 +252,6 @@ def json_from_db(value: Any) -> Any:
             return None
         try:
             return json.loads(s)
-        except Exception:
+        except (json.JSONDecodeError, ValueError):
             return None
     return value
