@@ -126,6 +126,7 @@ _HISTORY_TAIL_AFTER_MEMORIZE: int = _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE
 # DB-storage limits are enforced separately at the storage write path.
 PIPELINE_MAX_TOKENS: int = 4000  # turn/memorize/retrieve/apimw/consolidation
 UTILITY_MAX_TOKENS: int = 1000   # holistic_summary/topic_statement/narrative_suggestion
+_BACKGROUND_TASKS: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
 _LOG_PROMPTS: bool = False
 _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved", "removed"}
 
@@ -2665,6 +2666,7 @@ async def _run_memorize_episodes(
         normalize_text_list=_normalize_text_list,
         compute_holistic_categories_summary=_compute_holistic_categories_summary,
         run_consolidation_task=_run_consolidation_task,
+        background_tasks_set=_BACKGROUND_TASKS,
         record_call=_record_call,
         logger=logger,
         memorize_progress=_MEMORIZE_PROGRESS,
@@ -3642,7 +3644,9 @@ async def conversation_turn(
             }
 
         if force_memorize_payload is not None:
-            asyncio.create_task(_run_forced_memorize_from_turn(force_memorize_payload))
+            _t = asyncio.create_task(_run_forced_memorize_from_turn(force_memorize_payload))
+            _BACKGROUND_TASKS.add(_t)
+            _t.add_done_callback(_BACKGROUND_TASKS.discard)
 
         _record_call(
             "conversation.turn",

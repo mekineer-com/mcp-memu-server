@@ -103,6 +103,7 @@ async def run_memorize_episodes(
     normalize_text_list: Callable[[Any], list[str]],
     compute_holistic_categories_summary: Callable[..., Awaitable[str | None]],
     run_consolidation_task: Callable[..., Awaitable[None]],
+    background_tasks_set: set[asyncio.Task],
     record_call: Callable[..., None],
     logger: Any,
     memorize_progress: dict[str, dict[str, Any]],
@@ -258,7 +259,9 @@ async def run_memorize_episodes(
 
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
             if conversation_id and has_results:
-                asyncio.create_task(run_consolidation_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid))
+                _ct = asyncio.create_task(run_consolidation_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid))
+                background_tasks_set.add(_ct)
+                _ct.add_done_callback(background_tasks_set.discard)
 
             record_call(
                 "memorize",
