@@ -185,6 +185,7 @@ async def run_memorize_episodes(
         memorize_progress[progress_key] = {"current": 0, "total": total_episodes}
         import time as _time
 
+        prev_seg_end = -1
         if not cancelled:
             for ep_num, (episode, ep_url, seg_raw_text, seg_end) in enumerate(all_episodes, 1):
                 if progress_key in memorize_cancel:
@@ -211,8 +212,8 @@ async def run_memorize_episodes(
                     has_results = True
                     pending_episode_ids.extend(normalize_text_list(ep_result.get("pending_episode_ids")))
                 next_seg_end = all_episodes[ep_num][3] if ep_num < total_episodes else None
-                segment_done = (next_seg_end != seg_end)
-                if segment_done and conversation_id:
+                last_episode_of_segment = (next_seg_end != seg_end)
+                if last_episode_of_segment and conversation_id:
                     # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
                     async with mem_lock:
                         fresh_row, _, _ = load_turn_state_and_soul_card(
