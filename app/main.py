@@ -1541,7 +1541,7 @@ async def _run_retrieve(
     # Prompt-diversity: read the rotating rewrite angle so the router
     # uses a different lens (topic / relation / counterpoint-hint) on
     # consecutive RETRIEVE turns.
-    pre_retrieve_angle = 0
+    retrieve_rewrite_angle = 0
     if scoped_conversation_id and soul_id:
         db_path = _sqlite_current_path(user_id or None, soul_id)
         if db_path is not None and db_path.exists():
@@ -1551,20 +1551,23 @@ async def _run_retrieve(
                 _sqlite_ensure_conversation_state_schema(con)
                 pre_row = _conversation_state_from_row(_conversation_state_row(con, scoped_conversation_id))
                 if pre_row:
-                    pre_retrieve_angle = int(pre_row.get("retrieve_rewrite_angle") or 0)
+                    retrieve_rewrite_angle = int(pre_row.get("retrieve_rewrite_angle") or 0)
             finally:
                 con.close()
 
-    async def _retrieve_and_maybe_persist(state_soul_id: str | None) -> dict[str, Any]:
-        _t0 = time.monotonic()
-        result = await svc.retrieve(
-            memu_queries, where=scope, as_of=as_of, rewrite_angle=pre_retrieve_angle
-        )
-        _retrieve_ms = int((time.monotonic() - _t0) * 1000)
-        out_local: dict[str, Any] = {"ok": True, "result": result, "retrieve_ms": _retrieve_ms}
-        return out_local
-
-    out = await _retrieve_and_maybe_persist(soul_id or None)
+    retrieve_started_at = time.monotonic()
+    retrieve_result = await svc.retrieve(
+        memu_queries,
+        where=scope,
+        as_of=as_of,
+        rewrite_angle=retrieve_rewrite_angle,
+    )
+    retrieve_ms = int((time.monotonic() - retrieve_started_at) * 1000)
+    out: dict[str, Any] = {
+        "ok": True,
+        "result": retrieve_result,
+        "retrieve_ms": retrieve_ms,
+    }
 
     # Mental-health procedural sidecar. The router gated this by writing
     # mental_health_query only when the turn touches such a theme — if it
@@ -1611,7 +1614,7 @@ async def _run_retrieve(
             scoped_conversation_id,
             soul_id=soul_id,
             user_id=user_id,
-            updates={"retrieve_rewrite_angle": (pre_retrieve_angle + 1) % 3},
+            updates={"retrieve_rewrite_angle": (retrieve_rewrite_angle + 1) % 3},
         )
 
     if scoped_conversation_id:
@@ -1682,7 +1685,7 @@ async def _apimw_retrieve_pass(
     conversation_id: str,
     apimw_k: int,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    queries = _build_retrieve_soul_context_queries(
+    retrieve_queries = _build_retrieve_soul_context_queries(
         soul_id=soul_id,
         message=query_text,
         history=history,
@@ -1693,7 +1696,7 @@ async def _apimw_retrieve_pass(
         **payload,
         "method": "rag",
         "query": query_text,
-        "queries": queries,
+        "queries": retrieve_queries,
         "conversation_id": conversation_id,
     }
     retrieve_payload["retrieve_config"] = _build_apimw_retrieve_config(
@@ -1702,10 +1705,10 @@ async def _apimw_retrieve_pass(
     )
     logger.info("apimw retrieve for %s", conversation_id)
     retrieve_out = await _run_retrieve(retrieve_payload, conversation_id=conversation_id)
-    result_data_local = retrieve_out.get("result") or {}
-    rows = [row for row in (result_data_local.get("items") or []) if isinstance(row, dict)]
-    logger.info("apimw retrieved %d items for %s", len(rows), conversation_id)
-    return result_data_local, rows
+    retrieve_result_data = retrieve_out.get("result") or {}
+    retrieved_items = [item for item in (retrieve_result_data.get("items") or []) if isinstance(item, dict)]
+    logger.info("apimw retrieved %d items for %s", len(retrieved_items), conversation_id)
+    return retrieve_result_data, retrieved_items
 
 
 async def _apimw_retrieve_and_merge(
@@ -1721,7 +1724,7 @@ async def _apimw_retrieve_and_merge(
     apimw_random_count: int,
     scope: dict[str, str],
 ) -> list[dict[str, Any]]:
-    result_data_first, items_first = await _apimw_retrieve_pass(
+    first_pass_result, first_pass_items = await _apimw_retrieve_pass(
         payload,
         query_text=topic_statement,
         soul_id=soul_id,
@@ -1731,10 +1734,10 @@ async def _apimw_retrieve_and_merge(
         apimw_k=apimw_k,
     )
 
-    items_second: list[dict[str, Any]] = []
-    second_query = str(result_data_first.get("next_step_query") or "").strip()
+    second_pass_items: list[dict[str, Any]] = []
+    second_query = str(first_pass_result.get("next_step_query") or "").strip()
     if second_query and _norm_result_sig(second_query) != _norm_result_sig(topic_statement):
-        _result_data_second, items_second = await _apimw_retrieve_pass(
+        _second_pass_result, second_pass_items = await _apimw_retrieve_pass(
             payload,
             query_text=second_query,
             soul_id=soul_id,
@@ -1746,12 +1749,12 @@ async def _apimw_retrieve_and_merge(
 
     combined_items: list[dict[str, Any]] = []
     seen_item_sigs: set[str] = set()
-    for row in items_first + items_second:
-        sig = _item_sig(row)
+    for item in first_pass_items + second_pass_items:
+        sig = _item_sig(item)
         if not sig or sig in seen_item_sigs:
             continue
         seen_item_sigs.add(sig)
-        combined_items.append(row)
+        combined_items.append(item)
 
     if apimw_random_count > 0:
         pool = svc.database.memory_item_repo.list_items(scope)
@@ -1773,12 +1776,12 @@ async def _apimw_retrieve_and_merge(
             candidates.append(row)
         if candidates:
             sample_size = min(apimw_random_count, len(candidates))
-            for row in random.sample(candidates, sample_size):
-                sig = _item_sig(row)
+            for candidate_item in random.sample(candidates, sample_size):
+                sig = _item_sig(candidate_item)
                 if not sig or sig in seen_item_sigs:
                     continue
                 seen_item_sigs.add(sig)
-                combined_items.append(row)
+                combined_items.append(candidate_item)
 
     logger.info("apimw combined pool %d items for %s", len(combined_items), conversation_id)
     return combined_items
@@ -1798,24 +1801,24 @@ async def _apimw_def_call(
     llm_profile: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
     logger.info("apimw step D+E+F: combined call for %s", conversation_id)
-    memory_lines: list[str] = []
+    formatted_memory_lines: list[str] = []
     items_by_id: dict[str, dict[str, Any]] = {}
-    for it in combined_items:
-        if not isinstance(it, dict):
+    for item in combined_items:
+        if not isinstance(item, dict):
             continue
-        item_id = str(it.get("id") or "").strip()
-        summary = str(it.get("summary") or "").strip()
+        item_id = str(item.get("id") or "").strip()
+        summary = str(item.get("summary") or "").strip()
         if not item_id or not summary:
             continue
-        items_by_id[item_id] = it
-        mem_type = str(it.get("memory_type") or "memory").strip()
-        suffix = _format_turn_item_suffix(it)
-        memory_lines.append(f"[{item_id}] [{mem_type}]{suffix} {summary}")
-        shaped_by = it.get("shaped_by")
+        items_by_id[item_id] = item
+        memory_type = str(item.get("memory_type") or "memory").strip()
+        suffix = _format_turn_item_suffix(item)
+        formatted_memory_lines.append(f"[{item_id}] [{memory_type}]{suffix} {summary}")
+        shaped_by = item.get("shaped_by")
         if isinstance(shaped_by, dict):
-            memory_lines.append(_format_shaped_by_line(shaped_by, with_id=True))
+            formatted_memory_lines.append(_format_shaped_by_line(shaped_by, with_id=True))
 
-    formatted_memories = "\n".join(memory_lines) if memory_lines else "(none)"
+    formatted_memories = "\n".join(formatted_memory_lines) if formatted_memory_lines else "(none)"
 
     categories = svc.database.memory_category_repo.list_categories(scope)
     cat_lines: list[str] = []
@@ -1836,7 +1839,7 @@ async def _apimw_def_call(
         "\n".join(f"- {goal}" for goal in life_goals_active if str(goal).strip()) if life_goals_active else "(none yet)"
     )
 
-    def_system = (
+    apimw_system_prompt = (
         f"{identity_context}\n\n"
         "This is your subconscious — a background process that runs between your turns. "
         "You have just searched your long-term memory. Below are your summaries, your individual memories, "
@@ -1853,7 +1856,7 @@ async def _apimw_def_call(
         "Use this when something you noticed in the background feels important enough to bring to your own attention next time you speak. One sentence."
     )
 
-    def_user = (
+    apimw_user_prompt = (
         f"Summaries:\n{formatted_categories}\n\n"
         f"Individual memories:\n{formatted_memories}\n\n"
         f"Your working thoughts:\n{formatted_cache}\n\n"
@@ -1863,9 +1866,9 @@ async def _apimw_def_call(
     )
 
     llm_raw = await svc.chat(
-        def_user,
+        apimw_user_prompt,
         profile=llm_profile,
-        system_prompt=def_system,
+        system_prompt=apimw_system_prompt,
         temperature=0.2,
         max_tokens=PIPELINE_MAX_TOKENS,
         response_format={"type": "json_object"},
@@ -1873,11 +1876,11 @@ async def _apimw_def_call(
         step="def_call",
     )
 
-    raw_text = str(llm_raw or "").strip()
+    apimw_response_text = str(llm_raw or "").strip()
     try:
-        result_json = json.loads(raw_text)
+        result_json = json.loads(apimw_response_text)
     except json.JSONDecodeError:
-        logger.error("apimw D+E+F: JSON parse failed, raw=%s", raw_text[:200])
+        logger.error("apimw D+E+F: JSON parse failed, raw=%s", apimw_response_text[:200])
         return None, items_by_id
     if not isinstance(result_json, dict):
         logger.error("apimw D+E+F: expected dict, got %s", type(result_json).__name__)
@@ -1905,23 +1908,23 @@ async def _apimw_persist(
         current_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
         current_intentions = _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
 
-        prior_ids = result_json.get("prior_context") or []
-        if isinstance(prior_ids, list) and prior_ids:
-            pc_lines: list[str] = []
-            for mid in prior_ids:
-                mid_str = str(mid).strip()
-                it = items_by_id.get(mid_str)
-                if not it:
+        prior_context_ids_raw = result_json.get("prior_context") or []
+        if isinstance(prior_context_ids_raw, list) and prior_context_ids_raw:
+            prior_context_lines: list[str] = []
+            for raw_memory_id in prior_context_ids_raw:
+                memory_id = str(raw_memory_id).strip()
+                item = items_by_id.get(memory_id)
+                if not item:
                     continue
-                mem_type = str(it.get("memory_type") or "memory").strip()
-                suffix = _format_turn_item_suffix(it)
-                summary = str(it.get("summary") or "").strip()
-                pc_lines.append(f"[{mem_type}]{suffix} {summary}")
-                shaped_by = it.get("shaped_by")
+                memory_type = str(item.get("memory_type") or "memory").strip()
+                suffix = _format_turn_item_suffix(item)
+                summary = str(item.get("summary") or "").strip()
+                prior_context_lines.append(f"[{memory_type}]{suffix} {summary}")
+                shaped_by = item.get("shaped_by")
                 if isinstance(shaped_by, dict):
-                    pc_lines.append(_format_shaped_by_line(shaped_by))
-            if pc_lines:
-                new_prior = "\n".join(pc_lines)
+                    prior_context_lines.append(_format_shaped_by_line(shaped_by))
+            if prior_context_lines:
+                new_prior = "\n".join(prior_context_lines)
                 existing_prior = str(fresh_row.get("prior_context") or "").strip()
                 if existing_prior and existing_prior != new_prior:
                     logger.warning(
@@ -1950,7 +1953,11 @@ async def _apimw_persist(
             except Exception:
                 logger.warning("failed to persist subconscious memory item", exc_info=True)
 
-        prior_context_ids = [str(mid).strip() for mid in prior_ids if isinstance(mid, str) and str(mid).strip()] if isinstance(prior_ids, list) else []
+        prior_context_ids = (
+            [str(mid).strip() for mid in prior_context_ids_raw if isinstance(mid, str) and str(mid).strip()]
+            if isinstance(prior_context_ids_raw, list)
+            else []
+        )
         if prior_context_ids:
             updates["append_prior_context_ids_since_consolidation"] = prior_context_ids
 
@@ -1976,7 +1983,7 @@ async def _run_apimw(
     try:
         svc = _get_service_from_payload(payload, retrieve_method_override="rag")
         scope = {"user_id": user_id, "soul_id": soul_id}
-        apimw_k = _apimw_memory_count_from_cfg(_CONFIG)
+        apimw_item_top_k = _apimw_memory_count_from_cfg(_CONFIG)
         apimw_random_count = _apimw_random_count_from_cfg(_CONFIG)
 
         chat_x_anchors = _compact_chat_x_anchors(
@@ -2017,12 +2024,12 @@ async def _run_apimw(
             state_row=state_row,
             conversation_id=conversation_id,
             soul_id=soul_id,
-            apimw_k=apimw_k,
+            apimw_k=apimw_item_top_k,
             apimw_random_count=apimw_random_count,
             scope=scope,
         )
 
-        _heavy_profile = _resolve_profile(svc, "memory_extract")
+        apimw_heavy_profile = _resolve_profile(svc, "memory_extract")
         result_json, items_by_id = await _apimw_def_call(
             svc,
             combined_items=combined_items,
@@ -2033,7 +2040,7 @@ async def _run_apimw(
             soul_id=soul_id,
             conversation_id=conversation_id,
             scope=scope,
-            llm_profile=_heavy_profile,
+            llm_profile=apimw_heavy_profile,
         )
         if result_json is None:
             return
@@ -3396,13 +3403,13 @@ def _turn_launch_apimw(
     state_row: dict[str, Any],
 ) -> str:
     apimw_state = state_out
-    _cadence_anchors = _compact_chat_x_anchors(
+    cadence_anchors = _compact_chat_x_anchors(
         str(apimw_state.get("last_chat_x") or "").strip() or None,
     )
-    _cadence_slice = _slice_history_from_chat_x_anchors(history_full, _cadence_anchors, limit=999)
-    _cadence_threshold = _apimw_cadence_from_cfg(_CONFIG)
-    _cadence_soul_messages = _count_soul_messages(_cadence_slice, soul_id)
-    if _cadence_soul_messages < _cadence_threshold:
+    cadence_slice = _slice_history_from_chat_x_anchors(history_full, cadence_anchors, limit=999)
+    cadence_threshold = _apimw_cadence_from_cfg(_CONFIG)
+    cadence_soul_messages = _count_soul_messages(cadence_slice, soul_id)
+    if cadence_soul_messages < cadence_threshold:
         return "skipped_cadence"
     if not _mark_apimw_inflight(cid):
         return "skipped_inflight"
