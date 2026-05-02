@@ -7,7 +7,7 @@ import traceback
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
@@ -36,6 +36,13 @@ def estimate_unmemorized_tokens(messages: list[dict[str, Any]], digest_cursor: A
     return estimate_tokens(messages[start:])
 
 
+
+
+class EpisodeMemorizeJob(TypedDict):
+    episode_payload: dict[str, Any]
+    episode_resource_url: str
+    segment_raw_text: str
+    segment_end_index: int
 
 
 async def run_forced_memorize_from_turn(
@@ -141,48 +148,66 @@ async def run_memorize_episodes(
                     cached_prior_context_ids = [str(rid).strip() for rid in raw_pc_ids if str(rid).strip()]
 
         # Phase 2: split segments into episodes, write each episode as its own file.
-        all_episodes: list[tuple[dict[str, Any], str, str, int]] = []
+        episode_jobs: list[EpisodeMemorizeJob] = []
         cancelled = False
-        for _seg_idx, (seg_url, seg_conv, seg_end) in enumerate(memorize_segments):
+        for _seg_idx, (segment_resource_url, segment_messages, segment_end_index) in enumerate(memorize_segments):
             if progress_key in memorize_cancel:
                 memorize_cancel.discard(progress_key)
                 logger.info("memorize cancelled during pre-split after segment %d/%d", _seg_idx, len(memorize_segments))
                 cancelled = True
                 break
-            seg_raw_text = json.dumps(seg_conv, ensure_ascii=False)
-            episodes = await svc.split_segment_into_episodes(
-                local_path=seg_url,
-                raw_text=seg_raw_text,
+            segment_raw_text = json.dumps(segment_messages, ensure_ascii=False)
+            segment_episodes = await svc.split_segment_into_episodes(
+                local_path=segment_resource_url,
+                raw_text=segment_raw_text,
                 modality="conversation",
             )
-            if not episodes:
-                episodes = [{"text": seg_raw_text, "caption": None}]
-            for ep_idx, episode in enumerate(episodes):
-                ep_indices = episode.get("message_indices")
-                if isinstance(ep_indices, list) and ep_indices:
-                    ep_msgs = [seg_conv[i] for i in ep_indices if 0 <= i < len(seg_conv)]
+            if not segment_episodes:
+                segment_episodes = [{"text": segment_raw_text, "caption": None}]
+            for episode_payload in segment_episodes:
+                episode_indices = episode_payload.get("message_indices")
+                if isinstance(episode_indices, list) and episode_indices:
+                    episode_messages = [
+                        segment_messages[i]
+                        for i in episode_indices
+                        if 0 <= i < len(segment_messages)
+                    ]
                 else:
-                    ep_msgs = seg_conv
-                first_ts = ep_msgs[0].get("ts_ms") if ep_msgs and isinstance(ep_msgs[0], dict) else None
-                last_ts = ep_msgs[-1].get("ts_ms") if ep_msgs and isinstance(ep_msgs[-1], dict) else None
+                    episode_messages = segment_messages
+                first_ts = (
+                    episode_messages[0].get("ts_ms")
+                    if episode_messages and isinstance(episode_messages[0], dict)
+                    else None
+                )
+                last_ts = (
+                    episode_messages[-1].get("ts_ms")
+                    if episode_messages and isinstance(episode_messages[-1], dict)
+                    else None
+                )
                 d1 = date_label(first_ts if isinstance(first_ts, int) else None, zi)
                 d2 = date_label(last_ts if isinstance(last_ts, int) else None, zi)
                 fn = f"{d1}.json" if d1 == d2 else f"{d1}__{d2}.json"
-                ep_path = (episodes_dir / fn).resolve()
+                episode_path = (episodes_dir / fn).resolve()
                 n = 1
-                while ep_path.exists():
+                while episode_path.exists():
                     n += 1
                     fn_base = f"{d1}" if d1 == d2 else f"{d1}__{d2}"
-                    ep_path = (episodes_dir / f"{fn_base}_{n}.json").resolve()
-                ep_path.write_text(json.dumps(ep_msgs, ensure_ascii=False), encoding="utf-8")
-                ep_url = str(ep_path)
-                all_episodes.append((episode, ep_url, seg_raw_text, seg_end))
+                    episode_path = (episodes_dir / f"{fn_base}_{n}.json").resolve()
+                episode_path.write_text(json.dumps(episode_messages, ensure_ascii=False), encoding="utf-8")
+                episode_jobs.append(
+                    {
+                        "episode_payload": episode_payload,
+                        "episode_resource_url": str(episode_path),
+                        "segment_raw_text": segment_raw_text,
+                        "segment_end_index": segment_end_index,
+                    }
+                )
 
-        total_episodes = len(all_episodes)
+        total_episodes = len(episode_jobs)
         memorize_progress[progress_key] = {"current": 0, "total": total_episodes}
 
         if not cancelled:
-            for ep_num, (episode, ep_url, seg_raw_text, seg_end) in enumerate(all_episodes, 1):
+            for ep_num, episode_job in enumerate(episode_jobs, 1):
                 if progress_key in memorize_cancel:
                     memorize_cancel.discard(progress_key)
                     logger.info("memorize cancelled after episode %d/%d", ep_num - 1, total_episodes)
@@ -190,12 +215,12 @@ async def run_memorize_episodes(
                 memorize_progress[progress_key] = {"current": ep_num, "total": total_episodes}
                 ep_start = _time.monotonic()
                 ep_result = await svc.memorize_episode(
-                    resource_url=ep_url,
+                    resource_url=episode_job["episode_resource_url"],
                     modality="conversation",
-                    episode=episode,
+                    episode=episode_job["episode_payload"],
                     user=scope,
-                    raw_text=seg_raw_text,
-                    local_path=ep_url,
+                    raw_text=episode_job["segment_raw_text"],
+                    local_path=episode_job["episode_resource_url"],
                     all_categories_summary=current_all_categories_summary,
                     soul_card=soul_card_for_memorize,
                     memory_retrieve_history=cached_retrieval_ids or None,
@@ -206,8 +231,11 @@ async def run_memorize_episodes(
                 if isinstance(ep_result, dict):
                     has_results = True
                     pending_episode_ids.extend(normalize_text_list(ep_result.get("pending_episode_ids")))
-                next_seg_end = all_episodes[ep_num][3] if ep_num < total_episodes else None
-                last_episode_of_segment = (next_seg_end != seg_end)
+                next_segment_end_index = (
+                    episode_jobs[ep_num]["segment_end_index"] if ep_num < total_episodes else None
+                )
+                segment_end_index = episode_job["segment_end_index"]
+                last_episode_of_segment = (next_segment_end_index != segment_end_index)
                 if last_episode_of_segment and conversation_id:
                     # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
                     async with mem_lock:
@@ -217,8 +245,8 @@ async def run_memorize_episodes(
                             soul_id=soul_id,
                         )
                         fresh_cursor = int(fresh_row.get("digest_cursor") or 0)
-                        if fresh_cursor <= seg_end:
-                            processed_end_cursor = max(processed_end_cursor, seg_end)
+                        if fresh_cursor <= segment_end_index:
+                            processed_end_cursor = max(processed_end_cursor, segment_end_index)
                             # per-segment advance — crash recovery needs the cursor to move
                             # only after all episodes in a segment complete.
                             write_conversation_state(
@@ -230,7 +258,7 @@ async def run_memorize_episodes(
                                 },
                             )
                         else:
-                            # Another runner advanced the cursor past our seg_end; honour the further value.
+                            # Another runner advanced the cursor past this segment; honour the further value.
                             processed_end_cursor = max(processed_end_cursor, fresh_cursor)
 
         # Phase 3: holistic summary LLM call — outside the lock.
