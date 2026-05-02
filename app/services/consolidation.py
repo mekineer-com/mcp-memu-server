@@ -33,6 +33,17 @@ if TYPE_CHECKING:
     from memu.app import MemoryService
 
 
+_EPISODE_SUFFIX_RE = re.compile(r"_(\d+)\.json$")
+
+
+def _episode_file_sort_key(path: Path) -> tuple[str, int]:
+    stem = path.stem
+    m = _EPISODE_SUFFIX_RE.search(path.name)
+    if m:
+        return (path.name[:m.start()], int(m.group(1)))
+    return (stem, 0)
+
+
 _HEX_MEMORY_ID_RE = re.compile(r"^[0-9a-f]{8}$|^[0-9a-f]{16}$|^[0-9a-f]{32}$", re.IGNORECASE)
 _UUID_MEMORY_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -450,11 +461,13 @@ LIMIT 1
             episodes_dir = (chat_dir / "episodes").resolve()
             messages: list[dict[str, Any]] = []
             if episodes_dir.is_dir():
-                for ep_file in sorted(episodes_dir.glob("*.json")):
+                for ep_file in sorted(episodes_dir.glob("*.json"), key=_episode_file_sort_key):
                     try:
-                        messages.extend(json.loads(ep_file.read_text(encoding="utf-8")))
+                        parsed = json.loads(ep_file.read_text(encoding="utf-8"))
                     except (OSError, json.JSONDecodeError):
                         continue
+                    if isinstance(parsed, list):
+                        messages.extend(m for m in parsed if isinstance(m, dict))
             if not messages:
                 days_dir = (chat_dir / "days").resolve()
                 for seg in sorted(
