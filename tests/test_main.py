@@ -72,6 +72,29 @@ def test_estimate_unmemorized_tokens_respects_digest_cursor():
     assert main._estimate_unmemorized_tokens(messages, 99) == 0
 
 
+def test_split_indices_by_sleep_keeps_all_qualifying_boundaries():
+    def _ts(y: int, m: int, d: int, hh: int, mm: int = 0) -> int:
+        return int(datetime(y, m, d, hh, mm, tzinfo=UTC).timestamp() * 1000)
+
+    messages = [
+        {"ts_ms": _ts(2026, 1, 1, 21, 0)},
+        {"ts_ms": _ts(2026, 1, 2, 9, 0)},
+        {"ts_ms": _ts(2026, 1, 2, 21, 0)},
+        {"ts_ms": _ts(2026, 1, 3, 9, 0)},
+        {"ts_ms": _ts(2026, 1, 3, 21, 0)},
+        {"ts_ms": _ts(2026, 1, 4, 9, 0)},
+    ]
+    splits, stats = main._split_indices_by_sleep(
+        messages,
+        UTC,
+        True,
+        3 * 60 * 60,
+    )
+
+    assert splits == [1, 3, 5]
+    assert stats["nights_qual"] == 3
+
+
 def test_compact_chat_x_anchors_keeps_two_unique_newest():
     anchors = main._compact_chat_x_anchors("m9", "m8", "m9", "m7")
     assert anchors == ["m9", "m8"]

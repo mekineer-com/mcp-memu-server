@@ -353,7 +353,6 @@ def split_indices_by_sleep(
     zi: Any | None,
     tz_ok: bool,
     min_lull_seconds: int,
-    episodes_per_segment: int = 3,
 ) -> tuple[list[int], dict[str, Any]]:
     if not tz_ok:
         return ([], {"tz_ok": False})
@@ -405,8 +404,6 @@ def split_indices_by_sleep(
         }
     )
     splits = list(raw_splits)
-    if len(splits) >= episodes_per_segment:
-        splits = splits[:episodes_per_segment - 1]
     return (
         splits,
         {
@@ -565,7 +562,6 @@ async def memorize_endpoint(
     sanitize_db_filename: Callable[[str], str],
     min_chunk_tokens: int,
     sleep_split_min_lull_seconds: int,
-    episodes_per_segment: int,
     memorize_progress: dict[str, dict[str, Any]],
     record_call: Callable[..., None],
     logger: Any,
@@ -703,7 +699,6 @@ async def memorize_endpoint(
                 ctx_start = max(0, rebuild_from - 1)
                 splits_rel, sleep_stats = split_indices_by_sleep(
                     merged[ctx_start:], zi, tz_ok, sleep_split_min_lull_seconds,
-                    episodes_per_segment=episodes_per_segment,
                 )
                 splits = [ctx_start + i for i in splits_rel if (ctx_start + i) > rebuild_from]
 

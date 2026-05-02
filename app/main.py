@@ -2701,7 +2701,6 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         sanitize_db_filename=_sanitize_db_filename,
         min_chunk_tokens=_MIN_CHUNK_TOKENS,
         sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
-        episodes_per_segment=_EPISODES_PER_SEGMENT,
         memorize_progress=_MEMORIZE_PROGRESS,
         record_call=_record_call,
         logger=logger,
