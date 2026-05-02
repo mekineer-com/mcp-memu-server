@@ -3314,35 +3314,41 @@ def _turn_state_read(
     int,
     "dict[str, Any] | None",
 ]:
-    state_row, soul_card, db_path = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
-    payload_soul_card = str(safe.get("soul_card") or "").strip() or None
-    soul_card = payload_soul_card or soul_card
+    conversation_state, soul_card, db_path = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
+    request_soul_card = str(safe.get("soul_card") or "").strip() or None
+    soul_card = request_soul_card or soul_card
     memory_cache_before = list(state_override_cache)
     intentions_before = _normalize_intentions_stack_impl(state_override_intentions)
-    digest_cursor_for_gate = state_row.get("digest_cursor") if state_row.get("last_memorize_at") else -1
-    force_memorize_unmemorized_tokens = _estimate_unmemorized_tokens(history_full, digest_cursor_for_gate)
-    force_memorize_payload: dict[str, Any] | None = None
-    if (not dry_run) and history_full and force_memorize_unmemorized_tokens >= _MIN_CHUNK_TOKENS:
-        had_sleep_gap = _unmemorized_sleep_gap_detected(
-            history_full, digest_cursor_for_gate, safe
+    unmemorized_digest_cursor = (
+        conversation_state.get("digest_cursor")
+        if conversation_state.get("last_memorize_at")
+        else -1
+    )
+    unmemorized_tokens = _estimate_unmemorized_tokens(history_full, unmemorized_digest_cursor)
+    queued_memorize_payload: dict[str, Any] | None = None
+    if (not dry_run) and history_full and unmemorized_tokens >= _MIN_CHUNK_TOKENS:
+        has_sleep_gap = _unmemorized_sleep_gap_detected(
+            history_full,
+            unmemorized_digest_cursor,
+            safe,
         )
-        if had_sleep_gap:
-            memorize_history = _normalize_conversation(history_full)
-            if memorize_history:
-                force_memorize_payload = {
+        if has_sleep_gap:
+            normalized_history = _normalize_conversation(history_full)
+            if normalized_history:
+                queued_memorize_payload = {
                     **safe,
                     "conversation_id": cid,
-                    "conversation": memorize_history,
+                    "conversation": normalized_history,
                     "user": {"user_id": uid, "soul_id": soul_id, "conversation_id": cid},
                 }
     return (
-        state_row,
+        conversation_state,
         soul_card,
         db_path,
         memory_cache_before,
         intentions_before,
-        force_memorize_unmemorized_tokens,
-        force_memorize_payload,
+        unmemorized_tokens,
+        queued_memorize_payload,
     )
 
 
@@ -3355,34 +3361,36 @@ def _turn_state_write(
     chat_x: str | None,
     apply_turn_maintenance: bool,
 ) -> tuple[dict[str, Any], Any]:
-    fresh_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
-    fresh_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
-    fresh_intentions = _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
-    undo_snapshot_intentions = fresh_intentions
+    latest_state_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
+    current_memory_cache = _normalize_memory_cache_impl(latest_state_row.get("memory_cache"))
+    current_intentions = _normalize_intentions_stack_impl(latest_state_row.get("intentions_active"))
+    intentions_snapshot = current_intentions
     if apply_turn_maintenance:
-        fresh_intentions = _apply_intention_turn_maintenance_impl(fresh_intentions)
-    memory_cache_after = (
-        _append_memory_cache_entry(fresh_cache, cache_entry) if cache_entry else list(fresh_cache)
+        current_intentions = _apply_intention_turn_maintenance_impl(current_intentions)
+    next_memory_cache = (
+        _append_memory_cache_entry(current_memory_cache, cache_entry)
+        if cache_entry
+        else list(current_memory_cache)
     )
-    intentions_after = _remove_intentions(
-        fresh_intentions,
+    next_intentions = _remove_intentions(
+        current_intentions,
         [item_id for item_id in annulment_ids if item_id],
     )
-    _next_last_chat_x, _next_last_chat_x_prev = _next_chat_x_state_values(chat_x, fresh_row)
+    next_chat_x, next_chat_x_prev = _next_chat_x_state_values(chat_x, latest_state_row)
     updates: dict[str, Any] = {
-        "intentions_active": intentions_after,
-        "memory_cache": memory_cache_after,
-        "last_chat_x": _next_last_chat_x,
-        "last_chat_x_prev": _next_last_chat_x_prev,
+        "intentions_active": next_intentions,
+        "memory_cache": next_memory_cache,
+        "last_chat_x": next_chat_x,
+        "last_chat_x_prev": next_chat_x_prev,
         "undo_snapshot": {
-            "memory_cache": fresh_cache,
-            "intentions_active": undo_snapshot_intentions,
+            "memory_cache": current_memory_cache,
+            "intentions_active": intentions_snapshot,
         },
     }
     # Scene break resets the rewrite angle so the next RETRIEVE starts at the
     # topic lens instead of mid-rotation.
-    prev_chat_x = str(fresh_row.get("last_chat_x") or "").strip() or None
-    if _next_last_chat_x != prev_chat_x:
+    previous_chat_x = str(latest_state_row.get("last_chat_x") or "").strip() or None
+    if next_chat_x != previous_chat_x:
         updates["retrieve_rewrite_angle"] = 0
     state_out, state_path = _write_conversation_state(
         cid,
@@ -3400,11 +3408,9 @@ def _turn_launch_apimw(
     safe: dict[str, Any],
     history_full: list[dict[str, Any]],
     state_out: dict[str, Any],
-    state_row: dict[str, Any],
 ) -> str:
-    apimw_state = state_out
     cadence_anchors = _compact_chat_x_anchors(
-        str(apimw_state.get("last_chat_x") or "").strip() or None,
+        str(state_out.get("last_chat_x") or "").strip() or None,
     )
     cadence_slice = _slice_history_from_chat_x_anchors(history_full, cadence_anchors, limit=999)
     cadence_threshold = _apimw_cadence_from_cfg(_CONFIG)
@@ -3420,7 +3426,7 @@ def _turn_launch_apimw(
                 conversation_id=cid,
                 soul_id=soul_id,
                 user_id=uid,
-                state_row=apimw_state,
+                state_row=state_out,
                 history=history_full,
             )
         )
@@ -3523,8 +3529,8 @@ async def conversation_turn(
                 db_path,
                 memory_cache_before,
                 intentions_before,
-                force_memorize_unmemorized_tokens,
-                force_memorize_payload,
+                unmemorized_tokens,
+                queued_memorize_payload,
             ) = _turn_state_read(
                 cid, uid, soul_id, safe, state_override_cache, state_override_intentions,
                 dry_run, history_full,
@@ -3615,7 +3621,7 @@ async def conversation_turn(
         apimw_status = "skipped_dry_run" if dry_run else "not_started"
         if (not dry_run) and run_apimw:
             apimw_status = _turn_launch_apimw(
-                cid, uid, soul_id, safe, history_full, state_out, state_row,
+                cid, uid, soul_id, safe, history_full, state_out,
             )
 
         _response_str = str(turn_contract.get("response") or "").strip()
@@ -3644,13 +3650,13 @@ async def conversation_turn(
             out["turn_contract"] = turn_contract
             out["dry_run"] = dry_run
             out["forced_memorize"] = {
-                "queued": bool(force_memorize_payload),
-                "unmemorized_tokens": force_memorize_unmemorized_tokens,
+                "queued": bool(queued_memorize_payload),
+                "unmemorized_tokens": unmemorized_tokens,
                 "min_chunk_tokens": _MIN_CHUNK_TOKENS,
             }
 
-        if force_memorize_payload is not None:
-            _t = asyncio.create_task(_run_forced_memorize_from_turn(force_memorize_payload))
+        if queued_memorize_payload is not None:
+            _t = asyncio.create_task(_run_forced_memorize_from_turn(queued_memorize_payload))
             _BACKGROUND_TASKS.add(_t)
             _t.add_done_callback(_BACKGROUND_TASKS.discard)
 
@@ -3662,8 +3668,8 @@ async def conversation_turn(
                 "conversationId": cid,
                 "dryRun": dry_run,
                 "apimw": apimw_status,
-                "forcedMemorizeQueued": bool(force_memorize_payload),
-                "unmemorizedTokens": force_memorize_unmemorized_tokens,
+                "forcedMemorizeQueued": bool(queued_memorize_payload),
+                "unmemorizedTokens": unmemorized_tokens,
                 "minChunkTokens": _MIN_CHUNK_TOKENS,
                 "responseLen": len(str(out.get("response") or "")),
             },
