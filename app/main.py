@@ -3359,6 +3359,7 @@ def _turn_state_write(
     cache_entry: str,
     annulment_ids: list[str],
     chat_x: str | None,
+    retrieval_ids_since_consolidation: list[str],
     apply_turn_maintenance: bool,
 ) -> tuple[dict[str, Any], Any]:
     latest_state_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
@@ -3392,6 +3393,8 @@ def _turn_state_write(
     previous_chat_x = str(latest_state_row.get("last_chat_x") or "").strip() or None
     if next_chat_x != previous_chat_x:
         updates["retrieve_rewrite_angle"] = 0
+    if retrieval_ids_since_consolidation:
+        updates["append_retrieval_ids_since_consolidation"] = retrieval_ids_since_consolidation
     state_out, state_path = _write_conversation_state(
         cid,
         soul_id=soul_id,
@@ -3481,35 +3484,35 @@ async def conversation_turn(
         if not isinstance(prompt_override_payload_raw, dict):
             raise HTTPException(status_code=400, detail="prompt_override_payload is required")
         prompt_override_payload = dict(prompt_override_payload_raw)
-        payload_user_prompt = str(prompt_override_payload.get("user_prompt", "")).strip()
-        if not payload_user_prompt:
+        override_user_prompt = str(prompt_override_payload.get("user_prompt", "")).strip()
+        if not override_user_prompt:
             raise HTTPException(
                 status_code=400,
                 detail="prompt_override_payload.user_prompt is required",
             )
-        payload_system_prompt = str(prompt_override_payload.get("system_prompt", "")).strip()
-        payload_retrieve_rag = prompt_override_payload.get("retrieve_rag")
-        if not isinstance(payload_retrieve_rag, dict):
+        override_system_prompt = str(prompt_override_payload.get("system_prompt", "")).strip()
+        override_retrieve_rag = prompt_override_payload.get("retrieve_rag")
+        if not isinstance(override_retrieve_rag, dict):
             raise HTTPException(
                 status_code=400,
                 detail="prompt_override_payload.retrieve_rag is required",
             )
-        payload_memory_cache_raw = prompt_override_payload.get("memory_cache")
-        if not isinstance(payload_memory_cache_raw, list):
+        override_memory_cache_raw = prompt_override_payload.get("memory_cache")
+        if not isinstance(override_memory_cache_raw, list):
             raise HTTPException(
                 status_code=400,
                 detail="prompt_override_payload.memory_cache is required",
             )
-        payload_intentions_raw = prompt_override_payload.get("intentions_active")
-        if not isinstance(payload_intentions_raw, dict):
+        override_intentions_raw = prompt_override_payload.get("intentions_active")
+        if not isinstance(override_intentions_raw, dict):
             raise HTTPException(
                 status_code=400,
                 detail="prompt_override_payload.intentions_active is required",
             )
-        state_override_cache: list[str] = _normalize_memory_cache_impl(payload_memory_cache_raw)
-        state_override_intentions: dict[str, Any] = _normalize_intentions_stack_impl(payload_intentions_raw)
-        payload_retrieve_ms = prompt_override_payload.get("retrieve_ms")
-        _rag_ms = int(payload_retrieve_ms) if isinstance(payload_retrieve_ms, (int, float)) else 0
+        override_memory_cache: list[str] = _normalize_memory_cache_impl(override_memory_cache_raw)
+        override_intentions: dict[str, Any] = _normalize_intentions_stack_impl(override_intentions_raw)
+        override_retrieve_ms = prompt_override_payload.get("retrieve_ms")
+        retrieve_ms = int(override_retrieve_ms) if isinstance(override_retrieve_ms, (int, float)) else 0
         dry_run = bool(safe.get("dry_run", False))
         run_apimw = _retrieve_apimw_enabled_from_cfg(_CONFIG) and bool(safe.get("run_apimw", True))
         apply_turn_maintenance = bool(safe.get("apply_turn_maintenance", True))
@@ -3524,7 +3527,7 @@ async def conversation_turn(
 
         async with state_lock:
             (
-                state_row,
+                conversation_state_before,
                 soul_card,
                 db_path,
                 memory_cache_before,
@@ -3532,34 +3535,34 @@ async def conversation_turn(
                 unmemorized_tokens,
                 queued_memorize_payload,
             ) = _turn_state_read(
-                cid, uid, soul_id, safe, state_override_cache, state_override_intentions,
+                cid, uid, soul_id, safe, override_memory_cache, override_intentions,
                 dry_run, history_full,
             )
 
-        soul_gen = _load_soul_gen_config(_CONFIG, uid, soul_id, logger=logger)
-        turn_temperature: float = float(soul_gen.get("temperature", 0.2))
+        generation_config = _load_soul_gen_config(_CONFIG, uid, soul_id, logger=logger)
+        turn_temperature: float = float(generation_config.get("temperature", 0.2))
         turn_response_format: Any = {"type": "json_object"}
-        req_temperature = safe.get("temperature")
-        if req_temperature is not None:
+        requested_temperature = safe.get("temperature")
+        if requested_temperature is not None:
             try:
-                updated = dict(soul_gen)
-                updated["temperature"] = float(req_temperature)
-                turn_temperature = updated["temperature"]
-                if updated != soul_gen:
-                    _save_soul_gen_config(_CONFIG, uid, soul_id, updated)
+                updated_generation_config = dict(generation_config)
+                updated_generation_config["temperature"] = float(requested_temperature)
+                turn_temperature = updated_generation_config["temperature"]
+                if updated_generation_config != generation_config:
+                    _save_soul_gen_config(_CONFIG, uid, soul_id, updated_generation_config)
             except (TypeError, ValueError):
-                logger.debug("ignoring invalid temperature override: %r", req_temperature, exc_info=True)
+                logger.debug("ignoring invalid temperature override: %r", requested_temperature, exc_info=True)
 
-        turn_system_prompt = payload_system_prompt or _make_turn_system_prompt(
+        turn_system_prompt = override_system_prompt or _make_turn_system_prompt(
             soul_id,
             soul_card=soul_card,
             response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
         )
-        turn_user_prompt = payload_user_prompt
+        turn_user_prompt = override_user_prompt
 
-        svc = _get_service_from_payload(safe, retrieve_method_override="rag")
-        _turn_t0 = time.monotonic()
-        llm_raw = await svc.chat(
+        memory_service = _get_service_from_payload(safe, retrieve_method_override="rag")
+        turn_started_at = time.monotonic()
+        turn_response_raw = await memory_service.chat(
             turn_user_prompt,
             system_prompt=turn_system_prompt,
             temperature=turn_temperature,
@@ -3568,67 +3571,67 @@ async def conversation_turn(
             op="turn",
             step="respond",
         )
-        _turn_ms = int((time.monotonic() - _turn_t0) * 1000)
+        turn_ms = int((time.monotonic() - turn_started_at) * 1000)
         try:
-            turn_contract = _parse_turn_contract(llm_raw)
+            turn_contract = _parse_turn_contract(turn_response_raw)
         except Exception as exc:
-            raw_snippet = str(llm_raw or "")[:200]
+            raw_snippet = str(turn_response_raw or "")[:200]
             raise HTTPException(
                 status_code=502,
                 detail=f"turn contract parse failure: {exc}; raw={raw_snippet!r}",
             ) from exc
 
-        cache_entry = str(turn_contract.get("cache_entry") or "").strip()
-        annulments = turn_contract.get("annulments") if isinstance(turn_contract.get("annulments"), list) else []
-        annulment_ids = [str(row.get("intention_id") or "").strip() for row in annulments if isinstance(row, dict)]
-        chat_x = str(turn_contract.get("chat_x") or "").strip() or None
-        if chat_x:
+        turn_cache_entry = str(turn_contract.get("cache_entry") or "").strip()
+        turn_annulments = turn_contract.get("annulments") if isinstance(turn_contract.get("annulments"), list) else []
+        normalized_annulments = [row for row in turn_annulments if isinstance(row, dict)]
+        turn_annulment_ids = [
+            str(row.get("intention_id") or "").strip()
+            for row in normalized_annulments
+        ]
+        chat_x_anchor = str(turn_contract.get("chat_x") or "").strip() or None
+        if chat_x_anchor:
             anchor_index: int | None = None
-            for _idx, _msg in enumerate(history_full):
-                if str(_msg.get("message_id") or "").strip() == chat_x:
-                    anchor_index = _idx
+            for history_index, history_message in enumerate(history_full):
+                if str(history_message.get("message_id") or "").strip() == chat_x_anchor:
+                    anchor_index = history_index
                     break
             if anchor_index is None or (len(history_full) - anchor_index) < 6:
-                chat_x = None
+                chat_x_anchor = None
 
-        state_out = state_row
-        state_path = db_path
+        conversation_state_after = conversation_state_before
+        conversation_state_path = db_path
         annulment_memory_ids: list[str] = []
 
         if not dry_run:
             async with state_lock:
-                state_out, state_path = _turn_state_write(
+                retrieved_item_ids = _extract_result_item_ids(override_retrieve_rag)
+                conversation_state_after, conversation_state_path = _turn_state_write(
                     cid, uid, soul_id,
-                    cache_entry, annulment_ids, chat_x,
+                    turn_cache_entry, turn_annulment_ids, chat_x_anchor,
+                    retrieved_item_ids,
                     apply_turn_maintenance,
                 )
-                turn_retrieval_ids = _extract_result_item_ids(payload_retrieve_rag)
-                if turn_retrieval_ids:
-                    _write_conversation_state(
-                        cid, soul_id=soul_id, user_id=uid,
-                        updates={"append_retrieval_ids_since_consolidation": turn_retrieval_ids},
-                    )
 
         if not dry_run:
             annulment_memory_ids = await _persist_annulment_memories(
-                svc=svc,
+                svc=memory_service,
                 scope={"user_id": uid, "soul_id": soul_id},
                 conversation_id=cid,
                 intentions_before=intentions_before,
-                annulments=[row for row in annulments if isinstance(row, dict)],
+                annulments=normalized_annulments,
             )
 
         apimw_status = "skipped_dry_run" if dry_run else "not_started"
         if (not dry_run) and run_apimw:
             apimw_status = _turn_launch_apimw(
-                cid, uid, soul_id, safe, history_full, state_out,
+                cid, uid, soul_id, safe, history_full, conversation_state_after,
             )
 
-        _response_str = str(turn_contract.get("response") or "").strip()
-        out: dict[str, Any] = {
+        response_text = str(turn_contract.get("response") or "").strip()
+        response_payload: dict[str, Any] = {
             "ok": True,
             "conversation_id": cid,
-            "response": _response_str,
+            "response": response_text,
             "apimw": apimw_status,
             "prompt_override_used": True,
             "final_turn_payload": {
@@ -3637,19 +3640,19 @@ async def conversation_turn(
                 "memory_cache": memory_cache_before,
                 "intentions_active": intentions_before,
             },
-            "retrieve_ms": _rag_ms,
-            "turn_ms": _turn_ms,
-            "reply_chars": len(_response_str),
+            "retrieve_ms": retrieve_ms,
+            "turn_ms": turn_ms,
+            "reply_chars": len(response_text),
             "turn_prompt_chars": len(turn_user_prompt),
             "turn_system_chars": len(turn_system_prompt),
         }
         if include_debug:
-            out["state"] = state_out
-            out["path"] = str(state_path) if state_path is not None else None
-            out["annulment_memory_ids"] = annulment_memory_ids
-            out["turn_contract"] = turn_contract
-            out["dry_run"] = dry_run
-            out["forced_memorize"] = {
+            response_payload["state"] = conversation_state_after
+            response_payload["path"] = str(conversation_state_path) if conversation_state_path is not None else None
+            response_payload["annulment_memory_ids"] = annulment_memory_ids
+            response_payload["turn_contract"] = turn_contract
+            response_payload["dry_run"] = dry_run
+            response_payload["forced_memorize"] = {
                 "queued": bool(queued_memorize_payload),
                 "unmemorized_tokens": unmemorized_tokens,
                 "min_chunk_tokens": _MIN_CHUNK_TOKENS,
@@ -3671,10 +3674,10 @@ async def conversation_turn(
                 "forcedMemorizeQueued": bool(queued_memorize_payload),
                 "unmemorizedTokens": unmemorized_tokens,
                 "minChunkTokens": _MIN_CHUNK_TOKENS,
-                "responseLen": len(str(out.get("response") or "")),
+                "responseLen": len(str(response_payload.get("response") or "")),
             },
         )
-        return out
+        return response_payload
     except HTTPException:
         _record_call(
             "conversation.turn",
@@ -3718,9 +3721,9 @@ async def conversation_turn_undo(
 
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
     async with state_lock:
-        state_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
-        snapshot = state_row.get("undo_snapshot")
-        if not isinstance(snapshot, dict):
+        conversation_state, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
+        undo_snapshot = conversation_state.get("undo_snapshot")
+        if not isinstance(undo_snapshot, dict):
             return {"status": "no_snapshot"}
 
         _write_conversation_state(
@@ -3728,8 +3731,8 @@ async def conversation_turn_undo(
             soul_id=soul_id,
             user_id=uid,
             updates={
-                "memory_cache": list(snapshot.get("memory_cache") or []),
-                "intentions_active": snapshot.get("intentions_active"),
+                "memory_cache": list(undo_snapshot.get("memory_cache") or []),
+                "intentions_active": undo_snapshot.get("intentions_active"),
                 "undo_snapshot": None,
             },
         )
