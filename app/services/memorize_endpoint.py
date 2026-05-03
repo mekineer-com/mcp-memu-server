@@ -444,6 +444,39 @@ def split_indices_by_sleep(
     )
 
 
+def select_sleep_splits_after_min_tokens(
+    messages: list[dict[str, Any]],
+    *,
+    start_index: int,
+    candidate_splits: list[int],
+    min_chunk_tokens: int,
+) -> list[int]:
+    if min_chunk_tokens <= 0 or not candidate_splits:
+        return [split_idx for split_idx in candidate_splits if split_idx > start_index]
+
+    word_prefix: list[int] = [0]
+    for message in messages:
+        text = ""
+        if isinstance(message, dict):
+            text = str(message.get("content") or message.get("mes") or "")
+        else:
+            text = str(message or "")
+        word_prefix.append(word_prefix[-1] + len(text.split()))
+
+    gated_splits: list[int] = []
+    chunk_start = max(0, start_index)
+    for split_idx in candidate_splits:
+        if split_idx <= chunk_start:
+            continue
+        words = max(0, word_prefix[split_idx] - word_prefix[chunk_start])
+        token_estimate = int(words / 0.75)
+        if token_estimate < min_chunk_tokens:
+            continue
+        gated_splits.append(split_idx)
+        chunk_start = split_idx
+    return gated_splits
+
+
 def find_chat_dir_for_conversation(
     chats_dir: Path,
     uid: str,
@@ -728,7 +761,13 @@ async def memorize_endpoint(
                 splits_rel, sleep_stats = split_indices_by_sleep(
                     merged[ctx_start:], zi, tz_ok, sleep_split_min_lull_seconds,
                 )
-                splits = [ctx_start + i for i in splits_rel if (ctx_start + i) > rebuild_from]
+                candidate_splits = [ctx_start + i for i in splits_rel if (ctx_start + i) > rebuild_from]
+                splits = select_sleep_splits_after_min_tokens(
+                    merged,
+                    start_index=rebuild_from,
+                    candidate_splits=candidate_splits,
+                    min_chunk_tokens=min_chunk_tokens,
+                )
 
                 boundaries = [rebuild_from] + splits + [len(merged)]
                 for a_i, b_i in zip(boundaries, boundaries[1:]):
@@ -822,7 +861,17 @@ async def memorize_endpoint(
             # Response object directly, FastAPI does not auto-attach the tasks from
             # the injected BackgroundTasks parameter. Without this, add_task above
             # is silently a no-op and the segments never run.
-            memorize_progress[memorize_lock_key(uid, soul_id)] = {"current": 0, "total": len(memorize_segments)}
+            episodes_cap_raw = getattr(getattr(svc, "memorize_config", None), "episodes_per_segment", 3)
+            try:
+                episodes_cap = int(episodes_cap_raw)
+            except (TypeError, ValueError):
+                episodes_cap = 3
+            episodes_cap = max(1, episodes_cap)
+            estimated_total_episodes = max(1, len(memorize_segments) * episodes_cap)
+            memorize_progress[memorize_lock_key(uid, soul_id)] = {
+                "current": 0,
+                "total": estimated_total_episodes,
+            }
             return JSONResponse(
                 status_code=202,
                 content={
