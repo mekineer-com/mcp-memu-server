@@ -3774,7 +3774,13 @@ async def mcp_memu_memorize(req: _mcp_tools.MemuMemorizeRequest):
     async def _memorize_call(payload: dict[str, Any], force: bool) -> dict[str, Any]:
         background_tasks = BackgroundTasks()
         response = await memorize(payload, background_tasks, force)
-        runner = asyncio.create_task(background_tasks())
+        # Internal endpoint call: FastAPI response hooks do not execute, so launch
+        # background tasks explicitly and return immediately (fire-and-forget).
+        try:
+            runner = asyncio.create_task(background_tasks())
+        except RuntimeError:
+            logger.exception("failed to schedule memorize background tasks")
+            return {"ok": False, "detail": "failed to schedule memorize background tasks"}
         _BACKGROUND_TASKS.add(runner)
         runner.add_done_callback(_BACKGROUND_TASKS.discard)
         body_bytes = getattr(response, "body", b"{}")

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from app import main
 from app.services import mcp_tools
@@ -90,6 +93,54 @@ async def test_memu_turn_raises_when_retrieve_returns_empty_prompt() -> None:
         )
 
     assert exc.value.status_code == 502
+
+
+def test_memu_retrieve_request_requires_query_or_queries() -> None:
+    with pytest.raises(ValidationError):
+        mcp_tools.MemuRetrieveRequest(
+            user_id="u1",
+            soul_id="s1",
+            query="   ",
+        )
+
+    with pytest.raises(ValidationError):
+        mcp_tools.MemuRetrieveRequest(
+            user_id="u1",
+            soul_id="s1",
+            queries=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_mcp_memu_memorize_returns_before_background_finishes(monkeypatch: pytest.MonkeyPatch) -> None:
+    finished = asyncio.Event()
+
+    async def slow_background_work() -> None:
+        await asyncio.sleep(0.2)
+        finished.set()
+
+    async def fake_memorize(
+        _payload: dict[str, Any],
+        background_tasks: Any,
+        _force: bool,
+    ) -> JSONResponse:
+        background_tasks.add_task(slow_background_work)
+        return JSONResponse(status_code=202, content={"ok": True, "status": "accepted"})
+
+    monkeypatch.setattr(main, "memorize", fake_memorize)
+
+    req = mcp_tools.MemuMemorizeRequest(
+        user_id="u1",
+        soul_id="s1",
+        conversation=[{"role": "user", "content": "hello"}],
+    )
+    out = await main.mcp_memu_memorize(req)
+
+    assert out["ok"] is True
+    assert out["status"] == "accepted"
+    assert not finished.is_set()
+
+    await asyncio.wait_for(finished.wait(), timeout=1.0)
 
 
 @pytest.mark.asyncio

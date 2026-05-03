@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class MemuTurnRequest(BaseModel):
@@ -32,6 +32,14 @@ class MemuRetrieveRequest(BaseModel):
     debug: bool = False
     history: list[dict[str, Any]] | None = None
     soul_card: str | None = None
+
+    @model_validator(mode="after")
+    def _require_query_or_queries(self) -> "MemuRetrieveRequest":
+        query_text = str(self.query or "").strip()
+        has_queries = isinstance(self.queries, list) and len(self.queries) > 0
+        if not query_text and not has_queries:
+            raise ValueError("Either query or queries is required")
+        return self
 
 
 class MemuMemorizeRequest(BaseModel):
@@ -153,14 +161,19 @@ async def memu_retrieve_endpoint(
     *,
     retrieve: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
 ) -> dict[str, Any]:
+    query_text = str(req.query or "").strip()
+    has_queries = isinstance(req.queries, list) and len(req.queries) > 0
+    if not query_text and not has_queries:
+        raise HTTPException(status_code=400, detail="Either query or queries is required")
+
     scope = _scope(user_id=req.user_id, soul_id=req.soul_id, conversation_id=req.conversation_id)
     payload: dict[str, Any] = {
         "user": scope,
         "debug": bool(req.debug),
     }
-    if req.query is not None:
-        payload["query"] = str(req.query)
-    if req.queries is not None:
+    if query_text:
+        payload["query"] = query_text
+    if has_queries:
         payload["queries"] = req.queries
     if req.method is not None:
         payload["method"] = str(req.method)
