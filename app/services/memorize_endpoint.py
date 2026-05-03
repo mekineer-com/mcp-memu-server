@@ -5,6 +5,7 @@ import math
 import time as _time
 import traceback
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TypedDict
@@ -43,6 +44,46 @@ class EpisodeMemorizeJob(TypedDict):
     episode_resource_url: str
     segment_raw_text: str
     segment_end_index: int
+
+
+@dataclass(slots=True)
+class MemorizeContext:
+    get_memorize_lock: Callable[[str], asyncio.Lock]
+    memorize_lock_key: Callable[[str, str], str]
+    write_conversation_state: Callable[..., tuple[dict[str, Any], Any]]
+    memorize_progress: dict[str, dict[str, Any]]
+    memorize_cancel: set[str]
+    record_call: Callable[..., None]
+    logger: Any
+    min_chunk_tokens: int
+    sleep_split_min_lull_seconds: int
+
+
+@dataclass(slots=True)
+class MemorizeRunContext:
+    base: MemorizeContext
+    load_turn_state_and_soul_card: Callable[..., tuple[dict[str, Any], str | None, str | None]]
+    normalize_text_list: Callable[[Any], list[str]]
+    compute_holistic_categories_summary: Callable[..., Awaitable[str | None]]
+    run_consolidation_task: Callable[..., Awaitable[None]]
+    background_tasks_set: set[asyncio.Task]
+
+
+@dataclass(slots=True)
+class MemorizeEndpointContext:
+    base: MemorizeContext
+    safe_payload: Callable[[dict[str, Any]], dict[str, Any]]
+    get_service_from_payload: Callable[[dict[str, Any]], Any]
+    extract_scope: Callable[[dict[str, Any]], dict[str, Any] | None]
+    extract_conversation_id: Callable[[dict[str, Any]], str | None]
+    normalize_conversation: Callable[[Any], Any]
+    pick_str: Callable[..., str | None]
+    sqlite_current_path: Callable[[str | None, str], Path | None]
+    clear_cached_services: Callable[[], None]
+    get_storage_dir: Callable[[dict[str, Any]], Path]
+    run_memorize_episodes: Callable[..., Awaitable[None]]
+    get_config: Callable[[], dict[str, Any]]
+    sanitize_db_filename: Callable[[str], str]
 
 
 async def run_forced_memorize_from_turn(
@@ -103,25 +144,13 @@ async def run_memorize_episodes(
     merged_len: int,
     force: bool,
     sleep_stats: Any,
-    get_memorize_lock: Callable[[str], asyncio.Lock],
-    memorize_lock_key: Callable[[str, str], str],
-    write_conversation_state: Callable[..., tuple[dict[str, Any], Any]],
-    load_turn_state_and_soul_card: Callable[..., tuple[dict[str, Any], str | None, str | None]],
-    normalize_text_list: Callable[[Any], list[str]],
-    compute_holistic_categories_summary: Callable[..., Awaitable[str | None]],
-    run_consolidation_task: Callable[..., Awaitable[None]],
-    background_tasks_set: set[asyncio.Task],
-    record_call: Callable[..., None],
-    logger: Any,
-    memorize_progress: dict[str, dict[str, Any]],
-    memorize_cancel: set[str],
-    min_chunk_tokens: int,
-    sleep_split_min_lull_seconds: int,
+    run_ctx: MemorizeRunContext,
     episodes_dir: Path,
     zi: Any | None = None,
 ) -> None:
-    progress_key = memorize_lock_key(uid, soul_id)
-    mem_lock = get_memorize_lock(progress_key)
+    ctx = run_ctx.base
+    progress_key = ctx.memorize_lock_key(uid, soul_id)
+    mem_lock = ctx.get_memorize_lock(progress_key)
     has_results = False
     pending_episode_ids: list[str] = []
     processed_end_cursor = processed_cursor
@@ -134,7 +163,7 @@ async def run_memorize_episodes(
         # Phase 1: read initial state under lock.
         async with mem_lock:
             if conversation_id:
-                state_row, soul_card_for_memorize, _ = load_turn_state_and_soul_card(
+                state_row, soul_card_for_memorize, _ = run_ctx.load_turn_state_and_soul_card(
                     conversation_id,
                     user_id=uid,
                     soul_id=soul_id,
@@ -151,9 +180,9 @@ async def run_memorize_episodes(
         episode_jobs: list[EpisodeMemorizeJob] = []
         cancelled = False
         for _seg_idx, (segment_resource_url, segment_messages, segment_end_index) in enumerate(memorize_segments):
-            if progress_key in memorize_cancel:
-                memorize_cancel.discard(progress_key)
-                logger.info("memorize cancelled during pre-split after segment %d/%d", _seg_idx, len(memorize_segments))
+            if progress_key in ctx.memorize_cancel:
+                ctx.memorize_cancel.discard(progress_key)
+                ctx.logger.info("memorize cancelled during pre-split after segment %d/%d", _seg_idx, len(memorize_segments))
                 cancelled = True
                 break
             segment_raw_text = json.dumps(segment_messages, ensure_ascii=False)
@@ -204,15 +233,15 @@ async def run_memorize_episodes(
                 )
 
         total_episodes = len(episode_jobs)
-        memorize_progress[progress_key] = {"current": 0, "total": total_episodes}
+        ctx.memorize_progress[progress_key] = {"current": 0, "total": total_episodes}
 
         if not cancelled:
             for ep_num, episode_job in enumerate(episode_jobs, 1):
-                if progress_key in memorize_cancel:
-                    memorize_cancel.discard(progress_key)
-                    logger.info("memorize cancelled after episode %d/%d", ep_num - 1, total_episodes)
+                if progress_key in ctx.memorize_cancel:
+                    ctx.memorize_cancel.discard(progress_key)
+                    ctx.logger.info("memorize cancelled after episode %d/%d", ep_num - 1, total_episodes)
                     break
-                memorize_progress[progress_key] = {"current": ep_num, "total": total_episodes}
+                ctx.memorize_progress[progress_key] = {"current": ep_num, "total": total_episodes}
                 ep_start = _time.monotonic()
                 ep_result = await svc.memorize_episode(
                     resource_url=episode_job["episode_resource_url"],
@@ -227,10 +256,10 @@ async def run_memorize_episodes(
                     memory_prior_context=cached_prior_context_ids or None,
                     conversation_id=conversation_id,
                 )
-                logger.info("memorize episode %d/%d elapsed=%.1fs", ep_num, total_episodes, _time.monotonic() - ep_start)
+                ctx.logger.info("memorize episode %d/%d elapsed=%.1fs", ep_num, total_episodes, _time.monotonic() - ep_start)
                 if isinstance(ep_result, dict):
                     has_results = True
-                    pending_episode_ids.extend(normalize_text_list(ep_result.get("pending_episode_ids")))
+                    pending_episode_ids.extend(run_ctx.normalize_text_list(ep_result.get("pending_episode_ids")))
                 next_segment_end_index = (
                     episode_jobs[ep_num]["segment_end_index"] if ep_num < total_episodes else None
                 )
@@ -239,7 +268,7 @@ async def run_memorize_episodes(
                 if last_episode_of_segment and conversation_id:
                     # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
                     async with mem_lock:
-                        fresh_row, _, _ = load_turn_state_and_soul_card(
+                        fresh_row, _, _ = run_ctx.load_turn_state_and_soul_card(
                             conversation_id,
                             user_id=uid,
                             soul_id=soul_id,
@@ -249,7 +278,7 @@ async def run_memorize_episodes(
                             processed_end_cursor = max(processed_end_cursor, segment_end_index)
                             # per-segment advance — crash recovery needs the cursor to move
                             # only after all episodes in a segment complete.
-                            write_conversation_state(
+                            ctx.write_conversation_state(
                                 conversation_id,
                                 soul_id=soul_id,
                                 user_id=uid,
@@ -263,7 +292,7 @@ async def run_memorize_episodes(
 
         # Phase 3: holistic summary LLM call — outside the lock.
         if conversation_id and has_results:
-            current_all_categories_summary = await compute_holistic_categories_summary(
+            current_all_categories_summary = await run_ctx.compute_holistic_categories_summary(
                 svc=svc,
                 soul_id=soul_id,
                 user_id=uid,
@@ -272,7 +301,7 @@ async def run_memorize_episodes(
         # Phase 4: final state flush + bookkeeping under lock.
         async with mem_lock:
             if conversation_id and has_results:
-                write_conversation_state(
+                ctx.write_conversation_state(
                     conversation_id,
                     soul_id=soul_id,
                     user_id=uid,
@@ -287,11 +316,13 @@ async def run_memorize_episodes(
 
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
             if conversation_id and has_results:
-                _ct = asyncio.create_task(run_consolidation_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid))
-                background_tasks_set.add(_ct)
-                _ct.add_done_callback(background_tasks_set.discard)
+                _ct = asyncio.create_task(
+                    run_ctx.run_consolidation_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid)
+                )
+                run_ctx.background_tasks_set.add(_ct)
+                _ct.add_done_callback(run_ctx.background_tasks_set.discard)
 
-            record_call(
+            ctx.record_call(
                 "memorize",
                 safe,
                 ok=True,
@@ -309,15 +340,15 @@ async def run_memorize_episodes(
                     "force": force,
                     "memorizeSegmentCount": len(memorize_segments),
                     "memorizeEpisodeCount": total_episodes,
-                    "minChunkTokens": min_chunk_tokens,
+                    "minChunkTokens": ctx.min_chunk_tokens,
                     "memorizeDeferred": not force and not has_results,
-                    "sleepSplitMinLullSeconds": sleep_split_min_lull_seconds,
+                    "sleepSplitMinLullSeconds": ctx.sleep_split_min_lull_seconds,
                     "sleepSplitStats": sleep_stats,
                 },
             )
     finally:
-        memorize_progress.pop(progress_key, None)
-        memorize_cancel.discard(progress_key)
+        ctx.memorize_progress.pop(progress_key, None)
+        ctx.memorize_cancel.discard(progress_key)
 
 
 def chat_storage_hash(uid: str, aid: str, key: str) -> str:
@@ -392,7 +423,7 @@ def split_indices_by_sleep(
     if sum(1 for x in ts if x is not None) < 2:
         return ([], {"tz_ok": True, "timestamps_ok": False})
 
-    best: dict[Any, tuple[float, int]] = {}
+    best_gap_per_night: dict[Any, tuple[float, int]] = {}
     for i in range(len(ts) - 1):
         a = ts[i]
         b = ts[i + 1]
@@ -416,18 +447,22 @@ def split_indices_by_sleep(
             overlap = (min(t1, win_end) - max(t0, win_start)).total_seconds()
             if overlap <= 0:
                 continue
-            prev = best.get(d)
+            prev = best_gap_per_night.get(d)
             if prev is None or overlap > prev[0]:
-                best[d] = (overlap, i + 1)
+                best_gap_per_night[d] = (overlap, i + 1)
 
     min_lull = float(min_lull_seconds)
-    nights_total = len(best)
-    nights_qual = sum(1 for (score, _idx) in best.values() if isinstance(score, (int, float)) and score >= min_lull)
+    nights_total = len(best_gap_per_night)
+    nights_qual = sum(
+        1
+        for (score, _idx) in best_gap_per_night.values()
+        if isinstance(score, (int, float)) and score >= min_lull
+    )
 
     raw_splits = sorted(
         {
             idx
-            for (score, idx) in best.values()
+            for (score, idx) in best_gap_per_night.values()
             if isinstance(idx, int) and 0 < idx < len(msgs) and isinstance(score, (int, float)) and score >= min_lull
         }
     )
@@ -613,39 +648,21 @@ async def memorize_endpoint(
     background_tasks: BackgroundTasks,
     force: bool,
     *,
-    safe_payload: Callable[[dict[str, Any]], dict[str, Any]],
-    get_service_from_payload: Callable[[dict[str, Any]], Any],
-    extract_scope: Callable[[dict[str, Any]], dict[str, Any] | None],
-    extract_conversation_id: Callable[[dict[str, Any]], str | None],
-    normalize_conversation: Callable[[Any], Any],
-    pick_str: Callable[..., str | None],
-    get_memorize_lock: Callable[[str], asyncio.Lock],
-    memorize_lock_key: Callable[[str, str], str],
-    sqlite_current_path: Callable[[str | None, str], Path | None],
-    clear_cached_services: Callable[[], None],
-    get_storage_dir: Callable[[dict[str, Any]], Path],
-    write_conversation_state: Callable[..., tuple[dict[str, Any], Any]],
-    run_memorize_episodes: Callable[..., Awaitable[None]],
-    get_config: Callable[[], dict[str, Any]],
-    sanitize_db_filename: Callable[[str], str],
-    min_chunk_tokens: int,
-    sleep_split_min_lull_seconds: int,
-    memorize_progress: dict[str, dict[str, Any]],
-    record_call: Callable[..., None],
-    logger: Any,
+    endpoint_ctx: MemorizeEndpointContext,
 ) -> JSONResponse:
     """Memorize a SillyTavern conversation.
 
     Preferred: send the full memU payload (llm_profiles/database_config/etc) so per-step routing works.
     """
+    ctx = endpoint_ctx.base
     try:
-        safe = safe_payload(payload)
-        svc = get_service_from_payload(safe)
+        safe = endpoint_ctx.safe_payload(payload)
+        svc = endpoint_ctx.get_service_from_payload(safe)
 
         scope = safe.get("user")
         if not isinstance(scope, dict):
-            scope = extract_scope(safe) or None
-        conversation_id = extract_conversation_id(safe)
+            scope = endpoint_ctx.extract_scope(safe) or None
+        conversation_id = endpoint_ctx.extract_conversation_id(safe)
         if conversation_id and isinstance(scope, dict):
             scope = {**scope, "conversation_id": conversation_id}
 
@@ -662,13 +679,13 @@ async def memorize_endpoint(
         if not isinstance(conversation, list) or not conversation:
             raise HTTPException(status_code=400, detail="Missing or empty 'conversation' list")
 
-        conv_norm = normalize_conversation(conversation)
+        conv_norm = endpoint_ctx.normalize_conversation(conversation)
 
         # scope is validated dict with non-empty soul_id above; no need to re-guard.
         uid = str(scope.get("user_id") or "user")
-        async with get_memorize_lock(memorize_lock_key(uid, soul_id)):
+        async with ctx.get_memorize_lock(ctx.memorize_lock_key(uid, soul_id)):
             if force:
-                db_path = sqlite_current_path(uid, soul_id)
+                db_path = endpoint_ctx.sqlite_current_path(uid, soul_id)
                 if db_path is not None and db_path.exists():
                     ts = datetime.now(UTC).strftime("%y%m%d-%H%M%S")
                     archive_path = db_path.with_suffix(f".bak-{ts}")
@@ -677,12 +694,12 @@ async def memorize_endpoint(
                         wal_file = db_path.with_name(db_path.name + wal_suffix)
                         if wal_file.exists():
                             wal_file.rename(archive_path.with_name(archive_path.name + wal_suffix))
-                    logger.info("re-memorize: archived %s → %s", db_path.name, archive_path.name)
-                    clear_cached_services()
-            storage_dir = get_storage_dir(get_config())
+                    ctx.logger.info("re-memorize: archived %s → %s", db_path.name, archive_path.name)
+                    endpoint_ctx.clear_cached_services()
+            storage_dir = endpoint_ctx.get_storage_dir(endpoint_ctx.get_config())
             chats_dir = (storage_dir / "st_chats").resolve()
-            chat_file = pick_str(safe, "chat_file_name")
-            resource_url_in = pick_str(safe, "resource_url")
+            chat_file = endpoint_ctx.pick_str(safe, "chat_file_name")
+            resource_url_in = endpoint_ctx.pick_str(safe, "resource_url")
             chat_dir, chat_key, chat_key_source = resolve_chat_storage_dir(
                 chats_dir,
                 uid,
@@ -690,7 +707,7 @@ async def memorize_endpoint(
                 conversation_id,
                 chat_file,
                 resource_url_in,
-                sanitize_db_filename,
+                endpoint_ctx.sanitize_db_filename,
             )
             episodes_dir = (chat_dir / "episodes").resolve()
             chat_dir.mkdir(parents=True, exist_ok=True)
@@ -703,7 +720,7 @@ async def memorize_endpoint(
 
             processed_cursor = -1
             if conversation_id:
-                state_out, _db_path = write_conversation_state(
+                state_out, _db_path = ctx.write_conversation_state(
                     conversation_id,
                     soul_id=soul_id,
                     user_id=uid,
@@ -712,7 +729,7 @@ async def memorize_endpoint(
                 if state_out.get("last_memorize_at"):
                     processed_cursor = int(state_out.get("digest_cursor") or 0)
 
-            tz_name = pick_str(safe, "time_zone")
+            tz_name = endpoint_ctx.pick_str(safe, "time_zone")
             tz_off_raw = safe.get("time_zone_offset_min")
             tz_off_min = int(tz_off_raw) if isinstance(tz_off_raw, (int, float)) and math.isfinite(tz_off_raw) else None
 
@@ -750,6 +767,7 @@ async def memorize_endpoint(
                     rebuild_from = 0
                     keep_segments: list[dict[str, Any]] = []
                 else:
+                    # Rebuild manifest for the last ~2500 messages; keep earlier segments intact.
                     tail_start = max(0, len(merged) - tail_n)
                     rebuild_from = tail_start
                     keep_segments = []
@@ -766,14 +784,14 @@ async def memorize_endpoint(
 
                 ctx_start = max(0, rebuild_from - 1)
                 splits_rel, sleep_stats = split_indices_by_sleep(
-                    merged[ctx_start:], zi, tz_ok, sleep_split_min_lull_seconds,
+                    merged[ctx_start:], zi, tz_ok, ctx.sleep_split_min_lull_seconds,
                 )
                 candidate_splits = [ctx_start + i for i in splits_rel if (ctx_start + i) > rebuild_from]
                 splits = select_sleep_splits_after_min_tokens(
                     merged,
                     start_index=rebuild_from,
                     candidate_splits=candidate_splits,
-                    min_chunk_tokens=min_chunk_tokens,
+                    min_chunk_tokens=ctx.min_chunk_tokens,
                 )
 
                 segment_start = max(0, rebuild_from)
@@ -789,7 +807,7 @@ async def memorize_endpoint(
                     "tz": str(tz_name or ""),
                     "segments": segments,
                     "split": {
-                        "min_lull_seconds": sleep_split_min_lull_seconds,
+                        "min_lull_seconds": ctx.sleep_split_min_lull_seconds,
                     },
                     "source": {
                         "conversationId": conversation_id or "",
@@ -809,26 +827,26 @@ async def memorize_endpoint(
                     for old_ep in episodes_dir.glob("*.json"):
                         old_ep.unlink(missing_ok=True)
             if segments and isinstance(merged, list):
-                _last_idx = len(merged) - 1
-                for _seg in segments:
+                last_message_idx = len(merged) - 1
+                for segment in segments:
                     try:
-                        _si = int(_seg.get("start"))
-                        _ei = int(_seg.get("end"))
+                        seg_start = int(segment.get("start"))
+                        seg_end = int(segment.get("end"))
                     except (TypeError, ValueError):
                         continue
-                    if _ei < _si or _ei > _last_idx or _ei <= processed_cursor:
+                    if seg_end < seg_start or seg_end > last_message_idx or seg_end <= processed_cursor:
                         continue
-                    _eff = max(_si, processed_cursor + 1)
-                    if _eff > _ei:
+                    effective_start = max(seg_start, processed_cursor + 1)
+                    if effective_start > seg_end:
                         continue
-                    _bc = merged[_eff : _ei + 1]
-                    if not _bc:
+                    seg_messages = merged[effective_start : seg_end + 1]
+                    if not seg_messages:
                         continue
-                    memorize_segments.append((resource_url, _bc, _ei))
+                    memorize_segments.append((resource_url, seg_messages, seg_end))
 
             expected_cursor = memorize_segments[-1][2] if memorize_segments else processed_cursor
             background_tasks.add_task(
-                run_memorize_episodes,
+                endpoint_ctx.run_memorize_episodes,
                 memorize_segments=memorize_segments,
                 svc=svc,
                 scope=scope,
@@ -846,9 +864,9 @@ async def memorize_endpoint(
                 prev_len=prev_len,
                 merged_len=len(merged) if isinstance(merged, list) else 0,
                 force=force,
-                sleep_stats=sleep_stats if "sleep_stats" in locals() else None,
+                sleep_stats=sleep_stats,
                 episodes_dir=episodes_dir,
-                zi=zi if "zi" in locals() else None,
+                zi=zi,
             )
             # background=background_tasks is REQUIRED: when an endpoint returns a
             # Response object directly, FastAPI does not auto-attach the tasks from
@@ -861,7 +879,7 @@ async def memorize_endpoint(
                 episodes_cap = 3
             episodes_cap = max(1, episodes_cap)
             estimated_total_episodes = max(1, len(memorize_segments) * episodes_cap)
-            memorize_progress[memorize_lock_key(uid, soul_id)] = {
+            ctx.memorize_progress[ctx.memorize_lock_key(uid, soul_id)] = {
                 "current": 0,
                 "total": estimated_total_episodes,
             }
@@ -882,7 +900,7 @@ async def memorize_endpoint(
         raise
     except Exception as exc:
         traceback.print_exc()
-        record_call(
+        ctx.record_call(
             "memorize",
             payload,
             ok=False,

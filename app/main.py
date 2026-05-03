@@ -2623,6 +2623,49 @@ async def _run_consolidation_task(
             )
 
 
+def _make_memorize_context() -> _memorize_endpoint.MemorizeContext:
+    return _memorize_endpoint.MemorizeContext(
+        get_memorize_lock=_get_memorize_lock,
+        memorize_lock_key=_memorize_lock_key,
+        write_conversation_state=_write_conversation_state,
+        memorize_progress=_MEMORIZE_PROGRESS,
+        memorize_cancel=_MEMORIZE_CANCEL,
+        record_call=_record_call,
+        logger=logger,
+        min_chunk_tokens=_MIN_CHUNK_TOKENS,
+        sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
+    )
+
+
+def _make_memorize_run_context() -> _memorize_endpoint.MemorizeRunContext:
+    return _memorize_endpoint.MemorizeRunContext(
+        base=_make_memorize_context(),
+        load_turn_state_and_soul_card=_load_turn_state_and_soul_card,
+        normalize_text_list=_normalize_text_list,
+        compute_holistic_categories_summary=_compute_holistic_categories_summary,
+        run_consolidation_task=_run_consolidation_task,
+        background_tasks_set=_BACKGROUND_TASKS,
+    )
+
+
+def _make_memorize_endpoint_context() -> _memorize_endpoint.MemorizeEndpointContext:
+    return _memorize_endpoint.MemorizeEndpointContext(
+        base=_make_memorize_context(),
+        safe_payload=_safe_payload,
+        get_service_from_payload=_get_service_from_payload,
+        extract_scope=_extract_scope,
+        extract_conversation_id=_extract_conversation_id,
+        normalize_conversation=_normalize_conversation,
+        pick_str=_pick_str,
+        sqlite_current_path=_sqlite_current_path,
+        clear_cached_services=_clear_cached_services,
+        get_storage_dir=_get_storage_dir,
+        run_memorize_episodes=_run_memorize_episodes,
+        get_config=lambda: _CONFIG,
+        sanitize_db_filename=_sanitize_db_filename,
+    )
+
+
 async def _run_memorize_episodes(
     *,
     memorize_segments: list[tuple[str, list[dict[str, Any]], int]],
@@ -2665,22 +2708,9 @@ async def _run_memorize_episodes(
         merged_len=merged_len,
         force=force,
         sleep_stats=sleep_stats,
+        run_ctx=_make_memorize_run_context(),
         episodes_dir=episodes_dir,
         zi=zi,
-        get_memorize_lock=_get_memorize_lock,
-        memorize_lock_key=_memorize_lock_key,
-        write_conversation_state=_write_conversation_state,
-        load_turn_state_and_soul_card=_load_turn_state_and_soul_card,
-        normalize_text_list=_normalize_text_list,
-        compute_holistic_categories_summary=_compute_holistic_categories_summary,
-        run_consolidation_task=_run_consolidation_task,
-        background_tasks_set=_BACKGROUND_TASKS,
-        record_call=_record_call,
-        logger=logger,
-        memorize_progress=_MEMORIZE_PROGRESS,
-        memorize_cancel=_MEMORIZE_CANCEL,
-        min_chunk_tokens=_MIN_CHUNK_TOKENS,
-        sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
     )
 
 
@@ -2692,26 +2722,7 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         payload,
         background_tasks,
         force,
-        safe_payload=_safe_payload,
-        get_service_from_payload=_get_service_from_payload,
-        extract_scope=_extract_scope,
-        extract_conversation_id=_extract_conversation_id,
-        normalize_conversation=_normalize_conversation,
-        pick_str=_pick_str,
-        get_memorize_lock=_get_memorize_lock,
-        memorize_lock_key=_memorize_lock_key,
-        sqlite_current_path=_sqlite_current_path,
-        clear_cached_services=_clear_cached_services,
-        get_storage_dir=_get_storage_dir,
-        write_conversation_state=_write_conversation_state,
-        run_memorize_episodes=_run_memorize_episodes,
-        get_config=lambda: _CONFIG,
-        sanitize_db_filename=_sanitize_db_filename,
-        min_chunk_tokens=_MIN_CHUNK_TOKENS,
-        sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
-        memorize_progress=_MEMORIZE_PROGRESS,
-        record_call=_record_call,
-        logger=logger,
+        endpoint_ctx=_make_memorize_endpoint_context(),
     )
 
 
