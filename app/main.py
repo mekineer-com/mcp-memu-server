@@ -3783,11 +3783,20 @@ async def mcp_memu_memorize(req: _mcp_tools.MemuMemorizeRequest):
             return {"ok": False, "detail": "failed to schedule memorize background tasks"}
         _BACKGROUND_TASKS.add(runner)
         runner.add_done_callback(_BACKGROUND_TASKS.discard)
-        body_bytes = getattr(response, "body", b"{}")
+        if isinstance(response, dict):
+            return response
+        if not isinstance(response, JSONResponse):
+            logger.error("unexpected memorize response type: %s", type(response).__name__)
+            return {"ok": False, "detail": "unexpected memorize response type"}
         try:
-            return json.loads(body_bytes.decode("utf-8"))
+            parsed = json.loads(response.body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
+            logger.exception("failed to parse memorize response body")
             return {"ok": False, "detail": "invalid memorize response"}
+        if not isinstance(parsed, dict):
+            logger.error("unexpected memorize response payload type: %s", type(parsed).__name__)
+            return {"ok": False, "detail": "unexpected memorize response payload type"}
+        return parsed
 
     return await _mcp_tools.memu_memorize_endpoint(
         req,
