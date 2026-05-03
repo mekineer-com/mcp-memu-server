@@ -1,4 +1,9 @@
-from app.services.memorize_endpoint import select_sleep_splits_after_min_tokens
+from datetime import UTC, datetime
+
+from app.services.memorize_endpoint import (
+    select_sleep_splits_after_min_tokens,
+    unmemorized_sleep_gap_detected,
+)
 
 
 def _msg(words: int) -> dict[str, str]:
@@ -27,3 +32,25 @@ def test_select_sleep_splits_after_min_tokens_no_floor_keeps_all_after_start() -
         min_chunk_tokens=0,
     )
     assert out == [2, 3]
+
+
+def test_unmemorized_sleep_gap_detected_requires_floor_before_split() -> None:
+    def _ts(y: int, m: int, d: int, hh: int, mm: int = 0) -> int:
+        return int(datetime(y, m, d, hh, mm, tzinfo=UTC).timestamp() * 1000)
+
+    history = [
+        {"ts_ms": _ts(2026, 1, 1, 1, 0), "content": "small"},
+        {"ts_ms": _ts(2026, 1, 1, 7, 0), "content": "small"},  # qualifying sleep split at idx=1
+        {"ts_ms": _ts(2026, 1, 1, 7, 1), "content": "w " * 4000},  # floor exists only after the split
+    ]
+    assert (
+        unmemorized_sleep_gap_detected(
+            history,
+            digest_cursor=-1,
+            safe={"time_zone_offset_min": 0},
+            logger=None,
+            min_chunk_tokens=4000,
+            sleep_split_min_lull_seconds=3 * 60 * 60,
+        )
+        is False
+    )

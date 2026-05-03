@@ -2491,6 +2491,7 @@ def _unmemorized_sleep_gap_detected(
         digest_cursor,
         safe,
         logger=logger,
+        min_chunk_tokens=_MIN_CHUNK_TOKENS,
         sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
     )
 

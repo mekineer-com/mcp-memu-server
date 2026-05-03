@@ -584,6 +584,7 @@ def unmemorized_sleep_gap_detected(
     safe: dict[str, Any],
     *,
     logger: Any,
+    min_chunk_tokens: int,
     sleep_split_min_lull_seconds: int,
 ) -> bool:
     try:
@@ -598,7 +599,13 @@ def unmemorized_sleep_gap_detected(
     if zi is None:
         return False
     splits, _stats = split_indices_by_sleep(unproc, zi, True, sleep_split_min_lull_seconds)
-    return bool(splits)
+    eligible_splits = select_sleep_splits_after_min_tokens(
+        unproc,
+        start_index=0,
+        candidate_splits=splits,
+        min_chunk_tokens=min_chunk_tokens,
+    )
+    return bool(eligible_splits)
 
 
 async def memorize_endpoint(
@@ -769,14 +776,12 @@ async def memorize_endpoint(
                     min_chunk_tokens=min_chunk_tokens,
                 )
 
-                boundaries = [rebuild_from] + splits + [len(merged)]
-                for a_i, b_i in zip(boundaries, boundaries[1:]):
-                    if b_i <= a_i:
+                segment_start = max(0, rebuild_from)
+                for split_idx in splits:
+                    if split_idx <= segment_start:
                         continue
-                    seg = merged[a_i:b_i]
-                    if not seg:
-                        continue
-                    new_segments.append({"start": a_i, "end": b_i - 1})
+                    new_segments.append({"start": segment_start, "end": split_idx - 1})
+                    segment_start = split_idx
 
                 segments = keep_segments + new_segments
                 manifest_out = {
@@ -803,11 +808,8 @@ async def memorize_endpoint(
                 if episodes_dir and episodes_dir.exists():
                     for old_ep in episodes_dir.glob("*.json"):
                         old_ep.unlink(missing_ok=True)
-            if not segments and force and isinstance(merged, list) and merged:
-                memorize_segments.append((resource_url, merged, len(merged) - 1))
-            elif segments and isinstance(merged, list):
+            if segments and isinstance(merged, list):
                 _last_idx = len(merged) - 1
-                _carry: tuple[int, int] | None = None
                 for _seg in segments:
                     try:
                         _si = int(_seg.get("start"))
@@ -816,22 +818,13 @@ async def memorize_endpoint(
                         continue
                     if _ei < _si or _ei > _last_idx or _ei <= processed_cursor:
                         continue
-                    _eff = _carry[0] if _carry is not None else max(_si, processed_cursor + 1)
-                    _carry = None
+                    _eff = max(_si, processed_cursor + 1)
                     if _eff > _ei:
                         continue
                     _bc = merged[_eff : _ei + 1]
                     if not _bc:
                         continue
-                    if min_chunk_tokens > 0 and estimate_tokens(_bc) < min_chunk_tokens:
-                        _carry = (_eff, _ei)
-                        continue
                     memorize_segments.append((resource_url, _bc, _ei))
-                if _carry is not None:
-                    _cf, _ce = _carry
-                    _cc = merged[_cf : _ce + 1]
-                    if _cc:
-                        memorize_segments.append((resource_url, _cc, _ce))
 
             expected_cursor = memorize_segments[-1][2] if memorize_segments else processed_cursor
             background_tasks.add_task(

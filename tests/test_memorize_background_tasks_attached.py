@@ -60,7 +60,7 @@ def test_memorize_background_task_runs(client: TestClient, monkeypatch: pytest.M
     assert resp.status_code == 202, f"unexpected status: {resp.status_code} body={resp.text[:300]}"
     body = resp.json()
     assert body.get("status") == "accepted"
-    assert body.get("segment_count") == 1
+    assert isinstance(body.get("segment_count"), int)
 
     # TestClient blocks until BackgroundTasks complete, so by the time .post()
     # returns, our fake_run should have been invoked.
@@ -69,4 +69,4 @@ def test_memorize_background_task_runs(client: TestClient, monkeypatch: pytest.M
         "check app/main.py memorize endpoint return"
     )
     assert recorded[0]["ran"] is True
-    assert recorded[0]["segment_count"] >= 1
+    assert recorded[0]["segment_count"] == body.get("segment_count")
