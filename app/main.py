@@ -86,6 +86,7 @@ from app.services.intention_state import (
     remove_intentions as _remove_intentions,
 )
 from app.services import crud_endpoints as _crud_endpoints
+from app.services import mcp_tools as _mcp_tools
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import memorize_endpoint as _memorize_endpoint
 from app.services import sqlite_scope as _sqlite_scope
@@ -3751,6 +3752,68 @@ async def conversation_turn_undo(
     return {"status": "restored"}
 
 
+@app.post("/integration/memu/turn", operation_id="memu_turn", tags=["mcp_tools"])
+async def mcp_memu_turn(req: _mcp_tools.MemuTurnRequest):
+    return await _mcp_tools.memu_turn_endpoint(
+        req,
+        conversation_retrieve=conversation_retrieve,
+        conversation_turn=conversation_turn,
+    )
+
+
+@app.post("/integration/memu/retrieve", operation_id="memu_retrieve", tags=["mcp_tools"])
+async def mcp_memu_retrieve(req: _mcp_tools.MemuRetrieveRequest):
+    return await _mcp_tools.memu_retrieve_endpoint(
+        req,
+        retrieve=retrieve,
+    )
+
+
+@app.post("/integration/memu/memorize", operation_id="memu_memorize", tags=["mcp_tools"])
+async def mcp_memu_memorize(req: _mcp_tools.MemuMemorizeRequest):
+    async def _memorize_call(payload: dict[str, Any], force: bool) -> dict[str, Any]:
+        background_tasks = BackgroundTasks()
+        response = await memorize(payload, background_tasks, force)
+        runner = asyncio.create_task(background_tasks())
+        _BACKGROUND_TASKS.add(runner)
+        runner.add_done_callback(_BACKGROUND_TASKS.discard)
+        body_bytes = getattr(response, "body", b"{}")
+        try:
+            return json.loads(body_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {"ok": False, "detail": "invalid memorize response"}
+
+    return await _mcp_tools.memu_memorize_endpoint(
+        req,
+        memorize=_memorize_call,
+    )
+
+
+@app.post("/integration/memu/consolidate", operation_id="memu_consolidate", tags=["mcp_tools"])
+async def mcp_memu_consolidate(req: _mcp_tools.MemuConsolidateRequest):
+    return await _mcp_tools.memu_consolidate_endpoint(
+        req,
+        force_consolidation=force_consolidation,
+    )
+
+
+@app.post("/integration/memu/intentions", operation_id="memu_intentions", tags=["mcp_tools"])
+async def mcp_memu_intentions(req: _mcp_tools.MemuIntentionsRequest):
+    return await _mcp_tools.memu_intentions_endpoint(
+        req,
+        list_intentions=list_intentions,
+    )
+
+
+@app.post("/integration/memu/state", operation_id="memu_state", tags=["mcp_tools"])
+async def mcp_memu_state(req: _mcp_tools.MemuStateRequest):
+    return await _mcp_tools.memu_state_endpoint(
+        req,
+        get_state=get_conversation_state,
+        patch_state=patch_conversation_state,
+    )
+
+
 # =============================================================================
 # Optional MCP mount & static UI
 # =============================================================================
@@ -3768,10 +3831,21 @@ try:
         )
         from fastapi_mcp import FastApiMCP
 
-    mcp = FastApiMCP(app)
+    mcp = FastApiMCP(
+        app,
+        include_operations=[
+            "memu_turn",
+            "memu_retrieve",
+            "memu_memorize",
+            "memu_consolidate",
+            "memu_intentions",
+            "memu_state",
+        ],
+    )
     http_path = str(_CONFIG.get("mcp", {}).get("http_path") or "/mcp")
     sse_path = str(_CONFIG.get("mcp", {}).get("sse_path") or "/sse")
-    mcp.mount(http_path=http_path, sse_path=sse_path)
+    mcp.mount_http(mount_path=http_path)
+    mcp.mount_sse(mount_path=sse_path)
     _has_mcp = True
 except (ImportError, TypeError):
     _has_mcp = False
