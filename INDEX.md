@@ -48,7 +48,7 @@ mcp-memu-server/
 | `/integration/memu/memorize` | POST | MCP-facing memorize trigger wrapper (`force` supported) |
 | `/integration/memu/consolidate` | POST | MCP-facing force consolidation wrapper |
 | `/integration/memu/intentions` | POST | MCP-facing intentions read wrapper |
-| `/integration/memu/state` | POST | MCP-facing state get/patch wrapper (`action=get|patch`) |
+| `/integration/memu/state` | POST | State get/patch wrapper (`action=get|patch`); currently excluded from MCP discovery surface (`include_operations`) |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/conversation/{id}/consolidation/force` | POST | Force consolidation now (bypasses interval gate, still lock-safe) |
 | `/souls/{soul_id}/intentions` | GET | List intentions from `intentions_life_goals` table (long-term, consolidation-managed) |

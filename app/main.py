@@ -3839,7 +3839,6 @@ try:
             "memu_memorize",
             "memu_consolidate",
             "memu_intentions",
-            "memu_state",
         ],
     )
     http_path = str(_CONFIG.get("mcp", {}).get("http_path") or "/mcp")

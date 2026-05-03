@@ -18,7 +18,6 @@ def test_mcp_tool_registration_exposes_expected_operations() -> None:
         "memu_memorize",
         "memu_consolidate",
         "memu_intentions",
-        "memu_state",
     }
 
 
