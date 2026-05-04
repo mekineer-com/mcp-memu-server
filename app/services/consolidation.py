@@ -58,7 +58,7 @@ class ConsolidationDeps:
     sqlite_connect: Callable[[Path], sqlite3.Connection]
     sqlite_ensure_conversation_state_schema: Callable[[sqlite3.Connection], None]
     conversation_state_row: Callable[[sqlite3.Connection, str], sqlite3.Row | None]
-    conversation_state_from_row: Callable[[sqlite3.Row | None], dict[str, Any] | None]
+    conversation_state_from_row: Callable[..., dict[str, Any] | None]
     write_conversation_state: Callable[..., tuple[dict[str, Any], Path]]
     get_storage_dir: Callable[[dict[str, Any]], Path]
     config: dict[str, Any]
@@ -337,7 +337,7 @@ def gather_consolidation_inputs(
     try:
         con.row_factory = sqlite3.Row
         deps.sqlite_ensure_conversation_state_schema(con)
-        state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id))
+        state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id), con=con)
         if state is None:
             raise HTTPException(status_code=404, detail="conversation state not found")
 

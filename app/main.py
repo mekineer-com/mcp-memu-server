@@ -920,8 +920,11 @@ def _sqlite_file_info(p: Path) -> dict[str, Any]:
     return _sqlite_scope.sqlite_file_info(p)
 
 
-def _conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
-    return _conversation_state_from_row_impl(row)
+def _conversation_state_from_row(row: sqlite3.Row | None, *, con: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+    state = _conversation_state_from_row_impl(row)
+    if state is not None and con is not None:
+        state.update(_soul_state.read(con))
+    return state
 
 
 def _intention_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -1528,7 +1531,7 @@ async def _run_retrieve(
             try:
                 con.row_factory = sqlite3.Row
                 _sqlite_ensure_conversation_state_schema(con)
-                pre_row = _conversation_state_from_row(_conversation_state_row(con, scoped_conversation_id))
+                pre_row = _conversation_state_from_row(_conversation_state_row(con, scoped_conversation_id), con=con)
                 if pre_row:
                     retrieve_rewrite_angle = int(pre_row.get("retrieve_rewrite_angle") or 0)
             finally:
@@ -1605,7 +1608,7 @@ async def _run_retrieve(
                 try:
                     con.row_factory = sqlite3.Row
                     _sqlite_ensure_conversation_state_schema(con)
-                    state_out = _conversation_state_from_row(_conversation_state_row(con, scoped_conversation_id))
+                    state_out = _conversation_state_from_row(_conversation_state_row(con, scoped_conversation_id), con=con)
                 finally:
                     con.close()
         if state_out:

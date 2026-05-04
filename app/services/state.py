@@ -285,6 +285,9 @@ INSERT OR IGNORE INTO memu_conversation_state (
             con.commit()
 
         state_out = conversation_state_from_row(conversation_state_row(con, cid))
-        return state_out or conversation_state_empty(cid, scoped_soul, scoped_user), db_path
+        if state_out is None:
+            state_out = conversation_state_empty(cid, scoped_soul, scoped_user)
+        state_out.update(_soul_state.read(con))
+        return state_out, db_path
     finally:
         con.close()
