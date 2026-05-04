@@ -18,7 +18,6 @@ from app.db import (
     sqlite_ensure_conversation_state_schema,
     sqlite_ensure_nonempty,
 )
-from app.services.intention_state import normalize_intentions_stack, normalize_memory_cache
 from app.services import soul_state as _soul_state
 
 logger = logging.getLogger(__name__)
@@ -27,7 +26,6 @@ logger = logging.getLogger(__name__)
 def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
-    # digest_cursor = index of last message already consumed by a memorize run; unmemorized tail = messages[cursor+1:]
     digest_cursor = int(row["digest_cursor"] or 0)
     prior_context = row["prior_context"]
     return {
@@ -36,24 +34,13 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "user_id": row["user_id"],
         "digest_cursor": max(0, digest_cursor),
         "prior_context": None if prior_context is None else str(prior_context),
-        "intentions_active": normalize_intentions_stack(json_from_db(row["intentions_active"])),
-        "memory_cache": normalize_memory_cache(json_from_db(row["memory_cache"])),
         "pending_episode_ids": normalize_text_list(row["pending_episode_ids"]),
-        "self_model_id": row["self_model_id"],
         "last_retrieval_ids": json_from_db(row["last_retrieval_ids"]),
         "last_memorize_at": row["last_memorize_at"],
-        "last_consolidation_at": row["last_consolidation_at"],
-        "consolidation_in_progress": bool(row["consolidation_in_progress"]),
-        "consolidation_started_at": row["consolidation_started_at"],
         "updated_at": row["updated_at"],
         "undo_snapshot": json_from_db(row["undo_snapshot"]),
-        "all_categories_summary": row["all_categories_summary"],
         "last_chat_x": row["last_chat_x"],
         "last_chat_x_prev": row["last_chat_x_prev"],
-        "retrieve_rewrite_angle": int(row["retrieve_rewrite_angle"] or 0) if "retrieve_rewrite_angle" in row.keys() else 0,
-        "retrieval_ids_since_consolidation": normalize_text_list(row["retrieval_ids_since_consolidation"]),
-        "prior_context_ids_since_consolidation": normalize_text_list(row["prior_context_ids_since_consolidation"]),
-        "subconscious_message": row["subconscious_message"] if "subconscious_message" in row.keys() else None,
         "last_background_error": row["last_background_error"] if "last_background_error" in row.keys() else None,
         "last_background_error_at": row["last_background_error_at"] if "last_background_error_at" in row.keys() else None,
     }
@@ -62,12 +49,8 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
 def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
     return con.execute(
         "SELECT conversation_id, soul_id, user_id, digest_cursor, prior_context, "
-        "intentions_active, memory_cache, pending_episode_ids, self_model_id, "
-        "last_retrieval_ids, last_memorize_at, last_consolidation_at, consolidation_in_progress, "
-        "consolidation_started_at, updated_at, undo_snapshot, "
-        "all_categories_summary, last_chat_x, last_chat_x_prev, retrieve_rewrite_angle, "
-        "retrieval_ids_since_consolidation, prior_context_ids_since_consolidation, "
-        "subconscious_message, "
+        "pending_episode_ids, last_retrieval_ids, last_memorize_at, "
+        "updated_at, undo_snapshot, last_chat_x, last_chat_x_prev, "
         "last_background_error, last_background_error_at "
         "FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
         (conversation_id,),
@@ -85,23 +68,13 @@ def conversation_state_empty(
         "user_id": user_id,
         "digest_cursor": 0,
         "prior_context": None,
-        "intentions_active": normalize_intentions_stack(None),
-        "memory_cache": [],
         "pending_episode_ids": [],
-        "self_model_id": None,
         "last_retrieval_ids": None,
         "last_memorize_at": None,
-        "last_consolidation_at": None,
-        "consolidation_in_progress": False,
-        "consolidation_started_at": None,
         "updated_at": None,
-        "all_categories_summary": None,
+        "undo_snapshot": None,
         "last_chat_x": None,
         "last_chat_x_prev": None,
-        "retrieve_rewrite_angle": 0,
-        "retrieval_ids_since_consolidation": [],
-        "prior_context_ids_since_consolidation": [],
-        "subconscious_message": None,
         "last_background_error": None,
         "last_background_error_at": None,
     }
@@ -172,25 +145,11 @@ def write_conversation_state(
             con.execute(
                 """
 INSERT OR IGNORE INTO memu_conversation_state (
-    conversation_id,
-    soul_id,
-    user_id,
-    digest_cursor,
-    prior_context,
-    intentions_active,
-    memory_cache,
-    pending_episode_ids,
-    self_model_id,
-    last_retrieval_ids,
-    last_memorize_at,
-    last_consolidation_at,
-    consolidation_in_progress,
-    consolidation_started_at,
-    updated_at,
-    all_categories_summary,
-    last_chat_x,
-    last_chat_x_prev
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    conversation_id, soul_id, user_id,
+    digest_cursor, prior_context, pending_episode_ids,
+    last_retrieval_ids, last_memorize_at,
+    updated_at, last_chat_x, last_chat_x_prev
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """,
                 (
                     seed["conversation_id"],
@@ -198,17 +157,10 @@ INSERT OR IGNORE INTO memu_conversation_state (
                     seed.get("user_id"),
                     int(seed.get("digest_cursor") or 0),
                     seed.get("prior_context"),
-                    json_to_db(seed.get("intentions_active")),
-                    json_to_db(seed.get("memory_cache") or []),
                     json_to_db(seed.get("pending_episode_ids") or []),
-                    seed.get("self_model_id"),
                     json_to_db(seed.get("last_retrieval_ids")),
                     seed.get("last_memorize_at"),
-                    seed.get("last_consolidation_at"),
-                    1 if seed.get("consolidation_in_progress") else 0,
-                    seed.get("consolidation_started_at"),
                     seed.get("updated_at"),
-                    seed.get("all_categories_summary"),
                     seed.get("last_chat_x"),
                     seed.get("last_chat_x_prev"),
                 ),
@@ -237,25 +189,14 @@ INSERT OR IGNORE INTO memu_conversation_state (
             if key in {
                 "digest_cursor",
                 "prior_context",
-                "intentions_active",
-                "memory_cache",
                 "pending_episode_ids",
-                "self_model_id",
                 "last_retrieval_ids",
                 "last_memorize_at",
-                "last_consolidation_at",
-                "consolidation_in_progress",
-                "consolidation_started_at",
                 "undo_snapshot",
-                "all_categories_summary",
                 "last_chat_x",
                 "last_chat_x_prev",
-                "retrieve_rewrite_angle",
                 "last_background_error",
                 "last_background_error_at",
-                "retrieval_ids_since_consolidation",
-                "prior_context_ids_since_consolidation",
-                "subconscious_message",
             }:
                 field_updates[key] = value
 
@@ -316,27 +257,7 @@ INSERT OR IGNORE INTO memu_conversation_state (
         if "memory_cache" in field_updates:
             field_updates["memory_cache"] = normalize_memory_cache(field_updates.get("memory_cache"))
         if "pending_episode_ids" in field_updates:
-            field_updates["pending_episode_ids"] = normalize_text_list(
-                field_updates.get("pending_episode_ids")
-            )
-        if "retrieval_ids_since_consolidation" in field_updates:
-            field_updates["retrieval_ids_since_consolidation"] = normalize_text_list(
-                field_updates.get("retrieval_ids_since_consolidation")
-            )
-        if "prior_context_ids_since_consolidation" in field_updates:
-            field_updates["prior_context_ids_since_consolidation"] = normalize_text_list(
-                field_updates.get("prior_context_ids_since_consolidation")
-            )
-        if "self_model_id" in field_updates:
-            raw_self_model_id = field_updates.get("self_model_id")
-            field_updates["self_model_id"] = (
-                None if raw_self_model_id is None else (str(raw_self_model_id).strip() or None)
-            )
-        if "consolidation_in_progress" in field_updates:
-            field_updates["consolidation_in_progress"] = bool(field_updates.get("consolidation_in_progress"))
-        if "consolidation_started_at" in field_updates:
-            raw_started = field_updates.get("consolidation_started_at")
-            field_updates["consolidation_started_at"] = None if raw_started is None else (str(raw_started).strip() or None)
+            field_updates["pending_episode_ids"] = normalize_text_list(field_updates["pending_episode_ids"])
 
         if scoped_soul is not None:
             field_updates["soul_id"] = scoped_soul
@@ -349,22 +270,10 @@ INSERT OR IGNORE INTO memu_conversation_state (
             params: list[Any] = []
             for key, value in field_updates.items():
                 assignments.append(f"{key} = ?")
-                if key in {
-                    "intentions_active",
-                    "memory_cache",
-                    "pending_episode_ids",
-                    "retrieval_ids_since_consolidation",
-                    "prior_context_ids_since_consolidation",
-                    "last_retrieval_ids",
-                    "undo_snapshot",
-                }:
+                if key in {"pending_episode_ids", "last_retrieval_ids", "undo_snapshot"}:
                     params.append(json_to_db(value))
                 elif key == "digest_cursor":
                     params.append(int(value or 0))
-                elif key == "retrieve_rewrite_angle":
-                    params.append(int(value or 0))
-                elif key == "consolidation_in_progress":
-                    params.append(1 if value else 0)
                 else:
                     params.append(value)
             params.append(cid)
@@ -372,6 +281,7 @@ INSERT OR IGNORE INTO memu_conversation_state (
                 f"UPDATE memu_conversation_state SET {', '.join(assignments)} WHERE conversation_id = ?",
                 tuple(params),
             )
+        if soul_updates or field_updates:
             con.commit()
 
         state_out = conversation_state_from_row(conversation_state_row(con, cid))

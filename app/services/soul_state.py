@@ -13,6 +13,7 @@ from app.services.intention_state import normalize_intentions_stack, normalize_m
 def ensure_schema(con: sqlite3.Connection) -> None:
     con.execute("""
 CREATE TABLE IF NOT EXISTS soul_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
     narrative_self TEXT,
     all_categories_summary TEXT,
     memory_cache JSON DEFAULT '[]',
@@ -28,13 +29,12 @@ CREATE TABLE IF NOT EXISTS soul_state (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )""")
     if con.execute("SELECT COUNT(*) FROM soul_state").fetchone()[0] == 0:
-        con.execute("INSERT INTO soul_state (updated_at) VALUES (?)", (datetime.now(UTC).isoformat(),))
-        con.commit()
+        con.execute("INSERT INTO soul_state (id, updated_at) VALUES (1, ?)", (datetime.now(UTC).isoformat(),))
 
 
 def read(con: sqlite3.Connection) -> dict[str, Any]:
     ensure_schema(con)
-    row = con.execute("SELECT * FROM soul_state LIMIT 1").fetchone()
+    row = con.execute("SELECT * FROM soul_state WHERE id = 1").fetchone()
     if row is None:
         return defaults()
     return {
@@ -87,6 +87,7 @@ _VALID_FIELDS = {
 
 
 def write(con: sqlite3.Connection, updates: dict[str, Any]) -> None:
+    """Update soul_state fields. Does NOT commit — caller owns the transaction."""
     ensure_schema(con)
     fields = {k: v for k, v in updates.items() if k in _VALID_FIELDS}
     if not fields:
@@ -115,14 +116,13 @@ def write(con: sqlite3.Connection, updates: dict[str, Any]) -> None:
             params.append(1 if value else 0)
         else:
             params.append(value)
-    con.execute(f"UPDATE soul_state SET {', '.join(assignments)} WHERE rowid = 1", tuple(params))
-    con.commit()
+    con.execute(f"UPDATE soul_state SET {', '.join(assignments)} WHERE id = 1", tuple(params))
 
 
 def seed_from_legacy(con: sqlite3.Connection) -> None:
     """One-time: populate soul_state from old tables if empty."""
     ensure_schema(con)
-    existing = con.execute("SELECT narrative_self, all_categories_summary FROM soul_state LIMIT 1").fetchone()
+    existing = con.execute("SELECT narrative_self, all_categories_summary FROM soul_state WHERE id = 1").fetchone()
     if existing and (existing["narrative_self"] or existing["all_categories_summary"]):
         return
 
