@@ -11,6 +11,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.services import soul_state as _soul_state
+
 _RELATIONSHIP_NAME_MAX_CHARS = 50
 _RELATIONSHIP_TEXT_MAX_CHARS = 50
 _RELATIONSHIP_RESERVED_PREFIXES = ("user:", "soul:", "peer:", "environment:")
@@ -559,22 +561,9 @@ async def narrative_suggestion_endpoint(
         try:
             con.row_factory = sqlite3.Row
             sqlite_ensure_conversation_state_schema(con)
-            sm = con.execute(
-                "SELECT narrative_self FROM memu_self_model "
-                "WHERE soul_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT 1",
-                (sid, uid),
-            ).fetchone()
-            if sm is not None:
-                current_narrative = str(sm["narrative_self"] or "").strip()
-            cs = con.execute(
-                "SELECT all_categories_summary FROM memu_conversation_state "
-                "WHERE soul_id = ? AND user_id = ? "
-                "AND all_categories_summary IS NOT NULL AND all_categories_summary != '' "
-                "ORDER BY updated_at DESC LIMIT 1",
-                (sid, uid),
-            ).fetchone()
-            if cs is not None:
-                all_cats_summary = str(cs["all_categories_summary"] or "").strip()
+            soul = _soul_state.read(con)
+            current_narrative = str(soul.get("narrative_self") or "").strip()
+            all_cats_summary = str(soul.get("all_categories_summary") or "").strip()
         finally:
             con.close()
 

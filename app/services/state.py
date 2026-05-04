@@ -52,7 +52,7 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
         "pending_episode_ids, last_retrieval_ids, last_memorize_at, "
         "updated_at, undo_snapshot, last_chat_x, last_chat_x_prev, "
         "last_background_error, last_background_error_at "
-        "FROM memu_conversation_state WHERE conversation_id = ? LIMIT 1",
+        "FROM conversations WHERE conversation_id = ? LIMIT 1",
         (conversation_id,),
     ).fetchone()
 
@@ -144,7 +144,7 @@ def write_conversation_state(
             seed["updated_at"] = datetime.now(UTC).isoformat()
             con.execute(
                 """
-INSERT OR IGNORE INTO memu_conversation_state (
+INSERT OR IGNORE INTO conversations (
     conversation_id, soul_id, user_id,
     digest_cursor, prior_context, pending_episode_ids,
     last_retrieval_ids, last_memorize_at,
@@ -278,7 +278,7 @@ INSERT OR IGNORE INTO memu_conversation_state (
                     params.append(value)
             params.append(cid)
             con.execute(
-                f"UPDATE memu_conversation_state SET {', '.join(assignments)} WHERE conversation_id = ?",
+                f"UPDATE conversations SET {', '.join(assignments)} WHERE conversation_id = ?",
                 tuple(params),
             )
         if soul_updates or field_updates:

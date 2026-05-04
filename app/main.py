@@ -2216,7 +2216,7 @@ async def diag_sqlite_counts(
         "memu_category_items",
         "memu_entities",
         "memu_triples",
-        "memu_conversation_state",
+        "conversations",
         "memu_self_model",
         "intentions_life_goals",
     ]
@@ -2267,7 +2267,7 @@ async def diag_sqlite_recent(
         "memu_category_items",
         "memu_entities",
         "memu_triples",
-        "memu_conversation_state",
+        "conversations",
         "memu_self_model",
         "intentions_life_goals",
     }

@@ -132,88 +132,24 @@ CREATE TABLE IF NOT EXISTS intentions_life_goals (
 def sqlite_ensure_conversation_state_schema(con: sqlite3.Connection) -> None:
     con.execute(
         """
-CREATE TABLE IF NOT EXISTS memu_conversation_state (
-    conversation_id VARCHAR PRIMARY KEY,
-    soul_id VARCHAR,
-    user_id VARCHAR,
+CREATE TABLE IF NOT EXISTS conversations (
+    conversation_id TEXT PRIMARY KEY,
+    soul_id TEXT,
+    user_id TEXT,
     digest_cursor INTEGER DEFAULT 0,
     prior_context TEXT,
-    intentions_active JSON,
-    memory_cache JSON DEFAULT '[]',
     pending_episode_ids JSON DEFAULT '[]',
-    self_model_id VARCHAR,
     last_retrieval_ids JSON,
     last_memorize_at DATETIME,
-    last_consolidation_at DATETIME,
-    consolidation_in_progress BOOLEAN DEFAULT 0,
-    consolidation_started_at DATETIME,
-    subconscious_message TEXT,
     updated_at DATETIME,
-    undo_snapshot JSON
+    undo_snapshot JSON,
+    last_chat_x TEXT,
+    last_chat_x_prev TEXT,
+    last_background_error TEXT,
+    last_background_error_at DATETIME
 )
 """
     )
-    cols = set(sqlite_table_columns(con, "memu_conversation_state"))
-    alters: list[str] = []
-    if "soul_id" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN soul_id VARCHAR")
-    if "user_id" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN user_id VARCHAR")
-    if "digest_cursor" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN digest_cursor INTEGER DEFAULT 0")
-    if "prior_context" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN prior_context TEXT")
-    if "intentions_active" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN intentions_active JSON")
-    if "active_intentions" in cols and "intentions_active" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state RENAME COLUMN active_intentions TO intentions_active")
-    if "memory_cache" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN memory_cache JSON DEFAULT '[]'")
-    if "pending_episode_ids" not in cols:
-        if "pending_diary_episode_ids" in cols:
-            alters.append("ALTER TABLE memu_conversation_state RENAME COLUMN pending_diary_episode_ids TO pending_episode_ids")
-        else:
-            alters.append("ALTER TABLE memu_conversation_state ADD COLUMN pending_episode_ids JSON DEFAULT '[]'")
-    if "self_model_id" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN self_model_id VARCHAR")
-    if "last_retrieval_ids" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_retrieval_ids JSON")
-    if "last_memorize_at" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_memorize_at DATETIME")
-    if "last_consolidation_at" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_consolidation_at DATETIME")
-    if "consolidation_in_progress" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN consolidation_in_progress BOOLEAN DEFAULT 0")
-    if "consolidation_started_at" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN consolidation_started_at DATETIME")
-    if "updated_at" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN updated_at DATETIME")
-    if "undo_snapshot" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN undo_snapshot JSON")
-    if "all_categories_summary" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN all_categories_summary TEXT")
-    if "last_chat_x" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_chat_x TEXT")
-    if "last_chat_x_prev" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_chat_x_prev TEXT")
-    if "retrieve_rewrite_angle" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN retrieve_rewrite_angle INTEGER DEFAULT 0")
-    if "retrieval_ids_since_consolidation" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN retrieval_ids_since_consolidation JSON")
-    if "prior_context_ids_since_consolidation" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN prior_context_ids_since_consolidation JSON")
-    if "subconscious_message" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN subconscious_message TEXT")
-    if "last_background_error" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_background_error TEXT")
-    if "last_background_error_at" not in cols:
-        alters.append("ALTER TABLE memu_conversation_state ADD COLUMN last_background_error_at DATETIME")
-    for stmt in alters:
-        try:
-            con.execute(stmt)
-        except sqlite3.OperationalError as e:
-            if "duplicate column" not in str(e).lower():
-                raise
     sqlite_ensure_self_model_tables(con)
     con.commit()
 
