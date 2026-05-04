@@ -764,7 +764,7 @@ async def get_conversation_state_endpoint(
     sqlite_current_path: Callable[[str | None, str | None], Path | None],
     sqlite_connect: Callable[[Path], sqlite3.Connection],
     sqlite_ensure_conversation_state_schema: Callable[[sqlite3.Connection], None],
-    conversation_state_from_row: Callable[[sqlite3.Row | None], dict[str, Any] | None],
+    conversation_state_from_row: Callable[..., dict[str, Any] | None],
     conversation_state_row: Callable[[sqlite3.Connection, str], sqlite3.Row | None],
     find_conversation_state_across_dbs: Callable[[str], tuple[Path | None, dict[str, Any] | None]],
 ) -> dict[str, Any]:
@@ -787,7 +787,7 @@ async def get_conversation_state_endpoint(
         try:
             con.row_factory = sqlite3.Row
             sqlite_ensure_conversation_state_schema(con)
-            state_out = conversation_state_from_row(conversation_state_row(con, cid))
+            state_out = conversation_state_from_row(conversation_state_row(con, cid), con=con)
         finally:
             con.close()
     else:

@@ -152,7 +152,7 @@ def test_write_consolidation_outputs_clears_pending_episode_ids() -> None:
             sqlite_connect=sqlite_connect,
             sqlite_ensure_conversation_state_schema=sqlite_ensure_conversation_state_schema,
             conversation_state_row=conversation_state_row,
-            conversation_state_from_row=conversation_state_from_row,
+            conversation_state_from_row=lambda row, **kw: conversation_state_from_row(row),
             write_conversation_state=lambda conversation_id, *, soul_id, user_id, updates: write_conversation_state(
                 conversation_id,
                 sqlite_current_path=lambda _user, _soul: db_path,

@@ -352,7 +352,7 @@ def gather_consolidation_inputs(
                 user_id=user_id,
                 updates={"consolidation_in_progress": False, "consolidation_started_at": None},
             )
-            reread = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id))
+            reread = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id), con=con)
             if reread is None:
                 raise HTTPException(404, "conversation state not found after stale-lock reset")
             state = reread
@@ -839,7 +839,7 @@ INSERT INTO intentions_life_goals (
     _con = deps.sqlite_connect(db_path)
     _con.row_factory = sqlite3.Row
     current_state = deps.conversation_state_from_row(
-        deps.conversation_state_row(_con, conversation_id)
+        deps.conversation_state_row(_con, conversation_id), con=_con
     ) or {}
     _con.close()
     current_intentions = current_state.get("intentions_active")
