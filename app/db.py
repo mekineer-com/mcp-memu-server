@@ -54,44 +54,14 @@ def sqlite_pragmas(con: sqlite3.Connection) -> dict[str, Any]:
 def sqlite_ensure_self_model_tables(con: sqlite3.Connection) -> None:
     con.execute(
         """
-CREATE TABLE IF NOT EXISTS memu_self_model (
+CREATE TABLE IF NOT EXISTS narrative_history (
     id TEXT PRIMARY KEY,
-    soul_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    narrative_self TEXT,
-    related_memory_ids TEXT,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    narrative_self TEXT NOT NULL,
+    related_memory_ids JSON DEFAULT '[]',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )
 """
     )
-    cols = set(sqlite_table_columns(con, "memu_self_model"))
-    if "related_memory_ids" not in cols:
-        con.execute("ALTER TABLE memu_self_model ADD COLUMN related_memory_ids TEXT")
-        cols = set(sqlite_table_columns(con, "memu_self_model"))
-    if "trait_invariants" in cols or "contextual_state" in cols:
-        con.execute(
-            """
-CREATE TABLE memu_self_model__new (
-    id TEXT PRIMARY KEY,
-    soul_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    narrative_self TEXT,
-    related_memory_ids TEXT,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-)
-"""
-        )
-        con.execute(
-            """
-INSERT INTO memu_self_model__new (
-    id, soul_id, user_id, narrative_self, related_memory_ids, updated_at
-)
-SELECT id, soul_id, user_id, narrative_self, related_memory_ids, updated_at
-FROM memu_self_model
-"""
-        )
-        con.execute("DROP TABLE memu_self_model")
-        con.execute("ALTER TABLE memu_self_model__new RENAME TO memu_self_model")
     tables = {
         str(row[0])
         for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
@@ -121,9 +91,6 @@ CREATE TABLE IF NOT EXISTS intentions_life_goals (
     intention_cols = set(sqlite_table_columns(con, "intentions_life_goals"))
     if "resolution_note" not in intention_cols:
         con.execute("ALTER TABLE intentions_life_goals ADD COLUMN resolution_note TEXT")
-    con.execute(
-        "CREATE INDEX IF NOT EXISTS idx_self_model_soul_user ON memu_self_model(soul_id, user_id, updated_at DESC)"
-    )
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_intentions_soul_user ON intentions_life_goals(soul_id, user_id, status)"
     )

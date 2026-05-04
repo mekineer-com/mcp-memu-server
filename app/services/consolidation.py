@@ -27,6 +27,7 @@ from app.services.graph_edges import (
 )
 from app.services.intention_state import format_intentions_for_prompt
 from app.services.narrative_self import snapshot_previous_narrative_self
+from app.services import soul_state as _soul_state
 from app.services.turn_contract import DEFAULT_SOUL_CARD, format_relative_time_label, format_time_anchor
 
 if TYPE_CHECKING:
@@ -417,29 +418,8 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
             if str(row["description"] or "").strip()
         ]
 
-        narrative_self = None
+        narrative_self = str(state.get("narrative_self") or "").strip() or None
         self_model_id = str(state.get("self_model_id") or "").strip() or None
-        if self_model_id:
-            row = con.execute(
-                "SELECT id, narrative_self FROM memu_self_model WHERE id = ? LIMIT 1",
-                (self_model_id,),
-            ).fetchone()
-            if row is not None:
-                narrative_self = str(row["narrative_self"] or "").strip() or None
-        if narrative_self is None:
-            row = con.execute(
-                """
-SELECT id, narrative_self
-FROM memu_self_model
-WHERE soul_id = ? AND user_id = ?
-ORDER BY updated_at DESC, id DESC
-LIMIT 1
-""",
-                (soul_id, user_id),
-            ).fetchone()
-            if row is not None:
-                self_model_id = str(row["id"] or "").strip() or self_model_id
-                narrative_self = str(row["narrative_self"] or "").strip() or None
 
         episode_inputs: list[dict[str, Any]] = []
         if pending_episode_ids:
@@ -751,19 +731,11 @@ def write_consolidation_outputs(
 
         if narrative_self:
             con.execute(
-                """
-INSERT INTO memu_self_model (
-    id, soul_id, user_id, narrative_self, related_memory_ids, updated_at
-) VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
-    soul_id = excluded.soul_id,
-    user_id = excluded.user_id,
-    narrative_self = excluded.narrative_self,
-    related_memory_ids = excluded.related_memory_ids,
-    updated_at = excluded.updated_at
-""",
-                (self_model_id, soul_id, user_id, narrative_self, deps.json_to_db([]), now_iso),
+                "INSERT OR REPLACE INTO narrative_history (id, narrative_self, related_memory_ids, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (self_model_id, narrative_self, deps.json_to_db([]), now_iso),
             )
+            _soul_state.write(con, {"narrative_self": narrative_self, "self_model_id": self_model_id})
 
         life_goal_rows = con.execute(
             """

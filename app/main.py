@@ -2217,7 +2217,7 @@ async def diag_sqlite_counts(
         "memu_entities",
         "memu_triples",
         "conversations",
-        "memu_self_model",
+        "narrative_history",
         "intentions_life_goals",
     ]
     con = _sqlite_connect(p)
@@ -2268,7 +2268,7 @@ async def diag_sqlite_recent(
         "memu_entities",
         "memu_triples",
         "conversations",
-        "memu_self_model",
+        "narrative_history",
         "intentions_life_goals",
     }
     if table not in allowed:

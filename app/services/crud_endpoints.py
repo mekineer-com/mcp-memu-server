@@ -641,23 +641,14 @@ async def narrative_suggestion_endpoint(
         try:
             con.row_factory = sqlite3.Row
             sqlite_ensure_conversation_state_schema(con)
-            existing = con.execute(
-                "SELECT id FROM memu_self_model WHERE soul_id = ? AND user_id = ? "
-                "ORDER BY updated_at DESC LIMIT 1",
-                (sid, uid),
-            ).fetchone()
-            self_model_id = str(existing["id"]) if existing is not None else str(uuid.uuid4())
+            self_model_id = str(uuid.uuid4())
             now_iso = datetime.now(UTC).isoformat()
             con.execute(
-                """
-INSERT INTO memu_self_model (id, soul_id, user_id, narrative_self, related_memory_ids, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
-    narrative_self = excluded.narrative_self,
-    updated_at = excluded.updated_at
-""",
-                (self_model_id, sid, uid, new_narrative, None, now_iso),
+                "INSERT INTO narrative_history (id, narrative_self, related_memory_ids, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (self_model_id, new_narrative, "[]", now_iso),
             )
+            _soul_state.write(con, {"narrative_self": new_narrative, "self_model_id": self_model_id})
             con.commit()
         finally:
             con.close()
