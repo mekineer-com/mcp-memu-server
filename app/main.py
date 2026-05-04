@@ -1282,7 +1282,6 @@ def _load_turn_state_and_soul_card(
             con.row_factory = sqlite3.Row
             _sqlite_ensure_conversation_state_schema(con)
             state_row = _conversation_state_from_row(_conversation_state_row(con, conversation_id))
-            _soul_state.seed_from_legacy(con)
             soul = _soul_state.read(con)
         finally:
             con.close()
