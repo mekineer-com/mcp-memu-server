@@ -1302,7 +1302,7 @@ def _load_active_life_goals_for_prompt(*, user_id: str, soul_id: str) -> list[st
         rows = con.execute(
             """
 SELECT description
-FROM intentions_life_goals
+FROM intentions
 WHERE soul_id = ? AND user_id = ? AND source = 'life_goal' AND status = 'active'
 ORDER BY updated_at ASC, id ASC
 """,
@@ -2140,7 +2140,7 @@ async def diag_page():
 <li><a href='/diag/calls'>/diag/calls</a> <small>(last 50 memorize/retrieve calls)</small></li>
 <li><a href='/diag/sqlite'>/diag/sqlite</a></li>
 <li><a href='/diag/sqlite/counts'>/diag/sqlite/counts</a> <small>(add ?user_id=...&soul_id=...)</small></li>
-<li><a href='/diag/sqlite/recent?table=memu_memory_items&limit=10'>/diag/sqlite/recent</a> <small>(add scope params)</small></li>
+<li><a href='/diag/sqlite/recent?table=memory_items&limit=10'>/diag/sqlite/recent</a> <small>(add scope params)</small></li>
 </ul>
 <p><b>Scope tip:</b> if your ST extension uses <code>user_id</code> + <code>soul_id</code>, but your tests omit one, retrieval can look empty. Use the same scope in <code>/diag/sqlite/*</code>.</p>
 </body></html>"""
@@ -2210,15 +2210,15 @@ async def diag_sqlite_counts(
         return {"ok": False, "reason": reason, "path": str(p) if p else None, "storage": _STORAGE_STATUS}
 
     allowed = [
-        "memu_resources",
-        "memu_memory_categories",
-        "memu_memory_items",
-        "memu_category_items",
-        "memu_entities",
-        "memu_triples",
+        "resources",
+        "categories",
+        "memory_items",
+        "category_items",
+        "entities",
+        "triples",
         "conversations",
         "narrative_history",
-        "intentions_life_goals",
+        "intentions",
     ]
     con = _sqlite_connect(p)
     try:
@@ -2254,22 +2254,22 @@ async def diag_sqlite_counts(
 @app.get(f"{_DIAG_PREFIX}/diag/sqlite/recent")
 @app.get("/diag/sqlite/recent", operation_id="diag_sqlite_recent")
 async def diag_sqlite_recent(
-    table: str = "memu_memory_items",
+    table: str = "memory_items",
     limit: int = 20,
     user_id: str | None = None,
     soul_id: str | None = None,
     conversation_id: str | None = None,
 ):
     allowed = {
-        "memu_resources",
-        "memu_memory_categories",
-        "memu_memory_items",
-        "memu_category_items",
-        "memu_entities",
-        "memu_triples",
+        "resources",
+        "categories",
+        "memory_items",
+        "category_items",
+        "entities",
+        "triples",
         "conversations",
         "narrative_history",
-        "intentions_life_goals",
+        "intentions",
     }
     if table not in allowed:
         raise HTTPException(status_code=400, detail=f"table must be one of: {sorted(allowed)}")

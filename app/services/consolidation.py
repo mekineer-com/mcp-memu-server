@@ -369,7 +369,7 @@ def gather_consolidation_inputs(
         category_rows = con.execute(
             """
 SELECT name, summary
-FROM memu_memory_categories
+FROM categories
 WHERE soul_id = ? AND user_id = ?
 ORDER BY name ASC
 """,
@@ -379,7 +379,7 @@ ORDER BY name ASC
         life_goal_rows = con.execute(
             """
 SELECT id, description, status
-FROM intentions_life_goals
+FROM intentions
 WHERE soul_id = ? AND user_id = ? AND source = 'life_goal' AND status IN ('active', 'removed')
 ORDER BY updated_at ASC, id ASC
 """,
@@ -398,7 +398,7 @@ ORDER BY updated_at ASC, id ASC
 
         intention_sql = """
 SELECT description, status, updated_at
-FROM intentions_life_goals
+FROM intentions
 WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
 """
         params: list[Any] = [soul_id, user_id]
@@ -467,12 +467,12 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
                 rows = con.execute(
                     """
 SELECT id, summary
-FROM memu_memory_items
+FROM memory_items
 WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND episode_id = ? AND memory_type NOT IN ('narrative_self')
   AND (merged_into IS NULL OR TRIM(merged_into) = '')
   AND NOT EXISTS (
-    SELECT 1 FROM memu_triples t
-    WHERE t.subject_id = memu_memory_items.id
+    SELECT 1 FROM triples t
+    WHERE t.subject_id = memory_items.id
       AND t.predicate = 'evolved_into'
       AND t.valid_to IS NULL
   )
@@ -493,12 +493,12 @@ LIMIT 24
         try:
             if last_consol:
                 res_rows = con.execute(
-                    "SELECT memory_prior_context FROM memu_resources WHERE soul_id = ? AND user_id = ? AND created_at >= ? AND memory_prior_context IS NOT NULL",
+                    "SELECT memory_prior_context FROM resources WHERE soul_id = ? AND user_id = ? AND created_at >= ? AND memory_prior_context IS NOT NULL",
                     (soul_id, user_id, last_consol),
                 ).fetchall()
             else:
                 res_rows = con.execute(
-                    "SELECT memory_prior_context FROM memu_resources WHERE soul_id = ? AND user_id = ? AND memory_prior_context IS NOT NULL",
+                    "SELECT memory_prior_context FROM resources WHERE soul_id = ? AND user_id = ? AND memory_prior_context IS NOT NULL",
                     (soul_id, user_id),
                 ).fetchall()
             for rr in res_rows:
@@ -514,7 +514,7 @@ LIMIT 24
         if clean_ids:
             placeholders = ",".join("?" for _ in clean_ids)
             ret_rows = con.execute(
-                f"SELECT id, memory_type, summary FROM memu_memory_items WHERE id IN ({placeholders})",
+                f"SELECT id, memory_type, summary FROM memory_items WHERE id IN ({placeholders})",
                 tuple(clean_ids),
             ).fetchall()
             retrieved_memory_summaries = [
@@ -740,7 +740,7 @@ def write_consolidation_outputs(
         life_goal_rows = con.execute(
             """
 SELECT id, description, status
-FROM intentions_life_goals
+FROM intentions
 WHERE soul_id = ? AND user_id = ? AND source = 'life_goal' AND status IN ('active', 'removed')
 ORDER BY updated_at ASC, id ASC
 """,
@@ -785,15 +785,15 @@ ORDER BY updated_at ASC, id ASC
 
         for goal_id in goals_to_mark_removed:
             con.execute(
-                "UPDATE intentions_life_goals SET status = 'removed', updated_at = ? WHERE id = ?",
+                "UPDATE intentions SET status = 'removed', updated_at = ? WHERE id = ?",
                 (now_iso, goal_id),
             )
         for goal_id in goals_to_delete:
-            con.execute("DELETE FROM intentions_life_goals WHERE id = ?", (goal_id,))
+            con.execute("DELETE FROM intentions WHERE id = ?", (goal_id,))
         for goal_id, text in goals_to_add:
             con.execute(
                 """
-INSERT INTO intentions_life_goals (
+INSERT INTO intentions (
     id, soul_id, user_id, description, status, source, confidence, target_date, related_memory_ids, updated_at
 ) VALUES (?, ?, ?, ?, 'active', 'life_goal', NULL, NULL, ?, ?)
 """,

@@ -123,7 +123,7 @@ def _select_relationship_row(
     return con.execute(
         """
 SELECT id, name, entity_type, normalized, properties
-FROM memu_entities
+FROM entities
 WHERE normalized = ? AND user_id = ? AND soul_id = ?
 LIMIT 1
 """,
@@ -258,7 +258,7 @@ async def list_intentions_endpoint(
         sqlite_ensure_conversation_state_schema(con)
         rows = con.execute(
             """
-SELECT * FROM intentions_life_goals
+SELECT * FROM intentions
 WHERE soul_id = ? AND user_id = ? AND status = ?
 """,
             (sid, uid, scoped_status),
@@ -370,7 +370,7 @@ async def create_relationship_endpoint(
             props.pop("relationship", None)
         con.execute(
             """
-UPDATE memu_entities
+UPDATE entities
 SET name = ?, entity_type = ?, properties = ?, updated_at = ?
 WHERE id = ?
 """,
@@ -450,7 +450,7 @@ async def update_relationship_endpoint(
         final_name = next_name or str(row["name"] or "").strip()
         con.execute(
             """
-UPDATE memu_entities
+UPDATE entities
 SET name = ?, properties = ?, updated_at = ?
 WHERE id = ?
 """,
@@ -518,7 +518,7 @@ async def delete_relationship_endpoint(
         props["deleted_at"] = now_iso
         con.execute(
             """
-UPDATE memu_entities
+UPDATE entities
 SET properties = ?, updated_at = ?
 WHERE id = ?
 """,
@@ -703,7 +703,7 @@ async def patch_intention_endpoint(
         con.row_factory = sqlite3.Row
         sqlite_ensure_conversation_state_schema(con)
         row = con.execute(
-            "SELECT * FROM intentions_life_goals WHERE id = ? LIMIT 1",
+            "SELECT * FROM intentions WHERE id = ? LIMIT 1",
             (iid,),
         ).fetchone()
         if row is None:
@@ -722,12 +722,12 @@ async def patch_intention_endpoint(
             params.append(datetime.now(UTC).isoformat())
             params.append(iid)
             con.execute(
-                f"UPDATE intentions_life_goals SET {', '.join(set_parts)} WHERE id = ?",
+                f"UPDATE intentions SET {', '.join(set_parts)} WHERE id = ?",
                 params,
             )
             con.commit()
             row = con.execute(
-                "SELECT * FROM intentions_life_goals WHERE id = ? LIMIT 1",
+                "SELECT * FROM intentions WHERE id = ? LIMIT 1",
                 (iid,),
             ).fetchone()
 

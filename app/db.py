@@ -67,12 +67,12 @@ CREATE TABLE IF NOT EXISTS narrative_history (
         for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         if row and row[0]
     }
-    if "memu_intentions" in tables and "intentions_life_goals" not in tables:
-        con.execute("ALTER TABLE memu_intentions RENAME TO intentions_life_goals")
+    if "memu_intentions" in tables and "intentions" not in tables:
+        con.execute("ALTER TABLE memu_intentions RENAME TO intentions")
 
     con.execute(
         """
-CREATE TABLE IF NOT EXISTS intentions_life_goals (
+CREATE TABLE IF NOT EXISTS intentions (
     id TEXT PRIMARY KEY,
     soul_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
@@ -88,11 +88,11 @@ CREATE TABLE IF NOT EXISTS intentions_life_goals (
 )
 """
     )
-    intention_cols = set(sqlite_table_columns(con, "intentions_life_goals"))
+    intention_cols = set(sqlite_table_columns(con, "intentions"))
     if "resolution_note" not in intention_cols:
-        con.execute("ALTER TABLE intentions_life_goals ADD COLUMN resolution_note TEXT")
+        con.execute("ALTER TABLE intentions ADD COLUMN resolution_note TEXT")
     con.execute(
-        "CREATE INDEX IF NOT EXISTS idx_intentions_soul_user ON intentions_life_goals(soul_id, user_id, status)"
+        "CREATE INDEX IF NOT EXISTS idx_intentions_soul_user ON intentions(soul_id, user_id, status)"
     )
 
 
