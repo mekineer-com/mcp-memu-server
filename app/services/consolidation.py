@@ -694,7 +694,7 @@ def write_consolidation_outputs(
     db_path: Path = inputs["db_path"]
     now_iso = datetime.now(UTC).isoformat()
 
-    self_model_id = str(inputs.get("self_model_id") or "").strip() or str(uuid.uuid4())
+    self_model_id = str(uuid.uuid4())
     narrative_self = str(llm_results.get("narrative_self") or "").strip() or None
 
     old_narrative_text = llm_results.get("old_narrative_text")
