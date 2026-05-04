@@ -183,7 +183,7 @@ def test_write_consolidation_outputs_clears_pending_episode_ids() -> None:
         result = write_consolidation_outputs(
             deps,
             _SvcStub(),
-            inputs={"db_path": db_path, "self_model_id": None},
+            inputs={"db_path": db_path},
             llm_results={
                 "narrative_self": None,
                 "old_narrative_text": None,

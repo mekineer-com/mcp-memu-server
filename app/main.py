@@ -2314,7 +2314,6 @@ async def diag_sqlite_recent(
             "intentions_active",
             "memory_cache",
             "pending_episode_ids",
-            "self_model_id",
             "last_memorize_at",
             "unresolved",
             "resource_id",

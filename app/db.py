@@ -51,7 +51,7 @@ def sqlite_pragmas(con: sqlite3.Connection) -> dict[str, Any]:
     return out
 
 
-def sqlite_ensure_self_model_tables(con: sqlite3.Connection) -> None:
+def sqlite_ensure_soul_tables(con: sqlite3.Connection) -> None:
     con.execute(
         """
 CREATE TABLE IF NOT EXISTS narrative_history (
@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 )
 """
     )
-    sqlite_ensure_self_model_tables(con)
+    sqlite_ensure_soul_tables(con)
     con.commit()
 
 

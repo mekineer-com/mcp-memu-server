@@ -641,14 +641,14 @@ async def narrative_suggestion_endpoint(
         try:
             con.row_factory = sqlite3.Row
             sqlite_ensure_conversation_state_schema(con)
-            self_model_id = str(uuid.uuid4())
+            narrative_id = str(uuid.uuid4())
             now_iso = datetime.now(UTC).isoformat()
             con.execute(
                 "INSERT INTO narrative_history (id, narrative_self, related_memory_ids, created_at) "
                 "VALUES (?, ?, ?, ?)",
-                (self_model_id, new_narrative, "[]", now_iso),
+                (narrative_id, new_narrative, "[]", now_iso),
             )
-            _soul_state.write(con, {"narrative_self": new_narrative, "self_model_id": self_model_id})
+            _soul_state.write(con, {"narrative_self": new_narrative})
             con.commit()
         finally:
             con.close()
@@ -817,9 +817,6 @@ async def patch_conversation_state_endpoint(
 
     if "pending_episode_ids" in body:
         updates["pending_episode_ids"] = body.get("pending_episode_ids")
-
-    if "self_model_id" in body:
-        updates["self_model_id"] = body.get("self_model_id")
 
     if "last_retrieval_ids" in body:
         updates["last_retrieval_ids"] = body.get("last_retrieval_ids")

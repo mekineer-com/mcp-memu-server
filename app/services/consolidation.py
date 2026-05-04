@@ -419,7 +419,6 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
         ]
 
         narrative_self = str(state.get("narrative_self") or "").strip() or None
-        self_model_id = str(state.get("self_model_id") or "").strip() or None
 
         episode_inputs: list[dict[str, Any]] = []
         if pending_episode_ids:
@@ -543,7 +542,6 @@ LIMIT 24
             "intention_activity": intention_activity,
             "episode_inputs": episode_inputs,
             "narrative_self": narrative_self,
-            "self_model_id": self_model_id,
             "last_consolidation_at": state.get("last_consolidation_at"),
             "started_at": now.isoformat(),
             "retrieved_memories": retrieved_memory_summaries,
@@ -694,7 +692,7 @@ def write_consolidation_outputs(
     db_path: Path = inputs["db_path"]
     now_iso = datetime.now(UTC).isoformat()
 
-    self_model_id = str(uuid.uuid4())
+    narrative_id = str(uuid.uuid4())
     narrative_self = str(llm_results.get("narrative_self") or "").strip() or None
 
     old_narrative_text = llm_results.get("old_narrative_text")
@@ -731,11 +729,11 @@ def write_consolidation_outputs(
 
         if narrative_self:
             con.execute(
-                "INSERT OR REPLACE INTO narrative_history (id, narrative_self, related_memory_ids, created_at) "
+                "INSERT INTO narrative_history (id, narrative_self, related_memory_ids, created_at) "
                 "VALUES (?, ?, ?, ?)",
-                (self_model_id, narrative_self, deps.json_to_db([]), now_iso),
+                (narrative_id, narrative_self, deps.json_to_db([]), now_iso),
             )
-            _soul_state.write(con, {"narrative_self": narrative_self, "self_model_id": self_model_id})
+            _soul_state.write(con, {"narrative_self": narrative_self})
 
         life_goal_rows = con.execute(
             """
@@ -839,8 +837,6 @@ INSERT INTO intentions (
         "consolidation_started_at": None,
         "intentions_active": current_intentions,
     }
-    if llm_results.get("narrative_self"):
-        state_updates["self_model_id"] = self_model_id
     state_after, _ = deps.write_conversation_state(
         conversation_id,
         soul_id=soul_id,
@@ -853,7 +849,7 @@ INSERT INTO intentions (
 
     return {
         "conversation_id": conversation_id,
-        "self_model_id": self_model_id if llm_results.get("narrative_self") else None,
+        "narrative_id": narrative_id if llm_results.get("narrative_self") else None,
         "companion_memory_id": companion_memory_id,
         "edges_written": wrote,
         "edges_invalidated": invalidated,

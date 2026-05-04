@@ -25,7 +25,6 @@ CREATE TABLE IF NOT EXISTS soul_state (
     last_consolidation_at DATETIME,
     consolidation_in_progress BOOLEAN DEFAULT 0,
     consolidation_started_at DATETIME,
-    self_model_id TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )""")
     if con.execute("SELECT COUNT(*) FROM soul_state").fetchone()[0] == 0:
@@ -49,7 +48,6 @@ def read(con: sqlite3.Connection) -> dict[str, Any]:
         "last_consolidation_at": row["last_consolidation_at"],
         "consolidation_in_progress": bool(row["consolidation_in_progress"]),
         "consolidation_started_at": row["consolidation_started_at"],
-        "self_model_id": row["self_model_id"],
         "updated_at": row["updated_at"],
     }
 
@@ -67,7 +65,6 @@ def defaults() -> dict[str, Any]:
         "last_consolidation_at": None,
         "consolidation_in_progress": False,
         "consolidation_started_at": None,
-        "self_model_id": None,
         "updated_at": None,
     }
 
@@ -82,7 +79,6 @@ _VALID_FIELDS = {
     "retrieve_rewrite_angle", "retrieval_ids_since_consolidation",
     "prior_context_ids_since_consolidation", "subconscious_message",
     "last_consolidation_at", "consolidation_in_progress", "consolidation_started_at",
-    "self_model_id",
 }
 
 
