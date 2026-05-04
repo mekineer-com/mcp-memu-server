@@ -50,7 +50,7 @@ def test_build_turn_prompt_includes_core_sections():
     assert "My conversation history:" in prompt
     assert "Prior context:" in prompt
     assert "Goals:" in prompt  # retrieved category block renders as "<Name>:" lines
-    assert "Your working thoughts:" in prompt
+    assert "My working thoughts:" in prompt
     assert "My intentions:" in prompt
 
 

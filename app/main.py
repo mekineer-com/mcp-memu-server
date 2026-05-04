@@ -87,6 +87,7 @@ from app.services.intention_state import (
 )
 from app.services import crud_endpoints as _crud_endpoints
 from app.services import mcp_tools as _mcp_tools
+from app.services import soul_state as _soul_state
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import memorize_endpoint as _memorize_endpoint
 from app.services import sqlite_scope as _sqlite_scope
@@ -1269,47 +1270,24 @@ def _load_turn_state_and_soul_card(
     user_id: str,
     soul_id: str,
 ) -> tuple[dict[str, Any], str | None, Path | None]:
-    def _self_model_to_soul_card(sm_row: sqlite3.Row) -> str | None:
-        narrative_self = str(sm_row["narrative_self"] or "").strip()
-
-        lines: list[str] = []
-        if narrative_self:
-            lines.append(narrative_self)
-        card = "\n".join(lines).strip()
-        return card or None
-
-    state_row: dict[str, Any] | None = None
-    soul_card: str | None = None
     db_path = _sqlite_current_path(user_id, soul_id)
+    state_row: dict[str, Any] | None = None
+    soul = _soul_state.defaults()
     if db_path is not None and db_path.exists():
         con = _sqlite_connect(db_path)
         try:
             con.row_factory = sqlite3.Row
             _sqlite_ensure_conversation_state_schema(con)
             state_row = _conversation_state_from_row(_conversation_state_row(con, conversation_id))
-            sm_id = (state_row or {}).get("self_model_id")
-            sm_row = None
-            if sm_id:
-                sm_row = con.execute(
-                    "SELECT narrative_self FROM memu_self_model WHERE id = ? LIMIT 1",
-                    (str(sm_id),),
-                ).fetchone()
-            if sm_row is None:
-                sm_row = con.execute(
-                    "SELECT narrative_self FROM memu_self_model "
-                    "WHERE soul_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT 1",
-                    (soul_id, user_id),
-                ).fetchone()
-            if sm_row is not None:
-                soul_card = _self_model_to_soul_card(sm_row)
+            _soul_state.seed_from_legacy(con)
+            soul = _soul_state.read(con)
         finally:
             con.close()
     if state_row is None:
-        state_row = _conversation_state_empty(
-            conversation_id,
-            soul_id=soul_id,
-            user_id=user_id,
-        )
+        state_row = _conversation_state_empty(conversation_id, soul_id=soul_id, user_id=user_id)
+    state_row.update(soul)
+    narrative = str(soul.get("narrative_self") or "").strip()
+    soul_card = narrative or None
     return state_row, soul_card, db_path
 
 

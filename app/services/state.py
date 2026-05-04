@@ -19,6 +19,7 @@ from app.db import (
     sqlite_ensure_nonempty,
 )
 from app.services.intention_state import normalize_intentions_stack, normalize_memory_cache
+from app.services import soul_state as _soul_state
 
 logger = logging.getLogger(__name__)
 
@@ -216,9 +217,20 @@ INSERT OR IGNORE INTO memu_conversation_state (
             existing_state = conversation_state_from_row(conversation_state_row(con, cid)) or seed
 
         raw_updates = dict(updates) if updates else {}
+        soul_updates = {k: raw_updates.pop(k) for k in list(raw_updates) if k in _soul_state._VALID_FIELDS}
+        for append_key, field in (
+            ("append_retrieval_ids_since_consolidation", "retrieval_ids_since_consolidation"),
+            ("append_prior_context_ids_since_consolidation", "prior_context_ids_since_consolidation"),
+        ):
+            appended = raw_updates.pop(append_key, None)
+            if appended is not None:
+                current = _soul_state.read(con)
+                soul_updates[field] = merge_unique_text_lists(current.get(field), appended)
+        if soul_updates:
+            _soul_state.write(con, soul_updates)
         append_pending_episode_ids = raw_updates.pop("append_pending_episode_ids", None)
-        append_retrieval_ids = raw_updates.pop("append_retrieval_ids_since_consolidation", None)
-        append_prior_context_ids = raw_updates.pop("append_prior_context_ids_since_consolidation", None)
+        append_retrieval_ids = None
+        append_prior_context_ids = None
         field_updates: dict[str, Any] = {}
 
         for key, value in raw_updates.items():

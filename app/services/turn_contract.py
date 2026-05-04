@@ -546,7 +546,7 @@ def build_turn_prompt(
         "My conversation history:",
         _render_history(history_for_render, token_budget=history_tail_after_memorize),
         "",
-        "Your working thoughts:",
+        "My working thoughts:",
         "\n".join(cache_lines) if cache_lines else "(empty)",
         *([ f"  {subconscious_message}" ] if subconscious_message else []),
         "",
