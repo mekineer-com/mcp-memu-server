@@ -1536,7 +1536,7 @@ async def _run_retrieve(
             finally:
                 con.close()
 
-    channel_mode = str(safe.get("channel_mode") or "").strip() or None
+    channel_mode = str(safe.get("channel_mode") or "direct").strip()
 
     retrieve_started_at = time.monotonic()
     retrieve_result = await svc.retrieve(
