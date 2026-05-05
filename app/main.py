@@ -3205,7 +3205,7 @@ async def conversation_retrieve(
 
         out = await _run_retrieve(safe, conversation_id=cid)
 
-        want_turn_prompt = bool(safe.get("build_turn_prompt", False)) and out.get("should_respond", True)
+        want_turn_prompt = bool(safe.get("build_turn_prompt", False))
 
         if want_turn_prompt:
             scope = _extract_scope(safe)
@@ -3558,25 +3558,31 @@ async def conversation_turn(
         turn_user_prompt = override_user_prompt
 
         memory_service = _get_service_from_payload(safe, retrieve_method_override="rag")
-        turn_started_at = time.monotonic()
-        turn_response_raw = await memory_service.chat(
-            turn_user_prompt,
-            system_prompt=turn_system_prompt,
-            temperature=turn_temperature,
-            max_tokens=PIPELINE_MAX_TOKENS,
-            response_format=turn_response_format,
-            op="turn",
-            step="respond",
-        )
-        turn_ms = int((time.monotonic() - turn_started_at) * 1000)
-        try:
-            turn_contract = _parse_turn_contract(turn_response_raw)
-        except Exception as exc:
-            raw_snippet = str(turn_response_raw or "")[:200]
-            raise HTTPException(
-                status_code=502,
-                detail=f"turn contract parse failure: {exc}; raw={raw_snippet!r}",
-            ) from exc
+        listen_mode = not bool(safe.get("should_respond", True))
+
+        if listen_mode:
+            turn_contract = {"response": "", "cache_entry": "", "annulments": [], "chat_x": ""}
+            turn_ms = 0
+        else:
+            turn_started_at = time.monotonic()
+            turn_response_raw = await memory_service.chat(
+                turn_user_prompt,
+                system_prompt=turn_system_prompt,
+                temperature=turn_temperature,
+                max_tokens=PIPELINE_MAX_TOKENS,
+                response_format=turn_response_format,
+                op="turn",
+                step="respond",
+            )
+            turn_ms = int((time.monotonic() - turn_started_at) * 1000)
+            try:
+                turn_contract = _parse_turn_contract(turn_response_raw)
+            except Exception as exc:
+                raw_snippet = str(turn_response_raw or "")[:200]
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"turn contract parse failure: {exc}; raw={raw_snippet!r}",
+                ) from exc
 
         turn_cache_entry = str(turn_contract.get("cache_entry") or "").strip()
         turn_annulments = turn_contract.get("annulments") if isinstance(turn_contract.get("annulments"), list) else []
