@@ -117,6 +117,22 @@ CREATE TABLE IF NOT EXISTS conversations (
 )
 """
     )
+    con.execute(
+        """
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    speaker TEXT,
+    content TEXT NOT NULL,
+    source_label TEXT,
+    received_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+"""
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_conv_time ON messages(conversation_id, received_at)"
+    )
     sqlite_ensure_soul_tables(con)
     con.commit()
 

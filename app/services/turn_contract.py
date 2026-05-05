@@ -466,6 +466,7 @@ def build_turn_prompt(
     memory_cache: Any,
     intentions_active: Any,
     subconscious_message: str | None = None,
+    cross_conversation_history: str | None = None,
     now: datetime | None = None,
 ) -> str:
     cache = normalize_memory_cache(memory_cache)
@@ -541,8 +542,13 @@ def build_turn_prompt(
             synthetic["source_message_id"] = str(last_msg_id + 1)
         history_for_render.append(synthetic)
 
+    cross_block: list[str] = []
+    if cross_conversation_history and cross_conversation_history.strip():
+        cross_block = ["Other conversations:", cross_conversation_history.strip(), ""]
+
     parts = [
         *context_blocks,
+        *cross_block,
         "My conversation history:",
         _render_history(history_for_render, token_budget=history_tail_after_memorize),
         "",

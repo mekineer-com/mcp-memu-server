@@ -87,6 +87,7 @@ from app.services.intention_state import (
 )
 from app.services import crud_endpoints as _crud_endpoints
 from app.services import mcp_tools as _mcp_tools
+from app.services import message_log as _message_log
 from app.services import soul_state as _soul_state
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import memorize_endpoint as _memorize_endpoint
@@ -3196,12 +3197,30 @@ async def conversation_retrieve(
                     user_id=uid,
                     soul_id=soul_id,
                 )
+                if _db_path is not None and _db_path.exists():
+                    _con = _sqlite_connect(_db_path)
+                    try:
+                        _con.row_factory = sqlite3.Row
+                        _sqlite_ensure_conversation_state_schema(_con)
+                        full_history = list(history)
+                        if message.strip():
+                            full_history.append({"role": "user", "content": message})
+                        _message_log.append_messages(_con, cid, full_history)
+                        cross_tail = _message_log.read_all_tails(_con, exclude_conversation_id=cid)
+                        _con.commit()
+                    finally:
+                        _con.close()
+                else:
+                    cross_tail = []
                 safe["queries"] = _build_retrieve_soul_context_queries(
                     soul_id=soul_id,
                     message=message,
                     history=history,
                     state_row=state_row,
                 )
+                if cross_tail:
+                    safe["_cross_conversation_history"] = _message_log.format_merged_history(cross_tail)
+                    safe["queries"].insert(-1, {"role": "cross_conversation", "content": {"text": safe["_cross_conversation_history"]}})
 
         out = await _run_retrieve(safe, conversation_id=cid)
 
@@ -3256,6 +3275,7 @@ async def conversation_retrieve(
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
                     subconscious_message=_subconscious_msg,
+                    cross_conversation_history=safe.get("_cross_conversation_history"),
                 )
                 if _subconscious_msg:
                     _write_conversation_state(
