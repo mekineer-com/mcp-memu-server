@@ -1536,16 +1536,21 @@ async def _run_retrieve(
             finally:
                 con.close()
 
+    channel_mode = str(safe.get("channel_mode") or "").strip() or None
+
     retrieve_started_at = time.monotonic()
     retrieve_result = await svc.retrieve(
         memu_queries,
         where=scope,
         as_of=as_of,
         rewrite_angle=retrieve_rewrite_angle,
+        channel_mode=channel_mode,
     )
     retrieve_ms = int((time.monotonic() - retrieve_started_at) * 1000)
+    should_respond = bool(retrieve_result.get("should_respond", True))
     out: dict[str, Any] = {
         "ok": True,
+        "should_respond": should_respond,
         "result": retrieve_result,
         "retrieve_ms": retrieve_ms,
     }
@@ -3200,7 +3205,7 @@ async def conversation_retrieve(
 
         out = await _run_retrieve(safe, conversation_id=cid)
 
-        want_turn_prompt = bool(safe.get("build_turn_prompt", False))
+        want_turn_prompt = bool(safe.get("build_turn_prompt", False)) and out.get("should_respond", True)
 
         if want_turn_prompt:
             scope = _extract_scope(safe)

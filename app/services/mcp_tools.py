@@ -18,6 +18,7 @@ class MemuTurnRequest(BaseModel):
     apply_turn_maintenance: bool = True
     debug: bool = False
     temperature: float | None = None
+    channel_mode: str | None = None
 
 
 class MemuRetrieveRequest(BaseModel):
@@ -110,8 +111,20 @@ async def memu_turn_endpoint(
     }
     if req.soul_card:
         retrieve_payload["soul_card"] = str(req.soul_card)
+    if req.channel_mode:
+        retrieve_payload["channel_mode"] = str(req.channel_mode)
 
     retrieve_out = await conversation_retrieve(conversation_id, retrieve_payload)
+
+    if not retrieve_out.get("should_respond", True):
+        return {
+            "ok": True,
+            "should_respond": False,
+            "conversation_id": conversation_id,
+            "response": "",
+            "retrieve_ms": retrieve_out.get("retrieve_ms"),
+        }
+
     turn_user_prompt = str(retrieve_out.get("turn_user_prompt") or "").strip()
     turn_system_prompt = str(retrieve_out.get("turn_system_prompt") or "").strip()
     if not turn_user_prompt:
