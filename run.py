@@ -220,7 +220,7 @@ def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
 
     handlers = log_cfg.setdefault("handlers", {})
     handlers["memu_file"] = {
-        "class": "logging.FileHandler",
+        "class": "logging.handlers.WatchedFileHandler",
         "formatter": "default",
         "filename": str(log_path),
         "encoding": "utf-8",
