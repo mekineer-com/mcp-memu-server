@@ -87,14 +87,19 @@ def read_tail(
     ]
 
 
+MAX_CROSS_TAIL_MESSAGES = 50
+
+
 def read_all_tails(
     con: sqlite3.Connection,
     exclude_conversation_id: str | None = None,
+    max_messages: int = MAX_CROSS_TAIL_MESSAGES,
 ) -> list[dict[str, Any]]:
     """Read unmemorized tails from all conversations, merged chronologically.
 
     Uses each conversation's digest_cursor from the conversations table as the boundary.
     Excludes the current conversation (its history comes fresh from the payload).
+    Capped at max_messages most recent to bound prompt size.
     """
     cursor_rows = con.execute(
         "SELECT conversation_id, digest_cursor FROM conversations"
@@ -106,11 +111,11 @@ def read_all_tails(
         if cid == exclude_conversation_id:
             continue
         cursor = int(row["digest_cursor"] or 0)
-        tail = read_tail(con, cid, after_cursor=cursor)
+        tail = read_tail(con, cid, after_cursor=cursor + 1)
         all_messages.extend(tail)
 
     all_messages.sort(key=lambda m: m.get("received_at") or "")
-    return all_messages
+    return all_messages[-max_messages:]
 
 
 def format_merged_history(
