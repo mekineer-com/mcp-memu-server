@@ -121,10 +121,8 @@ _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 4000
 _DEFAULT_EPISODES_PER_SEGMENT: int = 3
-_DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE: int = 3000
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
 _EPISODES_PER_SEGMENT: int = _DEFAULT_EPISODES_PER_SEGMENT
-_HISTORY_TAIL_AFTER_MEMORIZE: int = _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE
 # Uniform runaway-protection caps for LLM calls. Not business logic —
 # these are floors against pathological generation, not content limits.
 # DB-storage limits are enforced separately at the storage write path.
@@ -373,7 +371,7 @@ class STUserModel(BaseModel):
 _CONFIG: dict[str, Any] = _load_config()
 
 def _refresh_runtime_limits() -> None:
-    global _MIN_CHUNK_TOKENS, _EPISODES_PER_SEGMENT, _HISTORY_TAIL_AFTER_MEMORIZE
+    global _MIN_CHUNK_TOKENS, _EPISODES_PER_SEGMENT
     global _LOG_PROMPTS
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
     try:
@@ -384,13 +382,6 @@ def _refresh_runtime_limits() -> None:
         _EPISODES_PER_SEGMENT = max(1, int(memorize_cfg.get("episodes_per_segment", _DEFAULT_EPISODES_PER_SEGMENT)))
     except (TypeError, ValueError, OverflowError):
         _EPISODES_PER_SEGMENT = _DEFAULT_EPISODES_PER_SEGMENT
-    try:
-        _HISTORY_TAIL_AFTER_MEMORIZE = max(
-            1,
-            int(memorize_cfg.get("history_tail_after_memorize", _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE)),
-        )
-    except (TypeError, ValueError, OverflowError):
-        _HISTORY_TAIL_AFTER_MEMORIZE = _DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE
     debug_cfg = _CONFIG.get("debug") if isinstance(_CONFIG.get("debug"), dict) else {}
     _LOG_PROMPTS = bool(debug_cfg.get("log_prompts", False))
 
@@ -1231,7 +1222,8 @@ def _build_retrieve_soul_context_queries(
     if intentions_text and intentions_text.strip() != "(none)":
         soul_ctx_queries.append({"role": "intentions", "content": {"text": intentions_text}})
 
-    history_text = _render_history(history, token_budget=_HISTORY_TAIL_AFTER_MEMORIZE)
+    from app.services.turn_contract import RETRIEVE_HISTORY_TOKEN_BUDGET
+    history_text = _render_history(history, token_budget=RETRIEVE_HISTORY_TOKEN_BUDGET)
     if history_text:
         soul_ctx_queries.append({"role": "history", "content": {"text": history_text}})
 
@@ -3218,12 +3210,6 @@ async def conversation_retrieve(
 
                 message = _pick_str(safe, "message", "query") or ""
                 history = _normalize_turn_history(safe.get("history"))
-                # Tail = whatever hasn't been memorized yet. The most recent
-                # memorized segment (per manifest.json) marks the boundary;
-                # everything before it lives in segment files + category
-                # summaries, and the soul reads those through the retrieved
-                # memory context. history_tail_after_memorize is the token
-                # ceiling applied inside _render_history as a safety cap.
                 history = _slice_history_after_last_memorized_segment(
                     history,
                     chats_dir=(_get_storage_dir(_CONFIG) / "st_chats").resolve(),
@@ -3244,7 +3230,6 @@ async def conversation_retrieve(
                 out["turn_user_prompt"] = _build_turn_prompt(
                     user_message=message,
                     history=history,
-                    history_tail_after_memorize=_HISTORY_TAIL_AFTER_MEMORIZE,
                     prior_context=out.get("prior_context"),
                     retrieve_rag=out.get("result"),
                     all_categories_summary=_state_row.get("all_categories_summary"),

@@ -54,23 +54,6 @@ def test_build_turn_prompt_includes_core_sections():
     assert "My intentions:" in prompt
 
 
-def test_build_turn_prompt_limits_history_by_token_budget():
-    prompt = build_turn_prompt(
-        user_message="hello",
-        history=[
-            {"message_id": "1", "role": "user", "content": "one two three four five six seven eight nine ten"},
-            {"message_id": "2", "role": "assistant", "content": "ok"},
-        ],
-        history_tail_after_memorize=2,
-        prior_context=None,
-        retrieve_rag=None,
-        all_categories_summary=None,
-        memory_cache=[],
-        intentions_active={},
-    )
-    assert "[2] [assistant] ok" in prompt
-    assert "[1] [user]" not in prompt
-
 
 def test_make_turn_system_prompt_includes_time_anchor() -> None:
     prompt = make_turn_system_prompt(
