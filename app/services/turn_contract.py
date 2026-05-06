@@ -138,7 +138,7 @@ def _estimate_text_tokens(text: str) -> int:
     return max(1, int(words / 0.75))
 
 
-def _render_history(history: list[dict[str, Any]], *, token_budget: int = DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE) -> str:
+def render_history(history: list[dict[str, Any]], *, token_budget: int = DEFAULT_HISTORY_TAIL_AFTER_MEMORIZE) -> str:
     if not history:
         return "(none)"
     budget = int(token_budget or 0)
@@ -550,7 +550,7 @@ def build_turn_prompt(
         *context_blocks,
         *cross_block,
         "My conversation history:",
-        _render_history(history_for_render, token_budget=history_tail_after_memorize),
+        render_history(history_for_render, token_budget=history_tail_after_memorize),
         "",
         "My working thoughts:",
         "\n".join(cache_lines) if cache_lines else "(empty)",

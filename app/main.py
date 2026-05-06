@@ -106,6 +106,7 @@ from app.services.turn_contract import (
     format_shaped_by_line as _format_shaped_by_line,
     make_turn_system_prompt as _make_turn_system_prompt,
     parse_turn_contract as _parse_turn_contract,
+    render_history as _render_history,
 )
 
 
@@ -1182,22 +1183,6 @@ def _next_chat_x_state_values(
 
 # ==== Turn prompt context builders ====
 
-def _format_route_history(history: list[dict[str, Any]]) -> str:
-    if not history:
-        return ""
-    lines: list[str] = []
-    for item in history:
-        message_id = str(item.get("message_id") or "").strip()
-        role = str(item.get("name") or item.get("role") or "unknown").strip()
-        content = str(item.get("content") or "").strip()
-        if not content:
-            continue
-        if message_id:
-            lines.append(f"[{message_id}] [{role}] {content}")
-        else:
-            lines.append(f"[{role}] {content}")
-    return "\n".join(lines)
-
 
 def _build_retrieve_identity_context(soul_name: str, *, apimw: bool = False) -> str:
     name = str(soul_name or "").strip() or "the assistant"
@@ -1246,7 +1231,7 @@ def _build_retrieve_soul_context_queries(
     if intentions_text and intentions_text.strip() != "(none)":
         soul_ctx_queries.append({"role": "intentions", "content": {"text": intentions_text}})
 
-    history_text = _format_route_history(history)
+    history_text = _render_history(history, token_budget=0)
     if history_text:
         soul_ctx_queries.append({"role": "history", "content": {"text": history_text}})
 
@@ -1970,8 +1955,8 @@ async def _run_apimw(
             limit=30,
         )
         history_from_chat_x = _slice_history_from_chat_x_anchors(history, chat_x_anchors[:1], limit=30)
-        previous_episode_text = _format_route_history(history_from_previous_chat_x)
-        episode_text = _format_route_history(history_from_chat_x)
+        previous_episode_text = _render_history(history_from_previous_chat_x, token_budget=0)
+        episode_text = _render_history(history_from_chat_x, token_budget=0)
         topic_user_blocks: list[str] = []
         if previous_episode_text:
             topic_user_blocks.append(f"Previous episode:\n{previous_episode_text}")
