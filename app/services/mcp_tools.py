@@ -19,8 +19,6 @@ class MemuTurnRequest(BaseModel):
     debug: bool = False
     temperature: float | None = None
     channel_mode: str | None = None
-    sender_name: str | None = None
-    chat_name: str | None = None
 
 
 class MemuRetrieveRequest(BaseModel):
@@ -115,10 +113,6 @@ async def memu_turn_endpoint(
         retrieve_payload["soul_card"] = str(req.soul_card)
     if req.channel_mode:
         retrieve_payload["channel_mode"] = str(req.channel_mode)
-    if req.sender_name:
-        retrieve_payload["sender_name"] = str(req.sender_name)
-    if req.chat_name:
-        retrieve_payload["chat_name"] = str(req.chat_name)
 
     retrieve_out = await conversation_retrieve(conversation_id, retrieve_payload)
     should_respond = retrieve_out.get("should_respond", True)
