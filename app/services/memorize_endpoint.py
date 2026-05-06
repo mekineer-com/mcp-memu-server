@@ -147,6 +147,8 @@ async def run_memorize_episodes(
     run_ctx: MemorizeRunContext,
     episodes_dir: Path,
     zi: Any | None = None,
+    cross_memorize: bool = False,
+    final_cursors: dict[str, int] | None = None,
 ) -> None:
     ctx = run_ctx.base
     progress_key = ctx.memorize_lock_key(uid, soul_id)
@@ -186,11 +188,16 @@ async def run_memorize_episodes(
                 cancelled = True
                 break
             segment_raw_text = json.dumps(segment_messages, ensure_ascii=False)
-            segment_episodes = await svc.split_segment_into_episodes(
-                local_path=segment_resource_url,
-                raw_text=segment_raw_text,
-                modality="conversation",
-            )
+            if cross_memorize:
+                segment_episodes = await svc.split_cross_conversation_into_episodes(
+                    raw_text=segment_raw_text,
+                )
+            else:
+                segment_episodes = await svc.split_segment_into_episodes(
+                    local_path=segment_resource_url,
+                    raw_text=segment_raw_text,
+                    modality="conversation",
+                )
             if not segment_episodes:
                 segment_episodes = [{"text": segment_raw_text, "caption": None}]
             for episode_payload in segment_episodes:
@@ -300,13 +307,28 @@ async def run_memorize_episodes(
 
         # Phase 4: final state flush + bookkeeping under lock.
         async with mem_lock:
-            if conversation_id and has_results:
+            if has_results and final_cursors:
+                now_iso = datetime.now(UTC).isoformat()
+                for fc_cid, fc_cursor in final_cursors.items():
+                    updates: dict[str, Any] = {
+                        "digest_cursor": max(0, fc_cursor),
+                        "last_memorize_at": now_iso,
+                    }
+                    if fc_cid == conversation_id:
+                        updates["append_pending_episode_ids"] = pending_episode_ids
+                        updates["all_categories_summary"] = current_all_categories_summary
+                    ctx.write_conversation_state(
+                        fc_cid,
+                        soul_id=soul_id,
+                        user_id=uid,
+                        updates=updates,
+                    )
+            elif conversation_id and has_results:
                 ctx.write_conversation_state(
                     conversation_id,
                     soul_id=soul_id,
                     user_id=uid,
                     updates={
-                        # final flush once all segments commit — also writes the holistic summary atomically
                         "digest_cursor": max(0, processed_end_cursor),
                         "last_memorize_at": datetime.now(UTC).isoformat(),
                         "append_pending_episode_ids": pending_episode_ids,
@@ -658,6 +680,7 @@ async def memorize_endpoint(
     ctx = endpoint_ctx.base
     try:
         safe = endpoint_ctx.safe_payload(payload)
+        is_cross = bool(safe.get("_cross_memorize"))
         svc = endpoint_ctx.get_service_from_payload(safe)
 
         scope = safe.get("user")
@@ -762,7 +785,7 @@ async def memorize_endpoint(
             resource_url = str(chat_dir)
             sleep_stats: Any | None = None
             new_segments: list[dict[str, Any]] = []
-            if not tail and tz_ok and isinstance(merged, list) and any(isinstance(m.get("ts_ms"), int) for m in merged):
+            if not tail and not is_cross and tz_ok and isinstance(merged, list) and any(isinstance(m.get("ts_ms"), int) for m in merged):
                 tail_n = 2500
                 if not segments:
                     rebuild_from = 0
@@ -822,8 +845,8 @@ async def memorize_endpoint(
                 manifest_path.write_text(json.dumps(manifest_out, ensure_ascii=False, indent=2), encoding="utf-8")
 
             memorize_segments: list[tuple[str, list[dict[str, Any]], int]] = []
-            if tail:
-                tail_start = max(0, processed_cursor + 1)
+            if is_cross or tail:
+                tail_start = 0 if is_cross else max(0, processed_cursor + 1)
                 if tail_start < len(merged):
                     memorize_segments = [(resource_url, merged[tail_start:], len(merged) - 1)]
                 if not memorize_segments:
@@ -836,7 +859,7 @@ async def memorize_endpoint(
                 if episodes_dir and episodes_dir.exists():
                     for old_ep in episodes_dir.glob("*.json"):
                         old_ep.unlink(missing_ok=True)
-            if not tail and segments and isinstance(merged, list):
+            if not tail and not is_cross and segments and isinstance(merged, list):
                 last_message_idx = len(merged) - 1
                 for segment in segments:
                     try:
@@ -877,6 +900,8 @@ async def memorize_endpoint(
                 sleep_stats=sleep_stats,
                 episodes_dir=episodes_dir,
                 zi=zi,
+                cross_memorize=is_cross,
+                final_cursors=safe.get("_final_cursors") if is_cross else None,
             )
             # background=background_tasks is REQUIRED: when an endpoint returns a
             # Response object directly, FastAPI does not auto-attach the tasks from

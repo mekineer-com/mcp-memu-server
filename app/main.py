@@ -2674,6 +2674,8 @@ async def _run_memorize_episodes(
     sleep_stats: Any,
     episodes_dir: Path,
     zi: Any = None,
+    cross_memorize: bool = False,
+    final_cursors: dict[str, int] | None = None,
 ) -> None:
     await _memorize_endpoint.run_memorize_episodes(
         memorize_segments=memorize_segments,
@@ -2697,6 +2699,8 @@ async def _run_memorize_episodes(
         run_ctx=_make_memorize_run_context(),
         episodes_dir=episodes_dir,
         zi=zi,
+        cross_memorize=cross_memorize,
+        final_cursors=final_cursors,
     )
 
 
@@ -3314,6 +3318,57 @@ async def conversation_retrieve(
 
 # ---- Turn state helpers + conversation turn endpoints ----
 
+def _build_cross_conversation_payload(
+    cid: str,
+    uid: str,
+    soul_id: str,
+    safe: dict[str, Any],
+    history_full: list[dict[str, Any]],
+    digest_cursor: int,
+) -> dict[str, Any] | None:
+    """Merge unmemorized tails from all conversations into one memorize payload."""
+    db_path = _sqlite_current_path(uid, soul_id)
+    if db_path is None or not db_path.exists():
+        return None
+
+    trigger_label = _message_log.derive_source_label(cid)
+    trigger_cursor = max(0, digest_cursor + 1)
+    trigger_tail = _normalize_conversation(history_full[trigger_cursor:]) if trigger_cursor < len(history_full) else []
+    if not trigger_tail:
+        return None
+
+    for i, msg in enumerate(trigger_tail):
+        msg["source_label"] = trigger_label
+        msg["source_conversation_id"] = cid
+        msg["source_conversation_index"] = digest_cursor + 1 + i
+
+    final_cursors: dict[str, int] = {cid: digest_cursor + len(trigger_tail)}
+    all_messages = list(trigger_tail)
+
+    con = _sqlite_connect(db_path)
+    try:
+        other_tails = _message_log.read_all_tails_for_memorize(con, exclude_conversation_id=cid)
+    finally:
+        con.close()
+
+    for other_cid, tail_msgs in other_tails.items():
+        if not tail_msgs:
+            continue
+        final_cursors[other_cid] = tail_msgs[-1]["source_conversation_index"]
+        all_messages.extend(tail_msgs)
+
+    all_messages.sort(key=lambda m: m.get("received_at") or m.get("ts_ms") or "")
+
+    return {
+        **safe,
+        "conversation_id": cid,
+        "conversation": all_messages,
+        "user": {"user_id": uid, "soul_id": soul_id, "conversation_id": cid},
+        "_cross_memorize": True,
+        "_final_cursors": final_cursors,
+    }
+
+
 def _turn_state_read(
     cid: str,
     uid: str,
@@ -3351,14 +3406,9 @@ def _turn_state_read(
             safe,
         )
         if has_sleep_gap:
-            normalized_history = _normalize_conversation(history_full)
-            if normalized_history:
-                queued_memorize_payload = {
-                    **safe,
-                    "conversation_id": cid,
-                    "conversation": normalized_history,
-                    "user": {"user_id": uid, "soul_id": soul_id, "conversation_id": cid},
-                }
+            queued_memorize_payload = _build_cross_conversation_payload(
+                cid, uid, soul_id, safe, history_full, unmemorized_digest_cursor,
+            )
     return (
         conversation_state,
         soul_card,

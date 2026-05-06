@@ -118,6 +118,34 @@ def read_all_tails(
     return all_messages[-max_messages:]
 
 
+def read_all_tails_for_memorize(
+    con: sqlite3.Connection,
+    exclude_conversation_id: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Read unmemorized tails from all conversations, keyed by conversation_id.
+
+    Each message carries source_label and its position within its conversation.
+    No cap — memorize needs all unmemorized messages.
+    """
+    cursor_rows = con.execute(
+        "SELECT conversation_id, digest_cursor FROM conversations"
+    ).fetchall()
+
+    result: dict[str, list[dict[str, Any]]] = {}
+    for row in cursor_rows:
+        cid = str(row["conversation_id"])
+        if cid == exclude_conversation_id:
+            continue
+        cursor = int(row["digest_cursor"] or 0)
+        tail = read_tail(con, cid, after_cursor=cursor + 1)
+        if tail:
+            for i, msg in enumerate(tail):
+                msg["source_conversation_id"] = cid
+                msg["source_conversation_index"] = cursor + 1 + i
+            result[cid] = tail
+    return result
+
+
 def format_merged_history(
     messages: list[dict[str, Any]],
     current_source: str | None = None,
