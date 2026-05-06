@@ -2703,11 +2703,12 @@ async def _run_memorize_episodes(
 # ---- Memorize endpoint ----
 
 @app.post("/memorize", operation_id="memorize")
-async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool = False):
+async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool = False, tail: bool = False):
     return await _memorize_endpoint.memorize_endpoint(
         payload,
         background_tasks,
         force,
+        tail=tail,
         endpoint_ctx=_make_memorize_endpoint_context(),
     )
 

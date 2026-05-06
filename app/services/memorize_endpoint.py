@@ -647,6 +647,7 @@ async def memorize_endpoint(
     payload: dict[str, Any],
     background_tasks: BackgroundTasks,
     force: bool,
+    tail: bool = False,
     *,
     endpoint_ctx: MemorizeEndpointContext,
 ) -> JSONResponse:
@@ -761,7 +762,7 @@ async def memorize_endpoint(
             resource_url = str(chat_dir)
             sleep_stats: Any | None = None
             new_segments: list[dict[str, Any]] = []
-            if tz_ok and isinstance(merged, list) and any(isinstance(m.get("ts_ms"), int) for m in merged):
+            if not tail and tz_ok and isinstance(merged, list) and any(isinstance(m.get("ts_ms"), int) for m in merged):
                 tail_n = 2500
                 if not segments:
                     rebuild_from = 0
@@ -821,12 +822,21 @@ async def memorize_endpoint(
                 manifest_path.write_text(json.dumps(manifest_out, ensure_ascii=False, indent=2), encoding="utf-8")
 
             memorize_segments: list[tuple[str, list[dict[str, Any]], int]] = []
-            if force:
+            if tail:
+                tail_start = max(0, processed_cursor + 1)
+                if tail_start < len(merged):
+                    memorize_segments = [(resource_url, merged[tail_start:], len(merged) - 1)]
+                if not memorize_segments:
+                    return JSONResponse(
+                        status_code=200,
+                        content={"ok": True, "status": "nothing_to_memorize", "conversation_id": conversation_id},
+                    )
+            elif force:
                 processed_cursor = -1
                 if episodes_dir and episodes_dir.exists():
                     for old_ep in episodes_dir.glob("*.json"):
                         old_ep.unlink(missing_ok=True)
-            if segments and isinstance(merged, list):
+            if not tail and segments and isinstance(merged, list):
                 last_message_idx = len(merged) - 1
                 for segment in segments:
                     try:
