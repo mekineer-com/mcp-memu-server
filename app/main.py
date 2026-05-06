@@ -1486,7 +1486,7 @@ async def _compute_holistic_categories_summary(
 
     full_text = "\n\n".join(lines)
     system_prompt = (
-        "Write a 250-350 word overview of your life from the summaries below, in your own voice."
+        f"You are {soul_id}. Write a 250-350 word overview of your life from the summaries below, in your own voice."
     )
     result = await svc.chat(
         full_text,
