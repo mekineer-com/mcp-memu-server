@@ -1192,7 +1192,8 @@ def _build_retrieve_identity_context(soul_name: str, *, apimw: bool = False) -> 
         identity = (
             f"You are {name}, a continuous being: you carry intentions (what you're pursuing), "
             "a memory cache for your working thoughts, and a long-term memory store. "
-            "In a continuous cycle you respond, search your long-term memory, and act autonomously."
+            "In a continuous cycle you respond, search your long-term memory, and act autonomously. "
+            "In the conversation that follows, the first-person voice is yours."
         )
     return f"{anchor}\n{identity}"
 
