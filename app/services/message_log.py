@@ -128,7 +128,7 @@ def read_all_tails_for_memorize(
     No cap — memorize needs all unmemorized messages.
     """
     cursor_rows = con.execute(
-        "SELECT conversation_id, digest_cursor FROM conversations"
+        "SELECT conversation_id, digest_cursor, last_memorize_at FROM conversations"
     ).fetchall()
 
     result: dict[str, list[dict[str, Any]]] = {}
@@ -136,7 +136,7 @@ def read_all_tails_for_memorize(
         cid = str(row["conversation_id"])
         if cid == exclude_conversation_id:
             continue
-        cursor = int(row["digest_cursor"] or 0)
+        cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
         tail = read_tail(con, cid, after_cursor=cursor + 1)
         if tail:
             for i, msg in enumerate(tail):

@@ -3341,6 +3341,9 @@ def _build_cross_conversation_payload(
         msg["source_label"] = trigger_label
         msg["source_conversation_id"] = cid
         msg["source_conversation_index"] = digest_cursor + 1 + i
+        ts = msg.get("ts_ms")
+        if isinstance(ts, (int, float)) and "received_at" not in msg:
+            msg["received_at"] = datetime.fromtimestamp(ts / 1000.0, tz=UTC).isoformat()
 
     final_cursors: dict[str, int] = {cid: digest_cursor + len(trigger_tail)}
     all_messages = list(trigger_tail)
@@ -3357,7 +3360,7 @@ def _build_cross_conversation_payload(
         final_cursors[other_cid] = tail_msgs[-1]["source_conversation_index"]
         all_messages.extend(tail_msgs)
 
-    all_messages.sort(key=lambda m: m.get("received_at") or m.get("ts_ms") or "")
+    all_messages.sort(key=lambda m: m.get("received_at") or "")
 
     return {
         **safe,

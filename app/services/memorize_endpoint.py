@@ -272,7 +272,7 @@ async def run_memorize_episodes(
                 )
                 segment_end_index = episode_job["segment_end_index"]
                 last_episode_of_segment = (next_segment_end_index != segment_end_index)
-                if last_episode_of_segment and conversation_id:
+                if last_episode_of_segment and conversation_id and not cross_memorize:
                     # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
                     async with mem_lock:
                         fresh_row, _, _ = run_ctx.load_turn_state_and_soul_card(
