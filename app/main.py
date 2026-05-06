@@ -3210,6 +3210,10 @@ async def conversation_retrieve(
 
                 message = _pick_str(safe, "message", "query") or ""
                 history = _normalize_turn_history(safe.get("history"))
+                # Tail = whatever hasn't been memorized yet. The most recent
+                # memorized segment (per manifest.json) marks the boundary;
+                # everything before it lives as episodes and memory context the
+                # soul retrieves.
                 history = _slice_history_after_last_memorized_segment(
                     history,
                     chats_dir=(_get_storage_dir(_CONFIG) / "st_chats").resolve(),
