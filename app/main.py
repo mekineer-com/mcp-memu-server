@@ -1231,7 +1231,7 @@ def _build_retrieve_soul_context_queries(
     if intentions_text and intentions_text.strip() != "(none)":
         soul_ctx_queries.append({"role": "intentions", "content": {"text": intentions_text}})
 
-    history_text = _render_history(history, token_budget=0)
+    history_text = _render_history(history, token_budget=_HISTORY_TAIL_AFTER_MEMORIZE)
     if history_text:
         soul_ctx_queries.append({"role": "history", "content": {"text": history_text}})
 
