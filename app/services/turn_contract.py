@@ -156,10 +156,17 @@ def render_history(history: list[dict[str, Any]], *, token_budget: int = DEFAULT
         if budget > 0 and used_tokens >= budget:
             break
     lines: list[str] = []
+    last_time_label: str | None = None
     for item in reversed(selected):
         message_id = _text(item.get("message_id") or item.get("source_message_id") or item.get("id"))
         role = _text(item.get("name") or item.get("role") or "unknown")
         content = _text(item.get("content"))
+        time_label = format_relative_time_label(
+            item.get("ts_ms") or item.get("created_at") or item.get("received_at"),
+        )
+        if time_label and time_label != last_time_label:
+            lines.append(f"--- {time_label} ---")
+            last_time_label = time_label
         if message_id:
             lines.append(f"[{message_id}] [{role}] {content}")
         else:
