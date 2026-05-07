@@ -1758,6 +1758,8 @@ async def _apimw_def_call(
     logger.info("apimw step D+E+F: combined call for %s", conversation_id)
     formatted_memory_lines: list[str] = []
     items_by_id: dict[str, dict[str, Any]] = {}
+    id_map: dict[str, str] = {}
+    counter = 1
     for item in combined_items:
         if not isinstance(item, dict):
             continue
@@ -1766,10 +1768,12 @@ async def _apimw_def_call(
         if not item_id or not summary:
             continue
         items_by_id[item_id] = item
-        formatted_memory_lines.append(_format_memory_line(item, show_id=True))
+        id_map[str(counter)] = item_id
+        formatted_memory_lines.append(_format_memory_line(item, show_id=True, item_id=str(counter)))
+        counter += 1
         shaped_by = item.get("shaped_by")
         if isinstance(shaped_by, dict):
-            formatted_memory_lines.append(_format_shaped_by_line(shaped_by, with_id=True))
+            formatted_memory_lines.append(_format_shaped_by_line(shaped_by))
 
     formatted_memories = "\n".join(formatted_memory_lines) if formatted_memory_lines else "(none)"
 
@@ -1834,13 +1838,13 @@ async def _apimw_def_call(
         result_json = json.loads(apimw_response_text)
     except json.JSONDecodeError:
         logger.error("apimw D+E+F: JSON parse failed, raw=%s", apimw_response_text[:200])
-        return None, items_by_id
+        return None, items_by_id, id_map
     if not isinstance(result_json, dict):
         logger.error("apimw D+E+F: expected dict, got %s", type(result_json).__name__)
-        return None, items_by_id
+        return None, items_by_id, id_map
 
     logger.info("apimw D+E+F: parsed JSON with keys %s for %s", list(result_json.keys()), conversation_id)
-    return result_json, items_by_id
+    return result_json, items_by_id, id_map
 
 
 async def _apimw_persist(
@@ -1848,6 +1852,7 @@ async def _apimw_persist(
     *,
     result_json: dict[str, Any],
     items_by_id: dict[str, dict[str, Any]],
+    id_map: dict[str, str],
     combined_items: list[dict[str, Any]],
     scope: dict[str, str],
     conversation_id: str,
@@ -1865,7 +1870,8 @@ async def _apimw_persist(
         if isinstance(prior_context_ids_raw, list) and prior_context_ids_raw:
             prior_context_lines: list[str] = []
             for raw_memory_id in prior_context_ids_raw:
-                memory_id = str(raw_memory_id).strip()
+                numbered = str(raw_memory_id).strip()
+                memory_id = id_map.get(numbered, numbered)
                 item = items_by_id.get(memory_id)
                 if not item:
                     continue
@@ -1983,7 +1989,7 @@ async def _run_apimw(
         )
 
         apimw_heavy_profile = _resolve_profile(svc, "memory_extract")
-        result_json, items_by_id = await _apimw_def_call(
+        result_json, items_by_id, apimw_id_map = await _apimw_def_call(
             svc,
             combined_items=combined_items,
             identity_context=identity_context,
@@ -2002,6 +2008,7 @@ async def _run_apimw(
             svc,
             result_json=result_json,
             items_by_id=items_by_id,
+            id_map=apimw_id_map,
             combined_items=combined_items,
             scope=scope,
             conversation_id=conversation_id,

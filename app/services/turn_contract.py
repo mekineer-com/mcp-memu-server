@@ -271,18 +271,16 @@ def _format_item_suffix(item: dict[str, Any], *, now: datetime | None = None) ->
     parts: list[str] = []
     time_label = format_relative_time_label(item.get("happened_at"), now=now)
     if time_label:
-        parts.append(time_label)
-    superseded_at = item.get("superseded_at")
-    if superseded_at:
-        s_label = format_relative_time_label(superseded_at, now=now)
-        if s_label:
-            parts.append(f"superseded {s_label}")
+        superseded_at = item.get("superseded_at")
+        if superseded_at:
+            s_label = format_relative_time_label(superseded_at, now=now)
+            if s_label:
+                time_label = f"{time_label}, superseded {s_label}"
+        parts.append(f"({time_label})")
     via_graph = _text(item.get("via_graph"))
     if via_graph:
-        parts.append(via_graph)
-    if not parts:
-        return ""
-    return f" ({', '.join(parts)})"
+        parts.append(f"({via_graph})")
+    return " ".join(parts)
 
 
 def format_memory_line(
@@ -297,9 +295,14 @@ def format_memory_line(
     summary = _text(item.get("summary"))
     suffix = _format_item_suffix(item, now=now)
     speaker_label = _text(item.get("speaker_label"))
-    speaker_tag = f"[{speaker_label}]" if speaker_label else ""
-    id_part = f"[{mid}] " if show_id and mid else ""
-    return f"{id_part}[{memory_type}]{speaker_tag}{suffix} {summary}"
+    parts = [f"[{mid}]"] if show_id and mid else []
+    parts.append(f"[{memory_type}]")
+    if speaker_label:
+        parts.append(f"[{speaker_label}]")
+    if suffix:
+        parts.append(suffix)
+    parts.append(summary)
+    return " ".join(parts)
 
 
 def format_shaped_by_line(
@@ -314,9 +317,10 @@ def format_shaped_by_line(
     suffix = _format_item_suffix(shaped_by, now=now)
     prefix = " " * indent + predicate
     seed_id = _text(shaped_by.get("id"))
+    suffix_part = f" {suffix}" if suffix else ""
     if with_id and seed_id:
-        return f"{prefix} [{seed_id}]{suffix} {summary}"
-    return f"{prefix}{suffix} {summary}"
+        return f"{prefix} [{seed_id}]{suffix_part} {summary}"
+    return f"{prefix}{suffix_part} {summary}"
 
 
 def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, set[str], set[str]]:
