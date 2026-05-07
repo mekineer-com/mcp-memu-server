@@ -513,14 +513,20 @@ LIMIT 24
         if clean_ids:
             placeholders = ",".join("?" for _ in clean_ids)
             ret_rows = con.execute(
-                f"SELECT id, memory_type, summary FROM memory_items WHERE id IN ({placeholders})",
+                f"SELECT id, memory_type, summary, happened_at, created_at FROM memory_items WHERE id IN ({placeholders})",
                 tuple(clean_ids),
             ).fetchall()
-            retrieved_memory_summaries = [
-                {"id": str(row["id"]).strip(), "summary": str(row["summary"]).strip()}
-                for row in ret_rows
-                if str(row["id"] or "").strip() and str(row["summary"] or "").strip()
-            ]
+            retrieved_memory_summaries = []
+            for row in ret_rows:
+                mid = str(row["id"] or "").strip()
+                summary = str(row["summary"] or "").strip()
+                if not mid or not summary:
+                    continue
+                time_label = format_relative_time_label(row["happened_at"] or row["created_at"])
+                entry: dict[str, str] = {"id": mid, "summary": summary}
+                if time_label:
+                    entry["time_label"] = time_label
+                retrieved_memory_summaries.append(entry)
 
         deps.write_conversation_state(
             conversation_id,
@@ -595,7 +601,8 @@ async def run_consolidation_llm(
                 n = counter[0]
                 counter[0] += 1
                 id_map[str(n)] = mid
-                ret_lines.append(f"[{n}] {s['summary']}")
+                tl = s.get("time_label")
+                ret_lines.append(f"[{n}] ({tl}) {s['summary']}" if tl else f"[{n}] {s['summary']}")
             elif str(s).strip():
                 ret_lines.append(str(s))
         retrieved_text = "\n".join(ret_lines)
