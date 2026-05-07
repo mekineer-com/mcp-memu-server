@@ -1875,10 +1875,7 @@ async def _apimw_persist(
                 item = items_by_id.get(memory_id)
                 if not item:
                     continue
-                memory_type = str(item.get("memory_type") or "memory").strip()
-                suffix = _format_turn_item_suffix(item)
-                summary = str(item.get("summary") or "").strip()
-                prior_context_lines.append(f"[{memory_type}]{suffix} {summary}")
+                prior_context_lines.append(_format_memory_line(item))
                 shaped_by = item.get("shaped_by")
                 if isinstance(shaped_by, dict):
                     prior_context_lines.append(_format_shaped_by_line(shaped_by))

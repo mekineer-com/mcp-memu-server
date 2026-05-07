@@ -28,7 +28,7 @@ from app.services.graph_edges import (
 from app.services.intention_state import format_intentions_for_prompt
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import soul_state as _soul_state
-from app.services.turn_contract import DEFAULT_SOUL_CARD, format_memory_line, format_relative_time_label, format_time_anchor
+from app.services.turn_contract import DEFAULT_SOUL_CARD, format_memory_line, format_shaped_by_line, format_relative_time_label, format_time_anchor
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
@@ -521,6 +521,7 @@ LIMIT 24
                 f"SELECT id, memory_type, summary, happened_at, created_at FROM memory_items WHERE id IN ({placeholders})",
                 tuple(clean_ids),
             ).fetchall()
+            items_by_id: dict[str, dict[str, Any]] = {}
             retrieved_memory_summaries = []
             for row in ret_rows:
                 mid = str(row["id"] or "").strip()
@@ -533,7 +534,31 @@ LIMIT 24
                     "memory_type": str(row["memory_type"] or "").strip(),
                     "happened_at": row["happened_at"] or row["created_at"],
                 }
+                items_by_id[mid] = entry
                 retrieved_memory_summaries.append(entry)
+
+            edge_predicates = ("caused_by", "evokes", "conflicts_with", "parallels", "shaped_by")
+            edge_placeholders = ",".join("?" for _ in clean_ids)
+            pred_placeholders = ",".join("?" for _ in edge_predicates)
+            edge_rows = con.execute(
+                f"SELECT subject_id, predicate, object_id FROM triples "
+                f"WHERE subject_id IN ({edge_placeholders}) AND object_id IN ({edge_placeholders}) "
+                f"AND predicate IN ({pred_placeholders}) AND valid_to IS NULL",
+                tuple(clean_ids) + tuple(clean_ids) + tuple(edge_predicates),
+            ).fetchall()
+            for er in edge_rows:
+                subj = str(er["subject_id"]).strip()
+                obj_id = str(er["object_id"]).strip()
+                pred = str(er["predicate"]).strip()
+                obj_item = items_by_id.get(obj_id)
+                if subj in items_by_id and obj_item:
+                    items_by_id[subj]["shaped_by"] = {
+                        "predicate": pred,
+                        "id": obj_id,
+                        "summary": obj_item.get("summary", ""),
+                        "memory_type": obj_item.get("memory_type", ""),
+                        "happened_at": obj_item.get("happened_at"),
+                    }
 
         deps.write_conversation_state(
             conversation_id,
@@ -609,6 +634,9 @@ async def run_consolidation_llm(
                 counter[0] += 1
                 id_map[str(n)] = mid
                 ret_lines.append(format_memory_line(s, show_id=True, item_id=str(n)))
+                shaped_by = s.get("shaped_by")
+                if isinstance(shaped_by, dict):
+                    ret_lines.append(format_shaped_by_line(shaped_by))
             elif str(s).strip():
                 ret_lines.append(str(s))
         retrieved_text = "\n".join(ret_lines)

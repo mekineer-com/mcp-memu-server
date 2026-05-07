@@ -159,7 +159,7 @@ def test_build_turn_prompt_renders_superseded_suffix() -> None:
     assert "[profile] (3 weeks ago, superseded Monday) I used to believe X" in prompt
 
 
-def test_build_turn_prompt_renders_speakers_block_and_labels() -> None:
+def test_build_turn_prompt_renders_memories_without_speaker_tags() -> None:
     prompt = build_turn_prompt(
         user_message="hello",
         history=[],
@@ -184,31 +184,6 @@ def test_build_turn_prompt_renders_speakers_block_and_labels() -> None:
         memory_cache=[],
         intentions_active={},
     )
-    assert "Speakers:" in prompt
-    assert "- Marcos = user:marcos" in prompt
-    assert "- Siri = soul:siri" in prompt
-    assert "[behavior] [Marcos] Marcos reminded me to pause before replying" in prompt
-    assert "[behavior] [Siri] I stayed gentle when things felt tense" in prompt
-
-
-def test_build_turn_prompt_omits_speakers_block_without_labels() -> None:
-    prompt = build_turn_prompt(
-        user_message="hello",
-        history=[],
-        prior_context=None,
-        retrieve_rag={
-            "items": [
-                {
-                    "memory_type": "behavior",
-                    "summary": "A memory without a speaker label",
-                    "speaker_id": "user:marcos",
-                }
-            ]
-        },
-        all_categories_summary=None,
-        memory_cache=[],
-        intentions_active={},
-    )
     assert "Speakers:" not in prompt
-    assert "[behavior]" in prompt
-    assert "A memory without a speaker label" in prompt
+    assert "[behavior] Marcos reminded me to pause before replying" in prompt
+    assert "[behavior] I stayed gentle when things felt tense" in prompt
