@@ -1444,7 +1444,10 @@ async def _compute_holistic_categories_summary(
         name = cat.name.strip()
         summary = str(cat.summary or "").strip()
         if name and summary:
-            lines.append(f"## {name}\n{summary}")
+            if summary.lstrip().startswith(f"# {name}"):
+                lines.append(summary)
+            else:
+                lines.append(f"## {name}\n{summary}")
     if not lines:
         return None
 
