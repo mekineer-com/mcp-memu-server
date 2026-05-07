@@ -103,6 +103,7 @@ from app.services.turn_contract import (
     LIFE_GOALS_FREE_WILL_HEADER as _LIFE_GOALS_FREE_WILL_HEADER,
     _format_item_suffix as _format_turn_item_suffix,
     build_turn_prompt as _build_turn_prompt,
+    format_memory_line as _format_memory_line,
     format_shaped_by_line as _format_shaped_by_line,
     make_turn_system_prompt as _make_turn_system_prompt,
     parse_turn_contract as _parse_turn_contract,
@@ -1765,9 +1766,7 @@ async def _apimw_def_call(
         if not item_id or not summary:
             continue
         items_by_id[item_id] = item
-        memory_type = str(item.get("memory_type") or "memory").strip()
-        suffix = _format_turn_item_suffix(item)
-        formatted_memory_lines.append(f"[{item_id}] [{memory_type}]{suffix} {summary}")
+        formatted_memory_lines.append(_format_memory_line(item, show_id=True))
         shaped_by = item.get("shaped_by")
         if isinstance(shaped_by, dict):
             formatted_memory_lines.append(_format_shaped_by_line(shaped_by, with_id=True))

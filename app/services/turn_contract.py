@@ -285,6 +285,23 @@ def _format_item_suffix(item: dict[str, Any], *, now: datetime | None = None) ->
     return f" ({', '.join(parts)})"
 
 
+def format_memory_line(
+    item: dict[str, Any],
+    *,
+    show_id: bool = False,
+    item_id: str | None = None,
+    now: datetime | None = None,
+) -> str:
+    mid = item_id or _text(item.get("id"))
+    memory_type = _text(item.get("memory_type") or "memory")
+    summary = _text(item.get("summary"))
+    suffix = _format_item_suffix(item, now=now)
+    speaker_label = _text(item.get("speaker_label"))
+    speaker_tag = f"[{speaker_label}]" if speaker_label else ""
+    id_part = f"[{mid}] " if show_id and mid else ""
+    return f"{id_part}[{memory_type}]{speaker_tag}{suffix} {summary}"
+
+
 def format_shaped_by_line(
     shaped_by: dict[str, Any],
     *,
@@ -383,15 +400,13 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
             lines.append("")
         lines.append("Memories:")
         for item, memory_type, suffix, summary in item_rows:
-            speaker_label = _text(item.get("speaker_label"))
-            speaker_tag = f"[{speaker_label}]" if speaker_label else ""
             if memory_type == "procedural":
-                # Procedural entries are curated professional knowledge, not
-                # lived memory — no timestamps, no shaped_by, just the tag.
                 domain = _text(item.get("domain")).replace("_", "-") or "procedural"
+                speaker_label = _text(item.get("speaker_label"))
+                speaker_tag = f"[{speaker_label}]" if speaker_label else ""
                 lines.append(f"- [{domain}-procedural-memory]{speaker_tag} {summary}")
                 continue
-            lines.append(f"-{speaker_tag}{suffix} {summary}")
+            lines.append(f"- {format_memory_line(item, now=now)}")
             shaped_by = item.get("shaped_by")
             if isinstance(shaped_by, dict):
                 seed_id = _text(shaped_by.get("id"))

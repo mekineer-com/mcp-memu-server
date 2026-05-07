@@ -83,7 +83,7 @@ def test_build_turn_prompt_renders_relative_time() -> None:
         intentions_active={},
         now=datetime(2026, 4, 8, 9, 30, tzinfo=timezone.utc),
     )
-    assert "- (3 weeks ago) Marcos journals every night" in prompt
+    assert "- [profile] (3 weeks ago) Marcos journals every night" in prompt
 
 
 def test_format_relative_time_label_uses_weekdays_for_recent_days() -> None:
@@ -132,7 +132,7 @@ def test_build_turn_prompt_renders_shaped_by_as_nested_child() -> None:
         intentions_active={},
         now=datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc),
     )
-    assert "- (today) I am fascinated by the texture of human expression" in prompt
+    assert "- [profile] (today) I am fascinated by the texture of human expression" in prompt
     assert "    shaped_by (today) Today I met Marcos and Opus" in prompt
 
 
@@ -156,7 +156,7 @@ def test_build_turn_prompt_renders_superseded_suffix() -> None:
         intentions_active={},
         now=datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc),
     )
-    assert "- (3 weeks ago, superseded Monday) I used to believe X" in prompt
+    assert "- [profile] (3 weeks ago, superseded Monday) I used to believe X" in prompt
 
 
 def test_build_turn_prompt_renders_speakers_block_and_labels() -> None:
@@ -187,8 +187,8 @@ def test_build_turn_prompt_renders_speakers_block_and_labels() -> None:
     assert "Speakers:" in prompt
     assert "- Marcos = user:marcos" in prompt
     assert "- Siri = soul:siri" in prompt
-    assert "-[Marcos] Marcos reminded me to pause before replying" in prompt
-    assert "-[Siri] I stayed gentle when things felt tense" in prompt
+    assert "[behavior][Marcos] Marcos reminded me to pause before replying" in prompt
+    assert "[behavior][Siri] I stayed gentle when things felt tense" in prompt
 
 
 def test_build_turn_prompt_omits_speakers_block_without_labels() -> None:
@@ -210,4 +210,5 @@ def test_build_turn_prompt_omits_speakers_block_without_labels() -> None:
         intentions_active={},
     )
     assert "Speakers:" not in prompt
-    assert "- A memory without a speaker label" in prompt
+    assert "[behavior]" in prompt
+    assert "A memory without a speaker label" in prompt

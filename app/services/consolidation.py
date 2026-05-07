@@ -28,7 +28,7 @@ from app.services.graph_edges import (
 from app.services.intention_state import format_intentions_for_prompt
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import soul_state as _soul_state
-from app.services.turn_contract import DEFAULT_SOUL_CARD, format_relative_time_label, format_time_anchor
+from app.services.turn_contract import DEFAULT_SOUL_CARD, format_memory_line, format_relative_time_label, format_time_anchor
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
@@ -250,7 +250,7 @@ def _format_episode_block_for_prompt(
                     n = counter[0]
                     counter[0] += 1
                     id_map[str(n)] = mid
-                    lines.append(f"- [{n}] {s['summary']}")
+                    lines.append(f"- {format_memory_line(s, show_id=True, item_id=str(n))}")
                 elif str(s).strip():
                     lines.append(f"- {s}")
         lines.append("")
@@ -465,7 +465,7 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
                 episode_id = str(entry["episode_id"])
                 rows = con.execute(
                     """
-SELECT id, summary
+SELECT id, summary, memory_type, happened_at, created_at
 FROM memory_items
 WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND episode_id = ? AND memory_type NOT IN ('narrative_self')
   AND (merged_into IS NULL OR TRIM(merged_into) = '')
@@ -481,7 +481,12 @@ LIMIT 24
                     (soul_id, user_id, conversation_id, episode_id),
                 ).fetchall()
                 entry["memory_summaries"] = [
-                    {"id": str(row["id"] or "").strip(), "summary": str(row["summary"] or "").strip()}
+                    {
+                        "id": str(row["id"] or "").strip(),
+                        "summary": str(row["summary"] or "").strip(),
+                        "memory_type": str(row["memory_type"] or "").strip(),
+                        "happened_at": row["happened_at"] or row["created_at"],
+                    }
                     for row in rows
                     if str(row["id"] or "").strip() and str(row["summary"] or "").strip()
                 ]
@@ -522,10 +527,12 @@ LIMIT 24
                 summary = str(row["summary"] or "").strip()
                 if not mid or not summary:
                     continue
-                time_label = format_relative_time_label(row["happened_at"] or row["created_at"])
-                entry: dict[str, str] = {"id": mid, "summary": summary}
-                if time_label:
-                    entry["time_label"] = time_label
+                entry: dict[str, Any] = {
+                    "id": mid,
+                    "summary": summary,
+                    "memory_type": str(row["memory_type"] or "").strip(),
+                    "happened_at": row["happened_at"] or row["created_at"],
+                }
                 retrieved_memory_summaries.append(entry)
 
         deps.write_conversation_state(
@@ -601,8 +608,7 @@ async def run_consolidation_llm(
                 n = counter[0]
                 counter[0] += 1
                 id_map[str(n)] = mid
-                tl = s.get("time_label")
-                ret_lines.append(f"[{n}] ({tl}) {s['summary']}" if tl else f"[{n}] {s['summary']}")
+                ret_lines.append(format_memory_line(s, show_id=True, item_id=str(n)))
             elif str(s).strip():
                 ret_lines.append(str(s))
         retrieved_text = "\n".join(ret_lines)

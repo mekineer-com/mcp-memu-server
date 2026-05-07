@@ -95,8 +95,8 @@ def test_format_episode_block_for_prompt_shows_memory_ids() -> None:
         counter,
     )
     assert "memories:" in out
-    assert "- [1] one" in out
-    assert "- [2] two" in out
+    assert "- [1] [memory] one" in out
+    assert "- [2] [memory] two" in out
     assert id_map == {"1": "mem_1", "2": "mem_2"}
 
 
