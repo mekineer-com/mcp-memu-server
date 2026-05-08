@@ -267,9 +267,29 @@ def format_relative_time_label(happened_at: Any, *, now: datetime | None = None)
     return f"in {years} year{'s' if years != 1 else ''}"
 
 
+_MEMORY_TYPE_LEGEND = {
+    "profile": "who someone is",
+    "behavior": "how someone acts",
+    "social": "what someone means to someone",
+    "knowledge": "what you've learned",
+}
+
+
+def format_memory_legend(memory_types: set[str]) -> str:
+    entries = []
+    for mt in ("profile", "behavior", "social", "knowledge"):
+        if mt in memory_types and mt in _MEMORY_TYPE_LEGEND:
+            entries.append(f"[{mt}] {_MEMORY_TYPE_LEGEND[mt]}")
+    if not entries:
+        return ""
+    return "Key: " + " · ".join(entries)
+
+
 def _format_item_suffix(item: dict[str, Any], *, now: datetime | None = None) -> str:
     parts: list[str] = []
-    time_label = format_relative_time_label(item.get("happened_at"), now=now)
+    time_label = format_relative_time_label(
+        item.get("happened_at") or item.get("created_at"), now=now,
+    )
     if time_label:
         superseded_at = item.get("superseded_at")
         if superseded_at:
@@ -380,6 +400,9 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
         if lines:
             lines.append("")
         lines.append("Memories:")
+        legend = format_memory_legend({mt for _, mt, _, _ in item_rows})
+        if legend:
+            lines.append(legend)
         for item, memory_type, suffix, summary in item_rows:
             if memory_type == "procedural":
                 domain = _text(item.get("domain")).replace("_", "-") or "procedural"

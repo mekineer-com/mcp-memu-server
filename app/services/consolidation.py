@@ -28,7 +28,7 @@ from app.services.graph_edges import (
 from app.services.intention_state import format_intentions_for_prompt
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import soul_state as _soul_state
-from app.services.turn_contract import DEFAULT_SOUL_CARD, format_memory_line, format_shaped_by_line, format_relative_time_label, format_time_anchor
+from app.services.turn_contract import DEFAULT_SOUL_CARD, format_memory_legend, format_memory_line, format_shaped_by_line, format_relative_time_label, format_time_anchor
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
@@ -235,7 +235,15 @@ def _format_episode_block_for_prompt(
 ) -> str:
     if not episodes:
         return "(none queued)"
+    all_types: set[str] = set()
+    for row in episodes:
+        for s in row.get("memory_summaries") or []:
+            if isinstance(s, dict):
+                all_types.add(str(s.get("memory_type") or ""))
     lines: list[str] = []
+    legend = format_memory_legend(all_types)
+    if legend:
+        lines.append(legend)
     for idx, row in enumerate(episodes, 1):
         excerpt = str(row.get("excerpt") or "").strip()
         summaries = row.get("memory_summaries") or []
@@ -626,7 +634,11 @@ async def run_consolidation_llm(
 
     retrieved_memories = inputs.get("retrieved_memories") or []
     if retrieved_memories:
+        ret_types = {str(s.get("memory_type") or "") for s in retrieved_memories if isinstance(s, dict)}
+        ret_legend = format_memory_legend(ret_types)
         ret_lines: list[str] = []
+        if ret_legend:
+            ret_lines.append(ret_legend)
         for s in retrieved_memories:
             if isinstance(s, dict):
                 mid = s["id"]

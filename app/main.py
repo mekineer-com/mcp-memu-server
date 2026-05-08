@@ -104,6 +104,7 @@ from app.services.turn_contract import (
     _format_item_suffix as _format_turn_item_suffix,
     build_turn_prompt as _build_turn_prompt,
     format_memory_line as _format_memory_line,
+    format_memory_legend as _format_memory_legend,
     format_shaped_by_line as _format_shaped_by_line,
     make_turn_system_prompt as _make_turn_system_prompt,
     parse_turn_contract as _parse_turn_contract,
@@ -1724,6 +1725,7 @@ async def _apimw_retrieve_and_merge(
                 "memory_type": str(item.memory_type or "memory"),
                 "summary": summary,
                 "happened_at": item.happened_at,
+                "created_at": item.created_at,
             }
             sig = _item_sig(row)
             if not sig or sig in seen_item_sigs:
@@ -1775,6 +1777,9 @@ async def _apimw_def_call(
         if isinstance(shaped_by, dict):
             formatted_memory_lines.append(_format_shaped_by_line(shaped_by))
 
+    legend = _format_memory_legend({str(item.get("memory_type") or "") for item in combined_items if isinstance(item, dict)})
+    if legend and formatted_memory_lines:
+        formatted_memory_lines.insert(0, legend)
     formatted_memories = "\n".join(formatted_memory_lines) if formatted_memory_lines else "(none)"
 
     categories = svc.database.memory_category_repo.list_categories(scope)
@@ -1861,6 +1866,7 @@ async def _apimw_persist(
 ) -> None:
     async with _retrieve_scope_lock(user_id, soul_id):
         updates: dict[str, Any] = {}
+        resolved_prior_context_ids: list[str] = []
 
         fresh_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=user_id, soul_id=soul_id)
         current_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
@@ -1871,7 +1877,10 @@ async def _apimw_persist(
             prior_context_lines: list[str] = []
             for raw_memory_id in prior_context_ids_raw:
                 numbered = str(raw_memory_id).strip()
+                if not numbered:
+                    continue
                 memory_id = id_map.get(numbered, numbered)
+                resolved_prior_context_ids.append(memory_id)
                 item = items_by_id.get(memory_id)
                 if not item:
                     continue
@@ -1910,8 +1919,8 @@ async def _apimw_persist(
                 logger.warning("failed to persist subconscious memory item", exc_info=True)
 
         prior_context_ids = (
-            [str(mid).strip() for mid in prior_context_ids_raw if isinstance(mid, str) and str(mid).strip()]
-            if isinstance(prior_context_ids_raw, list)
+            list(dict.fromkeys(resolved_prior_context_ids))
+            if resolved_prior_context_ids
             else []
         )
         if prior_context_ids:
