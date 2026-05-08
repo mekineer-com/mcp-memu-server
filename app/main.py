@@ -3237,6 +3237,15 @@ async def conversation_retrieve(
                     soul_id=soul_id,
                     conversation_id=cid,
                 )
+                if len(history) < 8 and _db_path is not None and _db_path.exists():
+                    _phcon = _sqlite_connect(_db_path)
+                    try:
+                        _phcon.row_factory = sqlite3.Row
+                        padded = _message_log.read_recent(_phcon, cid, limit=8)
+                    finally:
+                        _phcon.close()
+                    if len(padded) > len(history):
+                        history = padded
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
 

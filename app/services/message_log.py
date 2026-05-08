@@ -146,6 +146,29 @@ def read_all_tails_for_memorize(
     return result
 
 
+def read_recent(
+    con: sqlite3.Connection,
+    conversation_id: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Read the most recent `limit` messages for a conversation (memorized + tail)."""
+    rows = con.execute(
+        "SELECT role, speaker, content, source_label, received_at FROM messages "
+        "WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+        (conversation_id, limit),
+    ).fetchall()
+    return list(reversed([
+        {
+            "role": row["role"],
+            "name": row["speaker"],
+            "content": row["content"],
+            "source_label": row["source_label"],
+            "received_at": row["received_at"],
+        }
+        for row in rows
+    ]))
+
+
 def format_merged_history(
     messages: list[dict[str, Any]],
     current_source: str | None = None,
