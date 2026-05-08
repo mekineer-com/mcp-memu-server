@@ -110,8 +110,6 @@ CREATE TABLE IF NOT EXISTS conversations (
     last_memorize_at DATETIME,
     updated_at DATETIME,
     undo_snapshot JSON,
-    last_chat_x TEXT,
-    last_chat_x_prev TEXT,
     last_background_error TEXT,
     last_background_error_at DATETIME
 )

@@ -10,7 +10,6 @@ import signal
 import sqlite3
 import threading
 import time
-import traceback
 import uuid
 import warnings
 from collections.abc import Mapping
@@ -72,13 +71,8 @@ from app.services.consolidation import (
     run_consolidation_llm as _run_consolidation_llm,
     write_consolidation_outputs as _write_consolidation_outputs,
 )
-from app.services.graph_edges import (
-    invalidate_memory_edges as _invalidate_memory_edges,
-    write_memory_edges as _write_memory_edges,
-)
 from app.services.intention_state import (
     append_memory_cache_entry as _append_memory_cache_entry,
-    apply_intention_action as _apply_intention_action,
     apply_intention_turn_maintenance as _apply_intention_turn_maintenance_impl,
     format_intentions_for_prompt as _format_intentions_for_prompt,
     normalize_intentions_stack as _normalize_intentions_stack_impl,
@@ -101,7 +95,6 @@ from app.services.state import (
 )
 from app.services.turn_contract import (
     LIFE_GOALS_FREE_WILL_HEADER as _LIFE_GOALS_FREE_WILL_HEADER,
-    _format_item_suffix as _format_turn_item_suffix,
     build_turn_prompt as _build_turn_prompt,
     format_memory_line as _format_memory_line,
     format_memory_legend as _format_memory_legend,
@@ -399,14 +392,25 @@ def _prompt_log_before(ctx: Any, request_view: Any) -> None:
     meta = getattr(request_view, "metadata", None) or {}
     sys_prompt = meta.get("system_prompt", "")
     user_content = getattr(request_view, "content", None) or ""
-    prompt_text = f"== SYSTEM ==\n{sys_prompt}\n\n== USER ==\n{user_content}" if sys_prompt else user_content
+    messages: list[dict[str, Any]] = []
+    if sys_prompt:
+        messages.append({"role": "system", "content": sys_prompt})
+    messages.append({"role": "user", "content": user_content})
+    payload_view = {
+        "model": getattr(ctx, "model", None) or "-",
+        "messages": messages,
+        "temperature": meta.get("temperature"),
+        "max_tokens": meta.get("max_tokens"),
+        "response_format": meta.get("response_format"),
+    }
+    payload_log_text = json.dumps(payload_view, ensure_ascii=False, indent=2).replace("\\n", "\n")
     _PROMPT_LOGGER.info(
         "\n\n\n%s\n\n[PROMPT] op=%s step=%s model=%s\n%s\n\n",
         banner,
         op,
         step,
         getattr(ctx, "model", None) or "-",
-        prompt_text,
+        payload_log_text,
     )
 
 
@@ -1107,73 +1111,6 @@ def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _compact_chat_x_anchors(*anchors: str | None, max_count: int = 2) -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-    for raw in anchors:
-        anchor = str(raw or "").strip()
-        if not anchor or anchor in seen:
-            continue
-        out.append(anchor)
-        seen.add(anchor)
-        if len(out) >= max_count:
-            break
-    return out
-
-
-def _slice_history_from_chat_x_anchors(
-    history: list[dict[str, Any]],
-    chat_x_anchors: list[str] | None,
-    *,
-    stop_at_message_id: str | None = None,
-    limit: int = 12,
-) -> list[dict[str, Any]]:
-    # With stop_at_message_id set, the returned slice must never include or
-    # extend past that message — the two slices (previous / current episode)
-    # must not overlap.
-    if not history or limit <= 0:
-        return []
-    stop_id = str(stop_at_message_id or "").strip()
-    if not chat_x_anchors:
-        return [] if stop_id else history[-limit:]
-    anchors = _compact_chat_x_anchors(*chat_x_anchors, max_count=2)
-    if not anchors:
-        return [] if stop_id else history[-limit:]
-    anchor_set = set(anchors)
-    start_idx = None
-    for idx, item in enumerate(history):
-        if str(item.get("message_id") or "").strip() in anchor_set:
-            start_idx = idx
-            break
-    if start_idx is None:
-        return [] if stop_id else history[-limit:]
-    stop_idx: int | None = None
-    if stop_id:
-        for idx, item in enumerate(history):
-            if str(item.get("message_id") or "").strip() == stop_id:
-                stop_idx = idx
-                break
-        if stop_idx is None or stop_idx <= start_idx:
-            return []
-    end_idx = stop_idx if stop_idx is not None else len(history)
-    sliced = history[start_idx:end_idx]
-    return sliced[-limit:]
-
-
-def _next_chat_x_state_values(
-    chat_x: str | None,
-    state_row: dict[str, Any],
-) -> tuple[str | None, str | None]:
-    next_anchors = _compact_chat_x_anchors(
-        chat_x,
-        str(state_row.get("last_chat_x") or "").strip() or None,
-        str(state_row.get("last_chat_x_prev") or "").strip() or None,
-    )
-    next_last_chat_x = next_anchors[0] if next_anchors else None
-    next_last_chat_x_prev = next_anchors[1] if len(next_anchors) > 1 else None
-    return next_last_chat_x, next_last_chat_x_prev
-
-
 # ==== Turn prompt context builders ====
 
 
@@ -1198,6 +1135,10 @@ def _build_retrieve_identity_context(soul_name: str, *, apimw: bool = False) -> 
             "In the conversation that follows, the first-person voice is yours."
         )
     return f"{anchor}\n{identity}"
+
+
+RETRIEVE_REWRITE_HISTORY_MESSAGES = 8
+APIMW_RETRIEVE_REWRITE_HISTORY_MESSAGES = 12
 
 
 def _build_retrieve_soul_context_queries(
@@ -1225,8 +1166,13 @@ def _build_retrieve_soul_context_queries(
     if intentions_text and intentions_text.strip() != "(none)":
         soul_ctx_queries.append({"role": "intentions", "content": {"text": intentions_text}})
 
-    from app.services.turn_contract import RETRIEVE_HISTORY_TOKEN_BUDGET
-    history_text = _render_history(history, token_budget=RETRIEVE_HISTORY_TOKEN_BUDGET)
+    history_limit = (
+        APIMW_RETRIEVE_REWRITE_HISTORY_MESSAGES
+        if identity_mode == "apimw"
+        else RETRIEVE_REWRITE_HISTORY_MESSAGES
+    )
+    history_slice = history[-history_limit:] if history_limit > 0 else history
+    history_text = _render_history(history_slice)
     if history_text:
         soul_ctx_queries.append({"role": "history", "content": {"text": history_text}})
 
@@ -1869,8 +1815,6 @@ async def _apimw_persist(
         resolved_prior_context_ids: list[str] = []
 
         fresh_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=user_id, soul_id=soul_id)
-        current_cache = _normalize_memory_cache_impl(fresh_row.get("memory_cache"))
-        current_intentions = _normalize_intentions_stack_impl(fresh_row.get("intentions_active"))
 
         prior_context_ids_raw = result_json.get("prior_context") or []
         if isinstance(prior_context_ids_raw, list) and prior_context_ids_raw:
@@ -1951,24 +1895,9 @@ async def _run_apimw(
         apimw_item_top_k = _apimw_memory_count_from_cfg(_CONFIG)
         apimw_random_count = _apimw_random_count_from_cfg(_CONFIG)
 
-        chat_x_anchors = _compact_chat_x_anchors(
-            str(state_row.get("last_chat_x") or "").strip() or None,
-            str(state_row.get("last_chat_x_prev") or "").strip() or None,
-        )
-        history_from_previous_chat_x = _slice_history_from_chat_x_anchors(
-            history,
-            chat_x_anchors[1:2] if len(chat_x_anchors) > 1 else None,
-            stop_at_message_id=chat_x_anchors[0] if chat_x_anchors else None,
-            limit=30,
-        )
-        history_from_chat_x = _slice_history_from_chat_x_anchors(history, chat_x_anchors[:1], limit=30)
-        previous_episode_text = _render_history(history_from_previous_chat_x, token_budget=0)
-        episode_text = _render_history(history_from_chat_x, token_budget=0)
-        topic_user_blocks: list[str] = []
-        if previous_episode_text:
-            topic_user_blocks.append(f"Previous episode:\n{previous_episode_text}")
-        topic_user_blocks.append(f"Current episode:\n{episode_text or '(none)'}")
-        topic_user = "\n\n".join(topic_user_blocks)
+        recent_history = history[-30:] if history else []
+        episode_text = _render_history(recent_history)
+        topic_user = f"Recent conversation:\n{episode_text or '(none)'}"
 
         identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
         topic_statement = await _apimw_topic_statement(
@@ -2444,6 +2373,47 @@ def _slice_history_after_last_memorized_segment(
         conversation_id=conversation_id,
         sanitize_db_filename=_sanitize_db_filename,
     )
+
+
+TURN_HISTORY_WINDOW_MESSAGES = 8
+
+
+def _apply_turn_history_window(
+    *,
+    conversation_id: str,
+    history_tail: list[dict[str, Any]],
+    history_full: list[dict[str, Any]],
+    db_path: Path | None,
+) -> list[dict[str, Any]]:
+    """Build the prompt-visible current-conversation history window.
+
+    Rules:
+    - Show at most the last TURN_HISTORY_WINDOW_MESSAGES messages.
+    - If the unmemorized tail is shorter than the window, backfill from stored
+      conversation history (memorized + unmemorized).
+    - If DB backfill is unavailable, fallback to payload history.
+    """
+    limit = TURN_HISTORY_WINDOW_MESSAGES
+    window = list(history_tail or [])
+
+    if len(window) < limit and db_path is not None and db_path.exists():
+        _phcon = _sqlite_connect(db_path)
+        try:
+            _phcon.row_factory = sqlite3.Row
+            padded = _message_log.read_recent(_phcon, conversation_id, limit=limit)
+        finally:
+            _phcon.close()
+        if len(padded) > len(window):
+            window = padded
+
+    if len(window) < limit and history_full:
+        fallback = list(history_full)[-limit:]
+        if len(fallback) > len(window):
+            window = fallback
+
+    if len(window) > limit:
+        window = window[-limit:]
+    return window
 
 
 def _unmemorized_sleep_gap_detected(
@@ -3169,42 +3139,51 @@ async def conversation_retrieve(
         raise HTTPException(status_code=400, detail="conversation_id is required")
     try:
         safe = _safe_payload(payload)
-        if safe.get("queries") is None:
-            scope = _extract_scope(safe)
-            uid = str(scope.get("user_id") or "").strip()
-            soul_id = str(scope.get("soul_id") or "").strip()
-            message = _pick_str(safe, "message", "query") or ""
-            history = _normalize_turn_history(safe.get("history"))
-            if uid and soul_id and message.strip():
-                state_row, _soul_card, _db_path = _load_turn_state_and_soul_card(
-                    cid,
-                    user_id=uid,
-                    soul_id=soul_id,
+        scope = _extract_scope(safe)
+        uid = str(scope.get("user_id") or "").strip()
+        soul_id = str(scope.get("soul_id") or "").strip()
+        message = _pick_str(safe, "message", "query") or ""
+        history = _normalize_turn_history(safe.get("history"))
+        state_row: dict[str, Any] | None = None
+        cross_tail: list[dict[str, Any]] = []
+        if uid and soul_id and message.strip():
+            state_row, _soul_card, _db_path = _load_turn_state_and_soul_card(
+                cid,
+                user_id=uid,
+                soul_id=soul_id,
+            )
+            if _db_path is not None and _db_path.exists():
+                _con = _sqlite_connect(_db_path)
+                try:
+                    _con.row_factory = sqlite3.Row
+                    _sqlite_ensure_conversation_state_schema(_con)
+                    full_history = list(history)
+                    if message.strip():
+                        full_history.append({"role": "user", "content": message})
+                    _message_log.append_messages(_con, cid, full_history)
+                    cross_tail = _message_log.read_all_tails(_con, exclude_conversation_id=cid)
+                    _con.commit()
+                finally:
+                    _con.close()
+
+        if safe.get("queries") is None and uid and soul_id and message.strip() and state_row is not None:
+            safe["queries"] = _build_retrieve_soul_context_queries(
+                soul_id=soul_id,
+                message=message,
+                history=history,
+                state_row=state_row,
+            )
+
+        if cross_tail:
+            safe["_cross_conversation_history"] = _message_log.format_merged_history(cross_tail)
+            queries = safe.get("queries")
+            if isinstance(queries, list):
+                has_cross_conversation = any(
+                    isinstance(query, dict) and str(query.get("role") or "").strip() == "cross_conversation"
+                    for query in queries
                 )
-                if _db_path is not None and _db_path.exists():
-                    _con = _sqlite_connect(_db_path)
-                    try:
-                        _con.row_factory = sqlite3.Row
-                        _sqlite_ensure_conversation_state_schema(_con)
-                        full_history = list(history)
-                        if message.strip():
-                            full_history.append({"role": "user", "content": message})
-                        _message_log.append_messages(_con, cid, full_history)
-                        cross_tail = _message_log.read_all_tails(_con, exclude_conversation_id=cid)
-                        _con.commit()
-                    finally:
-                        _con.close()
-                else:
-                    cross_tail = []
-                safe["queries"] = _build_retrieve_soul_context_queries(
-                    soul_id=soul_id,
-                    message=message,
-                    history=history,
-                    state_row=state_row,
-                )
-                if cross_tail:
-                    safe["_cross_conversation_history"] = _message_log.format_merged_history(cross_tail)
-                    safe["queries"].insert(-1, {"role": "cross_conversation", "content": {"text": safe["_cross_conversation_history"]}})
+                if not has_cross_conversation:
+                    queries.insert(-1, {"role": "cross_conversation", "content": {"text": safe["_cross_conversation_history"]}})
 
         out = await _run_retrieve(safe, conversation_id=cid)
 
@@ -3225,27 +3204,24 @@ async def conversation_retrieve(
                 soul_card = payload_soul_card or soul_card
 
                 message = _pick_str(safe, "message", "query") or ""
-                history = _normalize_turn_history(safe.get("history"))
+                history_full = _normalize_turn_history(safe.get("history"))
                 # Tail = whatever hasn't been memorized yet. The most recent
                 # memorized segment (per manifest.json) marks the boundary;
                 # everything before it lives as episodes and memory context the
                 # soul retrieves.
-                history = _slice_history_after_last_memorized_segment(
-                    history,
+                history_tail = _slice_history_after_last_memorized_segment(
+                    history_full,
                     chats_dir=(_get_storage_dir(_CONFIG) / "st_chats").resolve(),
                     uid=uid,
                     soul_id=soul_id,
                     conversation_id=cid,
                 )
-                if len(history) < 8 and _db_path is not None and _db_path.exists():
-                    _phcon = _sqlite_connect(_db_path)
-                    try:
-                        _phcon.row_factory = sqlite3.Row
-                        padded = _message_log.read_recent(_phcon, cid, limit=8)
-                    finally:
-                        _phcon.close()
-                    if len(padded) > len(history):
-                        history = padded
+                history = _apply_turn_history_window(
+                    conversation_id=cid,
+                    history_tail=history_tail,
+                    history_full=history_full,
+                    db_path=_db_path,
+                )
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
 
@@ -3253,7 +3229,6 @@ async def conversation_retrieve(
                     soul_id,
                     soul_card=soul_card,
                     response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
-                    include_chat_x=(len(history) > 8 and len(history) % 6 == 0),
                 )
                 _subconscious_msg = str(_state_row.get("subconscious_message") or "").strip() or None
                 out["turn_user_prompt"] = _build_turn_prompt(
@@ -3414,7 +3389,6 @@ def _turn_state_write(
     soul_id: str,
     cache_entry: str,
     annulment_ids: list[str],
-    chat_x: str | None,
     retrieval_ids_since_consolidation: list[str],
     apply_turn_maintenance: bool,
 ) -> tuple[dict[str, Any], Any]:
@@ -3433,22 +3407,14 @@ def _turn_state_write(
         current_intentions,
         [item_id for item_id in annulment_ids if item_id],
     )
-    next_chat_x, next_chat_x_prev = _next_chat_x_state_values(chat_x, latest_state_row)
     updates: dict[str, Any] = {
         "intentions_active": next_intentions,
         "memory_cache": next_memory_cache,
-        "last_chat_x": next_chat_x,
-        "last_chat_x_prev": next_chat_x_prev,
         "undo_snapshot": {
             "memory_cache": current_memory_cache,
             "intentions_active": intentions_snapshot,
         },
     }
-    # Scene break resets the rewrite angle so the next RETRIEVE starts at the
-    # topic lens instead of mid-rotation.
-    previous_chat_x = str(latest_state_row.get("last_chat_x") or "").strip() or None
-    if next_chat_x != previous_chat_x:
-        updates["retrieve_rewrite_angle"] = 0
     if retrieval_ids_since_consolidation:
         updates["append_retrieval_ids_since_consolidation"] = retrieval_ids_since_consolidation
     state_out, state_path = _write_conversation_state(
@@ -3466,18 +3432,20 @@ def _turn_launch_apimw(
     soul_id: str,
     safe: dict[str, Any],
     history_full: list[dict[str, Any]],
-    state_out: dict[str, Any],
 ) -> str:
-    cadence_anchors = _compact_chat_x_anchors(
-        str(state_out.get("last_chat_x") or "").strip() or None,
-    )
-    cadence_slice = _slice_history_from_chat_x_anchors(history_full, cadence_anchors, limit=999)
     cadence_threshold = _apimw_cadence_from_cfg(_CONFIG)
-    cadence_soul_messages = _count_soul_messages(cadence_slice, soul_id)
+    cadence_soul_messages = _count_soul_messages(history_full, soul_id)
     if cadence_soul_messages < cadence_threshold:
+        return "skipped_cadence"
+    if cadence_threshold > 1 and (cadence_soul_messages % cadence_threshold) != 0:
         return "skipped_cadence"
     if not _mark_apimw_inflight(cid):
         return "skipped_inflight"
+    apimw_state_row, _apimw_soul_card, _apimw_db_path = _load_turn_state_and_soul_card(
+        cid,
+        user_id=uid,
+        soul_id=soul_id,
+    )
     try:
         apimw_task = asyncio.create_task(
             _run_apimw(
@@ -3485,7 +3453,7 @@ def _turn_launch_apimw(
                 conversation_id=cid,
                 soul_id=soul_id,
                 user_id=uid,
-                state_row=state_out,
+                state_row=apimw_state_row,
                 history=history_full,
             )
         )
@@ -3620,7 +3588,7 @@ async def conversation_turn(
         listen_mode = not bool(safe.get("should_respond", True))
 
         if listen_mode:
-            turn_contract = {"response": "", "cache_entry": "", "annulments": [], "chat_x": ""}
+            turn_contract = {"response": "", "cache_entry": "", "annulments": []}
             turn_ms = 0
         else:
             turn_started_at = time.monotonic()
@@ -3650,15 +3618,6 @@ async def conversation_turn(
             str(row.get("intention_id") or "").strip()
             for row in normalized_annulments
         ]
-        chat_x_anchor = str(turn_contract.get("chat_x") or "").strip() or None
-        if chat_x_anchor:
-            anchor_index: int | None = None
-            for history_index, history_message in enumerate(history_full):
-                if str(history_message.get("message_id") or "").strip() == chat_x_anchor:
-                    anchor_index = history_index
-                    break
-            if anchor_index is None or (len(history_full) - anchor_index) < 6:
-                chat_x_anchor = None
 
         conversation_state_after = conversation_state_before
         conversation_state_path = db_path
@@ -3669,7 +3628,7 @@ async def conversation_turn(
                 retrieved_item_ids = _extract_result_item_ids(override_retrieve_rag)
                 conversation_state_after, conversation_state_path = _turn_state_write(
                     cid, uid, soul_id,
-                    turn_cache_entry, turn_annulment_ids, chat_x_anchor,
+                    turn_cache_entry, turn_annulment_ids,
                     retrieved_item_ids,
                     apply_turn_maintenance,
                 )
@@ -3686,10 +3645,24 @@ async def conversation_turn(
         apimw_status = "skipped_dry_run" if dry_run else "not_started"
         if (not dry_run) and run_apimw:
             apimw_status = _turn_launch_apimw(
-                cid, uid, soul_id, safe, history_full, conversation_state_after,
+                cid, uid, soul_id, safe, history_full,
             )
 
         response_text = str(turn_contract.get("response") or "").strip()
+        if not dry_run and response_text and conversation_state_path is not None and conversation_state_path.exists():
+            _con = _sqlite_connect(conversation_state_path)
+            try:
+                _con.row_factory = sqlite3.Row
+                _sqlite_ensure_conversation_state_schema(_con)
+                _message_log.append_messages(
+                    _con,
+                    cid,
+                    [{"role": "assistant", "name": soul_id, "content": response_text}],
+                )
+                _con.commit()
+            finally:
+                _con.close()
+
         response_payload: dict[str, Any] = {
             "ok": True,
             "conversation_id": cid,

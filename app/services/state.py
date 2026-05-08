@@ -39,8 +39,6 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "last_memorize_at": row["last_memorize_at"],
         "updated_at": row["updated_at"],
         "undo_snapshot": json_from_db(row["undo_snapshot"]),
-        "last_chat_x": row["last_chat_x"],
-        "last_chat_x_prev": row["last_chat_x_prev"],
         "last_background_error": row["last_background_error"] if "last_background_error" in row.keys() else None,
         "last_background_error_at": row["last_background_error_at"] if "last_background_error_at" in row.keys() else None,
     }
@@ -50,7 +48,7 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
     return con.execute(
         "SELECT conversation_id, soul_id, user_id, digest_cursor, prior_context, "
         "pending_episode_ids, last_retrieval_ids, last_memorize_at, "
-        "updated_at, undo_snapshot, last_chat_x, last_chat_x_prev, "
+        "updated_at, undo_snapshot, "
         "last_background_error, last_background_error_at "
         "FROM conversations WHERE conversation_id = ? LIMIT 1",
         (conversation_id,),
@@ -73,8 +71,6 @@ def conversation_state_empty(
         "last_memorize_at": None,
         "updated_at": None,
         "undo_snapshot": None,
-        "last_chat_x": None,
-        "last_chat_x_prev": None,
         "last_background_error": None,
         "last_background_error_at": None,
     }
@@ -148,8 +144,8 @@ INSERT OR IGNORE INTO conversations (
     conversation_id, soul_id, user_id,
     digest_cursor, prior_context, pending_episode_ids,
     last_retrieval_ids, last_memorize_at,
-    updated_at, last_chat_x, last_chat_x_prev
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 """,
                 (
                     seed["conversation_id"],
@@ -161,8 +157,6 @@ INSERT OR IGNORE INTO conversations (
                     json_to_db(seed.get("last_retrieval_ids")),
                     seed.get("last_memorize_at"),
                     seed.get("updated_at"),
-                    seed.get("last_chat_x"),
-                    seed.get("last_chat_x_prev"),
                 ),
             )
             con.commit()
@@ -193,8 +187,6 @@ INSERT OR IGNORE INTO conversations (
                 "last_retrieval_ids",
                 "last_memorize_at",
                 "undo_snapshot",
-                "last_chat_x",
-                "last_chat_x_prev",
                 "last_background_error",
                 "last_background_error_at",
             }:
@@ -246,12 +238,6 @@ INSERT OR IGNORE INTO conversations (
         if "all_categories_summary" in field_updates:
             raw_acs = field_updates.get("all_categories_summary")
             field_updates["all_categories_summary"] = None if raw_acs is None else (str(raw_acs) or None)
-        if "last_chat_x" in field_updates:
-            raw_lcx = field_updates.get("last_chat_x")
-            field_updates["last_chat_x"] = None if raw_lcx is None else (str(raw_lcx).strip() or None)
-        if "last_chat_x_prev" in field_updates:
-            raw_lcx_prev = field_updates.get("last_chat_x_prev")
-            field_updates["last_chat_x_prev"] = None if raw_lcx_prev is None else (str(raw_lcx_prev).strip() or None)
         if "intentions_active" in field_updates:
             field_updates["intentions_active"] = normalize_intentions_stack(field_updates.get("intentions_active"))
         if "memory_cache" in field_updates:

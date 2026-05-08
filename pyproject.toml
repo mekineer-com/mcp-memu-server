@@ -18,7 +18,6 @@ dependencies = [
     # Database & ORM
     "sqlmodel>=0.0.27",
     "sqlalchemy[asyncio]>=2.0.41",
-    "psycopg[binary,pool]>=3.2.9",
     "alembic>=1.16.2",
 
 
@@ -113,9 +112,7 @@ DEP002 = [
     "uvicorn",           # Will be used for production deployment
     "sqlmodel",          # Planned for database models
     "sqlalchemy",        # Database ORM (used by sqlmodel)
-    "psycopg",           # PostgreSQL adapter
     "alembic",           # Database migrations
-    "pgvector",          # Vector database support
     "openai",            # AI functionality (may be used indirectly via memu-py)
     "pydantic-settings", # Configuration management (future use)
     "python-dotenv",     # Environment variables (future use)
@@ -135,4 +132,3 @@ ignore_missing_imports = true
 
 [project.optional-dependencies]
 memu = []
-postgres = ["pgvector>=0.3.2"]

@@ -385,17 +385,15 @@ def database_config_from_cfg(cfg: dict[str, Any], scope: dict[str, Any] | None =
     provider = str(provider).strip().lower() or "sqlite"
     if provider == "inmemory":
         provider = "sqlite"
+    if provider != "sqlite":
+        raise RuntimeError(f"Unsupported storage.metadata_store.provider={provider!r}; only 'sqlite' is supported.")
 
     dsn = meta.get("dsn")
     if not dsn:
-        if provider == "sqlite":
-            dsn = default_config()["storage"]["metadata_store"]["dsn"]
-        else:
-            raise RuntimeError("Postgres selected but no DSN set (storage.metadata_store.dsn).")
+        dsn = default_config()["storage"]["metadata_store"]["dsn"]
 
-    if provider == "sqlite":
-        dsn = normalize_sqlite_dsn(str(dsn))
-        dsn = sqlite_dsn_for_scope(cfg, dsn, scope or {})
+    dsn = normalize_sqlite_dsn(str(dsn))
+    dsn = sqlite_dsn_for_scope(cfg, dsn, scope or {})
 
     ddl_mode = meta.get("ddl_mode") or "create"
 

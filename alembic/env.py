@@ -49,14 +49,8 @@ def _normalize_sync_dsn(raw_dsn: str) -> str:
     if dsn in {":memory:", "memory"}:
         return "sqlite:///:memory:"
 
-    if dsn.startswith("postgres://"):
-        return "postgresql+psycopg://" + dsn[len("postgres://") :]
-    if dsn.startswith("postgresql://") and not dsn.startswith("postgresql+"):
-        return "postgresql+psycopg://" + dsn[len("postgresql://") :]
-    if dsn.startswith("postgresql+asyncpg://"):
-        return "postgresql+psycopg://" + dsn[len("postgresql+asyncpg://") :]
-    if dsn.startswith("postgresql+psycopg://"):
-        return dsn
+    if dsn.startswith(("postgres://", "postgresql://", "postgresql+")):
+        raise RuntimeError(f"Unsupported DSN scheme for sqlite-only server: {dsn}")
 
     if dsn.startswith("sqlite+aiosqlite://"):
         return dsn.replace("sqlite+aiosqlite://", "sqlite://", 1)
@@ -64,6 +58,8 @@ def _normalize_sync_dsn(raw_dsn: str) -> str:
         return dsn
     if dsn.startswith("sqlite:"):
         return dsn
+    if "://" in dsn:
+        raise RuntimeError(f"Unsupported DSN scheme for sqlite-only server: {dsn}")
 
     p = Path(dsn).expanduser()
     if not p.is_absolute():

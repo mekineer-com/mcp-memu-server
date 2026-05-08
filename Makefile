@@ -1,4 +1,4 @@
-.PHONY: help install clean run check test docker-up docker-down
+.PHONY: help install clean run check test
 
 # =========================
 # Help
@@ -18,10 +18,6 @@ help:
 	@echo ""
 	@echo "🧹 Maintenance"
 	@echo "  make clean         - Clean cache and build artifacts"
-	@echo ""
-	@echo "🐳 Docker"
-	@echo "  make docker-up     - Start Docker services"
-	@echo "  make docker-down   - Stop Docker services"
 
 # =========================
 # Install dependencies
@@ -68,24 +64,3 @@ clean:
 	find . -type d -name "*.egg-info" -exec rm -rf {} \; 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete
 	rm -rf dist/ build/ .coverage htmlcov/
-
-# =========================
-# Docker
-# =========================
-docker-up:
-	@if [ ! -f docker-compose.yml ] && [ ! -f docker-compose.yaml ]; then \
-		echo "⚠️  Docker compose configuration not found."; \
-		echo "Please add docker-compose.yml/docker-compose.yaml."; \
-		exit 1; \
-	fi
-	@echo "🐳 Starting Docker services"
-	docker compose up -d
-
-docker-down:
-	@if [ ! -f docker-compose.yml ] && [ ! -f docker-compose.yaml ]; then \
-		echo "⚠️  Docker compose configuration not found."; \
-		echo "Please add docker-compose.yml/docker-compose.yaml."; \
-		exit 1; \
-	fi
-	@echo "🐳 Stopping Docker services"
-	docker compose down

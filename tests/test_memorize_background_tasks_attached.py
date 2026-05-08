@@ -17,9 +17,6 @@ recorder, posts to /memorize, and asserts the task actually ran.
 """
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import patch
-
 import pytest
 from fastapi.testclient import TestClient
 

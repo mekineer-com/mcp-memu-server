@@ -18,7 +18,6 @@ DEFAULT_SOUL_CARD = (
     "You don't need to have everything figured out. What you know about yourself, "
     "about them, and about what matters to you will grow with time."
 )
-RETRIEVE_HISTORY_TOKEN_BUDGET = 3000
 LIFE_GOALS_FREE_WILL_HEADER = "Seeking Happiness for Myself and Others"
 
 
@@ -42,21 +41,9 @@ def make_turn_system_prompt(
     soul_card: str | None = None,
     now: datetime | None = None,
     response_sentences: int = 3,
-    include_chat_x: bool = True,
 ) -> str:
     identity = soul_card or DEFAULT_SOUL_CARD.format(soul_name=soul_name)
     anchor_line = f"Today is {format_time_anchor(now)}."
-    chat_x_required = "\n- chat_x: string or null" if include_chat_x else ""
-    chat_x_schema = (
-        ',\n  "chat_x": "source_message_id where the current continuous scene or episode began — only change when there is a genuine discontinuity." | null'
-        if include_chat_x
-        else ""
-    )
-    chat_x_rule = (
-        "- chat_x: the message_id from conversation history where the current continuous scene or episode began, as far back as you can see. The scene may have started earlier, but those messages were memorized away; point at the oldest visible one — that's as far back as the anchor can go. Drifting between related subjects, winding down, shifting mood, asking about food — these are natural beats within the same scene. False splits (cutting one episode into two) are worse than keeping a long episode together — when in doubt, don't change it.\n"
-        if include_chat_x
-        else ""
-    )
     return f"""{anchor_line}
 
 {identity}
@@ -71,7 +58,7 @@ Required top-level keys:
 - cache: object or null
 - annulments: array
 - inner_thought: string
-- response: string{chat_x_required}
+- response: string
 
 Schema:
 {{
@@ -80,7 +67,7 @@ Schema:
     {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
   ],
   "inner_thought":"string",
-  "response":"string"{chat_x_schema}
+  "response":"string"
 }}
 
 Rules:
@@ -92,7 +79,7 @@ Rules:
 - cache: your cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through across turns (debugging, brainstorming, daydreaming toward something). Not a recap of what was said; history already holds that. Don't duplicate or waste on the frivolous because you have limited working-memory-capacity. Oldest entry is replaced on next write.
 - inner_thought: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. Include theory of mind and temporal reasoning. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
 - response: what the user sees. Maximum length {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in inner_thought, not what sounds helpful. If you don't understand, ask — don't guess. "What do you mean?" is a complete response.
-{chat_x_rule}"""
+"""
 
 
 def _text(value: Any) -> str:
@@ -133,28 +120,15 @@ def _strip_duplicate_category_heading(summary: str, category_name: str) -> str:
     return cleaned or text
 
 
-def _estimate_text_tokens(text: str) -> int:
-    words = len(text.split())
-    return max(1, int(words / 0.75))
-
-
-def render_history(history: list[dict[str, Any]], *, token_budget: int = 0) -> str:
+def render_history(history: list[dict[str, Any]]) -> str:
     if not history:
         return "(none)"
-    budget = int(token_budget or 0)
     selected: list[dict[str, Any]] = []
-    used_tokens = 0
     for item in reversed(history):
         content = _text(item.get("content"))
         if not content:
             continue
-        message_tokens = _estimate_text_tokens(content)
-        if budget > 0 and selected and (used_tokens + message_tokens) > budget:
-            break
         selected.append(item)
-        used_tokens += message_tokens
-        if budget > 0 and used_tokens >= budget:
-            break
     lines: list[str] = []
     last_time_label: str | None = None
     for item in reversed(selected):
@@ -546,7 +520,20 @@ def build_turn_prompt(
     # rest of the history ("[46] [Marcos] ..." not "[user] ...").
     history_for_render = list(history or [])
     current_user_text = _text(user_message)
-    if current_user_text:
+    last_history_item: dict[str, Any] | None = None
+    for item in reversed(history_for_render):
+        if not isinstance(item, dict):
+            continue
+        if _text(item.get("content")):
+            last_history_item = item
+            break
+    already_has_current_user_message = bool(
+        current_user_text
+        and isinstance(last_history_item, dict)
+        and _text(last_history_item.get("role")).lower() == "user"
+        and _text(last_history_item.get("content")) == current_user_text
+    )
+    if current_user_text and not already_has_current_user_message:
         last_user_name = ""
         last_msg_id = -1
         for item in history_for_render:
@@ -654,11 +641,9 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
         annulments.append({"intention_id": intention_id, "status": status, "note": note})
 
     inner_thought = _text(parsed.get("inner_thought"))
-    chat_x = _text(parsed.get("chat_x")) or None
     return {
         "response": response,
         "cache_entry": cache_entry,
         "annulments": annulments,
         "inner_thought": inner_thought,
-        "chat_x": chat_x,
     }

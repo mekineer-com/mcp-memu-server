@@ -3,7 +3,7 @@
 
 Design goals (for your setup):
 - The plugin spawns Python directly (no /bin/sh, no run.sh).
-- Server reads *all* paths (memu path, sqlite/postgres, resources, host/port) from config.json.
+- Server reads *all* paths (memu path, sqlite/resources, host/port) from config.json.
 - Optional: run the server using a different Python (e.g. memu's own venv). We therefore do NOT
   auto-reexec into .venv unless explicitly requested.
 - Write a pidfile so the plugin can stop/restart the server reliably.

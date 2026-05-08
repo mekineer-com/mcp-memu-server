@@ -1,6 +1,7 @@
 """Basic tests for the application."""
 
 import asyncio
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -95,70 +96,33 @@ def test_split_indices_by_sleep_keeps_all_qualifying_boundaries():
     assert stats["nights_qual"] == 3
 
 
-def test_compact_chat_x_anchors_keeps_two_unique_newest():
-    anchors = main._compact_chat_x_anchors("m9", "m8", "m9", "m7")
-    assert anchors == ["m9", "m8"]
+def test_turn_launch_apimw_uses_periodic_cadence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main, "_apimw_cadence_from_cfg", lambda *_a, **_k: 3)
+    monkeypatch.setattr(main, "_mark_apimw_inflight", lambda *_a, **_k: False)
 
-
-def test_slice_history_from_chat_x_anchors_uses_two_anchors_and_optional_stop_boundary():
-    history = [
-        {"message_id": "m1", "content": "1"},
-        {"message_id": "m2", "content": "2"},
-        {"message_id": "m3", "content": "3"},
-        {"message_id": "m4", "content": "4"},
-        {"message_id": "m5", "content": "5"},
-        {"message_id": "m6", "content": "6"},
+    history_three = [
+        {"role": "assistant", "content": "a"},
+        {"role": "assistant", "content": "b"},
+        {"role": "assistant", "content": "c"},
     ]
-    sliced = main._slice_history_from_chat_x_anchors(history, ["m5", "m3"], limit=12)
-    assert [item.get("message_id") for item in sliced] == ["m3", "m4", "m5", "m6"]
-    stopped = main._slice_history_from_chat_x_anchors(history, ["m3"], stop_at_message_id="m5", limit=12)
-    assert [item.get("message_id") for item in stopped] == ["m3", "m4"]
-
-
-def test_slice_history_from_chat_x_anchors_uses_one_anchor():
-    history = [
-        {"message_id": "m1", "content": "1"},
-        {"message_id": "m2", "content": "2"},
-        {"message_id": "m3", "content": "3"},
-        {"message_id": "m4", "content": "4"},
-        {"message_id": "m5", "content": "5"},
-    ]
-    sliced = main._slice_history_from_chat_x_anchors(history, ["m4"], limit=12)
-    assert [item.get("message_id") for item in sliced] == ["m4", "m5"]
-
-
-def test_slice_history_from_chat_x_anchors_anchor_inversion_returns_empty():
-    history = [
-        {"message_id": "m1", "content": "1"},
-        {"message_id": "m2", "content": "2"},
-        {"message_id": "m3", "content": "3"},
-        {"message_id": "m4", "content": "4"},
-        {"message_id": "m5", "content": "5"},
-    ]
-    sliced = main._slice_history_from_chat_x_anchors(
-        history, ["m4"], stop_at_message_id="m2", limit=12
+    status_three = main._turn_launch_apimw(
+        "cid",
+        "u1",
+        "Echo",
+        {},
+        history_three,
     )
-    assert sliced == []
-    sliced = main._slice_history_from_chat_x_anchors(
-        history, ["m3"], stop_at_message_id="m3", limit=12
-    )
-    assert sliced == []
+    assert status_three == "skipped_inflight"
 
-
-def test_slice_history_from_chat_x_anchors_missing_prev_with_stop_returns_empty():
-    history = [
-        {"message_id": "m1", "content": "1"},
-        {"message_id": "m2", "content": "2"},
-        {"message_id": "m3", "content": "3"},
-    ]
-    sliced = main._slice_history_from_chat_x_anchors(
-        history, None, stop_at_message_id="m2", limit=12
+    history_four = history_three + [{"role": "assistant", "content": "d"}]
+    status_four = main._turn_launch_apimw(
+        "cid",
+        "u1",
+        "Echo",
+        {},
+        history_four,
     )
-    assert sliced == []
-    sliced = main._slice_history_from_chat_x_anchors(
-        history, [], stop_at_message_id="m2", limit=12
-    )
-    assert sliced == []
+    assert status_four == "skipped_cadence"
 
 
 
@@ -184,6 +148,115 @@ def test_parse_as_of_datetime_accepts_iso_date_and_datetime():
 def test_parse_as_of_datetime_rejects_invalid():
     with pytest.raises(main.HTTPException):
         main._parse_as_of_datetime("not-a-date")
+
+
+def test_apply_turn_history_window_caps_at_eight_messages():
+    history_full = [{"message_id": f"m{i}", "role": "user", "content": f"msg {i}"} for i in range(1, 13)]
+    history_tail = list(history_full)
+
+    out = main._apply_turn_history_window(
+        conversation_id="cid",
+        history_tail=history_tail,
+        history_full=history_full,
+        db_path=None,
+    )
+
+    assert len(out) == 8
+    assert [item["message_id"] for item in out] == [f"m{i}" for i in range(5, 13)]
+
+
+def test_apply_turn_history_window_backfills_from_payload_when_tail_short():
+    history_full = [{"message_id": f"m{i}", "role": "user", "content": f"msg {i}"} for i in range(1, 11)]
+    history_tail = history_full[-2:]
+
+    out = main._apply_turn_history_window(
+        conversation_id="cid",
+        history_tail=history_tail,
+        history_full=history_full,
+        db_path=None,
+    )
+
+    assert len(out) == 8
+    assert [item["message_id"] for item in out] == [f"m{i}" for i in range(3, 11)]
+
+
+def test_apply_turn_history_window_backfills_from_db_when_available(tmp_path: Path):
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.execute(
+            """
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                speaker TEXT,
+                content TEXT NOT NULL,
+                source_label TEXT,
+                received_at TEXT
+            )
+            """
+        )
+        for i in range(1, 11):
+            con.execute(
+                "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("cid", "user", "Marcos", f"db {i}", "sillytavern", f"2026-05-08T00:00:{i:02d}+00:00"),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+    history_full = [{"message_id": "m1", "role": "user", "content": "payload only"}]
+    history_tail = history_full[-1:]
+
+    out = main._apply_turn_history_window(
+        conversation_id="cid",
+        history_tail=history_tail,
+        history_full=history_full,
+        db_path=db_path,
+    )
+
+    assert len(out) == 8
+    assert [item["content"] for item in out] == [f"db {i}" for i in range(3, 11)]
+
+
+def test_build_retrieve_soul_context_queries_uses_last_8_messages_for_rewrite() -> None:
+    history = [
+        {"message_id": f"m{i}", "role": "user", "content": f"msg {i}"}
+        for i in range(1, 16)
+    ]
+    queries = main._build_retrieve_soul_context_queries(
+        soul_id="Echo",
+        message="current",
+        history=history,
+        state_row={"memory_cache": [], "intentions_active": {"items": []}},
+    )
+    history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
+    assert len(history_rows) == 1
+    text = str((history_rows[0].get("content") or {}).get("text") or "")
+    assert "[m8] [user] msg 8" in text
+    assert "[m15] [user] msg 15" in text
+    assert "[m7] [user] msg 7" not in text
+
+
+def test_build_retrieve_soul_context_queries_uses_last_12_messages_for_apimw_rewrite() -> None:
+    history = [
+        {"message_id": f"m{i}", "role": "user", "content": f"msg {i}"}
+        for i in range(1, 16)
+    ]
+    queries = main._build_retrieve_soul_context_queries(
+        soul_id="Echo",
+        message="current",
+        history=history,
+        state_row={"memory_cache": [], "intentions_active": {"items": []}},
+        identity_mode="apimw",
+    )
+    history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
+    assert len(history_rows) == 1
+    text = str((history_rows[0].get("content") or {}).get("text") or "")
+    assert "[m4] [user] msg 4" in text
+    assert "[m15] [user] msg 15" in text
+    assert "[m3] [user] msg 3" not in text
 
 
 @pytest.mark.asyncio
@@ -333,3 +406,253 @@ def test_assert_user_declared_relationship_is_strict():
         main._assert_user_declared_relationship({"origin": ""})
     with pytest.raises(main.HTTPException):
         main._assert_user_declared_relationship({"origin": "extracted"})
+
+
+@pytest.mark.asyncio
+async def test_apimw_persist_remaps_numbered_prior_context_ids(monkeypatch: pytest.MonkeyPatch):
+    captured_updates: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": []}, None, None),
+    )
+
+    def _fake_write_conversation_state(conversation_id: str, soul_id: str, user_id: str, updates: dict[str, object]):
+        captured_updates.update(updates)
+        return {"conversation_id": conversation_id, **updates}, Path("/tmp/fake.json")
+
+    monkeypatch.setattr(main, "_write_conversation_state", _fake_write_conversation_state)
+
+    await main._apimw_persist(
+        svc=SimpleNamespace(),
+        result_json={"prior_context": ["1", "mem_raw", "2", "1"]},
+        items_by_id={
+            "mem_one": {"id": "mem_one", "memory_type": "profile", "summary": "Marcos likes continuity."},
+            "mem_two": {"id": "mem_two", "memory_type": "behavior", "summary": "I paused before replying."},
+            "mem_raw": {"id": "mem_raw", "memory_type": "knowledge", "summary": "Raw IDs can still appear."},
+        },
+        id_map={"1": "mem_one", "2": "mem_two"},
+        combined_items=[],
+        scope={"user_id": "u", "soul_id": "s"},
+        conversation_id="c",
+        user_id="u",
+        soul_id="s",
+    )
+
+    assert captured_updates["append_prior_context_ids_since_consolidation"] == ["mem_one", "mem_raw", "mem_two"]
+
+
+@pytest.mark.asyncio
+async def test_conversation_retrieve_injects_cross_context_even_with_prebuilt_queries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("cid-current", 0),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("whatsapp:dm:other", 0),
+        )
+        con.execute(
+            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("whatsapp:dm:other", "user", "Marcos", "wa-1", "whatsapp:dm", "2026-05-08T11:00:00+00:00"),
+        )
+        con.execute(
+            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("whatsapp:dm:other", "assistant", "Echo", "wa-2", "whatsapp:dm", "2026-05-08T11:00:01+00:00"),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+    )
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        captured["safe"] = safe
+        return {"ok": True, "should_respond": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo"},
+        "message": "hello from st",
+        "query": "hello from st",
+        "history": [{"role": "user", "content": "hello from st"}],
+        "queries": [{"role": "message", "content": {"text": "hello from st"}}],
+    }
+
+    out = await main.conversation_retrieve("cid-current", payload)
+
+    assert out["ok"] is True
+    safe = captured["safe"]
+    assert isinstance(safe, dict)
+    cross_text = str(safe.get("_cross_conversation_history") or "")
+    assert "wa-2" in cross_text
+    queries = safe.get("queries")
+    assert isinstance(queries, list)
+    cross_roles = [
+        str(q.get("role") or "").strip()
+        for q in queries
+        if isinstance(q, dict)
+    ]
+    assert cross_roles.count("cross_conversation") == 1
+
+
+@pytest.mark.asyncio
+async def test_conversation_retrieve_does_not_duplicate_preexisting_cross_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("cid-current", 0),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("whatsapp:dm:other", 0),
+        )
+        con.execute(
+            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("whatsapp:dm:other", "user", "Marcos", "wa-1", "whatsapp:dm", "2026-05-08T11:00:00+00:00"),
+        )
+        con.execute(
+            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("whatsapp:dm:other", "assistant", "Echo", "wa-2", "whatsapp:dm", "2026-05-08T11:00:01+00:00"),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+    )
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        captured["safe"] = safe
+        return {"ok": True, "should_respond": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo"},
+        "message": "hello from st",
+        "query": "hello from st",
+        "history": [{"role": "user", "content": "hello from st"}],
+        "queries": [
+            {"role": "cross_conversation", "content": {"text": "existing"}},
+            {"role": "message", "content": {"text": "hello from st"}},
+        ],
+    }
+
+    out = await main.conversation_retrieve("cid-current", payload)
+
+    assert out["ok"] is True
+    safe = captured["safe"]
+    assert isinstance(safe, dict)
+    queries = safe.get("queries")
+    assert isinstance(queries, list)
+    cross_roles = [
+        str(q.get("role") or "").strip()
+        for q in queries
+        if isinstance(q, dict)
+    ]
+    assert cross_roles.count("cross_conversation") == 1
+
+
+@pytest.mark.asyncio
+async def test_conversation_turn_persists_assistant_message_for_cross_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+
+    class _FakeSvc:
+        async def chat(self, *_args, **_kwargs) -> str:
+            return '{"cache":null,"annulments":[],"inner_thought":"ok","response":"assistant says hi"}'
+
+    async def _fake_persist_annulment_memories(**_kwargs):
+        return []
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        main,
+        "_turn_state_read",
+        lambda *_a, **_k: (
+            {"digest_cursor": 0},
+            None,
+            db_path,
+            [],
+            {"items": []},
+            0,
+            None,
+        ),
+    )
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
+    monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo", "conversation_id": "cid-turn"},
+        "message": "hello",
+        "history": [{"role": "user", "content": "hello"}],
+        "run_apimw": False,
+        "apply_turn_maintenance": False,
+        "prompt_override_payload": {
+            "user_prompt": "prompt",
+            "system_prompt": "system",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "retrieve_rag": {"items": [], "categories": [], "resources": []},
+        },
+    }
+
+    out = await main.conversation_turn("cid-turn", payload)
+
+    assert out["ok"] is True
+    assert out["response"] == "assistant says hi"
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            "SELECT role, speaker, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
+            ("cid-turn",),
+        ).fetchone()
+    finally:
+        con.close()
+
+    assert row is not None
+    assert str(row["role"]) == "assistant"
+    assert str(row["speaker"]) == "Echo"
+    assert str(row["content"]) == "assistant says hi"

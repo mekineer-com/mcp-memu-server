@@ -187,3 +187,19 @@ def test_build_turn_prompt_renders_memories_without_speaker_tags() -> None:
     assert "Speakers:" not in prompt
     assert "[behavior] Marcos reminded me to pause before replying" in prompt
     assert "[behavior] I stayed gentle when things felt tense" in prompt
+
+
+def test_build_turn_prompt_does_not_duplicate_current_user_message_when_already_last() -> None:
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[
+            {"role": "assistant", "content": "old 1"},
+            {"role": "user", "content": "hello"},
+        ],
+        prior_context=None,
+        retrieve_rag=None,
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+    )
+    assert prompt.count("[user] hello") == 1

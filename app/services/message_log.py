@@ -34,18 +34,9 @@ def append_messages(
         return 0
 
     label = source_label or derive_source_label(conversation_id)
-    existing_count = con.execute(
-        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
-        (conversation_id,),
-    ).fetchone()[0]
-
-    new_messages = messages[existing_count:]
-    if not new_messages:
-        return 0
-
     now_iso = datetime.now(UTC).isoformat()
-    rows = []
-    for msg in new_messages:
+    incoming_rows: list[tuple[str, str | None, str]] = []
+    for msg in messages:
         role = str(msg.get("role") or "user").strip()
         content = str(msg.get("content") or msg.get("text") or "").strip()
         if isinstance(msg.get("content"), dict):
@@ -53,10 +44,49 @@ def append_messages(
         speaker = str(msg.get("name") or msg.get("speaker") or "").strip() or None
         if not content:
             continue
-        rows.append((conversation_id, role, speaker, content, label, now_iso))
+        incoming_rows.append((role, speaker, content))
 
-    if not rows:
+    if not incoming_rows:
         return 0
+
+    existing_count = con.execute(
+        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()[0]
+
+    # Fast path: cumulative full-history payloads (legacy behavior).
+    new_rows_data: list[tuple[str, str | None, str]]
+    if len(incoming_rows) > existing_count:
+        new_rows_data = incoming_rows[existing_count:]
+    else:
+        new_rows_data = []
+
+    # Fallback: incremental payloads (latest message(s) only).
+    if not new_rows_data:
+        recent_rows = con.execute(
+            "SELECT role, speaker, content FROM messages "
+            "WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+            (conversation_id, len(incoming_rows)),
+        ).fetchall()
+        existing_tail = list(reversed([
+            (str(row["role"] or "").strip(), str(row["speaker"] or "").strip() or None, str(row["content"] or "").strip())
+            for row in recent_rows
+        ]))
+        max_overlap = min(len(existing_tail), len(incoming_rows))
+        overlap = 0
+        for k in range(max_overlap, 0, -1):
+            if existing_tail[-k:] == incoming_rows[:k]:
+                overlap = k
+                break
+        new_rows_data = incoming_rows[overlap:]
+
+    if not new_rows_data:
+        return 0
+
+    rows = [
+        (conversation_id, role, speaker, content, label, now_iso)
+        for role, speaker, content in new_rows_data
+    ]
 
     con.executemany(
         "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) "
@@ -90,21 +120,26 @@ def read_tail(
 
 
 MAX_CROSS_TAIL_MESSAGES = 50
+DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES = 8
 
 
 def read_all_tails(
     con: sqlite3.Connection,
     exclude_conversation_id: str | None = None,
     max_messages: int = MAX_CROSS_TAIL_MESSAGES,
+    recent_fallback_per_conversation: int = DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
 ) -> list[dict[str, Any]]:
     """Read unmemorized tails from all conversations, merged chronologically.
 
     Uses each conversation's digest_cursor from the conversations table as the boundary.
     Excludes the current conversation (its history comes fresh from the payload).
+    If a conversation has no unmemorized tail, falls back to recent messages so
+    cross-conversation context does not disappear solely due to cursor drift or
+    full memorization.
     Capped at max_messages most recent to bound prompt size.
     """
     cursor_rows = con.execute(
-        "SELECT conversation_id, digest_cursor FROM conversations"
+        "SELECT conversation_id, digest_cursor, last_memorize_at FROM conversations"
     ).fetchall()
 
     all_messages: list[dict[str, Any]] = []
@@ -112,8 +147,24 @@ def read_all_tails(
         cid = str(row["conversation_id"])
         if cid == exclude_conversation_id:
             continue
-        cursor = int(row["digest_cursor"] or 0)
+        cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
         tail = read_tail(con, cid, after_cursor=cursor + 1)
+        if tail:
+            for msg in tail:
+                msg["conversation_id"] = cid
+        if not tail and recent_fallback_per_conversation > 0:
+            recent = read_recent(con, cid, limit=recent_fallback_per_conversation)
+            tail = [
+                {
+                    "role": msg.get("role"),
+                    "speaker": msg.get("name"),
+                    "content": msg.get("content"),
+                    "source_label": msg.get("source_label"),
+                    "received_at": msg.get("received_at"),
+                    "conversation_id": cid,
+                }
+                for msg in recent
+            ]
         all_messages.extend(tail)
 
     all_messages.sort(key=lambda m: m.get("received_at") or "")
@@ -176,6 +227,21 @@ def format_merged_history(
     current_source: str | None = None,
 ) -> str:
     """Format merged messages with source labels and date separators for the soul's context."""
+    # Build canonical speaker labels from explicit names already present.
+    # This keeps labels stable when some payload rows omit name/speaker.
+    canonical_speaker: dict[tuple[str, str], str] = {}
+    for msg in messages:
+        cid = str(msg.get("conversation_id") or "").strip()
+        role = str(msg.get("role") or "").strip()
+        speaker = str(msg.get("speaker") or "").strip()
+        if not cid or not role or not speaker:
+            continue
+        if speaker.lower() == role.lower():
+            continue
+        key = (cid, role)
+        if key not in canonical_speaker:
+            canonical_speaker[key] = speaker
+
     lines: list[str] = []
     last_time_label: str | None = None
     for msg in messages:
@@ -186,7 +252,13 @@ def format_merged_history(
             lines.append(f"--- {time_label} ---")
             last_time_label = time_label
         source = msg.get("source_label") or "unknown"
-        speaker = msg.get("speaker") or msg.get("role") or "unknown"
+        role = str(msg.get("role") or "").strip()
+        cid = str(msg.get("conversation_id") or "").strip()
+        speaker = str(msg.get("speaker") or "").strip()
+        if not speaker and cid and role:
+            speaker = canonical_speaker.get((cid, role), "")
+        if not speaker:
+            speaker = role or "unknown"
         content = msg.get("content") or ""
         lines.append(f"[{source}] [{speaker}]: {content}")
     return "\n".join(lines)
