@@ -165,6 +165,8 @@ def render_history(history: list[dict[str, Any]], *, token_budget: int = 0) -> s
             item.get("ts_ms") or item.get("created_at") or item.get("received_at"),
         )
         if time_label and time_label != last_time_label:
+            if lines:
+                lines.append("")
             lines.append(f"--- {time_label} ---")
             last_time_label = time_label
         if message_id:

@@ -6,6 +6,8 @@ import sqlite3
 from datetime import UTC, datetime
 from typing import Any
 
+from app.services.turn_contract import format_relative_time_label
+
 
 def derive_source_label(conversation_id: str) -> str:
     cid = str(conversation_id or "").strip()
@@ -173,9 +175,16 @@ def format_merged_history(
     messages: list[dict[str, Any]],
     current_source: str | None = None,
 ) -> str:
-    """Format merged messages with source labels for the soul's context."""
+    """Format merged messages with source labels and date separators for the soul's context."""
     lines: list[str] = []
+    last_time_label: str | None = None
     for msg in messages:
+        time_label = format_relative_time_label(msg.get("received_at"))
+        if time_label and time_label != last_time_label:
+            if lines:
+                lines.append("")
+            lines.append(f"--- {time_label} ---")
+            last_time_label = time_label
         source = msg.get("source_label") or "unknown"
         speaker = msg.get("speaker") or msg.get("role") or "unknown"
         content = msg.get("content") or ""
