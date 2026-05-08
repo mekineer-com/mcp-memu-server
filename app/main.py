@@ -2396,7 +2396,7 @@ def _apply_turn_history_window(
     limit = TURN_HISTORY_WINDOW_MESSAGES
     window = list(history_tail or [])
 
-    if len(window) < limit and db_path is not None and db_path.exists():
+    if db_path is not None and db_path.exists():
         _phcon = _sqlite_connect(db_path)
         try:
             _phcon.row_factory = sqlite3.Row
