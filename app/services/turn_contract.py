@@ -268,9 +268,9 @@ def format_relative_time_label(happened_at: Any, *, now: datetime | None = None)
 
 
 _MEMORY_TYPE_LEGEND = {
-    "profile": "who someone is",
-    "behavior": "how someone acts",
-    "social": "what someone means to someone",
+    "profile": "what's said or declared",
+    "behavior": "what someone does",
+    "social": "dynamics between people",
     "knowledge": "what you've learned",
 }
 
