@@ -121,6 +121,21 @@ def test_fallback_intention_actions_creates_when_only_relax_exists() -> None:
     assert actions == [{"type": "create", "id": "stay-present", "text": "Stay present with what matters now"}]
 
 
+def test_fallback_intention_actions_tolerates_non_numeric_priority() -> None:
+    actions = _fallback_intention_actions(
+        {
+            "items": [
+                {"id": "relax", "text": "Relax", "priority": 5.0, "ephemeral": False, "kind": "relax"},
+                {"id": "focus", "text": "Focus", "priority": "high", "ephemeral": False},
+                {"id": "explore", "text": "Explore", "priority": 3.0, "ephemeral": False},
+            ]
+        },
+        [],
+    )
+    assert actions and actions[0].get("type") == "boost"
+    assert actions[0].get("target_id") in {"focus", "explore"}
+
+
 @pytest.mark.asyncio
 async def test_run_consolidation_llm_retries_once_on_missing_root() -> None:
     class _Svc:
@@ -169,6 +184,54 @@ async def test_run_consolidation_llm_retries_once_on_missing_root() -> None:
     assert out["intention_actions"] == [
         {"type": "create", "id": "new-thread", "text": "Follow this emerging thread"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_consolidation_llm_retries_once_on_malformed_xml() -> None:
+    class _Svc:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def _escape_prompt_value(self, value):
+            return str(value)
+
+        async def chat(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return "<consolidation><narrative_self>steady</narrative_self>"
+            return """
+<consolidation>
+  <narrative_self>steady</narrative_self>
+  <life_goals></life_goals>
+  <intentions>
+    <create id="new-thread" text="Follow this emerging thread" />
+  </intentions>
+  <edges></edges>
+  <companion_memory>noted</companion_memory>
+</consolidation>
+"""
+
+        async def embed(self, *_args, **_kwargs):
+            return []
+
+    svc = _Svc()
+    out = await run_consolidation_llm(
+        svc,
+        inputs={
+            "categories": [],
+            "active_life_goals": [],
+            "removed_life_goals": [],
+            "intention_activity": [],
+            "episode_inputs": [],
+            "narrative_self": None,
+            "state": {"intentions_active": {"items": [{"id": "relax", "text": "Relax", "kind": "relax"}]}},
+            "retrieved_memories": [],
+        },
+        soul_id="Echo",
+        llm_profile=None,
+    )
+    assert svc.calls == 2
+    assert out["narrative_self"] == "steady"
 
 
 def test_format_episode_block_for_prompt_shows_memory_ids() -> None:

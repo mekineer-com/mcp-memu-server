@@ -5,6 +5,7 @@ import logging
 import re
 import sqlite3
 import uuid
+import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -257,7 +258,13 @@ def _fallback_intention_actions(
             ephemerals.append(item)
         else:
             ranked.append(item)
-    ranked.sort(key=lambda item: float(item.get("priority") or 0.0), reverse=True)
+    def _safe_priority(item: dict[str, Any]) -> float:
+        try:
+            return float(item.get("priority") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    ranked.sort(key=_safe_priority, reverse=True)
     if ranked:
         return [{"type": "boost", "target_id": str(ranked[0].get("id")), "amount": 1}]
     if ephemerals:
@@ -726,16 +733,14 @@ async def run_consolidation_llm(
             parsed = _parse_consolidation_xml(str(raw or ""))
             parse_error = None
             break
-        except ValueError as exc:
+        except (ValueError, ET.ParseError) as exc:
             parse_error = exc
             if attempt == 1:
                 log.warning("consolidation: parse failed on attempt 1; retrying once")
                 continue
             raise
-    if parsed is None:
-        if parse_error is not None:
-            raise parse_error
-        raise ValueError("consolidation parse failed with unknown error")
+    if parsed is None and parse_error is not None:
+        raise parse_error
     remapped_edges = _remap_edges_with_memory_ids(parsed["edges"], id_map=id_map, include_confidence=True)
     remapped_invalidations = _remap_edges_with_memory_ids(
         parsed["edge_invalidations"],
