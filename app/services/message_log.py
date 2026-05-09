@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from collections import OrderedDict
+
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -349,12 +349,8 @@ def read_recent_for_conversation_ids(
     ]))
 
 
-def format_merged_history(
-    messages: list[dict[str, Any]],
-    current_source: str | None = None,
-) -> str:
+def format_merged_history(messages: list[dict[str, Any]]) -> str:
     """Format merged messages as grouped markdown for the soul's cross-chat context."""
-    del current_source
 
     def _conversation_kind_and_key(conversation_id: str) -> tuple[str, str]:
         cid = str(conversation_id or "").strip()
@@ -429,13 +425,13 @@ def format_merged_history(
         if key not in canonical_speaker:
             canonical_speaker[key] = speaker
 
-    by_conversation: "OrderedDict[str, list[dict[str, Any]]]" = OrderedDict()
+    by_conversation: dict[str, list[dict[str, Any]]] = {}
     for msg in messages:
         cid = str(msg.get("conversation_id") or "").strip() or "unknown"
         by_conversation.setdefault(cid, []).append(msg)
 
     dir_names = _load_whatsapp_directory_names()
-    sections: OrderedDict[str, list[str]] = OrderedDict()
+    sections: dict[str, list[str]] = {}
     for cid, rows in by_conversation.items():
         kind, key = _conversation_kind_and_key(cid)
         section_key = _section_title(kind)
