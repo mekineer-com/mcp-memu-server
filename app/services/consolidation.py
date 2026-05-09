@@ -710,16 +710,32 @@ async def run_consolidation_llm(
         episodes=svc._escape_prompt_value(episodes_text),
     )
 
-    raw = await svc.chat(
-        user_prompt,
-        profile=llm_profile,
-        system_prompt=system_prompt,
-        temperature=0.2,
-        max_tokens=4000,  # PIPELINE_MAX_TOKENS (kept in main.py; see comment there)
-        op="consolidation",
-        step="main",
-    )
-    parsed = _parse_consolidation_xml(str(raw or ""))
+    parsed: dict[str, Any] | None = None
+    parse_error: Exception | None = None
+    for attempt in (1, 2):
+        raw = await svc.chat(
+            user_prompt,
+            profile=llm_profile,
+            system_prompt=system_prompt,
+            temperature=0.2,
+            max_tokens=4000,  # PIPELINE_MAX_TOKENS (kept in main.py; see comment there)
+            op="consolidation",
+            step="main",
+        )
+        try:
+            parsed = _parse_consolidation_xml(str(raw or ""))
+            parse_error = None
+            break
+        except ValueError as exc:
+            parse_error = exc
+            if attempt == 1:
+                log.warning("consolidation: parse failed on attempt 1; retrying once")
+                continue
+            raise
+    if parsed is None:
+        if parse_error is not None:
+            raise parse_error
+        raise ValueError("consolidation parse failed with unknown error")
     remapped_edges = _remap_edges_with_memory_ids(parsed["edges"], id_map=id_map, include_confidence=True)
     remapped_invalidations = _remap_edges_with_memory_ids(
         parsed["edge_invalidations"],
