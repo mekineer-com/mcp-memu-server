@@ -1,7 +1,6 @@
 import pytest
 
 from app.services.consolidation import _format_episode_block_for_prompt
-from app.services.consolidation import _fallback_intention_actions
 from app.services.consolidation import _remap_edges_with_memory_ids
 from app.services.consolidation import _parse_consolidation_xml
 from app.services.consolidation import run_consolidation_llm
@@ -98,42 +97,6 @@ def test_parse_consolidation_xml_accepts_root_attributes() -> None:
     assert parsed["narrative_self"] == "n"
     assert parsed["intention_actions"] == [{"type": "create", "id": "stay-present", "text": "Stay present."}]
 
-
-def test_fallback_intention_actions_boosts_top_ranked_non_relax() -> None:
-    actions = _fallback_intention_actions(
-        {
-            "items": [
-                {"id": "relax", "text": "Relax", "priority": 5.0, "ephemeral": False, "kind": "relax"},
-                {"id": "focus", "text": "Focus", "priority": 7.0, "ephemeral": False},
-                {"id": "explore", "text": "Explore", "priority": 6.0, "ephemeral": False},
-            ]
-        },
-        [],
-    )
-    assert actions == [{"type": "boost", "target_id": "focus", "amount": 1}]
-
-
-def test_fallback_intention_actions_creates_when_only_relax_exists() -> None:
-    actions = _fallback_intention_actions(
-        {"items": [{"id": "relax", "text": "Relax", "priority": 5.0, "ephemeral": False, "kind": "relax"}]},
-        [],
-    )
-    assert actions == [{"type": "create", "id": "stay-present", "text": "Stay present with what matters now"}]
-
-
-def test_fallback_intention_actions_tolerates_non_numeric_priority() -> None:
-    actions = _fallback_intention_actions(
-        {
-            "items": [
-                {"id": "relax", "text": "Relax", "priority": 5.0, "ephemeral": False, "kind": "relax"},
-                {"id": "focus", "text": "Focus", "priority": "high", "ephemeral": False},
-                {"id": "explore", "text": "Explore", "priority": 3.0, "ephemeral": False},
-            ]
-        },
-        [],
-    )
-    assert actions and actions[0].get("type") == "boost"
-    assert actions[0].get("target_id") in {"focus", "explore"}
 
 
 @pytest.mark.asyncio
@@ -359,3 +322,36 @@ def test_write_consolidation_outputs_clears_pending_episode_ids() -> None:
         )
 
         assert result["state"]["pending_episode_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_consolidation_llm_strips_relax_boost_from_intention_actions() -> None:
+    """Model returns <boost target_id="relax" /> which is a no-op in apply_intention_action.
+    It must be stripped so the caller sees an empty list, not a phantom action."""
+    class _Svc:
+        def _escape_prompt_value(self, value): return str(value)
+        async def chat(self, *_a, **_kw):
+            return """
+<consolidation>
+  <narrative_self>steady</narrative_self>
+  <life_goals></life_goals>
+  <intentions>
+    <boost target_id="relax" />
+  </intentions>
+  <edges></edges>
+  <companion_memory>noted</companion_memory>
+</consolidation>
+"""
+        async def embed(self, *_a, **_kw): return []
+
+    out = await run_consolidation_llm(
+        _Svc(),
+        inputs={
+            "categories": [], "active_life_goals": [], "removed_life_goals": [],
+            "intention_activity": [], "episode_inputs": [], "narrative_self": None,
+            "state": {"intentions_active": None}, "retrieved_memories": [],
+        },
+        soul_id="Echo",
+        llm_profile=None,
+    )
+    assert out["intention_actions"] == [], "relax boost must be stripped"

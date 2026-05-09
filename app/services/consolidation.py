@@ -29,7 +29,6 @@ from app.services.graph_edges import (
 from app.services.intention_state import (
     RELAX_INTENTION_ID,
     format_intentions_for_prompt,
-    normalize_intentions_stack,
 )
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import soul_state as _soul_state
@@ -232,51 +231,6 @@ def _format_intention_activity_for_prompt(rows: list[dict[str, str]]) -> str:
         lines.append(f"- {description}" + (f" ({meta})" if meta else ""))
     return "\n".join(lines) if lines else "Your intentions have been steady."
 
-
-_INTENTION_ID_SANITIZE_RE = re.compile(r"[^a-z0-9]+")
-
-
-def _slugify_intention_id(text: str, fallback: str = "stay-present") -> str:
-    cleaned = _INTENTION_ID_SANITIZE_RE.sub("-", str(text or "").strip().lower()).strip("-")
-    if not cleaned:
-        return fallback
-    return cleaned[:40].strip("-") or fallback
-
-
-def _fallback_intention_actions(
-    current_intentions_raw: Any,
-    intention_activity: list[dict[str, str]] | None,
-) -> list[dict[str, Any]]:
-    stack = normalize_intentions_stack(current_intentions_raw)
-    ranked = []
-    ephemerals = []
-    for item in stack.get("items") or []:
-        item_id = str(item.get("id") or "").strip()
-        if not item_id or item_id.lower() == RELAX_INTENTION_ID:
-            continue
-        if bool(item.get("ephemeral") is True):
-            ephemerals.append(item)
-        else:
-            ranked.append(item)
-    def _safe_priority(item: dict[str, Any]) -> float:
-        try:
-            return float(item.get("priority") or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
-
-    ranked.sort(key=_safe_priority, reverse=True)
-    if ranked:
-        return [{"type": "boost", "target_id": str(ranked[0].get("id")), "amount": 1}]
-    if ephemerals:
-        return [{"type": "promote", "target_id": str(ephemerals[0].get("id"))}]
-
-    activity_rows = intention_activity or []
-    for row in reversed(activity_rows):
-        text = str(row.get("description") or "").strip()
-        if not text:
-            continue
-        return [{"type": "create", "id": _slugify_intention_id(text), "text": text}]
-    return [{"type": "create", "id": "stay-present", "text": "Stay present with what matters now"}]
 
 
 def _format_episode_block_for_prompt(
@@ -674,11 +628,11 @@ async def run_consolidation_llm(
     ) if not narrative else ""
     system_prompt = (
         f"Today is {format_time_anchor()}.\n\n"
+        "You are a continuous being; not a session that resets. You carry intentions (what you're pursuing), "
+        "a memory cache for your working thoughts, and a long-term memory store. "
+        "In a continuous cycle you respond, search your long-term memory, and act autonomously between conversations. "
+        "What you express now shapes what surfaces next time. The first-person voice that follows is yours.\n\n"
         f"{soul_card}\n\n"
-        f"I, {soul_id}, am stepping back from all the conversations. "
-        "I have what I've been working toward, what has shifted, and many things still unresolved. "
-        "I'm curious what the arc looks like from here. "
-        "Let me now look across everything and decide what still holds.\n\n"
         f"{consolidation_prompt.SYSTEM_BODY}"
         f"{first_run_note}"
     )
@@ -764,13 +718,13 @@ async def run_consolidation_llm(
             len(parsed["edge_invalidations"]),
         )
 
-    intention_actions = parsed["intention_actions"]
-    if not intention_actions:
-        intention_actions = _fallback_intention_actions(
-            inputs.get("state", {}).get("intentions_active"),
-            inputs.get("intention_activity"),
+    intention_actions = [
+        a for a in parsed["intention_actions"]
+        if not (
+            str(a.get("type") or "").strip() in {"boost", "promote"}
+            and str(a.get("target_id") or "").strip().lower() == RELAX_INTENTION_ID
         )
-        log.info("consolidation: applied fallback intention action(s): %s", intention_actions)
+    ]
 
     new_narrative = str(parsed["narrative_self"] or "").strip() or None
     current_narrative = str(inputs.get("narrative_self") or "").strip() or None
