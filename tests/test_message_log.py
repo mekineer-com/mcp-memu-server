@@ -186,8 +186,94 @@ def test_format_merged_history_reuses_known_speaker_within_same_conversation() -
         ]
     )
 
-    assert "[whatsapp:dm] [Marcos]: first" in rendered
-    assert "[whatsapp:dm] [Marcos]: second" in rendered
+    assert "## My WhatsApp Conversations:" in rendered
+    assert "[dm][abc]" in rendered
+    assert "[Marcos]: first" in rendered
+    assert "[Marcos]: second" in rendered
+
+
+def test_format_merged_history_groups_sections_and_conversations(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    rendered = message_log.format_merged_history(
+        [
+            {
+                "conversation_id": "sillytavern:chat-a",
+                "source_label": "sillytavern",
+                "role": "user",
+                "speaker": "Marcos",
+                "content": "st message",
+                "received_at": "2026-05-08T11:00:00+00:00",
+            },
+            {
+                "conversation_id": "whatsapp:group:18322935409-1579788049@g.us",
+                "source_label": "whatsapp:group",
+                "role": "assistant",
+                "speaker": "Echo",
+                "content": "wa group message",
+                "received_at": "2026-05-08T11:00:01+00:00",
+            },
+            {
+                "conversation_id": "whatsapp:dm:15133278228",
+                "source_label": "whatsapp:dm",
+                "role": "user",
+                "speaker": "Marcos",
+                "content": "wa dm message",
+                "received_at": "2026-05-08T11:00:02+00:00",
+            },
+        ]
+    )
+
+    assert "## My SillyTavern Conversations:" in rendered
+    assert "[dm][chat-a]" in rendered
+    assert "[Marcos]: st message" in rendered
+    assert "## My WhatsApp Conversations:" in rendered
+    assert "[group][18322935409-1579788049@g.us]" in rendered
+    assert "[Echo]: wa group message" in rendered
+    assert "[dm][15133278228]" in rendered
+    assert "[Marcos]: wa dm message" in rendered
+
+
+def test_format_merged_history_uses_channel_directory_names(tmp_path, monkeypatch) -> None:
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "channel_directory.json").write_text(
+        json.dumps(
+            {
+                "platforms": {
+                    "whatsapp": [
+                        {"id": "18322935409-1579788049@g.us", "name": "Work Group", "type": "group"},
+                        {"id": "15133278228@s.whatsapp.net", "name": "Marcos", "type": "dm"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    rendered = message_log.format_merged_history(
+        [
+            {
+                "conversation_id": "whatsapp:group:18322935409-1579788049@g.us",
+                "source_label": "whatsapp:group",
+                "role": "assistant",
+                "speaker": "Echo",
+                "content": "group hello",
+                "received_at": "2026-05-08T11:00:00+00:00",
+            },
+            {
+                "conversation_id": "whatsapp:dm:15133278228",
+                "source_label": "whatsapp:dm",
+                "role": "user",
+                "speaker": "Marcos",
+                "content": "dm hello",
+                "received_at": "2026-05-08T11:00:01+00:00",
+            },
+        ]
+    )
+
+    assert "[group][Work Group]" in rendered
+    assert "[dm][Marcos]" in rendered
 
 
 def test_conversation_aliases_includes_creds_self_lid_phone_pair(tmp_path, monkeypatch) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from collections import OrderedDict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -352,7 +353,67 @@ def format_merged_history(
     messages: list[dict[str, Any]],
     current_source: str | None = None,
 ) -> str:
-    """Format merged messages with source labels and date separators for the soul's context."""
+    """Format merged messages as grouped markdown for the soul's cross-chat context."""
+    del current_source
+
+    def _conversation_kind_and_key(conversation_id: str) -> tuple[str, str]:
+        cid = str(conversation_id or "").strip()
+        if cid.startswith("whatsapp:group:"):
+            return ("whatsapp_group", cid[len("whatsapp:group:"):].strip())
+        if cid.startswith("whatsapp:dm:"):
+            return ("whatsapp_dm", cid[len("whatsapp:dm:"):].strip())
+        if cid.startswith("sillytavern:"):
+            return ("sillytavern_dm", cid[len("sillytavern:"):].strip() or "sillytavern")
+        if cid == "sillytavern":
+            return ("sillytavern_dm", "sillytavern")
+        return ("other", cid or "unknown")
+
+    def _load_whatsapp_directory_names() -> dict[str, str]:
+        hermes_home = Path(os.getenv("HERMES_HOME") or "~/.hermes").expanduser().resolve()
+        directory_path = hermes_home / "channel_directory.json"
+        if not directory_path.exists():
+            return {}
+        try:
+            raw = json.loads(directory_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        platforms = raw.get("platforms") if isinstance(raw, dict) else None
+        rows = platforms.get("whatsapp") if isinstance(platforms, dict) else None
+        if not isinstance(rows, list):
+            return {}
+        out: dict[str, str] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            rid = str(row.get("id") or "").strip()
+            rname = str(row.get("name") or "").strip()
+            if not rid or not rname:
+                continue
+            out[rid] = rname
+            normalized = _normalize_whatsapp_identifier(rid)
+            if normalized and normalized not in out:
+                out[normalized] = rname
+        return out
+
+    def _conversation_heading(kind: str, key: str, names: dict[str, str]) -> str:
+        if kind == "whatsapp_group":
+            pretty = names.get(key) or names.get(_normalize_whatsapp_identifier(key)) or key or "group"
+            return f"[group][{pretty}]"
+        if kind == "whatsapp_dm":
+            pretty = names.get(key) or names.get(_normalize_whatsapp_identifier(key)) or key or "contact"
+            return f"[dm][{pretty}]"
+        if kind == "sillytavern_dm":
+            pretty = key or "sillytavern"
+            return f"[dm][{pretty}]"
+        return f"[other][{key or 'unknown'}]"
+
+    def _section_title(kind: str) -> str:
+        if kind.startswith("sillytavern_"):
+            return "## My SillyTavern Conversations:"
+        if kind.startswith("whatsapp_"):
+            return "## My WhatsApp Conversations:"
+        return "## Other Conversations:"
+
     # Build canonical speaker labels from explicit names already present.
     # This keeps labels stable when some payload rows omit name/speaker.
     canonical_speaker: dict[tuple[str, str], str] = {}
@@ -368,23 +429,42 @@ def format_merged_history(
         if key not in canonical_speaker:
             canonical_speaker[key] = speaker
 
-    lines: list[str] = []
-    last_time_label: str | None = None
+    by_conversation: "OrderedDict[str, list[dict[str, Any]]]" = OrderedDict()
     for msg in messages:
-        time_label = format_relative_time_label(msg.get("received_at"))
-        if time_label and time_label != last_time_label:
-            if lines:
-                lines.append("")
-            lines.append(f"--- {time_label} ---")
-            last_time_label = time_label
-        source = msg.get("source_label") or "unknown"
-        role = str(msg.get("role") or "").strip()
-        cid = str(msg.get("conversation_id") or "").strip()
-        speaker = str(msg.get("speaker") or "").strip()
-        if not speaker and cid and role:
-            speaker = canonical_speaker.get((cid, role), "")
-        if not speaker:
-            speaker = role or "unknown"
-        content = msg.get("content") or ""
-        lines.append(f"[{source}] [{speaker}]: {content}")
-    return "\n".join(lines)
+        cid = str(msg.get("conversation_id") or "").strip() or "unknown"
+        by_conversation.setdefault(cid, []).append(msg)
+
+    dir_names = _load_whatsapp_directory_names()
+    sections: OrderedDict[str, list[str]] = OrderedDict()
+    for cid, rows in by_conversation.items():
+        kind, key = _conversation_kind_and_key(cid)
+        section_key = _section_title(kind)
+        blocks = sections.setdefault(section_key, [])
+
+        conv_lines: list[str] = [_conversation_heading(kind, key, dir_names)]
+        last_time_label: str | None = None
+        for msg in rows:
+            time_label = format_relative_time_label(msg.get("received_at"))
+            if time_label and time_label != last_time_label:
+                conv_lines.append(f"--- {time_label} ---")
+                last_time_label = time_label
+            role = str(msg.get("role") or "").strip()
+            speaker = str(msg.get("speaker") or "").strip()
+            if not speaker and cid and role:
+                speaker = canonical_speaker.get((cid, role), "")
+            if not speaker:
+                speaker = role or "unknown"
+            content = str(msg.get("content") or "")
+            conv_lines.append(f"[{speaker}]: {content}")
+        blocks.append("\n".join(conv_lines))
+
+    lines: list[str] = []
+    for section_title, blocks in sections.items():
+        if not blocks:
+            continue
+        if lines:
+            lines.append("")
+        lines.append(section_title)
+        lines.append("")
+        lines.append("\n\n".join(blocks))
+    return "\n".join(lines).strip()
