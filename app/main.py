@@ -2374,7 +2374,6 @@ def _slice_history_after_last_memorized_segment(
 
 
 TURN_HISTORY_WINDOW_MESSAGES = 8
-TURN_HISTORY_WARN_MESSAGES = 64
 
 
 def _apply_turn_history_window(
@@ -2414,14 +2413,6 @@ def _apply_turn_history_window(
         fallback = list(history_full)[-limit:]
         if len(fallback) > len(window):
             window = fallback
-
-    if len(window) >= TURN_HISTORY_WARN_MESSAGES:
-        logger.warning(
-            "turn history window exceeded high-water mark: conversation_id=%s size=%d floor=%d",
-            conversation_id,
-            len(window),
-            TURN_HISTORY_WINDOW_MESSAGES,
-        )
 
     return window
 
