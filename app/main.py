@@ -2597,6 +2597,7 @@ def _make_memorize_endpoint_context() -> _memorize_endpoint.MemorizeEndpointCont
         clear_cached_services=_clear_cached_services,
         get_storage_dir=_get_storage_dir,
         run_memorize_episodes=_run_memorize_episodes,
+        run_consolidation_task=_run_consolidation_task,
         get_config=lambda: _CONFIG,
         sanitize_db_filename=_sanitize_db_filename,
     )

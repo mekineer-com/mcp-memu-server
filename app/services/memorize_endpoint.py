@@ -82,6 +82,7 @@ class MemorizeEndpointContext:
     clear_cached_services: Callable[[], None]
     get_storage_dir: Callable[[dict[str, Any]], Path]
     run_memorize_episodes: Callable[..., Awaitable[None]]
+    run_consolidation_task: Callable[..., Awaitable[None]]
     get_config: Callable[[], dict[str, Any]]
     sanitize_db_filename: Callable[[str], str]
 
@@ -161,6 +162,7 @@ async def run_memorize_episodes(
     cached_retrieval_ids: list[str] = []
     cached_prior_context_ids: list[str] = []
     total_episodes = 0
+    had_existing_pending = False
     try:
         # Phase 1: read initial state under lock.
         async with mem_lock:
@@ -177,6 +179,7 @@ async def run_memorize_episodes(
                 raw_pc_ids = state_row.get("prior_context_ids_since_consolidation")
                 if isinstance(raw_pc_ids, list):
                     cached_prior_context_ids = [str(rid).strip() for rid in raw_pc_ids if str(rid).strip()]
+                had_existing_pending = bool(run_ctx.normalize_text_list(state_row.get("pending_episode_ids")))
 
         # Phase 2: split segments into episodes, write each episode as its own file.
         episode_jobs: list[EpisodeMemorizeJob] = []
@@ -337,7 +340,7 @@ async def run_memorize_episodes(
                 )
 
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
-            if conversation_id and has_results:
+            if conversation_id and (has_results or had_existing_pending):
                 _ct = asyncio.create_task(
                     run_ctx.run_consolidation_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid)
                 )
@@ -364,6 +367,7 @@ async def run_memorize_episodes(
                     "memorizeEpisodeCount": total_episodes,
                     "minChunkTokens": ctx.min_chunk_tokens,
                     "memorizeDeferred": not force and not has_results,
+                    "pendingEpisodeRetryOnly": bool(had_existing_pending and not has_results),
                     "sleepSplitMinLullSeconds": ctx.sleep_split_min_lull_seconds,
                     "sleepSplitStats": sleep_stats,
                 },
@@ -743,6 +747,7 @@ async def memorize_endpoint(
             prev_len = 0
 
             processed_cursor = -1
+            has_pending_episodes = False
             if conversation_id:
                 state_out, _db_path = ctx.write_conversation_state(
                     conversation_id,
@@ -752,6 +757,10 @@ async def memorize_endpoint(
                 )
                 if state_out.get("last_memorize_at"):
                     processed_cursor = int(state_out.get("digest_cursor") or 0)
+                raw_pending_ids = state_out.get("pending_episode_ids")
+                has_pending_episodes = isinstance(raw_pending_ids, list) and any(
+                    str(item).strip() for item in raw_pending_ids
+                )
 
             tz_name = endpoint_ctx.pick_str(safe, "time_zone")
             tz_off_raw = safe.get("time_zone_offset_min")
@@ -850,6 +859,25 @@ async def memorize_endpoint(
                 if tail_start < len(merged):
                     memorize_segments = [(resource_url, merged[tail_start:], len(merged) - 1)]
                 if not memorize_segments:
+                    if conversation_id and has_pending_episodes:
+                        background_tasks.add_task(
+                            endpoint_ctx.run_consolidation_task,
+                            svc,
+                            conversation_id=conversation_id,
+                            soul_id=soul_id,
+                            uid=uid,
+                        )
+                        return JSONResponse(
+                            status_code=202,
+                            content={
+                                "ok": True,
+                                "status": "accepted",
+                                "conversation_id": conversation_id,
+                                "segment_count": 0,
+                                "pending_episode_retry": True,
+                            },
+                            background=background_tasks,
+                        )
                     return JSONResponse(
                         status_code=200,
                         content={"ok": True, "status": "nothing_to_memorize", "conversation_id": conversation_id},

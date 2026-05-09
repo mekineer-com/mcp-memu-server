@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 
 def extract_xml_fragment(raw: str, root_tag: str) -> ET.Element:
     text = str(raw or "").strip()
-    match = re.search(rf"<{root_tag}>(.*?)</{root_tag}>", text, re.DOTALL)
+    match = re.search(rf"<{root_tag}(?:\s[^>]*)?>(.*?)</{root_tag}>", text, re.DOTALL)
     if match is None:
         raise ValueError(f"Missing <{root_tag}> root")
     return ET.fromstring(f"<{root_tag}>{match.group(1)}</{root_tag}>")

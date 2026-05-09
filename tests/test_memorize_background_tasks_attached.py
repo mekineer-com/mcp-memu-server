@@ -67,3 +67,52 @@ def test_memorize_background_task_runs(client: TestClient, monkeypatch: pytest.M
     )
     assert recorded[0]["ran"] is True
     assert recorded[0]["segment_count"] == body.get("segment_count")
+
+
+def test_memorize_tail_retries_consolidation_when_pending_episodes_exist(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    recorded: list[dict] = []
+
+    async def fake_consolidation_task(_svc, *, conversation_id: str, soul_id: str, uid: str) -> None:
+        recorded.append({"conversation_id": conversation_id, "soul_id": soul_id, "uid": uid})
+
+    async def fake_run_memorize_episodes(**_kwargs) -> None:  # pragma: no cover - should not run in this branch
+        raise AssertionError("run_memorize_episodes should not run when no tail segments exist")
+
+    class _FakeSvc:
+        pass
+
+    def fake_write_conversation_state(*_args, **_kwargs):
+        return (
+            {
+                "last_memorize_at": "2026-05-09T00:00:00+00:00",
+                "digest_cursor": 1,  # with 2-message input below, tail is empty
+                "pending_episode_ids": ["cid-2:0-1"],
+            },
+            tmp_path / "Echo.db",
+        )
+
+    monkeypatch.setattr(main_module, "_get_service_from_payload", lambda *a, **k: _FakeSvc())
+    monkeypatch.setattr(main_module, "_run_memorize_episodes", fake_run_memorize_episodes)
+    monkeypatch.setattr(main_module, "_run_consolidation_task", fake_consolidation_task)
+    monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)
+    monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
+
+    payload = {
+        "user": {"user_id": "test_user", "soul_id": "test_soul", "conversation_id": "cid-2"},
+        "conversation_id": "cid-2",
+        "conversation": [
+            {"role": "user", "name": "test_user", "content": "hello"},
+            {"role": "assistant", "name": "test_soul", "content": "hi"},
+        ],
+        "llm_profiles": {"default": {"provider": "openai", "api_key": "x", "base_url": "x", "chat_model": "x", "embed_model": "x"}},
+    }
+
+    resp = client.post("/memorize?tail=true", json=payload)
+    assert resp.status_code == 202, f"unexpected status: {resp.status_code} body={resp.text[:300]}"
+    body = resp.json()
+    assert body.get("pending_episode_retry") is True
+    assert recorded == [{"conversation_id": "cid-2", "soul_id": "test_soul", "uid": "test_user"}]

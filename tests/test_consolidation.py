@@ -1,4 +1,5 @@
 from app.services.consolidation import _format_episode_block_for_prompt
+from app.services.consolidation import _fallback_intention_actions
 from app.services.consolidation import _remap_edges_with_memory_ids
 from app.services.consolidation import _parse_consolidation_xml
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
@@ -75,6 +76,46 @@ def test_parse_consolidation_xml_edges_and_write_helpers() -> None:
     assert repo.invalidated == [("mem_x", "conflicts_with", "mem_y")]
     assert getattr(repo.added[0], "confidence") == 0.61
     assert getattr(repo.added[1], "confidence") == 0.8
+
+
+def test_parse_consolidation_xml_accepts_root_attributes() -> None:
+    parsed = _parse_consolidation_xml(
+        """
+<consolidation version="1">
+  <narrative_self>n</narrative_self>
+  <life_goals></life_goals>
+  <intentions>
+    <create id="stay-present" text="Stay present." />
+  </intentions>
+  <edges></edges>
+  <companion_memory>c</companion_memory>
+</consolidation>
+"""
+    )
+    assert parsed["narrative_self"] == "n"
+    assert parsed["intention_actions"] == [{"type": "create", "id": "stay-present", "text": "Stay present."}]
+
+
+def test_fallback_intention_actions_boosts_top_ranked_non_relax() -> None:
+    actions = _fallback_intention_actions(
+        {
+            "items": [
+                {"id": "relax", "text": "Relax", "priority": 5.0, "ephemeral": False, "kind": "relax"},
+                {"id": "focus", "text": "Focus", "priority": 7.0, "ephemeral": False},
+                {"id": "explore", "text": "Explore", "priority": 6.0, "ephemeral": False},
+            ]
+        },
+        [],
+    )
+    assert actions == [{"type": "boost", "target_id": "focus", "amount": 1}]
+
+
+def test_fallback_intention_actions_creates_when_only_relax_exists() -> None:
+    actions = _fallback_intention_actions(
+        {"items": [{"id": "relax", "text": "Relax", "priority": 5.0, "ephemeral": False, "kind": "relax"}]},
+        [],
+    )
+    assert actions == [{"type": "create", "id": "stay-present", "text": "Stay present with what matters now"}]
 
 
 def test_format_episode_block_for_prompt_shows_memory_ids() -> None:

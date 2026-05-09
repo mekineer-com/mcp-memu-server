@@ -25,7 +25,11 @@ from app.services.graph_edges import (
     invalidate_memory_edges,
     write_memory_edges,
 )
-from app.services.intention_state import format_intentions_for_prompt
+from app.services.intention_state import (
+    RELAX_INTENTION_ID,
+    format_intentions_for_prompt,
+    normalize_intentions_stack,
+)
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import soul_state as _soul_state
 from app.services.turn_contract import DEFAULT_SOUL_CARD, format_memory_legend, format_memory_line, format_shaped_by_line, format_relative_time_label, format_time_anchor
@@ -226,6 +230,46 @@ def _format_intention_activity_for_prompt(rows: list[dict[str, str]]) -> str:
         meta = ", ".join(part for part in (status, time_label) if part)
         lines.append(f"- {description}" + (f" ({meta})" if meta else ""))
     return "\n".join(lines) if lines else "Your intentions have been steady."
+
+
+_INTENTION_ID_SANITIZE_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _slugify_intention_id(text: str, fallback: str = "stay-present") -> str:
+    cleaned = _INTENTION_ID_SANITIZE_RE.sub("-", str(text or "").strip().lower()).strip("-")
+    if not cleaned:
+        return fallback
+    return cleaned[:40].strip("-") or fallback
+
+
+def _fallback_intention_actions(
+    current_intentions_raw: Any,
+    intention_activity: list[dict[str, str]] | None,
+) -> list[dict[str, Any]]:
+    stack = normalize_intentions_stack(current_intentions_raw)
+    ranked = []
+    ephemerals = []
+    for item in stack.get("items") or []:
+        item_id = str(item.get("id") or "").strip()
+        if not item_id or item_id.lower() == RELAX_INTENTION_ID:
+            continue
+        if bool(item.get("ephemeral") is True):
+            ephemerals.append(item)
+        else:
+            ranked.append(item)
+    ranked.sort(key=lambda item: float(item.get("priority") or 0.0), reverse=True)
+    if ranked:
+        return [{"type": "boost", "target_id": str(ranked[0].get("id")), "amount": 1}]
+    if ephemerals:
+        return [{"type": "promote", "target_id": str(ephemerals[0].get("id"))}]
+
+    activity_rows = intention_activity or []
+    for row in reversed(activity_rows):
+        text = str(row.get("description") or "").strip()
+        if not text:
+            continue
+        return [{"type": "create", "id": _slugify_intention_id(text), "text": text}]
+    return [{"type": "create", "id": "stay-present", "text": "Stay present with what matters now"}]
 
 
 def _format_episode_block_for_prompt(
@@ -699,6 +743,14 @@ async def run_consolidation_llm(
             len(parsed["edge_invalidations"]),
         )
 
+    intention_actions = parsed["intention_actions"]
+    if not intention_actions:
+        intention_actions = _fallback_intention_actions(
+            inputs.get("state", {}).get("intentions_active"),
+            inputs.get("intention_activity"),
+        )
+        log.info("consolidation: applied fallback intention action(s): %s", intention_actions)
+
     new_narrative = str(parsed["narrative_self"] or "").strip() or None
     current_narrative = str(inputs.get("narrative_self") or "").strip() or None
     snapshot_old_narrative = bool(current_narrative and new_narrative and current_narrative != new_narrative)
@@ -728,7 +780,7 @@ async def run_consolidation_llm(
         "old_narrative_embedding": old_narrative_embedding,
         "edges": remapped_edges,
         "edge_invalidations": remapped_invalidations,
-        "intention_actions": parsed["intention_actions"],
+        "intention_actions": intention_actions,
     }
 
 
