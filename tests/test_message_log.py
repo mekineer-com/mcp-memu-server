@@ -211,6 +211,18 @@ def test_conversation_aliases_includes_creds_self_lid_phone_pair(tmp_path, monke
     assert "whatsapp:dm:15133278228" in aliases
 
 
+def test_normalize_whatsapp_identifier_rejects_path_like_values() -> None:
+    assert message_log._normalize_whatsapp_identifier("../etc/passwd") == ""
+    assert message_log._normalize_whatsapp_identifier("..\\evil") == ""
+    assert message_log._normalize_whatsapp_identifier("15133278228:13@s.whatsapp.net") == "15133278228"
+
+
+def test_read_lid_mapping_value_rejects_non_string_json(tmp_path) -> None:
+    mapping_file = tmp_path / "lid-mapping-test.json"
+    mapping_file.write_text(json.dumps({"phone": "15133278228"}), encoding="utf-8")
+    assert message_log._read_lid_mapping_value(mapping_file) == ""
+
+
 def test_read_recent_for_conversation_ids_merges_alias_rows() -> None:
     con = _con()
     try:

@@ -187,6 +187,23 @@ def test_apply_turn_history_window_backfills_from_payload_when_tail_short():
     assert [item["message_id"] for item in out] == [f"m{i}" for i in range(3, 11)]
 
 
+def test_apply_turn_history_window_logs_warning_when_tail_is_very_large(caplog: pytest.LogCaptureFixture):
+    caplog.set_level("WARNING")
+    history_full = [{"message_id": f"m{i}", "role": "user", "content": f"msg {i}"} for i in range(1, 81)]
+    history_tail = list(history_full)
+
+    out = main._apply_turn_history_window(
+        conversation_id="cid-high-water",
+        history_tail=history_tail,
+        history_full=history_full,
+        db_path=None,
+    )
+
+    assert len(out) == 80
+    assert "turn history window exceeded high-water mark" in caplog.text
+    assert "cid-high-water" in caplog.text
+
+
 def test_apply_turn_history_window_backfills_from_db_when_available(tmp_path: Path):
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)

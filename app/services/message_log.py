@@ -127,19 +127,28 @@ DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES = 8
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:
-    return (
+    normalized = (
         str(value or "")
         .strip()
         .replace("+", "", 1)
         .split(":", 1)[0]
         .split("@", 1)[0]
     )
+    # Conversation IDs flow into lid-mapping file lookups. Reject path-like
+    # values so alias expansion cannot traverse outside the session dir.
+    if not normalized or "/" in normalized or "\\" in normalized:
+        return ""
+    if normalized in {".", ".."}:
+        return ""
+    return normalized
 
 
 def _read_lid_mapping_value(path: Path) -> str:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(raw, str):
         return ""
     return _normalize_whatsapp_identifier(raw)
 
