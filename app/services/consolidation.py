@@ -894,6 +894,12 @@ INSERT INTO intentions (
     _con.close()
     current_intentions = current_state.get("intentions_active")
 
+    if inputs.get("last_consolidation_at") is None:
+        current_intentions = upsert_intentions_stack_entries(
+            current_intentions,
+            [{"id": "optimize-happiness", "text": "Optimize happiness for myself and those I love.", "ephemeral": False}],
+        )
+
     for action in llm_results.get("intention_actions") or []:
         atype = str(action.get("type") or "").strip()
         if atype == "boost":
