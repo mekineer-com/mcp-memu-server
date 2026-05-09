@@ -150,7 +150,14 @@ def test_parse_as_of_datetime_rejects_invalid():
         main._parse_as_of_datetime("not-a-date")
 
 
-def test_apply_turn_history_window_caps_at_eight_messages():
+def test_build_retrieve_identity_context_uses_shared_time_anchor(monkeypatch: pytest.MonkeyPatch):
+    sentinel_anchor = "__ANCHOR_FROM_SHARED_FORMATTER__"
+    monkeypatch.setattr(main, "_format_time_anchor", lambda *_a, **_k: sentinel_anchor)
+    out = main._build_retrieve_identity_context("Echo")
+    assert out.startswith(f"Today is {sentinel_anchor}.")
+
+
+def test_apply_turn_history_window_keeps_full_unmemorized_tail():
     history_full = [{"message_id": f"m{i}", "role": "user", "content": f"msg {i}"} for i in range(1, 13)]
     history_tail = list(history_full)
 
@@ -161,8 +168,8 @@ def test_apply_turn_history_window_caps_at_eight_messages():
         db_path=None,
     )
 
-    assert len(out) == 8
-    assert [item["message_id"] for item in out] == [f"m{i}" for i in range(5, 13)]
+    assert len(out) == 12
+    assert [item["message_id"] for item in out] == [f"m{i}" for i in range(1, 13)]
 
 
 def test_apply_turn_history_window_backfills_from_payload_when_tail_short():
@@ -218,6 +225,57 @@ def test_apply_turn_history_window_backfills_from_db_when_available(tmp_path: Pa
 
     assert len(out) == 8
     assert [item["content"] for item in out] == [f"db {i}" for i in range(3, 11)]
+
+
+def test_apply_turn_history_window_backfills_from_whatsapp_alias_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    hermes_home = tmp_path / ".hermes"
+    session_dir = hermes_home / "whatsapp" / "session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "creds.json").write_text(
+        '{"me":{"id":"15133278228:13@s.whatsapp.net","lid":"114628432556258:13@lid"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.execute(
+            """
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                speaker TEXT,
+                content TEXT NOT NULL,
+                source_label TEXT,
+                received_at TEXT
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("whatsapp:dm:114628432556258", "user", "Marcos", "lid-older", "whatsapp:dm", "2026-05-08T00:00:01+00:00"),
+        )
+        con.execute(
+            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("whatsapp:dm:15133278228", "assistant", "Echo", "phone-newer", "whatsapp:dm", "2026-05-08T00:00:02+00:00"),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    history_full = [{"message_id": "m1", "role": "user", "content": "payload only"}]
+    history_tail = history_full[-1:]
+
+    out = main._apply_turn_history_window(
+        conversation_id="whatsapp:dm:15133278228",
+        history_tail=history_tail,
+        history_full=history_full,
+        db_path=db_path,
+    )
+
+    assert [item["content"] for item in out] == ["lid-older", "phone-newer"]
 
 
 def test_build_retrieve_soul_context_queries_uses_last_8_messages_for_rewrite() -> None:

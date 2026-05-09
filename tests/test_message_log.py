@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 from app.db import sqlite_ensure_conversation_state_schema
@@ -187,3 +188,49 @@ def test_format_merged_history_reuses_known_speaker_within_same_conversation() -
 
     assert "[whatsapp:dm] [Marcos]: first" in rendered
     assert "[whatsapp:dm] [Marcos]: second" in rendered
+
+
+def test_conversation_aliases_includes_creds_self_lid_phone_pair(tmp_path, monkeypatch) -> None:
+    session_dir = tmp_path / ".hermes" / "whatsapp" / "session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "creds.json").write_text(
+        json.dumps(
+            {
+                "me": {
+                    "id": "15133278228:13@s.whatsapp.net",
+                    "lid": "114628432556258:13@lid",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    aliases = message_log.conversation_aliases("whatsapp:dm:114628432556258")
+    assert "whatsapp:dm:114628432556258" in aliases
+    assert "whatsapp:dm:15133278228" in aliases
+
+
+def test_read_recent_for_conversation_ids_merges_alias_rows() -> None:
+    con = _con()
+    try:
+        assert message_log.append_messages(
+            con,
+            "whatsapp:dm:114628432556258",
+            [{"role": "user", "name": "Marcos", "content": "older-lid"}],
+            source_label="whatsapp:dm",
+        ) == 1
+        assert message_log.append_messages(
+            con,
+            "whatsapp:dm:15133278228",
+            [{"role": "user", "name": "Marcos", "content": "newer-phone"}],
+            source_label="whatsapp:dm",
+        ) == 1
+        merged = message_log.read_recent_for_conversation_ids(
+            con,
+            ["whatsapp:dm:114628432556258", "whatsapp:dm:15133278228"],
+            limit=8,
+        )
+        assert [row["content"] for row in merged] == ["older-lid", "newer-phone"]
+    finally:
+        con.close()

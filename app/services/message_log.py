@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from app.services.turn_contract import format_relative_time_label
@@ -123,6 +126,92 @@ MAX_CROSS_TAIL_MESSAGES = 50
 DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES = 8
 
 
+def _normalize_whatsapp_identifier(value: str) -> str:
+    return (
+        str(value or "")
+        .strip()
+        .replace("+", "", 1)
+        .split(":", 1)[0]
+        .split("@", 1)[0]
+    )
+
+
+def _read_lid_mapping_value(path: Path) -> str:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return _normalize_whatsapp_identifier(raw)
+
+
+def _load_whatsapp_creds_aliases(session_dir: Path) -> dict[str, str]:
+    creds_path = session_dir / "creds.json"
+    if not creds_path.exists():
+        return {}
+    try:
+        parsed = json.loads(creds_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    me = parsed.get("me") if isinstance(parsed, dict) else None
+    if not isinstance(me, dict):
+        return {}
+    phone_id = _normalize_whatsapp_identifier(me.get("id"))
+    lid_id = _normalize_whatsapp_identifier(me.get("lid"))
+    if not phone_id or not lid_id or phone_id == lid_id:
+        return {}
+    return {
+        phone_id: lid_id,
+        lid_id: phone_id,
+    }
+
+
+def _expand_whatsapp_alias_identifiers(identifier: str) -> set[str]:
+    normalized = _normalize_whatsapp_identifier(identifier)
+    if not normalized:
+        return set()
+
+    hermes_home = Path(os.getenv("HERMES_HOME") or "~/.hermes").expanduser().resolve()
+    session_dir = hermes_home / "whatsapp" / "session"
+    creds_aliases = _load_whatsapp_creds_aliases(session_dir)
+    resolved: set[str] = set()
+    queue = [normalized]
+    while queue:
+        current = queue.pop(0)
+        if not current or current in resolved:
+            continue
+        resolved.add(current)
+
+        for suffix in ("", "_reverse"):
+            mapping_path = session_dir / f"lid-mapping-{current}{suffix}.json"
+            if not mapping_path.exists():
+                continue
+            mapped = _read_lid_mapping_value(mapping_path)
+            if mapped and mapped not in resolved:
+                queue.append(mapped)
+
+        mapped_from_creds = creds_aliases.get(current, "")
+        if mapped_from_creds and mapped_from_creds not in resolved:
+            queue.append(mapped_from_creds)
+
+    return resolved
+
+
+def conversation_aliases(conversation_id: str) -> list[str]:
+    cid = str(conversation_id or "").strip()
+    if not cid:
+        return []
+    prefix = "whatsapp:dm:"
+    if not cid.startswith(prefix):
+        return [cid]
+    identifier = cid[len(prefix):]
+    aliases = _expand_whatsapp_alias_identifiers(identifier) or {_normalize_whatsapp_identifier(identifier)}
+    out = {cid}
+    for alias in aliases:
+        if alias:
+            out.add(f"{prefix}{alias}")
+    return sorted(out, key=lambda item: (len(item), item))
+
+
 def read_all_tails(
     con: sqlite3.Connection,
     exclude_conversation_id: str | None = None,
@@ -209,6 +298,34 @@ def read_recent(
         "SELECT role, speaker, content, source_label, received_at FROM messages "
         "WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
         (conversation_id, limit),
+    ).fetchall()
+    return list(reversed([
+        {
+            "role": row["role"],
+            "name": row["speaker"],
+            "content": row["content"],
+            "source_label": row["source_label"],
+            "received_at": row["received_at"],
+        }
+        for row in rows
+    ]))
+
+
+def read_recent_for_conversation_ids(
+    con: sqlite3.Connection,
+    conversation_ids: list[str],
+    limit: int,
+) -> list[dict[str, Any]]:
+    ids = [str(cid or "").strip() for cid in conversation_ids if str(cid or "").strip()]
+    if not ids:
+        return []
+    if len(ids) == 1:
+        return read_recent(con, ids[0], limit)
+    placeholders = ",".join("?" for _ in ids)
+    rows = con.execute(
+        "SELECT role, speaker, content, source_label, received_at FROM messages "
+        f"WHERE conversation_id IN ({placeholders}) ORDER BY id DESC LIMIT ?",
+        [*ids, limit],
     ).fetchall()
     return list(reversed([
         {

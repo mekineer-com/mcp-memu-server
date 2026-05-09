@@ -96,6 +96,7 @@ from app.services.state import (
 from app.services.turn_contract import (
     LIFE_GOALS_FREE_WILL_HEADER as _LIFE_GOALS_FREE_WILL_HEADER,
     build_turn_prompt as _build_turn_prompt,
+    format_time_anchor as _format_time_anchor,
     format_memory_line as _format_memory_line,
     format_memory_legend as _format_memory_legend,
     format_shaped_by_line as _format_shaped_by_line,
@@ -1116,10 +1117,7 @@ def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
 
 def _build_retrieve_identity_context(soul_name: str, *, apimw: bool = False) -> str:
     name = str(soul_name or "").strip() or "the assistant"
-    # Derive from UTC first so DST transitions on the host TZ never produce ambiguous times.
-    now = datetime.now(UTC).astimezone()
-    zone = now.tzname() or "local"
-    anchor = f"Today is {now.strftime('%A, %B')} {now.day}, {now.year} {now.strftime('%H:%M')} {zone}."
+    anchor = f"Today is {_format_time_anchor()}."
     if apimw:
         identity = (
             f"I, {name}, have everything that matters to me. "
@@ -2388,19 +2386,24 @@ def _apply_turn_history_window(
     """Build the prompt-visible current-conversation history window.
 
     Rules:
-    - Show at most the last TURN_HISTORY_WINDOW_MESSAGES messages.
-    - If the unmemorized tail is shorter than the window, backfill from stored
+    - Preserve the full unmemorized tail when present.
+    - If the unmemorized tail is shorter than TURN_HISTORY_WINDOW_MESSAGES,
+      backfill to that minimum from stored
       conversation history (memorized + unmemorized).
     - If DB backfill is unavailable, fallback to payload history.
     """
     limit = TURN_HISTORY_WINDOW_MESSAGES
     window = list(history_tail or [])
 
-    if db_path is not None and db_path.exists():
+    if len(window) < limit and db_path is not None and db_path.exists():
         _phcon = _sqlite_connect(db_path)
         try:
             _phcon.row_factory = sqlite3.Row
-            padded = _message_log.read_recent(_phcon, conversation_id, limit=limit)
+            padded = _message_log.read_recent_for_conversation_ids(
+                _phcon,
+                _message_log.conversation_aliases(conversation_id),
+                limit=limit,
+            )
         finally:
             _phcon.close()
         if len(padded) > len(window):
@@ -2411,8 +2414,6 @@ def _apply_turn_history_window(
         if len(fallback) > len(window):
             window = fallback
 
-    if len(window) > limit:
-        window = window[-limit:]
     return window
 
 
