@@ -32,6 +32,38 @@ def _looks_like_shared_group_conversation(conversation_id: str) -> bool:
     return ":group:" in cid or cid.endswith(":group")
 
 
+def _canonical_conversation_id(conversation_id: str) -> str:
+    cid = str(conversation_id or "").strip()
+    prefix = "whatsapp:dm:"
+    if not cid.startswith(prefix):
+        return cid
+    identifier = cid[len(prefix):]
+    aliases = _expand_whatsapp_alias_identifiers(identifier)
+    if not aliases:
+        normalized = _normalize_whatsapp_identifier(identifier)
+        return f"{prefix}{normalized}" if normalized else cid
+    canonical = sorted(aliases, key=lambda item: (len(item), item))[0]
+    return f"{prefix}{canonical}"
+
+
+def _normalize_row_for_overlap(
+    conversation_id: str,
+    role: str,
+    speaker: str | None,
+    content: str,
+) -> tuple[str, str | None, str]:
+    norm_role = str(role or "").strip()
+    norm_speaker = str(speaker or "").strip() or None
+    norm_content = str(content or "").strip()
+    if norm_role == "user" and _looks_like_shared_group_conversation(conversation_id):
+        parsed = _parse_shared_group_sender_prefix(norm_content)
+        if parsed is not None:
+            parsed_speaker, parsed_content = parsed
+            norm_content = parsed_content
+            norm_speaker = parsed_speaker
+    return norm_role, norm_speaker, norm_content
+
+
 def derive_source_label(conversation_id: str) -> str:
     cid = str(conversation_id or "").strip()
     if cid.startswith("whatsapp:"):
@@ -65,12 +97,9 @@ def append_messages(
         if isinstance(msg.get("content"), dict):
             content = str(msg["content"].get("text") or "").strip()
         speaker = str(msg.get("name") or msg.get("speaker") or "").strip() or None
-        if role == "user" and _looks_like_shared_group_conversation(conversation_id):
-            parsed = _parse_shared_group_sender_prefix(content)
-            if parsed is not None:
-                parsed_sender, parsed_content = parsed
-                content = parsed_content
-                speaker = parsed_sender
+        role, speaker, content = _normalize_row_for_overlap(
+            conversation_id, role, speaker, content
+        )
         if not content:
             continue
         incoming_rows.append((role, speaker, content))
@@ -98,7 +127,12 @@ def append_messages(
             (conversation_id, len(incoming_rows)),
         ).fetchall()
         existing_tail = list(reversed([
-            (str(row["role"] or "").strip(), str(row["speaker"] or "").strip() or None, str(row["content"] or "").strip())
+            _normalize_row_for_overlap(
+                conversation_id,
+                str(row["role"] or "").strip(),
+                str(row["speaker"] or "").strip() or None,
+                str(row["content"] or "").strip(),
+            )
             for row in recent_rows
         ]))
         max_overlap = min(len(existing_tail), len(incoming_rows))
@@ -262,6 +296,7 @@ def read_all_tails(
     full memorization.
     Capped at max_messages most recent to bound prompt size.
     """
+    excluded_ids = set(conversation_aliases(exclude_conversation_id or ""))
     cursor_rows = con.execute(
         "SELECT conversation_id, digest_cursor, last_memorize_at FROM conversations"
     ).fetchall()
@@ -269,13 +304,14 @@ def read_all_tails(
     all_messages: list[dict[str, Any]] = []
     for row in cursor_rows:
         cid = str(row["conversation_id"])
-        if cid == exclude_conversation_id:
+        if cid in excluded_ids:
             continue
+        canonical_cid = _canonical_conversation_id(cid)
         cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
         tail = read_tail(con, cid, after_cursor=cursor + 1)
         if tail:
             for msg in tail:
-                msg["conversation_id"] = cid
+                msg["conversation_id"] = canonical_cid
         if not tail and recent_fallback_per_conversation > 0:
             recent = read_recent(con, cid, limit=recent_fallback_per_conversation)
             tail = [
@@ -285,7 +321,7 @@ def read_all_tails(
                     "content": msg.get("content"),
                     "source_label": msg.get("source_label"),
                     "received_at": msg.get("received_at"),
-                    "conversation_id": cid,
+                    "conversation_id": canonical_cid,
                 }
                 for msg in recent
             ]
@@ -464,6 +500,10 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
 
         conv_lines: list[str] = [_conversation_heading(kind, key, dir_names)]
         last_time_label: str | None = None
+        # Legacy alias splits + overlap drift can produce repeated rows for the
+        # same sender/text within one day bucket. Suppress duplicates in prompt
+        # rendering so cross-chat context stays semantically dense.
+        seen_day_lines: set[tuple[str, str, str]] = set()
         for msg in rows:
             time_label = format_relative_time_label(msg.get("received_at"))
             if time_label and time_label != last_time_label:
@@ -476,6 +516,17 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
             if not speaker:
                 speaker = role or "unknown"
             content = str(msg.get("content") or "")
+            if role == "user" and kind == "whatsapp_group":
+                parsed = _parse_shared_group_sender_prefix(content)
+                if parsed is not None:
+                    parsed_speaker, parsed_content = parsed
+                    speaker = parsed_speaker
+                    content = parsed_content
+            day_bucket = time_label or "unknown-day"
+            dedupe_key = (day_bucket, speaker.strip().lower(), content.strip())
+            if dedupe_key in seen_day_lines:
+                continue
+            seen_day_lines.add(dedupe_key)
             conv_lines.append(f"[{speaker}]: {content}")
         blocks.append("\n".join(conv_lines))
 

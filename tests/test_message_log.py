@@ -118,6 +118,28 @@ def test_append_messages_dm_keeps_bracket_prefix_in_plain_content() -> None:
         con.close()
 
 
+def test_append_messages_group_overlap_ignores_speaker_drift_for_prefixed_rows() -> None:
+    con = _con()
+    try:
+        cid = "whatsapp:group:18322935409-1579788049@g.us"
+        assert message_log.append_messages(
+            con,
+            cid,
+            [{"role": "user", "content": "[Raquel] Going to the gym now."}],
+            source_label="whatsapp:group",
+        ) == 1
+
+        # Same semantic row but with a fallback speaker from an older payload.
+        assert message_log.append_messages(
+            con,
+            cid,
+            [{"role": "user", "name": "Marcos", "content": "[Raquel] Going to the gym now."}],
+            source_label="whatsapp:group",
+        ) == 0
+    finally:
+        con.close()
+
+
 def test_read_all_tails_falls_back_to_recent_when_unmemorized_tail_empty() -> None:
     con = _con()
     try:
@@ -269,6 +291,49 @@ def test_format_merged_history_groups_sections_and_conversations(tmp_path, monke
     assert "[Marcos]: wa dm message" in rendered
 
 
+def test_format_merged_history_parses_legacy_group_prefix_at_render_time() -> None:
+    rendered = message_log.format_merged_history(
+        [
+            {
+                "conversation_id": "whatsapp:group:18322935409-1579788049@g.us",
+                "source_label": "whatsapp:group",
+                "role": "user",
+                "speaker": "Marcos",
+                "content": "[Raquel] Going to the gym now.",
+                "received_at": "2026-05-09T12:08:26+00:00",
+            }
+        ]
+    )
+
+    assert "[Marcos]: [Raquel] Going to the gym now." not in rendered
+    assert "[Raquel]: Going to the gym now." in rendered
+
+
+def test_format_merged_history_dedupes_same_day_duplicate_lines() -> None:
+    rendered = message_log.format_merged_history(
+        [
+            {
+                "conversation_id": "whatsapp:group:18322935409-1579788049@g.us",
+                "source_label": "whatsapp:group",
+                "role": "user",
+                "speaker": "Marcos",
+                "content": "[Raquel] Going to the gym now.",
+                "received_at": "2026-05-09T12:08:26+00:00",
+            },
+            {
+                "conversation_id": "whatsapp:group:18322935409-1579788049@g.us",
+                "source_label": "whatsapp:group",
+                "role": "user",
+                "speaker": "",
+                "content": "[Raquel] Going to the gym now.",
+                "received_at": "2026-05-09T12:09:26+00:00",
+            },
+        ]
+    )
+
+    assert rendered.count("[Raquel]: Going to the gym now.") == 1
+
+
 def test_format_merged_history_uses_channel_directory_names(tmp_path, monkeypatch) -> None:
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
@@ -366,5 +431,54 @@ def test_read_recent_for_conversation_ids_merges_alias_rows() -> None:
             limit=8,
         )
         assert [row["content"] for row in merged] == ["older-lid", "newer-phone"]
+    finally:
+        con.close()
+
+
+def test_read_all_tails_excludes_current_whatsapp_aliases(tmp_path, monkeypatch) -> None:
+    session_dir = tmp_path / ".hermes" / "whatsapp" / "session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "creds.json").write_text(
+        json.dumps(
+            {
+                "me": {
+                    "id": "15133278228:13@s.whatsapp.net",
+                    "lid": "114628432556258:13@lid",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    con = _con()
+    try:
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("whatsapp:dm:114628432556258", 0),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("whatsapp:dm:15133278228", 0),
+        )
+        assert message_log.append_messages(
+            con,
+            "whatsapp:dm:114628432556258",
+            [{"role": "user", "name": "Marcos", "content": "lid row"}],
+            source_label="whatsapp:dm",
+        ) == 1
+        assert message_log.append_messages(
+            con,
+            "whatsapp:dm:15133278228",
+            [{"role": "assistant", "name": "Echo", "content": "phone row"}],
+            source_label="whatsapp:dm",
+        ) == 1
+
+        merged = message_log.read_all_tails(
+            con,
+            exclude_conversation_id="whatsapp:dm:114628432556258",
+            max_messages=50,
+        )
+        assert merged == []
     finally:
         con.close()
