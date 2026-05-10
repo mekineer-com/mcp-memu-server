@@ -184,6 +184,7 @@ def read_tail(
 
 MAX_CROSS_TAIL_MESSAGES = 50
 DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES = 8
+MAX_CROSS_TAIL_MESSAGES_PER_CONVERSATION = 8
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:
@@ -325,6 +326,11 @@ def read_all_tails(
                 }
                 for msg in recent
             ]
+        if (
+            MAX_CROSS_TAIL_MESSAGES_PER_CONVERSATION > 0
+            and len(tail) > MAX_CROSS_TAIL_MESSAGES_PER_CONVERSATION
+        ):
+            tail = tail[-MAX_CROSS_TAIL_MESSAGES_PER_CONVERSATION:]
         all_messages.extend(tail)
 
     all_messages.sort(key=lambda m: m.get("received_at") or "")
@@ -452,12 +458,15 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
                 out[normalized] = rname
         return out
 
+    def _lookup_whatsapp_name(key: str, names: dict[str, str]) -> str:
+        return names.get(key) or names.get(_normalize_whatsapp_identifier(key)) or ""
+
     def _conversation_heading(kind: str, key: str, names: dict[str, str]) -> str:
         if kind == "whatsapp_group":
-            pretty = names.get(key) or names.get(_normalize_whatsapp_identifier(key)) or key or "group"
+            pretty = _lookup_whatsapp_name(key, names) or key or "group"
             return f"[group][{pretty}]"
         if kind == "whatsapp_dm":
-            pretty = names.get(key) or names.get(_normalize_whatsapp_identifier(key)) or key or "contact"
+            pretty = _lookup_whatsapp_name(key, names) or key or "contact"
             return f"[dm][{pretty}]"
         if kind == "sillytavern_dm":
             pretty = key or "sillytavern"
@@ -497,6 +506,7 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
         kind, key = _conversation_kind_and_key(cid)
         section_key = _section_title(kind)
         blocks = sections.setdefault(section_key, [])
+        whatsapp_dm_contact_name = _lookup_whatsapp_name(key, dir_names) if kind == "whatsapp_dm" else ""
 
         conv_lines: list[str] = [_conversation_heading(kind, key, dir_names)]
         last_time_label: str | None = None
@@ -515,6 +525,8 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
                 speaker = canonical_speaker.get((cid, role), "")
             if not speaker:
                 speaker = role or "unknown"
+            if role == "user" and kind == "whatsapp_dm" and whatsapp_dm_contact_name:
+                speaker = whatsapp_dm_contact_name
             content = str(msg.get("content") or "")
             if role == "user" and kind == "whatsapp_group":
                 parsed = _parse_shared_group_sender_prefix(content)

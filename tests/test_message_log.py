@@ -222,6 +222,52 @@ def test_read_all_tails_never_memorized_includes_first_message_without_fallback(
         con.close()
 
 
+def test_read_all_tails_caps_per_conversation_to_preserve_cross_chat_mix() -> None:
+    con = _con()
+    try:
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("current", 0),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("whatsapp:dm:dominant", 0),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("whatsapp:group:small@g.us", 0),
+        )
+
+        many_rows = [{"role": "user", "content": f"dominant-{i}"} for i in range(20)]
+        assert message_log.append_messages(
+            con,
+            "whatsapp:dm:dominant",
+            many_rows,
+            source_label="whatsapp:dm",
+        ) == 20
+        assert message_log.append_messages(
+            con,
+            "whatsapp:group:small@g.us",
+            [{"role": "user", "content": "small-1"}, {"role": "user", "content": "small-2"}],
+            source_label="whatsapp:group",
+        ) == 2
+
+        merged = message_log.read_all_tails(
+            con,
+            exclude_conversation_id="current",
+            max_messages=50,
+        )
+        by_cid: dict[str, int] = {}
+        for row in merged:
+            cid = str(row.get("conversation_id") or "")
+            by_cid[cid] = by_cid.get(cid, 0) + 1
+
+        assert by_cid["whatsapp:dm:dominant"] == 8
+        assert by_cid["whatsapp:group:small@g.us"] == 2
+    finally:
+        con.close()
+
+
 def test_format_merged_history_reuses_known_speaker_within_same_conversation() -> None:
     rendered = message_log.format_merged_history(
         [
@@ -375,6 +421,41 @@ def test_format_merged_history_uses_channel_directory_names(tmp_path, monkeypatc
 
     assert "[group][Work Group]" in rendered
     assert "[dm][Marcos]" in rendered
+
+
+def test_format_merged_history_whatsapp_dm_user_lines_use_contact_name(tmp_path, monkeypatch) -> None:
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "channel_directory.json").write_text(
+        json.dumps(
+            {
+                "platforms": {
+                    "whatsapp": [
+                        {"id": "247789598601266@lid", "name": "Liz Kalverda", "type": "dm"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    rendered = message_log.format_merged_history(
+        [
+            {
+                "conversation_id": "whatsapp:dm:247789598601266",
+                "source_label": "whatsapp:dm",
+                "role": "user",
+                "speaker": "Marcos",
+                "content": "hello from dm",
+                "received_at": "2026-05-10T08:00:00+00:00",
+            }
+        ]
+    )
+
+    assert "[dm][Liz Kalverda]" in rendered
+    assert "[Liz Kalverda]: hello from dm" in rendered
+    assert "[Marcos]: hello from dm" not in rendered
 
 
 def test_conversation_aliases_includes_creds_self_lid_phone_pair(tmp_path, monkeypatch) -> None:
