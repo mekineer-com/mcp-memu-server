@@ -510,21 +510,6 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
             return "## My WhatsApp Conversations:"
         return "## Other Conversations:"
 
-    # Build canonical speaker labels from explicit names already present.
-    # This keeps labels stable when some payload rows omit name/speaker.
-    canonical_speaker: dict[tuple[str, str], str] = {}
-    for msg in messages:
-        cid = str(msg.get("conversation_id") or "").strip()
-        role = str(msg.get("role") or "").strip()
-        speaker = str(msg.get("speaker") or "").strip()
-        if not cid or not role or not speaker:
-            continue
-        if speaker.lower() == role.lower():
-            continue
-        key = (cid, role)
-        if key not in canonical_speaker:
-            canonical_speaker[key] = speaker
-
     by_conversation: dict[str, list[dict[str, Any]]] = {}
     for msg in messages:
         cid = str(msg.get("conversation_id") or "").strip() or "unknown"
@@ -557,8 +542,6 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
                 parsed = _parse_shared_group_sender_prefix(content)
                 if parsed is not None:
                     speaker, content = parsed
-            if not speaker and cid and role:
-                speaker = canonical_speaker.get((cid, role), "")
             if not speaker:
                 speaker = role or "unknown"
             day_bucket = time_label or "unknown-day"

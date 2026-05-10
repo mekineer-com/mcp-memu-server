@@ -57,6 +57,7 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
             soul_id="s1",
             message="hello",
             history=[{"role": "user", "content": "hello"}],
+            user_name="Liz Kalverda",
         ),
         conversation_retrieve=fake_retrieve,
         conversation_turn=fake_turn,
@@ -65,7 +66,10 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
     assert out["ok"] is True
     assert out["response"] == "done"
     assert [row[0] for row in captured] == ["retrieve", "turn"]
+    retrieve_payload = captured[0][2]
     turn_payload = captured[1][2]
+    assert retrieve_payload.get("user_name") == "Liz Kalverda"
+    assert turn_payload.get("user_name") == "Liz Kalverda"
     override_payload = turn_payload.get("prompt_override_payload")
     assert isinstance(override_payload, dict)
     assert override_payload.get("retrieve_ms") == 42

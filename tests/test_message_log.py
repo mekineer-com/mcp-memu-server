@@ -268,7 +268,7 @@ def test_read_all_tails_caps_per_conversation_to_preserve_cross_chat_mix() -> No
         con.close()
 
 
-def test_format_merged_history_reuses_known_speaker_within_same_conversation() -> None:
+def test_format_merged_history_does_not_relabel_blank_speaker_rows() -> None:
     rendered = message_log.format_merged_history(
         [
             {
@@ -293,7 +293,8 @@ def test_format_merged_history_reuses_known_speaker_within_same_conversation() -
     assert "## My WhatsApp Conversations:" in rendered
     assert "[dm][abc]" in rendered
     assert "[Marcos]: first" in rendered
-    assert "[Marcos]: second" in rendered
+    assert "[user]: second" in rendered
+    assert "[Marcos]: second" not in rendered
 
 
 def test_format_merged_history_groups_sections_and_conversations(tmp_path, monkeypatch) -> None:
@@ -516,6 +517,49 @@ def test_format_merged_history_dm_preserves_explicit_speaker_per_row(tmp_path, m
     assert "[dm][Liz Kalverda]" in rendered
     assert "[Marcos]: did news travel?" in rendered
     assert "[Liz Kalverda]: yes I saw it" in rendered
+
+
+def test_format_merged_history_dm_does_not_infer_blank_speaker_from_other_rows(tmp_path, monkeypatch) -> None:
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "channel_directory.json").write_text(
+        json.dumps(
+            {
+                "platforms": {
+                    "whatsapp": [
+                        {"id": "247789598601266@lid", "name": "Liz Kalverda", "type": "dm"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    rendered = message_log.format_merged_history(
+        [
+            {
+                "conversation_id": "whatsapp:dm:247789598601266",
+                "source_label": "whatsapp:dm",
+                "role": "user",
+                "speaker": "Marcos",
+                "content": "from me",
+                "received_at": "2026-05-10T08:00:00+00:00",
+            },
+            {
+                "conversation_id": "whatsapp:dm:247789598601266",
+                "source_label": "whatsapp:dm",
+                "role": "user",
+                "speaker": "",
+                "content": "missing speaker row",
+                "received_at": "2026-05-10T08:00:01+00:00",
+            },
+        ]
+    )
+
+    assert "[Marcos]: from me" in rendered
+    assert "[user]: missing speaker row" in rendered
+    assert "[Marcos]: missing speaker row" not in rendered
 
 
 def test_format_merged_history_whatsapp_dm_keeps_self_speaker_for_self_chat(tmp_path, monkeypatch) -> None:

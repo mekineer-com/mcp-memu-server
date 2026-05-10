@@ -571,6 +571,62 @@ async def test_conversation_retrieve_injects_cross_context_even_with_prebuilt_qu
 
 
 @pytest.mark.asyncio
+async def test_conversation_retrieve_stamps_user_name_on_current_appended_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("cid-current", 0),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+    )
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        return {"ok": True, "should_respond": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo"},
+        "message": "current message",
+        "query": "current message",
+        "user_name": "Liz Kalverda",
+        "history": [{"role": "user", "content": "prior message"}],
+        "queries": [{"role": "message", "content": {"text": "current message"}}],
+    }
+
+    out = await main.conversation_retrieve("cid-current", payload)
+    assert out["ok"] is True
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            "SELECT role, speaker, content FROM messages WHERE conversation_id = ? AND content = ? ORDER BY id DESC LIMIT 1",
+            ("cid-current", "current message"),
+        ).fetchone()
+    finally:
+        con.close()
+
+    assert row is not None
+    assert str(row["role"]) == "user"
+    assert str(row["speaker"]) == "Liz Kalverda"
+
+
+@pytest.mark.asyncio
 async def test_conversation_retrieve_does_not_duplicate_preexisting_cross_query(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
