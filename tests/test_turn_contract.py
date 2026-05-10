@@ -47,11 +47,27 @@ def test_build_turn_prompt_includes_core_sections():
         memory_cache=["note a"],
         intentions_active={"items": [{"id": "relax", "text": "Relax", "priority": 5, "kind": "relax"}]},
     )
-    assert "My conversation history:" in prompt
+    assert "## My SillyTavern Conversations:" in prompt
     assert "Prior context:" in prompt
     assert "Goals:" in prompt  # retrieved category block renders as "<Name>:" lines
     assert "My working thoughts:" in prompt
     assert "My intentions:" in prompt
+
+
+def test_build_turn_prompt_omits_wrapper_when_cross_history_already_has_markdown_sections():
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[],
+        prior_context=None,
+        retrieve_rag=None,
+        cross_conversation_history="## My WhatsApp Conversations:\n[group][Friends]\n[Raquel]: hi",
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+    )
+
+    assert "Other conversations:" not in prompt
+    assert "## My WhatsApp Conversations:" in prompt
 
 
 

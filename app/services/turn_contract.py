@@ -558,12 +558,16 @@ def build_turn_prompt(
 
     cross_block: list[str] = []
     if cross_conversation_history and cross_conversation_history.strip():
-        cross_block = ["Other conversations:", cross_conversation_history.strip(), ""]
+        cross_history_text = cross_conversation_history.strip()
+        if re.search(r"(?m)^##\s+", cross_history_text):
+            cross_block = [cross_history_text, ""]
+        else:
+            cross_block = ["Other conversations:", cross_history_text, ""]
 
     parts = [
         *context_blocks,
         *cross_block,
-        "My conversation history:",
+        "## My SillyTavern Conversations:",
         render_history(history_for_render),
         "",
         "My working thoughts:",
