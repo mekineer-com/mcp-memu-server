@@ -82,6 +82,42 @@ def test_append_messages_incremental_overlap_only_appends_suffix() -> None:
         con.close()
 
 
+def test_append_messages_shared_group_parses_sender_prefix_into_speaker() -> None:
+    con = _con()
+    try:
+        assert message_log.append_messages(
+            con,
+            "whatsapp:group:18322935409-1579788049@g.us",
+            [{"role": "user", "name": "Marcos", "content": "[Raquel] Going to the gym now."}],
+            source_label="whatsapp:group",
+        ) == 1
+
+        rows = message_log.read_tail(con, "whatsapp:group:18322935409-1579788049@g.us", after_cursor=0)
+        assert len(rows) == 1
+        assert rows[0]["speaker"] == "Raquel"
+        assert rows[0]["content"] == "Going to the gym now."
+    finally:
+        con.close()
+
+
+def test_append_messages_dm_keeps_bracket_prefix_in_plain_content() -> None:
+    con = _con()
+    try:
+        assert message_log.append_messages(
+            con,
+            "whatsapp:dm:15133278228",
+            [{"role": "user", "name": "Marcos", "content": "[Raquel] Going to the gym now."}],
+            source_label="whatsapp:dm",
+        ) == 1
+
+        rows = message_log.read_tail(con, "whatsapp:dm:15133278228", after_cursor=0)
+        assert len(rows) == 1
+        assert rows[0]["speaker"] == "Marcos"
+        assert rows[0]["content"] == "[Raquel] Going to the gym now."
+    finally:
+        con.close()
+
+
 def test_read_all_tails_falls_back_to_recent_when_unmemorized_tail_empty() -> None:
     con = _con()
     try:

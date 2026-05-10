@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 
 from datetime import UTC, datetime
@@ -11,6 +12,24 @@ from pathlib import Path
 from typing import Any
 
 from app.services.turn_contract import format_relative_time_label
+
+_SHARED_GROUP_PREFIX_RE = re.compile(r"^\[([^\]]+)\]\s+(.+)$")
+
+
+def _parse_shared_group_sender_prefix(content: str) -> tuple[str, str] | None:
+    match = _SHARED_GROUP_PREFIX_RE.match(content)
+    if not match:
+        return None
+    sender = str(match.group(1) or "").strip()
+    message = str(match.group(2) or "").strip()
+    if not sender or not message:
+        return None
+    return sender, message
+
+
+def _looks_like_shared_group_conversation(conversation_id: str) -> bool:
+    cid = str(conversation_id or "").strip().lower()
+    return ":group:" in cid or cid.endswith(":group")
 
 
 def derive_source_label(conversation_id: str) -> str:
@@ -46,6 +65,12 @@ def append_messages(
         if isinstance(msg.get("content"), dict):
             content = str(msg["content"].get("text") or "").strip()
         speaker = str(msg.get("name") or msg.get("speaker") or "").strip() or None
+        if role == "user" and _looks_like_shared_group_conversation(conversation_id):
+            parsed = _parse_shared_group_sender_prefix(content)
+            if parsed is not None:
+                parsed_sender, parsed_content = parsed
+                content = parsed_content
+                speaker = parsed_sender
         if not content:
             continue
         incoming_rows.append((role, speaker, content))
