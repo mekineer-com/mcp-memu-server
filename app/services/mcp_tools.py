@@ -13,6 +13,7 @@ class MemuTurnRequest(BaseModel):
     soul_id: str
     message: str
     history: list[dict[str, Any]] | None = None
+    user_name: str | None = None
     soul_card: str | None = None
     run_apimw: bool = True
     apply_turn_maintenance: bool = True
@@ -101,6 +102,7 @@ async def memu_turn_endpoint(
         raise HTTPException(status_code=400, detail="message is required")
     scope = _scope(user_id=req.user_id, soul_id=req.soul_id, conversation_id=conversation_id)
 
+    user_name = str(req.user_name or "").strip()
     retrieve_payload: dict[str, Any] = {
         "user": scope,
         "message": message,
@@ -109,6 +111,8 @@ async def memu_turn_endpoint(
         "build_turn_prompt": True,
         "debug": bool(req.debug),
     }
+    if user_name:
+        retrieve_payload["user_name"] = user_name
     if req.soul_card:
         retrieve_payload["soul_card"] = str(req.soul_card)
     if req.channel_mode:
@@ -143,6 +147,8 @@ async def memu_turn_endpoint(
         "should_respond": bool(should_respond),
         "debug": bool(req.debug),
     }
+    if user_name:
+        turn_payload["user_name"] = user_name
     if req.soul_card:
         turn_payload["soul_card"] = str(req.soul_card)
     if req.temperature is not None:

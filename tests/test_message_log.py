@@ -472,54 +472,14 @@ def test_format_merged_history_whatsapp_dm_heading_prefers_named_alias_over_nume
     assert "[Marcos]: hello from dm" in rendered
 
 
-def test_format_merged_history_dm_backfills_blank_user_speaker_from_matching_content() -> None:
-    rendered = message_log.format_merged_history(
-        [
-            {
-                "conversation_id": "whatsapp:dm:247789598601266",
-                "source_label": "whatsapp:dm",
-                "role": "user",
-                "speaker": "",
-                "content": "same message",
-                "received_at": "2026-05-10T08:00:00+00:00",
-            },
-            {
-                "conversation_id": "whatsapp:dm:247789598601266",
-                "source_label": "whatsapp:dm",
-                "role": "user",
-                "speaker": "Liz Kalverda",
-                "content": "same message",
-                "received_at": "2026-05-10T08:00:01+00:00",
-            },
-        ]
-    )
-
-    assert rendered.count("[Liz Kalverda]: same message") == 1
-    assert "[user]: same message" not in rendered
-
-
-def test_format_merged_history_whatsapp_dm_relabels_self_stamped_speaker_for_non_self_contact(tmp_path, monkeypatch) -> None:
+def test_format_merged_history_dm_preserves_explicit_speaker_per_row(tmp_path, monkeypatch) -> None:
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
-    session_dir = hermes_home / "whatsapp" / "session"
-    session_dir.mkdir(parents=True, exist_ok=True)
-    (session_dir / "creds.json").write_text(
-        json.dumps(
-            {
-                "me": {
-                    "id": "15133278228:13@s.whatsapp.net",
-                    "lid": "114628432556258:13@lid",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
     (hermes_home / "channel_directory.json").write_text(
         json.dumps(
             {
                 "platforms": {
                     "whatsapp": [
-                        {"id": "114628432556258@lid", "name": "Marcos", "type": "dm"},
                         {"id": "247789598601266@lid", "name": "Liz Kalverda", "type": "dm"},
                     ]
                 }
@@ -529,6 +489,9 @@ def test_format_merged_history_whatsapp_dm_relabels_self_stamped_speaker_for_non
     )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
+    # In a DM with Liz, both Marcos's outbound and Liz's inbound may appear
+    # as role=user (in self-chat mode bridging). The speaker stamped at
+    # ingestion is the truth — the renderer must not re-attribute either row.
     rendered = message_log.format_merged_history(
         [
             {
@@ -536,15 +499,23 @@ def test_format_merged_history_whatsapp_dm_relabels_self_stamped_speaker_for_non
                 "source_label": "whatsapp:dm",
                 "role": "user",
                 "speaker": "Marcos",
-                "content": "Anyway, did news travel?",
+                "content": "did news travel?",
                 "received_at": "2026-05-10T08:00:00+00:00",
-            }
+            },
+            {
+                "conversation_id": "whatsapp:dm:247789598601266",
+                "source_label": "whatsapp:dm",
+                "role": "user",
+                "speaker": "Liz Kalverda",
+                "content": "yes I saw it",
+                "received_at": "2026-05-10T08:00:01+00:00",
+            },
         ]
     )
 
     assert "[dm][Liz Kalverda]" in rendered
-    assert "[Liz Kalverda]: Anyway, did news travel?" in rendered
-    assert "[Marcos]: Anyway, did news travel?" not in rendered
+    assert "[Marcos]: did news travel?" in rendered
+    assert "[Liz Kalverda]: yes I saw it" in rendered
 
 
 def test_format_merged_history_whatsapp_dm_keeps_self_speaker_for_self_chat(tmp_path, monkeypatch) -> None:

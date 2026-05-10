@@ -3145,6 +3145,7 @@ async def conversation_retrieve(
         uid = str(scope.get("user_id") or "").strip()
         soul_id = str(scope.get("soul_id") or "").strip()
         message = _pick_str(safe, "message", "query") or ""
+        user_name = _pick_str(safe, "user_name") or ""
         history = _normalize_turn_history(safe.get("history"))
         state_row: dict[str, Any] | None = None
         cross_tail: list[dict[str, Any]] = []
@@ -3161,7 +3162,10 @@ async def conversation_retrieve(
                     _sqlite_ensure_conversation_state_schema(_con)
                     full_history = list(history)
                     if message.strip():
-                        full_history.append({"role": "user", "content": message})
+                        current_msg: dict[str, Any] = {"role": "user", "content": message}
+                        if user_name:
+                            current_msg["name"] = user_name
+                        full_history.append(current_msg)
                     _message_log.append_messages(_con, cid, full_history)
                     cross_tail = _message_log.read_all_tails(_con, exclude_conversation_id=cid)
                     _con.commit()

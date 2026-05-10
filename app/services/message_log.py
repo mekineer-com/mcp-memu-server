@@ -214,27 +214,6 @@ def _read_lid_mapping_value(path: Path) -> str:
     return _normalize_whatsapp_identifier(raw)
 
 
-def _load_whatsapp_self_identifiers(session_dir: Path) -> set[str]:
-    creds_path = session_dir / "creds.json"
-    if not creds_path.exists():
-        return set()
-    try:
-        parsed = json.loads(creds_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return set()
-    me = parsed.get("me") if isinstance(parsed, dict) else None
-    if not isinstance(me, dict):
-        return set()
-    out: set[str] = set()
-    phone_id = _normalize_whatsapp_identifier(me.get("id"))
-    lid_id = _normalize_whatsapp_identifier(me.get("lid"))
-    if phone_id:
-        out.add(phone_id)
-    if lid_id:
-        out.add(lid_id)
-    return out
-
-
 def _load_whatsapp_creds_aliases(session_dir: Path) -> dict[str, str]:
     creds_path = session_dir / "creds.json"
     if not creds_path.exists():
@@ -552,37 +531,6 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
         by_conversation.setdefault(cid, []).append(msg)
 
     dir_names = _load_whatsapp_directory_names()
-    hermes_home = Path(os.getenv("HERMES_HOME") or "~/.hermes").expanduser().resolve()
-    session_dir = hermes_home / "whatsapp" / "session"
-    self_identifiers = _load_whatsapp_self_identifiers(session_dir)
-    self_aliases: set[str] = set()
-    for identifier in self_identifiers:
-        expanded = _expand_whatsapp_alias_identifiers(identifier)
-        if expanded:
-            self_aliases.update(expanded)
-        self_aliases.add(identifier)
-    self_display_names: set[str] = set()
-    for identifier in sorted(self_aliases, key=lambda item: (len(item), item)):
-        display_name = _lookup_whatsapp_name(identifier, dir_names)
-        if display_name:
-            self_display_names.add(display_name)
-
-    def _is_self_whatsapp_dm_key(dm_key: str) -> bool:
-        key_norm = _normalize_whatsapp_identifier(dm_key)
-        if not key_norm:
-            return False
-        if key_norm in self_aliases:
-            return True
-        expanded = _expand_whatsapp_alias_identifiers(key_norm)
-        return bool(expanded and (expanded & self_aliases))
-
-    def _speaker_looks_like_self(speaker_value: str) -> bool:
-        speaker_text = str(speaker_value or "").strip()
-        if not speaker_text:
-            return False
-        if speaker_text in self_display_names:
-            return True
-        return _normalize_whatsapp_identifier(speaker_text) in self_aliases
 
     sections: dict[str, list[str]] = {}
     for cid, rows in by_conversation.items():
@@ -590,41 +538,7 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
         section_key = _section_title(kind)
         blocks = sections.setdefault(section_key, [])
         conv_lines: list[str] = [_conversation_heading(kind, key, dir_names)]
-        dm_contact_name = ""
-        dm_is_self = False
-        if kind == "whatsapp_dm":
-            dm_contact_name = _lookup_whatsapp_name(key, dir_names)
-            dm_is_self = _is_self_whatsapp_dm_key(key)
         last_time_label: str | None = None
-        explicit_user_speakers_by_day_and_content: dict[tuple[str, str], set[str]] = {}
-        for msg in rows:
-            role = str(msg.get("role") or "").strip()
-            if role != "user":
-                continue
-            time_label = format_relative_time_label(msg.get("received_at"))
-            day_bucket = time_label or "unknown-day"
-            speaker = str(msg.get("speaker") or "").strip()
-            content = str(msg.get("content") or "")
-            if role == "user" and kind == "whatsapp_group":
-                parsed = _parse_shared_group_sender_prefix(content)
-                if parsed is not None:
-                    speaker = parsed[0]
-                    content = parsed[1]
-            if (
-                role == "user"
-                and kind == "whatsapp_dm"
-                and dm_contact_name
-                and not dm_is_self
-                and (
-                    not speaker
-                    or speaker.lower() == role.lower()
-                    or _speaker_looks_like_self(speaker)
-                )
-            ):
-                speaker = dm_contact_name
-            if not speaker:
-                continue
-            explicit_user_speakers_by_day_and_content.setdefault((day_bucket, content.strip()), set()).add(speaker)
         # Legacy alias splits + overlap drift can produce repeated rows for the
         # same sender/text within one day bucket. Suppress duplicates in prompt
         # rendering so cross-chat context stays semantically dense.
@@ -637,33 +551,17 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
             role = str(msg.get("role") or "").strip()
             speaker = str(msg.get("speaker") or "").strip()
             content = str(msg.get("content") or "")
+            # Legacy fallback: pre-eb51570 group rows stored the raw "[Sender] body"
+            # text. The content prefix is the authoritative sender for groups.
             if role == "user" and kind == "whatsapp_group":
                 parsed = _parse_shared_group_sender_prefix(content)
                 if parsed is not None:
-                    parsed_speaker, parsed_content = parsed
-                    speaker = parsed_speaker
-                    content = parsed_content
-            if (
-                role == "user"
-                and kind == "whatsapp_dm"
-                and dm_contact_name
-                and not dm_is_self
-                and (
-                    not speaker
-                    or speaker.lower() == role.lower()
-                    or _speaker_looks_like_self(speaker)
-                )
-            ):
-                speaker = dm_contact_name
-            day_bucket = time_label or "unknown-day"
-            if not speaker and role == "user" and kind == "whatsapp_dm":
-                explicit_speakers = explicit_user_speakers_by_day_and_content.get((day_bucket, content.strip())) or set()
-                if len(explicit_speakers) == 1:
-                    speaker = next(iter(explicit_speakers))
+                    speaker, content = parsed
             if not speaker and cid and role:
                 speaker = canonical_speaker.get((cid, role), "")
             if not speaker:
                 speaker = role or "unknown"
+            day_bucket = time_label or "unknown-day"
             dedupe_key = (day_bucket, speaker.strip().lower(), content.strip())
             if dedupe_key in seen_day_lines:
                 continue
