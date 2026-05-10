@@ -418,6 +418,7 @@ def read_recent_for_conversation_ids(
 
 def format_merged_history(messages: list[dict[str, Any]]) -> str:
     """Format merged messages as grouped markdown for the soul's cross-chat context."""
+    numeric_like_re = re.compile(r"^[0-9+\-() .]+$")
 
     def _conversation_kind_and_key(conversation_id: str) -> tuple[str, str]:
         cid = str(conversation_id or "").strip()
@@ -459,7 +460,36 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
         return out
 
     def _lookup_whatsapp_name(key: str, names: dict[str, str]) -> str:
-        return names.get(key) or names.get(_normalize_whatsapp_identifier(key)) or ""
+        key_norm = _normalize_whatsapp_identifier(key)
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def _push(candidate_key: str) -> None:
+            value = str(names.get(candidate_key) or "").strip()
+            if value and value not in seen:
+                seen.add(value)
+                candidates.append(value)
+
+        if key:
+            _push(key)
+        if key_norm:
+            _push(key_norm)
+
+        for alias in sorted(_expand_whatsapp_alias_identifiers(key_norm), key=lambda item: (len(item), item)):
+            _push(alias)
+            _push(f"{alias}@lid")
+            _push(f"{alias}@s.whatsapp.net")
+
+        if not candidates:
+            return ""
+
+        def _score(name: str) -> tuple[int, int, int]:
+            normalized_name = _normalize_whatsapp_identifier(name)
+            same_as_key = int(bool(key_norm) and normalized_name == key_norm)
+            numeric_like = int(bool(numeric_like_re.fullmatch(name)))
+            return (same_as_key, numeric_like, len(name))
+
+        return min(candidates, key=_score)
 
     def _conversation_heading(kind: str, key: str, names: dict[str, str]) -> str:
         if kind == "whatsapp_group":
@@ -506,10 +536,25 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
         kind, key = _conversation_kind_and_key(cid)
         section_key = _section_title(kind)
         blocks = sections.setdefault(section_key, [])
-        whatsapp_dm_contact_name = _lookup_whatsapp_name(key, dir_names) if kind == "whatsapp_dm" else ""
-
         conv_lines: list[str] = [_conversation_heading(kind, key, dir_names)]
         last_time_label: str | None = None
+        explicit_user_speakers_by_day_and_content: dict[tuple[str, str], set[str]] = {}
+        for msg in rows:
+            role = str(msg.get("role") or "").strip()
+            if role != "user":
+                continue
+            time_label = format_relative_time_label(msg.get("received_at"))
+            day_bucket = time_label or "unknown-day"
+            speaker = str(msg.get("speaker") or "").strip()
+            content = str(msg.get("content") or "")
+            if role == "user" and kind == "whatsapp_group":
+                parsed = _parse_shared_group_sender_prefix(content)
+                if parsed is not None:
+                    speaker = parsed[0]
+                    content = parsed[1]
+            if not speaker:
+                continue
+            explicit_user_speakers_by_day_and_content.setdefault((day_bucket, content.strip()), set()).add(speaker)
         # Legacy alias splits + overlap drift can produce repeated rows for the
         # same sender/text within one day bucket. Suppress duplicates in prompt
         # rendering so cross-chat context stays semantically dense.
@@ -521,12 +566,6 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
                 last_time_label = time_label
             role = str(msg.get("role") or "").strip()
             speaker = str(msg.get("speaker") or "").strip()
-            if not speaker and cid and role:
-                speaker = canonical_speaker.get((cid, role), "")
-            if not speaker:
-                speaker = role or "unknown"
-            if role == "user" and kind == "whatsapp_dm" and whatsapp_dm_contact_name:
-                speaker = whatsapp_dm_contact_name
             content = str(msg.get("content") or "")
             if role == "user" and kind == "whatsapp_group":
                 parsed = _parse_shared_group_sender_prefix(content)
@@ -535,6 +574,14 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
                     speaker = parsed_speaker
                     content = parsed_content
             day_bucket = time_label or "unknown-day"
+            if not speaker and role == "user" and kind == "whatsapp_dm":
+                explicit_speakers = explicit_user_speakers_by_day_and_content.get((day_bucket, content.strip())) or set()
+                if len(explicit_speakers) == 1:
+                    speaker = next(iter(explicit_speakers))
+            if not speaker and cid and role:
+                speaker = canonical_speaker.get((cid, role), "")
+            if not speaker:
+                speaker = role or "unknown"
             dedupe_key = (day_bucket, speaker.strip().lower(), content.strip())
             if dedupe_key in seen_day_lines:
                 continue
