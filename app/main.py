@@ -3694,7 +3694,10 @@ async def conversation_turn(
 
         response_text = str(turn_contract.get("response") or "").strip()
         if not dry_run and response_text and conversation_state_path is not None and conversation_state_path.exists():
-            user_name = str(safe.get("user_name") or "").strip()
+            # user_name is a display name (e.g., WhatsApp "Liz Kalverda"). When
+            # a caller (SillyTavern plugin) omits it, fall back to user_id so
+            # the speaker is still stamped and rendering doesn't show "[user]:".
+            user_name = str(safe.get("user_name") or "").strip() or uid
             current_user_msg: dict[str, Any] = {"role": "user", "content": message}
             if user_name:
                 current_user_msg["name"] = user_name
