@@ -3479,6 +3479,51 @@ def _turn_launch_apimw(
     return "started"
 
 
+@app.post("/conversation/{conversation_id}/messages/append", operation_id="conversation_append_message")
+async def conversation_append_message(
+    conversation_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    """Append a single message to the per-conversation messages table.
+
+    Used by Hermes' listen-only policy: ingest the message into memU so it
+    flows into memorize and cross-chat context, without engaging the soul
+    for a response. No retrieve, no turn, no LLM calls — just a write.
+    """
+    cid = str(conversation_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+    safe = _safe_payload(payload)
+    scope = _extract_scope(safe)
+    uid = str(scope.get("user_id") or "").strip()
+    soul_id = str(scope.get("soul_id") or "").strip()
+    if not uid or not soul_id:
+        raise HTTPException(status_code=400, detail="user_id and soul_id required")
+    message = _pick_str(safe, "message", "content") or ""
+    if not message.strip():
+        raise HTTPException(status_code=400, detail="message is required")
+    user_name = _pick_str(safe, "user_name") or ""
+    role = (_pick_str(safe, "role") or "user").strip()
+
+    _state_row, _soul_card, db_path = _load_turn_state_and_soul_card(
+        cid, user_id=uid, soul_id=soul_id,
+    )
+    if db_path is None or not db_path.exists():
+        raise HTTPException(status_code=404, detail="conversation state not found")
+    _con = _sqlite_connect(db_path)
+    try:
+        _con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(_con)
+        msg: dict[str, Any] = {"role": role, "content": message}
+        if user_name:
+            msg["name"] = user_name
+        appended = _message_log.append_messages(_con, cid, [msg])
+        _con.commit()
+    finally:
+        _con.close()
+    return {"ok": True, "conversation_id": cid, "appended": int(appended)}
+
+
 @app.post("/conversation/{conversation_id}/turn", operation_id="conversation_turn")
 async def conversation_turn(
     conversation_id: str,
