@@ -77,7 +77,9 @@ def test_parse_consolidation_xml_edges_and_write_helpers() -> None:
     assert invalidated == 1
     assert repo.invalidated == [("mem_x", "conflicts_with", "mem_y")]
     assert getattr(repo.added[0], "confidence") == 0.61
-    assert getattr(repo.added[1], "confidence") == 0.8
+    # Edge 2's <confidence> was invalid and stripped at parse time; no AI judgment,
+    # so the stored confidence is NULL (no artificial fallback).
+    assert getattr(repo.added[1], "confidence") is None
 
 
 def test_parse_consolidation_xml_accepts_root_attributes() -> None:

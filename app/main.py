@@ -1301,7 +1301,6 @@ async def _persist_annulment_memories(
             source_role="soul",
             speaker_id=f"soul:{soul_slug}",
             speaker_label=soul_label or "soul",
-            confidence=1.0,
             happened_at=datetime.now(UTC),
             reflection_salience=saliences[idx],
             conversation_id=conversation_id,

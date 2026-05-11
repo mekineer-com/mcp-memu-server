@@ -1,13 +1,10 @@
 """Shared edge normalization + write/invalidate helpers for APImw and consolidation.
 
 Confidence convention:
-- Mechanical triples (``mentions``, ``evolved_into``) are written directly by memorize.py
-  without an explicit confidence value, so they land at Triple's model default of 1.0
-  (certain by construction — no LLM judgment involved).
-- LLM-judgment triples (the five ALLOWED_EDGE_PREDICATES below) are written via
-  ``_normalize_edges``.  When the LLM omits confidence the fallback is 0.8, reflecting
-  that the relationship is inferred rather than directly observed.
-The two tiers should stay separate; do NOT unify the defaults.
+- If no AI judged the confidence, the field is left NULL.  No fallback.  Mechanical
+  triples (``mentions``, ``evolved_into``) and LLM-judgment triples (the five
+  ALLOWED_EDGE_PREDICATES below) where the model omitted ``confidence`` both land
+  here.  Absence is signal: ``NULL`` means ``not assigned by AI``.
 """
 from __future__ import annotations
 
@@ -31,11 +28,14 @@ def _normalize_edges(payload: Any) -> list[dict[str, Any]]:
         object_id = str(entry.get("object_id") or "").strip()
         if not subject_id or not object_id or predicate not in ALLOWED_EDGE_PREDICATES:
             continue
-        confidence_raw = entry.get("confidence", 0.8)
-        try:
-            confidence = float(confidence_raw)
-        except (TypeError, ValueError):
-            confidence = 0.8
+        confidence_raw = entry.get("confidence")
+        if confidence_raw is None:
+            confidence: float | None = None
+        else:
+            try:
+                confidence = float(confidence_raw)
+            except (TypeError, ValueError):
+                confidence = None
         out.append(
             {
                 "subject_id": subject_id,
