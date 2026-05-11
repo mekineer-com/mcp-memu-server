@@ -571,10 +571,14 @@ async def test_conversation_retrieve_injects_cross_context_even_with_prebuilt_qu
 
 
 @pytest.mark.asyncio
-async def test_conversation_retrieve_stamps_user_name_on_current_appended_message(
+async def test_conversation_retrieve_does_not_persist_current_user_message(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """User message persistence is deferred to conversation_turn (paired with
+    the assistant response) so that aborted/inspected turns leave no orphan
+    rows in the messages table.
+    """
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -614,16 +618,15 @@ async def test_conversation_retrieve_stamps_user_name_on_current_appended_messag
     con = main._sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        row = con.execute(
-            "SELECT role, speaker, content FROM messages WHERE conversation_id = ? AND content = ? ORDER BY id DESC LIMIT 1",
-            ("cid-current", "current message"),
-        ).fetchone()
+        rows = con.execute(
+            "SELECT role, speaker, content FROM messages WHERE conversation_id = ?",
+            ("cid-current",),
+        ).fetchall()
     finally:
         con.close()
 
-    assert row is not None
-    assert str(row["role"]) == "user"
-    assert str(row["speaker"]) == "Liz Kalverda"
+    # No rows should be persisted by retrieve alone: that is the orphan-prevention contract.
+    assert rows == []
 
 
 @pytest.mark.asyncio
@@ -739,6 +742,7 @@ async def test_conversation_turn_persists_assistant_message_for_cross_context(
     payload = {
         "user": {"user_id": "u1", "soul_id": "Echo", "conversation_id": "cid-turn"},
         "message": "hello",
+        "user_name": "Liz Kalverda",
         "history": [{"role": "user", "content": "hello"}],
         "run_apimw": False,
         "apply_turn_maintenance": False,
@@ -759,14 +763,19 @@ async def test_conversation_turn_persists_assistant_message_for_cross_context(
     con = main._sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        row = con.execute(
-            "SELECT role, speaker, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
+        rows = con.execute(
+            "SELECT role, speaker, content FROM messages WHERE conversation_id = ? ORDER BY id ASC",
             ("cid-turn",),
-        ).fetchone()
+        ).fetchall()
     finally:
         con.close()
 
-    assert row is not None
-    assert str(row["role"]) == "assistant"
-    assert str(row["speaker"]) == "Echo"
-    assert str(row["content"]) == "assistant says hi"
+    # The current user message and the assistant response are persisted as a
+    # pair so that an aborted turn (no response) leaves no orphan user row.
+    assert len(rows) == 2
+    assert str(rows[0]["role"]) == "user"
+    assert str(rows[0]["speaker"]) == "Liz Kalverda"
+    assert str(rows[0]["content"]) == "hello"
+    assert str(rows[1]["role"]) == "assistant"
+    assert str(rows[1]["speaker"]) == "Echo"
+    assert str(rows[1]["content"]) == "assistant says hi"

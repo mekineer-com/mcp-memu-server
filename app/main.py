@@ -3144,7 +3144,6 @@ async def conversation_retrieve(
         uid = str(scope.get("user_id") or "").strip()
         soul_id = str(scope.get("soul_id") or "").strip()
         message = _pick_str(safe, "message", "query") or ""
-        user_name = _pick_str(safe, "user_name") or ""
         history = _normalize_turn_history(safe.get("history"))
         state_row: dict[str, Any] | None = None
         cross_tail: list[dict[str, Any]] = []
@@ -3159,15 +3158,10 @@ async def conversation_retrieve(
                 try:
                     _con.row_factory = sqlite3.Row
                     _sqlite_ensure_conversation_state_schema(_con)
-                    full_history = list(history)
-                    if message.strip():
-                        current_msg: dict[str, Any] = {"role": "user", "content": message}
-                        if user_name:
-                            current_msg["name"] = user_name
-                        full_history.append(current_msg)
-                    _message_log.append_messages(_con, cid, full_history)
+                    # Persistence of the current user message is deferred to
+                    # conversation_turn (paired with the assistant response) so
+                    # that aborted/inspected turns leave no orphan rows.
                     cross_tail = _message_log.read_all_tails(_con, exclude_conversation_id=cid)
-                    _con.commit()
                 finally:
                     _con.close()
 
@@ -3700,6 +3694,10 @@ async def conversation_turn(
 
         response_text = str(turn_contract.get("response") or "").strip()
         if not dry_run and response_text and conversation_state_path is not None and conversation_state_path.exists():
+            user_name = str(safe.get("user_name") or "").strip()
+            current_user_msg: dict[str, Any] = {"role": "user", "content": message}
+            if user_name:
+                current_user_msg["name"] = user_name
             _con = _sqlite_connect(conversation_state_path)
             try:
                 _con.row_factory = sqlite3.Row
@@ -3707,7 +3705,10 @@ async def conversation_turn(
                 _message_log.append_messages(
                     _con,
                     cid,
-                    [{"role": "assistant", "name": soul_id, "content": response_text}],
+                    [
+                        current_user_msg,
+                        {"role": "assistant", "name": soul_id, "content": response_text},
+                    ],
                 )
                 _con.commit()
             finally:
