@@ -132,7 +132,6 @@ def render_history(history: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     last_time_label: str | None = None
     for item in reversed(selected):
-        message_id = _text(item.get("message_id") or item.get("source_message_id") or item.get("id"))
         role = _text(item.get("name") or item.get("role") or "unknown")
         content = _text(item.get("content"))
         time_label = format_relative_time_label(
@@ -143,10 +142,7 @@ def render_history(history: list[dict[str, Any]]) -> str:
                 lines.append("")
             lines.append(f"--- {time_label} ---")
             last_time_label = time_label
-        if message_id:
-            lines.append(f"[{message_id}] [{role}] {content}")
-        else:
-            lines.append(f"[{role}] {content}")
+        lines.append(f"[{role}] {content}")
     return "\n".join(lines) or "(none)"
 
 
@@ -516,8 +512,7 @@ def build_turn_prompt(
     # history → new message as one continuous exchange. The cache + intentions
     # blocks sit between the history block and the "New message:" footer, so
     # without this echo the flow reads as interrupted. Carry the prior user
-    # item's name + next message_id so the echo renders identically to the
-    # rest of the history ("[46] [Marcos] ..." not "[user] ...").
+    # item's name so the echo renders with the correct speaker label.
     history_for_render = list(history or [])
     current_user_text = _text(user_message)
     last_history_item: dict[str, Any] | None = None
@@ -535,7 +530,6 @@ def build_turn_prompt(
     )
     if current_user_text and not already_has_current_user_message:
         last_user_name = ""
-        last_msg_id = -1
         for item in history_for_render:
             if not isinstance(item, dict):
                 continue
@@ -543,17 +537,9 @@ def build_turn_prompt(
                 name = _text(item.get("name"))
                 if name:
                     last_user_name = name
-            mid = item.get("message_id") or item.get("source_message_id") or item.get("id")
-            if mid is not None:
-                try:
-                    last_msg_id = max(last_msg_id, int(str(mid).strip()))
-                except (TypeError, ValueError):
-                    pass
         synthetic: dict[str, Any] = {"role": "user", "content": current_user_text}
         if last_user_name:
             synthetic["name"] = last_user_name
-        if last_msg_id >= 0:
-            synthetic["source_message_id"] = str(last_msg_id + 1)
         history_for_render.append(synthetic)
 
     cross_block: list[str] = []

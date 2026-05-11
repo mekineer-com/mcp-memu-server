@@ -292,9 +292,9 @@ def test_build_retrieve_soul_context_queries_uses_last_8_messages_for_rewrite() 
     history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
     assert len(history_rows) == 1
     text = str((history_rows[0].get("content") or {}).get("text") or "")
-    assert "[m8] [user] msg 8" in text
-    assert "[m15] [user] msg 15" in text
-    assert "[m7] [user] msg 7" not in text
+    assert "[user] msg 8" in text
+    assert "[user] msg 15" in text
+    assert "[user] msg 7" not in text
 
 
 def test_build_retrieve_soul_context_queries_uses_last_12_messages_for_apimw_rewrite() -> None:
@@ -312,9 +312,9 @@ def test_build_retrieve_soul_context_queries_uses_last_12_messages_for_apimw_rew
     history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
     assert len(history_rows) == 1
     text = str((history_rows[0].get("content") or {}).get("text") or "")
-    assert "[m4] [user] msg 4" in text
-    assert "[m15] [user] msg 15" in text
-    assert "[m3] [user] msg 3" not in text
+    assert "[user] msg 4" in text
+    assert "[user] msg 15" in text
+    assert "[user] msg 3" not in text
 
 
 @pytest.mark.asyncio
