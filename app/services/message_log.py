@@ -120,6 +120,9 @@ def append_messages(
         new_rows_data = []
 
     # Fallback: incremental payloads (latest message(s) only).
+    # Policy: exact tail overlap is treated as duplicate noise and suppressed.
+    # This is intentional for retry/replay-prone paths (including listen_only
+    # message ingestion) where duplicate rows hurt context quality.
     if not new_rows_data:
         recent_rows = con.execute(
             "SELECT role, speaker, content FROM messages "
