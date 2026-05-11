@@ -481,7 +481,7 @@ def test_format_merged_history_dm_preserves_explicit_speaker_per_row(tmp_path, m
             {
                 "platforms": {
                     "whatsapp": [
-                        {"id": "247789598601266@lid", "name": "Liz Kalverda", "type": "dm"},
+                        {"id": "19999999999@lid", "name": "Alice", "type": "dm"},
                     ]
                 }
             }
@@ -496,7 +496,7 @@ def test_format_merged_history_dm_preserves_explicit_speaker_per_row(tmp_path, m
     rendered = message_log.format_merged_history(
         [
             {
-                "conversation_id": "whatsapp:dm:247789598601266",
+                "conversation_id": "whatsapp:dm:19999999999",
                 "source_label": "whatsapp:dm",
                 "role": "user",
                 "speaker": "Marcos",
@@ -504,19 +504,19 @@ def test_format_merged_history_dm_preserves_explicit_speaker_per_row(tmp_path, m
                 "received_at": "2026-05-10T08:00:00+00:00",
             },
             {
-                "conversation_id": "whatsapp:dm:247789598601266",
+                "conversation_id": "whatsapp:dm:19999999999",
                 "source_label": "whatsapp:dm",
                 "role": "user",
-                "speaker": "Liz Kalverda",
+                "speaker": "Alice",
                 "content": "yes I saw it",
                 "received_at": "2026-05-10T08:00:01+00:00",
             },
         ]
     )
 
-    assert "[dm][Liz Kalverda]" in rendered
+    assert "[dm][Alice]" in rendered
     assert "[Marcos]: did news travel?" in rendered
-    assert "[Liz Kalverda]: yes I saw it" in rendered
+    assert "[Alice]: yes I saw it" in rendered
 
 
 def test_format_merged_history_dm_does_not_infer_blank_speaker_from_other_rows(tmp_path, monkeypatch) -> None:
@@ -527,7 +527,7 @@ def test_format_merged_history_dm_does_not_infer_blank_speaker_from_other_rows(t
             {
                 "platforms": {
                     "whatsapp": [
-                        {"id": "247789598601266@lid", "name": "Liz Kalverda", "type": "dm"},
+                        {"id": "19999999999@lid", "name": "Alice", "type": "dm"},
                     ]
                 }
             }
@@ -539,7 +539,7 @@ def test_format_merged_history_dm_does_not_infer_blank_speaker_from_other_rows(t
     rendered = message_log.format_merged_history(
         [
             {
-                "conversation_id": "whatsapp:dm:247789598601266",
+                "conversation_id": "whatsapp:dm:19999999999",
                 "source_label": "whatsapp:dm",
                 "role": "user",
                 "speaker": "Marcos",
@@ -547,7 +547,7 @@ def test_format_merged_history_dm_does_not_infer_blank_speaker_from_other_rows(t
                 "received_at": "2026-05-10T08:00:00+00:00",
             },
             {
-                "conversation_id": "whatsapp:dm:247789598601266",
+                "conversation_id": "whatsapp:dm:19999999999",
                 "source_label": "whatsapp:dm",
                 "role": "user",
                 "speaker": "",

@@ -607,7 +607,7 @@ async def test_conversation_retrieve_does_not_persist_current_user_message(
         "user": {"user_id": "u1", "soul_id": "Echo"},
         "message": "current message",
         "query": "current message",
-        "user_name": "Liz Kalverda",
+        "user_name": "Alice",
         "history": [{"role": "user", "content": "prior message"}],
         "queries": [{"role": "message", "content": {"text": "current message"}}],
     }
@@ -742,7 +742,7 @@ async def test_conversation_turn_persists_assistant_message_for_cross_context(
     payload = {
         "user": {"user_id": "u1", "soul_id": "Echo", "conversation_id": "cid-turn"},
         "message": "hello",
-        "user_name": "Liz Kalverda",
+        "user_name": "Alice",
         "history": [{"role": "user", "content": "hello"}],
         "run_apimw": False,
         "apply_turn_maintenance": False,
@@ -774,7 +774,7 @@ async def test_conversation_turn_persists_assistant_message_for_cross_context(
     # pair so that an aborted turn (no response) leaves no orphan user row.
     assert len(rows) == 2
     assert str(rows[0]["role"]) == "user"
-    assert str(rows[0]["speaker"]) == "Liz Kalverda"
+    assert str(rows[0]["speaker"]) == "Alice"
     assert str(rows[0]["content"]) == "hello"
     assert str(rows[1]["role"]) == "assistant"
     assert str(rows[1]["speaker"]) == "Echo"
