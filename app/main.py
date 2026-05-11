@@ -3517,7 +3517,7 @@ async def conversation_append_message(
         msg: dict[str, Any] = {"role": role, "content": message}
         if user_name:
             msg["name"] = user_name
-        appended = _message_log.append_messages(_con, cid, [msg])
+        appended = _message_log.append_single_message(_con, cid, msg)
         _con.commit()
     finally:
         _con.close()

@@ -12,6 +12,34 @@ def _con() -> sqlite3.Connection:
     return con
 
 
+def test_append_single_message_writes_identical_consecutive_rows() -> None:
+    # The listen-only ingestion path must not silently drop a repeated message.
+    # append_messages's overlap dedupe (correct for cumulative payloads) would
+    # have returned appended=0 on the second identical call. append_single_message
+    # bypasses that.
+    con = _con()
+    try:
+        cid = "whatsapp:dm:15133278228"
+        msg = {"role": "user", "name": "Liz", "content": "hello"}
+        assert message_log.append_single_message(con, cid, msg) == 1
+        assert message_log.append_single_message(con, cid, msg) == 1
+        rows = message_log.read_tail(con, cid, after_cursor=0)
+        assert [r["content"] for r in rows] == ["hello", "hello"]
+        assert [r["speaker"] for r in rows] == ["Liz", "Liz"]
+    finally:
+        con.close()
+
+
+def test_append_single_message_returns_zero_for_empty_content() -> None:
+    con = _con()
+    try:
+        cid = "whatsapp:dm:15133278228"
+        assert message_log.append_single_message(con, cid, {"role": "user", "content": "   "}) == 0
+        assert message_log.read_tail(con, cid, after_cursor=0) == []
+    finally:
+        con.close()
+
+
 def test_append_messages_cumulative_history_fast_path() -> None:
     con = _con()
     try:

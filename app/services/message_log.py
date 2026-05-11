@@ -159,6 +159,41 @@ def append_messages(
     return len(rows)
 
 
+def append_single_message(
+    con: sqlite3.Connection,
+    conversation_id: str,
+    message: dict[str, Any],
+    source_label: str | None = None,
+) -> int:
+    """Write one message unconditionally — no overlap dedupe.
+
+    Used by the listen-only ingestion endpoint, where the caller knows the
+    message is new (the bridge already de-duplicates by inbound message id).
+    Returns 1 if a row was written, 0 if the content was empty after
+    normalization.
+    """
+    if not isinstance(message, dict):
+        return 0
+    role = str(message.get("role") or "user").strip()
+    content = str(message.get("content") or message.get("text") or "").strip()
+    if isinstance(message.get("content"), dict):
+        content = str(message["content"].get("text") or "").strip()
+    speaker = str(message.get("name") or message.get("speaker") or "").strip() or None
+    role, speaker, content = _normalize_row_for_overlap(
+        conversation_id, role, speaker, content
+    )
+    if not content:
+        return 0
+    label = source_label or derive_source_label(conversation_id)
+    now_iso = datetime.now(UTC).isoformat()
+    con.execute(
+        "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (conversation_id, role, speaker, content, label, now_iso),
+    )
+    return 1
+
+
 def read_tail(
     con: sqlite3.Connection,
     conversation_id: str,
