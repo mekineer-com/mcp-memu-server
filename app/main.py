@@ -3230,6 +3230,14 @@ async def conversation_retrieve(
                     response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
                 )
                 _subconscious_msg = str(_state_row.get("subconscious_message") or "").strip() or None
+                chat_name_for_prompt = str(safe.get("chat_name") or "").strip()
+                chat_type_for_prompt = str(safe.get("chat_type") or "").strip()
+                if chat_name_for_prompt and chat_type_for_prompt:
+                    chat_label_for_prompt = f"[{chat_type_for_prompt}][{chat_name_for_prompt}]"
+                elif chat_name_for_prompt:
+                    chat_label_for_prompt = f"[{chat_name_for_prompt}]"
+                else:
+                    chat_label_for_prompt = None
                 out["turn_user_prompt"] = _build_turn_prompt(
                     user_message=message,
                     history=history,
@@ -3240,6 +3248,7 @@ async def conversation_retrieve(
                     intentions_active=intentions_active,
                     subconscious_message=_subconscious_msg,
                     cross_conversation_history=safe.get("_cross_conversation_history"),
+                    chat_label=chat_label_for_prompt,
                 )
                 if _subconscious_msg:
                     _write_conversation_state(
@@ -3692,7 +3701,30 @@ async def conversation_turn(
                 cid, uid, soul_id, safe, history_full,
             )
 
+        response_target = str(turn_contract.get("response_target") or "respond").lower()
+        response_peer = str(turn_contract.get("response_peer") or "").strip()
         response_text = str(turn_contract.get("response") or "").strip()
+
+        # Enforce response_target contract:
+        # - listen: nothing is sent.
+        # - respond: response_peer must match the originating chat name. The
+        #   match is skipped when the caller hasn't supplied chat_name yet,
+        #   so legacy contracts keep working until hermes is updated.
+        # - private: passes through; routing to the human's private chat is
+        #   hermes-side (see HANDOFF for the wiring task).
+        if response_target == "listen":
+            response_text = ""
+        elif response_target == "respond":
+            chat_name = str(safe.get("chat_name") or "").strip()
+            if chat_name:
+                peer_norm = re.sub(r"\s+", " ", response_peer).strip().lower()
+                chat_norm = re.sub(r"\s+", " ", chat_name).strip().lower()
+                if peer_norm != chat_norm:
+                    logger.info(
+                        "conversation_turn: response dropped — response_peer=%r does not match chat_name=%r",
+                        response_peer, chat_name,
+                    )
+                    response_text = ""
         if not dry_run and response_text and conversation_state_path is not None and conversation_state_path.exists():
             user_name = str(safe.get("user_name") or "").strip()
             current_user_msg: dict[str, Any] = {"role": "user", "content": message}
@@ -3718,6 +3750,8 @@ async def conversation_turn(
             "ok": True,
             "conversation_id": cid,
             "response": response_text,
+            "response_target": response_target,
+            "response_peer": response_peer,
             "apimw": apimw_status,
             "prompt_override_used": True,
             "final_turn_payload": {

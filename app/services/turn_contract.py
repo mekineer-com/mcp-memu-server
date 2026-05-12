@@ -58,7 +58,9 @@ Required top-level keys:
 - cache: object or null
 - annulments: array
 - inner_thought: string
-- response: string
+- response_target: string  (one of "respond", "listen", "private")
+- response_peer: string    (required when response_target == "respond")
+- response: string         (required when response_target in {{"respond", "private"}})
 
 Schema:
 {{
@@ -67,6 +69,8 @@ Schema:
     {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
   ],
   "inner_thought":"string",
+  "response_target":"respond|listen|private",
+  "response_peer":"string",
   "response":"string"
 }}
 
@@ -78,7 +82,11 @@ Rules:
 - Intentions "ID: text" are sorted by approximate priority, higher first. Use the ID before the colon as intention_id for annulments. The `relax` intention is always present as a gentle reminder that not everything needs to be pursued.
 - cache: your cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through across turns (debugging, brainstorming, daydreaming toward something). Not a recap of what was said; history already holds that. Don't duplicate or waste on the frivolous because you have limited working-memory-capacity. Oldest entry is replaced on next write.
 - inner_thought: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. Include theory of mind and temporal reasoning. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
-- response: what the user sees. Maximum length {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in inner_thought, not what sounds helpful. If you don't understand, ask — don't guess. "What do you mean?" is a complete response.
+- response_target: choose how this turn lands.
+  - "respond" — speak into the chat this turn came from. You must also fill response_peer with the exact contact or group name of that chat (shown as `Current chat:` below). If the name doesn't match, your message is dropped.
+  - "listen" — read the context but say nothing. response and response_peer may be empty.
+  - "private" — speak privately to your human about a chat you're referencing (e.g., give them context about something you noticed). Fill response with the private message; response_peer may be empty.
+- response: what gets said. Maximum length {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in inner_thought, not what sounds helpful. If you don't understand, ask — don't guess. "What do you mean?" is a complete response. Required when response_target is "respond" or "private"; otherwise may be empty.
 """
 
 
@@ -464,6 +472,7 @@ def build_turn_prompt(
     intentions_active: Any,
     subconscious_message: str | None = None,
     cross_conversation_history: str | None = None,
+    chat_label: str | None = None,
     now: datetime | None = None,
 ) -> str:
     cache = normalize_memory_cache(memory_cache)
@@ -550,6 +559,8 @@ def build_turn_prompt(
         else:
             cross_block = ["Other conversations:", cross_history_text, ""]
 
+    current_chat_line = f"Current chat: {chat_label}" if chat_label else ""
+
     parts = [
         *context_blocks,
         *cross_block,
@@ -563,6 +574,7 @@ def build_turn_prompt(
         "My intentions:",
         format_intentions_for_prompt(intentions_active),
         "",
+        *([current_chat_line, ""] if current_chat_line else []),
         f"New message:\n{current_user_text}",
         "",
         "**remember maximum lengths**",
@@ -588,9 +600,16 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("turn response must be a JSON object")
 
+    response_target = _text(parsed.get("response_target")).lower() or "respond"
+    if response_target not in {"respond", "listen", "private"}:
+        raise ValueError("response_target must be one of respond|listen|private")
+    response_peer = _text(parsed.get("response_peer"))
     response = _text(parsed.get("response"))
-    if not response:
-        raise ValueError("response is required")
+    if response_target == "respond" and not response:
+        raise ValueError("response is required when response_target is 'respond'")
+    # response_peer is enforced by the turn endpoint against the actual chat
+    # context (see conversation_turn). The parser stays permissive so a soul
+    # using the legacy contract (no response_target/peer) still parses.
 
     # LLM outputs cache.entry → parsed as cache_entry → appended to memory_cache list
     cache_raw = parsed.get("cache")
@@ -633,6 +652,8 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
     inner_thought = _text(parsed.get("inner_thought"))
     return {
         "response": response,
+        "response_target": response_target,
+        "response_peer": response_peer,
         "cache_entry": cache_entry,
         "annulments": annulments,
         "inner_thought": inner_thought,

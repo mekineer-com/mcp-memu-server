@@ -17,6 +17,41 @@ def test_parse_turn_contract_valid_json():
     assert parsed["response"] == "Hi there"
     assert parsed["cache_entry"] == "thinking"
     assert parsed["inner_thought"] == "hmm"
+    # Legacy payload with no response_target defaults to "respond" for
+    # backward compatibility while hermes / the soul prompt catch up.
+    assert parsed["response_target"] == "respond"
+    assert parsed["response_peer"] == ""
+
+
+def test_parse_turn_contract_listen_target_allows_empty_response():
+    parsed = parse_turn_contract(
+        '{"response":"","response_target":"listen","cache":null,"annulments":[],"inner_thought":"watching"}'
+    )
+    assert parsed["response_target"] == "listen"
+    assert parsed["response"] == ""
+
+
+def test_parse_turn_contract_respond_target_requires_response():
+    with pytest.raises(ValueError, match="response is required"):
+        parse_turn_contract(
+            '{"response":"","response_target":"respond","response_peer":"Alice","cache":null,"annulments":[],"inner_thought":"ok"}'
+        )
+
+
+def test_parse_turn_contract_rejects_invalid_target():
+    with pytest.raises(ValueError, match="response_target"):
+        parse_turn_contract(
+            '{"response":"hi","response_target":"yodel","cache":null,"annulments":[],"inner_thought":"ok"}'
+        )
+
+
+def test_parse_turn_contract_private_target():
+    parsed = parse_turn_contract(
+        '{"response":"context for you","response_target":"private","cache":null,"annulments":[],"inner_thought":"a quiet aside"}'
+    )
+    assert parsed["response_target"] == "private"
+    assert parsed["response"] == "context for you"
+    assert parsed["response_peer"] == ""
 
 
 def test_parse_turn_contract_rejects_non_json_text():
@@ -35,6 +70,33 @@ def test_parse_turn_contract_accepts_bare_string_cache(caplog):
     assert parsed["cache_entry"] == "a stray thought"
     warnings = [r for r in caplog.records if "bare string" in r.getMessage()]
     assert warnings, "expected a WARN log when cache is auto-wrapped"
+
+
+def test_build_turn_prompt_renders_current_chat_line_when_label_provided():
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[{"role": "user", "content": "hi"}],
+        prior_context=None,
+        retrieve_rag=None,
+        all_categories_summary=None,
+        memory_cache=None,
+        intentions_active=None,
+        chat_label="[dm][Alice]",
+    )
+    assert "Current chat: [dm][Alice]" in prompt
+
+
+def test_build_turn_prompt_omits_current_chat_line_when_label_absent():
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[{"role": "user", "content": "hi"}],
+        prior_context=None,
+        retrieve_rag=None,
+        all_categories_summary=None,
+        memory_cache=None,
+        intentions_active=None,
+    )
+    assert "Current chat:" not in prompt
 
 
 def test_build_turn_prompt_includes_core_sections():

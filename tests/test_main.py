@@ -781,3 +781,93 @@ async def test_conversation_turn_persists_assistant_message_for_cross_context(
     assert str(rows[1]["content"]) == "assistant says hi"
 
 
+@pytest.mark.asyncio
+async def test_conversation_turn_drops_response_when_peer_mismatches_chat_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the soul declares response_target=respond with a peer that does not
+    match the originating chat's chat_name, the response is dropped (empty
+    response_text) and nothing is persisted. The contract validation lives in
+    conversation_turn so an unintended cross-chat reply never reaches a
+    downstream transport.
+    """
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+
+    class _FakeSvc:
+        async def chat(self, *_args, **_kwargs) -> str:
+            # Soul thinks she is responding to Alice, but the originating
+            # chat is with Bob — the validator must drop the reply.
+            return (
+                '{"cache":null,"annulments":[],"inner_thought":"answering Alice",'
+                '"response_target":"respond","response_peer":"Alice",'
+                '"response":"hi Alice"}'
+            )
+
+    async def _fake_persist_annulment_memories(**_kwargs):
+        return []
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        main,
+        "_turn_state_read",
+        lambda *_a, **_k: (
+            {"digest_cursor": 0},
+            None,
+            db_path,
+            [],
+            {"items": []},
+            0,
+            None,
+        ),
+    )
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
+    monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo", "conversation_id": "cid-turn"},
+        "message": "hey",
+        "user_name": "Bob",
+        "chat_name": "Bob",
+        "chat_type": "dm",
+        "history": [],
+        "run_apimw": False,
+        "apply_turn_maintenance": False,
+        "prompt_override_payload": {
+            "user_prompt": "prompt",
+            "system_prompt": "system",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "retrieve_rag": {"items": [], "categories": [], "resources": []},
+        },
+    }
+
+    out = await main.conversation_turn("cid-turn", payload)
+
+    assert out["ok"] is True
+    assert out["response"] == ""
+    assert out["response_target"] == "respond"
+    assert out["response_peer"] == "Alice"
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT role FROM messages WHERE conversation_id = ?",
+            ("cid-turn",),
+        ).fetchall()
+    finally:
+        con.close()
+    # Mismatch means no response text, which means no user+assistant pair.
+    assert rows == []
+
+
