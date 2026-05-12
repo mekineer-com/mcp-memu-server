@@ -605,8 +605,8 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
         raise ValueError("response_target must be one of respond|listen|private")
     response_peer = _text(parsed.get("response_peer"))
     response = _text(parsed.get("response"))
-    if response_target == "respond" and not response:
-        raise ValueError("response is required when response_target is 'respond'")
+    if response_target in {"respond", "private"} and not response:
+        raise ValueError("response is required when response_target is 'respond' or 'private'")
     # response_peer is enforced by the turn endpoint against the actual chat
     # context (see conversation_turn). The parser stays permissive so a soul
     # using the legacy contract (no response_target/peer) still parses.

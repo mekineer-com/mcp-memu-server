@@ -82,6 +82,34 @@ def test_append_messages_incremental_overlap_only_appends_suffix() -> None:
         con.close()
 
 
+def test_append_messages_existing_single_row_does_not_drop_new_user_row() -> None:
+    con = _con()
+    try:
+        assert message_log.append_messages(
+            con,
+            "c3-edge",
+            [{"role": "user", "content": "existing one"}],
+        ) == 1
+
+        assert message_log.append_messages(
+            con,
+            "c3-edge",
+            [
+                {"role": "user", "content": "new current user"},
+                {"role": "assistant", "content": "assistant reply"},
+            ],
+        ) == 2
+
+        rows = message_log.read_tail(con, "c3-edge", after_cursor=0)
+        assert [r["content"] for r in rows] == [
+            "existing one",
+            "new current user",
+            "assistant reply",
+        ]
+    finally:
+        con.close()
+
+
 def test_append_messages_shared_group_parses_sender_prefix_into_speaker() -> None:
     con = _con()
     try:

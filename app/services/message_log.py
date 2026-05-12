@@ -113,9 +113,34 @@ def append_messages(
     ).fetchone()[0]
 
     # Fast path: cumulative full-history payloads (legacy behavior).
+    # Only activate when stored rows are an exact prefix of incoming rows.
+    # A count-only slice can drop the current user row in mixed incremental
+    # flows (for example when one prior row exists and incoming is [user,assistant]).
     new_rows_data: list[tuple[str, str | None, str]]
     if len(incoming_rows) > existing_count:
-        new_rows_data = incoming_rows[existing_count:]
+        prefix_matches = existing_count == 0
+        if existing_count > 0:
+            prefix_rows = con.execute(
+                "SELECT role, speaker, content FROM messages "
+                "WHERE conversation_id = ? ORDER BY id ASC LIMIT ?",
+                (conversation_id, existing_count),
+            ).fetchall()
+            existing_prefix = [
+                _normalize_row_for_overlap(
+                    conversation_id,
+                    str(row["role"] or "").strip(),
+                    str(row["speaker"] or "").strip() or None,
+                    str(row["content"] or "").strip(),
+                )
+                for row in prefix_rows
+            ]
+            prefix_matches = len(existing_prefix) == existing_count and (
+                existing_prefix == incoming_rows[:existing_count]
+            )
+        if prefix_matches:
+            new_rows_data = incoming_rows[existing_count:]
+        else:
+            new_rows_data = []
     else:
         new_rows_data = []
 

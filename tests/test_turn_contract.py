@@ -54,6 +54,13 @@ def test_parse_turn_contract_private_target():
     assert parsed["response_peer"] == ""
 
 
+def test_parse_turn_contract_private_target_requires_response():
+    with pytest.raises(ValueError, match="response is required"):
+        parse_turn_contract(
+            '{"response":"","response_target":"private","cache":null,"annulments":[],"inner_thought":"a quiet aside"}'
+        )
+
+
 def test_parse_turn_contract_rejects_non_json_text():
     with pytest.raises(ValueError):
         parse_turn_contract("```json\\n{}\\n```")
