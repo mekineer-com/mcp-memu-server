@@ -419,7 +419,8 @@ def default_llm_profiles_from_server_config(cfg: dict[str, Any]) -> dict[str, An
     provider = str(llm.get("provider") or "openai")
     client_backend = str(llm.get("client_backend") or "httpx")
     endpoint_overrides = llm.get("endpoint_overrides") or {}
-    default_profile = {
+    temperature = llm.get("temperature")
+    default_profile: dict[str, Any] = {
         "provider": provider,
         "api_key": api_key,
         "base_url": base_url,
@@ -428,6 +429,8 @@ def default_llm_profiles_from_server_config(cfg: dict[str, Any]) -> dict[str, An
         "client_backend": client_backend,
         "endpoint_overrides": endpoint_overrides,
     }
+    if temperature is not None:
+        default_profile["temperature"] = float(temperature)
     profiles = {
         "default": default_profile,
         "embedding": {**default_profile},
