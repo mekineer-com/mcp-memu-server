@@ -607,25 +607,6 @@ def _consolidation_interval_days_from_cfg(cfg: Mapping[str, Any] | None) -> int:
         return 7
 
 
-def _step_temperature_from_cfg(cfg: Mapping[str, Any] | None, step_name: str) -> float | None:
-    if not isinstance(cfg, Mapping):
-        return None
-    llm = cfg.get("llm")
-    if not isinstance(llm, Mapping):
-        return None
-    step_temps = llm.get("step_temperatures")
-    if not isinstance(step_temps, Mapping):
-        return None
-    raw = step_temps.get(step_name)
-    if raw is None or raw == "":
-        return None
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        logger.warning("invalid step temperature for %s: %r", step_name, raw)
-        return None
-
-
 def _build_apimw_retrieve_config(base_cfg: Any, *, item_top_k: int) -> dict[str, Any]:
     cfg = dict(base_cfg) if isinstance(base_cfg, dict) else {}
     item_cfg = cfg.get("item")
@@ -1430,8 +1411,8 @@ async def _compute_holistic_categories_summary(
     )
     result = await svc.chat(
         full_text,
+        profile="holistic_summary",
         system_prompt=system_prompt,
-        temperature=_step_temperature_from_cfg(_CONFIG, "holistic_summary"),
         op="categories",
         step="holistic_summary",
     )
@@ -1592,8 +1573,8 @@ async def _apimw_topic_statement(
     )
     topic_statement = await svc.chat(
         topic_user,
+        profile="topic_statement",
         system_prompt=topic_system,
-        temperature=_step_temperature_from_cfg(_CONFIG, "topic_statement"),
         op="apimw",
         step="topic_statement",
     )

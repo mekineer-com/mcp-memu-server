@@ -79,9 +79,7 @@
   "memorize": {
     "min_chunk_tokens": 4000,
     "episodes_per_segment": 3,
-    "enable_preprocessor": false,
-    "enable_router": false,
-    "enable_target_items": false,
+    "enable_preprocessor": true,
     "enable_confidence_normalization": false,
     "semantic_dedupe_enabled": true
   },

@@ -20,7 +20,7 @@ This is part of the memU local stack — a private fork, not affiliated with Nev
 ## Quick start
 
 ```bash
-# 1. Copy the example config
+# 1. Copy the example config (config.example.json has default values)
 cp config.example.json config.json
 
 # 2. Edit config.json — at minimum:
