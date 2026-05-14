@@ -431,6 +431,9 @@ def default_llm_profiles_from_server_config(cfg: dict[str, Any]) -> dict[str, An
     }
     if temperature is not None:
         default_profile["temperature"] = float(temperature)
+    max_tokens = llm.get("max_tokens")
+    if max_tokens is not None:
+        default_profile["max_tokens"] = int(max_tokens)
     profiles = {
         "default": default_profile,
         "embedding": {**default_profile},
