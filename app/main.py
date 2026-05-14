@@ -120,10 +120,6 @@ _DEFAULT_EPISODES_PER_SEGMENT: int = 3
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
 _EPISODES_PER_SEGMENT: int = _DEFAULT_EPISODES_PER_SEGMENT
 # Uniform runaway-protection caps for LLM calls. Not business logic —
-# these are floors against pathological generation, not content limits.
-# DB-storage limits are enforced separately at the storage write path.
-PIPELINE_MAX_TOKENS: int = 4000  # turn/memorize/retrieve/apimw/consolidation
-UTILITY_MAX_TOKENS: int = 1000   # holistic_summary/topic_statement/narrative_suggestion
 _BACKGROUND_TASKS: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
 _LOG_PROMPTS: bool = False
 _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved", "removed"}
@@ -1406,9 +1402,8 @@ async def _compute_holistic_categories_summary(
     )
     result = await svc.chat(
         full_text,
+        profile="holistic_summary",
         system_prompt=system_prompt,
-        temperature=0.3,
-        max_tokens=UTILITY_MAX_TOKENS,
         op="categories",
         step="holistic_summary",
     )
@@ -1569,9 +1564,8 @@ async def _apimw_topic_statement(
     )
     topic_statement = await svc.chat(
         topic_user,
+        profile="topic_statement",
         system_prompt=topic_system,
-        temperature=0.1,
-        max_tokens=UTILITY_MAX_TOKENS,
         op="apimw",
         step="topic_statement",
     )
@@ -1778,8 +1772,6 @@ async def _apimw_def_call(
         apimw_user_prompt,
         profile=llm_profile,
         system_prompt=apimw_system_prompt,
-        temperature=0.2,
-        max_tokens=PIPELINE_MAX_TOKENS,
         response_format={"type": "json_object"},
         op="apimw",
         step="def_call",
@@ -2912,7 +2904,7 @@ async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)
         get_service_from_payload=_get_service_from_payload,
         build_retrieve_identity_context=_build_retrieve_identity_context,
         snapshot_previous_narrative_self=snapshot_previous_narrative_self,
-        utility_max_tokens=UTILITY_MAX_TOKENS,
+        utility_max_tokens=None,
     )
 
 
@@ -3653,7 +3645,6 @@ async def conversation_turn(
                 turn_user_prompt,
                 system_prompt=turn_system_prompt,
                 temperature=turn_temperature,
-                max_tokens=PIPELINE_MAX_TOKENS,
                 response_format=turn_response_format,
                 op="turn",
                 step="respond",

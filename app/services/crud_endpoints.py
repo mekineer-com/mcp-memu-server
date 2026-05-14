@@ -545,7 +545,7 @@ async def narrative_suggestion_endpoint(
     get_service_from_payload: Callable[[dict[str, Any]], Any],
     build_retrieve_identity_context: Callable[[str], str],
     snapshot_previous_narrative_self: Callable[..., Any],
-    utility_max_tokens: int,
+    utility_max_tokens: int | None = None,
 ) -> dict[str, Any]:
     sid = str(soul_id or "").strip()
     uid = str(payload.get("user_id") or "").strip()
@@ -593,8 +593,6 @@ async def narrative_suggestion_endpoint(
     raw = await svc.chat(
         user_prompt,
         system_prompt=system_prompt,
-        temperature=0.2,
-        max_tokens=utility_max_tokens,
         response_format={"type": "json_object"},
         op="narrative_suggestion",
         step="respond",

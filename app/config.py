@@ -440,8 +440,16 @@ def default_llm_profiles_from_server_config(cfg: dict[str, Any]) -> dict[str, An
     }
     step_models = llm.get("step_models")
     if isinstance(step_models, dict):
-        for step_name, model in step_models.items():
-            model_str = str(model or "").strip()
+        for step_name, raw_val in step_models.items():
+            raw_str = str(raw_val or "").strip()
+            if not raw_str:
+                continue
+            parts = raw_str.split(",", 1)
+            model_str = parts[0].strip()
+            step_profile = {**default_profile}
             if model_str:
-                profiles[step_name] = {**default_profile, "chat_model": model_str}
+                step_profile["chat_model"] = model_str
+            if len(parts) > 1 and parts[1].strip():
+                step_profile["temperature"] = float(parts[1].strip())
+            profiles[step_name] = step_profile
     return profiles

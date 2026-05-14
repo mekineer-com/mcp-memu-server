@@ -14,6 +14,8 @@
       "preprocess": "",
       "memory_extract": "mistralai/mistral-small-4-119b-2603:thinking",
       "category_update": "",
+      "holistic_summary": ",0.3",
+      "topic_statement": ",0.1",
       "reflection": "",
       "ranking": "",
       "consolidation": "mistralai/mistral-small-4-119b-2603:thinking"
