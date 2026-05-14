@@ -68,7 +68,7 @@
   "memorize": {
     "min_chunk_tokens": 4000,
     "episodes_per_segment": 3,
-    "history_tail_after_memorize": 3000,
+    "pipeline_max_tokens": 4000,
     "enable_target_items": false,
     "enable_confidence_normalization": false,
     "semantic_dedupe_enabled": true

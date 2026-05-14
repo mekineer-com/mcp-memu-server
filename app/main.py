@@ -685,7 +685,7 @@ def _get_service_from_payload(
         memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
         memorize_config["episodes_per_segment"] = _EPISODES_PER_SEGMENT
         mem_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
-        for passthrough_key in ("enable_target_items", "enable_confidence_normalization", "semantic_dedupe_enabled"):
+        for passthrough_key in ("enable_target_items", "enable_confidence_normalization", "semantic_dedupe_enabled", "pipeline_max_tokens"):
             if passthrough_key in mem_cfg and passthrough_key not in memorize_config:
                 memorize_config[passthrough_key] = mem_cfg[passthrough_key]
         step_models = (_CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}).get("step_models", {})
