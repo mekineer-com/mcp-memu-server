@@ -648,7 +648,7 @@ def _get_service_from_payload(
     if isinstance(step_temps, dict):
         merged_default = llm_profiles.get("default", {})
         for step_name, temp in step_temps.items():
-            if temp is not None:
+            if temp is not None and temp != "":
                 existing = llm_profiles.get(step_name, {**merged_default})
                 existing["temperature"] = float(temp)
                 llm_profiles[step_name] = existing

@@ -19,12 +19,12 @@
       "consolidation": ""
     },
     "step_temperatures": {
-      "preprocess": null,
-      "memory_extract": null,
-      "category_update": null,
-      "reflection": null,
-      "ranking": null,
-      "consolidation": null,
+      "preprocess": "",
+      "memory_extract": "",
+      "category_update": "",
+      "reflection": "",
+      "ranking": "",
+      "consolidation": "",
       "holistic_summary": 0.3,
       "topic_statement": 0.1
     }
