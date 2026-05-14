@@ -20,6 +20,8 @@ class MemuTurnRequest(BaseModel):
     debug: bool = False
     temperature: float | None = None
     channel_mode: str | None = None
+    chat_name: str | None = None
+    chat_type: str | None = None
 
 
 class MemuRetrieveRequest(BaseModel):
@@ -103,6 +105,8 @@ async def memu_turn_endpoint(
     scope = _scope(user_id=req.user_id, soul_id=req.soul_id, conversation_id=conversation_id)
 
     user_name = str(req.user_name or "").strip()
+    chat_name = str(req.chat_name or "").strip()
+    chat_type = str(req.chat_type or "").strip()
     retrieve_payload: dict[str, Any] = {
         "user": scope,
         "message": message,
@@ -117,6 +121,10 @@ async def memu_turn_endpoint(
         retrieve_payload["soul_card"] = str(req.soul_card)
     if req.channel_mode:
         retrieve_payload["channel_mode"] = str(req.channel_mode)
+    if chat_name:
+        retrieve_payload["chat_name"] = chat_name
+    if chat_type:
+        retrieve_payload["chat_type"] = chat_type
 
     retrieve_out = await conversation_retrieve(conversation_id, retrieve_payload)
     should_respond = retrieve_out.get("should_respond", True)
@@ -153,6 +161,10 @@ async def memu_turn_endpoint(
         turn_payload["soul_card"] = str(req.soul_card)
     if req.temperature is not None:
         turn_payload["temperature"] = float(req.temperature)
+    if chat_name:
+        turn_payload["chat_name"] = chat_name
+    if chat_type:
+        turn_payload["chat_type"] = chat_type
 
     turn_out = await conversation_turn(conversation_id, turn_payload)
     compact: dict[str, Any] = {
@@ -160,6 +172,8 @@ async def memu_turn_endpoint(
         "should_respond": bool(should_respond),
         "conversation_id": str(turn_out.get("conversation_id") or conversation_id),
         "response": str(turn_out.get("response") or ""),
+        "response_target": str(turn_out.get("response_target") or "respond"),
+        "response_peer": str(turn_out.get("response_peer") or ""),
         "apimw": turn_out.get("apimw"),
         "retrieve_ms": turn_out.get("retrieve_ms"),
         "turn_ms": turn_out.get("turn_ms"),

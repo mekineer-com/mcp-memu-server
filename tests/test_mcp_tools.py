@@ -45,6 +45,8 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
             "ok": True,
             "conversation_id": conversation_id,
             "response": "done",
+            "response_target": "private",
+            "response_peer": "",
             "apimw": "not_started",
             "retrieve_ms": 42,
             "turn_ms": 9,
@@ -58,6 +60,8 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
             message="hello",
             history=[{"role": "user", "content": "hello"}],
             user_name="Alice",
+            chat_name="Alice",
+            chat_type="dm",
         ),
         conversation_retrieve=fake_retrieve,
         conversation_turn=fake_turn,
@@ -65,11 +69,17 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
 
     assert out["ok"] is True
     assert out["response"] == "done"
+    assert out["response_target"] == "private"
+    assert out["response_peer"] == ""
     assert [row[0] for row in captured] == ["retrieve", "turn"]
     retrieve_payload = captured[0][2]
     turn_payload = captured[1][2]
     assert retrieve_payload.get("user_name") == "Alice"
+    assert retrieve_payload.get("chat_name") == "Alice"
+    assert retrieve_payload.get("chat_type") == "dm"
     assert turn_payload.get("user_name") == "Alice"
+    assert turn_payload.get("chat_name") == "Alice"
+    assert turn_payload.get("chat_type") == "dm"
     override_payload = turn_payload.get("prompt_override_payload")
     assert isinstance(override_payload, dict)
     assert override_payload.get("retrieve_ms") == 42
@@ -97,6 +107,52 @@ async def test_memu_turn_raises_when_retrieve_returns_empty_prompt() -> None:
         )
 
     assert exc.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_memu_turn_omits_blank_chat_fields() -> None:
+    captured: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def fake_retrieve(conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        captured.append(("retrieve", conversation_id, payload))
+        return {
+            "turn_system_prompt": "system",
+            "turn_user_prompt": "user",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "result": {"categories": [], "items": [], "resources": []},
+        }
+
+    async def fake_turn(conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        captured.append(("turn", conversation_id, payload))
+        return {
+            "ok": True,
+            "conversation_id": conversation_id,
+            "response": "done",
+            "apimw": "not_started",
+            "retrieve_ms": 1,
+            "turn_ms": 1,
+        }
+
+    await mcp_tools.memu_turn_endpoint(
+        mcp_tools.MemuTurnRequest(
+            conversation_id="c1",
+            user_id="u1",
+            soul_id="s1",
+            message="hello",
+            chat_name="   ",
+            chat_type="",
+        ),
+        conversation_retrieve=fake_retrieve,
+        conversation_turn=fake_turn,
+    )
+
+    retrieve_payload = captured[0][2]
+    turn_payload = captured[1][2]
+    assert "chat_name" not in retrieve_payload
+    assert "chat_type" not in retrieve_payload
+    assert "chat_name" not in turn_payload
+    assert "chat_type" not in turn_payload
 
 
 def test_memu_retrieve_request_requires_query_or_queries() -> None:
