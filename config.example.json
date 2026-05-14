@@ -14,11 +14,13 @@
       "preprocess": "",
       "memory_extract": "",
       "category_update": "",
-      "holistic_summary": ",0.3",
-      "topic_statement": ",0.1",
       "reflection": "",
       "ranking": "",
       "consolidation": ""
+    },
+    "step_temperatures": {
+      "holistic_summary": 0.3,
+      "topic_statement": 0.1
     }
   },
   "storage": {

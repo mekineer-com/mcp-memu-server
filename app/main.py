@@ -644,6 +644,14 @@ def _get_service_from_payload(
     # set. Same path for ST plugin, MCP clients, PicoClaw, test tools.
     client_profiles = payload.get("llm_profiles") if isinstance(payload.get("llm_profiles"), dict) else {}
     llm_profiles = {**_default_llm_profiles_from_server_config(_CONFIG), **client_profiles}
+    step_temps = (_CONFIG.get("llm") or {}).get("step_temperatures")
+    if isinstance(step_temps, dict):
+        merged_default = llm_profiles.get("default", {})
+        for step_name, temp in step_temps.items():
+            if temp is not None:
+                existing = llm_profiles.get(step_name, {**merged_default})
+                existing["temperature"] = float(temp)
+                llm_profiles[step_name] = existing
     payload["llm_profiles"] = llm_profiles
     database_config = payload.get("database_config")
     blob_config = payload.get("blob_config")
