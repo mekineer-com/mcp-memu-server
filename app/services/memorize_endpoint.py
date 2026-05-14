@@ -245,60 +245,82 @@ async def run_memorize_episodes(
         total_episodes = len(episode_jobs)
         ctx.memorize_progress[progress_key] = {"current": 0, "total": total_episodes}
 
-        if not cancelled:
-            for ep_num, episode_job in enumerate(episode_jobs, 1):
-                if progress_key in ctx.memorize_cancel:
-                    ctx.memorize_cancel.discard(progress_key)
-                    ctx.logger.info("memorize cancelled after episode %d/%d", ep_num - 1, total_episodes)
-                    break
-                ctx.memorize_progress[progress_key] = {"current": ep_num, "total": total_episodes}
+        if not cancelled and episode_jobs:
+            if progress_key in ctx.memorize_cancel:
+                ctx.memorize_cancel.discard(progress_key)
+                ctx.logger.info("memorize cancelled before batch extraction")
+            else:
+                ctx.memorize_progress[progress_key] = {"current": 0, "total": total_episodes, "phase": "extracting"}
                 ep_start = _time.monotonic()
-                ep_result = await svc.memorize_episode(
-                    resource_url=episode_job["episode_resource_url"],
+                batch_results = await svc.memorize_episodes_batch(
                     modality="conversation",
-                    episode=episode_job["episode_payload"],
+                    episodes=[
+                        {
+                            "resource_url": job["episode_resource_url"],
+                            "local_path": job["episode_resource_url"],
+                            "raw_text": job["segment_raw_text"],
+                            "episode": job["episode_payload"],
+                        }
+                        for job in episode_jobs
+                    ],
                     user=scope,
-                    raw_text=episode_job["segment_raw_text"],
-                    local_path=episode_job["episode_resource_url"],
                     all_categories_summary=current_all_categories_summary,
                     soul_card=soul_card_for_memorize,
                     memory_retrieve_history=cached_retrieval_ids or None,
                     memory_prior_context=cached_prior_context_ids or None,
                     conversation_id=conversation_id,
                 )
-                ctx.logger.info("memorize episode %d/%d elapsed=%.1fs", ep_num, total_episodes, _time.monotonic() - ep_start)
-                if isinstance(ep_result, dict):
-                    has_results = True
-                    pending_episode_ids.extend(run_ctx.normalize_text_list(ep_result.get("pending_episode_ids")))
-                next_segment_end_index = (
-                    episode_jobs[ep_num]["segment_end_index"] if ep_num < total_episodes else None
+                if len(batch_results) != len(episode_jobs):
+                    msg = (
+                        f"memorize_episodes_batch returned {len(batch_results)} results "
+                        f"for {len(episode_jobs)} episode jobs"
+                    )
+                    raise RuntimeError(msg)
+                ctx.logger.info(
+                    "memorize batch episodes=%d elapsed=%.1fs",
+                    total_episodes,
+                    _time.monotonic() - ep_start,
                 )
-                segment_end_index = episode_job["segment_end_index"]
-                last_episode_of_segment = (next_segment_end_index != segment_end_index)
-                if last_episode_of_segment and conversation_id and not cross_memorize:
-                    # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
-                    async with mem_lock:
-                        fresh_row, _, _ = run_ctx.load_turn_state_and_soul_card(
-                            conversation_id,
-                            user_id=uid,
-                            soul_id=soul_id,
-                        )
-                        fresh_cursor = int(fresh_row.get("digest_cursor") or 0)
-                        if fresh_cursor <= segment_end_index:
-                            processed_end_cursor = max(processed_end_cursor, segment_end_index)
-                            # per-segment advance — crash recovery needs the cursor to move
-                            # only after all episodes in a segment complete.
-                            ctx.write_conversation_state(
+
+                for ep_num, episode_job in enumerate(episode_jobs, 1):
+                    if progress_key in ctx.memorize_cancel:
+                        ctx.memorize_cancel.discard(progress_key)
+                        ctx.logger.info("memorize cancelled after batch result %d/%d", ep_num - 1, total_episodes)
+                        break
+                    ctx.memorize_progress[progress_key] = {"current": ep_num, "total": total_episodes, "phase": "persist"}
+                    ep_result = batch_results[ep_num - 1] if ep_num - 1 < len(batch_results) else None
+                    if isinstance(ep_result, dict):
+                        has_results = True
+                        pending_episode_ids.extend(run_ctx.normalize_text_list(ep_result.get("pending_episode_ids")))
+                    next_segment_end_index = (
+                        episode_jobs[ep_num]["segment_end_index"] if ep_num < total_episodes else None
+                    )
+                    segment_end_index = episode_job["segment_end_index"]
+                    last_episode_of_segment = (next_segment_end_index != segment_end_index)
+                    if last_episode_of_segment and conversation_id and not cross_memorize:
+                        # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
+                        async with mem_lock:
+                            fresh_row, _, _ = run_ctx.load_turn_state_and_soul_card(
                                 conversation_id,
-                                soul_id=soul_id,
                                 user_id=uid,
-                                updates={
-                                    "digest_cursor": processed_end_cursor,
-                                },
+                                soul_id=soul_id,
                             )
-                        else:
-                            # Another runner advanced the cursor past this segment; honour the further value.
-                            processed_end_cursor = max(processed_end_cursor, fresh_cursor)
+                            fresh_cursor = int(fresh_row.get("digest_cursor") or 0)
+                            if fresh_cursor <= segment_end_index:
+                                processed_end_cursor = max(processed_end_cursor, segment_end_index)
+                                # per-segment advance — crash recovery needs the cursor to move
+                                # only after all episodes in a segment complete.
+                                ctx.write_conversation_state(
+                                    conversation_id,
+                                    soul_id=soul_id,
+                                    user_id=uid,
+                                    updates={
+                                        "digest_cursor": processed_end_cursor,
+                                    },
+                                )
+                            else:
+                                # Another runner advanced the cursor past this segment; honour the further value.
+                                processed_end_cursor = max(processed_end_cursor, fresh_cursor)
 
         # Phase 3: holistic summary LLM call — outside the lock.
         if conversation_id and has_results:

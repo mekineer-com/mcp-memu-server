@@ -326,7 +326,7 @@ async def test_run_memorize_episodes_clears_progress_on_exception(tmp_path):
         async def split_segment_into_episodes(self, **_kwargs):
             return [{"text": "episode text", "caption": "episode"}]
 
-        async def memorize_episode(self, **_kwargs):
+        async def memorize_episodes_batch(self, **_kwargs):
             raise RuntimeError("boom")
 
     user_id = "u"
@@ -869,5 +869,4 @@ async def test_conversation_turn_drops_response_when_peer_mismatches_chat_name(
         con.close()
     # Mismatch means no response text, which means no user+assistant pair.
     assert rows == []
-
 
