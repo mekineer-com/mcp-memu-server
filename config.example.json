@@ -5,6 +5,8 @@
     "base_url": "https://api.openai.com/v1",
     "chat_model": "YOUR_CHAT_MODEL",
     "embed_model": "YOUR_EMBED_MODEL",
+    "embed_batch_size": 1,
+    "temperature": null,
     "client_backend": "httpx",
     "endpoint_overrides": {},
     "step_models": {
@@ -66,7 +68,10 @@
   "memorize": {
     "min_chunk_tokens": 4000,
     "episodes_per_segment": 3,
-    "history_tail_after_memorize": 3000
+    "history_tail_after_memorize": 3000,
+    "enable_target_items": false,
+    "enable_confidence_normalization": false,
+    "semantic_dedupe_enabled": true
   },
   "retrieve": {
     "method": "rag",
