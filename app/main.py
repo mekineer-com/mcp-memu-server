@@ -647,7 +647,6 @@ def _get_service_from_payload(
     step_temps = (_CONFIG.get("llm") or {}).get("step_temperatures")
     if isinstance(step_temps, dict):
         merged_default = llm_profiles.get("default", {})
-        logger.info("step_temps: merged_default chat_model=%s, profiles keys=%s", merged_default.get("chat_model"), list(llm_profiles.keys()))
         for step_name, temp in step_temps.items():
             if temp is not None and temp != "":
                 existing = llm_profiles.get(step_name, {**merged_default})
