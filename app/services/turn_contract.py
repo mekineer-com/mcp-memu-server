@@ -105,29 +105,6 @@ def _summary_from_category_line(line: str) -> str:
     return line.strip()
 
 
-def _strip_duplicate_category_heading(summary: str, category_name: str) -> str:
-    text = _text(summary)
-    name = _text(category_name)
-    if not text or not name:
-        return text
-    lines = text.splitlines()
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    if not lines:
-        return text
-    first = lines[0].strip()
-    if not first.startswith("#"):
-        return text
-    heading = first.lstrip("#").strip()
-    if _norm_text(heading) != _norm_text(name):
-        return text
-    rest = lines[1:]
-    while rest and not rest[0].strip():
-        rest.pop(0)
-    cleaned = "\n".join(rest).strip()
-    return cleaned or text
-
-
 def render_history(history: list[dict[str, Any]]) -> str:
     if not history:
         return "(none)"
@@ -320,15 +297,12 @@ def format_shaped_by_line(
     return f"{prefix}{suffix_part} {summary}"
 
 
-def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, set[str], set[str]]:
-    # This block intentionally combines retrieved category summaries + item memories.
-    # Dedup term sets are returned so later blocks can avoid repeating the same facts.
+def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, set[str]]:
     if not isinstance(result, dict):
-        return "(none)", set(), set()
+        return "(none)", set()
 
     lines: list[str] = []
     item_terms: set[str] = set()
-    category_terms: set[str] = set()
 
     item_rows: list[tuple[dict[str, Any], str, str, str]] = []
     seen_items: set[str] = set()
@@ -349,36 +323,9 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
             item_terms.add(_norm_text(summary))
             item_rows.append((item, memory_type, _format_item_suffix(item, now=now), summary))
 
-    categories = result.get("categories")
-    if isinstance(categories, list):
-        category_rows: list[tuple[str, str]] = []
-        seen_categories: set[str] = set()
-        for cat in categories[:8]:
-            if not isinstance(cat, dict):
-                continue
-            name = _text(cat.get("name"))
-            summary = _text(cat.get("summary"))
-            if not summary:
-                continue
-            summary_key = _norm_text(summary)
-            if not summary_key or summary_key in item_terms or summary_key in seen_categories:
-                continue
-            seen_categories.add(summary_key)
-            category_terms.add(summary_key)
-            category_rows.append((name, _strip_duplicate_category_heading(summary, name)))
-    else:
-        category_rows = []
-
-    if category_rows:
-        for name, summary in category_rows:
-            lines.append(f"\n{name}:")
-            lines.append(summary)
-
     main_item_ids = {_text(item.get("id")) for item, _, _, _ in item_rows if _text(item.get("id"))}
 
     if item_rows:
-        if lines:
-            lines.append("")
         lines.append("Memories:")
         legend = format_memory_legend({mt for _, mt, _, _ in item_rows})
         if legend:
@@ -398,7 +345,7 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
                     continue
                 lines.append(format_shaped_by_line(shaped_by, now=now))
 
-    return ("\n".join(lines) if lines else "(none)"), item_terms, category_terms
+    return ("\n".join(lines) if lines else "(none)"), item_terms
 
 
 def _render_empty_retrieve_label(result: Any) -> str:
@@ -480,12 +427,12 @@ def build_turn_prompt(
     if len(cache) >= MAX_MEMORY_CACHE_ENTRIES:
         cache_lines[0] = f"{cache_lines[0]}  \u2190 oldest, replaced on next write"
 
-    rendered_retrieve, item_terms, category_terms = _render_retrieve(retrieve_rag, now=now)
+    rendered_retrieve, item_terms = _render_retrieve(retrieve_rag, now=now)
     rendered_all_categories, all_categories_terms = _render_all_categories_summary(
         all_categories_summary,
-        item_terms | category_terms,
+        item_terms,
     )
-    blocked_terms = item_terms | category_terms | all_categories_terms
+    blocked_terms = item_terms | all_categories_terms
 
     safe_prior = _dedupe_prior_context(prior_context, blocked_terms) or None
 
