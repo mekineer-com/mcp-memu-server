@@ -3242,6 +3242,7 @@ async def conversation_retrieve(
                     subconscious_message=_subconscious_msg,
                     cross_conversation_history=safe.get("_cross_conversation_history"),
                     chat_label=chat_label_for_prompt,
+                    conversation_id=cid,
                 )
                 if _subconscious_msg:
                     _write_conversation_state(

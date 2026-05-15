@@ -83,7 +83,7 @@ Rules:
 - cache: your cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through across turns (debugging, brainstorming, daydreaming toward something). Not a recap of what was said; history already holds that. Don't duplicate or waste on the frivolous because you have limited working-memory-capacity. Oldest entry is replaced on next write.
 - inner_thought: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. Include theory of mind and temporal reasoning. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
 - response_target: choose how this turn lands.
-  - "respond" — speak into the chat this turn came from. You must also fill response_peer with the exact contact or group name of that chat (shown as `Current chat:` below). If the name doesn't match, your message is dropped.
+  - "respond" — speak into the chat this turn came from. You must also fill response_peer with the exact contact or group name of that chat (marked with `← current chat` in the conversations block below). If the name doesn't match, your message is dropped.
   - "listen" — read the context but say nothing. response and response_peer may be empty.
   - "private" — speak privately to your human about a chat you're referencing (e.g., give them context about something you noticed). Fill response with the private message; response_peer may be empty.
 - response: what gets said. Maximum length {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in inner_thought, not what sounds helpful. If you don't understand, ask — don't guess. "What do you mean?" is a complete response. Required when response_target is "respond" or "private"; otherwise may be empty.
@@ -408,6 +408,131 @@ def _dedupe_prior_context(prior_context: str | None, blocked_terms: set[str]) ->
     return "\n".join(kept)
 
 
+def _section_title_from_conversation_id(conversation_id: str | None) -> str:
+    cid = _text(conversation_id)
+    if cid.startswith("sillytavern"):
+        return "## My SillyTavern Conversations:"
+    if cid.startswith("whatsapp:"):
+        return "## My WhatsApp Conversations:"
+    return "## Other Conversations:"
+
+
+def _conversation_heading_from_conversation_id(conversation_id: str | None) -> str:
+    cid = _text(conversation_id)
+    if cid.startswith("whatsapp:group:"):
+        key = _text(cid[len("whatsapp:group:"):]) or "group"
+        return f"[group][{key}]"
+    if cid.startswith("whatsapp:dm:"):
+        key = _text(cid[len("whatsapp:dm:"):]) or "contact"
+        return f"[dm][{key}]"
+    if cid.startswith("sillytavern:"):
+        key = _text(cid[len("sillytavern:"):]) or "sillytavern"
+        return f"[dm][{key}]"
+    if cid == "sillytavern":
+        return "[dm][sillytavern]"
+    return f"[other][{cid or 'unknown'}]"
+
+
+def _append_current_chat_marker(heading: str) -> str:
+    text = _text(heading)
+    if not text:
+        return ""
+    if text.endswith("← current chat"):
+        return text
+    return f"{text} \u2190 current chat"
+
+
+def _split_markdown_sections(text: str) -> list[tuple[str, list[str]]]:
+    raw = _text(text)
+    if not raw:
+        return []
+    sections: list[tuple[str, list[str]]] = []
+    current_header: str | None = None
+    current_lines: list[str] = []
+    for line in raw.splitlines():
+        if line.startswith("## "):
+            if current_header is not None:
+                sections.append((current_header, current_lines))
+            current_header = line.strip()
+            current_lines = []
+            continue
+        if current_header is None:
+            continue
+        current_lines.append(line)
+    if current_header is not None:
+        sections.append((current_header, current_lines))
+    return sections
+
+
+def _split_conversation_blocks(lines: list[str]) -> list[str]:
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if current:
+                current.append("")
+            continue
+        if re.match(r"^\[[^\]]+\]\[[^\]]+\]", stripped) and current:
+            block = "\n".join(current).strip()
+            if block:
+                blocks.append(block)
+            current = [stripped]
+            continue
+        current.append(stripped)
+    block = "\n".join(current).strip()
+    if block:
+        blocks.append(block)
+    return blocks
+
+
+def _merge_current_into_conversations(
+    cross_conversation_text: str | None,
+    current_chat_block: str,
+    current_section_header: str,
+) -> str:
+    current_block = _text(current_chat_block)
+    cross_raw = _text(cross_conversation_text)
+    if not current_block:
+        return cross_raw
+
+    sections = _split_markdown_sections(cross_raw)
+    if not sections and cross_raw:
+        sections = [("## Other Conversations:", cross_raw.splitlines())]
+    merged_map: dict[str, list[str]] = {}
+    order: list[str] = []
+    for header, body_lines in sections:
+        blocks = _split_conversation_blocks(body_lines)
+        if not blocks:
+            continue
+        if header not in merged_map:
+            merged_map[header] = []
+            order.append(header)
+        merged_map[header].extend(blocks)
+
+    if current_section_header not in merged_map:
+        merged_map[current_section_header] = []
+        order.append(current_section_header)
+    merged_map[current_section_header].append(current_block)
+
+    # Current chat includes the newest message being answered, so keep its
+    # platform section last for chronological read flow.
+    if current_section_header in order:
+        order = [h for h in order if h != current_section_header] + [current_section_header]
+
+    out_lines: list[str] = []
+    for idx, header in enumerate(order):
+        blocks = merged_map.get(header) or []
+        if not blocks:
+            continue
+        if idx > 0 and out_lines:
+            out_lines.append("")
+        out_lines.append(header)
+        out_lines.append("")
+        out_lines.append("\n\n".join(blocks))
+    return "\n".join(out_lines).strip()
+
+
 def build_turn_prompt(
     *,
     user_message: str,
@@ -420,6 +545,7 @@ def build_turn_prompt(
     subconscious_message: str | None = None,
     cross_conversation_history: str | None = None,
     chat_label: str | None = None,
+    conversation_id: str | None = None,
     now: datetime | None = None,
 ) -> str:
     cache = normalize_memory_cache(memory_cache)
@@ -498,23 +624,21 @@ def build_turn_prompt(
             synthetic["name"] = last_user_name
         history_for_render.append(synthetic)
 
-    cross_block: list[str] = []
-    if cross_conversation_history and cross_conversation_history.strip():
-        cross_history_text = cross_conversation_history.strip()
-        if re.search(r"(?m)^##\s+", cross_history_text):
-            cross_block = [cross_history_text, ""]
-        else:
-            cross_block = ["Other conversations:", cross_history_text, ""]
-
-    current_chat_line = f"Current chat: {chat_label}" if chat_label else ""
+    heading = _append_current_chat_marker(
+        _text(chat_label) or _conversation_heading_from_conversation_id(conversation_id),
+    )
+    current_chat_block = "\n".join([heading, render_history(history_for_render)])
+    current_section_header = _section_title_from_conversation_id(conversation_id)
+    conversations_block = _merge_current_into_conversations(
+        cross_conversation_history,
+        current_chat_block,
+        current_section_header,
+    )
 
     parts = [
         *context_blocks,
-        *cross_block,
-        "## My SillyTavern Conversations:",
-        render_history(history_for_render),
+        conversations_block,
         "",
-        *([current_chat_line, ""] if current_chat_line else []),
         "My working thoughts:",
         "\n".join(cache_lines) if cache_lines else "(empty)",
         *([ f"  {subconscious_message}" ] if subconscious_message else []),

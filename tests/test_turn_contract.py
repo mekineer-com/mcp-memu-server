@@ -79,7 +79,7 @@ def test_parse_turn_contract_accepts_bare_string_cache(caplog):
     assert warnings, "expected a WARN log when cache is auto-wrapped"
 
 
-def test_build_turn_prompt_renders_current_chat_line_when_label_provided():
+def test_build_turn_prompt_marks_current_chat_when_label_provided():
     prompt = build_turn_prompt(
         user_message="hello",
         history=[{"role": "user", "content": "hi"}],
@@ -89,11 +89,12 @@ def test_build_turn_prompt_renders_current_chat_line_when_label_provided():
         memory_cache=None,
         intentions_active=None,
         chat_label="[dm][Alice]",
+        conversation_id="sillytavern:Echo",
     )
-    assert "Current chat: [dm][Alice]" in prompt
+    assert "[dm][Alice] ← current chat" in prompt
 
 
-def test_build_turn_prompt_omits_current_chat_line_when_label_absent():
+def test_build_turn_prompt_derives_current_chat_heading_when_label_absent():
     prompt = build_turn_prompt(
         user_message="hello",
         history=[{"role": "user", "content": "hi"}],
@@ -102,8 +103,9 @@ def test_build_turn_prompt_omits_current_chat_line_when_label_absent():
         all_categories_summary=None,
         memory_cache=None,
         intentions_active=None,
+        conversation_id="whatsapp:dm:15133278228",
     )
-    assert "Current chat:" not in prompt
+    assert "[dm][15133278228] ← current chat" in prompt
 
 
 def test_build_turn_prompt_includes_core_sections():
@@ -115,6 +117,7 @@ def test_build_turn_prompt_includes_core_sections():
         all_categories_summary="Goals: wants progress",
         memory_cache=["note a"],
         intentions_active={"items": [{"id": "relax", "text": "Relax", "priority": 5, "kind": "relax"}]},
+        conversation_id="sillytavern:Echo",
     )
     assert "## My SillyTavern Conversations:" in prompt
     assert "Prior context:" in prompt
@@ -133,10 +136,69 @@ def test_build_turn_prompt_omits_wrapper_when_cross_history_already_has_markdown
         all_categories_summary=None,
         memory_cache=[],
         intentions_active={},
+        conversation_id="sillytavern:Echo",
+        chat_label="[dm][Echo]",
     )
 
     assert "Other conversations:" not in prompt
     assert "## My WhatsApp Conversations:" in prompt
+    assert "## My SillyTavern Conversations:" in prompt
+    assert "[dm][Echo] ← current chat" in prompt
+    assert "Current chat:" not in prompt
+
+
+def test_build_turn_prompt_appends_current_chat_to_existing_platform_section():
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[],
+        prior_context=None,
+        retrieve_rag=None,
+        cross_conversation_history="\n".join(
+            [
+                "## My WhatsApp Conversations:",
+                "",
+                "[dm][Liz]",
+                "[Liz]: older",
+            ]
+        ),
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+        conversation_id="whatsapp:dm:Marcos",
+        chat_label="[dm][Marcos]",
+    )
+
+    assert prompt.count("## My WhatsApp Conversations:") == 1
+    assert "[dm][Marcos] ← current chat" in prompt
+
+
+def test_build_turn_prompt_keeps_current_platform_section_last():
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[],
+        prior_context=None,
+        retrieve_rag=None,
+        cross_conversation_history="\n".join(
+            [
+                "## My SillyTavern Conversations:",
+                "",
+                "[dm][Echo]",
+                "[Echo]: old",
+                "",
+                "## My WhatsApp Conversations:",
+                "",
+                "[dm][Liz]",
+                "[Liz]: old",
+            ]
+        ),
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+        conversation_id="sillytavern:Echo",
+        chat_label="[dm][Echo]",
+    )
+
+    assert prompt.rfind("## My SillyTavern Conversations:") > prompt.rfind("## My WhatsApp Conversations:")
 
 
 
