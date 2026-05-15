@@ -4,7 +4,7 @@ Local FastAPI server that wraps the `memu` memory engine and exposes it as an HT
 
 This is part of the memU local stack — a private fork, not affiliated with NevaMind-AI.
 
-> **Single conversation per soul.** Each soul should have exactly one conversation. Consolidation (the weekly self-review pipeline) is soul-scoped and tracks state per conversation; running multiple conversations under the same soul will produce divergent weekly reviews. Multi-conversation support is tracked as a "maybe" item in the roadmap.
+> **One soul, many chats.** Each `soul_id` has its own memory database. Multiple conversations can share one soul — each has its own cursor and manifest, and retrieval pulls from all of them. Consolidation is soul-scoped (weekly). Use different `soul_id` values for separate personalities.
 
 ---
 
@@ -40,34 +40,7 @@ The server runs on `http://127.0.0.1:8099` by default.
 
 ## Config (`config.json`)
 
-```json
-{
-  "llm": {
-    "provider": "openai",
-    "api_key": "sk-...",
-    "base_url": "https://api.openai.com/v1",
-    "chat_model": "gpt-4o",
-    "embed_model": "text-embedding-3-large"
-  },
-  "storage": {
-    "metadata_store": { "provider": "sqlite", "dsn": "../memu/sqlite/memu.db" }
-  },
-  "listen": { "host": "127.0.0.1", "port": 8099 },
-  "memu": { "path": "../memu/src" },
-  "categories": {
-    "defaults": [
-      { "name": "Identity", "description": "..." },
-      { "name": "Preferences", "description": "..." },
-      { "name": "Relationships", "description": "..." },
-      { "name": "Experiences", "description": "..." }
-    ]
-  },
-  "retrieve": { "method": "rag" },
-  "consolidation_interval_days": 7
-}
-```
-
-See `config.example.json` for the full reference. Relative paths in config are resolved from the `mcp-memu-server/` directory.
+At minimum, set `llm.api_key`, `llm.chat_model`, `llm.embed_model`, `storage.metadata_store.dsn`, and `memu.path`. See `config.example.json` for the full reference including `step_models`, `step_temperatures`, memorize toggles, and retrieve settings. Relative paths are resolved from the `mcp-memu-server/` directory.
 
 ---
 
@@ -76,8 +49,10 @@ See `config.example.json` for the full reference. Relative paths in config are r
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/health` | GET | Health check |
-| `/memorize` | POST | Extract memories from conversation (async, returns 202) |
+| `/conversation/{id}/memorize` | POST | Extract memories from conversation (async, returns 202) |
 | `/retrieve` | POST | Query memories |
+| `/souls/{soul_id}/narrative_suggestion` | POST | Submit narrative_self revision suggestion |
+| `/souls/{soul_id}/relationships` | CRUD | Manage declared relationships |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt (RAG + prior context) |
 | `/conversation/{id}/turn` | POST | Soul turn loop: run LLM, persist intentions + cache |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
@@ -100,11 +75,14 @@ mcp-memu-server/
 ├── app/main.py              # All endpoints + business logic
 ├── app/db.py                # SQLite helpers
 ├── app/database.py          # SQLAlchemy async engine
+├── app/config.py            # Config loading + LLM profile builder
 ├── app/services/consolidation.py # Consolidation pipeline
 ├── app/services/diary.py    # Diary helper primitives
+├── app/services/graph_edges.py   # Entity graph edge writing
 ├── app/services/state.py    # Conversation state management
 ├── app/services/turn_contract.py   # Soul turn prompt construction
 ├── app/services/intention_state.py # Intentions normalization
+├── app/services/mcp_tools.py     # MCP tool definitions
 ├── run.py                   # Entry point
 └── config.json              # Runtime config (not committed)
 ```
