@@ -386,29 +386,12 @@ def _prompt_log_before(ctx: Any, request_view: Any) -> None:
     op = getattr(ctx, "operation", None) or "-"
     step = getattr(ctx, "step_id", None) or "-"
     banner = f"===== {op.upper()} · {step} ".ljust(70, "=")
-    meta = getattr(request_view, "metadata", None) or {}
-    sys_prompt = meta.get("system_prompt", "")
-    user_content = getattr(request_view, "content", None) or ""
-    messages: list[dict[str, Any]] = []
-    if sys_prompt:
-        messages.append({"role": "system", "content": sys_prompt})
-    messages.append({"role": "user", "content": user_content})
-    payload_view: dict[str, Any] = {
-        "model": getattr(ctx, "model", None) or "-",
-        "messages": messages,
-    }
-    for opt_key in ("temperature", "max_tokens", "response_format"):
-        val = meta.get(opt_key)
-        if val is not None:
-            payload_view[opt_key] = val
-    payload_log_text = json.dumps(payload_view, ensure_ascii=False, indent=2).replace("\\n", "\n")
     _PROMPT_LOGGER.info(
-        "\n\n\n%s\n\n[PROMPT] op=%s step=%s model=%s\n%s\n\n",
+        "\n\n\n%s\n\n[PROMPT] op=%s step=%s model=%s",
         banner,
         op,
         step,
         getattr(ctx, "model", None) or "-",
-        payload_log_text,
     )
 
 
@@ -420,6 +403,11 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
     if kind == "embed":
         logger.info("[EMBED] elapsed=%.1fs", elapsed)
         return
+    meta = getattr(request_view, "metadata", None) or {}
+    payload = meta.get("payload")
+    if isinstance(payload, dict):
+        payload_log_text = json.dumps(payload, ensure_ascii=False, indent=2).replace("\\n", "\n")
+        _PROMPT_LOGGER.info("%s", payload_log_text)
     if not content:
         return
     finish_reason = getattr(usage, "finish_reason", None)
