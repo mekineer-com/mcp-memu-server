@@ -213,6 +213,15 @@ def _log_file_path(cfg: dict) -> Path:
     return (ROOT / "mcp-memu-server.log").resolve()
 
 
+_QUIET_PATHS = {"/health", "/memorize/progress", "/categories/search"}
+
+
+class _QuietAccessFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(p in msg for p in _QUIET_PATHS)
+
+
 def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
     log_cfg = deepcopy(getattr(uvicorn_module.config, "LOGGING_CONFIG"))
     log_path = _log_file_path(cfg)
@@ -226,6 +235,10 @@ def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
         "encoding": "utf-8",
     }
 
+    log_cfg.setdefault("filters", {})["quiet_access"] = {
+        "()": lambda: _QuietAccessFilter(),
+    }
+
     loggers = log_cfg.setdefault("loggers", {})
     for logger_name in ("uvicorn", "uvicorn.access"):
         logger_cfg = loggers.setdefault(logger_name, {})
@@ -235,6 +248,11 @@ def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
             handlers_list.append("memu_file")
         logger_cfg["handlers"] = handlers_list
         logger_cfg.setdefault("level", "INFO")
+        existing_filters = logger_cfg.get("filters")
+        filters_list = list(existing_filters) if isinstance(existing_filters, list) else []
+        if "quiet_access" not in filters_list:
+            filters_list.append("quiet_access")
+        logger_cfg["filters"] = filters_list
 
     return log_cfg
 
