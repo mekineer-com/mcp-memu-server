@@ -497,8 +497,6 @@ def _merge_current_into_conversations(
         return cross_raw
 
     sections = _split_markdown_sections(cross_raw)
-    if not sections and cross_raw:
-        sections = [("## Other Conversations:", cross_raw.splitlines())]
     merged_map: dict[str, list[str]] = {}
     order: list[str] = []
     for header, body_lines in sections:
