@@ -393,13 +393,14 @@ def _prompt_log_before(ctx: Any, request_view: Any) -> None:
     if sys_prompt:
         messages.append({"role": "system", "content": sys_prompt})
     messages.append({"role": "user", "content": user_content})
-    payload_view = {
+    payload_view: dict[str, Any] = {
         "model": getattr(ctx, "model", None) or "-",
         "messages": messages,
-        "temperature": meta.get("temperature"),
-        "max_tokens": meta.get("max_tokens"),
-        "response_format": meta.get("response_format"),
     }
+    for opt_key in ("temperature", "max_tokens", "response_format"):
+        val = meta.get(opt_key)
+        if val is not None:
+            payload_view[opt_key] = val
     payload_log_text = json.dumps(payload_view, ensure_ascii=False, indent=2).replace("\\n", "\n")
     _PROMPT_LOGGER.info(
         "\n\n\n%s\n\n[PROMPT] op=%s step=%s model=%s\n%s\n\n",
