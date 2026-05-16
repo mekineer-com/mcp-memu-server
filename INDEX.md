@@ -74,6 +74,7 @@ mcp-memu-server/
 | `app/services/graph_edges.py` | Shared edge normalization + write/invalidate helpers used by APImw and consolidation (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`). |
 | `app/services/memorize_endpoint.py` | `/memorize` endpoint core, forced-memorize background runner (`run_memorize_episodes`), progress/cancel handlers, and chat sleep-gap/token chunking helpers. |
 | `app/services/admin_routes.py` | Health/version/shutdown/diag endpoint handlers (including `/diag` and MCP-prefixed diag aliases). |
+| `app/services/payload.py` | Shared payload/scope/normalization helpers used across retrieve/turn/service-factory paths (scope extraction, turn history normalization, signature helpers, payload scrubbing). |
 | `app/services/sqlite_scope.py` | SQLite scope plumbing used across endpoints: scoped db-path resolution, scope `WHERE` builder, state-db lookup/write wrappers, and lightweight file info/intention row helpers. |
 | `app/services/crud_endpoints.py` | CRUD endpoint logic extracted from `main.py`: categories search/list, intentions, relationships, narrative suggestion, conversation state get/patch, clear-memory. |
 | `app/services/mcp_tools.py` | MCP-facing wrapper contracts (`memu_*`): typed request models + thin orchestration over existing REST/turn endpoints |
