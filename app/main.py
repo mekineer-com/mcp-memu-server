@@ -678,7 +678,7 @@ def _get_service_from_payload(
         memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
         memorize_config["episodes_per_segment"] = _EPISODES_PER_SEGMENT
         mem_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
-        for passthrough_key in ("enable_preprocessor", "enable_confidence_normalization", "semantic_dedupe_enabled"):
+        for passthrough_key in ("enable_confidence_normalization", "semantic_dedupe_enabled"):
             if passthrough_key in mem_cfg and passthrough_key not in memorize_config:
                 memorize_config[passthrough_key] = mem_cfg[passthrough_key]
         step_models = (_CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}).get("step_models", {})
@@ -3292,6 +3292,7 @@ def _build_cross_conversation_payload(
     safe: dict[str, Any],
     history_full: list[dict[str, Any]],
     digest_cursor: int,
+    trigger_memorize_default: bool = True,
 ) -> dict[str, Any] | None:
     """Merge unmemorized tails from all conversations into one memorize payload."""
     db_path = _sqlite_current_path(uid, soul_id)
@@ -3300,7 +3301,7 @@ def _build_cross_conversation_payload(
 
     trigger_label = _message_log.derive_source_label(cid)
     trigger_memorize_raw = safe.get("memorize_chat")
-    trigger_memorize = trigger_memorize_raw if isinstance(trigger_memorize_raw, bool) else True
+    trigger_memorize = trigger_memorize_raw if isinstance(trigger_memorize_raw, bool) else trigger_memorize_default
     trigger_cursor = max(0, digest_cursor + 1)
     trigger_tail = _normalize_conversation(history_full[trigger_cursor:]) if trigger_cursor < len(history_full) else []
     if not trigger_tail:
@@ -3380,7 +3381,13 @@ def _turn_state_read(
         )
         if has_sleep_gap:
             queued_memorize_payload = _build_cross_conversation_payload(
-                cid, uid, soul_id, safe, history_full, unmemorized_digest_cursor,
+                cid,
+                uid,
+                soul_id,
+                safe,
+                history_full,
+                unmemorized_digest_cursor,
+                bool(conversation_state.get("memorize_chat", True)),
             )
     return (
         conversation_state,

@@ -22,6 +22,7 @@ class MemuTurnRequest(BaseModel):
     channel_mode: str | None = None
     chat_name: str | None = None
     chat_type: str | None = None
+    memorize_chat: bool | None = None
 
 
 class MemuRetrieveRequest(BaseModel):
@@ -125,6 +126,8 @@ async def memu_turn_endpoint(
         retrieve_payload["chat_name"] = chat_name
     if chat_type:
         retrieve_payload["chat_type"] = chat_type
+    if isinstance(req.memorize_chat, bool):
+        retrieve_payload["memorize_chat"] = req.memorize_chat
 
     retrieve_out = await conversation_retrieve(conversation_id, retrieve_payload)
     should_respond = retrieve_out.get("should_respond", True)
@@ -165,6 +168,8 @@ async def memu_turn_endpoint(
         turn_payload["chat_name"] = chat_name
     if chat_type:
         turn_payload["chat_type"] = chat_type
+    if isinstance(req.memorize_chat, bool):
+        turn_payload["memorize_chat"] = req.memorize_chat
 
     turn_out = await conversation_turn(conversation_id, turn_payload)
     compact: dict[str, Any] = {

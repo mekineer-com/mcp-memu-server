@@ -62,6 +62,7 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
             user_name="Alice",
             chat_name="Alice",
             chat_type="dm",
+            memorize_chat=False,
         ),
         conversation_retrieve=fake_retrieve,
         conversation_turn=fake_turn,
@@ -77,9 +78,11 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
     assert retrieve_payload.get("user_name") == "Alice"
     assert retrieve_payload.get("chat_name") == "Alice"
     assert retrieve_payload.get("chat_type") == "dm"
+    assert retrieve_payload.get("memorize_chat") is False
     assert turn_payload.get("user_name") == "Alice"
     assert turn_payload.get("chat_name") == "Alice"
     assert turn_payload.get("chat_type") == "dm"
+    assert turn_payload.get("memorize_chat") is False
     override_payload = turn_payload.get("prompt_override_payload")
     assert isinstance(override_payload, dict)
     assert override_payload.get("retrieve_ms") == 42
@@ -151,8 +154,10 @@ async def test_memu_turn_omits_blank_chat_fields() -> None:
     turn_payload = captured[1][2]
     assert "chat_name" not in retrieve_payload
     assert "chat_type" not in retrieve_payload
+    assert "memorize_chat" not in retrieve_payload
     assert "chat_name" not in turn_payload
     assert "chat_type" not in turn_payload
+    assert "memorize_chat" not in turn_payload
 
 
 def test_memu_retrieve_request_requires_query_or_queries() -> None:

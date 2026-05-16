@@ -156,6 +156,62 @@ def test_normalize_conversation_preserves_cross_memorize_metadata():
     assert out[0]["memorize_chat"] is False
 
 
+def test_build_cross_conversation_payload_uses_state_default_memorize_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+    out = main._build_cross_conversation_payload(
+        "whatsapp:dm:123",
+        "u1",
+        "Echo",
+        {},
+        [{"role": "user", "content": "hello"}],
+        -1,
+        False,
+    )
+    assert isinstance(out, dict)
+    conversation = out.get("conversation")
+    assert isinstance(conversation, list) and conversation
+    assert conversation[0].get("memorize_chat") is False
+
+
+def test_build_cross_conversation_payload_request_flag_overrides_state_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+    out = main._build_cross_conversation_payload(
+        "whatsapp:dm:123",
+        "u1",
+        "Echo",
+        {"memorize_chat": True},
+        [{"role": "user", "content": "hello"}],
+        -1,
+        False,
+    )
+    assert isinstance(out, dict)
+    conversation = out.get("conversation")
+    assert isinstance(conversation, list) and conversation
+    assert conversation[0].get("memorize_chat") is True
+
+
 def test_parse_as_of_datetime_accepts_iso_date_and_datetime():
     date_only = main._parse_as_of_datetime("2026-04-18")
     assert date_only is not None
