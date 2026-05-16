@@ -1479,8 +1479,8 @@ async def _run_retrieve(
     # Mental-health procedural sidecar. The router gated this by writing
     # mental_health_query only when the turn touches such a theme — if it
     # stayed empty, nothing fires.
-    if bool(safe.get("mental_health_addon")) and isinstance(out.get("result"), dict):
-        mh_query = str(out["result"].get("mental_health_query") or "").strip()
+    if safe.get("mental_health_addon"):
+        mh_query = str(retrieve_result.get("mental_health_query") or "").strip()
         if mh_query:
             yaml_dir = _procedural_yaml_dir(_CONFIG)
             procedural_db = _procedural_db_path(_CONFIG)
@@ -1502,7 +1502,7 @@ async def _run_retrieve(
                 )
                 if hits:
                     row, score = hits[0]
-                    out["result"].setdefault("items", []).append({
+                    retrieve_result.setdefault("items", []).append({
                         **row,
                         "memory_type": "procedural",
                         "score": float(score),
@@ -1514,8 +1514,7 @@ async def _run_retrieve(
     if (
         scoped_conversation_id
         and soul_id
-        and isinstance(out.get("result"), dict)
-        and out["result"].get("needs_retrieval")
+        and retrieve_result.get("needs_retrieval")
     ):
         _write_conversation_state(
             scoped_conversation_id,
@@ -1540,14 +1539,12 @@ async def _run_retrieve(
             prior_context = state_out.get("prior_context")
             if prior_context is not None and str(prior_context).strip():
                 out["prior_context"] = prior_context
-            memory_cache = state_out.get("memory_cache")
-            if isinstance(memory_cache, list) and memory_cache:
+            memory_cache = state_out.get("memory_cache") or []
+            if memory_cache:
                 out["memory_cache"] = memory_cache
-            intentions_active = state_out.get("intentions_active")
-            if isinstance(intentions_active, dict):
-                items = intentions_active.get("items")
-                if isinstance(items, list) and items:
-                    out["intentions_active"] = intentions_active
+            intentions_active = state_out.get("intentions_active") or {}
+            if intentions_active.get("items"):
+                out["intentions_active"] = intentions_active
 
     out["method"] = "rag"
     out["conversation_id"] = scoped_conversation_id
@@ -2736,7 +2733,7 @@ async def force_consolidation(
             if reason == "in_progress":
                 raise HTTPException(status_code=409, detail="consolidation already in progress")
             return {"ok": True, "status": "skipped", "reason": reason}
-        result = out.get("result") if isinstance(out.get("result"), dict) else {}
+        result = out.get("result") or {}
 
         _record_call(
             "consolidation.force",
