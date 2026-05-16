@@ -15,6 +15,36 @@ def test_placeholder():
     assert True
 
 
+def test_merge_llm_profiles_skips_null_fields_from_client():
+    defaults = {
+        "default": {
+            "provider": "openai",
+            "api_key": "k-default",
+            "base_url": "https://api.example/v1",
+            "chat_model": "gpt-default",
+        },
+        "reflection": {
+            "provider": "openai",
+            "api_key": "k-default",
+            "base_url": "https://api.example/v1",
+            "chat_model": "gpt-reflection-default",
+        },
+    }
+    client = {
+        "default": {"api_key": None, "base_url": "https://override.example/v1"},
+        "reflection": {"chat_model": "gpt-reflection-override", "api_key": None},
+        "ranking": None,
+    }
+
+    merged = main._merge_llm_profiles(defaults, client)
+
+    assert merged["default"]["api_key"] == "k-default"
+    assert merged["default"]["base_url"] == "https://override.example/v1"
+    assert merged["reflection"]["api_key"] == "k-default"
+    assert merged["reflection"]["chat_model"] == "gpt-reflection-override"
+    assert "ranking" not in merged
+
+
 def test_retrieve_method_from_cfg_forces_public_rag():
     assert main._retrieve_method_from_cfg({"retrieve": {"method": "rag"}}) == "rag"
     assert main._retrieve_method_from_cfg({"retrieve": {"method": "llm"}}) == "rag"

@@ -621,6 +621,37 @@ def _count_soul_messages(history: list[dict[str, Any]], soul_id: str) -> int:
     return total
 
 
+def _merge_llm_profiles(
+    default_profiles: Mapping[str, Any],
+    client_profiles: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Merge profile overrides while ignoring null-valued client fields."""
+    merged: dict[str, Any] = {
+        key: dict(value) if isinstance(value, Mapping) else value
+        for key, value in default_profiles.items()
+    }
+    for profile_name, client_profile in client_profiles.items():
+        if not isinstance(profile_name, str) or not profile_name.strip():
+            continue
+        if client_profile is None:
+            continue
+        if not isinstance(client_profile, Mapping):
+            merged[profile_name] = client_profile
+            continue
+        base = merged.get(profile_name)
+        merged_profile: dict[str, Any]
+        if isinstance(base, Mapping):
+            merged_profile = dict(base)
+        else:
+            merged_profile = {}
+        for field_name, field_value in client_profile.items():
+            if field_value is None:
+                continue
+            merged_profile[field_name] = field_value
+        merged[profile_name] = merged_profile
+    return merged
+
+
 def _get_service_from_payload(
     payload: dict[str, Any],
     *,
@@ -632,7 +663,10 @@ def _get_service_from_payload(
     # profiles merge on top per-key. Clients can send nothing, one override, or the full
     # set. Same path for ST plugin, MCP clients, PicoClaw, test tools.
     client_profiles = payload.get("llm_profiles") if isinstance(payload.get("llm_profiles"), dict) else {}
-    llm_profiles = {**_default_llm_profiles_from_server_config(_CONFIG), **client_profiles}
+    llm_profiles = _merge_llm_profiles(
+        _default_llm_profiles_from_server_config(_CONFIG),
+        client_profiles,
+    )
     step_temps = (_CONFIG.get("llm") or {}).get("step_temperatures")
     if isinstance(step_temps, dict):
         merged_default = llm_profiles.get("default", {})
