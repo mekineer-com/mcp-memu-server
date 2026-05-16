@@ -526,21 +526,6 @@ def _derive_service_key(payload: dict[str, Any]) -> str:
     return "__".join(parts) if parts else "default"
 
 
-def _normalize_retrieve_method(value: Any, default: str = "rag") -> str:
-    method = str(value or "").strip().lower()
-    return "rag" if method == "rag" else default
-
-
-def _retrieve_method_from_cfg(cfg: Mapping[str, Any] | None) -> str:
-    # Single-path retrieve: always rag.
-    if not isinstance(cfg, Mapping):
-        return "rag"
-    retrieve = cfg.get("retrieve")
-    if not isinstance(retrieve, Mapping):
-        return "rag"
-    return _normalize_retrieve_method(retrieve.get("method"), "rag")
-
-
 def _retrieve_apimw_enabled_from_cfg(cfg: Mapping[str, Any] | None) -> bool:
     if not isinstance(cfg, Mapping):
         return True
@@ -654,8 +639,6 @@ def _merge_llm_profiles(
 
 def _get_service_from_payload(
     payload: dict[str, Any],
-    *,
-    retrieve_method_override: str | None = None,
 ) -> MemoryService:
     service_key_raw = _derive_service_key(payload)
 
@@ -728,10 +711,7 @@ def _get_service_from_payload(
     if not isinstance(retrieve_config, dict):
         retrieve_config = {}
         payload["retrieve_config"] = retrieve_config
-    retrieve_config["method"] = _normalize_retrieve_method(
-        retrieve_method_override,
-        _retrieve_method_from_cfg(_CONFIG),
-    )
+    retrieve_config["method"] = "rag"
     step_models_r = (_CONFIG.get("llm", {}) if isinstance(_CONFIG.get("llm"), dict) else {}).get("step_models", {})
     if isinstance(step_models_r, dict):
         for cfg_key, profile_field in (
@@ -1458,8 +1438,7 @@ async def _run_retrieve(
     if scoped_conversation_id:
         safe["conversation_id"] = scoped_conversation_id
 
-    method = _normalize_retrieve_method(safe.get("method"), _retrieve_method_from_cfg(_CONFIG))
-    svc = _get_service_from_payload(safe, retrieve_method_override=method)
+    svc = _get_service_from_payload(safe)
     scope = _extract_retrieve_where(safe)
     memu_queries = _extract_retrieve_queries(safe)
     as_of = _parse_as_of_datetime(safe.get("as_of"))
@@ -1919,7 +1898,7 @@ async def _run_apimw(
     history: list[dict[str, Any]],
 ) -> None:
     try:
-        svc = _get_service_from_payload(payload, retrieve_method_override="rag")
+        svc = _get_service_from_payload(payload)
         scope = {"user_id": user_id, "soul_id": soul_id}
         apimw_item_top_k = _apimw_memory_count_from_cfg(_CONFIG)
         apimw_random_count = _apimw_random_count_from_cfg(_CONFIG)
@@ -3697,7 +3676,7 @@ async def conversation_turn(
         )
         turn_user_prompt = override_user_prompt
 
-        memory_service = _get_service_from_payload(safe, retrieve_method_override="rag")
+        memory_service = _get_service_from_payload(safe)
         listen_mode = not bool(safe.get("should_respond", True))
 
         if listen_mode:

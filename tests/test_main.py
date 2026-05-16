@@ -45,12 +45,6 @@ def test_merge_llm_profiles_skips_null_fields_from_client():
     assert "ranking" not in merged
 
 
-def test_retrieve_method_from_cfg_forces_public_rag():
-    assert main._retrieve_method_from_cfg({"retrieve": {"method": "rag"}}) == "rag"
-    assert main._retrieve_method_from_cfg({"retrieve": {"method": "llm"}}) == "rag"
-    assert main._retrieve_method_from_cfg({"retrieve": {"method": "unknown"}}) == "rag"
-
-
 def test_retrieve_apimw_enabled_from_cfg_defaults_and_override():
     assert main._retrieve_apimw_enabled_from_cfg(None) is True
     assert main._retrieve_apimw_enabled_from_cfg({"retrieve": {}}) is True
