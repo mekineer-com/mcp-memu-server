@@ -335,21 +335,18 @@ async def _trace_requests(request: Request, call_next):
             if not is_control:
                 _ACTIVE_WORK_REQUESTS = max(0, _ACTIVE_WORK_REQUESTS - 1)
 
-        try:
-            dt_ms = int((time.time() - t0) * 1000)
-            _LAST_HTTP.append(
-                {
-                    "t": time.time(),
-                    "method": request.method,
-                    "path": path,
-                    "status": status,
-                    "ms": dt_ms,
-                }
-            )
-            if len(_LAST_HTTP) > 200:
-                del _LAST_HTTP[0 : len(_LAST_HTTP) - 200]
-        except Exception:
-            logger.debug("request trace append failed", exc_info=True)
+        dt_ms = int((time.time() - t0) * 1000)
+        _LAST_HTTP.append(
+            {
+                "t": time.time(),
+                "method": request.method,
+                "path": path,
+                "status": status,
+                "ms": dt_ms,
+            }
+        )
+        if len(_LAST_HTTP) > 200:
+            del _LAST_HTTP[0 : len(_LAST_HTTP) - 200]
 
 
 # ==== Config loading & storage paths ====
@@ -454,13 +451,10 @@ _SERVICES_LOCK: threading.Lock = threading.Lock()
 def _close_service_quiet(svc: MemoryService | None) -> None:
     if svc is None:
         return
-    try:
-        db = getattr(svc, "database", None)
-        close_fn = getattr(db, "close", None)
-        if callable(close_fn):
-            close_fn()
-    except Exception:
-        logger.debug("service close failed", exc_info=True)
+    db = getattr(svc, "database", None)
+    close_fn = getattr(db, "close", None)
+    if callable(close_fn):
+        close_fn()
 
 
 def _clear_cached_services() -> None:
@@ -2715,11 +2709,7 @@ async def force_consolidation(
     pipeline_started = False
     try:
         safe = _safe_payload(payload)
-        scope = safe.get("user")
-        if not isinstance(scope, dict):
-            scope = _extract_scope(safe) or None
-        if not isinstance(scope, dict):
-            raise HTTPException(status_code=400, detail="user scope required")
+        scope = _extract_scope(safe)
 
         uid = str(scope.get("user_id") or "").strip()
         soul_id = str(scope.get("soul_id") or "").strip()
@@ -3576,11 +3566,7 @@ async def conversation_turn(
 
         safe = _safe_payload(payload)
 
-        scope = safe.get("user")
-        if not isinstance(scope, dict):
-            scope = _extract_scope(safe) or None
-        if not isinstance(scope, dict):
-            raise HTTPException(status_code=400, detail="user scope required")
+        scope = _extract_scope(safe)
 
         uid = str(scope.get("user_id") or "").strip()
         soul_id = str(scope.get("soul_id") or "").strip()
@@ -3867,11 +3853,7 @@ async def conversation_turn_undo(
         raise HTTPException(status_code=400, detail="conversation_id is required")
 
     safe = _safe_payload(payload)
-    scope = safe.get("user")
-    if not isinstance(scope, dict):
-        scope = _extract_scope(safe) or None
-    if not isinstance(scope, dict):
-        raise HTTPException(status_code=400, detail="user scope required")
+    scope = _extract_scope(safe)
 
     uid = str(scope.get("user_id") or "").strip()
     soul_id = str(scope.get("soul_id") or "").strip()
