@@ -12,6 +12,7 @@ import threading
 import time
 import uuid
 import warnings
+from collections import deque
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -154,8 +155,8 @@ def _has_category_content(c: dict[str, Any]) -> bool:
 
 _SERVER_INSTANCE_ID: str = str(uuid.uuid4())
 _SERVER_STARTED_AT_UNIX: float = time.time()
-_LAST_CALLS: list[dict[str, Any]] = []
-_LAST_HTTP: list[dict[str, Any]] = []
+_LAST_CALLS: deque[dict[str, Any]] = deque(maxlen=50)
+_LAST_HTTP: deque[dict[str, Any]] = deque(maxlen=200)
 _MEMORIZE_LOCKS: dict[str, asyncio.Lock] = {}
 _MEMORIZE_PROGRESS: dict[str, dict[str, Any]] = {}
 _MEMORIZE_CANCEL: set[str] = set()
@@ -204,17 +205,17 @@ def _clear_apimw_inflight(conversation_id: str) -> None:
         _APIMW_INFLIGHT.discard(key)
 
 
+_CONTROL_PATHS: frozenset[str] = frozenset(
+    ("/health", "/version", "/admin/shutdown", "/admin/shutdown/status", "/diag")
+)
+
+
 def _is_control_path(path: str) -> bool:
     p = str(path or "")
-    if p in ("/health", "/version", "/admin/shutdown", "/admin/shutdown/status", "/diag"):
-        return True
-    if p.startswith("/diag/"):
+    if p in _CONTROL_PATHS or p.startswith("/diag/"):
         return True
     pref = str(_DIAG_PREFIX or "").rstrip("/")
-    if pref:
-        if p == f"{pref}/diag" or p.startswith(f"{pref}/diag/"):
-            return True
-    return False
+    return bool(pref and (p == f"{pref}/diag" or p.startswith(f"{pref}/diag/")))
 
 
 def _shutdown_snapshot() -> dict[str, Any]:
@@ -345,8 +346,6 @@ async def _trace_requests(request: Request, call_next):
                 "ms": dt_ms,
             }
         )
-        if len(_LAST_HTTP) > 200:
-            del _LAST_HTTP[0 : len(_LAST_HTTP) - 200]
 
 
 # ==== Config loading & storage paths ====
@@ -529,50 +528,35 @@ def _retrieve_apimw_enabled_from_cfg(cfg: Mapping[str, Any] | None) -> bool:
     return bool(retrieve.get("apimw_enabled", True))
 
 
-def _apimw_cadence_from_cfg(cfg: Mapping[str, Any] | None) -> int:
+def _cfg_int(cfg: Mapping[str, Any] | None, key: str, default: int, minimum: int = 0, section: str | None = None) -> int:
+    """Read an integer from cfg (optionally nested under *section*), clamped to *minimum*."""
     if not isinstance(cfg, Mapping):
-        return 5
-    retrieve = cfg.get("retrieve")
-    if not isinstance(retrieve, Mapping):
-        return 5
+        return default
+    source = cfg
+    if section:
+        source = cfg.get(section)
+        if not isinstance(source, Mapping):
+            return default
     try:
-        return max(1, int(retrieve.get("apimw_cadence", 5)))
+        return max(minimum, int(source.get(key, default)))
     except (TypeError, ValueError):
-        return 5
+        return default
+
+
+def _apimw_cadence_from_cfg(cfg: Mapping[str, Any] | None) -> int:
+    return _cfg_int(cfg, "apimw_cadence", 5, minimum=1, section="retrieve")
 
 
 def _apimw_memory_count_from_cfg(cfg: Mapping[str, Any] | None) -> int:
-    if not isinstance(cfg, Mapping):
-        return 25
-    retrieve = cfg.get("retrieve")
-    if not isinstance(retrieve, Mapping):
-        return 25
-    try:
-        return max(1, int(retrieve.get("apimw_memory_count", 25)))
-    except (TypeError, ValueError):
-        return 25
+    return _cfg_int(cfg, "apimw_memory_count", 25, minimum=1, section="retrieve")
 
 
 def _apimw_random_count_from_cfg(cfg: Mapping[str, Any] | None) -> int:
-    if not isinstance(cfg, Mapping):
-        return 5
-    retrieve = cfg.get("retrieve")
-    if not isinstance(retrieve, Mapping):
-        return 5
-    try:
-        return max(0, int(retrieve.get("apimw_random_count", 5)))
-    except (TypeError, ValueError):
-        return 5
+    return _cfg_int(cfg, "apimw_random_count", 5, minimum=0, section="retrieve")
 
 
 def _consolidation_interval_days_from_cfg(cfg: Mapping[str, Any] | None) -> int:
-    if not isinstance(cfg, Mapping):
-        return 7
-    raw = cfg.get("consolidation_interval_days", 7)
-    try:
-        return max(1, int(raw))
-    except (TypeError, ValueError):
-        return 7
+    return _cfg_int(cfg, "consolidation_interval_days", 7, minimum=1)
 
 
 def _build_apimw_retrieve_config(base_cfg: Any, *, item_top_k: int) -> dict[str, Any]:
@@ -890,8 +874,6 @@ def _record_call(
             "error": error,
         }
         _LAST_CALLS.append(item)
-        if len(_LAST_CALLS) > 50:
-            del _LAST_CALLS[0 : len(_LAST_CALLS) - 50]
     except Exception:
         logger.debug("record_call telemetry append failed", exc_info=True)
 
@@ -1052,8 +1034,6 @@ def _resource_sig(row: Any) -> str:
         if value:
             return f"{key}:{value}"
     return ""
-
-
 
 
 def _parse_turn_ts_ms(value: Any) -> int | None:
@@ -1952,7 +1932,6 @@ async def _run_apimw(
 
     except Exception:
         logger.exception("APImw background pipeline failed for %s", conversation_id)
-
 
 
 # =============================================================================
