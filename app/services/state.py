@@ -32,6 +32,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "conversation_id": row["conversation_id"],
         "soul_id": row["soul_id"],
         "user_id": row["user_id"],
+        "memorize_chat": bool(int(row["memorize_chat"])) if "memorize_chat" in row.keys() and row["memorize_chat"] is not None else True,
         "digest_cursor": max(0, digest_cursor),
         "prior_context": None if prior_context is None else str(prior_context),
         "pending_episode_ids": normalize_text_list(row["pending_episode_ids"]),
@@ -46,7 +47,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
 
 def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
     return con.execute(
-        "SELECT conversation_id, soul_id, user_id, digest_cursor, prior_context, "
+        "SELECT conversation_id, soul_id, user_id, memorize_chat, digest_cursor, prior_context, "
         "pending_episode_ids, last_retrieval_ids, last_memorize_at, "
         "updated_at, undo_snapshot, "
         "last_background_error, last_background_error_at "
@@ -64,6 +65,7 @@ def conversation_state_empty(
         "conversation_id": conversation_id,
         "soul_id": soul_id,
         "user_id": user_id,
+        "memorize_chat": True,
         "digest_cursor": 0,
         "prior_context": None,
         "pending_episode_ids": [],
@@ -141,16 +143,17 @@ def write_conversation_state(
             con.execute(
                 """
 INSERT OR IGNORE INTO conversations (
-    conversation_id, soul_id, user_id,
+    conversation_id, soul_id, user_id, memorize_chat,
     digest_cursor, prior_context, pending_episode_ids,
     last_retrieval_ids, last_memorize_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """,
                 (
                     seed["conversation_id"],
                     seed.get("soul_id"),
                     seed.get("user_id"),
+                    1 if seed.get("memorize_chat", True) else 0,
                     int(seed.get("digest_cursor") or 0),
                     seed.get("prior_context"),
                     json_to_db(seed.get("pending_episode_ids") or []),
@@ -181,6 +184,7 @@ INSERT OR IGNORE INTO conversations (
 
         for key, value in raw_updates.items():
             if key in {
+                "memorize_chat",
                 "digest_cursor",
                 "prior_context",
                 "pending_episode_ids",
@@ -224,6 +228,8 @@ INSERT OR IGNORE INTO conversations (
                 field_updates["digest_cursor"] = max(0, int(field_updates.get("digest_cursor") or 0))
             except (TypeError, ValueError, OverflowError) as exc:
                 raise HTTPException(status_code=400, detail="digest_cursor must be an integer") from exc
+        if "memorize_chat" in field_updates:
+            field_updates["memorize_chat"] = 1 if bool(field_updates.get("memorize_chat")) else 0
         if "last_memorize_at" in field_updates:
             raw_last = field_updates.get("last_memorize_at")
             field_updates["last_memorize_at"] = None if raw_last is None else (str(raw_last).strip() or None)
@@ -258,6 +264,8 @@ INSERT OR IGNORE INTO conversations (
                 assignments.append(f"{key} = ?")
                 if key in {"pending_episode_ids", "last_retrieval_ids", "undo_snapshot"}:
                     params.append(json_to_db(value))
+                elif key == "memorize_chat":
+                    params.append(1 if bool(value) else 0)
                 elif key == "digest_cursor":
                     params.append(int(value or 0))
                 else:

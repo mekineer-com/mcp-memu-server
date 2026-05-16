@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     conversation_id TEXT PRIMARY KEY,
     soul_id TEXT,
     user_id TEXT,
+    memorize_chat INTEGER DEFAULT 1,
     digest_cursor INTEGER DEFAULT 0,
     prior_context TEXT,
     pending_episode_ids JSON DEFAULT '[]',
@@ -115,6 +116,9 @@ CREATE TABLE IF NOT EXISTS conversations (
 )
 """
     )
+    conversation_cols = set(sqlite_table_columns(con, "conversations"))
+    if "memorize_chat" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN memorize_chat INTEGER DEFAULT 1")
     con.execute(
         """
 CREATE TABLE IF NOT EXISTS messages (

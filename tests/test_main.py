@@ -134,6 +134,28 @@ def test_normalize_conversation_uses_created_at_when_timestamp_missing():
     assert out[0]["ts_ms"] == int(datetime(2026, 4, 16, 12, 0, tzinfo=UTC).timestamp() * 1000)
 
 
+def test_normalize_conversation_preserves_cross_memorize_metadata():
+    conv = [
+        {
+            "role": "user",
+            "name": "Marcos",
+            "content": "hello",
+            "source_label": "whatsapp:group",
+            "source_conversation_id": "whatsapp:group:123@g.us",
+            "source_conversation_index": 42,
+            "received_at": "2026-05-15T12:00:00+00:00",
+            "memorize_chat": False,
+        }
+    ]
+    out = main._normalize_conversation(conv)
+    assert isinstance(out, list) and out
+    assert out[0]["source_label"] == "whatsapp:group"
+    assert out[0]["source_conversation_id"] == "whatsapp:group:123@g.us"
+    assert out[0]["source_conversation_index"] == 42
+    assert out[0]["received_at"] == "2026-05-15T12:00:00+00:00"
+    assert out[0]["memorize_chat"] is False
+
+
 def test_parse_as_of_datetime_accepts_iso_date_and_datetime():
     date_only = main._parse_as_of_datetime("2026-04-18")
     assert date_only is not None
@@ -869,4 +891,3 @@ async def test_conversation_turn_drops_response_when_peer_mismatches_chat_name(
         con.close()
     # Mismatch means no response text, which means no user+assistant pair.
     assert rows == []
-

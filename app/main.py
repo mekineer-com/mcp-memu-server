@@ -852,6 +852,11 @@ def _normalize_conversation(conv: Any) -> Any:
                 "name": m.get("name"),
                 "content": m.get("content") or "",
                 **({"ts_ms": ts_ms} if ts_ms is not None else {}),
+                **({"source_label": m.get("source_label")} if m.get("source_label") is not None else {}),
+                **({"source_conversation_id": m.get("source_conversation_id")} if m.get("source_conversation_id") is not None else {}),
+                **({"source_conversation_index": m.get("source_conversation_index")} if m.get("source_conversation_index") is not None else {}),
+                **({"received_at": m.get("received_at")} if m.get("received_at") is not None else {}),
+                **({"memorize_chat": m.get("memorize_chat")} if isinstance(m.get("memorize_chat"), bool) else {}),
             }
         )
     return out
@@ -3294,6 +3299,8 @@ def _build_cross_conversation_payload(
         return None
 
     trigger_label = _message_log.derive_source_label(cid)
+    trigger_memorize_raw = safe.get("memorize_chat")
+    trigger_memorize = trigger_memorize_raw if isinstance(trigger_memorize_raw, bool) else True
     trigger_cursor = max(0, digest_cursor + 1)
     trigger_tail = _normalize_conversation(history_full[trigger_cursor:]) if trigger_cursor < len(history_full) else []
     if not trigger_tail:
@@ -3303,6 +3310,7 @@ def _build_cross_conversation_payload(
         msg["source_label"] = trigger_label
         msg["source_conversation_id"] = cid
         msg["source_conversation_index"] = digest_cursor + 1 + i
+        msg["memorize_chat"] = trigger_memorize
         ts = msg.get("ts_ms")
         if isinstance(ts, (int, float)) and "received_at" not in msg:
             msg["received_at"] = datetime.fromtimestamp(ts / 1000.0, tz=UTC).isoformat()
@@ -3393,6 +3401,7 @@ def _turn_state_write(
     annulment_ids: list[str],
     retrieval_ids_since_consolidation: list[str],
     apply_turn_maintenance: bool,
+    memorize_chat: bool | None = None,
 ) -> tuple[dict[str, Any], Any]:
     latest_state_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
     current_memory_cache = _normalize_memory_cache_impl(latest_state_row.get("memory_cache"))
@@ -3419,6 +3428,8 @@ def _turn_state_write(
     }
     if retrieval_ids_since_consolidation:
         updates["append_retrieval_ids_since_consolidation"] = retrieval_ids_since_consolidation
+    if isinstance(memorize_chat, bool):
+        updates["memorize_chat"] = memorize_chat
     state_out, state_path = _write_conversation_state(
         cid,
         soul_id=soul_id,
@@ -3501,6 +3512,18 @@ async def conversation_append_message(
         raise HTTPException(status_code=400, detail="message is required")
     user_name = _pick_str(safe, "user_name") or ""
     role = (_pick_str(safe, "role") or "user").strip()
+    memorize_chat_raw = safe.get("memorize_chat")
+    memorize_chat = memorize_chat_raw if isinstance(memorize_chat_raw, bool) else None
+
+    write_updates: dict[str, Any] = {}
+    if isinstance(memorize_chat, bool):
+        write_updates["memorize_chat"] = memorize_chat
+    _write_conversation_state(
+        cid,
+        soul_id=soul_id,
+        user_id=uid,
+        updates=write_updates,
+    )
 
     _state_row, _soul_card, db_path = _load_turn_state_and_soul_card(
         cid, user_id=uid, soul_id=soul_id,
@@ -3588,6 +3611,8 @@ async def conversation_turn(
         run_apimw = _retrieve_apimw_enabled_from_cfg(_CONFIG) and bool(safe.get("run_apimw", True))
         apply_turn_maintenance = bool(safe.get("apply_turn_maintenance", True))
         include_debug = bool(safe.get("debug", False))
+        memorize_chat_raw = safe.get("memorize_chat")
+        memorize_chat = memorize_chat_raw if isinstance(memorize_chat_raw, bool) else None
         if dry_run:
             run_apimw = False
 
@@ -3677,6 +3702,7 @@ async def conversation_turn(
                     turn_cache_entry, turn_annulment_ids,
                     retrieved_item_ids,
                     apply_turn_maintenance,
+                    memorize_chat=memorize_chat,
                 )
 
         if not dry_run:
