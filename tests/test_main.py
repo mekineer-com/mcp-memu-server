@@ -56,6 +56,16 @@ def test_imports():
     assert hasattr(main, "app")
 
 
+def test_run_retrieve_reports_rag_method(monkeypatch: pytest.MonkeyPatch):
+    class _FakeSvc:
+        async def retrieve(self, *_args, **_kwargs):
+            return {"items": [], "should_respond": True}
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+    out = asyncio.run(main._run_retrieve({"query": "hello", "user": {"user_id": "u", "soul_id": "s"}}))
+    assert out["method"] == "rag"
+
+
 def test_merge_memorize_segment_results_flattens_top_level_lists():
     out = main._merge_memorize_segment_results(
         [

@@ -1549,7 +1549,7 @@ async def _run_retrieve(
                 if isinstance(items, list) and items:
                     out["intentions_active"] = intentions_active
 
-    out["method"] = method
+    out["method"] = "rag"
     out["conversation_id"] = scoped_conversation_id
     out["queries"] = len(memu_queries)
     if as_of is not None:
