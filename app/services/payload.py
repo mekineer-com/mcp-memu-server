@@ -85,11 +85,11 @@ def _normalize_conversation(conv: Any) -> Any:
             role = "user"
 
         ts_ms: int | None = None
-        raw_ts = m.get("ts_ms") if isinstance(m, dict) else None
+        raw_ts = m.get("ts_ms")
         if raw_ts is None:
-            raw_ts = m.get("timestamp") if isinstance(m, dict) else None
+            raw_ts = m.get("timestamp")
         if raw_ts is None:
-            raw_ts = m.get("created_at") if isinstance(m, dict) else None
+            raw_ts = m.get("created_at")
         if isinstance(raw_ts, (int, float)) and math.isfinite(raw_ts):
             ts_ms = int(raw_ts)
         elif isinstance(raw_ts, str) and raw_ts.strip():

@@ -68,12 +68,12 @@ def register_admin_routes(
             "ephemeralDb": is_ephemeral_db(cfg),
             "config_path": str(config_path()),
             "storage_dir": str(storage_dir),
-            "storage": dict(storage_status),
-            "services_cached": int(services_cached()),
+            "storage": storage_status,
+            "services_cached": services_cached(),
             "startup_warnings": startup_warnings,
             "shutdown": shutdown_snapshot(),
             "mcp": {
-                "enabled": bool(mcp_enabled()),
+                "enabled": mcp_enabled(),
                 "http_path": str(cfg.get("mcp", {}).get("http_path") or "/mcp"),
                 "sse_path": str(cfg.get("mcp", {}).get("sse_path") or "/sse"),
             },
@@ -145,12 +145,12 @@ def register_admin_routes(
     @app.get(f"{diag_prefix}/diag/calls")
     @app.get("/diag/calls", operation_id="diag_calls")
     async def diag_calls():
-        return {"ok": True, "calls": list(last_calls)}
+        return {"ok": True, "calls": last_calls}
 
     @app.get(f"{diag_prefix}/diag/http")
     @app.get("/diag/http", operation_id="diag_http")
     async def diag_http():
-        return {"ok": True, "http": list(last_http)}
+        return {"ok": True, "http": last_http}
 
     @app.get(f"{diag_prefix}/diag/sqlite")
     @app.get("/diag/sqlite", operation_id="diag_sqlite")
@@ -165,17 +165,17 @@ def register_admin_routes(
                     "ok": False,
                     "reason": "provider_not_sqlite",
                     "provider": provider,
-                    "storage": dict(storage_status),
+                    "storage": storage_status,
                 }
 
             soul_id = soul_id.strip()
             p = sqlite_current_path(user_id or None, soul_id or None)
             if p is None:
-                return {"ok": False, "reason": "soul_id_required", "storage": dict(storage_status)}
+                return {"ok": False, "reason": "soul_id_required", "storage": storage_status}
 
             info = sqlite_file_info(p)
             if not p.exists():
-                return {"ok": False, "reason": "sqlite_file_missing", **info, "storage": dict(storage_status)}
+                return {"ok": False, "reason": "sqlite_file_missing", **info, "storage": storage_status}
 
             con = sqlite_connect(p)
             try:
@@ -187,7 +187,7 @@ def register_admin_routes(
                 ]
                 return {
                     "ok": True,
-                    "storage": dict(storage_status),
+                    "storage": storage_status,
                     "file": info,
                     "tables": tables,
                     "pragmas": sqlite_pragmas(con),
@@ -199,7 +199,7 @@ def register_admin_routes(
                 "ok": False,
                 "reason": "exception",
                 "error": f"{type(e).__name__}: {e}",
-                "storage": dict(storage_status),
+                "storage": storage_status,
             }
 
     @app.get(f"{diag_prefix}/diag/sqlite/counts")
@@ -213,7 +213,7 @@ def register_admin_routes(
         p = sqlite_current_path(user_id or None, soul_id)
         if p is None or not p.exists():
             reason = "soul_id_required" if p is None else "sqlite_file_missing"
-            return {"ok": False, "reason": reason, "path": str(p) if p else None, "storage": dict(storage_status)}
+            return {"ok": False, "reason": reason, "path": str(p) if p else None, "storage": storage_status}
 
         allowed = [
             "resources",
@@ -284,7 +284,7 @@ def register_admin_routes(
         p = sqlite_current_path(user_id or None, soul_id)
         if p is None or not p.exists():
             reason = "soul_id_required" if p is None else "sqlite_file_missing"
-            return {"ok": False, "reason": reason, "path": str(p) if p else None, "storage": dict(storage_status)}
+            return {"ok": False, "reason": reason, "path": str(p) if p else None, "storage": storage_status}
 
         con = sqlite_connect(p)
         try:
