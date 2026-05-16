@@ -76,7 +76,7 @@ mcp-memu-server/
 | `app/services/admin_routes.py` | Health/version/shutdown/diag endpoint handlers (including `/diag` and MCP-prefixed diag aliases). |
 | `app/services/payload.py` | Shared payload/scope/normalization helpers used across retrieve/turn/service-factory paths (scope extraction, turn history normalization, signature helpers, payload scrubbing). |
 | `app/services/service_factory.py` | Service cache + payload-driven `MemoryService` construction, llm profile merge, and config readers (`apimw_*`, consolidation interval, retrieve config shaping). |
-| `app/services/retrieve_orchestration.py` | Retrieve helper domain: query/where extraction, identity-context builder, and retrieve rewrite history constants/shared context-query assembly. |
+| `app/services/retrieve_orchestration.py` | Retrieve domain helpers + orchestration seam: query/where extraction, identity-context builder, retrieve rewrite constants/context-query assembly, and `_run_retrieve` implementation (called via thin wrapper in `main.py`). |
 | `app/services/sqlite_scope.py` | SQLite scope plumbing used across endpoints: scoped db-path resolution, scope `WHERE` builder, state-db lookup/write wrappers, and lightweight file info/intention row helpers. |
 | `app/services/crud_endpoints.py` | CRUD endpoint logic extracted from `main.py`: categories search/list, intentions, relationships, narrative suggestion, conversation state get/patch, clear-memory. |
 | `app/services/mcp_tools.py` | MCP-facing wrapper contracts (`memu_*`): typed request models + thin orchestration over existing REST/turn endpoints |

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import sqlite3
+import time
 from typing import Any
 
 from fastapi import HTTPException
@@ -115,3 +117,140 @@ def _build_retrieve_soul_context_queries(
 
     soul_ctx_queries.append({"role": "user", "content": {"text": message}})
     return soul_ctx_queries
+
+
+async def _run_retrieve(
+    payload: dict[str, Any],
+    *,
+    conversation_id: str | None = None,
+    safe_payload: Callable[[dict[str, Any]], dict[str, Any]],
+    extract_conversation_id: Callable[[dict[str, Any]], str | None],
+    get_service_from_payload: Callable[[dict[str, Any]], Any],
+    parse_as_of_datetime: Callable[[Any], Any],
+    sqlite_current_path: Callable[[str | None, str | None], Any],
+    sqlite_connect: Callable[[Any], Any],
+    sqlite_ensure_conversation_state_schema: Callable[[Any], None],
+    conversation_state_from_row: Callable[..., dict[str, Any] | None],
+    conversation_state_row: Callable[[Any, str], Any],
+    write_conversation_state: Callable[..., Any],
+    procedural_module: Any,
+    procedural_yaml_dir: Callable[[dict[str, Any]], Any],
+    procedural_db_path: Callable[[dict[str, Any]], Any],
+    procedural_should_ingest: Callable[[Any, Any], bool],
+    config: dict[str, Any],
+    logger: Any,
+) -> dict[str, Any]:
+    safe = safe_payload(payload)
+    scoped_conversation_id = str(conversation_id or extract_conversation_id(safe) or "").strip() or None
+    if scoped_conversation_id:
+        safe["conversation_id"] = scoped_conversation_id
+
+    svc = get_service_from_payload(safe)
+    scope = _extract_retrieve_where(safe)
+    memu_queries = _extract_retrieve_queries(safe)
+    as_of = parse_as_of_datetime(safe.get("as_of"))
+
+    soul_id = str((scope or {}).get("soul_id") or "").strip()
+    user_id = str((scope or {}).get("user_id") or "user").strip() or "user"
+
+    retrieve_rewrite_angle = 0
+    if scoped_conversation_id and soul_id:
+        db_path = sqlite_current_path(user_id or None, soul_id)
+        if db_path is not None and db_path.exists():
+            con = sqlite_connect(db_path)
+            try:
+                con.row_factory = sqlite3.Row
+                sqlite_ensure_conversation_state_schema(con)
+                pre_row = conversation_state_from_row(conversation_state_row(con, scoped_conversation_id), con=con)
+                if pre_row:
+                    retrieve_rewrite_angle = int(pre_row.get("retrieve_rewrite_angle") or 0)
+            finally:
+                con.close()
+
+    channel_mode = str(safe.get("channel_mode") or "").strip() or None
+
+    retrieve_started_at = time.monotonic()
+    retrieve_result = await svc.retrieve(
+        memu_queries,
+        where=scope,
+        as_of=as_of,
+        rewrite_angle=retrieve_rewrite_angle,
+        channel_mode=channel_mode,
+    )
+    retrieve_ms = int((time.monotonic() - retrieve_started_at) * 1000)
+    should_respond = bool(retrieve_result.get("should_respond", True))
+    out: dict[str, Any] = {
+        "ok": True,
+        "should_respond": should_respond,
+        "result": retrieve_result,
+        "retrieve_ms": retrieve_ms,
+    }
+
+    if safe.get("mental_health_addon"):
+        mh_query = str(retrieve_result.get("mental_health_query") or "").strip()
+        if mh_query:
+            yaml_dir = procedural_yaml_dir(config)
+            procedural_db = procedural_db_path(config)
+            if procedural_should_ingest(procedural_db, yaml_dir):
+                try:
+                    await procedural_module.ingest(svc, procedural_db, yaml_dir)
+                except Exception:
+                    logger.exception("procedural ingest failed")
+            try:
+                embeds = await svc.embed([mh_query], profile="embedding")
+                qvec = list(embeds[0]) if embeds else []
+                expected_embedding_model = str((config.get("llm") or {}).get("embed_model") or "").strip() or None
+                hits = procedural_module.lookup(
+                    procedural_db,
+                    domain="mental_health",
+                    query_vec=qvec,
+                    expected_embedding_model=expected_embedding_model,
+                    limit=1,
+                )
+                if hits:
+                    row, score = hits[0]
+                    retrieve_result.setdefault("items", []).append({
+                        **row,
+                        "memory_type": "procedural",
+                        "score": float(score),
+                    })
+            except Exception:
+                logger.exception("procedural lookup failed")
+
+    if scoped_conversation_id and soul_id and retrieve_result.get("needs_retrieval"):
+        write_conversation_state(
+            scoped_conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={"retrieve_rewrite_angle": (retrieve_rewrite_angle + 1) % 3},
+        )
+
+    if scoped_conversation_id:
+        state_out: dict[str, Any] | None = None
+        if soul_id:
+            db_path = sqlite_current_path(user_id or None, soul_id)
+            if db_path is not None and db_path.exists():
+                con = sqlite_connect(db_path)
+                try:
+                    con.row_factory = sqlite3.Row
+                    sqlite_ensure_conversation_state_schema(con)
+                    state_out = conversation_state_from_row(conversation_state_row(con, scoped_conversation_id), con=con)
+                finally:
+                    con.close()
+        if state_out:
+            prior_context = state_out.get("prior_context")
+            if prior_context is not None and str(prior_context).strip():
+                out["prior_context"] = prior_context
+            memory_cache = state_out.get("memory_cache") or []
+            if memory_cache:
+                out["memory_cache"] = memory_cache
+            intentions_active = state_out.get("intentions_active") or {}
+            if intentions_active.get("items"):
+                out["intentions_active"] = intentions_active
+
+    out["method"] = "rag"
+    out["conversation_id"] = scoped_conversation_id
+    out["queries"] = len(memu_queries)
+    if as_of is not None:
+        out["as_of"] = as_of.isoformat()
+    return out

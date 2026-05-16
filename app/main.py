@@ -848,131 +848,26 @@ async def _run_retrieve(
     *,
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    safe = _safe_payload(payload)
-    scoped_conversation_id = str(conversation_id or _extract_conversation_id(safe) or "").strip() or None
-    if scoped_conversation_id:
-        safe["conversation_id"] = scoped_conversation_id
-
-    svc = _get_service_from_payload(safe)
-    scope = _extract_retrieve_where(safe)
-    memu_queries = _extract_retrieve_queries(safe)
-    as_of = _parse_as_of_datetime(safe.get("as_of"))
-
-    soul_id = str((scope or {}).get("soul_id") or "").strip()
-    user_id = str((scope or {}).get("user_id") or "user").strip() or "user"
-
-    # Prompt-diversity: read the rotating rewrite angle so the router
-    # uses a different lens (topic / relation / counterpoint-hint) on
-    # consecutive RETRIEVE turns.
-    retrieve_rewrite_angle = 0
-    if scoped_conversation_id and soul_id:
-        db_path = _sqlite_current_path(user_id or None, soul_id)
-        if db_path is not None and db_path.exists():
-            con = _sqlite_connect(db_path)
-            try:
-                con.row_factory = sqlite3.Row
-                _sqlite_ensure_conversation_state_schema(con)
-                pre_row = _conversation_state_from_row(_conversation_state_row(con, scoped_conversation_id), con=con)
-                if pre_row:
-                    retrieve_rewrite_angle = int(pre_row.get("retrieve_rewrite_angle") or 0)
-            finally:
-                con.close()
-
-    channel_mode = str(safe.get("channel_mode") or "").strip() or None
-
-    retrieve_started_at = time.monotonic()
-    retrieve_result = await svc.retrieve(
-        memu_queries,
-        where=scope,
-        as_of=as_of,
-        rewrite_angle=retrieve_rewrite_angle,
-        channel_mode=channel_mode,
+    return await _retrieve_orchestration._run_retrieve(
+        payload,
+        conversation_id=conversation_id,
+        safe_payload=_safe_payload,
+        extract_conversation_id=_extract_conversation_id,
+        get_service_from_payload=_get_service_from_payload,
+        parse_as_of_datetime=_parse_as_of_datetime,
+        sqlite_current_path=_sqlite_current_path,
+        sqlite_connect=_sqlite_connect,
+        sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
+        conversation_state_from_row=_conversation_state_from_row,
+        conversation_state_row=_conversation_state_row,
+        write_conversation_state=_write_conversation_state,
+        procedural_module=_procedural,
+        procedural_yaml_dir=_procedural_yaml_dir,
+        procedural_db_path=_procedural_db_path,
+        procedural_should_ingest=_procedural_should_ingest,
+        config=_CONFIG,
+        logger=logger,
     )
-    retrieve_ms = int((time.monotonic() - retrieve_started_at) * 1000)
-    should_respond = bool(retrieve_result.get("should_respond", True))
-    out: dict[str, Any] = {
-        "ok": True,
-        "should_respond": should_respond,
-        "result": retrieve_result,
-        "retrieve_ms": retrieve_ms,
-    }
-
-    # Mental-health procedural sidecar. The router gated this by writing
-    # mental_health_query only when the turn touches such a theme — if it
-    # stayed empty, nothing fires.
-    if safe.get("mental_health_addon"):
-        mh_query = str(retrieve_result.get("mental_health_query") or "").strip()
-        if mh_query:
-            yaml_dir = _procedural_yaml_dir(_CONFIG)
-            procedural_db = _procedural_db_path(_CONFIG)
-            if _procedural_should_ingest(procedural_db, yaml_dir):
-                try:
-                    await _procedural.ingest(svc, procedural_db, yaml_dir)
-                except Exception:
-                    logger.exception("procedural ingest failed")
-            try:
-                embeds = await svc.embed([mh_query], profile="embedding")
-                qvec = list(embeds[0]) if embeds else []
-                expected_embedding_model = str((_CONFIG.get("llm") or {}).get("embed_model") or "").strip() or None
-                hits = _procedural.lookup(
-                    procedural_db,
-                    domain="mental_health",
-                    query_vec=qvec,
-                    expected_embedding_model=expected_embedding_model,
-                    limit=1,
-                )
-                if hits:
-                    row, score = hits[0]
-                    retrieve_result.setdefault("items", []).append({
-                        **row,
-                        "memory_type": "procedural",
-                        "score": float(score),
-                    })
-            except Exception:
-                logger.exception("procedural lookup failed")
-
-    # Advance the angle only on RETRIEVE verdicts (NO_RETRIEVE keeps it put).
-    if (
-        scoped_conversation_id
-        and soul_id
-        and retrieve_result.get("needs_retrieval")
-    ):
-        _write_conversation_state(
-            scoped_conversation_id,
-            soul_id=soul_id,
-            user_id=user_id,
-            updates={"retrieve_rewrite_angle": (retrieve_rewrite_angle + 1) % 3},
-        )
-
-    if scoped_conversation_id:
-        state_out: dict[str, Any] | None = None
-        if soul_id:
-            db_path = _sqlite_current_path(user_id or None, soul_id)
-            if db_path is not None and db_path.exists():
-                con = _sqlite_connect(db_path)
-                try:
-                    con.row_factory = sqlite3.Row
-                    _sqlite_ensure_conversation_state_schema(con)
-                    state_out = _conversation_state_from_row(_conversation_state_row(con, scoped_conversation_id), con=con)
-                finally:
-                    con.close()
-        if state_out:
-            prior_context = state_out.get("prior_context")
-            if prior_context is not None and str(prior_context).strip():
-                out["prior_context"] = prior_context
-            memory_cache = state_out.get("memory_cache") or []
-            if memory_cache:
-                out["memory_cache"] = memory_cache
-            intentions_active = state_out.get("intentions_active") or {}
-            if intentions_active.get("items"):
-                out["intentions_active"] = intentions_active
-
-    out["method"] = "rag"
-    out["conversation_id"] = scoped_conversation_id
-    out["queries"] = len(memu_queries)
-    if as_of is not None:
-        out["as_of"] = as_of.isoformat()
-    return out
 
 
 async def _apimw_topic_statement(
