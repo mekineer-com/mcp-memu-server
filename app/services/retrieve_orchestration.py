@@ -178,10 +178,8 @@ async def _run_retrieve(
         channel_mode=channel_mode,
     )
     retrieve_ms = int((time.monotonic() - retrieve_started_at) * 1000)
-    should_respond = bool(retrieve_result.get("should_respond", True))
     out: dict[str, Any] = {
         "ok": True,
-        "should_respond": should_respond,
         "result": retrieve_result,
         "retrieve_ms": retrieve_ms,
     }

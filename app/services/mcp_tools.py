@@ -130,8 +130,6 @@ async def memu_turn_endpoint(
         retrieve_payload["memorize_chat"] = req.memorize_chat
 
     retrieve_out = await conversation_retrieve(conversation_id, retrieve_payload)
-    should_respond = retrieve_out.get("should_respond", True)
-
     turn_user_prompt = str(retrieve_out.get("turn_user_prompt") or "").strip()
     turn_system_prompt = str(retrieve_out.get("turn_system_prompt") or "").strip()
     if not turn_user_prompt:
@@ -155,7 +153,6 @@ async def memu_turn_endpoint(
         "prompt_override_payload": prompt_override_payload,
         "run_apimw": bool(req.run_apimw),
         "apply_turn_maintenance": bool(req.apply_turn_maintenance),
-        "should_respond": bool(should_respond),
         "debug": bool(req.debug),
     }
     if user_name:
@@ -174,7 +171,6 @@ async def memu_turn_endpoint(
     turn_out = await conversation_turn(conversation_id, turn_payload)
     compact: dict[str, Any] = {
         "ok": bool(turn_out.get("ok", False)),
-        "should_respond": bool(should_respond),
         "conversation_id": str(turn_out.get("conversation_id") or conversation_id),
         "response": str(turn_out.get("response") or ""),
         "response_target": str(turn_out.get("response_target") or "respond"),
