@@ -408,6 +408,13 @@ def _dedupe_prior_context(prior_context: str | None, blocked_terms: set[str]) ->
     return "\n".join(kept)
 
 
+def _format_life_goals_for_prompt(life_goals_active: list[str] | None) -> str:
+    goals = [str(goal).strip() for goal in (life_goals_active or []) if str(goal).strip()]
+    if not goals:
+        return "(none yet)"
+    return "\n".join(f"- {goal}" for goal in goals)
+
+
 def _section_title_from_conversation_id(conversation_id: str | None) -> str:
     cid = _text(conversation_id)
     if cid.startswith(("sillytavern", "integrity:", "chat:")):
@@ -540,6 +547,7 @@ def build_turn_prompt(
     all_categories_summary: str | None,
     memory_cache: Any,
     intentions_active: Any,
+    life_goals_active: list[str] | None = None,
     subconscious_message: str | None = None,
     cross_conversation_history: str | None = None,
     chat_label: str | None = None,
@@ -643,6 +651,9 @@ def build_turn_prompt(
         "",
         "My intentions:",
         format_intentions_for_prompt(intentions_active),
+        "",
+        "My life goals:",
+        _format_life_goals_for_prompt(life_goals_active),
         "",
         f"New message:\n{current_user_text}",
         "",

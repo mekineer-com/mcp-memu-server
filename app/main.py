@@ -2265,6 +2265,7 @@ async def conversation_retrieve(
                 )
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
+                life_goals_active = _load_active_life_goals_for_prompt(user_id=uid, soul_id=soul_id)
 
                 out["turn_system_prompt"] = _make_turn_system_prompt(
                     soul_id,
@@ -2288,6 +2289,7 @@ async def conversation_retrieve(
                     all_categories_summary=_state_row.get("all_categories_summary"),
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
+                    life_goals_active=life_goals_active,
                     subconscious_message=_subconscious_msg,
                     cross_conversation_history=safe.get("_cross_conversation_history"),
                     chat_label=chat_label_for_prompt,
