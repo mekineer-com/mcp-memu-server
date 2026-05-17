@@ -2767,30 +2767,33 @@ async def conversation_turn(
                 cid, uid, soul_id, safe, history_full,
             )
 
-        response_target = str(turn_contract.get("response_target") or "respond").lower()
+        response_target = str(turn_contract.get("response_target") or "").strip().lower()
+        if response_target not in {"respond", "listen", "private"}:
+            raise HTTPException(status_code=502, detail="turn contract missing or invalid response_target")
         response_peer = str(turn_contract.get("response_peer") or "").strip()
         response_text = str(turn_contract.get("response") or "").strip()
 
         # Enforce response_target contract:
         # - listen: nothing is sent.
-        # - respond: response_peer must match the originating chat name. The
-        #   match is skipped when the caller hasn't supplied chat_name yet,
-        #   so legacy contracts keep working until hermes is updated.
+        # - respond: response_peer must match the originating chat name.
         # - private: passes through; routing to the human's private chat is
         #   hermes-side (see HANDOFF for the wiring task).
         if response_target == "listen":
             response_text = ""
         elif response_target == "respond":
             chat_name = str(safe.get("chat_name") or "").strip()
-            if chat_name:
-                peer_norm = re.sub(r"\s+", " ", response_peer).strip().lower()
-                chat_norm = re.sub(r"\s+", " ", chat_name).strip().lower()
-                if peer_norm != chat_norm:
-                    logger.info(
-                        "conversation_turn: response dropped — response_peer=%r does not match chat_name=%r",
-                        response_peer, chat_name,
-                    )
-                    response_text = ""
+            if not chat_name:
+                raise HTTPException(status_code=400, detail="chat_name is required when response_target is 'respond'")
+            if not response_peer:
+                raise HTTPException(status_code=502, detail="turn contract missing response_peer for respond target")
+            peer_norm = re.sub(r"\s+", " ", response_peer).strip().lower()
+            chat_norm = re.sub(r"\s+", " ", chat_name).strip().lower()
+            if peer_norm != chat_norm:
+                logger.info(
+                    "conversation_turn: response dropped — response_peer=%r does not match chat_name=%r",
+                    response_peer, chat_name,
+                )
+                response_text = ""
         if not dry_run and response_text and conversation_state_path is not None and conversation_state_path.exists():
             user_name = str(safe.get("user_name") or "").strip()
             current_user_msg: dict[str, Any] = {"role": "user", "content": message}

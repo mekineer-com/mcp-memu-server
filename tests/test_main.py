@@ -52,6 +52,12 @@ def test_retrieve_apimw_enabled_from_cfg_defaults_and_override():
     assert main._retrieve_apimw_enabled_from_cfg({"retrieve": {"apimw_enabled": False}}) is False
 
 
+def test_resolve_profile_raises_when_profile_missing():
+    svc = SimpleNamespace(llm_profiles=SimpleNamespace(profiles={"default": {}}))
+    with pytest.raises(main.HTTPException, match="llm profile 'memory_extract' is not configured"):
+        main._resolve_profile(svc, "memory_extract")
+
+
 def test_imports():
     assert hasattr(main, "app")
 
@@ -861,7 +867,10 @@ async def test_conversation_turn_persists_assistant_message_for_cross_context(
 
     class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
-            return '{"cache":null,"annulments":[],"inner_thought":"ok","response":"assistant says hi"}'
+            return (
+                '{"cache":null,"annulments":[],"inner_thought":"ok",'
+                '"response_target":"respond","response_peer":"Alice","response":"assistant says hi"}'
+            )
 
     async def _fake_persist_annulment_memories(**_kwargs):
         return []
@@ -889,6 +898,8 @@ async def test_conversation_turn_persists_assistant_message_for_cross_context(
         "user": {"user_id": "u1", "soul_id": "Echo", "conversation_id": "cid-turn"},
         "message": "hello",
         "user_name": "Alice",
+        "chat_name": "Alice",
+        "chat_type": "dm",
         "history": [{"role": "user", "content": "hello"}],
         "run_apimw": False,
         "apply_turn_maintenance": False,
@@ -1015,3 +1026,66 @@ async def test_conversation_turn_drops_response_when_peer_mismatches_chat_name(
         con.close()
     # Mismatch means no response text, which means no user+assistant pair.
     assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_conversation_turn_rejects_respond_when_chat_name_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+
+    class _FakeSvc:
+        async def chat(self, *_args, **_kwargs) -> str:
+            return (
+                '{"cache":null,"annulments":[],"inner_thought":"replying",'
+                '"response_target":"respond","response_peer":"Bob","response":"hi Bob"}'
+            )
+
+    async def _fake_persist_annulment_memories(**_kwargs):
+        return []
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        main,
+        "_turn_state_read",
+        lambda *_a, **_k: (
+            {"digest_cursor": 0},
+            None,
+            db_path,
+            [],
+            {"items": []},
+            0,
+            None,
+        ),
+    )
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
+    monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo", "conversation_id": "cid-turn"},
+        "message": "hey",
+        "user_name": "Bob",
+        "history": [],
+        "run_apimw": False,
+        "apply_turn_maintenance": False,
+        "prompt_override_payload": {
+            "user_prompt": "prompt",
+            "system_prompt": "system",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "retrieve_rag": {"items": [], "categories": [], "resources": []},
+        },
+    }
+
+    with pytest.raises(main.HTTPException, match="chat_name is required"):
+        await main.conversation_turn("cid-turn", payload)

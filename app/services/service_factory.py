@@ -20,13 +20,16 @@ def _services_cached() -> int:
 
 
 def _resolve_profile(svc: Any, name: str | None) -> str | None:
-    """Return *name* if the service has that profile, else fall back to None (default)."""
+    """Return *name* only when the service explicitly exposes that profile."""
     if not name:
         return None
-    if hasattr(svc, "llm_profiles") and hasattr(svc.llm_profiles, "profiles"):
-        if name in svc.llm_profiles.profiles:
-            return name
-    return None
+    llm_profiles = getattr(svc, "llm_profiles", None)
+    profiles = getattr(llm_profiles, "profiles", None)
+    if not isinstance(profiles, Mapping):
+        raise HTTPException(status_code=500, detail="service llm_profiles.profiles is unavailable")
+    if name not in profiles:
+        raise HTTPException(status_code=500, detail=f"llm profile '{name}' is not configured")
+    return name
 
 
 def _close_service_quiet(svc: MemoryService | None) -> None:

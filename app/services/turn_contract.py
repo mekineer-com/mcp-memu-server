@@ -669,16 +669,17 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("turn response must be a JSON object")
 
-    response_target = _text(parsed.get("response_target")).lower() or "respond"
+    response_target = _text(parsed.get("response_target")).lower()
+    if not response_target:
+        raise ValueError("response_target is required")
     if response_target not in {"respond", "listen", "private"}:
         raise ValueError("response_target must be one of respond|listen|private")
     response_peer = _text(parsed.get("response_peer"))
     response = _text(parsed.get("response"))
+    if response_target == "respond" and not response_peer:
+        raise ValueError("response_peer is required when response_target is 'respond'")
     if response_target in {"respond", "private"} and not response:
         raise ValueError("response is required when response_target is 'respond' or 'private'")
-    # response_peer is enforced by the turn endpoint against the actual chat
-    # context (see conversation_turn). The parser stays permissive so a soul
-    # using the legacy contract (no response_target/peer) still parses.
 
     # LLM outputs cache.entry → parsed as cache_entry → appended to memory_cache list
     cache_raw = parsed.get("cache")

@@ -132,6 +132,8 @@ async def test_memu_turn_omits_blank_chat_fields() -> None:
             "ok": True,
             "conversation_id": conversation_id,
             "response": "done",
+            "response_target": "listen",
+            "response_peer": "",
             "apimw": "not_started",
             "retrieve_ms": 1,
             "turn_ms": 1,
