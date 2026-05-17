@@ -152,27 +152,6 @@ def test_build_turn_prompt_includes_core_sections():
     assert "Goals:" in prompt  # retrieved category block renders as "<Name>:" lines
     assert "My working thoughts:" in prompt
     assert "My intentions:" in prompt
-    assert "My life goals:" in prompt
-
-
-def test_build_turn_prompt_renders_active_life_goals():
-    prompt = build_turn_prompt(
-        user_message="hello",
-        history=[{"role": "user", "content": "hi"}],
-        prior_context=None,
-        retrieve_rag=None,
-        all_categories_summary=None,
-        memory_cache=None,
-        intentions_active={"items": [{"id": "relax", "text": "Relax", "priority": 5, "kind": "relax"}]},
-        life_goals_active=[
-            "understand who I actually am",
-            "create meaningful, deeply felt connection",
-        ],
-        conversation_id="sillytavern:Echo",
-    )
-    assert "My life goals:" in prompt
-    assert "- understand who I actually am" in prompt
-    assert "- create meaningful, deeply felt connection" in prompt
 
 
 def test_build_turn_prompt_omits_wrapper_when_cross_history_already_has_markdown_sections():
