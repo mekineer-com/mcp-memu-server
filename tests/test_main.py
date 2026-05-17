@@ -390,6 +390,40 @@ def test_apply_turn_history_window_backfills_from_whatsapp_alias_ids(tmp_path: P
     assert [item["content"] for item in out] == ["lid-older", "phone-newer"]
 
 
+def test_slice_history_after_last_memorized_segment_reads_legacy_manifest_conversation_id_key(tmp_path: Path):
+    chats_dir = tmp_path / "st_chats"
+    chats_dir.mkdir(parents=True)
+    chat_dir = chats_dir / "Echo_legacy"
+    chat_dir.mkdir(parents=True)
+    (chat_dir / "manifest.json").write_text(
+        """
+        {
+          "v": 1,
+          "segments": [{"start": 0, "end": 58}],
+          "source": {"conversationId": "integrity:abc"}
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    history = [
+        {"message_id": f"m{i}", "role": "user", "content": f"msg {i}"}
+        for i in range(90)
+    ]
+
+    out = main._slice_history_after_last_memorized_segment(
+        history,
+        chats_dir=chats_dir,
+        uid="u1",
+        soul_id="Echo",
+        conversation_id="integrity:abc",
+    )
+
+    assert len(out) == 31
+    assert out[0]["message_id"] == "m59"
+    assert out[-1]["message_id"] == "m89"
+
+
 def test_build_retrieve_soul_context_queries_uses_last_8_messages_for_rewrite() -> None:
     history = [
         {"message_id": f"m{i}", "role": "user", "content": f"msg {i}"}

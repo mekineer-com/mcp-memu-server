@@ -588,7 +588,12 @@ def find_chat_dir_for_conversation(
         source = manifest.get("source") if isinstance(manifest, dict) else {}
         if not isinstance(source, dict):
             continue
-        if str(source.get("conversation_id") or "").strip() == conversation_id:
+        source_conversation_id = str(
+            source.get("conversation_id")
+            or source.get("conversationId")
+            or ""
+        ).strip()
+        if source_conversation_id == conversation_id:
             return manifest_path.parent
     return None
 
@@ -865,6 +870,7 @@ async def memorize_endpoint(
                         "min_lull_seconds": ctx.sleep_split_min_lull_seconds,
                     },
                     "source": {
+                        "conversation_id": conversation_id or "",
                         "conversationId": conversation_id or "",
                         "chatFileName": chat_file or "",
                         "resource_url_in": resource_url_in or "",
