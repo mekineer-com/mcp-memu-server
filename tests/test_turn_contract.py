@@ -108,6 +108,22 @@ def test_build_turn_prompt_derives_current_chat_heading_when_label_absent():
     assert "[dm][15133278228] ← current chat" in prompt
 
 
+def test_build_turn_prompt_integrity_id_uses_sillytavern_section_not_other():
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[{"role": "user", "content": "hi"}],
+        prior_context=None,
+        retrieve_rag=None,
+        all_categories_summary=None,
+        memory_cache=None,
+        intentions_active=None,
+        conversation_id="integrity:dc7b08fa-b7a9-4ccc-890c-8dc7eea5082e",
+    )
+    assert "## My SillyTavern Conversations:" in prompt
+    assert "## Other Conversations:" not in prompt
+    assert "[dm][integrity:dc7b08fa-b7a9-4ccc-890c-8dc7eea5082e] ← current chat" in prompt
+
+
 def test_build_turn_prompt_includes_core_sections():
     prompt = build_turn_prompt(
         user_message="hello",

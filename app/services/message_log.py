@@ -71,7 +71,7 @@ def derive_source_label(conversation_id: str) -> str:
         if "@g.us" in suffix:
             return "whatsapp:group"
         return "whatsapp:dm"
-    if cid.startswith("sillytavern"):
+    if cid.startswith(("sillytavern", "integrity:", "chat:")):
         return "sillytavern"
     if cid.startswith("cron:"):
         return "cron"
@@ -458,9 +458,13 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
             return ("whatsapp_dm", cid[len("whatsapp:dm:"):].strip())
         if cid.startswith("sillytavern:"):
             return ("sillytavern_dm", cid[len("sillytavern:"):].strip() or "sillytavern")
+        if cid.startswith("integrity:"):
+            return ("sillytavern_dm", cid)
+        if cid.startswith("chat:"):
+            return ("sillytavern_dm", cid)
         if cid == "sillytavern":
             return ("sillytavern_dm", "sillytavern")
-        return ("other", cid or "unknown")
+        return ("sillytavern_dm", cid or "sillytavern")
 
     def _load_whatsapp_directory_names() -> dict[str, str]:
         hermes_home = Path(os.getenv("HERMES_HOME") or "~/.hermes").expanduser().resolve()
@@ -531,14 +535,14 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
         if kind == "sillytavern_dm":
             pretty = key or "sillytavern"
             return f"[dm][{pretty}]"
-        return f"[other][{key or 'unknown'}]"
+        return f"[dm][{key or 'sillytavern'}]"
 
     def _section_title(kind: str) -> str:
         if kind.startswith("sillytavern_"):
             return "## My SillyTavern Conversations:"
         if kind.startswith("whatsapp_"):
             return "## My WhatsApp Conversations:"
-        return "## Other Conversations:"
+        return "## My SillyTavern Conversations:"
 
     by_conversation: dict[str, list[dict[str, Any]]] = {}
     for msg in messages:

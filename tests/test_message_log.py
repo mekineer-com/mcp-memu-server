@@ -366,6 +366,31 @@ def test_format_merged_history_groups_sections_and_conversations(tmp_path, monke
     assert "[Marcos]: wa dm message" in rendered
 
 
+def test_format_merged_history_integrity_id_stays_in_sillytavern_section() -> None:
+    rendered = message_log.format_merged_history(
+        [
+            {
+                "conversation_id": "integrity:dc7b08fa-b7a9-4ccc-890c-8dc7eea5082e",
+                "source_label": "sillytavern",
+                "role": "assistant",
+                "speaker": "Echo",
+                "content": "integrity id message",
+                "received_at": "2026-05-08T11:00:00+00:00",
+            }
+        ]
+    )
+
+    assert "## My SillyTavern Conversations:" in rendered
+    assert "## Other Conversations:" not in rendered
+    assert "[dm][integrity:dc7b08fa-b7a9-4ccc-890c-8dc7eea5082e]" in rendered
+    assert "[Echo]: integrity id message" in rendered
+
+
+def test_derive_source_label_maps_integrity_and_chat_to_sillytavern() -> None:
+    assert message_log.derive_source_label("integrity:abc-123") == "sillytavern"
+    assert message_log.derive_source_label("chat:Echo.chat") == "sillytavern"
+
+
 def test_format_merged_history_parses_legacy_group_prefix_at_render_time() -> None:
     rendered = message_log.format_merged_history(
         [

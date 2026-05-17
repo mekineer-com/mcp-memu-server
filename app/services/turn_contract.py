@@ -410,11 +410,11 @@ def _dedupe_prior_context(prior_context: str | None, blocked_terms: set[str]) ->
 
 def _section_title_from_conversation_id(conversation_id: str | None) -> str:
     cid = _text(conversation_id)
-    if cid.startswith("sillytavern"):
+    if cid.startswith(("sillytavern", "integrity:", "chat:")):
         return "## My SillyTavern Conversations:"
     if cid.startswith("whatsapp:"):
         return "## My WhatsApp Conversations:"
-    return "## Other Conversations:"
+    return "## My SillyTavern Conversations:"
 
 
 def _conversation_heading_from_conversation_id(conversation_id: str | None) -> str:
@@ -430,7 +430,7 @@ def _conversation_heading_from_conversation_id(conversation_id: str | None) -> s
         return f"[dm][{key}]"
     if cid == "sillytavern":
         return "[dm][sillytavern]"
-    return f"[other][{cid or 'unknown'}]"
+    return f"[dm][{cid or 'sillytavern'}]"
 
 
 def _append_current_chat_marker(heading: str) -> str:
