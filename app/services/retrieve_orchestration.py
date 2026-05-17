@@ -91,19 +91,19 @@ def _build_retrieve_soul_context_queries(
     memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
     intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
 
-    soul_ctx_queries: list[dict[str, Any]] = []
+    soul_context_for_retrieve: list[dict[str, Any]] = []
     identity_context = _build_retrieve_identity_context(soul_id, apimw=(identity_mode == "apimw"))
     if identity_context:
-        soul_ctx_queries.append({"role": "identity_context", "content": {"text": identity_context}})
+        soul_context_for_retrieve.append({"role": "identity_context", "content": {"text": identity_context}})
     all_cats_summary = str(state_row.get("all_categories_summary") or "").strip()
     if all_cats_summary:
-        soul_ctx_queries.append({"role": "all_categories_summary", "content": {"text": all_cats_summary}})
+        soul_context_for_retrieve.append({"role": "all_categories_summary", "content": {"text": all_cats_summary}})
     cache_text = "\n".join(str(entry) for entry in (memory_cache or []))
     if cache_text:
-        soul_ctx_queries.append({"role": "memory_cache", "content": {"text": cache_text}})
+        soul_context_for_retrieve.append({"role": "memory_cache", "content": {"text": cache_text}})
     intentions_text = _format_intentions_for_prompt(intentions_active) if intentions_active else ""
     if intentions_text and intentions_text.strip() != "(none)":
-        soul_ctx_queries.append({"role": "intentions", "content": {"text": intentions_text}})
+        soul_context_for_retrieve.append({"role": "intentions", "content": {"text": intentions_text}})
 
     history_limit = (
         APIMW_RETRIEVE_REWRITE_HISTORY_MESSAGES
@@ -113,10 +113,10 @@ def _build_retrieve_soul_context_queries(
     history_slice = history[-history_limit:] if history_limit > 0 else history
     history_text = _render_history(history_slice)
     if history_text:
-        soul_ctx_queries.append({"role": "history", "content": {"text": history_text}})
+        soul_context_for_retrieve.append({"role": "history", "content": {"text": history_text}})
 
-    soul_ctx_queries.append({"role": "user", "content": {"text": message}})
-    return soul_ctx_queries
+    soul_context_for_retrieve.append({"role": "user", "content": {"text": message}})
+    return soul_context_for_retrieve
 
 
 async def _run_retrieve(
