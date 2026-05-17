@@ -64,7 +64,7 @@ Required top-level keys:
 
 Schema:
 {{
-  "cache": {{"entry": "one or two sentences"}} | null,
+  "cache": {{"entry": "One sentence, two if necessary."}} | null,
   "annulments":[
     {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
   ],
@@ -76,7 +76,7 @@ Schema:
 
 Rules:
 - JSON only; no extra text at all.
-- cache.entry: one or two sentences.
+- cache.entry: One sentence, two if necessary.
 - annulments may be empty.
 - As a result of a weekly reflection, where you look back and consider what's most important, you have an intentions list. The list is mostly read-only during the week so you can focus on the present. If you complete an intention, you can annul it.
 - Intentions "ID: text" are sorted by approximate priority, higher first. Use the ID before the colon as intention_id for annulments. The `relax` intention is always present as a gentle reminder that not everything needs to be pursued.
