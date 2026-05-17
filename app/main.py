@@ -1535,7 +1535,7 @@ async def _run_consolidation_pipeline_once(
             stale_after=timedelta(seconds=3600),
         )
     if prep.get("status") == "skip":
-        return {"status": "skipped", **{k: v for k, v in prep.items() if k != "status"}}
+        return {"status": "skipped", "reason": prep.get("reason")}
 
     consolidation_llm = await _run_consolidation_llm(
         svc,
@@ -1592,17 +1592,6 @@ async def _run_consolidation_task(
             force=False,
         )
         if out.get("status") == "skipped":
-            logger.info(
-                "consolidation skipped conversation_id=%s reason=%s details=%s",
-                conversation_id,
-                str(out.get("reason") or ""),
-                {
-                    "last_consolidation_at": out.get("last_consolidation_at"),
-                    "due_at": out.get("due_at"),
-                    "now": out.get("now"),
-                    "started_at": out.get("started_at"),
-                },
-            )
             return
     except Exception:
         logger.exception("consolidation failed (non-fatal)")

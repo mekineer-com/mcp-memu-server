@@ -354,8 +354,9 @@ def test_write_consolidation_outputs_clears_pending_episode_ids() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_consolidation_llm_rejects_relax_only_intention_actions() -> None:
-    """Relax-only actions are stripped; if nothing actionable remains, fail loud."""
+async def test_run_consolidation_llm_strips_relax_boost_from_intention_actions() -> None:
+    """Model returns <boost target_id="relax" /> which is a no-op in apply_intention_action.
+    It must be stripped so the caller sees an empty list, not a phantom action."""
     class _Svc:
         def _escape_prompt_value(self, value): return str(value)
         async def chat(self, *_a, **_kw):
@@ -372,14 +373,14 @@ async def test_run_consolidation_llm_rejects_relax_only_intention_actions() -> N
 """
         async def embed(self, *_a, **_kw): return []
 
-    with pytest.raises(ValueError, match="no actionable intention actions"):
-        await run_consolidation_llm(
-            _Svc(),
-            inputs={
-                "categories": [], "active_life_goals": [], "removed_life_goals": [],
-                "intention_activity": [], "episode_inputs": [], "narrative_self": None,
-                "state": {"intentions_active": None}, "retrieved_memories": [],
-            },
-            soul_id="Echo",
-            llm_profile=None,
-        )
+    out = await run_consolidation_llm(
+        _Svc(),
+        inputs={
+            "categories": [], "active_life_goals": [], "removed_life_goals": [],
+            "intention_activity": [], "episode_inputs": [], "narrative_self": None,
+            "state": {"intentions_active": None}, "retrieved_memories": [],
+        },
+        soul_id="Echo",
+        llm_profile=None,
+    )
+    assert out["intention_actions"] == [], "relax boost must be stripped"

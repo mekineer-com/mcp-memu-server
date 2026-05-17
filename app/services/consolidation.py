@@ -384,11 +384,7 @@ def gather_consolidation_inputs(
         started_at = _parse_iso_datetime(state.get("consolidation_started_at"))
         if bool(state.get("consolidation_in_progress")):
             if started_at is not None and now - started_at <= stale_after:
-                return {
-                    "status": "skip",
-                    "reason": "in_progress",
-                    "started_at": started_at.isoformat() if started_at is not None else None,
-                }
+                return {"status": "skip", "reason": "in_progress"}
             deps.write_conversation_state(
                 conversation_id,
                 soul_id=soul_id,
@@ -404,13 +400,7 @@ def gather_consolidation_inputs(
             if not force and last_consolidation_at is not None:
                 due_at = last_consolidation_at + timedelta(days=max(1, int(interval_days)))
                 if now < due_at:
-                    return {
-                        "status": "skip",
-                        "reason": "interval_gate",
-                        "last_consolidation_at": last_consolidation_at.isoformat(),
-                        "due_at": due_at.isoformat(),
-                        "now": now.isoformat(),
-                    }
+                    return {"status": "skip", "reason": "interval_gate"}
 
         pending_episode_ids = deps.normalize_text_list(state.get("pending_episode_ids"))
 
@@ -758,11 +748,6 @@ async def run_consolidation_llm(
             and str(a.get("target_id") or "").strip().lower() == RELAX_INTENTION_ID
         )
     ]
-    if not intention_actions:
-        raise ValueError(
-            "consolidation returned no actionable intention actions "
-            "(missing/malformed actions or relax-only action)"
-        )
 
     new_narrative = str(parsed["narrative_self"] or "").strip() or None
     current_narrative = str(inputs.get("narrative_self") or "").strip() or None
