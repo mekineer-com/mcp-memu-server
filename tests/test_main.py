@@ -72,6 +72,39 @@ def test_run_retrieve_reports_rag_method(monkeypatch: pytest.MonkeyPatch):
     assert out["method"] == "rag"
 
 
+@pytest.mark.parametrize(
+    ("addon_enabled", "expected"),
+    [
+        (True, True),
+        (False, False),
+    ],
+)
+def test_run_retrieve_forwards_mental_health_toggle(
+    monkeypatch: pytest.MonkeyPatch,
+    addon_enabled: bool,
+    expected: bool,
+):
+    captured: dict[str, Any] = {}
+
+    class _FakeSvc:
+        async def retrieve(self, *_args, **kwargs):
+            captured.update(kwargs)
+            return {"items": [], "should_respond": True}
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+    out = asyncio.run(
+        main._run_retrieve(
+            {
+                "query": "hello",
+                "user": {"user_id": "u", "soul_id": "s"},
+                "mental_health_addon": addon_enabled,
+            }
+        )
+    )
+    assert out["method"] == "rag"
+    assert captured["mental_health_enabled"] is expected
+
+
 def test_merge_memorize_segment_results_flattens_top_level_lists():
     out = main._merge_memorize_segment_results(
         [

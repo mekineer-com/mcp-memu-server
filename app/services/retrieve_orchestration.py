@@ -176,6 +176,7 @@ async def _run_retrieve(
         as_of=as_of,
         rewrite_angle=retrieve_rewrite_angle,
         channel_mode=channel_mode,
+        mental_health_enabled=bool(safe.get("mental_health_addon")),
     )
     retrieve_ms = int((time.monotonic() - retrieve_started_at) * 1000)
     out: dict[str, Any] = {
