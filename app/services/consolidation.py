@@ -54,6 +54,7 @@ _UUID_MEMORY_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+_INTENTION_ID_SANITIZE_RE = re.compile(r"[^a-z0-9]+")
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,30 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC)
+
+
+def _slugify_intention_id(raw: Any) -> str:
+    text = str(raw or "").strip().lower()
+    if not text:
+        return ""
+    slug = _INTENTION_ID_SANITIZE_RE.sub("-", text).strip("-")
+    if not slug:
+        return ""
+    return slug[:64]
+
+
+def _node_text(node: ET.Element | None) -> str:
+    if node is None:
+        return ""
+    return str(node.text or "").strip()
+
+
+def _pick_attr(node: ET.Element, *keys: str) -> str:
+    for key in keys:
+        value = str(node.get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _parse_consolidation_xml(raw: str) -> dict[str, Any]:
@@ -158,20 +183,20 @@ def _parse_consolidation_xml(raw: str) -> dict[str, Any]:
     intentions_node = root.find("intentions")
     if intentions_node is not None:
         for boost in intentions_node.findall("boost"):
-            target = str(boost.get("target_id") or "").strip()
+            target = _pick_attr(boost, "target_id", "intention_id", "id") or _node_text(boost)
             if target:
                 intention_actions.append({"type": "boost", "target_id": target, "amount": 1})
         for promote in intentions_node.findall("promote"):
-            target = str(promote.get("target_id") or "").strip()
+            target = _pick_attr(promote, "target_id", "intention_id", "id") or _node_text(promote)
             if target:
                 intention_actions.append({"type": "promote", "target_id": target})
         for create in intentions_node.findall("create"):
-            cid = str(create.get("id") or "").strip()
-            ctext = str(create.get("text") or "").strip()
+            ctext = _pick_attr(create, "text", "description") or _node_text(create)
+            cid = _pick_attr(create, "id", "intention_id") or _slugify_intention_id(ctext)
             if cid and ctext:
                 intention_actions.append({"type": "create", "id": cid, "text": ctext})
         for annul in intentions_node.findall("annul"):
-            aid = str(annul.get("intention_id") or "").strip()
+            aid = _pick_attr(annul, "intention_id", "target_id", "id") or _node_text(annul)
             astatus = str(annul.get("status") or "completed").strip().lower()
             anote = str(annul.get("note") or "").strip()
             if aid:
@@ -359,7 +384,11 @@ def gather_consolidation_inputs(
         started_at = _parse_iso_datetime(state.get("consolidation_started_at"))
         if bool(state.get("consolidation_in_progress")):
             if started_at is not None and now - started_at <= stale_after:
-                return {"status": "skip", "reason": "in_progress"}
+                return {
+                    "status": "skip",
+                    "reason": "in_progress",
+                    "started_at": started_at.isoformat() if started_at is not None else None,
+                }
             deps.write_conversation_state(
                 conversation_id,
                 soul_id=soul_id,
@@ -375,7 +404,13 @@ def gather_consolidation_inputs(
             if not force and last_consolidation_at is not None:
                 due_at = last_consolidation_at + timedelta(days=max(1, int(interval_days)))
                 if now < due_at:
-                    return {"status": "skip", "reason": "interval_gate"}
+                    return {
+                        "status": "skip",
+                        "reason": "interval_gate",
+                        "last_consolidation_at": last_consolidation_at.isoformat(),
+                        "due_at": due_at.isoformat(),
+                        "now": now.isoformat(),
+                    }
 
         pending_episode_ids = deps.normalize_text_list(state.get("pending_episode_ids"))
 
@@ -723,6 +758,11 @@ async def run_consolidation_llm(
             and str(a.get("target_id") or "").strip().lower() == RELAX_INTENTION_ID
         )
     ]
+    if not intention_actions:
+        raise ValueError(
+            "consolidation returned no actionable intention actions "
+            "(missing/malformed actions or relax-only action)"
+        )
 
     new_narrative = str(parsed["narrative_self"] or "").strip() or None
     current_narrative = str(inputs.get("narrative_self") or "").strip() or None

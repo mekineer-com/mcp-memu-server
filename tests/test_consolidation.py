@@ -100,6 +100,33 @@ def test_parse_consolidation_xml_accepts_root_attributes() -> None:
     assert parsed["intention_actions"] == [{"type": "create", "id": "stay-present", "text": "Stay present."}]
 
 
+def test_parse_consolidation_xml_accepts_variant_intention_shapes() -> None:
+    parsed = _parse_consolidation_xml(
+        """
+<consolidation>
+  <narrative_self>n</narrative_self>
+  <life_goals></life_goals>
+  <intentions>
+    <boost intention_id="keep-going" />
+    <promote>ephemeral-thread</promote>
+    <create text="Explore embodied rituals." />
+    <create id="hold-gentle">Hold gentleness under pressure.</create>
+    <annul id="old-thread" status="deleted" />
+  </intentions>
+  <edges></edges>
+  <companion_memory>c</companion_memory>
+</consolidation>
+"""
+    )
+    assert parsed["intention_actions"] == [
+        {"type": "boost", "target_id": "keep-going", "amount": 1},
+        {"type": "promote", "target_id": "ephemeral-thread"},
+        {"type": "create", "id": "explore-embodied-rituals", "text": "Explore embodied rituals."},
+        {"type": "create", "id": "hold-gentle", "text": "Hold gentleness under pressure."},
+        {"type": "annul", "intention_id": "old-thread", "status": "deleted", "note": ""},
+    ]
+
+
 
 @pytest.mark.asyncio
 async def test_run_consolidation_llm_retries_once_on_missing_root() -> None:
@@ -327,9 +354,8 @@ def test_write_consolidation_outputs_clears_pending_episode_ids() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_consolidation_llm_strips_relax_boost_from_intention_actions() -> None:
-    """Model returns <boost target_id="relax" /> which is a no-op in apply_intention_action.
-    It must be stripped so the caller sees an empty list, not a phantom action."""
+async def test_run_consolidation_llm_rejects_relax_only_intention_actions() -> None:
+    """Relax-only actions are stripped; if nothing actionable remains, fail loud."""
     class _Svc:
         def _escape_prompt_value(self, value): return str(value)
         async def chat(self, *_a, **_kw):
@@ -346,14 +372,14 @@ async def test_run_consolidation_llm_strips_relax_boost_from_intention_actions()
 """
         async def embed(self, *_a, **_kw): return []
 
-    out = await run_consolidation_llm(
-        _Svc(),
-        inputs={
-            "categories": [], "active_life_goals": [], "removed_life_goals": [],
-            "intention_activity": [], "episode_inputs": [], "narrative_self": None,
-            "state": {"intentions_active": None}, "retrieved_memories": [],
-        },
-        soul_id="Echo",
-        llm_profile=None,
-    )
-    assert out["intention_actions"] == [], "relax boost must be stripped"
+    with pytest.raises(ValueError, match="no actionable intention actions"):
+        await run_consolidation_llm(
+            _Svc(),
+            inputs={
+                "categories": [], "active_life_goals": [], "removed_life_goals": [],
+                "intention_activity": [], "episode_inputs": [], "narrative_self": None,
+                "state": {"intentions_active": None}, "retrieved_memories": [],
+            },
+            soul_id="Echo",
+            llm_profile=None,
+        )
