@@ -144,10 +144,7 @@ async def run_memorize_episodes(
     processed_cursor: int,
     safe: dict[str, Any],
     resource_url: str,
-    chat_file: str | None,
-    resource_url_in: str | None,
     chat_key: str | None,
-    chat_key_source: str | None,
     tz_name: str | None,
     prev_len: int,
     merged_len: int,
@@ -388,10 +385,7 @@ async def run_memorize_episodes(
                 info={
                     "resource_url": resource_url,
                     "conversationId": conversation_id,
-                    "chatFileName": chat_file,
-                    "resourceUrlIn": resource_url_in,
                     "chatKey": chat_key,
-                    "chatKeySource": chat_key_source or "",
                     "timeZone": tz_name,
                     "messages_prev": prev_len,
                     "messages_in": merged_len,
@@ -421,34 +415,17 @@ def resolve_chat_storage_dir(
     uid: str,
     aid: str,
     conversation_id: str | None,
-    chat_file: str | None,
-    resource_url_in: str | None,
     sanitize_db_filename: Callable[[str], str],
 ) -> tuple[Path, str, str]:
     agent_slug = sanitize_db_filename(aid)
-    primary_value = str(conversation_id or resource_url_in or chat_file or "").strip()
+    primary_value = str(conversation_id or "").strip()
     if conversation_id:
         primary_source = "conversation_id"
-    elif resource_url_in:
-        primary_source = "resource_url"
-    elif chat_file:
-        primary_source = "chat_file"
     else:
         primary_source = "empty"
 
     primary_key = chat_storage_hash(uid, aid, primary_value)
     primary_path = (chats_dir / f"{agent_slug}_{primary_key}").resolve()
-
-    # Single legacy reuse path: if we are upgrading to conversation_id keying,
-    # keep using the prior resource_url/chat_file keyed folder when it already exists.
-    if conversation_id and not primary_path.exists():
-        legacy_value = str(resource_url_in or chat_file or "").strip()
-        if legacy_value:
-            legacy_source = "resource_url" if resource_url_in else "chat_file"
-            legacy_key = chat_storage_hash(uid, aid, legacy_value)
-            legacy_path = (chats_dir / f"{agent_slug}_{legacy_key}").resolve()
-            if legacy_path.exists():
-                return legacy_path, legacy_key, legacy_source
 
     return primary_path, primary_key, primary_source
 
@@ -584,8 +561,6 @@ def find_chat_dir_for_conversation(
         uid,
         soul_id,
         conversation_id,
-        None,
-        None,
         sanitize_db_filename,
     )
     if (primary_dir / "manifest.json").exists():
@@ -765,15 +740,11 @@ async def memorize_endpoint(
                     endpoint_ctx.clear_cached_services()
             storage_dir = endpoint_ctx.get_storage_dir(endpoint_ctx.get_config())
             chats_dir = (storage_dir / "st_chats").resolve()
-            chat_file = endpoint_ctx.pick_str(safe, "chat_file_name")
-            resource_url_in = endpoint_ctx.pick_str(safe, "resource_url")
             chat_dir, chat_key, chat_key_source = resolve_chat_storage_dir(
                 chats_dir,
                 uid,
                 soul_id,
                 conversation_id,
-                chat_file,
-                resource_url_in,
                 endpoint_ctx.sanitize_db_filename,
             )
             episodes_dir = (chat_dir / "episodes").resolve()
@@ -884,8 +855,6 @@ async def memorize_endpoint(
                     "source": {
                         "conversation_id": conversation_id or "",
                         "conversationId": conversation_id or "",
-                        "chatFileName": chat_file or "",
-                        "resource_url_in": resource_url_in or "",
                         "timeZoneOffsetMin": tz_off_min if tz_off_min is not None else None,
                         "chatKey": chat_key,
                         "chatKeySource": chat_key_source or "",
@@ -957,10 +926,7 @@ async def memorize_endpoint(
                 processed_cursor=processed_cursor,
                 safe=safe,
                 resource_url=resource_url,
-                chat_file=chat_file,
-                resource_url_in=resource_url_in,
                 chat_key=chat_key,
-                chat_key_source=chat_key_source,
                 tz_name=tz_name,
                 prev_len=prev_len,
                 merged_len=len(merged) if isinstance(merged, list) else 0,

@@ -1470,16 +1470,12 @@ def _resolve_chat_storage_dir(
     uid: str,
     aid: str,
     conversation_id: str | None,
-    chat_file: str | None,
-    resource_url_in: str | None,
 ) -> tuple[Path, str, str]:
     return _memorize_endpoint.resolve_chat_storage_dir(
         chats_dir,
         uid,
         aid,
         conversation_id,
-        chat_file,
-        resource_url_in,
         _sanitize_db_filename,
     )
 
@@ -1778,10 +1774,7 @@ async def _run_memorize_episodes(
     processed_cursor: int,
     safe: dict[str, Any],
     resource_url: str,
-    chat_file: str | None,
-    resource_url_in: str | None,
     chat_key: str | None,
-    chat_key_source: str | None,
     tz_name: str | None,
     prev_len: int,
     merged_len: int,
@@ -1802,10 +1795,7 @@ async def _run_memorize_episodes(
         processed_cursor=processed_cursor,
         safe=safe,
         resource_url=resource_url,
-        chat_file=chat_file,
-        resource_url_in=resource_url_in,
         chat_key=chat_key,
-        chat_key_source=chat_key_source,
         tz_name=tz_name,
         prev_len=prev_len,
         merged_len=merged_len,
