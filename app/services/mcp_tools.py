@@ -15,10 +15,7 @@ class MemuTurnRequest(BaseModel):
     history: list[dict[str, Any]] | None = None
     user_name: str | None = None
     soul_card: str | None = None
-    run_apimw: bool = True
-    apply_turn_maintenance: bool = True
     debug: bool = False
-    temperature: float | None = None
     channel_mode: str | None = None
     chat_name: str | None = None
     chat_type: str | None = None
@@ -151,16 +148,12 @@ async def memu_turn_endpoint(
         "message": message,
         "history": list(req.history or []),
         "prompt_override_payload": prompt_override_payload,
-        "run_apimw": bool(req.run_apimw),
-        "apply_turn_maintenance": bool(req.apply_turn_maintenance),
         "debug": bool(req.debug),
     }
     if user_name:
         turn_payload["user_name"] = user_name
     if req.soul_card:
         turn_payload["soul_card"] = str(req.soul_card)
-    if req.temperature is not None:
-        turn_payload["temperature"] = float(req.temperature)
     if chat_name:
         turn_payload["chat_name"] = chat_name
     if chat_type:

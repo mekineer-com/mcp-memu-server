@@ -36,7 +36,6 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "digest_cursor": max(0, digest_cursor),
         "prior_context": None if prior_context is None else str(prior_context),
         "pending_episode_ids": normalize_text_list(row["pending_episode_ids"]),
-        "last_retrieval_ids": json_from_db(row["last_retrieval_ids"]),
         "last_memorize_at": row["last_memorize_at"],
         "updated_at": row["updated_at"],
         "undo_snapshot": json_from_db(row["undo_snapshot"]),
@@ -50,7 +49,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
 def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
     return con.execute(
         "SELECT conversation_id, soul_id, user_id, memorize_chat, digest_cursor, prior_context, "
-        "pending_episode_ids, last_retrieval_ids, last_memorize_at, "
+        "pending_episode_ids, last_memorize_at, "
         "updated_at, undo_snapshot, "
         "last_background_error, last_background_error_at, "
         "last_consolidation_error, last_consolidation_error_at "
@@ -72,7 +71,6 @@ def conversation_state_empty(
         "digest_cursor": 0,
         "prior_context": None,
         "pending_episode_ids": [],
-        "last_retrieval_ids": None,
         "last_memorize_at": None,
         "updated_at": None,
         "undo_snapshot": None,
@@ -150,9 +148,9 @@ def write_conversation_state(
 INSERT OR IGNORE INTO conversations (
     conversation_id, soul_id, user_id, memorize_chat,
     digest_cursor, prior_context, pending_episode_ids,
-    last_retrieval_ids, last_memorize_at,
+    last_memorize_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 """,
                 (
                     seed["conversation_id"],
@@ -162,7 +160,6 @@ INSERT OR IGNORE INTO conversations (
                     int(seed.get("digest_cursor") or 0),
                     seed.get("prior_context"),
                     json_to_db(seed.get("pending_episode_ids") or []),
-                    json_to_db(seed.get("last_retrieval_ids")),
                     seed.get("last_memorize_at"),
                     seed.get("updated_at"),
                 ),
@@ -193,7 +190,6 @@ INSERT OR IGNORE INTO conversations (
                 "digest_cursor",
                 "prior_context",
                 "pending_episode_ids",
-                "last_retrieval_ids",
                 "last_memorize_at",
                 "undo_snapshot",
                 "last_background_error",
@@ -269,7 +265,7 @@ INSERT OR IGNORE INTO conversations (
             params: list[Any] = []
             for key, value in field_updates.items():
                 assignments.append(f"{key} = ?")
-                if key in {"pending_episode_ids", "last_retrieval_ids", "undo_snapshot"}:
+                if key in {"pending_episode_ids", "undo_snapshot"}:
                     params.append(json_to_db(value))
                 elif key == "memorize_chat":
                     params.append(1 if bool(value) else 0)

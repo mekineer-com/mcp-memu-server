@@ -44,7 +44,6 @@ from app.config import (
     procedural_yaml_dir as _procedural_yaml_dir,
     sanitize_db_filename as _sanitize_db_filename,
     save_config as _save_config,
-    save_soul_gen_config as _save_soul_gen_config,
     sqlite_dir_from_cfg as _sqlite_dir_from_cfg,
     sqlite_dsn_for_scope as _sqlite_dsn_for_scope,
     sqlite_file_from_dsn as _sqlite_file_from_dsn,
@@ -1221,8 +1220,6 @@ async def _apimw_persist(
                         conversation_id,
                     )
                 updates["prior_context"] = new_prior
-
-        updates["last_retrieval_ids"] = _extract_result_item_ids({"items": combined_items})
 
         message_to_self = str(result_json.get("message_to_self") or "").strip()
         if message_to_self:
@@ -2573,15 +2570,13 @@ def _turn_state_write(
     cache_entry: str,
     annulment_ids: list[str],
     retrieval_ids_since_consolidation: list[str],
-    apply_turn_maintenance: bool,
     memorize_chat: bool | None = None,
 ) -> tuple[dict[str, Any], Any]:
     latest_state_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
     current_memory_cache = _normalize_memory_cache_impl(latest_state_row.get("memory_cache"))
     current_intentions = _normalize_intentions_stack_impl(latest_state_row.get("intentions_active"))
     intentions_snapshot = current_intentions
-    if apply_turn_maintenance:
-        current_intentions = _apply_intention_turn_maintenance_impl(current_intentions)
+    current_intentions = _apply_intention_turn_maintenance_impl(current_intentions)
     next_memory_cache = (
         _append_memory_cache_entry(current_memory_cache, cache_entry)
         if cache_entry
@@ -2741,8 +2736,6 @@ async def conversation_turn(
             raise HTTPException(status_code=400, detail="message is required")
 
         history_full = _normalize_turn_history(safe.get("history"))
-        if safe.get("prompt_override") is not None:
-            raise HTTPException(status_code=400, detail="prompt_override is unsupported; use prompt_override_payload")
         prompt_override_payload_raw = safe.get("prompt_override_payload")
         if not isinstance(prompt_override_payload_raw, dict):
             raise HTTPException(status_code=400, detail="prompt_override_payload is required")
@@ -2777,8 +2770,7 @@ async def conversation_turn(
         override_retrieve_ms = prompt_override_payload.get("retrieve_ms")
         retrieve_ms = int(override_retrieve_ms) if isinstance(override_retrieve_ms, (int, float)) else 0
         dry_run = bool(safe.get("dry_run", False))
-        run_apimw = _retrieve_apimw_enabled_from_cfg(_CONFIG) and bool(safe.get("run_apimw", True))
-        apply_turn_maintenance = bool(safe.get("apply_turn_maintenance", True))
+        run_apimw = _retrieve_apimw_enabled_from_cfg(_CONFIG)
         include_debug = bool(safe.get("debug", False))
         memorize_chat_raw = safe.get("memorize_chat")
         memorize_chat = memorize_chat_raw if isinstance(memorize_chat_raw, bool) else None
@@ -2807,16 +2799,6 @@ async def conversation_turn(
         generation_config = _load_soul_gen_config(_CONFIG, uid, soul_id, logger=logger)
         turn_temperature: float = float(generation_config.get("temperature", 0.2))
         turn_response_format: Any = {"type": "json_object"}
-        requested_temperature = safe.get("temperature")
-        if requested_temperature is not None:
-            try:
-                updated_generation_config = dict(generation_config)
-                updated_generation_config["temperature"] = float(requested_temperature)
-                turn_temperature = updated_generation_config["temperature"]
-                if updated_generation_config != generation_config:
-                    _save_soul_gen_config(_CONFIG, uid, soul_id, updated_generation_config)
-            except (TypeError, ValueError):
-                logger.debug("ignoring invalid temperature override: %r", requested_temperature, exc_info=True)
 
         turn_system_prompt = override_system_prompt or _make_turn_system_prompt(
             soul_id,
@@ -2826,36 +2808,24 @@ async def conversation_turn(
         turn_user_prompt = override_user_prompt
 
         memory_service = _get_service_from_payload(safe)
-        listen_mode = not bool(safe.get("should_respond", True))
-
-        if listen_mode:
-            turn_contract = {
-                "response_target": "listen",
-                "response_peer": "",
-                "response": "",
-                "cache_entry": "",
-                "annulments": [],
-            }
-            turn_ms = 0
-        else:
-            turn_started_at = time.monotonic()
-            turn_response_raw = await memory_service.chat(
-                turn_user_prompt,
-                system_prompt=turn_system_prompt,
-                temperature=turn_temperature,
-                response_format=turn_response_format,
-                op="turn",
-                step="respond",
-            )
-            turn_ms = int((time.monotonic() - turn_started_at) * 1000)
-            try:
-                turn_contract = _parse_turn_contract(turn_response_raw)
-            except Exception as exc:
-                raw_snippet = str(turn_response_raw or "")[:200]
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"turn contract parse failure: {exc}; raw={raw_snippet!r}",
-                ) from exc
+        turn_started_at = time.monotonic()
+        turn_response_raw = await memory_service.chat(
+            turn_user_prompt,
+            system_prompt=turn_system_prompt,
+            temperature=turn_temperature,
+            response_format=turn_response_format,
+            op="turn",
+            step="respond",
+        )
+        turn_ms = int((time.monotonic() - turn_started_at) * 1000)
+        try:
+            turn_contract = _parse_turn_contract(turn_response_raw)
+        except Exception as exc:
+            raw_snippet = str(turn_response_raw or "")[:200]
+            raise HTTPException(
+                status_code=502,
+                detail=f"turn contract parse failure: {exc}; raw={raw_snippet!r}",
+            ) from exc
 
         turn_cache_entry = str(turn_contract.get("cache_entry") or "").strip()
         turn_annulments = turn_contract.get("annulments") if isinstance(turn_contract.get("annulments"), list) else []
@@ -2876,7 +2846,6 @@ async def conversation_turn(
                     cid, uid, soul_id,
                     turn_cache_entry, turn_annulment_ids,
                     retrieved_item_ids,
-                    apply_turn_maintenance,
                     memorize_chat=memorize_chat,
                 )
 
@@ -2950,7 +2919,6 @@ async def conversation_turn(
             "response_target": response_target,
             "response_peer": response_peer,
             "apimw": apimw_status,
-            "prompt_override_used": True,
             "final_turn_payload": {
                 "system_prompt": turn_system_prompt,
                 "user_prompt": turn_user_prompt,

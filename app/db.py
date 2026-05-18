@@ -107,7 +107,6 @@ CREATE TABLE IF NOT EXISTS conversations (
     digest_cursor INTEGER DEFAULT 0,
     prior_context TEXT,
     pending_episode_ids JSON DEFAULT '[]',
-    last_retrieval_ids JSON,
     last_memorize_at DATETIME,
     updated_at DATETIME,
     undo_snapshot JSON,

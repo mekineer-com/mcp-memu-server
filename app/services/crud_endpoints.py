@@ -816,9 +816,6 @@ async def patch_conversation_state_endpoint(
     if "pending_episode_ids" in body:
         updates["pending_episode_ids"] = body.get("pending_episode_ids")
 
-    if "last_retrieval_ids" in body:
-        updates["last_retrieval_ids"] = body.get("last_retrieval_ids")
-
     if "last_memorize_at" in body:
         updates["last_memorize_at"] = body.get("last_memorize_at")
     if "last_consolidation_at" in body:

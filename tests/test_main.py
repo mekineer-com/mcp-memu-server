@@ -76,7 +76,7 @@ def test_imports():
 def test_run_retrieve_reports_rag_method(monkeypatch: pytest.MonkeyPatch):
     class _FakeSvc:
         async def retrieve(self, *_args, **_kwargs):
-            return {"items": [], "should_respond": True}
+            return {"items": []}
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
     out = asyncio.run(main._run_retrieve({"query": "hello", "user": {"user_id": "u", "soul_id": "s"}}))
@@ -100,7 +100,7 @@ def test_run_retrieve_forwards_mental_health_toggle(
     class _FakeSvc:
         async def retrieve(self, *_args, **kwargs):
             captured.update(kwargs)
-            return {"items": [], "should_respond": True}
+            return {"items": []}
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
     out = asyncio.run(
@@ -737,7 +737,7 @@ async def test_conversation_retrieve_injects_cross_context_even_with_prebuilt_qu
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
-        return {"ok": True, "should_respond": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -795,7 +795,7 @@ async def test_conversation_retrieve_does_not_persist_current_user_message(
     )
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
-        return {"ok": True, "should_respond": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -865,7 +865,7 @@ async def test_conversation_retrieve_does_not_duplicate_preexisting_cross_query(
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
-        return {"ok": True, "should_respond": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -945,8 +945,6 @@ async def test_conversation_turn_persists_assistant_message_for_cross_context(
         "chat_name": "Alice",
         "chat_type": "dm",
         "history": [{"role": "user", "content": "hello"}],
-        "run_apimw": False,
-        "apply_turn_maintenance": False,
         "prompt_override_payload": {
             "user_prompt": "prompt",
             "system_prompt": "system",
@@ -1041,8 +1039,6 @@ async def test_conversation_turn_drops_response_when_peer_mismatches_chat_name(
         "chat_name": "Bob",
         "chat_type": "dm",
         "history": [],
-        "run_apimw": False,
-        "apply_turn_maintenance": False,
         "prompt_override_payload": {
             "user_prompt": "prompt",
             "system_prompt": "system",
@@ -1120,8 +1116,6 @@ async def test_conversation_turn_rejects_respond_when_chat_name_missing(
         "message": "hey",
         "user_name": "Bob",
         "history": [],
-        "run_apimw": False,
-        "apply_turn_maintenance": False,
         "prompt_override_payload": {
             "user_prompt": "prompt",
             "system_prompt": "system",
@@ -1133,69 +1127,6 @@ async def test_conversation_turn_rejects_respond_when_chat_name_missing(
 
     with pytest.raises(main.HTTPException, match="chat_name is required"):
         await main.conversation_turn("cid-turn", payload)
-
-
-@pytest.mark.asyncio
-async def test_conversation_turn_should_respond_false_returns_listen(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "Echo.db"
-    con = main._sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        main._sqlite_ensure_conversation_state_schema(con)
-        con.commit()
-    finally:
-        con.close()
-
-    class _FakeSvc:
-        async def chat(self, *_args, **_kwargs) -> str:
-            raise AssertionError("chat should not be called when should_respond=false")
-
-    async def _fake_persist_annulment_memories(**_kwargs):
-        return []
-
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
-    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
-    monkeypatch.setattr(
-        main,
-        "_turn_state_read",
-        lambda *_a, **_k: (
-            {"digest_cursor": 0},
-            None,
-            db_path,
-            [],
-            {"items": []},
-            0,
-            None,
-        ),
-    )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
-    monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
-    monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
-
-    payload = {
-        "user": {"user_id": "u1", "soul_id": "Echo", "conversation_id": "cid-turn"},
-        "message": "quiet",
-        "history": [],
-        "run_apimw": False,
-        "apply_turn_maintenance": False,
-        "should_respond": False,
-        "prompt_override_payload": {
-            "user_prompt": "prompt",
-            "system_prompt": "system",
-            "memory_cache": [],
-            "intentions_active": {"items": []},
-            "retrieve_rag": {"items": [], "categories": [], "resources": []},
-        },
-    }
-
-    out = await main.conversation_turn("cid-turn", payload)
-    assert out["ok"] is True
-    assert out["response_target"] == "listen"
-    assert out["response_peer"] == ""
-    assert out["response"] == ""
 
 
 def test_clear_background_error_if_apimw_owned_preserves_non_apimw_error(monkeypatch: pytest.MonkeyPatch) -> None:
