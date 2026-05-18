@@ -167,15 +167,12 @@ async def _run_retrieve(
             finally:
                 con.close()
 
-    channel_mode = str(safe.get("channel_mode") or "").strip() or None
-
     retrieve_started_at = time.monotonic()
     retrieve_result = await svc.retrieve(
         memu_queries,
         where=scope,
         as_of=as_of,
         rewrite_angle=retrieve_rewrite_angle,
-        channel_mode=channel_mode,
         mental_health_enabled=bool(safe.get("mental_health_addon")),
     )
     retrieve_ms = int((time.monotonic() - retrieve_started_at) * 1000)
