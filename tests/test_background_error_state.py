@@ -15,7 +15,10 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from app.db import sqlite_ensure_conversation_state_schema
+from app.services import memorize_endpoint
 from app.services.state import (
     conversation_state_from_row,
     conversation_state_row,
@@ -114,3 +117,54 @@ def test_subconscious_message_round_trip_through_state() -> None:
             con.close()
 
         assert soul["subconscious_message"] == "[subconscious] remember this"
+
+
+@pytest.mark.asyncio
+async def test_forced_memorize_raises_if_state_error_write_fails() -> None:
+    class _Logger:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        def exception(self, message: str) -> None:
+            self.messages.append(message)
+
+    class _NoopLock:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, _exc_type, _exc, _tb) -> bool:
+            return False
+
+    async def _failing_memorize_handler(_payload, _background_tasks, _force) -> None:
+        raise RuntimeError("llm refused")
+
+    def _get_memorize_lock(_key: str) -> _NoopLock:
+        return _NoopLock()
+
+    def _memorize_lock_key(user_id: str, soul_id: str) -> str:
+        return f"{user_id}:{soul_id}"
+
+    def _write_state(*_args, **_kwargs):
+        raise RuntimeError("sqlite write failed")
+
+    logger = _Logger()
+    payload = {
+        "user": {
+            "conversation_id": "conv-1",
+            "soul_id": "Echo",
+            "user_id": "Marcos",
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="background error state write also failed"):
+        await memorize_endpoint.run_forced_memorize_from_turn(
+            payload,
+            memorize_handler=_failing_memorize_handler,
+            logger=logger,
+            get_memorize_lock=_get_memorize_lock,
+            memorize_lock_key=_memorize_lock_key,
+            write_conversation_state=_write_state,
+        )
+
+    assert "forced memorize from turn failed" in logger.messages
+    assert "failed to record background error on conversation state" in logger.messages

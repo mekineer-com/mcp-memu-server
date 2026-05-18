@@ -104,6 +104,7 @@ async def run_forced_memorize_from_turn(
         logger.exception("forced memorize from turn failed")
         # Surface the failure on conversation state so operator + soul can see it.
         # Log-only failures silently lose episodes; the state field gives a trail.
+        state_write_error: Exception | None = None
         try:
             scope = payload.get("user") if isinstance(payload.get("user"), dict) else {}
             conversation_id = str(scope.get("conversation_id") or payload.get("conversation_id") or "").strip()
@@ -121,8 +122,15 @@ async def run_forced_memorize_from_turn(
                             "last_background_error_at": datetime.now(UTC).isoformat(),
                         },
                     )
-        except Exception:
+        except Exception as state_exc:
+            state_write_error = state_exc
             logger.exception("failed to record background error on conversation state")
+        if state_write_error is not None:
+            msg = (
+                "forced memorize failed and background error state write also failed; "
+                "check logs for both exceptions"
+            )
+            raise RuntimeError(msg) from state_write_error
 
 
 async def run_memorize_episodes(
@@ -202,7 +210,11 @@ async def run_memorize_episodes(
                     modality="conversation",
                 )
             if not segment_episodes:
-                segment_episodes = [{"text": segment_raw_text, "caption": None}]
+                msg = (
+                    f"preprocessor returned no episodes for segment "
+                    f"{_seg_idx + 1}/{len(memorize_segments)}"
+                )
+                raise RuntimeError(msg)
             for episode_payload in segment_episodes:
                 episode_indices = episode_payload.get("message_indices")
                 if isinstance(episode_indices, list) and episode_indices:
