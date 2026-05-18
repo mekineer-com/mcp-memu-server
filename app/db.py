@@ -112,13 +112,19 @@ CREATE TABLE IF NOT EXISTS conversations (
     updated_at DATETIME,
     undo_snapshot JSON,
     last_background_error TEXT,
-    last_background_error_at DATETIME
+    last_background_error_at DATETIME,
+    last_consolidation_error TEXT,
+    last_consolidation_error_at DATETIME
 )
 """
     )
     conversation_cols = set(sqlite_table_columns(con, "conversations"))
     if "memorize_chat" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN memorize_chat INTEGER DEFAULT 1")
+    if "last_consolidation_error" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN last_consolidation_error TEXT")
+    if "last_consolidation_error_at" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN last_consolidation_error_at DATETIME")
     con.execute(
         """
 CREATE TABLE IF NOT EXISTS messages (

@@ -870,6 +870,43 @@ async def _run_retrieve(
     )
 
 
+def _set_background_error(
+    conversation_id: str,
+    *,
+    soul_id: str,
+    user_id: str,
+    code: str,
+    detail: str,
+) -> None:
+    msg = f"{code}: {detail}".strip()[:300]
+    _write_conversation_state(
+        conversation_id,
+        soul_id=soul_id,
+        user_id=user_id,
+        updates={
+            "last_background_error": msg,
+            "last_background_error_at": datetime.now(UTC).isoformat(),
+        },
+    )
+
+
+def _clear_background_error(
+    conversation_id: str,
+    *,
+    soul_id: str,
+    user_id: str,
+) -> None:
+    _write_conversation_state(
+        conversation_id,
+        soul_id=soul_id,
+        user_id=user_id,
+        updates={
+            "last_background_error": None,
+            "last_background_error_at": None,
+        },
+    )
+
+
 async def _apimw_topic_statement(
     svc: Any,
     *,
@@ -877,7 +914,7 @@ async def _apimw_topic_statement(
     payload: dict[str, Any],
     identity_context: str,
     conversation_id: str,
-) -> str:
+) -> tuple[str, bool]:
     logger.info("apimw step A: topic statement for %s", conversation_id)
     topic_system = (
         f"{identity_context}\n\n"
@@ -891,7 +928,18 @@ async def _apimw_topic_statement(
         op="apimw",
         step="topic_statement",
     )
-    return str(topic_statement or "").strip() or _pick_str(payload, "message", "query") or ""
+    parsed_topic = str(topic_statement or "").strip()
+    if parsed_topic:
+        return parsed_topic, False
+    fallback = _pick_str(payload, "message", "query") or ""
+    if fallback:
+        logger.warning(
+            "apimw step A: empty topic statement for %s; falling back to message/query",
+            conversation_id,
+        )
+        return fallback, True
+    logger.warning("apimw step A: empty topic statement for %s; no message/query fallback", conversation_id)
+    return "", True
 
 
 async def _apimw_retrieve_pass(
@@ -1215,13 +1263,25 @@ async def _run_apimw(
         topic_user = f"Recent conversation:\n{episode_text or '(none)'}"
 
         identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
-        topic_statement = await _apimw_topic_statement(
+        topic_statement, used_topic_fallback = await _apimw_topic_statement(
             svc,
             topic_user=topic_user,
             payload=payload,
             identity_context=identity_context,
             conversation_id=conversation_id,
         )
+        if used_topic_fallback:
+            detail = "topic_statement empty; used message/query fallback" if topic_statement else "topic_statement empty and no fallback"
+            try:
+                _set_background_error(
+                    conversation_id,
+                    soul_id=soul_id,
+                    user_id=user_id,
+                    code="apimw_topic_failed",
+                    detail=detail,
+                )
+            except Exception:
+                logger.exception("failed to record APImw topic fallback state for %s", conversation_id)
         if not topic_statement:
             return
 
@@ -1252,6 +1312,16 @@ async def _run_apimw(
             llm_profile=apimw_heavy_profile,
         )
         if result_json is None:
+            try:
+                _set_background_error(
+                    conversation_id,
+                    soul_id=soul_id,
+                    user_id=user_id,
+                    code="apimw_def_parse_failed",
+                    detail="step D+E+F response was not valid JSON object",
+                )
+            except Exception:
+                logger.exception("failed to record APImw def-parse failure for %s", conversation_id)
             return
 
         await _apimw_persist(
@@ -1265,8 +1335,22 @@ async def _run_apimw(
             user_id=user_id,
             soul_id=soul_id,
         )
+        try:
+            _clear_background_error(conversation_id, soul_id=soul_id, user_id=user_id)
+        except Exception:
+            logger.exception("failed to clear APImw background error state for %s", conversation_id)
 
-    except Exception:
+    except Exception as exc:
+        try:
+            _set_background_error(
+                conversation_id,
+                soul_id=soul_id,
+                user_id=user_id,
+                code="apimw_failed",
+                detail=f"{type(exc).__name__}: {str(exc)[:220]}",
+            )
+        except Exception:
+            logger.exception("failed to record APImw failure state for %s", conversation_id)
         logger.exception("APImw background pipeline failed for %s", conversation_id)
 
 
@@ -1593,7 +1677,16 @@ async def _run_consolidation_task(
         )
         if out.get("status") == "skipped":
             return
-    except Exception:
+        _write_conversation_state(
+            conversation_id,
+            soul_id=soul_id,
+            user_id=uid,
+            updates={
+                "last_consolidation_error": None,
+                "last_consolidation_error_at": None,
+            },
+        )
+    except Exception as exc:
         logger.exception("consolidation failed (non-fatal)")
         if pipeline_started:
             await _clear_consolidation_in_progress(
@@ -1602,6 +1695,18 @@ async def _run_consolidation_task(
                 soul_id=soul_id,
                 user_id=uid,
             )
+        try:
+            _write_conversation_state(
+                conversation_id,
+                soul_id=soul_id,
+                user_id=uid,
+                updates={
+                    "last_consolidation_error": f"{type(exc).__name__}: {str(exc)[:260]}",
+                    "last_consolidation_error_at": datetime.now(UTC).isoformat(),
+                },
+            )
+        except Exception:
+            logger.exception("failed to record consolidation error state for %s", conversation_id)
 
 
 def _make_memorize_context() -> _memorize_endpoint.MemorizeContext:
@@ -2835,6 +2940,9 @@ async def conversation_turn(
             "turn_prompt_chars": len(turn_user_prompt),
             "turn_system_chars": len(turn_system_prompt),
         }
+        background_error = str((conversation_state_after or {}).get("last_background_error") or "").strip()
+        if background_error:
+            response_payload["background_error"] = background_error
         if include_debug:
             response_payload["state"] = conversation_state_after
             response_payload["path"] = str(conversation_state_path) if conversation_state_path is not None else None

@@ -42,6 +42,8 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "undo_snapshot": json_from_db(row["undo_snapshot"]),
         "last_background_error": row["last_background_error"] if "last_background_error" in row.keys() else None,
         "last_background_error_at": row["last_background_error_at"] if "last_background_error_at" in row.keys() else None,
+        "last_consolidation_error": row["last_consolidation_error"] if "last_consolidation_error" in row.keys() else None,
+        "last_consolidation_error_at": row["last_consolidation_error_at"] if "last_consolidation_error_at" in row.keys() else None,
     }
 
 
@@ -50,7 +52,8 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
         "SELECT conversation_id, soul_id, user_id, memorize_chat, digest_cursor, prior_context, "
         "pending_episode_ids, last_retrieval_ids, last_memorize_at, "
         "updated_at, undo_snapshot, "
-        "last_background_error, last_background_error_at "
+        "last_background_error, last_background_error_at, "
+        "last_consolidation_error, last_consolidation_error_at "
         "FROM conversations WHERE conversation_id = ? LIMIT 1",
         (conversation_id,),
     ).fetchone()
@@ -75,6 +78,8 @@ def conversation_state_empty(
         "undo_snapshot": None,
         "last_background_error": None,
         "last_background_error_at": None,
+        "last_consolidation_error": None,
+        "last_consolidation_error_at": None,
     }
 
 
@@ -193,6 +198,8 @@ INSERT OR IGNORE INTO conversations (
                 "undo_snapshot",
                 "last_background_error",
                 "last_background_error_at",
+                "last_consolidation_error",
+                "last_consolidation_error_at",
             }:
                 field_updates[key] = value
 
