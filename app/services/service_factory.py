@@ -13,6 +13,18 @@ from memu.app import MemoryService
 _SERVICES: dict[str, MemoryService] = {}
 _SERVICE_STORAGE_FP: dict[str, dict[str, Any]] = {}
 _SERVICES_LOCK: threading.Lock = threading.Lock()
+_STEP_MODEL_TO_MEMORIZE_PROFILE_FIELD: dict[str, str] = {
+    "preprocess": "preprocess_llm_profile",
+    "memory_extract": "memory_extract_llm_profile",
+    "category_update": "category_update_llm_profile",
+}
+_STEP_MODEL_TO_RETRIEVE_PROFILE_FIELD: dict[str, str] = {
+    "reflection": "sufficiency_check_llm_profile",
+    "ranking": "llm_ranking_llm_profile",
+}
+_VALID_STEP_MODEL_KEYS: set[str] = set(_STEP_MODEL_TO_MEMORIZE_PROFILE_FIELD) | set(_STEP_MODEL_TO_RETRIEVE_PROFILE_FIELD) | {
+    "consolidation"
+}
 
 
 def _services_cached() -> int:
@@ -167,10 +179,15 @@ def _merge_llm_profiles(
         if not isinstance(profile_name, str) or not profile_name.strip():
             continue
         if client_profile is None:
-            continue
+            raise HTTPException(
+                status_code=400,
+                detail=f"llm_profiles.{profile_name} cannot be null",
+            )
         if not isinstance(client_profile, Mapping):
-            merged[profile_name] = client_profile
-            continue
+            raise HTTPException(
+                status_code=400,
+                detail=f"llm_profiles.{profile_name} must be an object",
+            )
         base = merged.get(profile_name)
         merged_profile: dict[str, Any]
         if isinstance(base, Mapping):
@@ -179,10 +196,44 @@ def _merge_llm_profiles(
             merged_profile = {}
         for field_name, field_value in client_profile.items():
             if field_value is None:
-                continue
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"llm_profiles.{profile_name}.{field_name} cannot be null",
+                )
             merged_profile[field_name] = field_value
         merged[profile_name] = merged_profile
     return merged
+
+
+def _validated_step_models(
+    step_models: Any,
+    *,
+    llm_profiles: Mapping[str, Any],
+    logger: logging.Logger,
+) -> dict[str, str]:
+    if not isinstance(step_models, Mapping):
+        return {}
+    out: dict[str, str] = {}
+    for raw_key, raw_value in step_models.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        if key not in _VALID_STEP_MODEL_KEYS:
+            logger.warning("ignoring unrecognized llm.step_models key: %s", key)
+            continue
+        model_name = str(raw_value or "").strip()
+        if not model_name:
+            continue
+        if key not in llm_profiles:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"llm.step_models.{key} is configured but profile '{key}' is missing; "
+                    "check config step_models keys"
+                ),
+            )
+        out[key] = model_name
+    return out
 
 
 def _get_service_from_payload(
@@ -211,6 +262,12 @@ def _get_service_from_payload(
     llm_profiles = _merge_llm_profiles(
         default_llm_profiles_from_server_config(config),
         client_profiles,
+    )
+    step_models_cfg = (config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}).get("step_models", {})
+    _validated_step_models(
+        step_models_cfg,
+        llm_profiles=llm_profiles,
+        logger=logger,
     )
     step_temps = (config.get("llm") or {}).get("step_temperatures")
     if isinstance(step_temps, dict):
@@ -260,27 +317,18 @@ def _get_service_from_payload(
         for passthrough_key in ("enable_confidence_normalization", "semantic_dedupe_enabled"):
             if passthrough_key in mem_cfg and passthrough_key not in memorize_config:
                 memorize_config[passthrough_key] = mem_cfg[passthrough_key]
-        step_models = (config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}).get("step_models", {})
-        if isinstance(step_models, dict):
-            for cfg_key, profile_field in (
-                ("preprocess", "preprocess_llm_profile"),
-                ("memory_extract", "memory_extract_llm_profile"),
-                ("category_update", "category_update_llm_profile"),
-            ):
-                if profile_field not in memorize_config and str(step_models.get(cfg_key) or "").strip():
+        if isinstance(step_models_cfg, dict):
+            for cfg_key, profile_field in _STEP_MODEL_TO_MEMORIZE_PROFILE_FIELD.items():
+                if profile_field not in memorize_config and str(step_models_cfg.get(cfg_key) or "").strip():
                     memorize_config[profile_field] = cfg_key
     retrieve_config = payload.get("retrieve_config")
     if not isinstance(retrieve_config, dict):
         retrieve_config = {}
         payload["retrieve_config"] = retrieve_config
     retrieve_config["method"] = "rag"
-    step_models_r = (config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}).get("step_models", {})
-    if isinstance(step_models_r, dict):
-        for cfg_key, profile_field in (
-            ("reflection", "sufficiency_check_llm_profile"),
-            ("ranking", "llm_ranking_llm_profile"),
-        ):
-            if profile_field not in retrieve_config and str(step_models_r.get(cfg_key) or "").strip():
+    if isinstance(step_models_cfg, dict):
+        for cfg_key, profile_field in _STEP_MODEL_TO_RETRIEVE_PROFILE_FIELD.items():
+            if profile_field not in retrieve_config and str(step_models_cfg.get(cfg_key) or "").strip():
                 retrieve_config[profile_field] = cfg_key
     user_config = payload.get("user_config") or {}
 

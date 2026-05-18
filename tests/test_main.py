@@ -15,7 +15,7 @@ def test_placeholder():
     assert True
 
 
-def test_merge_llm_profiles_skips_null_fields_from_client():
+def test_merge_llm_profiles_rejects_null_fields_from_client():
     defaults = {
         "default": {
             "provider": "openai",
@@ -33,16 +33,27 @@ def test_merge_llm_profiles_skips_null_fields_from_client():
     client = {
         "default": {"api_key": None, "base_url": "https://override.example/v1"},
         "reflection": {"chat_model": "gpt-reflection-override", "api_key": None},
+    }
+
+    with pytest.raises(main.HTTPException, match="llm_profiles.default.api_key cannot be null"):
+        main._merge_llm_profiles(defaults, client)
+
+
+def test_merge_llm_profiles_rejects_null_profile_object():
+    defaults = {
+        "default": {
+            "provider": "openai",
+            "api_key": "k-default",
+            "base_url": "https://api.example/v1",
+            "chat_model": "gpt-default",
+        },
+    }
+    client = {
         "ranking": None,
     }
 
-    merged = main._merge_llm_profiles(defaults, client)
-
-    assert merged["default"]["api_key"] == "k-default"
-    assert merged["default"]["base_url"] == "https://override.example/v1"
-    assert merged["reflection"]["api_key"] == "k-default"
-    assert merged["reflection"]["chat_model"] == "gpt-reflection-override"
-    assert "ranking" not in merged
+    with pytest.raises(main.HTTPException, match="llm_profiles.ranking cannot be null"):
+        main._merge_llm_profiles(defaults, client)
 
 
 def test_retrieve_apimw_enabled_from_cfg_defaults_and_override():
