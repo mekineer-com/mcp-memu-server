@@ -1133,3 +1133,108 @@ async def test_conversation_turn_rejects_respond_when_chat_name_missing(
 
     with pytest.raises(main.HTTPException, match="chat_name is required"):
         await main.conversation_turn("cid-turn", payload)
+
+
+@pytest.mark.asyncio
+async def test_conversation_turn_should_respond_false_returns_listen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+
+    class _FakeSvc:
+        async def chat(self, *_args, **_kwargs) -> str:
+            raise AssertionError("chat should not be called when should_respond=false")
+
+    async def _fake_persist_annulment_memories(**_kwargs):
+        return []
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        main,
+        "_turn_state_read",
+        lambda *_a, **_k: (
+            {"digest_cursor": 0},
+            None,
+            db_path,
+            [],
+            {"items": []},
+            0,
+            None,
+        ),
+    )
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
+    monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo", "conversation_id": "cid-turn"},
+        "message": "quiet",
+        "history": [],
+        "run_apimw": False,
+        "apply_turn_maintenance": False,
+        "should_respond": False,
+        "prompt_override_payload": {
+            "user_prompt": "prompt",
+            "system_prompt": "system",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "retrieve_rag": {"items": [], "categories": [], "resources": []},
+        },
+    }
+
+    out = await main.conversation_turn("cid-turn", payload)
+    assert out["ok"] is True
+    assert out["response_target"] == "listen"
+    assert out["response_peer"] == ""
+    assert out["response"] == ""
+
+
+def test_clear_background_error_if_apimw_owned_preserves_non_apimw_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    writes: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"last_background_error": "forced_memorize: RuntimeError: LLM refused"},
+            None,
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "_write_conversation_state",
+        lambda conversation_id, soul_id, user_id, updates: writes.append(dict(updates)) or ({"ok": True}, Path("/tmp/fake.db")),
+    )
+    main._clear_background_error_if_apimw_owned("cid", soul_id="Echo", user_id="u1")
+    assert writes == []
+
+
+def test_clear_background_error_if_apimw_owned_clears_apimw_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    writes: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"last_background_error": "apimw_failed: RuntimeError: boom"},
+            None,
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "_write_conversation_state",
+        lambda conversation_id, soul_id, user_id, updates: writes.append(dict(updates)) or ({"ok": True}, Path("/tmp/fake.db")),
+    )
+    main._clear_background_error_if_apimw_owned("cid", soul_id="Echo", user_id="u1")
+    assert len(writes) == 1
+    assert writes[0]["last_background_error"] is None
+    assert writes[0]["last_background_error_at"] is None

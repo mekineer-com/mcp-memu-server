@@ -890,12 +890,29 @@ def _set_background_error(
     )
 
 
-def _clear_background_error(
+_APIMW_BACKGROUND_ERROR_PREFIXES = (
+    "apimw_topic_failed:",
+    "apimw_def_parse_failed:",
+    "apimw_failed:",
+)
+
+
+def _clear_background_error_if_apimw_owned(
     conversation_id: str,
     *,
     soul_id: str,
     user_id: str,
 ) -> None:
+    state_row, _soul_card, _db_path = _load_turn_state_and_soul_card(
+        conversation_id,
+        user_id=user_id,
+        soul_id=soul_id,
+    )
+    existing = str((state_row or {}).get("last_background_error") or "").strip()
+    if not existing:
+        return
+    if not any(existing.startswith(prefix) for prefix in _APIMW_BACKGROUND_ERROR_PREFIXES):
+        return
     _write_conversation_state(
         conversation_id,
         soul_id=soul_id,
@@ -1336,7 +1353,7 @@ async def _run_apimw(
             soul_id=soul_id,
         )
         try:
-            _clear_background_error(conversation_id, soul_id=soul_id, user_id=user_id)
+            _clear_background_error_if_apimw_owned(conversation_id, soul_id=soul_id, user_id=user_id)
         except Exception:
             logger.exception("failed to clear APImw background error state for %s", conversation_id)
 
@@ -2812,7 +2829,13 @@ async def conversation_turn(
         listen_mode = not bool(safe.get("should_respond", True))
 
         if listen_mode:
-            turn_contract = {"response": "", "cache_entry": "", "annulments": []}
+            turn_contract = {
+                "response_target": "listen",
+                "response_peer": "",
+                "response": "",
+                "cache_entry": "",
+                "annulments": [],
+            }
             turn_ms = 0
         else:
             turn_started_at = time.monotonic()
