@@ -314,7 +314,11 @@ def _get_service_from_payload(
         memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
         memorize_config["episodes_per_segment"] = episodes_per_segment
         mem_cfg = config.get("memorize") if isinstance(config.get("memorize"), dict) else {}
-        for passthrough_key in ("enable_confidence_normalization", "semantic_dedupe_enabled"):
+        for passthrough_key in (
+            "enable_confidence_normalization",
+            "semantic_dedupe_enabled",
+            "background_extra_messages_tokens",
+        ):
             if passthrough_key in mem_cfg and passthrough_key not in memorize_config:
                 memorize_config[passthrough_key] = mem_cfg[passthrough_key]
         if isinstance(step_models_cfg, dict):

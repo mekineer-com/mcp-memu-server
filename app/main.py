@@ -128,8 +128,10 @@ _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 4000
 _DEFAULT_EPISODES_PER_SEGMENT: int = 3
+_DEFAULT_BACKGROUND_SUMMARY_TOKENS: int = 1000
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
 _EPISODES_PER_SEGMENT: int = _DEFAULT_EPISODES_PER_SEGMENT
+_BACKGROUND_SUMMARY_TOKENS: int = _DEFAULT_BACKGROUND_SUMMARY_TOKENS
 # Uniform runaway-protection caps for LLM calls. Not business logic —
 _BACKGROUND_TASKS: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
 _LOG_PROMPTS: bool = False
@@ -161,6 +163,161 @@ def _has_category_content(c: dict[str, Any]) -> bool:
     return bool(summary or desc)
 
 
+def _received_at_to_ts_ms(value: Any) -> int | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return int(dt.timestamp() * 1000)
+
+
+def _background_sleep_gap_detected(
+    *,
+    history: list[dict[str, Any]],
+    safe: dict[str, Any],
+) -> bool:
+    gap_safe = dict(safe)
+    has_tz_name = bool(str(gap_safe.get("time_zone") or gap_safe.get("timeZone") or "").strip())
+    has_tz_off = isinstance(gap_safe.get("time_zone_offset_min"), (int, float)) or isinstance(
+        gap_safe.get("timeZoneOffsetMin"), (int, float)
+    )
+    if not has_tz_name and not has_tz_off:
+        gap_safe["time_zone_offset_min"] = 0
+    return _memorize_endpoint.unmemorized_sleep_gap_detected(
+        history,
+        digest_cursor=-1,
+        safe=gap_safe,
+        logger=logger,
+        min_chunk_tokens=_BACKGROUND_SUMMARY_TOKENS,
+        sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
+    )
+
+
+async def _run_background_rollup_for_conversation(
+    *,
+    conversation_id: str,
+    user_id: str,
+    soul_id: str,
+    safe_payload: dict[str, Any],
+    service: MemoryService | None = None,
+) -> str:
+    cid = str(conversation_id or "").strip()
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not cid or not uid or not sid:
+        return "skipped_scope"
+
+    state_lock = _get_memorize_lock(_memorize_lock_key(uid, sid))
+    async with state_lock:
+        state_row, _soul_card, db_path = _load_turn_state_and_soul_card(
+            cid,
+            user_id=uid,
+            soul_id=sid,
+        )
+        if bool(state_row.get("memorize_chat", True)):
+            return "skipped_primary_chat"
+        if db_path is None or not db_path.exists():
+            return "skipped_no_db"
+
+        con = _sqlite_connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            _sqlite_ensure_conversation_state_schema(con)
+            rolling_cursor_id = state_row.get("rolling_summary_cursor_id")
+            tail = _message_log.read_tail_after_message_id(con, cid, rolling_cursor_id)
+            if len(tail) < 2:
+                return "skipped_short_tail"
+
+            sleep_history: list[dict[str, Any]] = []
+            tokenize_messages: list[dict[str, Any]] = []
+            for msg in tail:
+                content = str(msg.get("content") or "").strip()
+                if not content:
+                    continue
+                ts_ms = _received_at_to_ts_ms(msg.get("received_at"))
+                if ts_ms is None:
+                    continue
+                sleep_history.append({"content": content, "ts_ms": ts_ms})
+                tokenize_messages.append({"content": content})
+            if len(sleep_history) < 2:
+                return "skipped_short_tail"
+
+            token_estimate = _estimate_tokens(tokenize_messages)
+            if token_estimate < _BACKGROUND_SUMMARY_TOKENS:
+                return "skipped_tokens"
+            if not _background_sleep_gap_detected(history=sleep_history, safe=safe_payload):
+                return "skipped_lull"
+
+            prior_summary = str(state_row.get("rolling_summary") or "").strip() or None
+            llm_service = service or _get_service_from_payload(
+                {
+                    **safe_payload,
+                    "user": {"user_id": uid, "soul_id": sid, "conversation_id": cid},
+                    "conversation_id": cid,
+                }
+            )
+            summary_input = [
+                {
+                    "role": str(msg.get("role") or "user"),
+                    "name": str(msg.get("speaker") or "").strip() or None,
+                    "content": str(msg.get("content") or ""),
+                    "source_label": msg.get("source_label"),
+                    "_message_index": int(msg.get("id") or 0),
+                }
+                for msg in tail
+            ]
+            new_summary = await llm_service.summarize_background_chat_rollup(
+                prior_summary=prior_summary,
+                messages=summary_input,
+            )
+            latest_row_id = _message_log.last_message_row_id(con, cid)
+            if latest_row_id is None:
+                return "skipped_empty_after_check"
+            now_iso = datetime.now(UTC).isoformat()
+            con.execute(
+                "UPDATE conversations SET rolling_summary = ?, rolling_summary_cursor_id = ?, "
+                "rolling_summary_updated_at = ?, updated_at = ? WHERE conversation_id = ?",
+                (new_summary, int(latest_row_id), now_iso, now_iso, cid),
+            )
+            _message_log.delete_messages_through_id(con, cid, latest_row_id)
+            con.commit()
+            return "rolled_up"
+        finally:
+            con.close()
+
+
+def _queue_background_rollup_task(
+    *,
+    conversation_id: str,
+    user_id: str,
+    soul_id: str,
+    safe_payload: dict[str, Any],
+    service: MemoryService | None = None,
+) -> None:
+    marker = f"{user_id}::{soul_id}::{conversation_id}"
+    if not _mark_background_rollup_inflight(marker):
+        return
+    task = asyncio.create_task(
+        _run_background_rollup_for_conversation(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            soul_id=soul_id,
+            safe_payload=safe_payload,
+            service=service,
+        )
+    )
+    _BACKGROUND_TASKS.add(task)
+    def _on_done(done_task: asyncio.Task) -> None:
+        _BACKGROUND_TASKS.discard(done_task)
+        _clear_background_rollup_inflight(marker)
+    task.add_done_callback(_on_done)
+
+
 # ==== Server state (locks, inflight, shutdown) ====
 
 _SERVER_INSTANCE_ID: str = str(uuid.uuid4())
@@ -185,6 +342,7 @@ _ACTIVE_HTTP_REQUESTS: int = 0
 _ACTIVE_WORK_REQUESTS: int = 0
 _SHUTDOWN_TASK: asyncio.Task | None = None
 _APIMW_INFLIGHT: set[str] = set()
+_BACKGROUND_ROLLUP_INFLIGHT: set[str] = set()
 _SHUTDOWN_STATE: dict[str, Any] = {
     "draining": False,
     "stopping": False,
@@ -213,6 +371,25 @@ def _clear_apimw_inflight(conversation_id: str) -> None:
         return
     with _STATE_LOCK:
         _APIMW_INFLIGHT.discard(key)
+
+
+def _mark_background_rollup_inflight(marker: str) -> bool:
+    key = str(marker or "").strip()
+    if not key:
+        return False
+    with _STATE_LOCK:
+        if key in _BACKGROUND_ROLLUP_INFLIGHT:
+            return False
+        _BACKGROUND_ROLLUP_INFLIGHT.add(key)
+        return True
+
+
+def _clear_background_rollup_inflight(marker: str) -> None:
+    key = str(marker or "").strip()
+    if not key:
+        return
+    with _STATE_LOCK:
+        _BACKGROUND_ROLLUP_INFLIGHT.discard(key)
 
 
 _CONTROL_PATHS: frozenset[str] = frozenset(
@@ -374,7 +551,7 @@ class STUserModel(BaseModel):
 _CONFIG: dict[str, Any] = _load_config()
 
 def _refresh_runtime_limits() -> None:
-    global _MIN_CHUNK_TOKENS, _EPISODES_PER_SEGMENT
+    global _MIN_CHUNK_TOKENS, _EPISODES_PER_SEGMENT, _BACKGROUND_SUMMARY_TOKENS
     global _LOG_PROMPTS
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
     try:
@@ -385,6 +562,13 @@ def _refresh_runtime_limits() -> None:
         _EPISODES_PER_SEGMENT = max(1, int(memorize_cfg.get("episodes_per_segment", _DEFAULT_EPISODES_PER_SEGMENT)))
     except (TypeError, ValueError, OverflowError):
         _EPISODES_PER_SEGMENT = _DEFAULT_EPISODES_PER_SEGMENT
+    try:
+        _BACKGROUND_SUMMARY_TOKENS = max(
+            0,
+            int(memorize_cfg.get("background_summary_tokens", _DEFAULT_BACKGROUND_SUMMARY_TOKENS)),
+        )
+    except (TypeError, ValueError, OverflowError):
+        _BACKGROUND_SUMMARY_TOKENS = _DEFAULT_BACKGROUND_SUMMARY_TOKENS
     debug_cfg = _CONFIG.get("debug") if isinstance(_CONFIG.get("debug"), dict) else {}
     _LOG_PROMPTS = bool(debug_cfg.get("log_prompts", False))
 
@@ -1765,7 +1949,7 @@ def _make_memorize_endpoint_context() -> _memorize_endpoint.MemorizeEndpointCont
 
 async def _run_memorize_episodes(
     *,
-    memorize_segments: list[tuple[str, list[dict[str, Any]], int]],
+    memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]],
     svc: Any,
     scope: dict[str, Any],
     conversation_id: str | None,
@@ -1780,7 +1964,7 @@ async def _run_memorize_episodes(
     merged_len: int,
     force: bool,
     sleep_stats: Any,
-    episodes_dir: Path,
+    segments_dir: Path,
     zi: Any = None,
     cross_memorize: bool = False,
     final_cursors: dict[str, int] | None = None,
@@ -1802,7 +1986,7 @@ async def _run_memorize_episodes(
         force=force,
         sleep_stats=sleep_stats,
         run_ctx=_make_memorize_run_context(),
-        episodes_dir=episodes_dir,
+        segments_dir=segments_dir,
         zi=zi,
         cross_memorize=cross_memorize,
         final_cursors=final_cursors,
@@ -2474,7 +2658,12 @@ def _build_cross_conversation_payload(
 
     con = _sqlite_connect(db_path)
     try:
+        con.row_factory = sqlite3.Row
         other_tails = _message_log.read_all_tails_for_memorize(con, exclude_conversation_id=cid)
+        rolling_summaries = _message_log.read_background_rolling_summaries(
+            con,
+            exclude_conversation_id=cid,
+        )
     finally:
         con.close()
 
@@ -2493,6 +2682,7 @@ def _build_cross_conversation_payload(
         "user": {"user_id": uid, "soul_id": soul_id, "conversation_id": cid},
         "_cross_memorize": True,
         "_final_cursors": final_cursors,
+        "_background_rolling_summaries": rolling_summaries,
     }
 
 
@@ -2524,11 +2714,13 @@ def _turn_state_read(
         if conversation_state.get("last_memorize_at")
         else -1
     )
-    unmemorized_tokens = _estimate_unmemorized_tokens(history_full, unmemorized_digest_cursor)
+    chat_is_primary = bool(conversation_state.get("memorize_chat", True))
+    primary_history = history_full if chat_is_primary else []
+    unmemorized_tokens = _estimate_unmemorized_tokens(primary_history, unmemorized_digest_cursor)
     queued_memorize_payload: dict[str, Any] | None = None
-    if (not dry_run) and history_full and unmemorized_tokens >= _MIN_CHUNK_TOKENS:
+    if (not dry_run) and primary_history and unmemorized_tokens >= _MIN_CHUNK_TOKENS:
         has_sleep_gap = _unmemorized_sleep_gap_detected(
-            history_full,
+            primary_history,
             unmemorized_digest_cursor,
             safe,
         )
@@ -2538,9 +2730,9 @@ def _turn_state_read(
                 uid,
                 soul_id,
                 safe,
-                history_full,
+                primary_history,
                 unmemorized_digest_cursor,
-                bool(conversation_state.get("memorize_chat", True)),
+                True,
             )
     return (
         conversation_state,
@@ -2699,6 +2891,13 @@ async def conversation_append_message(
         _con.commit()
     finally:
         _con.close()
+    if int(appended) > 0:
+        _queue_background_rollup_task(
+            conversation_id=cid,
+            user_id=uid,
+            soul_id=soul_id,
+            safe_payload=safe,
+        )
     return {"ok": True, "conversation_id": cid, "appended": int(appended)}
 
 
@@ -2828,6 +3027,7 @@ async def conversation_turn(
         conversation_state_after = conversation_state_before
         conversation_state_path = db_path
         annulment_memory_ids: list[str] = []
+        turn_appended_count = 0
 
         if not dry_run:
             async with state_lock:
@@ -2890,7 +3090,7 @@ async def conversation_turn(
             try:
                 _con.row_factory = sqlite3.Row
                 _sqlite_ensure_conversation_state_schema(_con)
-                _message_log.append_messages(
+                turn_appended_count = _message_log.append_messages(
                     _con,
                     cid,
                     [
@@ -2901,6 +3101,14 @@ async def conversation_turn(
                 _con.commit()
             finally:
                 _con.close()
+        if (not dry_run) and turn_appended_count > 0:
+            _queue_background_rollup_task(
+                conversation_id=cid,
+                user_id=uid,
+                soul_id=soul_id,
+                safe_payload=safe,
+                service=memory_service,
+            )
 
         response_payload: dict[str, Any] = {
             "ok": True,

@@ -168,8 +168,13 @@ async def run_memorize_episodes(
     soul_card_for_memorize: str | None = None
     cached_retrieval_ids: list[str] = []
     cached_prior_context_ids: list[str] = []
+    conversation_rolling_summary: str | None = None
     total_segments = 0
     had_existing_pending = False
+    rolling_summaries_raw = safe.get("_background_rolling_summaries")
+    rolling_summaries: dict[str, dict[str, Any]] = (
+        rolling_summaries_raw if isinstance(rolling_summaries_raw, dict) else {}
+    )
     try:
         # Phase 1: read initial state under lock.
         async with mem_lock:
@@ -187,6 +192,7 @@ async def run_memorize_episodes(
                 if isinstance(raw_pc_ids, list):
                     cached_prior_context_ids = [str(rid).strip() for rid in raw_pc_ids if str(rid).strip()]
                 had_existing_pending = bool(run_ctx.normalize_text_list(state_row.get("pending_episode_ids")))
+                conversation_rolling_summary = str(state_row.get("rolling_summary") or "").strip() or None
 
         # Phase 2: persist each memorize segment as a single file and feed one
         # synthetic episode payload per segment into batch memorize.
@@ -225,11 +231,51 @@ async def run_memorize_episodes(
                 segment_path = (segments_dir / f"{fn_base}_{n}.json").resolve()
             segment_path.write_text(segment_raw_text, encoding="utf-8")
             segment_id = f"{conversation_id or 'cross'}:{segment_start_index}-{segment_end_index}"
+            segment_background_rows: list[dict[str, Any]] = []
+            seen_background_sources: set[str] = set()
+            if conversation_rolling_summary and conversation_id and not cross_memorize:
+                segment_background_rows.append(
+                    {
+                        "after_index": None,
+                        "summary": conversation_rolling_summary,
+                        "source_label": "conversation-prehistory",
+                        "source_conversation_id": conversation_id,
+                        "rolled_up": True,
+                    }
+                )
+                seen_background_sources.add(conversation_id)
+            for idx, msg in enumerate(segment_messages):
+                if not isinstance(msg, dict):
+                    continue
+                if bool(msg.get("memorize_chat", True)):
+                    continue
+                source_cid = str(msg.get("source_conversation_id") or "").strip()
+                if not source_cid or source_cid in seen_background_sources:
+                    continue
+                seen_background_sources.add(source_cid)
+                summary_row = rolling_summaries.get(source_cid)
+                if not isinstance(summary_row, dict):
+                    continue
+                summary = str(summary_row.get("summary") or "").strip()
+                if not summary:
+                    continue
+                source_label = str(summary_row.get("source_label") or msg.get("source_label") or "background").strip() or "background"
+                segment_background_rows.append(
+                    {
+                        "after_index": None,
+                        "summary": summary,
+                        "source_label": source_label,
+                        "source_conversation_id": source_cid,
+                        "rolled_up": True,
+                        "anchor_index": int(idx),
+                    }
+                )
             segment_jobs.append(
                 {
                     "segment_payload": {
                         "message_indices": list(range(len(segment_messages))),
                         "segment_id": segment_id,
+                        "background_summaries": segment_background_rows,
                     },
                     "segment_resource_url": str(segment_path),
                     "segment_raw_text": segment_raw_text,

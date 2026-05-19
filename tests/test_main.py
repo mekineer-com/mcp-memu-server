@@ -296,6 +296,64 @@ def test_build_cross_conversation_payload_request_flag_overrides_state_default(
     assert conversation[0].get("memorize_chat") is True
 
 
+def test_build_cross_conversation_payload_includes_background_rolling_summaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, rolling_summary) VALUES (?, ?, ?)",
+            ("bg-chat", 0, "rolled summary"),
+        )
+        con.commit()
+    finally:
+        con.close()
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+    out = main._build_cross_conversation_payload(
+        "whatsapp:dm:123",
+        "u1",
+        "Echo",
+        {"memorize_chat": True},
+        [{"role": "user", "content": "hello"}],
+        -1,
+        True,
+    )
+    assert isinstance(out, dict)
+    rs = out.get("_background_rolling_summaries")
+    assert isinstance(rs, dict)
+    assert rs.get("bg-chat", {}).get("summary") == "rolled summary"
+
+
+def test_turn_state_read_excludes_background_chat_from_segment_trigger(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"memorize_chat": False, "digest_cursor": 0, "last_memorize_at": "2026-05-10T00:00:00+00:00"},
+            None,
+            None,
+        ),
+    )
+    monkeypatch.setattr(main, "_unmemorized_sleep_gap_detected", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("should not run")))
+    state, _soul_card, _db, _cache, _intentions, tokens, queued = main._turn_state_read(
+        "cid",
+        "u1",
+        "Echo",
+        {},
+        [],
+        {"items": []},
+        False,
+        [{"role": "user", "content": "w " * 10000}],
+    )
+    assert state["memorize_chat"] is False
+    assert tokens == 0
+    assert queued is None
+
+
 def test_parse_as_of_datetime_accepts_iso_date_and_datetime():
     date_only = main._parse_as_of_datetime("2026-04-18")
     assert date_only is not None
@@ -515,8 +573,8 @@ def test_build_retrieve_soul_context_queries_uses_last_12_messages_for_apimw_rew
 
 @pytest.mark.asyncio
 async def test_run_memorize_episodes_clears_progress_on_exception(tmp_path):
-    episodes_dir = tmp_path / "episodes"
-    episodes_dir.mkdir()
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
 
     class _FailingService:
         async def split_segment_into_episodes(self, **_kwargs):
@@ -533,7 +591,7 @@ async def test_run_memorize_episodes_clears_progress_on_exception(tmp_path):
 
     with pytest.raises(RuntimeError):
         await main._run_memorize_episodes(
-            memorize_segments=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0)],
+            memorize_segments=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0, 0)],
             svc=_FailingService(),
             scope={"user_id": user_id, "soul_id": soul_id},
             conversation_id=None,
@@ -548,7 +606,7 @@ async def test_run_memorize_episodes_clears_progress_on_exception(tmp_path):
             merged_len=1,
             force=True,
             sleep_stats=None,
-            episodes_dir=episodes_dir,
+            segments_dir=segments_dir,
         )
 
     assert key not in main._MEMORIZE_PROGRESS

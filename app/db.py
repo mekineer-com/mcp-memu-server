@@ -105,6 +105,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     user_id TEXT,
     memorize_chat INTEGER DEFAULT 1,
     digest_cursor INTEGER DEFAULT 0,
+    rolling_summary TEXT,
+    rolling_summary_cursor_id INTEGER,
+    rolling_summary_updated_at DATETIME,
     prior_context TEXT,
     pending_episode_ids JSON DEFAULT '[]',
     last_memorize_at DATETIME,
@@ -120,6 +123,12 @@ CREATE TABLE IF NOT EXISTS conversations (
     conversation_cols = set(sqlite_table_columns(con, "conversations"))
     if "memorize_chat" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN memorize_chat INTEGER DEFAULT 1")
+    if "rolling_summary" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary TEXT")
+    if "rolling_summary_cursor_id" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary_cursor_id INTEGER")
+    if "rolling_summary_updated_at" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary_updated_at DATETIME")
     if "last_consolidation_error" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN last_consolidation_error TEXT")
     if "last_consolidation_error_at" not in conversation_cols:

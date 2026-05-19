@@ -168,6 +168,64 @@ def test_append_messages_group_overlap_ignores_speaker_drift_for_prefixed_rows()
         con.close()
 
 
+def test_read_all_tails_for_memorize_background_uses_rowid_cursor() -> None:
+    con = _con()
+    try:
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, rolling_summary_cursor_id) VALUES (?, ?, ?)",
+            ("bg-1", 0, None),
+        )
+        assert message_log.append_messages(
+            con,
+            "bg-1",
+            [
+                {"role": "user", "content": "one"},
+                {"role": "assistant", "content": "two"},
+                {"role": "user", "content": "three"},
+            ],
+        ) == 3
+        last_id = message_log.last_message_row_id(con, "bg-1")
+        assert last_id is not None
+        con.execute(
+            "UPDATE conversations SET rolling_summary_cursor_id = ? WHERE conversation_id = ?",
+            (int(last_id) - 1, "bg-1"),
+        )
+        con.commit()
+
+        tails = message_log.read_all_tails_for_memorize(con)
+        rows = tails.get("bg-1") or []
+        assert [str(r.get("content")) for r in rows] == ["three"]
+        assert rows[0]["memorize_chat"] is False
+    finally:
+        con.close()
+
+
+def test_read_background_rolling_summaries_only_non_memorized_with_text() -> None:
+    con = _con()
+    try:
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, rolling_summary) VALUES (?, ?, ?)",
+            ("bg-2", 0, "summary text"),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, rolling_summary) VALUES (?, ?, ?)",
+            ("primary-1", 1, "should be ignored"),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, rolling_summary) VALUES (?, ?, ?)",
+            ("bg-empty", 0, ""),
+        )
+        con.commit()
+
+        rows = message_log.read_background_rolling_summaries(con)
+        assert "bg-2" in rows
+        assert rows["bg-2"]["summary"] == "summary text"
+        assert "primary-1" not in rows
+        assert "bg-empty" not in rows
+    finally:
+        con.close()
+
+
 def test_read_all_tails_falls_back_to_recent_when_unmemorized_tail_empty() -> None:
     con = _con()
     try:

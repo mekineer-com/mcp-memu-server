@@ -175,6 +175,59 @@ def read_tail(
     ]
 
 
+def read_tail_after_message_id(
+    con: sqlite3.Connection,
+    conversation_id: str,
+    after_message_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Read messages for a conversation after a message row-id boundary."""
+    cursor_id = int(after_message_id or 0)
+    rows = con.execute(
+        "SELECT id, role, speaker, content, source_label, received_at FROM messages "
+        "WHERE conversation_id = ? AND id > ? ORDER BY id ASC",
+        (conversation_id, cursor_id),
+    ).fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "role": row["role"],
+            "speaker": row["speaker"],
+            "content": row["content"],
+            "source_label": row["source_label"],
+            "received_at": row["received_at"],
+        }
+        for row in rows
+    ]
+
+
+def last_message_row_id(con: sqlite3.Connection, conversation_id: str) -> int | None:
+    row = con.execute(
+        "SELECT id FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
+        (conversation_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return int(row["id"])
+    except (TypeError, ValueError):
+        return None
+
+
+def delete_messages_through_id(
+    con: sqlite3.Connection,
+    conversation_id: str,
+    max_message_id: int | None,
+) -> int:
+    if max_message_id is None:
+        return 0
+    cursor_id = int(max_message_id)
+    cur = con.execute(
+        "DELETE FROM messages WHERE conversation_id = ? AND id <= ?",
+        (conversation_id, cursor_id),
+    )
+    return int(cur.rowcount or 0)
+
+
 MAX_CROSS_TAIL_MESSAGES = 50
 DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES = 8
 MAX_CROSS_TAIL_MESSAGES_PER_CONVERSATION = 8
@@ -340,7 +393,8 @@ def read_all_tails_for_memorize(
     No cap — memorize needs all unmemorized messages.
     """
     cursor_rows = con.execute(
-        "SELECT conversation_id, digest_cursor, last_memorize_at, memorize_chat FROM conversations"
+        "SELECT conversation_id, digest_cursor, last_memorize_at, memorize_chat, rolling_summary_cursor_id "
+        "FROM conversations"
     ).fetchall()
 
     result: dict[str, list[dict[str, Any]]] = {}
@@ -350,14 +404,49 @@ def read_all_tails_for_memorize(
             continue
         cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
         memorize_chat = True if row["memorize_chat"] is None else bool(int(row["memorize_chat"]))
-        tail = read_tail(con, cid, after_cursor=cursor + 1)
+        if memorize_chat:
+            tail = read_tail(con, cid, after_cursor=cursor + 1)
+        else:
+            rolling_cursor_id = row["rolling_summary_cursor_id"]
+            tail = read_tail_after_message_id(con, cid, rolling_cursor_id)
         if tail:
             for i, msg in enumerate(tail):
                 msg["source_conversation_id"] = cid
-                msg["source_conversation_index"] = cursor + 1 + i
+                msg["source_conversation_index"] = (
+                    int(msg["id"]) if (not memorize_chat and msg.get("id") is not None) else (cursor + 1 + i)
+                )
                 msg["memorize_chat"] = memorize_chat
             result[cid] = tail
     return result
+
+
+def read_background_rolling_summaries(
+    con: sqlite3.Connection,
+    *,
+    exclude_conversation_id: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    rows = con.execute(
+        "SELECT conversation_id, memorize_chat, rolling_summary, rolling_summary_updated_at "
+        "FROM conversations"
+    ).fetchall()
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        cid = str(row["conversation_id"] or "").strip()
+        if not cid or cid == exclude_conversation_id:
+            continue
+        memorize_chat = True if row["memorize_chat"] is None else bool(int(row["memorize_chat"]))
+        if memorize_chat:
+            continue
+        summary = str(row["rolling_summary"] or "").strip()
+        if not summary:
+            continue
+        out[cid] = {
+            "source_conversation_id": cid,
+            "source_label": derive_source_label(cid),
+            "summary": summary,
+            "updated_at": row["rolling_summary_updated_at"],
+        }
+    return out
 
 
 def read_recent(

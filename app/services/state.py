@@ -34,6 +34,17 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "user_id": row["user_id"],
         "memorize_chat": bool(int(row["memorize_chat"])) if "memorize_chat" in row.keys() and row["memorize_chat"] is not None else True,
         "digest_cursor": max(0, digest_cursor),
+        "rolling_summary": (
+            (str(row["rolling_summary"] or "").strip() or None)
+            if "rolling_summary" in row.keys()
+            else None
+        ),
+        "rolling_summary_cursor_id": (
+            int(row["rolling_summary_cursor_id"])
+            if "rolling_summary_cursor_id" in row.keys() and row["rolling_summary_cursor_id"] is not None
+            else None
+        ),
+        "rolling_summary_updated_at": row["rolling_summary_updated_at"] if "rolling_summary_updated_at" in row.keys() else None,
         "prior_context": None if prior_context is None else str(prior_context),
         "pending_episode_ids": normalize_text_list(row["pending_episode_ids"]),
         "last_memorize_at": row["last_memorize_at"],
@@ -48,7 +59,8 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
 
 def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
     return con.execute(
-        "SELECT conversation_id, soul_id, user_id, memorize_chat, digest_cursor, prior_context, "
+        "SELECT conversation_id, soul_id, user_id, memorize_chat, digest_cursor, "
+        "rolling_summary, rolling_summary_cursor_id, rolling_summary_updated_at, prior_context, "
         "pending_episode_ids, last_memorize_at, "
         "updated_at, undo_snapshot, "
         "last_background_error, last_background_error_at, "
@@ -69,6 +81,9 @@ def conversation_state_empty(
         "user_id": user_id,
         "memorize_chat": True,
         "digest_cursor": 0,
+        "rolling_summary": None,
+        "rolling_summary_cursor_id": None,
+        "rolling_summary_updated_at": None,
         "prior_context": None,
         "pending_episode_ids": [],
         "last_memorize_at": None,
@@ -147,10 +162,11 @@ def write_conversation_state(
                 """
 INSERT OR IGNORE INTO conversations (
     conversation_id, soul_id, user_id, memorize_chat,
-    digest_cursor, prior_context, pending_episode_ids,
+    digest_cursor, rolling_summary, rolling_summary_cursor_id, rolling_summary_updated_at,
+    prior_context, pending_episode_ids,
     last_memorize_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """,
                 (
                     seed["conversation_id"],
@@ -158,6 +174,9 @@ INSERT OR IGNORE INTO conversations (
                     seed.get("user_id"),
                     1 if seed.get("memorize_chat", True) else 0,
                     int(seed.get("digest_cursor") or 0),
+                    seed.get("rolling_summary"),
+                    seed.get("rolling_summary_cursor_id"),
+                    seed.get("rolling_summary_updated_at"),
                     seed.get("prior_context"),
                     json_to_db(seed.get("pending_episode_ids") or []),
                     seed.get("last_memorize_at"),
@@ -188,6 +207,9 @@ INSERT OR IGNORE INTO conversations (
             if key in {
                 "memorize_chat",
                 "digest_cursor",
+                "rolling_summary",
+                "rolling_summary_cursor_id",
+                "rolling_summary_updated_at",
                 "prior_context",
                 "pending_episode_ids",
                 "last_memorize_at",
@@ -231,6 +253,21 @@ INSERT OR IGNORE INTO conversations (
                 field_updates["digest_cursor"] = max(0, int(field_updates.get("digest_cursor") or 0))
             except (TypeError, ValueError, OverflowError) as exc:
                 raise HTTPException(status_code=400, detail="digest_cursor must be an integer") from exc
+        if "rolling_summary_cursor_id" in field_updates:
+            raw_cursor_id = field_updates.get("rolling_summary_cursor_id")
+            if raw_cursor_id is None:
+                field_updates["rolling_summary_cursor_id"] = None
+            else:
+                try:
+                    field_updates["rolling_summary_cursor_id"] = max(0, int(raw_cursor_id))
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise HTTPException(status_code=400, detail="rolling_summary_cursor_id must be an integer") from exc
+        if "rolling_summary" in field_updates:
+            raw_summary = field_updates.get("rolling_summary")
+            field_updates["rolling_summary"] = None if raw_summary is None else (str(raw_summary).strip() or None)
+        if "rolling_summary_updated_at" in field_updates:
+            raw_rs_at = field_updates.get("rolling_summary_updated_at")
+            field_updates["rolling_summary_updated_at"] = None if raw_rs_at is None else (str(raw_rs_at).strip() or None)
         if "memorize_chat" in field_updates:
             field_updates["memorize_chat"] = 1 if bool(field_updates.get("memorize_chat")) else 0
         if "last_memorize_at" in field_updates:
