@@ -2995,23 +2995,33 @@ async def conversation_turn(
 
         memory_service = _get_service_from_payload(safe)
         turn_started_at = time.monotonic()
-        turn_response_raw = await memory_service.chat(
-            turn_user_prompt,
-            system_prompt=turn_system_prompt,
-            temperature=turn_temperature,
-            response_format=turn_response_format,
-            op="turn",
-            step="respond",
-        )
+        turn_contract: dict[str, Any] | None = None
+        for attempt in (1, 2):
+            turn_response_raw = await memory_service.chat(
+                turn_user_prompt,
+                system_prompt=turn_system_prompt,
+                temperature=turn_temperature,
+                response_format=turn_response_format,
+                op="turn",
+                step="respond" if attempt == 1 else "respond_retry",
+            )
+            try:
+                turn_contract = _parse_turn_contract(turn_response_raw)
+                break
+            except Exception as exc:
+                raw_snippet = str(turn_response_raw or "")[:200]
+                if attempt == 1:
+                    logger.warning(
+                        "conversation_turn: turn contract parse failed on attempt 1; retrying once",
+                    )
+                    continue
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"turn contract parse failure: {exc}; raw={raw_snippet!r}",
+                ) from exc
+        if turn_contract is None:
+            raise HTTPException(status_code=502, detail="turn contract parse failure: unknown")
         turn_ms = int((time.monotonic() - turn_started_at) * 1000)
-        try:
-            turn_contract = _parse_turn_contract(turn_response_raw)
-        except Exception as exc:
-            raw_snippet = str(turn_response_raw or "")[:200]
-            raise HTTPException(
-                status_code=502,
-                detail=f"turn contract parse failure: {exc}; raw={raw_snippet!r}",
-            ) from exc
 
         turn_cache_entry = str(turn_contract.get("cache_entry") or "").strip()
         turn_annulments = turn_contract.get("annulments") if isinstance(turn_contract.get("annulments"), list) else []
