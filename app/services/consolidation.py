@@ -475,10 +475,10 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
             raw_segments = manifest.get("segments") if isinstance(manifest, dict) else None
             if not isinstance(raw_segments, list) or not raw_segments:
                 raise HTTPException(status_code=400, detail="conversation manifest has no segments")
-            episodes_dir = (chat_dir / "episodes").resolve()
+            segments_dir = (chat_dir / "segments").resolve()
             messages: list[dict[str, Any]] = []
-            if episodes_dir.is_dir():
-                for ep_file in sorted(episodes_dir.glob("*.json"), key=_episode_file_sort_key):
+            if segments_dir.is_dir():
+                for ep_file in sorted(segments_dir.glob("*.json"), key=_episode_file_sort_key):
                     try:
                         parsed = json.loads(ep_file.read_text(encoding="utf-8"))
                     except (OSError, json.JSONDecodeError):

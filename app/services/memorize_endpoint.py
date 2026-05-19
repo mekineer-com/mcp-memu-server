@@ -39,11 +39,13 @@ def estimate_unmemorized_tokens(messages: list[dict[str, Any]], digest_cursor: A
 
 
 
-class EpisodeMemorizeJob(TypedDict):
-    episode_payload: dict[str, Any]
-    episode_resource_url: str
+class SegmentMemorizeJob(TypedDict):
+    segment_payload: dict[str, Any]
+    segment_resource_url: str
     segment_raw_text: str
+    segment_start_index: int
     segment_end_index: int
+    segment_id: str
 
 
 @dataclass(slots=True)
@@ -135,7 +137,7 @@ async def run_forced_memorize_from_turn(
 
 async def run_memorize_episodes(
     *,
-    memorize_segments: list[tuple[str, list[dict[str, Any]], int]],
+    memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]],
     svc: Any,
     scope: dict[str, Any],
     conversation_id: str | None,
@@ -151,7 +153,7 @@ async def run_memorize_episodes(
     force: bool,
     sleep_stats: Any,
     run_ctx: MemorizeRunContext,
-    episodes_dir: Path,
+    segments_dir: Path,
     zi: Any | None = None,
     cross_memorize: bool = False,
     final_cursors: dict[str, int] | None = None,
@@ -166,7 +168,7 @@ async def run_memorize_episodes(
     soul_card_for_memorize: str | None = None
     cached_retrieval_ids: list[str] = []
     cached_prior_context_ids: list[str] = []
-    total_episodes = 0
+    total_segments = 0
     had_existing_pending = False
     try:
         # Phase 1: read initial state under lock.
@@ -186,91 +188,77 @@ async def run_memorize_episodes(
                     cached_prior_context_ids = [str(rid).strip() for rid in raw_pc_ids if str(rid).strip()]
                 had_existing_pending = bool(run_ctx.normalize_text_list(state_row.get("pending_episode_ids")))
 
-        # Phase 2: split segments into episodes, write each episode as its own file.
-        episode_jobs: list[EpisodeMemorizeJob] = []
+        # Phase 2: persist each memorize segment as a single file and feed one
+        # synthetic episode payload per segment into batch memorize.
+        segment_jobs: list[SegmentMemorizeJob] = []
         cancelled = False
-        for _seg_idx, (segment_resource_url, segment_messages, segment_end_index) in enumerate(memorize_segments):
+        for _seg_idx, (
+            segment_resource_url,
+            segment_messages,
+            segment_start_index,
+            segment_end_index,
+        ) in enumerate(memorize_segments):
             if progress_key in ctx.memorize_cancel:
                 ctx.memorize_cancel.discard(progress_key)
-                ctx.logger.info("memorize cancelled during pre-split after segment %d/%d", _seg_idx, len(memorize_segments))
+                ctx.logger.info("memorize cancelled during segment prep after segment %d/%d", _seg_idx, len(memorize_segments))
                 cancelled = True
                 break
             segment_raw_text = json.dumps(segment_messages, ensure_ascii=False)
-            if cross_memorize:
-                segment_episodes = await svc.split_cross_conversation_into_episodes(
-                    raw_text=segment_raw_text,
-                )
-            else:
-                segment_episodes = await svc.split_segment_into_episodes(
-                    local_path=segment_resource_url,
-                    raw_text=segment_raw_text,
-                    modality="conversation",
-                )
-            if not segment_episodes:
-                msg = (
-                    f"preprocessor returned no episodes for segment "
-                    f"{_seg_idx + 1}/{len(memorize_segments)}"
-                )
-                raise RuntimeError(msg)
-            for episode_payload in segment_episodes:
-                episode_indices = episode_payload.get("message_indices")
-                if isinstance(episode_indices, list) and episode_indices:
-                    episode_messages = [
-                        segment_messages[i]
-                        for i in episode_indices
-                        if 0 <= i < len(segment_messages)
-                    ]
-                else:
-                    episode_messages = segment_messages
-                first_ts = (
-                    episode_messages[0].get("ts_ms")
-                    if episode_messages and isinstance(episode_messages[0], dict)
-                    else None
-                )
-                last_ts = (
-                    episode_messages[-1].get("ts_ms")
-                    if episode_messages and isinstance(episode_messages[-1], dict)
-                    else None
-                )
-                d1 = date_label(first_ts if isinstance(first_ts, int) else None, zi)
-                d2 = date_label(last_ts if isinstance(last_ts, int) else None, zi)
-                fn = f"{d1}.json" if d1 == d2 else f"{d1}__{d2}.json"
-                episode_path = (episodes_dir / fn).resolve()
-                n = 1
-                while episode_path.exists():
-                    n += 1
-                    fn_base = f"{d1}" if d1 == d2 else f"{d1}__{d2}"
-                    episode_path = (episodes_dir / f"{fn_base}_{n}.json").resolve()
-                episode_path.write_text(json.dumps(episode_messages, ensure_ascii=False), encoding="utf-8")
-                episode_jobs.append(
-                    {
-                        "episode_payload": episode_payload,
-                        "episode_resource_url": str(episode_path),
-                        "segment_raw_text": segment_raw_text,
-                        "segment_end_index": segment_end_index,
-                    }
-                )
+            first_ts = (
+                segment_messages[0].get("ts_ms")
+                if segment_messages and isinstance(segment_messages[0], dict)
+                else None
+            )
+            last_ts = (
+                segment_messages[-1].get("ts_ms")
+                if segment_messages and isinstance(segment_messages[-1], dict)
+                else None
+            )
+            d1 = date_label(first_ts if isinstance(first_ts, int) else None, zi)
+            d2 = date_label(last_ts if isinstance(last_ts, int) else None, zi)
+            fn = f"{d1}.json" if d1 == d2 else f"{d1}__{d2}.json"
+            segment_path = (segments_dir / fn).resolve()
+            n = 1
+            while segment_path.exists():
+                n += 1
+                fn_base = f"{d1}" if d1 == d2 else f"{d1}__{d2}"
+                segment_path = (segments_dir / f"{fn_base}_{n}.json").resolve()
+            segment_path.write_text(segment_raw_text, encoding="utf-8")
+            segment_id = f"{conversation_id or 'cross'}:{segment_start_index}-{segment_end_index}"
+            segment_jobs.append(
+                {
+                    "segment_payload": {
+                        "message_indices": list(range(len(segment_messages))),
+                        "segment_id": segment_id,
+                    },
+                    "segment_resource_url": str(segment_path),
+                    "segment_raw_text": segment_raw_text,
+                    "segment_start_index": segment_start_index,
+                    "segment_end_index": segment_end_index,
+                    "segment_id": segment_id,
+                }
+            )
 
-        total_episodes = len(episode_jobs)
-        ctx.memorize_progress[progress_key] = {"current": 0, "total": total_episodes}
+        total_segments = len(segment_jobs)
+        ctx.memorize_progress[progress_key] = {"current": 0, "total": total_segments}
 
-        if not cancelled and episode_jobs:
+        if not cancelled and segment_jobs:
             if progress_key in ctx.memorize_cancel:
                 ctx.memorize_cancel.discard(progress_key)
                 ctx.logger.info("memorize cancelled before batch extraction")
             else:
-                ctx.memorize_progress[progress_key] = {"current": 0, "total": total_episodes, "phase": "extracting"}
+                ctx.memorize_progress[progress_key] = {"current": 0, "total": total_segments, "phase": "extracting"}
                 ep_start = _time.monotonic()
                 batch_results = await svc.memorize_episodes_batch(
                     modality="conversation",
                     episodes=[
                         {
-                            "resource_url": job["episode_resource_url"],
-                            "local_path": job["episode_resource_url"],
+                            "resource_url": job["segment_resource_url"],
+                            "local_path": job["segment_resource_url"],
                             "raw_text": job["segment_raw_text"],
-                            "episode": job["episode_payload"],
+                            "episode": job["segment_payload"],
                         }
-                        for job in episode_jobs
+                        for job in segment_jobs
                     ],
                     user=scope,
                     all_categories_summary=current_all_categories_summary,
@@ -279,34 +267,30 @@ async def run_memorize_episodes(
                     memory_prior_context=cached_prior_context_ids or None,
                     conversation_id=conversation_id,
                 )
-                if len(batch_results) != len(episode_jobs):
+                if len(batch_results) != len(segment_jobs):
                     msg = (
                         f"memorize_episodes_batch returned {len(batch_results)} results "
-                        f"for {len(episode_jobs)} episode jobs"
+                        f"for {len(segment_jobs)} segment jobs"
                     )
                     raise RuntimeError(msg)
                 ctx.logger.info(
-                    "memorize batch episodes=%d elapsed=%.1fs",
-                    total_episodes,
+                    "memorize batch segments=%d elapsed=%.1fs",
+                    total_segments,
                     _time.monotonic() - ep_start,
                 )
 
-                for ep_num, episode_job in enumerate(episode_jobs, 1):
+                for seg_num, segment_job in enumerate(segment_jobs, 1):
                     if progress_key in ctx.memorize_cancel:
                         ctx.memorize_cancel.discard(progress_key)
-                        ctx.logger.info("memorize cancelled after batch result %d/%d", ep_num - 1, total_episodes)
+                        ctx.logger.info("memorize cancelled after batch result %d/%d", seg_num - 1, total_segments)
                         break
-                    ctx.memorize_progress[progress_key] = {"current": ep_num, "total": total_episodes, "phase": "persist"}
-                    ep_result = batch_results[ep_num - 1] if ep_num - 1 < len(batch_results) else None
+                    ctx.memorize_progress[progress_key] = {"current": seg_num, "total": total_segments, "phase": "persist"}
+                    ep_result = batch_results[seg_num - 1] if seg_num - 1 < len(batch_results) else None
                     if isinstance(ep_result, dict):
                         has_results = True
                         pending_episode_ids.extend(run_ctx.normalize_text_list(ep_result.get("pending_episode_ids")))
-                    next_segment_end_index = (
-                        episode_jobs[ep_num]["segment_end_index"] if ep_num < total_episodes else None
-                    )
-                    segment_end_index = episode_job["segment_end_index"]
-                    last_episode_of_segment = (next_segment_end_index != segment_end_index)
-                    if last_episode_of_segment and conversation_id and not cross_memorize:
+                    segment_end_index = segment_job["segment_end_index"]
+                    if conversation_id and not cross_memorize:
                         # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
                         async with mem_lock:
                             fresh_row, _, _ = run_ctx.load_turn_state_and_soul_card(
@@ -392,7 +376,7 @@ async def run_memorize_episodes(
                     "messages_merged": merged_len,
                     "force": force,
                     "memorizeSegmentCount": len(memorize_segments),
-                    "memorizeEpisodeCount": total_episodes,
+                    "memorizeSegmentPersistedCount": total_segments,
                     "minChunkTokens": ctx.min_chunk_tokens,
                     "memorizeDeferred": not force and not has_results,
                     "pendingEpisodeRetryOnly": bool(had_existing_pending and not has_results),
@@ -747,9 +731,9 @@ async def memorize_endpoint(
                 conversation_id,
                 endpoint_ctx.sanitize_db_filename,
             )
-            episodes_dir = (chat_dir / "episodes").resolve()
+            segments_dir = (chat_dir / "segments").resolve()
             chat_dir.mkdir(parents=True, exist_ok=True)
-            episodes_dir.mkdir(parents=True, exist_ok=True)
+            segments_dir.mkdir(parents=True, exist_ok=True)
 
             manifest_path = (chat_dir / "manifest.json").resolve()
 
@@ -862,11 +846,11 @@ async def memorize_endpoint(
                 }
                 manifest_path.write_text(json.dumps(manifest_out, ensure_ascii=False, indent=2), encoding="utf-8")
 
-            memorize_segments: list[tuple[str, list[dict[str, Any]], int]] = []
+            memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]] = []
             if is_cross or tail:
                 tail_start = 0 if is_cross else max(0, processed_cursor + 1)
                 if tail_start < len(merged):
-                    memorize_segments = [(resource_url, merged[tail_start:], len(merged) - 1)]
+                    memorize_segments = [(resource_url, merged[tail_start:], tail_start, len(merged) - 1)]
                 if not memorize_segments:
                     if conversation_id and has_pending_episodes:
                         background_tasks.add_task(
@@ -893,9 +877,9 @@ async def memorize_endpoint(
                     )
             elif force:
                 processed_cursor = -1
-                if episodes_dir and episodes_dir.exists():
-                    for old_ep in episodes_dir.glob("*.json"):
-                        old_ep.unlink(missing_ok=True)
+                if segments_dir and segments_dir.exists():
+                    for old_seg in segments_dir.glob("*.json"):
+                        old_seg.unlink(missing_ok=True)
             if not tail and not is_cross and segments and isinstance(merged, list):
                 last_message_idx = len(merged) - 1
                 for segment in segments:
@@ -912,9 +896,9 @@ async def memorize_endpoint(
                     seg_messages = merged[effective_start : seg_end + 1]
                     if not seg_messages:
                         continue
-                    memorize_segments.append((resource_url, seg_messages, seg_end))
+                    memorize_segments.append((resource_url, seg_messages, effective_start, seg_end))
 
-            expected_cursor = memorize_segments[-1][2] if memorize_segments else processed_cursor
+            expected_cursor = memorize_segments[-1][3] if memorize_segments else processed_cursor
             background_tasks.add_task(
                 endpoint_ctx.run_memorize_episodes,
                 memorize_segments=memorize_segments,
@@ -932,7 +916,7 @@ async def memorize_endpoint(
                 merged_len=len(merged) if isinstance(merged, list) else 0,
                 force=force,
                 sleep_stats=sleep_stats,
-                episodes_dir=episodes_dir,
+                segments_dir=segments_dir,
                 zi=zi,
                 cross_memorize=is_cross,
                 final_cursors=safe.get("_final_cursors") if is_cross else None,
@@ -941,16 +925,10 @@ async def memorize_endpoint(
             # Response object directly, FastAPI does not auto-attach the tasks from
             # the injected BackgroundTasks parameter. Without this, add_task above
             # is silently a no-op and the segments never run.
-            episodes_cap_raw = getattr(getattr(svc, "memorize_config", None), "episodes_per_segment", 3)
-            try:
-                episodes_cap = int(episodes_cap_raw)
-            except (TypeError, ValueError):
-                episodes_cap = 3
-            episodes_cap = max(1, episodes_cap)
-            estimated_total_episodes = max(1, len(memorize_segments) * episodes_cap)
+            estimated_total_segments = max(1, len(memorize_segments))
             ctx.memorize_progress[ctx.memorize_lock_key(uid, soul_id)] = {
                 "current": 0,
-                "total": estimated_total_episodes,
+                "total": estimated_total_segments,
             }
             return JSONResponse(
                 status_code=202,
@@ -960,7 +938,7 @@ async def memorize_endpoint(
                     "conversation_id": conversation_id,
                     "expected_cursor": expected_cursor,
                     "segment_count": len(memorize_segments),
-                    "progress_unit": "episode",
+                    "progress_unit": "segment",
                     "resource_url": resource_url,
                 },
                 background=background_tasks,
