@@ -92,6 +92,7 @@ from app.services.payload import (
     _normalize_turn_history,
     _parse_as_of_datetime,
     _payload_signature,
+    _parse_turn_ts_ms,
     _pick_str,
     _resource_sig,
     _safe_payload,
@@ -163,19 +164,6 @@ def _has_category_content(c: dict[str, Any]) -> bool:
     return bool(summary or desc)
 
 
-def _received_at_to_ts_ms(value: Any) -> int | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    try:
-        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return int(dt.timestamp() * 1000)
-
-
 def _background_sleep_gap_detected(
     *,
     history: list[dict[str, Any]],
@@ -239,7 +227,7 @@ async def _run_background_rollup_for_conversation(
                 content = str(msg.get("content") or "").strip()
                 if not content:
                     continue
-                ts_ms = _received_at_to_ts_ms(msg.get("received_at"))
+                ts_ms = _parse_turn_ts_ms(msg.get("received_at"))
                 if ts_ms is None:
                     continue
                 sleep_history.append({"content": content, "ts_ms": ts_ms})
@@ -300,7 +288,7 @@ def _queue_background_rollup_task(
     service: MemoryService | None = None,
 ) -> None:
     marker = f"{user_id}::{soul_id}::{conversation_id}"
-    if not _mark_background_rollup_inflight(marker):
+    if not _mark_inflight(_BACKGROUND_ROLLUP_INFLIGHT, marker):
         return
     task = asyncio.create_task(
         _run_background_rollup_for_conversation(
@@ -314,7 +302,7 @@ def _queue_background_rollup_task(
     _BACKGROUND_TASKS.add(task)
     def _on_done(done_task: asyncio.Task) -> None:
         _BACKGROUND_TASKS.discard(done_task)
-        _clear_background_rollup_inflight(marker)
+        _clear_inflight(_BACKGROUND_ROLLUP_INFLIGHT, marker)
     task.add_done_callback(_on_done)
 
 
@@ -355,41 +343,30 @@ _SHUTDOWN_STATE: dict[str, Any] = {
 
 
 def _mark_apimw_inflight(conversation_id: str) -> bool:
-    key = str(conversation_id or "").strip()
-    if not key:
-        return False
-    with _STATE_LOCK:
-        if key in _APIMW_INFLIGHT:
-            return False
-        _APIMW_INFLIGHT.add(key)
-        return True
+    return _mark_inflight(_APIMW_INFLIGHT, conversation_id)
 
 
 def _clear_apimw_inflight(conversation_id: str) -> None:
-    key = str(conversation_id or "").strip()
-    if not key:
-        return
-    with _STATE_LOCK:
-        _APIMW_INFLIGHT.discard(key)
+    _clear_inflight(_APIMW_INFLIGHT, conversation_id)
 
 
-def _mark_background_rollup_inflight(marker: str) -> bool:
+def _mark_inflight(pool: set[str], marker: str) -> bool:
     key = str(marker or "").strip()
     if not key:
         return False
     with _STATE_LOCK:
-        if key in _BACKGROUND_ROLLUP_INFLIGHT:
+        if key in pool:
             return False
-        _BACKGROUND_ROLLUP_INFLIGHT.add(key)
+        pool.add(key)
         return True
 
 
-def _clear_background_rollup_inflight(marker: str) -> None:
+def _clear_inflight(pool: set[str], marker: str) -> None:
     key = str(marker or "").strip()
     if not key:
         return
     with _STATE_LOCK:
-        _BACKGROUND_ROLLUP_INFLIGHT.discard(key)
+        pool.discard(key)
 
 
 _CONTROL_PATHS: frozenset[str] = frozenset(
