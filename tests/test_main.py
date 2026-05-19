@@ -1224,3 +1224,136 @@ def test_clear_background_error_if_apimw_owned_clears_apimw_error(monkeypatch: p
     assert len(writes) == 1
     assert writes[0]["last_background_error"] is None
     assert writes[0]["last_background_error_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_background_rollup_deletes_only_summarized_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, soul_id, user_id, memorize_chat, digest_cursor, rolling_summary_cursor_id, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("cid-rollup", "Echo", "u1", 0, 0, None, datetime.now(UTC).isoformat()),
+        )
+        con.executemany(
+            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                ("cid-rollup", "user", "U", "old one", "sillytavern", "2026-05-19T00:00:00+00:00"),
+                ("cid-rollup", "assistant", "Echo", "old two", "sillytavern", "2026-05-19T00:00:01+00:00"),
+            ],
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"memorize_chat": False, "rolling_summary_cursor_id": None, "rolling_summary": None},
+            None,
+            db_path,
+        ),
+    )
+    monkeypatch.setattr(main, "_BACKGROUND_SUMMARY_TOKENS", 1)
+    monkeypatch.setattr(main, "_background_sleep_gap_detected", lambda **_kwargs: True)
+
+    class _SlowSvc:
+        async def summarize_background_chat_rollup(self, *, prior_summary, messages):  # noqa: ARG002
+            c = main._sqlite_connect(db_path)
+            try:
+                c.execute(
+                    "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    ("cid-rollup", "user", "U", "NEW_UNSUMMARIZED", "sillytavern", "2026-05-19T00:00:02+00:00"),
+                )
+                c.commit()
+            finally:
+                c.close()
+            return "rolled summary"
+
+    status = await main._run_background_rollup_for_conversation(
+        conversation_id="cid-rollup",
+        user_id="u1",
+        soul_id="Echo",
+        safe_payload={},
+        service=_SlowSvc(),
+    )
+    assert status == "rolled_up"
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT content FROM messages WHERE conversation_id = ? ORDER BY id ASC",
+            ("cid-rollup",),
+        ).fetchall()
+    finally:
+        con.close()
+    assert [str(row["content"]) for row in rows] == ["NEW_UNSUMMARIZED"]
+
+
+@pytest.mark.asyncio
+async def test_run_background_rollup_persists_background_error_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, soul_id, user_id, memorize_chat, digest_cursor, rolling_summary_cursor_id, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("cid-fail", "Echo", "u1", 0, 0, None, datetime.now(UTC).isoformat()),
+        )
+        con.executemany(
+            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                ("cid-fail", "user", "U", "one", "sillytavern", "2026-05-19T00:00:00+00:00"),
+                ("cid-fail", "assistant", "Echo", "two", "sillytavern", "2026-05-19T00:00:01+00:00"),
+            ],
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"memorize_chat": False, "rolling_summary_cursor_id": None, "rolling_summary": None},
+            None,
+            db_path,
+        ),
+    )
+    monkeypatch.setattr(main, "_BACKGROUND_SUMMARY_TOKENS", 1)
+    monkeypatch.setattr(main, "_background_sleep_gap_detected", lambda **_kwargs: True)
+    writes: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        main,
+        "_write_conversation_state",
+        lambda conversation_id, soul_id, user_id, updates: writes.append(dict(updates)) or ({"ok": True}, db_path),
+    )
+
+    class _FailingSvc:
+        async def summarize_background_chat_rollup(self, *, prior_summary, messages):  # noqa: ARG002
+            raise RuntimeError("summary failed")
+
+    with pytest.raises(RuntimeError, match="summary failed"):
+        await main._run_background_rollup_for_conversation(
+            conversation_id="cid-fail",
+            user_id="u1",
+            soul_id="Echo",
+            safe_payload={},
+            service=_FailingSvc(),
+        )
+    assert writes
+    assert str(writes[-1].get("last_background_error") or "").startswith(
+        "background_rollup_failed: RuntimeError: summary failed"
+    )
+    assert str(writes[-1].get("last_background_error_at") or "").strip()

@@ -213,12 +213,16 @@ async def _run_background_rollup_for_conversation(
             return "skipped_no_db"
 
         con = _sqlite_connect(db_path)
+        rollup_error: Exception | None = None
         try:
             con.row_factory = sqlite3.Row
             _sqlite_ensure_conversation_state_schema(con)
             rolling_cursor_id = state_row.get("rolling_summary_cursor_id")
             tail = _message_log.read_tail_after_message_id(con, cid, rolling_cursor_id)
             if len(tail) < 2:
+                return "skipped_short_tail"
+            tail_end_row_id = int(tail[-1].get("id") or 0)
+            if tail_end_row_id <= 0:
                 return "skipped_short_tail"
 
             sleep_history: list[dict[str, Any]] = []
@@ -263,20 +267,31 @@ async def _run_background_rollup_for_conversation(
                 prior_summary=prior_summary,
                 messages=summary_input,
             )
-            latest_row_id = _message_log.last_message_row_id(con, cid)
-            if latest_row_id is None:
-                return "skipped_empty_after_check"
             now_iso = datetime.now(UTC).isoformat()
             con.execute(
                 "UPDATE conversations SET rolling_summary = ?, rolling_summary_cursor_id = ?, "
                 "rolling_summary_updated_at = ?, updated_at = ? WHERE conversation_id = ?",
-                (new_summary, int(latest_row_id), now_iso, now_iso, cid),
+                (new_summary, tail_end_row_id, now_iso, now_iso, cid),
             )
-            _message_log.delete_messages_through_id(con, cid, latest_row_id)
+            _message_log.delete_messages_through_id(con, cid, tail_end_row_id)
             con.commit()
             return "rolled_up"
+        except Exception as exc:
+            rollup_error = exc
+            raise
         finally:
             con.close()
+            if rollup_error is not None:
+                try:
+                    _set_background_error(
+                        cid,
+                        soul_id=sid,
+                        user_id=uid,
+                        code="background_rollup_failed",
+                        detail=f"{type(rollup_error).__name__}: {str(rollup_error)[:220]}",
+                    )
+                except Exception:
+                    logger.exception("failed to record background rollup error for %s", cid)
 
 
 def _queue_background_rollup_task(
@@ -301,8 +316,13 @@ def _queue_background_rollup_task(
     )
     _BACKGROUND_TASKS.add(task)
     def _on_done(done_task: asyncio.Task) -> None:
-        _BACKGROUND_TASKS.discard(done_task)
-        _clear_inflight(_BACKGROUND_ROLLUP_INFLIGHT, marker)
+        try:
+            done_task.result()
+        except Exception:
+            logger.exception("background rollup task failed for %s", marker)
+        finally:
+            _BACKGROUND_TASKS.discard(done_task)
+            _clear_inflight(_BACKGROUND_ROLLUP_INFLIGHT, marker)
     task.add_done_callback(_on_done)
 
 
