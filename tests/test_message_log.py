@@ -253,7 +253,7 @@ def test_read_all_tails_falls_back_to_recent_when_unmemorized_tail_empty() -> No
         con.close()
 
 
-def test_read_all_tails_prefers_unmemorized_tail_over_recent_fallback() -> None:
+def test_read_all_tails_backfills_short_unmemorized_tail_when_history_is_short() -> None:
     con = _con()
     try:
         con.execute(
@@ -276,7 +276,30 @@ def test_read_all_tails_prefers_unmemorized_tail_over_recent_fallback() -> None:
         ) == 4
 
         merged = message_log.read_all_tails(con, exclude_conversation_id="current")
-        assert [m["content"] for m in merged] == ["three", "four"]
+        assert [m["content"] for m in merged] == ["one", "two", "three", "four"]
+    finally:
+        con.close()
+
+
+def test_read_all_tails_backfills_short_unmemorized_tail_to_floor() -> None:
+    con = _con()
+    try:
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("current", 0),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("c5-floor", 6, "2026-05-08T00:00:00+00:00"),
+        )
+        assert message_log.append_messages(
+            con,
+            "c5-floor",
+            [{"role": "user", "content": f"msg-{i}"} for i in range(10)],
+        ) == 10
+
+        merged = message_log.read_all_tails(con, exclude_conversation_id="current")
+        assert [m["content"] for m in merged] == [f"msg-{i}" for i in range(2, 10)]
     finally:
         con.close()
 

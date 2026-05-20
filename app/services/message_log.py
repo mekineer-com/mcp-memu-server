@@ -339,9 +339,9 @@ def read_all_tails(
 
     Uses each conversation's digest_cursor from the conversations table as the boundary.
     Excludes the current conversation (its history comes fresh from the payload).
-    If a conversation has no unmemorized tail, falls back to recent messages so
-    cross-conversation context does not disappear solely due to cursor drift or
-    full memorization.
+    If a conversation has fewer than recent_fallback_per_conversation unmemorized
+    messages, backfills from recent messages to that floor so context continuity
+    is preserved after memorize runs.
     If max_messages > 0, returns only the most recent max_messages entries.
     Default behavior is uncapped so full unmemorized tails are preserved.
     """
@@ -361,20 +361,21 @@ def read_all_tails(
         if tail:
             for msg in tail:
                 msg["conversation_id"] = canonical_cid
-        if not tail and recent_fallback_per_conversation > 0:
+        if len(tail) < recent_fallback_per_conversation and recent_fallback_per_conversation > 0:
             recent = read_recent(con, cid, limit=recent_fallback_per_conversation)
-            tail = [
-                {
-                    "role": msg.get("role"),
-                    "speaker": msg.get("name"),
-                    "chat_name": msg.get("chat_name"),
-                    "content": msg.get("content"),
-                    "source_label": msg.get("source_label"),
-                    "received_at": msg.get("received_at"),
-                    "conversation_id": canonical_cid,
-                }
-                for msg in recent
-            ]
+            if len(recent) > len(tail):
+                tail = [
+                    {
+                        "role": msg.get("role"),
+                        "speaker": msg.get("name"),
+                        "chat_name": msg.get("chat_name"),
+                        "content": msg.get("content"),
+                        "source_label": msg.get("source_label"),
+                        "received_at": msg.get("received_at"),
+                        "conversation_id": canonical_cid,
+                    }
+                    for msg in recent
+                ]
         all_messages.extend(tail)
 
     all_messages.sort(key=lambda m: m.get("received_at") or "")
