@@ -418,6 +418,7 @@ def test_apply_turn_history_window_backfills_from_db_when_available(tmp_path: Pa
                 conversation_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 speaker TEXT,
+                chat_name TEXT,
                 content TEXT NOT NULL,
                 source_label TEXT,
                 received_at TEXT
@@ -467,6 +468,7 @@ def test_apply_turn_history_window_backfills_from_whatsapp_alias_ids(tmp_path: P
                 conversation_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 speaker TEXT,
+                chat_name TEXT,
                 content TEXT NOT NULL,
                 source_label TEXT,
                 received_at TEXT

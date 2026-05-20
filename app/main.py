@@ -2859,6 +2859,7 @@ async def conversation_append_message(
         raise HTTPException(status_code=400, detail="message is required")
     user_name = _pick_str(safe, "user_name") or ""
     role = (_pick_str(safe, "role") or "user").strip()
+    chat_name_for_append = _pick_str(safe, "chat_name") or None
     memorize_chat_raw = safe.get("memorize_chat")
     memorize_chat = memorize_chat_raw if isinstance(memorize_chat_raw, bool) else None
 
@@ -2884,7 +2885,7 @@ async def conversation_append_message(
         msg: dict[str, Any] = {"role": role, "content": message}
         if user_name:
             msg["name"] = user_name
-        appended = _message_log.append_messages(_con, cid, [msg])
+        appended = _message_log.append_messages(_con, cid, [msg], chat_name=chat_name_for_append)
         _con.commit()
     finally:
         _con.close()
@@ -3090,6 +3091,7 @@ async def conversation_turn(
                 response_text = ""
         if not dry_run and response_text and conversation_state_path is not None and conversation_state_path.exists():
             user_name = str(safe.get("user_name") or "").strip()
+            chat_name_for_append = str(safe.get("chat_name") or "").strip() or None
             current_user_msg: dict[str, Any] = {"role": "user", "content": message}
             if user_name:
                 current_user_msg["name"] = user_name
@@ -3104,6 +3106,7 @@ async def conversation_turn(
                         current_user_msg,
                         {"role": "assistant", "name": soul_id, "content": response_text},
                     ],
+                    chat_name=chat_name_for_append,
                 )
                 _con.commit()
             finally:

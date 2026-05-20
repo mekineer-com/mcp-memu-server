@@ -140,12 +140,16 @@ CREATE TABLE IF NOT EXISTS messages (
     conversation_id TEXT NOT NULL,
     role TEXT NOT NULL,
     speaker TEXT,
+    chat_name TEXT,
     content TEXT NOT NULL,
     source_label TEXT,
     received_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )
 """
     )
+    message_cols = set(sqlite_table_columns(con, "messages"))
+    if "chat_name" not in message_cols:
+        con.execute("ALTER TABLE messages ADD COLUMN chat_name TEXT")
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_messages_conv_time ON messages(conversation_id, received_at)"
     )

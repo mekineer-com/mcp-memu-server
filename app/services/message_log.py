@@ -83,12 +83,14 @@ def append_messages(
     conversation_id: str,
     messages: list[dict[str, Any]],
     source_label: str | None = None,
+    chat_name: str | None = None,
 ) -> int:
     """Append messages not already stored. Returns count of new messages appended."""
     if not messages:
         return 0
 
     label = source_label or derive_source_label(conversation_id)
+    chat_name_value = str(chat_name or "").strip() or None
     now_iso = datetime.now(UTC).isoformat()
     incoming_rows: list[tuple[str, str | None, str]] = []
     for msg in messages:
@@ -109,44 +111,42 @@ def append_messages(
 
     new_rows_data: list[tuple[str, str | None, str]] = []
 
-    # Fallback: incremental payloads (latest message(s) only).
     # Policy: exact tail overlap is treated as duplicate noise and suppressed.
     # This is intentional for retry/replay-prone paths (including listen_only
     # message ingestion) where duplicate rows hurt context quality.
-    if not new_rows_data:
-        recent_rows = con.execute(
-            "SELECT role, speaker, content FROM messages "
-            "WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
-            (conversation_id, len(incoming_rows)),
-        ).fetchall()
-        existing_tail = list(reversed([
-            _normalize_row_for_overlap(
-                conversation_id,
-                str(row["role"] or "").strip(),
-                str(row["speaker"] or "").strip() or None,
-                str(row["content"] or "").strip(),
-            )
-            for row in recent_rows
-        ]))
-        max_overlap = min(len(existing_tail), len(incoming_rows))
-        overlap = 0
-        for k in range(max_overlap, 0, -1):
-            if existing_tail[-k:] == incoming_rows[:k]:
-                overlap = k
-                break
-        new_rows_data = incoming_rows[overlap:]
+    recent_rows = con.execute(
+        "SELECT role, speaker, content FROM messages "
+        "WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+        (conversation_id, len(incoming_rows)),
+    ).fetchall()
+    existing_tail = list(reversed([
+        _normalize_row_for_overlap(
+            conversation_id,
+            str(row["role"] or "").strip(),
+            str(row["speaker"] or "").strip() or None,
+            str(row["content"] or "").strip(),
+        )
+        for row in recent_rows
+    ]))
+    max_overlap = min(len(existing_tail), len(incoming_rows))
+    overlap = 0
+    for k in range(max_overlap, 0, -1):
+        if existing_tail[-k:] == incoming_rows[:k]:
+            overlap = k
+            break
+    new_rows_data = incoming_rows[overlap:]
 
     if not new_rows_data:
         return 0
 
     rows = [
-        (conversation_id, role, speaker, content, label, now_iso)
+        (conversation_id, role, speaker, chat_name_value, content, label, now_iso)
         for role, speaker, content in new_rows_data
     ]
 
     con.executemany(
-        "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO messages (conversation_id, role, speaker, chat_name, content, source_label, received_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
         rows,
     )
     return len(rows)
@@ -159,7 +159,7 @@ def read_tail(
 ) -> list[dict[str, Any]]:
     """Read messages for a conversation after the given cursor (message count offset)."""
     rows = con.execute(
-        "SELECT role, speaker, content, source_label, received_at FROM messages "
+        "SELECT role, speaker, chat_name, content, source_label, received_at FROM messages "
         "WHERE conversation_id = ? ORDER BY id ASC LIMIT -1 OFFSET ?",
         (conversation_id, after_cursor),
     ).fetchall()
@@ -167,6 +167,7 @@ def read_tail(
         {
             "role": row["role"],
             "speaker": row["speaker"],
+            "chat_name": row["chat_name"],
             "content": row["content"],
             "source_label": row["source_label"],
             "received_at": row["received_at"],
@@ -183,7 +184,7 @@ def read_tail_after_message_id(
     """Read messages for a conversation after a message row-id boundary."""
     cursor_id = int(after_message_id or 0)
     rows = con.execute(
-        "SELECT id, role, speaker, content, source_label, received_at FROM messages "
+        "SELECT id, role, speaker, chat_name, content, source_label, received_at FROM messages "
         "WHERE conversation_id = ? AND id > ? ORDER BY id ASC",
         (conversation_id, cursor_id),
     ).fetchall()
@@ -192,6 +193,7 @@ def read_tail_after_message_id(
             "id": int(row["id"]),
             "role": row["role"],
             "speaker": row["speaker"],
+            "chat_name": row["chat_name"],
             "content": row["content"],
             "source_label": row["source_label"],
             "received_at": row["received_at"],
@@ -365,6 +367,7 @@ def read_all_tails(
                 {
                     "role": msg.get("role"),
                     "speaker": msg.get("name"),
+                    "chat_name": msg.get("chat_name"),
                     "content": msg.get("content"),
                     "source_label": msg.get("source_label"),
                     "received_at": msg.get("received_at"),
@@ -456,7 +459,7 @@ def read_recent(
 ) -> list[dict[str, Any]]:
     """Read the most recent `limit` messages for a conversation (memorized + tail)."""
     rows = con.execute(
-        "SELECT role, speaker, content, source_label, received_at FROM messages "
+        "SELECT role, speaker, chat_name, content, source_label, received_at FROM messages "
         "WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
         (conversation_id, limit),
     ).fetchall()
@@ -464,6 +467,7 @@ def read_recent(
         {
             "role": row["role"],
             "name": row["speaker"],
+            "chat_name": row["chat_name"],
             "content": row["content"],
             "source_label": row["source_label"],
             "received_at": row["received_at"],
@@ -484,7 +488,7 @@ def read_recent_for_conversation_ids(
         return read_recent(con, ids[0], limit)
     placeholders = ",".join("?" for _ in ids)
     rows = con.execute(
-        "SELECT role, speaker, content, source_label, received_at FROM messages "
+        "SELECT role, speaker, chat_name, content, source_label, received_at FROM messages "
         f"WHERE conversation_id IN ({placeholders}) ORDER BY id DESC LIMIT ?",
         [*ids, limit],
     ).fetchall()
@@ -492,6 +496,7 @@ def read_recent_for_conversation_ids(
         {
             "role": row["role"],
             "name": row["speaker"],
+            "chat_name": row["chat_name"],
             "content": row["content"],
             "source_label": row["source_label"],
             "received_at": row["received_at"],
@@ -579,35 +584,11 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
 
         return min(candidates, key=_score)
 
-    def _friendly_sillytavern_label(key: str, *, multiple: bool) -> str:
-        raw = str(key or "").strip()
-        if not raw or raw == "sillytavern":
-            return "SillyTavern Chat"
-        if raw.startswith("integrity:"):
-            short = str(raw.split(":", 1)[1] or "").strip()[:8]
-            if multiple and short:
-                return f"SillyTavern Chat {short}"
-            return "SillyTavern Chat"
-        if raw.startswith("chat:"):
-            slug = str(raw.split(":", 1)[1] or "").strip()
-            if slug.lower().endswith(".chat"):
-                slug = slug[:-5]
-            if not slug:
-                return "SillyTavern Chat"
-            return f"SillyTavern Chat {slug}" if multiple else slug
-        if ":" in raw:
-            short = str(raw.split(":", 1)[1] or "").strip()[:8]
-            if multiple and short:
-                return f"SillyTavern Chat {short}"
-            return "SillyTavern Chat"
-        return raw
-
     def _conversation_heading(
         kind: str,
         key: str,
         names: dict[str, str],
-        *,
-        multiple_sillytavern_conversations: bool,
+        chat_name: str | None,
     ) -> str:
         if kind == "whatsapp_group":
             pretty = _lookup_whatsapp_name(key, names) or key or "group"
@@ -616,10 +597,7 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
             pretty = _lookup_whatsapp_name(key, names) or key or "contact"
             return f"[dm][{pretty}]"
         if kind == "sillytavern_dm":
-            pretty = _friendly_sillytavern_label(
-                key,
-                multiple=multiple_sillytavern_conversations,
-            )
+            pretty = (chat_name or "").strip() or key or "sillytavern"
             return f"[dm][{pretty}]"
         return f"[dm][{key or 'sillytavern'}]"
 
@@ -636,25 +614,20 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
         by_conversation.setdefault(cid, []).append(msg)
 
     dir_names = _load_whatsapp_directory_names()
-    silly_conversation_count = sum(
-        1
-        for conversation_id in by_conversation
-        if _conversation_kind_and_key(conversation_id)[0] == "sillytavern_dm"
-    )
-    multiple_sillytavern_conversations = silly_conversation_count > 1
 
     sections: dict[str, list[str]] = {}
     for cid, rows in by_conversation.items():
         kind, key = _conversation_kind_and_key(cid)
         section_key = _section_title(kind)
         blocks = sections.setdefault(section_key, [])
+        chat_name = ""
+        for msg in reversed(rows):
+            candidate = str(msg.get("chat_name") or "").strip()
+            if candidate:
+                chat_name = candidate
+                break
         conv_lines: list[str] = [
-            _conversation_heading(
-                kind,
-                key,
-                dir_names,
-                multiple_sillytavern_conversations=multiple_sillytavern_conversations,
-            )
+            _conversation_heading(kind, key, dir_names, chat_name or None)
         ]
         last_time_label: str | None = None
         # Legacy alias splits + overlap drift can produce repeated rows for the

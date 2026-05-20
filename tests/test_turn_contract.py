@@ -129,11 +129,12 @@ def test_build_turn_prompt_integrity_id_uses_sillytavern_section_not_other():
         all_categories_summary=None,
         memory_cache=None,
         intentions_active=None,
+        chat_label="[dm][Echo]",
         conversation_id="integrity:dc7b08fa-b7a9-4ccc-890c-8dc7eea5082e",
     )
     assert "## My SillyTavern Conversations:" in prompt
     assert "## Other Conversations:" not in prompt
-    assert "[dm][SillyTavern Chat] ← current chat" in prompt
+    assert "[dm][Echo] ← current chat" in prompt
     assert "integrity:dc7b08fa-b7a9-4ccc-890c-8dc7eea5082e" not in prompt
 
 
