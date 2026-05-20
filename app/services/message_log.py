@@ -230,9 +230,8 @@ def delete_messages_through_id(
     return int(cur.rowcount or 0)
 
 
-MAX_CROSS_TAIL_MESSAGES = 50
+MAX_CROSS_TAIL_MESSAGES = 0
 DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES = 8
-MAX_CROSS_TAIL_MESSAGES_PER_CONVERSATION = 8
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:
@@ -343,7 +342,8 @@ def read_all_tails(
     If a conversation has no unmemorized tail, falls back to recent messages so
     cross-conversation context does not disappear solely due to cursor drift or
     full memorization.
-    Capped at max_messages most recent to bound prompt size.
+    If max_messages > 0, returns only the most recent max_messages entries.
+    Default behavior is uncapped so full unmemorized tails are preserved.
     """
     excluded_ids = set(conversation_aliases(exclude_conversation_id or ""))
     cursor_rows = con.execute(
@@ -375,15 +375,12 @@ def read_all_tails(
                 }
                 for msg in recent
             ]
-        if (
-            MAX_CROSS_TAIL_MESSAGES_PER_CONVERSATION > 0
-            and len(tail) > MAX_CROSS_TAIL_MESSAGES_PER_CONVERSATION
-        ):
-            tail = tail[-MAX_CROSS_TAIL_MESSAGES_PER_CONVERSATION:]
         all_messages.extend(tail)
 
     all_messages.sort(key=lambda m: m.get("received_at") or "")
-    return all_messages[-max_messages:]
+    if max_messages > 0:
+        return all_messages[-max_messages:]
+    return all_messages
 
 
 def read_all_tails_for_memorize(

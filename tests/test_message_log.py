@@ -308,7 +308,7 @@ def test_read_all_tails_never_memorized_includes_first_message_without_fallback(
         con.close()
 
 
-def test_read_all_tails_caps_per_conversation_to_preserve_cross_chat_mix() -> None:
+def test_read_all_tails_keeps_full_unmemorized_tail_per_conversation() -> None:
     con = _con()
     try:
         con.execute(
@@ -348,8 +348,28 @@ def test_read_all_tails_caps_per_conversation_to_preserve_cross_chat_mix() -> No
             cid = str(row.get("conversation_id") or "")
             by_cid[cid] = by_cid.get(cid, 0) + 1
 
-        assert by_cid["whatsapp:dm:dominant"] == 8
+        assert by_cid["whatsapp:dm:dominant"] == 20
         assert by_cid["whatsapp:group:small@g.us"] == 2
+    finally:
+        con.close()
+
+
+def test_read_all_tails_fallback_remains_limited_per_conversation() -> None:
+    con = _con()
+    try:
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("current", 0),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("c7", 999, "2026-05-08T00:00:00+00:00"),
+        )
+        rows = [{"role": "user", "content": f"msg-{i}"} for i in range(20)]
+        assert message_log.append_messages(con, "c7", rows) == 20
+
+        merged = message_log.read_all_tails(con, exclude_conversation_id="current")
+        assert [m["content"] for m in merged] == [f"msg-{i}" for i in range(12, 20)]
     finally:
         con.close()
 
