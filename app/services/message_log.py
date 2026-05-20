@@ -630,10 +630,6 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
             _conversation_heading(kind, key, dir_names, chat_name or None)
         ]
         last_time_label: str | None = None
-        # Legacy alias splits + overlap drift can produce repeated rows for the
-        # same sender/text within one day bucket. Suppress duplicates in prompt
-        # rendering so cross-chat context stays semantically dense.
-        seen_day_lines: set[tuple[str, str, str]] = set()
         for msg in rows:
             time_label = format_relative_time_label(msg.get("received_at"))
             if time_label and time_label != last_time_label:
@@ -650,11 +646,6 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
                     speaker, content = parsed
             if not speaker:
                 speaker = role or "unknown"
-            day_bucket = time_label or "unknown-day"
-            dedupe_key = (day_bucket, speaker.strip().lower(), content.strip())
-            if dedupe_key in seen_day_lines:
-                continue
-            seen_day_lines.add(dedupe_key)
             conv_lines.append(f"[{speaker}]: {content}")
         blocks.append("\n".join(conv_lines))
 

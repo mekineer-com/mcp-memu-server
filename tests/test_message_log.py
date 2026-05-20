@@ -496,7 +496,7 @@ def test_format_merged_history_parses_legacy_group_prefix_at_render_time() -> No
     assert "[Raquel]: Going to the gym now." in rendered
 
 
-def test_format_merged_history_dedupes_same_day_duplicate_lines() -> None:
+def test_format_merged_history_preserves_same_day_duplicate_lines() -> None:
     rendered = message_log.format_merged_history(
         [
             {
@@ -518,7 +518,7 @@ def test_format_merged_history_dedupes_same_day_duplicate_lines() -> None:
         ]
     )
 
-    assert rendered.count("[Raquel]: Going to the gym now.") == 1
+    assert rendered.count("[Raquel]: Going to the gym now.") == 2
 
 
 def test_format_merged_history_uses_channel_directory_names(tmp_path, monkeypatch) -> None:
