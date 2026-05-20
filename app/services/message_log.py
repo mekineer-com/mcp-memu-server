@@ -579,7 +579,36 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
 
         return min(candidates, key=_score)
 
-    def _conversation_heading(kind: str, key: str, names: dict[str, str]) -> str:
+    def _friendly_sillytavern_label(key: str, *, multiple: bool) -> str:
+        raw = str(key or "").strip()
+        if not raw or raw == "sillytavern":
+            return "SillyTavern Chat"
+        if raw.startswith("integrity:"):
+            short = str(raw.split(":", 1)[1] or "").strip()[:8]
+            if multiple and short:
+                return f"SillyTavern Chat {short}"
+            return "SillyTavern Chat"
+        if raw.startswith("chat:"):
+            slug = str(raw.split(":", 1)[1] or "").strip()
+            if slug.lower().endswith(".chat"):
+                slug = slug[:-5]
+            if not slug:
+                return "SillyTavern Chat"
+            return f"SillyTavern Chat {slug}" if multiple else slug
+        if ":" in raw:
+            short = str(raw.split(":", 1)[1] or "").strip()[:8]
+            if multiple and short:
+                return f"SillyTavern Chat {short}"
+            return "SillyTavern Chat"
+        return raw
+
+    def _conversation_heading(
+        kind: str,
+        key: str,
+        names: dict[str, str],
+        *,
+        multiple_sillytavern_conversations: bool,
+    ) -> str:
         if kind == "whatsapp_group":
             pretty = _lookup_whatsapp_name(key, names) or key or "group"
             return f"[group][{pretty}]"
@@ -587,7 +616,10 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
             pretty = _lookup_whatsapp_name(key, names) or key or "contact"
             return f"[dm][{pretty}]"
         if kind == "sillytavern_dm":
-            pretty = key or "sillytavern"
+            pretty = _friendly_sillytavern_label(
+                key,
+                multiple=multiple_sillytavern_conversations,
+            )
             return f"[dm][{pretty}]"
         return f"[dm][{key or 'sillytavern'}]"
 
@@ -604,13 +636,26 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
         by_conversation.setdefault(cid, []).append(msg)
 
     dir_names = _load_whatsapp_directory_names()
+    silly_conversation_count = sum(
+        1
+        for conversation_id in by_conversation
+        if _conversation_kind_and_key(conversation_id)[0] == "sillytavern_dm"
+    )
+    multiple_sillytavern_conversations = silly_conversation_count > 1
 
     sections: dict[str, list[str]] = {}
     for cid, rows in by_conversation.items():
         kind, key = _conversation_kind_and_key(cid)
         section_key = _section_title(kind)
         blocks = sections.setdefault(section_key, [])
-        conv_lines: list[str] = [_conversation_heading(kind, key, dir_names)]
+        conv_lines: list[str] = [
+            _conversation_heading(
+                kind,
+                key,
+                dir_names,
+                multiple_sillytavern_conversations=multiple_sillytavern_conversations,
+            )
+        ]
         last_time_label: str | None = None
         # Legacy alias splits + overlap drift can produce repeated rows for the
         # same sender/text within one day bucket. Suppress duplicates in prompt

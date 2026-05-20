@@ -428,6 +428,13 @@ def _conversation_heading_from_conversation_id(conversation_id: str | None) -> s
     if cid.startswith("sillytavern:"):
         key = _text(cid[len("sillytavern:"):]) or "sillytavern"
         return f"[dm][{key}]"
+    if cid.startswith("integrity:"):
+        return "[dm][SillyTavern Chat]"
+    if cid.startswith("chat:"):
+        key = _text(cid[len("chat:"):])
+        if key.lower().endswith(".chat"):
+            key = key[:-5]
+        return f"[dm][{key or 'SillyTavern Chat'}]"
     if cid == "sillytavern":
         return "[dm][sillytavern]"
     return f"[dm][{cid or 'sillytavern'}]"

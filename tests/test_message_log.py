@@ -424,7 +424,7 @@ def test_format_merged_history_groups_sections_and_conversations(tmp_path, monke
     assert "[Marcos]: wa dm message" in rendered
 
 
-def test_format_merged_history_integrity_id_stays_in_sillytavern_section() -> None:
+def test_format_merged_history_integrity_id_renders_friendly_sillytavern_label() -> None:
     rendered = message_log.format_merged_history(
         [
             {
@@ -440,8 +440,35 @@ def test_format_merged_history_integrity_id_stays_in_sillytavern_section() -> No
 
     assert "## My SillyTavern Conversations:" in rendered
     assert "## Other Conversations:" not in rendered
-    assert "[dm][integrity:dc7b08fa-b7a9-4ccc-890c-8dc7eea5082e]" in rendered
+    assert "[dm][SillyTavern Chat]" in rendered
+    assert "integrity:dc7b08fa-b7a9-4ccc-890c-8dc7eea5082e" not in rendered
     assert "[Echo]: integrity id message" in rendered
+
+
+def test_format_merged_history_multiple_integrity_conversations_include_short_suffixes() -> None:
+    rendered = message_log.format_merged_history(
+        [
+            {
+                "conversation_id": "integrity:dc7b08fa-b7a9-4ccc-890c-8dc7eea5082e",
+                "source_label": "sillytavern",
+                "role": "assistant",
+                "speaker": "Echo",
+                "content": "first",
+                "received_at": "2026-05-08T11:00:00+00:00",
+            },
+            {
+                "conversation_id": "integrity:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "source_label": "sillytavern",
+                "role": "assistant",
+                "speaker": "Echo",
+                "content": "second",
+                "received_at": "2026-05-08T11:00:01+00:00",
+            },
+        ]
+    )
+
+    assert "[dm][SillyTavern Chat dc7b08fa]" in rendered
+    assert "[dm][SillyTavern Chat aaaaaaaa]" in rendered
 
 
 def test_derive_source_label_maps_integrity_and_chat_to_sillytavern() -> None:
