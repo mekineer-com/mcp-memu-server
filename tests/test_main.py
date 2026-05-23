@@ -969,7 +969,7 @@ async def test_conversation_turn_persists_assistant_message_for_cross_context(
     class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
             return (
-                '{"cache":null,"annulments":[],"inner_thought":"ok",'
+                '{"cache":null,"annulments":[],"rehearsal":"ok",'
                 '"response_target":"respond","response_peer":"Alice","response":"assistant says hi"}'
             )
 
@@ -1062,7 +1062,7 @@ async def test_conversation_turn_drops_response_when_peer_mismatches_chat_name(
             # Soul thinks she is responding to Alice, but the originating
             # chat is with Bob — the validator must drop the reply.
             return (
-                '{"cache":null,"annulments":[],"inner_thought":"answering Alice",'
+                '{"cache":null,"annulments":[],"rehearsal":"answering Alice",'
                 '"response_target":"respond","response_peer":"Alice",'
                 '"response":"hi Alice"}'
             )
@@ -1147,11 +1147,11 @@ async def test_conversation_turn_retries_once_on_parse_failure(
             self.calls += 1
             if self.calls == 1:
                 return (
-                    '{"cache":null,"annulments":[],"inner_thought":"first malformed"},"response_target":"respond",'
+                    '{"cache":null,"annulments":[],"rehearsal":"first malformed"},"response_target":"respond",'
                     '"response_peer":"Alice","response":"assistant says hi"}'
                 )
             return (
-                '{"cache":null,"annulments":[],"inner_thought":"retry good",'
+                '{"cache":null,"annulments":[],"rehearsal":"retry good",'
                 '"response_target":"respond","response_peer":"Alice","response":"assistant says hi"}'
             )
 
@@ -1219,7 +1219,7 @@ async def test_conversation_turn_rejects_respond_when_chat_name_missing(
     class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
             return (
-                '{"cache":null,"annulments":[],"inner_thought":"replying",'
+                '{"cache":null,"annulments":[],"rehearsal":"replying",'
                 '"response_target":"respond","response_peer":"Bob","response":"hi Bob"}'
             )
 
