@@ -879,7 +879,6 @@ async def _persist_annulment_memories(
     }
 
     summaries: list[str] = []
-    saliences: list[float] = []
     for row in annulments:
         intention_id = str(row.get("intention_id") or "").strip()
         status = str(row.get("status") or "").strip().lower()
@@ -891,7 +890,6 @@ async def _persist_annulment_memories(
         if note:
             summary = f"{summary}. Note: {note}"
         summaries.append(summary)
-        saliences.append(0.8 if status == "completed" else 0.4)
 
     if not summaries:
         return []
@@ -913,7 +911,6 @@ async def _persist_annulment_memories(
             speaker_id=f"soul:{soul_slug}",
             speaker_label=soul_label or "soul",
             happened_at=datetime.now(UTC),
-            reflection_salience=saliences[idx],
             conversation_id=conversation_id,
         )
         created_ids.append(str(item.id))
