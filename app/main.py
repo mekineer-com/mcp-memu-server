@@ -690,6 +690,38 @@ def _record_call(
         logger.debug("record_call telemetry append failed", exc_info=True)
 
 
+def _iter_exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None:
+        marker = id(current)
+        if marker in seen:
+            break
+        seen.add(marker)
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _timeout_cause(exc: BaseException) -> BaseException | None:
+    for err in _iter_exception_chain(exc):
+        if isinstance(err, (TimeoutError, asyncio.TimeoutError)):
+            return err
+        name = type(err).__name__.lower()
+        if "timeout" in name:
+            return err
+    return None
+
+
+def _raise_upstream_http_error(exc: Exception, *, op: str) -> None:
+    timeout = _timeout_cause(exc)
+    if timeout is not None:
+        detail = f"upstream timeout during {op}: {type(timeout).__name__}: {timeout}"
+        raise HTTPException(status_code=504, detail=detail) from exc
+    raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
+
+
 # ==== SQLite scope helpers ====
 
 def _sqlite_current_path(
@@ -2343,7 +2375,7 @@ async def retrieve(payload: dict[str, Any]):
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
         )
-        raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
+        _raise_upstream_http_error(exc, op="retrieve")
 
 
 @app.get("/timeline", operation_id="timeline")
@@ -2611,7 +2643,7 @@ async def conversation_retrieve(
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
         )
-        raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
+        _raise_upstream_http_error(exc, op="conversation.retrieve")
 
 
 # ---- Turn state helpers + conversation turn endpoints ----
@@ -3188,7 +3220,7 @@ async def conversation_turn(
             info={"conversationId": cid or None},
             error=f"{type(exc).__name__}: {exc}",
         )
-        raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
+        _raise_upstream_http_error(exc, op="conversation.turn")
 
 
 @app.post("/conversation/{conversation_id}/turn/undo", operation_id="conversation_turn_undo")
