@@ -1725,6 +1725,57 @@ def _slice_history_after_last_memorized_segment(
 TURN_HISTORY_WINDOW_MESSAGES = 8
 
 
+def _persist_sillytavern_history_tail(
+    *,
+    conversation_id: str,
+    user_id: str,
+    soul_id: str,
+    safe_payload: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> int:
+    if _message_log.derive_source_label(conversation_id) != "sillytavern":
+        return 0
+    if not history:
+        return 0
+
+    _, db_path = _write_conversation_state(
+        conversation_id,
+        soul_id=soul_id,
+        user_id=user_id,
+        updates={},
+    )
+
+    rows: list[dict[str, Any]] = []
+    for item in history:
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        role = str(item.get("role") or "user").strip() or "user"
+        msg: dict[str, Any] = {"role": role, "content": content}
+        speaker = str(item.get("name") or "").strip()
+        if speaker:
+            msg["name"] = speaker
+        rows.append(msg)
+    if not rows:
+        return 0
+
+    chat_name = _pick_str(safe_payload, "chat_name") or None
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
+        appended = _message_log.append_messages(
+            con,
+            conversation_id,
+            rows,
+            chat_name=chat_name,
+        )
+        con.commit()
+    finally:
+        con.close()
+    return int(appended)
+
+
 def _apply_turn_history_window(
     *,
     conversation_id: str,
@@ -2509,6 +2560,13 @@ async def conversation_retrieve(
         state_row: dict[str, Any] | None = None
         cross_tail: list[dict[str, Any]] = []
         if uid and soul_id and message.strip():
+            _persist_sillytavern_history_tail(
+                conversation_id=cid,
+                user_id=uid,
+                soul_id=soul_id,
+                safe_payload=safe,
+                history=history,
+            )
             state_row, _soul_card, _db_path = _load_turn_state_and_soul_card(
                 cid,
                 user_id=uid,
@@ -2519,9 +2577,10 @@ async def conversation_retrieve(
                 try:
                     _con.row_factory = sqlite3.Row
                     _sqlite_ensure_conversation_state_schema(_con)
-                    # Persistence of the current user message is deferred to
-                    # conversation_turn (paired with the assistant response) so
-                    # that aborted/inspected turns leave no orphan rows.
+                    # For non-ST channels, persistence of the current user
+                    # message is deferred to conversation_turn (paired with the
+                    # assistant response) so aborted/inspected turns do not
+                    # leave orphan rows.
                     cross_tail = _message_log.read_all_tails(_con, exclude_conversation_id=cid)
                 finally:
                     _con.close()

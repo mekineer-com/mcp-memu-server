@@ -883,6 +883,87 @@ async def test_conversation_retrieve_does_not_persist_current_user_message(
 
 
 @pytest.mark.asyncio
+async def test_conversation_retrieve_persists_sillytavern_history_tail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+    )
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo"},
+        "message": "latest",
+        "query": "latest",
+        "chat_name": "Echo",
+        "history": [
+            {"role": "user", "name": "Marcos", "content": "m1"},
+            {"role": "assistant", "name": "Echo", "content": "a1"},
+        ],
+        "queries": [{"role": "message", "content": {"text": "latest"}}],
+    }
+
+    out = await main.conversation_retrieve("integrity:chat-1", payload)
+    assert out["ok"] is True
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT role, speaker, chat_name, content FROM messages WHERE conversation_id = ? ORDER BY id ASC",
+            ("integrity:chat-1",),
+        ).fetchall()
+    finally:
+        con.close()
+    assert [(r["role"], r["speaker"], r["chat_name"], r["content"]) for r in rows] == [
+        ("user", "Marcos", "Echo", "m1"),
+        ("assistant", "Echo", "Echo", "a1"),
+    ]
+
+    payload2 = {
+        **payload,
+        "history": [
+            {"role": "user", "name": "Marcos", "content": "m1"},
+            {"role": "assistant", "name": "Echo", "content": "a1"},
+            {"role": "user", "name": "Marcos", "content": "m2"},
+        ],
+    }
+    out2 = await main.conversation_retrieve("integrity:chat-1", payload2)
+    assert out2["ok"] is True
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        rows_after = con.execute(
+            "SELECT role, speaker, content FROM messages WHERE conversation_id = ? ORDER BY id ASC",
+            ("integrity:chat-1",),
+        ).fetchall()
+    finally:
+        con.close()
+    assert [(r["role"], r["speaker"], r["content"]) for r in rows_after] == [
+        ("user", "Marcos", "m1"),
+        ("assistant", "Echo", "a1"),
+        ("user", "Marcos", "m2"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_conversation_retrieve_does_not_duplicate_preexisting_cross_query(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
