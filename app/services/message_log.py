@@ -32,20 +32,6 @@ def _looks_like_shared_group_conversation(conversation_id: str) -> bool:
     return ":group:" in cid or cid.endswith(":group")
 
 
-def _canonical_conversation_id(conversation_id: str) -> str:
-    cid = str(conversation_id or "").strip()
-    prefix = "whatsapp:dm:"
-    if not cid.startswith(prefix):
-        return cid
-    identifier = cid[len(prefix):]
-    aliases = _expand_whatsapp_alias_identifiers(identifier)
-    if not aliases:
-        normalized = _normalize_whatsapp_identifier(identifier)
-        return f"{prefix}{normalized}" if normalized else cid
-    canonical = sorted(aliases, key=lambda item: (len(item), item))[0]
-    return f"{prefix}{canonical}"
-
-
 def _normalize_row_for_overlap(
     conversation_id: str,
     role: str,
@@ -251,82 +237,11 @@ def _normalize_whatsapp_identifier(value: str) -> str:
     return normalized
 
 
-def _read_lid_mapping_value(path: Path) -> str:
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ""
-    if not isinstance(raw, str):
-        return ""
-    return _normalize_whatsapp_identifier(raw)
-
-
-def _load_whatsapp_creds_aliases(session_dir: Path) -> dict[str, str]:
-    creds_path = session_dir / "creds.json"
-    if not creds_path.exists():
-        return {}
-    try:
-        parsed = json.loads(creds_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    me = parsed.get("me") if isinstance(parsed, dict) else None
-    if not isinstance(me, dict):
-        return {}
-    phone_id = _normalize_whatsapp_identifier(me.get("id"))
-    lid_id = _normalize_whatsapp_identifier(me.get("lid"))
-    if not phone_id or not lid_id or phone_id == lid_id:
-        return {}
-    return {
-        phone_id: lid_id,
-        lid_id: phone_id,
-    }
-
-
-def _expand_whatsapp_alias_identifiers(identifier: str) -> set[str]:
-    normalized = _normalize_whatsapp_identifier(identifier)
-    if not normalized:
-        return set()
-
-    hermes_home = Path(os.getenv("HERMES_HOME") or "~/.hermes").expanduser().resolve()
-    session_dir = hermes_home / "whatsapp" / "session"
-    creds_aliases = _load_whatsapp_creds_aliases(session_dir)
-    resolved: set[str] = set()
-    queue = [normalized]
-    while queue:
-        current = queue.pop(0)
-        if not current or current in resolved:
-            continue
-        resolved.add(current)
-
-        for suffix in ("", "_reverse"):
-            mapping_path = session_dir / f"lid-mapping-{current}{suffix}.json"
-            if not mapping_path.exists():
-                continue
-            mapped = _read_lid_mapping_value(mapping_path)
-            if mapped and mapped not in resolved:
-                queue.append(mapped)
-
-        mapped_from_creds = creds_aliases.get(current, "")
-        if mapped_from_creds and mapped_from_creds not in resolved:
-            queue.append(mapped_from_creds)
-
-    return resolved
-
-
 def conversation_aliases(conversation_id: str) -> list[str]:
     cid = str(conversation_id or "").strip()
     if not cid:
         return []
-    prefix = "whatsapp:dm:"
-    if not cid.startswith(prefix):
-        return [cid]
-    identifier = cid[len(prefix):]
-    aliases = _expand_whatsapp_alias_identifiers(identifier) or {_normalize_whatsapp_identifier(identifier)}
-    out = {cid}
-    for alias in aliases:
-        if alias:
-            out.add(f"{prefix}{alias}")
-    return sorted(out, key=lambda item: (len(item), item))
+    return [cid]
 
 
 def read_all_tails(
@@ -345,102 +260,46 @@ def read_all_tails(
     If max_messages > 0, returns only the most recent max_messages entries.
     Default behavior is uncapped so full unmemorized tails are preserved.
     """
-    excluded_ids = set(conversation_aliases(exclude_conversation_id or ""))
+    excluded_id = str(exclude_conversation_id or "").strip()
     cursor_rows = con.execute(
         "SELECT conversation_id, digest_cursor, last_memorize_at FROM conversations"
     ).fetchall()
 
-    groups: dict[str, list[sqlite3.Row]] = {}
+    all_messages: list[dict[str, Any]] = []
     for row in cursor_rows:
         cid = str(row["conversation_id"])
-        if cid in excluded_ids:
+        if cid == excluded_id:
             continue
-        canonical_cid = _canonical_conversation_id(cid)
-        groups.setdefault(canonical_cid, []).append(row)
-
-    def _received_at_ts_ms(value: Any) -> int:
-        text = str(value or "").strip()
-        if not text:
-            return 0
-        try:
-            return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
-        except Exception:
-            return 0
-
-    all_messages: list[dict[str, Any]] = []
-    for canonical_cid, group_rows in groups.items():
-        group_ids = [str(row["conversation_id"]) for row in group_rows]
-        memorize_marks = [
-            str(row["last_memorize_at"]).strip()
-            for row in group_rows
-            if row["last_memorize_at"] and str(row["last_memorize_at"]).strip()
+        cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
+        tail = read_tail(con, cid, after_cursor=cursor + 1)
+        window = [
+            {
+                "role": msg.get("role"),
+                "speaker": msg.get("speaker") or msg.get("name"),
+                "chat_name": msg.get("chat_name"),
+                "content": msg.get("content"),
+                "source_label": msg.get("source_label"),
+                "received_at": msg.get("received_at"),
+                "conversation_id": cid,
+            }
+            for msg in tail
         ]
-        group_last_memorize_at = max(memorize_marks) if memorize_marks else ""
-
-        merged_tail: list[dict[str, Any]] = []
-        seen_tail_times: dict[tuple[str, str, str], list[int]] = {}
-        for row in group_rows:
-            cid = str(row["conversation_id"])
-            cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
-            tail = read_tail(con, cid, after_cursor=cursor + 1)
-            for msg in tail:
-                received_at = str(msg.get("received_at") or "")
-                if group_last_memorize_at and received_at and received_at <= group_last_memorize_at:
-                    continue
-                role = str(msg.get("role") or "")
-                speaker = str(msg.get("speaker") or msg.get("name") or "")
-                content = str(msg.get("content") or "")
-                dedupe_key = (role, speaker, content)
-                ts_ms = _received_at_ts_ms(received_at)
-                prior_times = seen_tail_times.get(dedupe_key, [])
-                if any(abs(ts_ms - prior) <= 2000 for prior in prior_times):
-                    continue
-                seen_tail_times.setdefault(dedupe_key, []).append(ts_ms)
-                merged_tail.append(
-                    {
-                        "role": msg.get("role"),
-                        "speaker": msg.get("speaker") or msg.get("name"),
-                        "chat_name": msg.get("chat_name"),
-                        "content": msg.get("content"),
-                        "source_label": msg.get("source_label"),
-                        "received_at": msg.get("received_at"),
-                        "conversation_id": canonical_cid,
-                    }
-                )
-
-        window = merged_tail
         if len(window) < recent_fallback_per_conversation and recent_fallback_per_conversation > 0:
-            recent = read_recent_for_conversation_ids(
-                con,
-                group_ids,
-                limit=recent_fallback_per_conversation,
-            )
-            recent_merged: list[dict[str, Any]] = []
-            seen_recent_times: dict[tuple[str, str, str], list[int]] = {}
-            for msg in recent:
-                received_at = str(msg.get("received_at") or "")
-                role = str(msg.get("role") or "")
-                speaker = str(msg.get("speaker") or msg.get("name") or "")
-                content = str(msg.get("content") or "")
-                dedupe_key = (role, speaker, content)
-                ts_ms = _received_at_ts_ms(received_at)
-                prior_times = seen_recent_times.get(dedupe_key, [])
-                if any(abs(ts_ms - prior) <= 2000 for prior in prior_times):
-                    continue
-                seen_recent_times.setdefault(dedupe_key, []).append(ts_ms)
-                recent_merged.append(
-                    {
-                        "role": msg.get("role"),
-                        "speaker": msg.get("speaker") or msg.get("name"),
-                        "chat_name": msg.get("chat_name"),
-                        "content": msg.get("content"),
-                        "source_label": msg.get("source_label"),
-                        "received_at": msg.get("received_at"),
-                        "conversation_id": canonical_cid,
-                    }
-                )
-            if len(recent_merged) > len(window):
-                window = recent_merged
+            recent = read_recent(con, cid, limit=recent_fallback_per_conversation)
+            recent_window = [
+                {
+                    "role": msg.get("role"),
+                    "speaker": msg.get("speaker") or msg.get("name"),
+                    "chat_name": msg.get("chat_name"),
+                    "content": msg.get("content"),
+                    "source_label": msg.get("source_label"),
+                    "received_at": msg.get("received_at"),
+                    "conversation_id": cid,
+                }
+                for msg in recent
+            ]
+            if len(recent_window) > len(window):
+                window = recent_window
 
         all_messages.extend(window)
 
@@ -650,11 +509,6 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
             _push(key)
         if key_norm:
             _push(key_norm)
-
-        for alias in sorted(_expand_whatsapp_alias_identifiers(key_norm), key=lambda item: (len(item), item)):
-            _push(alias)
-            _push(f"{alias}@lid")
-            _push(f"{alias}@s.whatsapp.net")
 
         if not candidates:
             return ""
