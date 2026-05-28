@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import UTC, datetime
 
 from app.db import sqlite_ensure_conversation_state_schema
 from app.services import message_log
@@ -937,5 +938,135 @@ def test_read_all_tails_excludes_current_whatsapp_aliases(tmp_path, monkeypatch)
             max_messages=50,
         )
         assert merged == []
+    finally:
+        con.close()
+
+
+def test_read_all_tails_whatsapp_alias_dedupes_identical_dual_ingest_rows(tmp_path, monkeypatch) -> None:
+    session_dir = tmp_path / ".hermes" / "whatsapp" / "session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "creds.json").write_text(
+        json.dumps(
+            {
+                "me": {
+                    "id": "15133278228:13@s.whatsapp.net",
+                    "lid": "114628432556258:13@lid",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    con = _con()
+    try:
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("whatsapp:dm:114628432556258", 0),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("whatsapp:dm:15133278228", 0),
+        )
+        assert message_log.append_messages(
+            con,
+            "whatsapp:dm:114628432556258",
+            [{"role": "user", "name": "Marcos", "content": "same-row"}],
+            source_label="whatsapp:dm",
+        ) == 1
+        assert message_log.append_messages(
+            con,
+            "whatsapp:dm:15133278228",
+            [{"role": "user", "name": "Marcos", "content": "same-row"}],
+            source_label="whatsapp:dm",
+        ) == 1
+
+        merged = message_log.read_all_tails(
+            con,
+            max_messages=50,
+            recent_fallback_per_conversation=0,
+        )
+        assert len(merged) == 1
+        assert merged[0]["content"] == "same-row"
+        assert merged[0]["conversation_id"] == "whatsapp:dm:15133278228"
+    finally:
+        con.close()
+
+
+def test_read_all_tails_whatsapp_alias_divergent_cursors_do_not_resurface_old_rows(tmp_path, monkeypatch) -> None:
+    session_dir = tmp_path / ".hermes" / "whatsapp" / "session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "creds.json").write_text(
+        json.dumps(
+            {
+                "me": {
+                    "id": "15133278228:13@s.whatsapp.net",
+                    "lid": "114628432556258:13@lid",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    con = _con()
+    try:
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("whatsapp:dm:114628432556258", 0),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("whatsapp:dm:15133278228", 0),
+        )
+        assert message_log.append_messages(
+            con,
+            "whatsapp:dm:114628432556258",
+            [
+                {"role": "user", "name": "Marcos", "content": "old-1"},
+                {"role": "assistant", "name": "Echo", "content": "old-2"},
+            ],
+            source_label="whatsapp:dm",
+        ) == 2
+        assert message_log.append_messages(
+            con,
+            "whatsapp:dm:15133278228",
+            [
+                {"role": "user", "name": "Marcos", "content": "old-1"},
+                {"role": "assistant", "name": "Echo", "content": "old-2"},
+            ],
+            source_label="whatsapp:dm",
+        ) == 2
+
+        memorize_mark = datetime.now(UTC).isoformat()
+        con.execute(
+            "UPDATE conversations SET digest_cursor = ?, last_memorize_at = ? WHERE conversation_id = ?",
+            (1, memorize_mark, "whatsapp:dm:15133278228"),
+        )
+        con.execute(
+            "UPDATE conversations SET digest_cursor = ?, last_memorize_at = ? WHERE conversation_id = ?",
+            (1, None, "whatsapp:dm:114628432556258"),
+        )
+        con.commit()
+
+        assert message_log.append_messages(
+            con,
+            "whatsapp:dm:114628432556258",
+            [{"role": "user", "name": "Marcos", "content": "new-3"}],
+            source_label="whatsapp:dm",
+        ) == 1
+        assert message_log.append_messages(
+            con,
+            "whatsapp:dm:15133278228",
+            [{"role": "user", "name": "Marcos", "content": "new-3"}],
+            source_label="whatsapp:dm",
+        ) == 1
+
+        merged = message_log.read_all_tails(
+            con,
+            max_messages=50,
+            recent_fallback_per_conversation=0,
+        )
+        assert [row["content"] for row in merged] == ["new-3"]
     finally:
         con.close()

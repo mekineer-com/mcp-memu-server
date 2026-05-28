@@ -350,33 +350,99 @@ def read_all_tails(
         "SELECT conversation_id, digest_cursor, last_memorize_at FROM conversations"
     ).fetchall()
 
-    all_messages: list[dict[str, Any]] = []
+    groups: dict[str, list[sqlite3.Row]] = {}
     for row in cursor_rows:
         cid = str(row["conversation_id"])
         if cid in excluded_ids:
             continue
         canonical_cid = _canonical_conversation_id(cid)
-        cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
-        tail = read_tail(con, cid, after_cursor=cursor + 1)
-        if tail:
+        groups.setdefault(canonical_cid, []).append(row)
+
+    def _received_at_ts_ms(value: Any) -> int:
+        text = str(value or "").strip()
+        if not text:
+            return 0
+        try:
+            return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+        except Exception:
+            return 0
+
+    all_messages: list[dict[str, Any]] = []
+    for canonical_cid, group_rows in groups.items():
+        group_ids = [str(row["conversation_id"]) for row in group_rows]
+        memorize_marks = [
+            str(row["last_memorize_at"]).strip()
+            for row in group_rows
+            if row["last_memorize_at"] and str(row["last_memorize_at"]).strip()
+        ]
+        group_last_memorize_at = max(memorize_marks) if memorize_marks else ""
+
+        merged_tail: list[dict[str, Any]] = []
+        seen_tail_times: dict[tuple[str, str, str], list[int]] = {}
+        for row in group_rows:
+            cid = str(row["conversation_id"])
+            cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
+            tail = read_tail(con, cid, after_cursor=cursor + 1)
             for msg in tail:
-                msg["conversation_id"] = canonical_cid
-        if len(tail) < recent_fallback_per_conversation and recent_fallback_per_conversation > 0:
-            recent = read_recent(con, cid, limit=recent_fallback_per_conversation)
-            if len(recent) > len(tail):
-                tail = [
+                received_at = str(msg.get("received_at") or "")
+                if group_last_memorize_at and received_at and received_at <= group_last_memorize_at:
+                    continue
+                role = str(msg.get("role") or "")
+                speaker = str(msg.get("speaker") or msg.get("name") or "")
+                content = str(msg.get("content") or "")
+                dedupe_key = (role, speaker, content)
+                ts_ms = _received_at_ts_ms(received_at)
+                prior_times = seen_tail_times.get(dedupe_key, [])
+                if any(abs(ts_ms - prior) <= 2000 for prior in prior_times):
+                    continue
+                seen_tail_times.setdefault(dedupe_key, []).append(ts_ms)
+                merged_tail.append(
                     {
                         "role": msg.get("role"),
-                        "speaker": msg.get("name"),
+                        "speaker": msg.get("speaker") or msg.get("name"),
                         "chat_name": msg.get("chat_name"),
                         "content": msg.get("content"),
                         "source_label": msg.get("source_label"),
                         "received_at": msg.get("received_at"),
                         "conversation_id": canonical_cid,
                     }
-                    for msg in recent
-                ]
-        all_messages.extend(tail)
+                )
+
+        window = merged_tail
+        if len(window) < recent_fallback_per_conversation and recent_fallback_per_conversation > 0:
+            recent = read_recent_for_conversation_ids(
+                con,
+                group_ids,
+                limit=recent_fallback_per_conversation,
+            )
+            recent_merged: list[dict[str, Any]] = []
+            seen_recent_times: dict[tuple[str, str, str], list[int]] = {}
+            for msg in recent:
+                received_at = str(msg.get("received_at") or "")
+                role = str(msg.get("role") or "")
+                speaker = str(msg.get("speaker") or msg.get("name") or "")
+                content = str(msg.get("content") or "")
+                dedupe_key = (role, speaker, content)
+                ts_ms = _received_at_ts_ms(received_at)
+                prior_times = seen_recent_times.get(dedupe_key, [])
+                if any(abs(ts_ms - prior) <= 2000 for prior in prior_times):
+                    continue
+                seen_recent_times.setdefault(dedupe_key, []).append(ts_ms)
+                recent_merged.append(
+                    {
+                        "role": msg.get("role"),
+                        "speaker": msg.get("speaker") or msg.get("name"),
+                        "chat_name": msg.get("chat_name"),
+                        "content": msg.get("content"),
+                        "source_label": msg.get("source_label"),
+                        "received_at": msg.get("received_at"),
+                        "conversation_id": canonical_cid,
+                    }
+                )
+            if len(recent_merged) > len(window):
+                window = recent_merged
+
+        all_messages.extend(window)
 
     all_messages.sort(key=lambda m: m.get("received_at") or "")
     if max_messages > 0:
