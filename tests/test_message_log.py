@@ -607,6 +607,48 @@ def test_format_merged_history_uses_channel_directory_names(tmp_path, monkeypatc
     assert "[dm][Marcos]" in rendered
 
 
+def test_format_merged_history_group_heading_uses_group_name_cache(tmp_path, monkeypatch) -> None:
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "channel_directory.json").write_text(
+        json.dumps(
+            {
+                "platforms": {
+                    "whatsapp": [
+                        {
+                            "id": "18322935409-1579788049@g.us",
+                            "name": "18322935409-1579788049",
+                            "type": "group",
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (hermes_home / "whatsapp_group_names.json").write_text(
+        json.dumps({"18322935409-1579788049@g.us": "Familia"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    rendered = message_log.format_merged_history(
+        [
+            {
+                "conversation_id": "whatsapp:group:18322935409-1579788049@g.us",
+                "source_label": "whatsapp:group",
+                "role": "assistant",
+                "speaker": "Echo",
+                "content": "group hello",
+                "received_at": "2026-05-08T11:00:00+00:00",
+            }
+        ]
+    )
+
+    assert "[group][Familia]" in rendered
+    assert "[group][18322935409-1579788049]" not in rendered
+
+
 def test_format_merged_history_whatsapp_dm_heading_prefers_named_alias_over_numeric(tmp_path, monkeypatch) -> None:
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
