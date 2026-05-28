@@ -672,7 +672,7 @@ def test_format_merged_history_whatsapp_dm_heading_prefers_named_alias_over_nume
                 "platforms": {
                     "whatsapp": [
                         {"id": "15133278228@s.whatsapp.net", "name": "15133278228", "type": "dm"},
-                        {"id": "114628432556258@lid", "name": "Marcos", "type": "dm"},
+                        {"id": "15133278228@lid", "name": "Marcos", "type": "dm"},
                     ]
                 }
             }
@@ -835,37 +835,15 @@ def test_format_merged_history_whatsapp_dm_keeps_self_speaker_for_self_chat(tmp_
     assert "[Marcos]: self message" in rendered
 
 
-def test_conversation_aliases_includes_creds_self_lid_phone_pair(tmp_path, monkeypatch) -> None:
-    session_dir = tmp_path / ".hermes" / "whatsapp" / "session"
-    session_dir.mkdir(parents=True, exist_ok=True)
-    (session_dir / "creds.json").write_text(
-        json.dumps(
-            {
-                "me": {
-                    "id": "15133278228:13@s.whatsapp.net",
-                    "lid": "114628432556258:13@lid",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-
+def test_conversation_aliases_returns_only_exact_id() -> None:
     aliases = message_log.conversation_aliases("whatsapp:dm:114628432556258")
-    assert "whatsapp:dm:114628432556258" in aliases
-    assert "whatsapp:dm:15133278228" in aliases
+    assert aliases == ["whatsapp:dm:114628432556258"]
 
 
 def test_normalize_whatsapp_identifier_rejects_path_like_values() -> None:
     assert message_log._normalize_whatsapp_identifier("../etc/passwd") == ""
     assert message_log._normalize_whatsapp_identifier("..\\evil") == ""
     assert message_log._normalize_whatsapp_identifier("15133278228:13@s.whatsapp.net") == "15133278228"
-
-
-def test_read_lid_mapping_value_rejects_non_string_json(tmp_path) -> None:
-    mapping_file = tmp_path / "lid-mapping-test.json"
-    mapping_file.write_text(json.dumps({"phone": "15133278228"}), encoding="utf-8")
-    assert message_log._read_lid_mapping_value(mapping_file) == ""
 
 
 def test_read_recent_for_conversation_ids_merges_alias_rows() -> None:
@@ -893,22 +871,7 @@ def test_read_recent_for_conversation_ids_merges_alias_rows() -> None:
         con.close()
 
 
-def test_read_all_tails_excludes_current_whatsapp_aliases(tmp_path, monkeypatch) -> None:
-    session_dir = tmp_path / ".hermes" / "whatsapp" / "session"
-    session_dir.mkdir(parents=True, exist_ok=True)
-    (session_dir / "creds.json").write_text(
-        json.dumps(
-            {
-                "me": {
-                    "id": "15133278228:13@s.whatsapp.net",
-                    "lid": "114628432556258:13@lid",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-
+def test_read_all_tails_excludes_only_exact_current_conversation_id() -> None:
     con = _con()
     try:
         con.execute(
@@ -937,27 +900,14 @@ def test_read_all_tails_excludes_current_whatsapp_aliases(tmp_path, monkeypatch)
             exclude_conversation_id="whatsapp:dm:114628432556258",
             max_messages=50,
         )
-        assert merged == []
+        assert len(merged) == 1
+        assert merged[0]["content"] == "phone row"
+        assert merged[0]["conversation_id"] == "whatsapp:dm:15133278228"
     finally:
         con.close()
 
 
-def test_read_all_tails_whatsapp_alias_dedupes_identical_dual_ingest_rows(tmp_path, monkeypatch) -> None:
-    session_dir = tmp_path / ".hermes" / "whatsapp" / "session"
-    session_dir.mkdir(parents=True, exist_ok=True)
-    (session_dir / "creds.json").write_text(
-        json.dumps(
-            {
-                "me": {
-                    "id": "15133278228:13@s.whatsapp.net",
-                    "lid": "114628432556258:13@lid",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-
+def test_read_all_tails_does_not_merge_mixed_alias_conversation_rows() -> None:
     con = _con()
     try:
         con.execute(
@@ -986,29 +936,20 @@ def test_read_all_tails_whatsapp_alias_dedupes_identical_dual_ingest_rows(tmp_pa
             max_messages=50,
             recent_fallback_per_conversation=0,
         )
-        assert len(merged) == 1
-        assert merged[0]["content"] == "same-row"
-        assert merged[0]["conversation_id"] == "whatsapp:dm:15133278228"
+        assert len(merged) == 2
+        assert [row["content"] for row in merged] == ["same-row", "same-row"]
+        assert {
+            str(merged[0]["conversation_id"]),
+            str(merged[1]["conversation_id"]),
+        } == {
+            "whatsapp:dm:114628432556258",
+            "whatsapp:dm:15133278228",
+        }
     finally:
         con.close()
 
 
-def test_read_all_tails_whatsapp_alias_divergent_cursors_do_not_resurface_old_rows(tmp_path, monkeypatch) -> None:
-    session_dir = tmp_path / ".hermes" / "whatsapp" / "session"
-    session_dir.mkdir(parents=True, exist_ok=True)
-    (session_dir / "creds.json").write_text(
-        json.dumps(
-            {
-                "me": {
-                    "id": "15133278228:13@s.whatsapp.net",
-                    "lid": "114628432556258:13@lid",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-
+def test_read_all_tails_mixed_alias_rows_keep_independent_cursors() -> None:
     con = _con()
     try:
         con.execute(
@@ -1067,6 +1008,10 @@ def test_read_all_tails_whatsapp_alias_divergent_cursors_do_not_resurface_old_ro
             max_messages=50,
             recent_fallback_per_conversation=0,
         )
-        assert [row["content"] for row in merged] == ["new-3"]
+        contents = [str(row["content"]) for row in merged]
+        assert len(contents) == 4
+        assert contents.count("old-1") == 1
+        assert contents.count("old-2") == 1
+        assert contents.count("new-3") == 2
     finally:
         con.close()

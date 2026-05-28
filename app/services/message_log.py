@@ -509,6 +509,8 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
             _push(key)
         if key_norm:
             _push(key_norm)
+            _push(f"{key_norm}@s.whatsapp.net")
+            _push(f"{key_norm}@lid")
 
         if not candidates:
             return ""
