@@ -577,10 +577,12 @@ def _prompt_log_before(ctx: Any, request_view: Any) -> None:
         return
     op = getattr(ctx, "operation", None) or "-"
     step = getattr(ctx, "step_id", None) or "-"
+    req_id = str(getattr(ctx, "request_id", "") or "").strip() or "-"
     banner = f"===== {op.upper()} · {step} ".ljust(70, "=")
     _PROMPT_LOGGER.info(
-        "\n\n\n%s\n\n[PROMPT] op=%s step=%s model=%s",
+        "\n\n\n%s\n\n[PROMPT] req=%s op=%s step=%s model=%s",
         banner,
+        req_id,
         op,
         step,
         getattr(ctx, "model", None) or "-",
@@ -597,9 +599,21 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
         return
     meta = getattr(request_view, "metadata", None) or {}
     payload = meta.get("payload")
+    op = getattr(ctx, "operation", None) or "-"
+    step = getattr(ctx, "step_id", None) or "-"
+    req_id = str(getattr(ctx, "request_id", "") or "").strip() or "-"
+    model = getattr(ctx, "model", None) or "-"
     if isinstance(payload, dict):
         payload_log_text = json.dumps(payload, ensure_ascii=False, indent=2).replace("\\n", "\n")
-        _PROMPT_LOGGER.info("%s", payload_log_text)
+        _PROMPT_LOGGER.info(
+            "[PAYLOAD] req=%s op=%s step=%s kind=%s model=%s\n%s",
+            req_id,
+            op,
+            step,
+            kind or "-",
+            model,
+            payload_log_text,
+        )
     if not content:
         return
     finish_reason = getattr(usage, "finish_reason", None)
@@ -607,9 +621,10 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
     out_tok = getattr(usage, "output_tokens", None)
     total_tok = getattr(usage, "total_tokens", None)
     _PROMPT_LOGGER.info(
-        "[RESPONSE] op=%s step=%s elapsed=%.1fs finish_reason=%s tokens=in:%s/out:%s/total:%s content_chars=%s\n\n%s\n",
-        getattr(ctx, "operation", None) or "-",
-        getattr(ctx, "step_id", None) or "-",
+        "[RESPONSE] req=%s op=%s step=%s elapsed=%.1fs finish_reason=%s tokens=in:%s/out:%s/total:%s content_chars=%s\n\n%s\n",
+        req_id,
+        op,
+        step,
         elapsed,
         finish_reason,
         in_tok,

@@ -90,6 +90,35 @@ def _build_retrieve_soul_context_queries(
 ) -> list[dict[str, Any]]:
     memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
     intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
+    current_user_text = str(message or "").strip()
+    history_for_render = list(history or [])
+    last_user_name = ""
+    for item in history_for_render:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("role") or "").strip().lower() != "user":
+            continue
+        name = str(item.get("name") or "").strip()
+        if name:
+            last_user_name = name
+    last_history_item: dict[str, Any] | None = None
+    for item in reversed(history_for_render):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("content") or "").strip():
+            last_history_item = item
+            break
+    already_has_current_user_message = bool(
+        current_user_text
+        and isinstance(last_history_item, dict)
+        and str(last_history_item.get("role") or "").strip().lower() == "user"
+        and str(last_history_item.get("content") or "").strip() == current_user_text
+    )
+    if current_user_text and not already_has_current_user_message:
+        synthetic: dict[str, str] = {"role": "user", "content": current_user_text}
+        if last_user_name:
+            synthetic["name"] = last_user_name
+        history_for_render.append(synthetic)
 
     soul_context_for_retrieve: list[dict[str, Any]] = []
     identity_context = _build_retrieve_identity_context(soul_id, apimw=(identity_mode == "apimw"))
@@ -98,22 +127,22 @@ def _build_retrieve_soul_context_queries(
     all_cats_summary = str(state_row.get("all_categories_summary") or "").strip()
     if all_cats_summary:
         soul_context_for_retrieve.append({"role": "all_categories_summary", "content": {"text": all_cats_summary}})
-    cache_text = "\n".join(str(entry) for entry in (memory_cache or []))
-    if cache_text:
-        soul_context_for_retrieve.append({"role": "memory_cache", "content": {"text": cache_text}})
-    intentions_text = _format_intentions_for_prompt(intentions_active) if intentions_active else ""
-    if intentions_text and intentions_text.strip() != "(none)":
-        soul_context_for_retrieve.append({"role": "intentions", "content": {"text": intentions_text}})
 
     history_limit = (
         APIMW_RETRIEVE_REWRITE_HISTORY_MESSAGES
         if identity_mode == "apimw"
         else RETRIEVE_REWRITE_HISTORY_MESSAGES
     )
-    history_slice = history[-history_limit:] if history_limit > 0 else history
+    history_slice = history_for_render[-history_limit:] if history_limit > 0 else history_for_render
     history_text = _render_history(history_slice)
     if history_text:
         soul_context_for_retrieve.append({"role": "history", "content": {"text": history_text}})
+    cache_text = "\n".join(str(entry) for entry in (memory_cache or []))
+    if cache_text:
+        soul_context_for_retrieve.append({"role": "memory_cache", "content": {"text": cache_text}})
+    intentions_text = _format_intentions_for_prompt(intentions_active) if intentions_active else ""
+    if intentions_text and intentions_text.strip() != "(none)":
+        soul_context_for_retrieve.append({"role": "intentions", "content": {"text": intentions_text}})
 
     soul_context_for_retrieve.append({"role": "user", "content": {"text": message}})
     return soul_context_for_retrieve

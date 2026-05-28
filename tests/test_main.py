@@ -548,9 +548,10 @@ def test_build_retrieve_soul_context_queries_uses_last_8_messages_for_rewrite() 
     history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
     assert len(history_rows) == 1
     text = str((history_rows[0].get("content") or {}).get("text") or "")
-    assert "[user] msg 8" in text
+    assert "[user] current" in text
+    assert "[user] msg 9" in text
     assert "[user] msg 15" in text
-    assert "[user] msg 7" not in text
+    assert "[user] msg 8" not in text
 
 
 def test_build_retrieve_soul_context_queries_uses_last_12_messages_for_apimw_rewrite() -> None:
@@ -568,9 +569,30 @@ def test_build_retrieve_soul_context_queries_uses_last_12_messages_for_apimw_rew
     history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
     assert len(history_rows) == 1
     text = str((history_rows[0].get("content") or {}).get("text") or "")
-    assert "[user] msg 4" in text
+    assert "[user] current" in text
+    assert "[user] msg 5" in text
     assert "[user] msg 15" in text
-    assert "[user] msg 3" not in text
+    assert "[user] msg 4" not in text
+
+
+def test_build_retrieve_soul_context_queries_orders_chats_before_working_and_intentions() -> None:
+    history = [
+        {"message_id": "m1", "role": "user", "content": "msg 1"},
+        {"message_id": "m2", "role": "user", "content": "msg 2"},
+    ]
+    queries = main._build_retrieve_soul_context_queries(
+        soul_id="Echo",
+        message="current",
+        history=history,
+        state_row={
+            "memory_cache": ["cache entry"],
+            "intentions_active": {"items": [{"id": "relax", "text": "Relax"}]},
+        },
+    )
+    roles = [str(q.get("role")) for q in queries if isinstance(q, dict)]
+    assert roles.index("history") < roles.index("memory_cache")
+    assert roles.index("memory_cache") < roles.index("intentions")
+    assert roles[-1] == "user"
 
 
 @pytest.mark.asyncio
