@@ -448,16 +448,7 @@ def test_apply_turn_history_window_backfills_from_db_when_available(tmp_path: Pa
     assert [item["content"] for item in out] == [f"db {i}" for i in range(3, 11)]
 
 
-def test_apply_turn_history_window_backfills_from_whatsapp_alias_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    hermes_home = tmp_path / ".hermes"
-    session_dir = hermes_home / "whatsapp" / "session"
-    session_dir.mkdir(parents=True, exist_ok=True)
-    (session_dir / "creds.json").write_text(
-        '{"me":{"id":"15133278228:13@s.whatsapp.net","lid":"114628432556258:13@lid"}}',
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
+def test_apply_turn_history_window_does_not_backfill_from_whatsapp_alias_ids(tmp_path: Path):
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -497,7 +488,7 @@ def test_apply_turn_history_window_backfills_from_whatsapp_alias_ids(tmp_path: P
         db_path=db_path,
     )
 
-    assert [item["content"] for item in out] == ["lid-older", "phone-newer"]
+    assert [item["content"] for item in out] == ["payload only"]
 
 
 def test_slice_history_after_last_memorized_segment_reads_legacy_manifest_conversation_id_key(tmp_path: Path):
@@ -922,6 +913,11 @@ async def test_conversation_retrieve_persists_sillytavern_history_tail(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+    )
+    monkeypatch.setattr(
+        main,
+        "_write_conversation_state",
+        lambda *_a, **_k: ({}, db_path),
     )
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
