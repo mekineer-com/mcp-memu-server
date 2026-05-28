@@ -3192,12 +3192,17 @@ async def conversation_turn(
                     response_peer, chat_name,
                 )
                 response_text = ""
-        if not dry_run and response_text and conversation_state_path is not None and conversation_state_path.exists():
+        if not dry_run and conversation_state_path is not None and conversation_state_path.exists():
             user_name = str(safe.get("user_name") or "").strip()
             chat_name_for_append = str(safe.get("chat_name") or "").strip() or None
             current_user_msg: dict[str, Any] = {"role": "user", "content": message}
             if user_name:
                 current_user_msg["name"] = user_name
+            append_rows: list[dict[str, Any]] = [current_user_msg]
+            if response_text:
+                append_rows.append(
+                    {"role": "assistant", "name": soul_id, "content": response_text}
+                )
             _con = _sqlite_connect(conversation_state_path)
             try:
                 _con.row_factory = sqlite3.Row
@@ -3205,10 +3210,7 @@ async def conversation_turn(
                 turn_appended_count = _message_log.append_messages(
                     _con,
                     cid,
-                    [
-                        current_user_msg,
-                        {"role": "assistant", "name": soul_id, "content": response_text},
-                    ],
+                    append_rows,
                     chat_name=chat_name_for_append,
                 )
                 _con.commit()

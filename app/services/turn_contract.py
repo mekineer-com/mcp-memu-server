@@ -303,6 +303,23 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
 
     lines: list[str] = []
     item_terms: set[str] = set()
+    category_rows: list[tuple[str, str]] = []
+
+    categories = result.get("categories")
+    if isinstance(categories, list):
+        seen_categories: set[str] = set()
+        for category in categories[:8]:
+            if not isinstance(category, dict):
+                continue
+            category_name = _text(category.get("name") or category.get("id") or "category")
+            category_summary = _text(category.get("summary"))
+            category_key = _norm_text(f"{category_name}|{category_summary}")
+            if not category_key or category_key in seen_categories:
+                continue
+            seen_categories.add(category_key)
+            if category_summary:
+                item_terms.add(_norm_text(category_summary))
+            category_rows.append((category_name, category_summary))
 
     item_rows: list[tuple[dict[str, Any], str, str, str]] = []
     seen_items: set[str] = set()
@@ -325,7 +342,17 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
 
     main_item_ids = {_text(item.get("id")) for item, _, _, _ in item_rows if _text(item.get("id"))}
 
+    if category_rows:
+        lines.append("Categories:")
+        for category_name, category_summary in category_rows:
+            if category_summary:
+                lines.append(f"- [{category_name}] {category_summary}")
+            else:
+                lines.append(f"- [{category_name}]")
+
     if item_rows:
+        if lines:
+            lines.append("")
         lines.append("Memories:")
         legend = format_memory_legend({mt for _, mt, _, _ in item_rows})
         if legend:
@@ -564,7 +591,7 @@ def build_turn_prompt(
     all_categories_text = _text(rendered_all_categories)
     raw_all_categories_text = _text(all_categories_summary)
     if not raw_all_categories_text:
-        all_categories_text = "(no stored category summary yet)"
+        all_categories_text = ""
     elif all_categories_text == "(none)":
         all_categories_text = "(already covered by retrieved memory context this turn)"
     prior_text = _text(safe_prior)

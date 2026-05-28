@@ -1141,11 +1141,9 @@ async def test_conversation_turn_drops_response_when_peer_mismatches_chat_name(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When the soul declares response_target=respond with a peer that does not
-    match the originating chat's chat_name, the response is dropped (empty
-    response_text) and nothing is persisted. The contract validation lives in
-    conversation_turn so an unintended cross-chat reply never reaches a
-    downstream transport.
+    """When response_target=respond points to a mismatched peer, response text
+    is dropped while the originating user turn is still persisted for history
+    continuity.
     """
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
@@ -1220,8 +1218,8 @@ async def test_conversation_turn_drops_response_when_peer_mismatches_chat_name(
         ).fetchall()
     finally:
         con.close()
-    # Mismatch means no response text, which means no user+assistant pair.
-    assert rows == []
+    # Mismatch drops assistant response, but user row still persists.
+    assert [r["role"] for r in rows] == ["user"]
 
 
 @pytest.mark.asyncio
