@@ -817,9 +817,6 @@ def _write_conversation_state(
         soul_id=soul_id,
         user_id=user_id,
         updates=updates,
-        config=_CONFIG,
-        storage_status=_STORAGE_STATUS,
-        sqlite_dir_from_cfg=_sqlite_dir_from_cfg,
         write_conversation_state_impl=_write_conversation_state_impl,
         sqlite_current_path=_sqlite_current_path,
     )

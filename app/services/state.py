@@ -96,7 +96,6 @@ def write_conversation_state(
     conversation_id: str,
     *,
     sqlite_current_path: Callable[[str | None, str | None], Path | None],
-    sqlite_dir: Path,
     soul_id: str | None = None,
     user_id: str | None = None,
     updates: Mapping[str, Any] | None = None,

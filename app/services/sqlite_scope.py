@@ -75,17 +75,12 @@ def write_conversation_state(
     soul_id: str | None,
     user_id: str | None,
     updates: Mapping[str, Any] | None,
-    config: Mapping[str, Any],
-    storage_status: Mapping[str, Any],
-    sqlite_dir_from_cfg: Callable[[dict[str, Any], str | None], Path],
     write_conversation_state_impl: Callable[..., tuple[dict[str, Any], Path]],
     sqlite_current_path: Callable[[str | None, str | None], Path | None],
 ) -> tuple[dict[str, Any], Path]:
-    sqlite_dir = sqlite_dir_from_cfg(dict(config), str(storage_status.get("dsn") or ""))
     return write_conversation_state_impl(
         conversation_id,
         sqlite_current_path=sqlite_current_path,
-        sqlite_dir=sqlite_dir,
         soul_id=soul_id,
         user_id=user_id,
         updates=updates,
