@@ -944,6 +944,15 @@ async def memorize_endpoint(
                         continue
                     memorize_segments.append((resource_url, seg_messages, effective_start, seg_end))
 
+            if force and not tail and not is_cross and not memorize_segments:
+                if isinstance(merged, list) and merged:
+                    memorize_segments = [(resource_url, merged, 0, len(merged) - 1)]
+                else:
+                    return JSONResponse(
+                        status_code=200,
+                        content={"ok": True, "status": "nothing_to_memorize", "conversation_id": conversation_id},
+                    )
+
             expected_cursor = memorize_segments[-1][3] if memorize_segments else processed_cursor
             background_tasks.add_task(
                 endpoint_ctx.run_memorize_episodes,

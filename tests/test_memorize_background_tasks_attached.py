@@ -58,6 +58,7 @@ def test_memorize_background_task_runs(client: TestClient, monkeypatch: pytest.M
     body = resp.json()
     assert body.get("status") == "accepted"
     assert isinstance(body.get("segment_count"), int)
+    assert body.get("segment_count", 0) >= 1
 
     # TestClient blocks until BackgroundTasks complete, so by the time .post()
     # returns, our fake_run should have been invoked.
