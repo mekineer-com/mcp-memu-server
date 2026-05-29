@@ -403,6 +403,8 @@ def gather_consolidation_inputs(
                     return {"status": "skip", "reason": "interval_gate"}
 
         pending_episode_ids = deps.normalize_text_list(state.get("pending_episode_ids"))
+        if not pending_episode_ids:
+            return {"status": "skip", "reason": "no_pending_episodes"}
 
         category_rows = con.execute(
             """

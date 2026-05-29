@@ -4,6 +4,7 @@ from app.services.consolidation import _format_episode_block_for_prompt
 from app.services.consolidation import _remap_edges_with_memory_ids
 from app.services.consolidation import _parse_consolidation_xml
 from app.services.consolidation import run_consolidation_llm
+from app.services.consolidation import gather_consolidation_inputs
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
 from app.services.graph_edges import invalidate_memory_edges, write_memory_edges
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
@@ -11,6 +12,7 @@ from app.services.state import conversation_state_from_row, conversation_state_r
 import sqlite3
 import tempfile
 from pathlib import Path
+from datetime import timedelta
 
 
 def test_parse_consolidation_xml_edges_and_write_helpers() -> None:
@@ -351,6 +353,75 @@ def test_write_consolidation_outputs_clears_pending_episode_ids() -> None:
         )
 
         assert result["state"]["pending_episode_ids"] == []
+
+
+def test_gather_consolidation_inputs_skips_when_no_pending_episodes() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        db_path = tmp_dir / "soul.db"
+        con = sqlite3.connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            sqlite_ensure_conversation_state_schema(con)
+        finally:
+            con.close()
+
+        cid = "conv-skip-empty-pending"
+        soul_id = "SoulX"
+        user_id = "UserX"
+
+        write_conversation_state(
+            cid,
+            sqlite_current_path=lambda _user, _soul: db_path,
+            sqlite_dir=tmp_dir,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={"pending_episode_ids": []},
+        )
+
+        deps = ConsolidationDeps(
+            sqlite_current_path=lambda _user, _soul: db_path,
+            sqlite_ensure_nonempty=sqlite_ensure_nonempty,
+            sqlite_connect=sqlite_connect,
+            sqlite_ensure_conversation_state_schema=sqlite_ensure_conversation_state_schema,
+            conversation_state_row=conversation_state_row,
+            conversation_state_from_row=lambda row, **kw: conversation_state_from_row(row),
+            write_conversation_state=lambda conversation_id, *, soul_id, user_id, updates: write_conversation_state(
+                conversation_id,
+                sqlite_current_path=lambda _user, _soul: db_path,
+                sqlite_dir=tmp_dir,
+                soul_id=soul_id,
+                user_id=user_id,
+                updates=updates,
+            ),
+            get_storage_dir=lambda _cfg: tmp_dir,
+            config={},
+            find_chat_dir_for_conversation=lambda _a, _b, _c, _d: None,
+            read_list=lambda _p: [],
+            normalize_text_list=normalize_text_list,
+            json_to_db=json_to_db,
+        )
+
+        out = gather_consolidation_inputs(
+            deps,
+            conversation_id=cid,
+            soul_id=soul_id,
+            user_id=user_id,
+            force=False,
+            interval_days=7,
+            stale_after=timedelta(seconds=3600),
+        )
+        assert out == {"status": "skip", "reason": "no_pending_episodes"}
+
+        check_con = sqlite_connect(db_path)
+        try:
+            check_con.row_factory = sqlite3.Row
+            state = conversation_state_from_row(conversation_state_row(check_con, cid))
+        finally:
+            check_con.close()
+        assert state is not None
+        assert bool(state.get("consolidation_in_progress")) is False
+        assert state.get("consolidation_started_at") is None
 
 
 @pytest.mark.asyncio
