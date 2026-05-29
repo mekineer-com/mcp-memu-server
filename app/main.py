@@ -590,7 +590,11 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
     model = getattr(ctx, "model", None) or "-"
     banner = f"===== {str(op).upper()} · {step} ".ljust(70, "=")
     lines = [
+        "",
+        "",
+        "",
         banner,
+        "",
         f"[PROMPT] req={req_id} op={op} step={step} model={model}",
     ]
     if isinstance(payload, dict):
@@ -609,7 +613,7 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
         )
     )
     if content:
-        lines.append(content)
+        lines.extend(["", content, ""])
     _PROMPT_LOGGER.info(
         "\n".join(lines),
     )
@@ -629,7 +633,11 @@ def _prompt_log_on_error(ctx: Any, request_view: Any, error: Any, usage: Any) ->
     model = getattr(ctx, "model", None) or "-"
     banner = f"===== {str(op).upper()} · {step} ".ljust(70, "=")
     lines = [
+        "",
+        "",
+        "",
         banner,
+        "",
         f"[PROMPT] req={req_id} op={op} step={step} model={model}",
     ]
     if isinstance(payload, dict):
