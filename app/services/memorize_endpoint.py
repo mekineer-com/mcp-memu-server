@@ -236,6 +236,7 @@ async def run_memorize_episodes(
                 ctx.memorize_cancel.discard(progress_key)
                 ctx.logger.info("memorize cancelled during segment prep after segment %d/%d", _seg_idx, len(memorize_segments))
                 cancelled = True
+                terminal_result = "cancelled"
                 break
             segment_raw_text = json.dumps(segment_messages, ensure_ascii=False)
             first_ts = (
