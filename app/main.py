@@ -101,7 +101,6 @@ from app.services.state import (
     conversation_state_empty as _conversation_state_empty,
     conversation_state_from_row as _conversation_state_from_row_impl,
     conversation_state_row as _conversation_state_row,
-    find_conversation_state_across_dbs as _find_conversation_state_across_dbs_impl,
     write_conversation_state as _write_conversation_state_impl,
 )
 from app.services.turn_contract import (
@@ -823,16 +822,6 @@ def _write_conversation_state(
         sqlite_dir_from_cfg=_sqlite_dir_from_cfg,
         write_conversation_state_impl=_write_conversation_state_impl,
         sqlite_current_path=_sqlite_current_path,
-    )
-
-
-def _find_conversation_state_across_dbs(conversation_id: str) -> tuple[Path | None, dict[str, Any] | None]:
-    return _sqlite_scope.find_conversation_state_across_dbs(
-        conversation_id,
-        config=_CONFIG,
-        storage_status=_STORAGE_STATUS,
-        sqlite_dir_from_cfg=_sqlite_dir_from_cfg,
-        find_conversation_state_across_dbs_impl=_find_conversation_state_across_dbs_impl,
     )
 
 
@@ -2405,7 +2394,6 @@ async def get_conversation_state(
         sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
         conversation_state_from_row=_conversation_state_from_row,
         conversation_state_row=_conversation_state_row,
-        find_conversation_state_across_dbs=_find_conversation_state_across_dbs,
     )
 
 

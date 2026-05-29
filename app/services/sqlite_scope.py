@@ -90,15 +90,3 @@ def write_conversation_state(
         user_id=user_id,
         updates=updates,
     )
-
-
-def find_conversation_state_across_dbs(
-    conversation_id: str,
-    *,
-    config: Mapping[str, Any],
-    storage_status: Mapping[str, Any],
-    sqlite_dir_from_cfg: Callable[[dict[str, Any], str | None], Path],
-    find_conversation_state_across_dbs_impl: Callable[[str, Path], tuple[Path | None, dict[str, Any] | None]],
-) -> tuple[Path | None, dict[str, Any] | None]:
-    sqlite_dir = sqlite_dir_from_cfg(dict(config), str(storage_status.get("dsn") or ""))
-    return find_conversation_state_across_dbs_impl(conversation_id, sqlite_dir)

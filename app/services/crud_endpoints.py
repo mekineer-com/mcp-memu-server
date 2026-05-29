@@ -744,7 +744,6 @@ async def get_conversation_state_endpoint(
     sqlite_ensure_conversation_state_schema: Callable[[sqlite3.Connection], None],
     conversation_state_from_row: Callable[..., dict[str, Any] | None],
     conversation_state_row: Callable[[sqlite3.Connection, str], sqlite3.Row | None],
-    find_conversation_state_across_dbs: Callable[[str], tuple[Path | None, dict[str, Any] | None]],
 ) -> dict[str, Any]:
     cid = str(conversation_id or "").strip()
     if not cid:
@@ -769,7 +768,7 @@ async def get_conversation_state_endpoint(
         finally:
             con.close()
     else:
-        db_path, state_out = find_conversation_state_across_dbs(cid)
+        raise HTTPException(status_code=400, detail="soul_id query parameter is required")
 
     return {"ok": True, "state": state_out, "path": str(db_path) if db_path else None}
 

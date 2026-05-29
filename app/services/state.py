@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import sqlite3
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -19,9 +18,6 @@ from app.db import (
     sqlite_ensure_nonempty,
 )
 from app.services import soul_state as _soul_state
-
-logger = logging.getLogger(__name__)
-
 
 def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
@@ -96,31 +92,6 @@ def conversation_state_empty(
     }
 
 
-def sqlite_agent_db_paths(sqlite_dir: Path) -> list[Path]:
-    if not sqlite_dir.exists():
-        return []
-    return sorted([p.resolve() for p in sqlite_dir.glob("*.db") if p.is_file()])
-
-
-def find_conversation_state_across_dbs(
-    conversation_id: str,
-    sqlite_dir: Path,
-) -> tuple[Path | None, dict[str, Any] | None]:
-    for db_path in sqlite_agent_db_paths(sqlite_dir):
-        con = sqlite_connect(db_path)
-        try:
-            con.row_factory = sqlite3.Row
-            sqlite_ensure_conversation_state_schema(con)
-            row = conversation_state_row(con, conversation_id)
-            if row is not None:
-                return db_path, conversation_state_from_row(row)
-        except (sqlite3.Error, OSError, TypeError, ValueError) as exc:
-            logger.warning("Skipping unreadable sqlite db during state scan: %s (%s)", db_path, exc)
-        finally:
-            con.close()
-    return None, None
-
-
 def write_conversation_state(
     conversation_id: str,
     *,
@@ -140,9 +111,7 @@ def write_conversation_state(
     db_path: Path | None = sqlite_current_path(scoped_user, scoped_soul) if scoped_soul else None
     existing_state: dict[str, Any] | None = None
     if db_path is None:
-        db_path, existing_state = find_conversation_state_across_dbs(cid, sqlite_dir)
-        if db_path is None:
-            raise HTTPException(status_code=400, detail="soul_id is required when creating new conversation state")
+        raise HTTPException(status_code=400, detail="soul_id is required")
 
     sqlite_ensure_nonempty(db_path)
     con = sqlite_connect(db_path)
@@ -155,7 +124,7 @@ def write_conversation_state(
 
         if existing_state is None:
             if scoped_soul is None:
-                raise HTTPException(status_code=400, detail="soul_id is required when creating new conversation state")
+                raise HTTPException(status_code=400, detail="soul_id is required")
             seed = conversation_state_empty(cid, scoped_soul, scoped_user)
             seed["updated_at"] = datetime.now(UTC).isoformat()
             con.execute(
