@@ -78,19 +78,20 @@ def append_messages(
     label = source_label or derive_source_label(conversation_id)
     chat_name_value = str(chat_name or "").strip() or None
     now_iso = datetime.now(UTC).isoformat()
-    incoming_rows: list[tuple[str, str | None, str]] = []
+    incoming_rows: list[tuple[str, str | None, str, str | None]] = []
     for msg in messages:
         role = str(msg.get("role") or "user").strip()
         content = str(msg.get("content") or msg.get("text") or "").strip()
         if isinstance(msg.get("content"), dict):
             content = str(msg["content"].get("text") or "").strip()
         speaker = str(msg.get("name") or msg.get("speaker") or "").strip() or None
+        ext_id = str(msg.get("external_message_id") or "").strip() or None
         role, speaker, content = _normalize_row_for_overlap(
             conversation_id, role, speaker, content
         )
         if not content:
             continue
-        incoming_rows.append((role, speaker, content))
+        incoming_rows.append((role, speaker, content, ext_id))
 
     if not incoming_rows:
         return 0
@@ -113,10 +114,11 @@ def append_messages(
             )
             for row in recent_rows
         ]))
-        max_overlap = min(len(existing_tail), len(incoming_rows))
+        overlap_rows = [(r, s, c) for r, s, c, _ in incoming_rows]
+        max_overlap = min(len(existing_tail), len(overlap_rows))
         overlap = 0
         for k in range(max_overlap, 0, -1):
-            if existing_tail[-k:] == incoming_rows[:k]:
+            if existing_tail[-k:] == overlap_rows[:k]:
                 overlap = k
                 break
         rows_data = incoming_rows[overlap:]
@@ -124,14 +126,16 @@ def append_messages(
     if not rows_data:
         return 0
 
+    has_external_id = any(ext_id for _, _, _, ext_id in rows_data)
     rows = [
-        (conversation_id, role, speaker, chat_name_value, content, label, now_iso)
-        for role, speaker, content in rows_data
+        (conversation_id, role, speaker, chat_name_value, content, label, now_iso, ext_id)
+        for role, speaker, content, ext_id in rows_data
     ]
 
+    verb = "INSERT OR IGNORE" if has_external_id else "INSERT"
     con.executemany(
-        "INSERT INTO messages (conversation_id, role, speaker, chat_name, content, source_label, received_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        f"{verb} INTO messages (conversation_id, role, speaker, chat_name, content, source_label, received_at, external_message_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         rows,
     )
     return len(rows)

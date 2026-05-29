@@ -150,8 +150,15 @@ CREATE TABLE IF NOT EXISTS messages (
     message_cols = set(sqlite_table_columns(con, "messages"))
     if "chat_name" not in message_cols:
         con.execute("ALTER TABLE messages ADD COLUMN chat_name TEXT")
+    if "external_message_id" not in message_cols:
+        con.execute("ALTER TABLE messages ADD COLUMN external_message_id TEXT")
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_messages_conv_time ON messages(conversation_id, received_at)"
+    )
+    con.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_external_id "
+        "ON messages (conversation_id, external_message_id) "
+        "WHERE external_message_id IS NOT NULL"
     )
     sqlite_ensure_soul_tables(con)
     con.commit()

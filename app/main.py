@@ -3006,6 +3006,9 @@ async def conversation_append_message(
         msg: dict[str, Any] = {"role": role, "content": message}
         if user_name:
             msg["name"] = user_name
+        ext_msg_id = _pick_str(safe, "external_message_id") or None
+        if ext_msg_id:
+            msg["external_message_id"] = ext_msg_id
         appended = _message_log.append_messages(_con, cid, [msg], chat_name=chat_name_for_append)
         _con.commit()
     finally:
@@ -3216,6 +3219,9 @@ async def conversation_turn(
             current_user_msg: dict[str, Any] = {"role": "user", "content": message}
             if user_name:
                 current_user_msg["name"] = user_name
+            ext_msg_id = _pick_str(safe, "external_message_id") or None
+            if ext_msg_id:
+                current_user_msg["external_message_id"] = ext_msg_id
             append_rows: list[dict[str, Any]] = [current_user_msg]
             if response_text:
                 append_rows.append(
