@@ -536,6 +536,14 @@ async def run_memorize_episodes(
             last_result="failure",
             error=f"{type(exc).__name__}: {exc}",
         )
+        if conversation_id:
+            async with mem_lock:
+                ctx.write_conversation_state(
+                    conversation_id,
+                    soul_id=soul_id,
+                    user_id=uid,
+                    updates={"pending_episode_ids": []},
+                )
         raise
     finally:
         ctx.memorize_cancel.discard(progress_key)

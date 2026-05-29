@@ -5,6 +5,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -629,6 +630,66 @@ async def test_run_memorize_episodes_records_failure_progress_on_exception(tmp_p
     assert row.get("last_result") == "failure"
     assert "RuntimeError: boom" in str(row.get("error") or "")
     assert key not in main._MEMORIZE_CANCEL
+
+
+@pytest.mark.asyncio
+async def test_run_memorize_episodes_clears_pending_ids_on_extraction_failure(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+
+    class _FailingService:
+        async def memorize_episodes_batch(self, **_kwargs):
+            raise RuntimeError("boom")
+
+    user_id = "u"
+    soul_id = "s"
+    conversation_id = "cid-1"
+    key = main._memorize_lock_key(user_id, soul_id)
+    main._MEMORIZE_PROGRESS.pop(key, None)
+    main._MEMORIZE_CANCEL.discard(key)
+
+    state_row: dict[str, Any] = {
+        "pending_episode_ids": ["cid-1:0-1"],
+        "digest_cursor": 0,
+    }
+
+    def fake_load_turn_state_and_soul_card(*_args, **_kwargs):
+        return dict(state_row), None, None
+
+    def fake_write_conversation_state(_cid: str, *, updates: dict[str, Any], **_kwargs):
+        if "pending_episode_ids" in updates:
+            state_row["pending_episode_ids"] = list(updates.get("pending_episode_ids") or [])
+        if "digest_cursor" in updates:
+            state_row["digest_cursor"] = int(updates["digest_cursor"])
+        return dict(state_row), tmp_path / "Echo.db"
+
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
+    monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
+
+    with pytest.raises(RuntimeError):
+        await main._run_memorize_episodes(
+            memorize_segments=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0, 0)],
+            svc=_FailingService(),
+            scope={"user_id": user_id, "soul_id": soul_id},
+            conversation_id=conversation_id,
+            soul_id=soul_id,
+            uid=user_id,
+            processed_cursor=-1,
+            safe={},
+            resource_url="/tmp/day.json",
+            chat_key=None,
+            tz_name=None,
+            prev_len=0,
+            merged_len=1,
+            force=False,
+            sleep_stats=None,
+            segments_dir=segments_dir,
+        )
+
+    assert state_row["pending_episode_ids"] == []
+    row = main._MEMORIZE_PROGRESS.get(key) or {}
+    assert row.get("active") is False
+    assert row.get("last_result") == "failure"
 
 
 def test_timeline_endpoint_returns_entity_edges(monkeypatch: pytest.MonkeyPatch):
