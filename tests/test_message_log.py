@@ -13,12 +13,12 @@ def _con() -> sqlite3.Connection:
     return con
 
 
-def test_append_messages_cumulative_history_fast_path() -> None:
+def test_append_messages_cumulative_history_payload_is_appended_verbatim() -> None:
     con = _con()
     try:
         added = message_log.append_messages(
             con,
-            "c1",
+            "whatsapp:dm:c1",
             [
                 {"role": "user", "content": "one"},
                 {"role": "assistant", "content": "two"},
@@ -28,17 +28,17 @@ def test_append_messages_cumulative_history_fast_path() -> None:
 
         added = message_log.append_messages(
             con,
-            "c1",
+            "whatsapp:dm:c1",
             [
                 {"role": "user", "content": "one"},
                 {"role": "assistant", "content": "two"},
                 {"role": "user", "content": "three"},
             ],
         )
-        assert added == 1
+        assert added == 3
 
-        rows = message_log.read_tail(con, "c1", after_cursor=0)
-        assert [r["content"] for r in rows] == ["one", "two", "three"]
+        rows = message_log.read_tail(con, "whatsapp:dm:c1", after_cursor=0)
+        assert [r["content"] for r in rows] == ["one", "two", "one", "two", "three"]
     finally:
         con.close()
 
@@ -55,29 +55,54 @@ def test_append_messages_incremental_payloads_append_new_rows() -> None:
         con.close()
 
 
-def test_append_messages_incremental_overlap_only_appends_suffix() -> None:
+def test_append_messages_incremental_overlap_is_not_suppressed() -> None:
     con = _con()
     try:
         assert message_log.append_messages(
             con,
-            "c3",
+            "whatsapp:dm:c3",
             [
                 {"role": "user", "content": "one"},
                 {"role": "assistant", "content": "two"},
             ],
         ) == 2
 
-        # Incoming payload overlaps the existing tail on "two"; only "three" should append.
+        # Incoming payload overlaps the existing tail on "two"; append stays literal.
         assert message_log.append_messages(
             con,
-            "c3",
+            "whatsapp:dm:c3",
+            [
+                {"role": "assistant", "content": "two"},
+                {"role": "user", "content": "three"},
+            ],
+        ) == 2
+
+        rows = message_log.read_tail(con, "whatsapp:dm:c3", after_cursor=0)
+        assert [r["content"] for r in rows] == ["one", "two", "two", "three"]
+    finally:
+        con.close()
+
+
+def test_append_messages_non_whatsapp_overlap_suppresses_suffix_only() -> None:
+    con = _con()
+    try:
+        assert message_log.append_messages(
+            con,
+            "integrity:chat-overlap",
+            [
+                {"role": "user", "content": "one"},
+                {"role": "assistant", "content": "two"},
+            ],
+        ) == 2
+        assert message_log.append_messages(
+            con,
+            "integrity:chat-overlap",
             [
                 {"role": "assistant", "content": "two"},
                 {"role": "user", "content": "three"},
             ],
         ) == 1
-
-        rows = message_log.read_tail(con, "c3", after_cursor=0)
+        rows = message_log.read_tail(con, "integrity:chat-overlap", after_cursor=0)
         assert [r["content"] for r in rows] == ["one", "two", "three"]
     finally:
         con.close()
@@ -147,7 +172,7 @@ def test_append_messages_dm_keeps_bracket_prefix_in_plain_content() -> None:
         con.close()
 
 
-def test_append_messages_group_overlap_ignores_speaker_drift_for_prefixed_rows() -> None:
+def test_append_messages_group_prefixed_rows_keep_sender_normalization() -> None:
     con = _con()
     try:
         cid = "whatsapp:group:18322935409-1579788049@g.us"
@@ -164,7 +189,14 @@ def test_append_messages_group_overlap_ignores_speaker_drift_for_prefixed_rows()
             cid,
             [{"role": "user", "name": "Marcos", "content": "[Raquel] Going to the gym now."}],
             source_label="whatsapp:group",
-        ) == 0
+        ) == 1
+
+        rows = message_log.read_tail(con, cid, after_cursor=0)
+        assert len(rows) == 2
+        assert rows[0]["speaker"] == "Raquel"
+        assert rows[0]["content"] == "Going to the gym now."
+        assert rows[1]["speaker"] == "Raquel"
+        assert rows[1]["content"] == "Going to the gym now."
     finally:
         con.close()
 

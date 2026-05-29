@@ -95,39 +95,38 @@ def append_messages(
     if not incoming_rows:
         return 0
 
-    new_rows_data: list[tuple[str, str | None, str]] = []
+    rows_data = incoming_rows
+    # WhatsApp ingress now owns dedupe using stable message identity. Non-WhatsApp
+    # callers may resend full history payloads, so keep suffix-only append there.
+    if not str(conversation_id or "").strip().startswith("whatsapp:"):
+        recent_rows = con.execute(
+            "SELECT role, speaker, content FROM messages "
+            "WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+            (conversation_id, len(incoming_rows)),
+        ).fetchall()
+        existing_tail = list(reversed([
+            _normalize_row_for_overlap(
+                conversation_id,
+                str(row["role"] or "").strip(),
+                str(row["speaker"] or "").strip() or None,
+                str(row["content"] or "").strip(),
+            )
+            for row in recent_rows
+        ]))
+        max_overlap = min(len(existing_tail), len(incoming_rows))
+        overlap = 0
+        for k in range(max_overlap, 0, -1):
+            if existing_tail[-k:] == incoming_rows[:k]:
+                overlap = k
+                break
+        rows_data = incoming_rows[overlap:]
 
-    # Policy: exact tail overlap is treated as duplicate noise and suppressed.
-    # This is intentional for retry/replay-prone paths (including listen_only
-    # message ingestion) where duplicate rows hurt context quality.
-    recent_rows = con.execute(
-        "SELECT role, speaker, content FROM messages "
-        "WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
-        (conversation_id, len(incoming_rows)),
-    ).fetchall()
-    existing_tail = list(reversed([
-        _normalize_row_for_overlap(
-            conversation_id,
-            str(row["role"] or "").strip(),
-            str(row["speaker"] or "").strip() or None,
-            str(row["content"] or "").strip(),
-        )
-        for row in recent_rows
-    ]))
-    max_overlap = min(len(existing_tail), len(incoming_rows))
-    overlap = 0
-    for k in range(max_overlap, 0, -1):
-        if existing_tail[-k:] == incoming_rows[:k]:
-            overlap = k
-            break
-    new_rows_data = incoming_rows[overlap:]
-
-    if not new_rows_data:
+    if not rows_data:
         return 0
 
     rows = [
         (conversation_id, role, speaker, chat_name_value, content, label, now_iso)
-        for role, speaker, content in new_rows_data
+        for role, speaker, content in rows_data
     ]
 
     con.executemany(
