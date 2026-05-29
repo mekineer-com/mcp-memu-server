@@ -67,7 +67,7 @@ class MemorizeRunContext:
     load_turn_state_and_soul_card: Callable[..., tuple[dict[str, Any], str | None, str | None]]
     normalize_text_list: Callable[[Any], list[str]]
     compute_holistic_categories_summary: Callable[..., Awaitable[str | None]]
-    run_consolidation_task: Callable[..., Awaitable[None]]
+    run_consolidation_task: Callable[..., Awaitable[dict[str, Any]]]
     background_tasks_set: set[asyncio.Task]
 
 
@@ -84,9 +84,35 @@ class MemorizeEndpointContext:
     clear_cached_services: Callable[[], None]
     get_storage_dir: Callable[[dict[str, Any]], Path]
     run_memorize_episodes: Callable[..., Awaitable[None]]
-    run_consolidation_task: Callable[..., Awaitable[None]]
+    run_consolidation_task: Callable[..., Awaitable[dict[str, Any]]]
     get_config: Callable[[], dict[str, Any]]
     sanitize_db_filename: Callable[[str], str]
+
+
+def _set_memorize_progress(
+    memorize_progress: dict[str, dict[str, Any]],
+    key: str,
+    *,
+    active: bool,
+    phase: str | None = None,
+    current: int | None = None,
+    total: int | None = None,
+    last_result: str | None = None,
+    error: str | None = None,
+) -> None:
+    row: dict[str, Any] = {"active": bool(active)}
+    if phase:
+        row["phase"] = str(phase)
+    if current is not None:
+        row["current"] = int(current)
+    if total is not None:
+        row["total"] = int(total)
+    if last_result:
+        row["last_result"] = str(last_result)
+    if error:
+        row["error"] = str(error)
+    row["updated_at"] = datetime.now(UTC).isoformat()
+    memorize_progress[key] = row
 
 
 async def run_forced_memorize_from_turn(
@@ -171,6 +197,8 @@ async def run_memorize_episodes(
     conversation_rolling_summary: str | None = None
     total_segments = 0
     had_existing_pending = False
+    consolidation_started = False
+    terminal_result: str = "success"
     rolling_summaries_raw = safe.get("_background_rolling_summaries")
     rolling_summaries: dict[str, dict[str, Any]] = (
         rolling_summaries_raw if isinstance(rolling_summaries_raw, dict) else {}
@@ -286,14 +314,29 @@ async def run_memorize_episodes(
             )
 
         total_segments = len(segment_jobs)
-        ctx.memorize_progress[progress_key] = {"current": 0, "total": total_segments}
+        _set_memorize_progress(
+            ctx.memorize_progress,
+            progress_key,
+            active=True,
+            phase="accepted",
+            current=0,
+            total=max(1, total_segments),
+        )
 
         if not cancelled and segment_jobs:
             if progress_key in ctx.memorize_cancel:
                 ctx.memorize_cancel.discard(progress_key)
                 ctx.logger.info("memorize cancelled before batch extraction")
+                terminal_result = "cancelled"
             else:
-                ctx.memorize_progress[progress_key] = {"current": 0, "total": total_segments, "phase": "extracting"}
+                _set_memorize_progress(
+                    ctx.memorize_progress,
+                    progress_key,
+                    active=True,
+                    phase="extracting",
+                    current=0,
+                    total=total_segments,
+                )
                 ep_start = _time.monotonic()
                 batch_results = await svc.memorize_episodes_batch(
                     modality="conversation",
@@ -329,8 +372,16 @@ async def run_memorize_episodes(
                     if progress_key in ctx.memorize_cancel:
                         ctx.memorize_cancel.discard(progress_key)
                         ctx.logger.info("memorize cancelled after batch result %d/%d", seg_num - 1, total_segments)
+                        terminal_result = "cancelled"
                         break
-                    ctx.memorize_progress[progress_key] = {"current": seg_num, "total": total_segments, "phase": "persist"}
+                    _set_memorize_progress(
+                        ctx.memorize_progress,
+                        progress_key,
+                        active=True,
+                        phase="persist",
+                        current=seg_num,
+                        total=total_segments,
+                    )
                     ep_result = batch_results[seg_num - 1] if seg_num - 1 < len(batch_results) else None
                     if isinstance(ep_result, dict):
                         has_results = True
@@ -363,6 +414,14 @@ async def run_memorize_episodes(
 
         # Phase 3: holistic summary LLM call — outside the lock.
         if conversation_id and has_results:
+            _set_memorize_progress(
+                ctx.memorize_progress,
+                progress_key,
+                active=True,
+                phase="summarizing",
+                current=total_segments,
+                total=max(1, total_segments),
+            )
             current_all_categories_summary = await run_ctx.compute_holistic_categories_summary(
                 svc=svc,
                 soul_id=soul_id,
@@ -402,8 +461,24 @@ async def run_memorize_episodes(
 
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
             if conversation_id and (has_results or had_existing_pending):
+                consolidation_started = True
+                _set_memorize_progress(
+                    ctx.memorize_progress,
+                    progress_key,
+                    active=True,
+                    phase="consolidating",
+                    current=1,
+                    total=1,
+                )
                 _ct = asyncio.create_task(
-                    run_ctx.run_consolidation_task(svc, conversation_id=conversation_id, soul_id=soul_id, uid=uid)
+                    run_ctx.run_consolidation_task(
+                        svc,
+                        conversation_id=conversation_id,
+                        soul_id=soul_id,
+                        uid=uid,
+                        progress_key=progress_key,
+                        memorize_progress=ctx.memorize_progress,
+                    )
                 )
                 run_ctx.background_tasks_set.add(_ct)
                 _ct.add_done_callback(run_ctx.background_tasks_set.discard)
@@ -430,8 +505,38 @@ async def run_memorize_episodes(
                     "sleepSplitStats": sleep_stats,
                 },
             )
+        if not consolidation_started:
+            if terminal_result == "cancelled":
+                _set_memorize_progress(
+                    ctx.memorize_progress,
+                    progress_key,
+                    active=False,
+                    last_result="cancelled",
+                )
+            elif not has_results and not had_existing_pending:
+                _set_memorize_progress(
+                    ctx.memorize_progress,
+                    progress_key,
+                    active=False,
+                    last_result="nothing_to_memorize",
+                )
+            else:
+                _set_memorize_progress(
+                    ctx.memorize_progress,
+                    progress_key,
+                    active=False,
+                    last_result="success",
+                )
+    except Exception as exc:
+        _set_memorize_progress(
+            ctx.memorize_progress,
+            progress_key,
+            active=False,
+            last_result="failure",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise
     finally:
-        ctx.memorize_progress.pop(progress_key, None)
         ctx.memorize_cancel.discard(progress_key)
 
 
@@ -898,13 +1003,24 @@ async def memorize_endpoint(
                 if tail_start < len(merged):
                     memorize_segments = [(resource_url, merged[tail_start:], tail_start, len(merged) - 1)]
                 if not memorize_segments:
+                    progress_key = ctx.memorize_lock_key(uid, soul_id)
                     if conversation_id and has_pending_episodes:
+                        _set_memorize_progress(
+                            ctx.memorize_progress,
+                            progress_key,
+                            active=True,
+                            phase="consolidating",
+                            current=1,
+                            total=1,
+                        )
                         background_tasks.add_task(
                             endpoint_ctx.run_consolidation_task,
                             svc,
                             conversation_id=conversation_id,
                             soul_id=soul_id,
                             uid=uid,
+                            progress_key=progress_key,
+                            memorize_progress=ctx.memorize_progress,
                         )
                         return JSONResponse(
                             status_code=202,
@@ -917,6 +1033,12 @@ async def memorize_endpoint(
                             },
                             background=background_tasks,
                         )
+                    _set_memorize_progress(
+                        ctx.memorize_progress,
+                        progress_key,
+                        active=False,
+                        last_result="nothing_to_memorize",
+                    )
                     return JSONResponse(
                         status_code=200,
                         content={"ok": True, "status": "nothing_to_memorize", "conversation_id": conversation_id},
@@ -948,6 +1070,12 @@ async def memorize_endpoint(
                 if isinstance(merged, list) and merged:
                     memorize_segments = [(resource_url, merged, 0, len(merged) - 1)]
                 else:
+                    _set_memorize_progress(
+                        ctx.memorize_progress,
+                        ctx.memorize_lock_key(uid, soul_id),
+                        active=False,
+                        last_result="nothing_to_memorize",
+                    )
                     return JSONResponse(
                         status_code=200,
                         content={"ok": True, "status": "nothing_to_memorize", "conversation_id": conversation_id},
@@ -981,10 +1109,14 @@ async def memorize_endpoint(
             # the injected BackgroundTasks parameter. Without this, add_task above
             # is silently a no-op and the segments never run.
             estimated_total_segments = max(1, len(memorize_segments))
-            ctx.memorize_progress[ctx.memorize_lock_key(uid, soul_id)] = {
-                "current": 0,
-                "total": estimated_total_segments,
-            }
+            _set_memorize_progress(
+                ctx.memorize_progress,
+                ctx.memorize_lock_key(uid, soul_id),
+                active=True,
+                phase="accepted",
+                current=0,
+                total=estimated_total_segments,
+            )
             return JSONResponse(
                 status_code=202,
                 content={
@@ -1022,7 +1154,9 @@ def memorize_progress_endpoint(
     progress = memorize_progress.get(key)
     if progress is None:
         return {"active": False}
-    return {"active": True, **progress}
+    out = dict(progress)
+    out["active"] = bool(out.get("active", False))
+    return out
 
 
 def memorize_cancel_endpoint(
@@ -1035,7 +1169,8 @@ def memorize_cancel_endpoint(
     uid = str(payload.get("user_id") or "").strip()
     sid = str(payload.get("soul_id") or "").strip()
     key = memorize_lock_key(uid, sid)
-    if key in memorize_progress:
+    row = memorize_progress.get(key) or {}
+    if bool(row.get("active")):
         memorize_cancel.add(key)
         return {"ok": True, "status": "cancel_requested"}
     return {"ok": False, "status": "no_active_memorize"}

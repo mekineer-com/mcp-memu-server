@@ -587,7 +587,7 @@ def test_build_retrieve_soul_context_queries_orders_chats_before_working_and_int
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_episodes_clears_progress_on_exception(tmp_path):
+async def test_run_memorize_episodes_records_failure_progress_on_exception(tmp_path):
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
 
@@ -624,7 +624,10 @@ async def test_run_memorize_episodes_clears_progress_on_exception(tmp_path):
             segments_dir=segments_dir,
         )
 
-    assert key not in main._MEMORIZE_PROGRESS
+    row = main._MEMORIZE_PROGRESS.get(key) or {}
+    assert row.get("active") is False
+    assert row.get("last_result") == "failure"
+    assert "RuntimeError: boom" in str(row.get("error") or "")
     assert key not in main._MEMORIZE_CANCEL
 
 

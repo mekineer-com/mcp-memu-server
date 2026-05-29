@@ -1946,7 +1946,18 @@ async def _run_consolidation_task(
     conversation_id: str,
     soul_id: str,
     uid: str,
-) -> None:
+    progress_key: str | None = None,
+    memorize_progress: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if progress_key and memorize_progress is not None:
+        _memorize_endpoint._set_memorize_progress(
+            memorize_progress,
+            progress_key,
+            active=True,
+            phase="consolidating",
+            current=1,
+            total=1,
+        )
     deps = _make_consolidation_deps()
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
     pipeline_started = False
@@ -1962,7 +1973,14 @@ async def _run_consolidation_task(
             force=False,
         )
         if out.get("status") == "skipped":
-            return
+            if progress_key and memorize_progress is not None:
+                _memorize_endpoint._set_memorize_progress(
+                    memorize_progress,
+                    progress_key,
+                    active=False,
+                    last_result="success",
+                )
+            return {"ok": True, "status": "skipped"}
         _write_conversation_state(
             conversation_id,
             soul_id=soul_id,
@@ -1972,6 +1990,14 @@ async def _run_consolidation_task(
                 "last_consolidation_error_at": None,
             },
         )
+        if progress_key and memorize_progress is not None:
+            _memorize_endpoint._set_memorize_progress(
+                memorize_progress,
+                progress_key,
+                active=False,
+                last_result="success",
+            )
+        return {"ok": True, "status": "ok"}
     except Exception as exc:
         logger.exception("consolidation failed (non-fatal)")
         if pipeline_started:
@@ -1993,6 +2019,15 @@ async def _run_consolidation_task(
             )
         except Exception:
             logger.exception("failed to record consolidation error state for %s", conversation_id)
+        if progress_key and memorize_progress is not None:
+            _memorize_endpoint._set_memorize_progress(
+                memorize_progress,
+                progress_key,
+                active=False,
+                last_result="failure",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return {"ok": False, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
 
 def _make_memorize_context() -> _memorize_endpoint.MemorizeContext:

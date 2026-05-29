@@ -77,7 +77,15 @@ def test_memorize_tail_retries_consolidation_when_pending_episodes_exist(
 ) -> None:
     recorded: list[dict] = []
 
-    async def fake_consolidation_task(_svc, *, conversation_id: str, soul_id: str, uid: str) -> None:
+    async def fake_consolidation_task(
+        _svc,
+        *,
+        conversation_id: str,
+        soul_id: str,
+        uid: str,
+        progress_key: str | None = None,
+        memorize_progress: dict | None = None,
+    ) -> None:
         recorded.append({"conversation_id": conversation_id, "soul_id": soul_id, "uid": uid})
 
     async def fake_run_memorize_episodes(**_kwargs) -> None:  # pragma: no cover - should not run in this branch
@@ -117,3 +125,47 @@ def test_memorize_tail_retries_consolidation_when_pending_episodes_exist(
     body = resp.json()
     assert body.get("pending_episode_retry") is True
     assert recorded == [{"conversation_id": "cid-2", "soul_id": "test_soul", "uid": "test_user"}]
+
+
+def test_memorize_tail_nothing_to_memorize_sets_terminal_progress(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    class _FakeSvc:
+        pass
+
+    def fake_write_conversation_state(*_args, **_kwargs):
+        return (
+            {
+                "last_memorize_at": "2026-05-09T00:00:00+00:00",
+                "digest_cursor": 1,  # with 2-message input below, tail is empty
+                "pending_episode_ids": [],
+            },
+            tmp_path / "Echo.db",
+        )
+
+    monkeypatch.setattr(main_module, "_get_service_from_payload", lambda *a, **k: _FakeSvc())
+    monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)
+    monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
+
+    payload = {
+        "user": {"user_id": "test_user", "soul_id": "test_soul", "conversation_id": "cid-3"},
+        "conversation_id": "cid-3",
+        "conversation": [
+            {"role": "user", "name": "test_user", "content": "hello"},
+            {"role": "assistant", "name": "test_soul", "content": "hi"},
+        ],
+        "llm_profiles": {"default": {"provider": "openai", "api_key": "x", "base_url": "x", "chat_model": "x", "embed_model": "x"}},
+    }
+
+    resp = client.post("/memorize?tail=true", json=payload)
+    assert resp.status_code == 200, f"unexpected status: {resp.status_code} body={resp.text[:300]}"
+    body = resp.json()
+    assert body.get("status") == "nothing_to_memorize"
+
+    progress = client.get("/memorize/progress?user_id=test_user&soul_id=test_soul")
+    assert progress.status_code == 200
+    out = progress.json()
+    assert out.get("active") is False
+    assert out.get("last_result") == "nothing_to_memorize"
