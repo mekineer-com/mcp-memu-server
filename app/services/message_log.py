@@ -516,10 +516,10 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
         chat_name: str | None,
     ) -> str:
         if kind == "whatsapp_group":
-            pretty = _lookup_whatsapp_name(key, names) or key or "group"
+            pretty = _lookup_whatsapp_name(key, names) or str(chat_name or "").strip() or key or "group"
             return f"[group][{pretty}]"
         if kind == "whatsapp_dm":
-            pretty = _lookup_whatsapp_name(key, names) or key or "contact"
+            pretty = _lookup_whatsapp_name(key, names) or str(chat_name or "").strip() or key or "contact"
             return f"[dm][{pretty}]"
         if kind == "sillytavern_dm":
             pretty = (chat_name or "").strip() or key or "sillytavern"
