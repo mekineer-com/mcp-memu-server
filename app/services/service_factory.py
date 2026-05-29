@@ -253,6 +253,7 @@ def _get_service_from_payload(
     log_prompts: bool,
     prompt_log_before: Any,
     prompt_log_after: Any,
+    prompt_log_on_error: Any,
     st_user_model: Any,
     logger: logging.Logger,
 ) -> MemoryService:
@@ -366,6 +367,7 @@ def _get_service_from_payload(
         if log_prompts:
             svc.intercept_before_llm_call(prompt_log_before, name="prompt_logger")
             svc.intercept_after_llm_call(prompt_log_after, name="response_logger")
+            svc.intercept_on_error_llm_call(prompt_log_on_error, name="error_logger")
 
         if len(_SERVICES) >= 50:
             oldest_key = next(iter(_SERVICES), None)

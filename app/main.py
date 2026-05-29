@@ -573,20 +573,7 @@ def _refresh_runtime_limits() -> None:
 def _prompt_log_before(ctx: Any, request_view: Any) -> None:
     import time as _time
     ctx._llm_start = _time.monotonic()
-    if getattr(request_view, "kind", None) == "embed":
-        return
-    op = getattr(ctx, "operation", None) or "-"
-    step = getattr(ctx, "step_id", None) or "-"
-    req_id = str(getattr(ctx, "request_id", "") or "").strip() or "-"
-    banner = f"===== {op.upper()} · {step} ".ljust(70, "=")
-    _PROMPT_LOGGER.info(
-        "\n\n\n%s\n\n[PROMPT] req=%s op=%s step=%s model=%s",
-        banner,
-        req_id,
-        op,
-        step,
-        getattr(ctx, "model", None) or "-",
-    )
+    return None
 
 
 def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: Any) -> None:
@@ -603,36 +590,70 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
     step = getattr(ctx, "step_id", None) or "-"
     req_id = str(getattr(ctx, "request_id", "") or "").strip() or "-"
     model = getattr(ctx, "model", None) or "-"
+    banner = f"===== {str(op).upper()} · {step} ".ljust(70, "=")
+    lines = [
+        "",
+        "",
+        "",
+        banner,
+        "",
+        f"[PROMPT] req={req_id} op={op} step={step} model={model}",
+    ]
     if isinstance(payload, dict):
         payload_log_text = json.dumps(payload, ensure_ascii=False, indent=2).replace("\\n", "\n")
-        _PROMPT_LOGGER.info(
-            "[PAYLOAD] req=%s op=%s step=%s kind=%s model=%s\n%s",
-            req_id,
-            op,
-            step,
-            kind or "-",
-            model,
-            payload_log_text,
-        )
-    if not content:
-        return
+        lines.append(f"[PAYLOAD] req={req_id} op={op} step={step} kind={kind or '-'} model={model}")
+        lines.append(payload_log_text)
     finish_reason = getattr(usage, "finish_reason", None)
     in_tok = getattr(usage, "input_tokens", None)
     out_tok = getattr(usage, "output_tokens", None)
     total_tok = getattr(usage, "total_tokens", None)
-    _PROMPT_LOGGER.info(
-        "[RESPONSE] req=%s op=%s step=%s elapsed=%.1fs finish_reason=%s tokens=in:%s/out:%s/total:%s content_chars=%s\n\n%s\n",
-        req_id,
-        op,
-        step,
-        elapsed,
-        finish_reason,
-        in_tok,
-        out_tok,
-        total_tok,
-        len(content),
-        content,
+    lines.append(
+        (
+            f"[RESPONSE] req={req_id} op={op} step={step} elapsed={elapsed:.1f}s "
+            f"finish_reason={finish_reason} tokens=in:{in_tok}/out:{out_tok}/total:{total_tok} "
+            f"content_chars={len(content or '')}"
+        )
     )
+    if content:
+        lines.extend(["", content, ""])
+    _PROMPT_LOGGER.info(
+        "\n".join(lines),
+    )
+
+
+def _prompt_log_on_error(ctx: Any, request_view: Any, error: Any, usage: Any) -> None:
+    import time as _time
+    elapsed = _time.monotonic() - getattr(ctx, "_llm_start", _time.monotonic())
+    if getattr(request_view, "kind", None) == "embed":
+        logger.error("[EMBED] elapsed=%.1fs error=%s", elapsed, type(error).__name__)
+        return
+    meta = getattr(request_view, "metadata", None) or {}
+    payload = meta.get("payload")
+    op = getattr(ctx, "operation", None) or "-"
+    step = getattr(ctx, "step_id", None) or "-"
+    req_id = str(getattr(ctx, "request_id", "") or "").strip() or "-"
+    model = getattr(ctx, "model", None) or "-"
+    banner = f"===== {str(op).upper()} · {step} ".ljust(70, "=")
+    lines = [
+        "",
+        "",
+        "",
+        banner,
+        "",
+        f"[PROMPT] req={req_id} op={op} step={step} model={model}",
+    ]
+    if isinstance(payload, dict):
+        payload_log_text = json.dumps(payload, ensure_ascii=False, indent=2).replace("\\n", "\n")
+        kind = getattr(request_view, "kind", None)
+        lines.append(f"[PAYLOAD] req={req_id} op={op} step={step} kind={kind or '-'} model={model}")
+        lines.append(payload_log_text)
+    lines.append(
+        (
+            f"[ERROR] req={req_id} op={op} step={step} elapsed={elapsed:.1f}s "
+            f"type={type(error).__name__} message={error}"
+        )
+    )
+    _PROMPT_LOGGER.error("\n".join(lines))
 
 
 _refresh_runtime_limits()
@@ -673,6 +694,7 @@ def _get_service_from_payload(payload: dict[str, Any]):
         log_prompts=_LOG_PROMPTS,
         prompt_log_before=_prompt_log_before,
         prompt_log_after=_prompt_log_after,
+        prompt_log_on_error=_prompt_log_on_error,
         st_user_model=STUserModel,
         logger=logger,
     )

@@ -1,6 +1,7 @@
 """Basic tests for the application."""
 
 import asyncio
+import logging
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -82,6 +83,69 @@ def test_run_retrieve_reports_rag_method(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
     out = asyncio.run(main._run_retrieve({"query": "hello", "user": {"user_id": "u", "soul_id": "s"}}))
     assert out["method"] == "rag"
+
+
+def test_prompt_log_before_only_sets_timer(caplog: pytest.LogCaptureFixture) -> None:
+    ctx = SimpleNamespace()
+    request_view = SimpleNamespace(kind="chat")
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        main._prompt_log_before(ctx, request_view)
+    assert hasattr(ctx, "_llm_start")
+    assert caplog.text == ""
+
+
+def test_prompt_log_after_emits_single_block(caplog: pytest.LogCaptureFixture) -> None:
+    ctx = SimpleNamespace(
+        _llm_start=0.0,
+        operation="turn",
+        step_id="respond",
+        request_id="req-1",
+        model="minimax/minimax-m2.7",
+    )
+    request_view = SimpleNamespace(
+        kind="chat",
+        metadata={"payload": {"messages": [{"role": "system", "content": "hello"}]}},
+    )
+    response_view = SimpleNamespace(content="ok")
+    usage = SimpleNamespace(
+        finish_reason="stop",
+        input_tokens=1,
+        output_tokens=2,
+        total_tokens=3,
+    )
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        main._prompt_log_after(ctx, request_view, response_view, usage)
+    text = caplog.text
+    assert "===== TURN · respond" in text
+    assert "[PROMPT] req=req-1 op=turn step=respond model=minimax/minimax-m2.7" in text
+    assert "[PAYLOAD] req=req-1 op=turn step=respond kind=chat model=minimax/minimax-m2.7" in text
+    assert "[RESPONSE] req=req-1 op=turn step=respond" in text
+    assert "content_chars=2" in text
+    assert "\nok\n" in text
+
+
+def test_prompt_log_on_error_emits_error_block(caplog: pytest.LogCaptureFixture) -> None:
+    ctx = SimpleNamespace(
+        _llm_start=0.0,
+        operation="retrieve",
+        step_id="decide_retrieval",
+        request_id="req-2",
+        model="minimax/minimax-m2.7",
+    )
+    request_view = SimpleNamespace(
+        kind="chat",
+        metadata={"payload": {"messages": [{"role": "system", "content": "hello"}]}},
+    )
+    usage = SimpleNamespace(status="error")
+    error = TimeoutError("timed out")
+    with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
+        main._prompt_log_on_error(ctx, request_view, error, usage)
+    text = caplog.text
+    assert "===== RETRIEVE · decide_retrieval" in text
+    assert "[PROMPT] req=req-2 op=retrieve step=decide_retrieval model=minimax/minimax-m2.7" in text
+    assert "[PAYLOAD] req=req-2 op=retrieve step=decide_retrieval kind=chat model=minimax/minimax-m2.7" in text
+    assert "[ERROR] req=req-2 op=retrieve step=decide_retrieval" in text
+    assert "type=TimeoutError message=timed out" in text
 
 
 @pytest.mark.parametrize(
