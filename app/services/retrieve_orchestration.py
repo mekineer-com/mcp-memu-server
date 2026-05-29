@@ -13,7 +13,11 @@ from app.services.intention_state import (
     normalize_memory_cache as _normalize_memory_cache_impl,
 )
 from app.services.payload import _canonicalize_scope_where, _extract_scope
-from app.services.turn_contract import format_time_anchor as _format_time_anchor, render_history as _render_history
+from app.services.turn_contract import (
+    format_time_anchor as _format_time_anchor,
+    render_history as _render_history,
+    _section_title_from_conversation_id,
+)
 
 
 RETRIEVE_REWRITE_HISTORY_MESSAGES = 8
@@ -87,6 +91,7 @@ def _build_retrieve_soul_context_queries(
     history: list[dict[str, Any]],
     state_row: dict[str, Any],
     identity_mode: str = "retrieve",
+    conversation_id: str | None = None,
 ) -> list[dict[str, Any]]:
     memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
     intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
@@ -136,7 +141,8 @@ def _build_retrieve_soul_context_queries(
     history_slice = history_for_render[-history_limit:] if history_limit > 0 else history_for_render
     history_text = _render_history(history_slice)
     if history_text:
-        soul_context_for_retrieve.append({"role": "history", "content": {"text": history_text}})
+        section_header = _section_title_from_conversation_id(conversation_id)
+        soul_context_for_retrieve.append({"role": "history", "content": {"text": f"{section_header}\n\n{history_text}"}})
     cache_text = "\n".join(str(entry) for entry in (memory_cache or []))
     if cache_text:
         soul_context_for_retrieve.append({"role": "memory_cache", "content": {"text": cache_text}})

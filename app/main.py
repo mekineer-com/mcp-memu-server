@@ -1181,6 +1181,7 @@ async def _apimw_retrieve_pass(
         history=history,
         state_row=state_row,
         identity_mode="apimw",
+        conversation_id=conversation_id,
     )
     retrieve_payload = {
         **payload,
@@ -2622,6 +2623,7 @@ async def conversation_retrieve(
                 message=message,
                 history=history,
                 state_row=state_row,
+                conversation_id=cid,
             )
 
         if cross_tail:
@@ -3209,7 +3211,7 @@ async def conversation_turn(
                 )
                 response_text = ""
         if not dry_run and conversation_state_path is not None and conversation_state_path.exists():
-            user_name = str(safe.get("user_name") or "").strip()
+            user_name = str(safe.get("user_name") or "").strip() or uid
             chat_name_for_append = str(safe.get("chat_name") or "").strip() or None
             current_user_msg: dict[str, Any] = {"role": "user", "content": message}
             if user_name:
