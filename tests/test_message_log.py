@@ -217,7 +217,11 @@ def test_read_all_tails_for_memorize_background_uses_rowid_cursor() -> None:
                 {"role": "user", "content": "three"},
             ],
         ) == 3
-        last_id = message_log.last_message_row_id(con, "bg-1")
+        row = con.execute(
+            "SELECT id FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
+            ("bg-1",),
+        ).fetchone()
+        last_id = int(row["id"]) if row is not None else None
         assert last_id is not None
         con.execute(
             "UPDATE conversations SET rolling_summary_cursor_id = ? WHERE conversation_id = ?",

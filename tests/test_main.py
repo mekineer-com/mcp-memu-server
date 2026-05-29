@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from app import main
+from app.services import crud_endpoints
 
 
 def test_placeholder():
@@ -820,15 +821,15 @@ def test_timeline_endpoint_returns_entity_edges(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_validate_relationship_speaker_id_rejects_reserved_prefixes():
-    assert main._validate_relationship_speaker_id("entity:brother") == "brother"
+    assert crud_endpoints._validate_relationship_speaker_id("entity:brother") == "brother"
     with pytest.raises(main.HTTPException):
-        main._validate_relationship_speaker_id("user:marcos")
+        crud_endpoints._validate_relationship_speaker_id("user:marcos")
     with pytest.raises(main.HTTPException):
-        main._validate_relationship_speaker_id("entity:brother!")
+        crud_endpoints._validate_relationship_speaker_id("entity:brother!")
 
 
 def test_relationship_item_from_values_filters_non_declared_or_inactive():
-    item = main._relationship_item_from_values(
+    item = crud_endpoints._relationship_item_from_values(
         normalized="brother",
         name="Brother",
         entity_type="person",
@@ -838,13 +839,13 @@ def test_relationship_item_from_values_filters_non_declared_or_inactive():
     assert item["speaker_id"] == "entity:brother"
     assert item["relationship"] == "sibling"
 
-    assert main._relationship_item_from_values(
+    assert crud_endpoints._relationship_item_from_values(
         normalized="brother",
         name="Brother",
         entity_type="person",
         properties={"origin": "extracted", "relationship": "sibling", "active": True},
     ) is None
-    assert main._relationship_item_from_values(
+    assert crud_endpoints._relationship_item_from_values(
         normalized="brother",
         name="Brother",
         entity_type="person",
@@ -853,11 +854,11 @@ def test_relationship_item_from_values_filters_non_declared_or_inactive():
 
 
 def test_assert_user_declared_relationship_is_strict():
-    main._assert_user_declared_relationship({"origin": "user_declared"})
+    crud_endpoints._assert_user_declared_relationship({"origin": "user_declared"})
     with pytest.raises(main.HTTPException):
-        main._assert_user_declared_relationship({"origin": ""})
+        crud_endpoints._assert_user_declared_relationship({"origin": ""})
     with pytest.raises(main.HTTPException):
-        main._assert_user_declared_relationship({"origin": "extracted"})
+        crud_endpoints._assert_user_declared_relationship({"origin": "extracted"})
 
 
 @pytest.mark.asyncio

@@ -94,7 +94,6 @@ from app.services.payload import (
     _payload_signature,
     _parse_turn_ts_ms,
     _pick_str,
-    _resource_sig,
     _safe_payload,
 )
 from app.services import sqlite_scope as _sqlite_scope
@@ -854,8 +853,6 @@ def _build_retrieve_identity_context(soul_name: str, *, apimw: bool = False) -> 
 
 
 _build_retrieve_soul_context_queries = _retrieve_orchestration._build_retrieve_soul_context_queries
-RETRIEVE_REWRITE_HISTORY_MESSAGES = _retrieve_orchestration.RETRIEVE_REWRITE_HISTORY_MESSAGES
-APIMW_RETRIEVE_REWRITE_HISTORY_MESSAGES = _retrieve_orchestration.APIMW_RETRIEVE_REWRITE_HISTORY_MESSAGES
 
 
 def _load_turn_state_and_soul_card(
@@ -902,29 +899,6 @@ ORDER BY updated_at ASC, id ASC
         return [str(row[0] or "").strip() for row in rows if str(row[0] or "").strip()]
     finally:
         con.close()
-
-
-def _validate_relationship_speaker_id(raw: Any) -> str:
-    return _crud_endpoints._validate_relationship_speaker_id(raw)
-
-
-def _relationship_item_from_values(
-    *,
-    normalized: str,
-    name: str,
-    entity_type: str,
-    properties: Mapping[str, Any] | None,
-) -> dict[str, Any] | None:
-    return _crud_endpoints._relationship_item_from_values(
-        normalized=normalized,
-        name=name,
-        entity_type=entity_type,
-        properties=properties,
-    )
-
-
-def _assert_user_declared_relationship(props: Mapping[str, Any] | None) -> None:
-    _crud_endpoints._assert_user_declared_relationship(props)
 
 
 # ==== Memorize execution helpers ====

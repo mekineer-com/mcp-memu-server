@@ -187,19 +187,6 @@ def read_tail_after_message_id(
     ]
 
 
-def last_message_row_id(con: sqlite3.Connection, conversation_id: str) -> int | None:
-    row = con.execute(
-        "SELECT id FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
-        (conversation_id,),
-    ).fetchone()
-    if row is None:
-        return None
-    try:
-        return int(row["id"])
-    except (TypeError, ValueError):
-        return None
-
-
 def delete_messages_through_id(
     con: sqlite3.Connection,
     conversation_id: str,

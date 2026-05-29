@@ -199,8 +199,6 @@ INSERT OR IGNORE INTO conversations (
         if soul_updates:
             _soul_state.write(con, soul_updates)
         append_pending_episode_ids = raw_updates.pop("append_pending_episode_ids", None)
-        append_retrieval_ids = None
-        append_prior_context_ids = None
         field_updates: dict[str, Any] = {}
 
         for key, value in raw_updates.items():
@@ -220,24 +218,6 @@ INSERT OR IGNORE INTO conversations (
                 "last_consolidation_error_at",
             }:
                 field_updates[key] = value
-
-        if append_prior_context_ids is not None:
-            base_pc = field_updates.get(
-                "prior_context_ids_since_consolidation", existing_state.get("prior_context_ids_since_consolidation")
-            )
-            field_updates["prior_context_ids_since_consolidation"] = merge_unique_text_lists(
-                base_pc,
-                append_prior_context_ids,
-            )
-
-        if append_retrieval_ids is not None:
-            base_ids = field_updates.get(
-                "retrieval_ids_since_consolidation", existing_state.get("retrieval_ids_since_consolidation")
-            )
-            field_updates["retrieval_ids_since_consolidation"] = merge_unique_text_lists(
-                base_ids,
-                append_retrieval_ids,
-            )
 
         if append_pending_episode_ids is not None:
             base_pending = field_updates.get(
@@ -273,21 +253,9 @@ INSERT OR IGNORE INTO conversations (
         if "last_memorize_at" in field_updates:
             raw_last = field_updates.get("last_memorize_at")
             field_updates["last_memorize_at"] = None if raw_last is None else (str(raw_last).strip() or None)
-        if "last_consolidation_at" in field_updates:
-            raw_last_consolidation = field_updates.get("last_consolidation_at")
-            field_updates["last_consolidation_at"] = (
-                None if raw_last_consolidation is None else (str(raw_last_consolidation).strip() or None)
-            )
         if "prior_context" in field_updates:
             raw_prior_context = field_updates.get("prior_context")
             field_updates["prior_context"] = None if raw_prior_context is None else str(raw_prior_context)
-        if "all_categories_summary" in field_updates:
-            raw_acs = field_updates.get("all_categories_summary")
-            field_updates["all_categories_summary"] = None if raw_acs is None else (str(raw_acs) or None)
-        if "intentions_active" in field_updates:
-            field_updates["intentions_active"] = normalize_intentions_stack(field_updates.get("intentions_active"))
-        if "memory_cache" in field_updates:
-            field_updates["memory_cache"] = normalize_memory_cache(field_updates.get("memory_cache"))
         if "pending_episode_ids" in field_updates:
             field_updates["pending_episode_ids"] = normalize_text_list(field_updates["pending_episode_ids"])
 

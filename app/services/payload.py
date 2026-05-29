@@ -172,16 +172,6 @@ def _item_sig(row: Any) -> str:
     return ""
 
 
-def _resource_sig(row: Any) -> str:
-    if not isinstance(row, dict):
-        return ""
-    for key in ("id", "url", "local_path", "name", "caption", "title"):
-        value = _norm_result_sig(row.get(key))
-        if value:
-            return f"{key}:{value}"
-    return ""
-
-
 def _parse_turn_ts_ms(value: Any) -> int | None:
     if isinstance(value, (int, float)) and math.isfinite(value):
         return int(value)
