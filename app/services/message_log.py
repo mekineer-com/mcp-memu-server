@@ -133,12 +133,13 @@ def append_messages(
     ]
 
     verb = "INSERT OR IGNORE" if has_external_id else "INSERT"
+    before = con.total_changes
     con.executemany(
         f"{verb} INTO messages (conversation_id, role, speaker, chat_name, content, source_label, received_at, external_message_id) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         rows,
     )
-    return len(rows)
+    return con.total_changes - before
 
 
 def read_tail(
