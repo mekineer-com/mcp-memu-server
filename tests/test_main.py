@@ -443,247 +443,6 @@ def test_build_retrieve_identity_context_uses_shared_time_anchor(monkeypatch: py
     assert out.startswith(f"Today is {sentinel_anchor}.")
 
 
-def test_apply_turn_history_window_keeps_full_unmemorized_tail():
-    history_full = [{"message_id": f"m{i}", "role": "user", "content": f"msg {i}"} for i in range(1, 13)]
-    history_tail = list(history_full)
-
-    out = main._apply_turn_history_window(
-        conversation_id="cid",
-        history_tail=history_tail,
-        history_full=history_full,
-        db_path=None,
-    )
-
-    assert len(out) == 12
-    assert [item["message_id"] for item in out] == [f"m{i}" for i in range(1, 13)]
-
-
-def test_apply_turn_history_window_backfills_from_payload_when_tail_short():
-    history_full = [{"message_id": f"m{i}", "role": "user", "content": f"msg {i}"} for i in range(1, 11)]
-    history_tail = history_full[-2:]
-
-    out = main._apply_turn_history_window(
-        conversation_id="cid",
-        history_tail=history_tail,
-        history_full=history_full,
-        db_path=None,
-    )
-
-    assert len(out) == 8
-    assert [item["message_id"] for item in out] == [f"m{i}" for i in range(3, 11)]
-
-
-def test_apply_turn_history_window_backfills_from_db_when_available(tmp_path: Path):
-    db_path = tmp_path / "Echo.db"
-    con = main._sqlite_connect(db_path)
-    try:
-        con.execute(
-            """
-            CREATE TABLE messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                conversation_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                speaker TEXT,
-                chat_name TEXT,
-                content TEXT NOT NULL,
-                source_label TEXT,
-                received_at TEXT
-            )
-            """
-        )
-        for i in range(1, 11):
-            con.execute(
-                "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-                ("cid", "user", "Marcos", f"db {i}", "sillytavern", f"2026-05-08T00:00:{i:02d}+00:00"),
-            )
-        con.commit()
-    finally:
-        con.close()
-
-    history_full = [{"message_id": "m1", "role": "user", "content": "payload only"}]
-    history_tail = history_full[-1:]
-
-    out = main._apply_turn_history_window(
-        conversation_id="cid",
-        history_tail=history_tail,
-        history_full=history_full,
-        db_path=db_path,
-    )
-
-    assert len(out) == 8
-    assert [item["content"] for item in out] == [f"db {i}" for i in range(3, 11)]
-
-
-def test_apply_turn_history_window_db_returns_all_since_memorize_not_capped_at_8(tmp_path: Path):
-    """Floor of 8, not a cap. 15 unmemorized messages → all 15 returned."""
-    db_path = tmp_path / "Echo.db"
-    con = main._sqlite_connect(db_path)
-    try:
-        con.execute(
-            """
-            CREATE TABLE messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                conversation_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                speaker TEXT,
-                chat_name TEXT,
-                content TEXT NOT NULL,
-                source_label TEXT,
-                received_at TEXT
-            )
-            """
-        )
-        for i in range(1, 16):
-            con.execute(
-                "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-                ("cid", "user", "Marcos", f"msg {i}", "sillytavern", f"2026-05-08T00:00:{i:02d}+00:00"),
-            )
-        con.commit()
-    finally:
-        con.close()
-
-    history_tail = [{"role": "user", "content": f"msg {i}"} for i in range(1, 16)]
-
-    out = main._apply_turn_history_window(
-        conversation_id="cid",
-        history_tail=history_tail,
-        history_full=history_tail,
-        db_path=db_path,
-    )
-
-    assert len(out) == 15, f"Expected all 15 unmemorized messages, got {len(out)} — floor of 8 means minimum, not cap"
-    assert [item["content"] for item in out] == [f"msg {i}" for i in range(1, 16)]
-
-
-@pytest.mark.parametrize("tail_size,expected_window", [
-    (0, 8),    # just memorized — backfill 8 from DB
-    (1, 8),
-    (3, 8),
-    (7, 8),
-    (8, 8),    # tail matches floor
-    (9, 9),    # tail exceeds floor — show all
-    (10, 10),
-    (12, 12),
-    (15, 15),
-])
-def test_apply_turn_history_window_floor_progression(tmp_path: Path, tail_size: int, expected_window: int):
-    """After memorize, window = max(unmemorized_tail, 8)."""
-    db_path = tmp_path / "Echo.db"
-    total_db_messages = 20
-    con = main._sqlite_connect(db_path)
-    try:
-        con.execute(
-            """
-            CREATE TABLE messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                conversation_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                speaker TEXT,
-                chat_name TEXT,
-                content TEXT NOT NULL,
-                source_label TEXT,
-                received_at TEXT
-            )
-            """
-        )
-        for i in range(1, total_db_messages + 1):
-            con.execute(
-                "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-                ("cid", "user", "Marcos", f"msg {i}", "sillytavern", f"2026-05-08T00:{i:02d}:00+00:00"),
-            )
-        con.commit()
-    finally:
-        con.close()
-
-    history_tail = [{"role": "user", "content": f"msg {total_db_messages - tail_size + i + 1}"} for i in range(tail_size)]
-
-    out = main._apply_turn_history_window(
-        conversation_id="cid",
-        history_tail=history_tail,
-        history_full=history_tail,
-        db_path=db_path,
-    )
-
-    assert len(out) == expected_window, (
-        f"tail={tail_size} → expected {expected_window} messages, got {len(out)}. "
-        f"Floor of 8 means: show all since memorize, minimum 8."
-    )
-
-
-def test_apply_turn_history_window_prefers_db_over_payload(tmp_path: Path):
-    db_path = tmp_path / "Echo.db"
-    con = main._sqlite_connect(db_path)
-    try:
-        con.execute(
-            """
-            CREATE TABLE messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                conversation_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                speaker TEXT,
-                chat_name TEXT,
-                content TEXT NOT NULL,
-                source_label TEXT,
-                received_at TEXT
-            )
-            """
-        )
-        con.execute(
-            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("whatsapp:dm:15133278228", "user", "Marcos", "db-msg", "whatsapp:dm", "2026-05-08T00:00:01+00:00"),
-        )
-        con.commit()
-    finally:
-        con.close()
-
-    history_full = [{"message_id": "m1", "role": "user", "content": "payload only"}]
-    history_tail = history_full[-1:]
-
-    out = main._apply_turn_history_window(
-        conversation_id="whatsapp:dm:15133278228",
-        history_tail=history_tail,
-        history_full=history_full,
-        db_path=db_path,
-    )
-
-    assert [item["content"] for item in out] == ["db-msg"]
-    assert out[0]["name"] == "Marcos"
-
-
-def test_slice_history_after_last_memorized_segment_reads_legacy_manifest_conversation_id_key(tmp_path: Path):
-    chats_dir = tmp_path / "st_chats"
-    chats_dir.mkdir(parents=True)
-    chat_dir = chats_dir / "Echo_legacy"
-    chat_dir.mkdir(parents=True)
-    (chat_dir / "manifest.json").write_text(
-        """
-        {
-          "v": 1,
-          "segments": [{"start": 0, "end": 58}],
-          "source": {"conversationId": "integrity:abc"}
-        }
-        """.strip(),
-        encoding="utf-8",
-    )
-
-    history = [
-        {"message_id": f"m{i}", "role": "user", "content": f"msg {i}"}
-        for i in range(90)
-    ]
-
-    out = main._slice_history_after_last_memorized_segment(
-        history,
-        chats_dir=chats_dir,
-        uid="u1",
-        soul_id="Echo",
-        conversation_id="integrity:abc",
-    )
-
-    assert len(out) == 31
-    assert out[0]["message_id"] == "m59"
-    assert out[-1]["message_id"] == "m89"
-
-
 def test_build_retrieve_soul_context_queries_includes_full_history() -> None:
     history = [
         {"message_id": f"m{i}", "role": "user", "content": f"msg {i}"}
@@ -1143,6 +902,59 @@ async def test_conversation_retrieve_uses_db_history_for_primary_chat_queries(
     assert "prior db msg" in history_text
     assert "current db msg" in history_text
     assert "[Marcos]" in history_text
+
+
+@pytest.mark.asyncio
+async def test_conversation_retrieve_uses_same_db_history_for_turn_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:dm:Marcos", 0, None),
+        )
+        con.execute(
+            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("whatsapp:dm:Marcos", "user", "Marcos", "db prior msg", "whatsapp:dm", "2026-05-08T10:00:00+00:00"),
+        )
+        con.execute(
+            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("whatsapp:dm:Marcos", "user", "Marcos", "db current msg", "whatsapp:dm", "2026-05-08T10:00:01+00:00"),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+    )
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo"},
+        "message": "db current msg",
+        "query": "db current msg",
+        "history": [{"role": "user", "content": "payload only"}],
+        "build_turn_prompt": True,
+    }
+
+    out = await main.conversation_retrieve("whatsapp:dm:Marcos", payload)
+    assert out["ok"] is True
+    turn_prompt = str(out.get("turn_user_prompt") or "")
+    assert "db prior msg" in turn_prompt
+    assert "db current msg" in turn_prompt
+    assert "payload only" not in turn_prompt
 
 
 @pytest.mark.asyncio

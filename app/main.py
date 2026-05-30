@@ -1703,24 +1703,6 @@ def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, con
     )
 
 
-def _slice_history_after_last_memorized_segment(
-    history: list[dict[str, Any]],
-    *,
-    chats_dir: Path,
-    uid: str,
-    soul_id: str,
-    conversation_id: str,
-) -> list[dict[str, Any]]:
-    return _memorize_endpoint.slice_history_after_last_memorized_segment(
-        history,
-        chats_dir=chats_dir,
-        uid=uid,
-        soul_id=soul_id,
-        conversation_id=conversation_id,
-        sanitize_db_filename=_sanitize_db_filename,
-    )
-
-
 TURN_HISTORY_WINDOW_MESSAGES = 8
 
 
@@ -1773,47 +1755,6 @@ def _persist_sillytavern_history_tail(
     finally:
         con.close()
     return int(appended)
-
-
-def _apply_turn_history_window(
-    *,
-    conversation_id: str,
-    history_tail: list[dict[str, Any]],
-    history_full: list[dict[str, Any]],
-    db_path: Path | None,
-) -> list[dict[str, Any]]:
-    """Build the prompt-visible current-conversation history window.
-
-    Rules:
-    - Show all messages since last memorize (history_tail).
-    - Floor of TURN_HISTORY_WINDOW_MESSAGES: if tail is shorter, backfill
-      from DB or payload so the soul always has at least that many.
-    - Prefer DB over payload (DB has per-message speaker names).
-    """
-    floor = TURN_HISTORY_WINDOW_MESSAGES
-    need = max(len(history_tail or []), floor)
-
-    if db_path is not None and db_path.exists():
-        _phcon = _sqlite_connect(db_path)
-        try:
-            _phcon.row_factory = sqlite3.Row
-            window = _message_log.read_recent_for_conversation_ids(
-                _phcon,
-                _message_log.conversation_aliases(conversation_id),
-                limit=need,
-            )
-        finally:
-            _phcon.close()
-        if window:
-            return window
-
-    window = list(history_tail or [])
-    if len(window) < floor and history_full:
-        fallback = list(history_full)[-floor:]
-        if len(fallback) > len(window):
-            window = fallback
-
-    return window
 
 
 def _unmemorized_sleep_gap_detected(
@@ -2679,24 +2620,10 @@ async def conversation_retrieve(
                 soul_card = payload_soul_card or soul_card
 
                 message = _pick_str(safe, "message", "query") or ""
-                history_full = _normalize_turn_history(safe.get("history"))
-                # Tail = whatever hasn't been memorized yet. The most recent
-                # memorized segment (per manifest.json) marks the boundary;
-                # everything before it lives as episodes and memory context the
-                # soul retrieves.
-                history_tail = _slice_history_after_last_memorized_segment(
-                    history_full,
-                    chats_dir=(_get_storage_dir(_CONFIG) / "st_chats").resolve(),
-                    uid=uid,
-                    soul_id=soul_id,
-                    conversation_id=cid,
-                )
-                history = _apply_turn_history_window(
-                    conversation_id=cid,
-                    history_tail=history_tail,
-                    history_full=history_full,
-                    db_path=_db_path,
-                )
+                # Canonical current-chat history is assembled once above
+                # (DB unmemorized tail + floor backfill) and reused here so
+                # retrieve + turn see the same context.
+                turn_history = history
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
 
@@ -2715,7 +2642,7 @@ async def conversation_retrieve(
                     chat_label_for_prompt = None
                 out["turn_user_prompt"] = _build_turn_prompt(
                     user_message=message,
-                    history=history,
+                    history=turn_history,
                     prior_context=out.get("prior_context"),
                     retrieve_rag=out.get("result"),
                     all_categories_summary=_state_row.get("all_categories_summary"),
