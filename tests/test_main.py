@@ -962,7 +962,8 @@ async def test_conversation_retrieve_injects_cross_context_even_with_prebuilt_qu
         for q in queries
         if isinstance(q, dict)
     ]
-    assert cross_roles.count("cross_conversation") == 1
+    assert cross_roles.count("history") == 1
+    assert cross_roles.count("cross_conversation") == 0
 
 
 @pytest.mark.asyncio
