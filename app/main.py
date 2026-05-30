@@ -1785,10 +1785,13 @@ def _apply_turn_history_window(
     """Build the prompt-visible current-conversation history window.
 
     Rules:
-    - Prefer DB history (has per-message speaker names).
-    - Fall back to payload history when DB is empty or unavailable.
+    - Show all messages since last memorize (history_tail).
+    - Floor of TURN_HISTORY_WINDOW_MESSAGES: if tail is shorter, backfill
+      from DB or payload so the soul always has at least that many.
+    - Prefer DB over payload (DB has per-message speaker names).
     """
-    limit = TURN_HISTORY_WINDOW_MESSAGES
+    floor = TURN_HISTORY_WINDOW_MESSAGES
+    need = max(len(history_tail or []), floor)
 
     if db_path is not None and db_path.exists():
         _phcon = _sqlite_connect(db_path)
@@ -1797,7 +1800,7 @@ def _apply_turn_history_window(
             window = _message_log.read_recent_for_conversation_ids(
                 _phcon,
                 _message_log.conversation_aliases(conversation_id),
-                limit=limit,
+                limit=need,
             )
         finally:
             _phcon.close()
@@ -1805,8 +1808,8 @@ def _apply_turn_history_window(
             return window
 
     window = list(history_tail or [])
-    if len(window) < limit and history_full:
-        fallback = list(history_full)[-limit:]
+    if len(window) < floor and history_full:
+        fallback = list(history_full)[-floor:]
         if len(fallback) > len(window):
             window = fallback
 
