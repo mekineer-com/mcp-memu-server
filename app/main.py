@@ -1785,29 +1785,26 @@ def _apply_turn_history_window(
     """Build the prompt-visible current-conversation history window.
 
     Rules:
-    - Preserve the full unmemorized tail when present.
-    - If the unmemorized tail is shorter than TURN_HISTORY_WINDOW_MESSAGES,
-      backfill to that minimum from stored
-      conversation history (memorized + unmemorized).
-    - If DB backfill is unavailable, fallback to payload history.
+    - Prefer DB history (has per-message speaker names).
+    - Fall back to payload history when DB is empty or unavailable.
     """
     limit = TURN_HISTORY_WINDOW_MESSAGES
-    window = list(history_tail or [])
 
-    if len(window) < limit and db_path is not None and db_path.exists():
+    if db_path is not None and db_path.exists():
         _phcon = _sqlite_connect(db_path)
         try:
             _phcon.row_factory = sqlite3.Row
-            padded = _message_log.read_recent_for_conversation_ids(
+            window = _message_log.read_recent_for_conversation_ids(
                 _phcon,
                 _message_log.conversation_aliases(conversation_id),
                 limit=limit,
             )
         finally:
             _phcon.close()
-        if len(padded) > len(window):
-            window = padded
+        if window:
+            return window
 
+    window = list(history_tail or [])
     if len(window) < limit and history_full:
         fallback = list(history_full)[-limit:]
         if len(fallback) > len(window):
@@ -2610,10 +2607,16 @@ async def conversation_retrieve(
                 try:
                     _con.row_factory = sqlite3.Row
                     _sqlite_ensure_conversation_state_schema(_con)
-                    # For non-ST channels, persistence of the current user
-                    # message is deferred to conversation_turn (paired with the
-                    # assistant response) so aborted/inspected turns do not
-                    # leave orphan rows.
+                    _user_name = str(safe.get("user_name") or "").strip() or uid
+                    _chat_name_for_persist = str(safe.get("chat_name") or "").strip() or None
+                    _current_msg: dict[str, Any] = {"role": "user", "content": message}
+                    if _user_name:
+                        _current_msg["name"] = _user_name
+                    _ext_id = _pick_str(safe, "external_message_id") or None
+                    if _ext_id:
+                        _current_msg["external_message_id"] = _ext_id
+                    _message_log.append_messages(_con, cid, [_current_msg], chat_name=_chat_name_for_persist)
+                    _con.commit()
                     cross_tail = _message_log.read_all_tails(_con, exclude_conversation_id=cid)
                 finally:
                     _con.close()

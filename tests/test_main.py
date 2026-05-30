@@ -514,7 +514,7 @@ def test_apply_turn_history_window_backfills_from_db_when_available(tmp_path: Pa
     assert [item["content"] for item in out] == [f"db {i}" for i in range(3, 11)]
 
 
-def test_apply_turn_history_window_does_not_backfill_from_whatsapp_alias_ids(tmp_path: Path):
+def test_apply_turn_history_window_prefers_db_over_payload(tmp_path: Path):
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -534,11 +534,7 @@ def test_apply_turn_history_window_does_not_backfill_from_whatsapp_alias_ids(tmp
         )
         con.execute(
             "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("whatsapp:dm:114628432556258", "user", "Marcos", "lid-older", "whatsapp:dm", "2026-05-08T00:00:01+00:00"),
-        )
-        con.execute(
-            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("whatsapp:dm:15133278228", "assistant", "Echo", "phone-newer", "whatsapp:dm", "2026-05-08T00:00:02+00:00"),
+            ("whatsapp:dm:15133278228", "user", "Marcos", "db-msg", "whatsapp:dm", "2026-05-08T00:00:01+00:00"),
         )
         con.commit()
     finally:
@@ -554,7 +550,8 @@ def test_apply_turn_history_window_does_not_backfill_from_whatsapp_alias_ids(tmp
         db_path=db_path,
     )
 
-    assert [item["content"] for item in out] == ["payload only"]
+    assert [item["content"] for item in out] == ["db-msg"]
+    assert out[0]["name"] == "Marcos"
 
 
 def test_slice_history_after_last_memorized_segment_reads_legacy_manifest_conversation_id_key(tmp_path: Path):
