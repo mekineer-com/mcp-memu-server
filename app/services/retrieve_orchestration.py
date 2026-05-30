@@ -14,6 +14,8 @@ from app.services.intention_state import (
 )
 from app.services.payload import _canonicalize_scope_where, _extract_scope
 from app.services.turn_contract import (
+    _append_current_chat_marker,
+    _conversation_heading_from_conversation_id,
     format_time_anchor as _format_time_anchor,
     format_working_thoughts_lines as _format_working_thoughts_lines,
     render_history as _render_history,
@@ -143,7 +145,14 @@ def _build_retrieve_soul_context_queries(
     history_text = _render_history(history_slice)
     if history_text:
         section_header = _section_title_from_conversation_id(conversation_id)
-        soul_context_for_retrieve.append({"role": "history", "content": {"text": f"{section_header}\n\n{history_text}"}})
+        heading = _append_current_chat_marker(_conversation_heading_from_conversation_id(conversation_id))
+        heading_block = f"{heading}\n" if heading else ""
+        soul_context_for_retrieve.append(
+            {
+                "role": "history",
+                "content": {"text": f"{section_header}\n\n{heading_block}{history_text}"},
+            }
+        )
     cache_text = "\n".join(_format_working_thoughts_lines(memory_cache))
     if cache_text:
         soul_context_for_retrieve.append({"role": "memory_cache", "content": {"text": cache_text}})

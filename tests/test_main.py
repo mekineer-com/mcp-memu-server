@@ -748,6 +748,24 @@ def test_build_retrieve_soul_context_queries_orders_chats_before_working_and_int
     assert working_text.startswith("1. cache entry")
 
 
+def test_build_retrieve_soul_context_queries_includes_current_chat_heading_for_whatsapp_dm() -> None:
+    history = [
+        {"message_id": "m1", "role": "user", "name": "Marcos", "content": "hello"},
+    ]
+    queries = main._build_retrieve_soul_context_queries(
+        soul_id="Echo",
+        message="current",
+        history=history,
+        state_row={"memory_cache": [], "intentions_active": {"items": []}},
+        conversation_id="whatsapp:dm:Marcos",
+    )
+    history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
+    assert len(history_rows) == 1
+    text = str((history_rows[0].get("content") or {}).get("text") or "")
+    assert "## My WhatsApp Conversations:" in text
+    assert "[dm][Marcos] \u2190 current chat" in text
+
+
 @pytest.mark.asyncio
 async def test_run_memorize_episodes_records_failure_progress_on_exception(tmp_path):
     segments_dir = tmp_path / "segments"
