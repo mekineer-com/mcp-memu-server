@@ -2607,16 +2607,6 @@ async def conversation_retrieve(
                 try:
                     _con.row_factory = sqlite3.Row
                     _sqlite_ensure_conversation_state_schema(_con)
-                    _user_name = str(safe.get("user_name") or "").strip() or uid
-                    _chat_name_for_persist = str(safe.get("chat_name") or "").strip() or None
-                    _current_msg: dict[str, Any] = {"role": "user", "content": message}
-                    if _user_name:
-                        _current_msg["name"] = _user_name
-                    _ext_id = _pick_str(safe, "external_message_id") or None
-                    if _ext_id:
-                        _current_msg["external_message_id"] = _ext_id
-                    _message_log.append_messages(_con, cid, [_current_msg], chat_name=_chat_name_for_persist)
-                    _con.commit()
                     cross_tail = _message_log.read_all_tails(_con, exclude_conversation_id=cid)
                 finally:
                     _con.close()
@@ -3364,12 +3354,42 @@ async def conversation_turn_undo(
     return {"status": "restored"}
 
 
+def _persist_inbound_user_message(
+    conversation_id: str,
+    user_id: str,
+    soul_id: str,
+    message: str,
+    user_name: str | None = None,
+    chat_name: str | None = None,
+    external_message_id: str | None = None,
+) -> None:
+    _write_conversation_state(conversation_id, soul_id=soul_id, user_id=user_id, updates={})
+    _, _, db_path = _load_turn_state_and_soul_card(conversation_id, user_id=user_id, soul_id=soul_id)
+    if db_path is None or not db_path.exists():
+        return
+    msg: dict[str, Any] = {"role": "user", "content": message}
+    speaker = str(user_name or "").strip() or user_id
+    if speaker:
+        msg["name"] = speaker
+    if external_message_id:
+        msg["external_message_id"] = external_message_id
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
+        _message_log.append_messages(con, conversation_id, [msg], chat_name=chat_name)
+        con.commit()
+    finally:
+        con.close()
+
+
 @app.post("/integration/memu/turn", operation_id="memu_turn", tags=["mcp_tools"])
 async def mcp_memu_turn(req: _mcp_tools.MemuTurnRequest):
     return await _mcp_tools.memu_turn_endpoint(
         req,
         conversation_retrieve=conversation_retrieve,
         conversation_turn=conversation_turn,
+        persist_user_message=_persist_inbound_user_message,
     )
 
 
