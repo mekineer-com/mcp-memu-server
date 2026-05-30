@@ -279,6 +279,14 @@ def format_memory_line(
     return " ".join(parts)
 
 
+def format_working_thoughts_lines(memory_cache: Any) -> list[str]:
+    cache = normalize_memory_cache(memory_cache)
+    cache_lines = [f"{idx + 1}. {entry}" for idx, entry in enumerate(cache)]
+    if len(cache) >= MAX_MEMORY_CACHE_ENTRIES:
+        cache_lines[0] = f"{cache_lines[0]}  \u2190 oldest, replaced on next write"
+    return cache_lines
+
+
 def format_shaped_by_line(
     shaped_by: dict[str, Any],
     *,
@@ -572,10 +580,7 @@ def build_turn_prompt(
     conversation_id: str | None = None,
     now: datetime | None = None,
 ) -> str:
-    cache = normalize_memory_cache(memory_cache)
-    cache_lines = [f"{idx + 1}. {entry}" for idx, entry in enumerate(cache)]
-    if len(cache) >= MAX_MEMORY_CACHE_ENTRIES:
-        cache_lines[0] = f"{cache_lines[0]}  \u2190 oldest, replaced on next write"
+    cache_lines = format_working_thoughts_lines(memory_cache)
 
     rendered_retrieve, item_terms = _render_retrieve(retrieve_rag, now=now)
     rendered_all_categories, all_categories_terms = _render_all_categories_summary(

@@ -15,6 +15,7 @@ from app.services.intention_state import (
 from app.services.payload import _canonicalize_scope_where, _extract_scope
 from app.services.turn_contract import (
     format_time_anchor as _format_time_anchor,
+    format_working_thoughts_lines as _format_working_thoughts_lines,
     render_history as _render_history,
     _section_title_from_conversation_id,
 )
@@ -143,7 +144,7 @@ def _build_retrieve_soul_context_queries(
     if history_text:
         section_header = _section_title_from_conversation_id(conversation_id)
         soul_context_for_retrieve.append({"role": "history", "content": {"text": f"{section_header}\n\n{history_text}"}})
-    cache_text = "\n".join(str(entry) for entry in (memory_cache or []))
+    cache_text = "\n".join(_format_working_thoughts_lines(memory_cache))
     if cache_text:
         soul_context_for_retrieve.append({"role": "memory_cache", "content": {"text": cache_text}})
     intentions_text = _format_intentions_for_prompt(intentions_active) if intentions_active else ""

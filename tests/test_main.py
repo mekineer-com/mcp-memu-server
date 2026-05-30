@@ -742,6 +742,10 @@ def test_build_retrieve_soul_context_queries_orders_chats_before_working_and_int
     assert roles.index("history") < roles.index("memory_cache")
     assert roles.index("memory_cache") < roles.index("intentions")
     assert roles[-1] == "user"
+    working_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "memory_cache"]
+    assert len(working_rows) == 1
+    working_text = str((working_rows[0].get("content") or {}).get("text") or "")
+    assert working_text.startswith("1. cache entry")
 
 
 @pytest.mark.asyncio
