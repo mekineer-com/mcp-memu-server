@@ -130,33 +130,6 @@ def test_consolidation_error_fields_round_trip_through_state() -> None:
         assert loaded["last_consolidation_error_at"] == now_iso
 
 
-def test_subconscious_message_round_trip_through_state() -> None:
-    from app.services import soul_state as _soul_state
-
-    with tempfile.TemporaryDirectory() as td:
-        tmp_dir = Path(td)
-        db_path, sqlite_dir = _tmp_sqlite_setup(tmp_dir, soul_id="SoulC")
-
-        cid = "conv-subconscious"
-        write_conversation_state(
-            cid,
-            sqlite_current_path=lambda _user, _soul: db_path,
-            sqlite_dir=sqlite_dir,
-            soul_id="SoulC",
-            user_id="UserC",
-            updates={"subconscious_message": "[subconscious] remember this"},
-        )
-
-        con = sqlite3.connect(db_path)
-        try:
-            con.row_factory = sqlite3.Row
-            soul = _soul_state.read(con)
-        finally:
-            con.close()
-
-        assert soul["subconscious_message"] == "[subconscious] remember this"
-
-
 @pytest.mark.asyncio
 async def test_forced_memorize_raises_if_state_error_write_fails() -> None:
     class _Logger:

@@ -1433,7 +1433,6 @@ async def _apimw_persist(
 
         message_to_self = str(result_json.get("message_to_self") or "").strip()
         if message_to_self:
-            updates["subconscious_message"] = f"[subconscious] {message_to_self[:300]}"
             try:
                 sc_text = message_to_self[:300]
                 sc_embedding = (await svc.embed([sc_text], profile="embedding"))[0]
@@ -2691,7 +2690,6 @@ async def conversation_retrieve(
                     soul_card=soul_card,
                     response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
                 )
-                _subconscious_msg = str(_state_row.get("subconscious_message") or "").strip() or None
                 chat_name_for_prompt = str(safe.get("chat_name") or "").strip()
                 chat_type_for_prompt = str(safe.get("chat_type") or "").strip()
                 if chat_name_for_prompt and chat_type_for_prompt:
@@ -2708,16 +2706,10 @@ async def conversation_retrieve(
                     all_categories_summary=_state_row.get("all_categories_summary"),
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
-                    subconscious_message=_subconscious_msg,
                     cross_conversation_history=safe.get("_cross_conversation_history"),
                     chat_label=chat_label_for_prompt,
                     conversation_id=cid,
                 )
-                if _subconscious_msg:
-                    _write_conversation_state(
-                        cid, soul_id=soul_id, user_id=uid,
-                        updates={"subconscious_message": None},
-                    )
 
         _record_call(
             "conversation.retrieve",
