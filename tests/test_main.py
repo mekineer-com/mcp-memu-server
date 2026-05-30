@@ -1059,6 +1059,71 @@ async def test_conversation_retrieve_injects_cross_context_even_with_prebuilt_qu
 
 
 @pytest.mark.asyncio
+async def test_conversation_retrieve_uses_db_history_for_primary_chat_queries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:dm:15133278228", 0, None),
+        )
+        con.execute(
+            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("whatsapp:dm:15133278228", "user", "Marcos", "prior db msg", "whatsapp:dm", "2026-05-08T10:00:00+00:00"),
+        )
+        con.execute(
+            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("whatsapp:dm:15133278228", "user", "Marcos", "current db msg", "whatsapp:dm", "2026-05-08T10:00:01+00:00"),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+    )
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        captured["safe"] = safe
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo"},
+        "message": "current db msg",
+        "query": "current db msg",
+        "history": [{"role": "user", "content": "payload-only current"}],
+    }
+
+    out = await main.conversation_retrieve("whatsapp:dm:15133278228", payload)
+    assert out["ok"] is True
+
+    safe = captured["safe"]
+    assert isinstance(safe, dict)
+    queries = safe.get("queries")
+    assert isinstance(queries, list)
+    history_entries = [
+        q for q in queries
+        if isinstance(q, dict) and str(q.get("role") or "").strip() == "history"
+    ]
+    assert len(history_entries) == 1
+    history_text = str(history_entries[0].get("content", {}).get("text", "")).strip()
+    assert "prior db msg" in history_text
+    assert "current db msg" in history_text
+    assert "[Marcos]" in history_text
+
+
+@pytest.mark.asyncio
 async def test_conversation_retrieve_does_not_persist_current_user_message(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
