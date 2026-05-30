@@ -162,6 +162,81 @@ async def test_memu_turn_omits_blank_chat_fields() -> None:
     assert "memorize_chat" not in turn_payload
 
 
+@pytest.mark.asyncio
+async def test_memu_turn_skips_persist_when_no_external_message_id() -> None:
+    persist_calls: list[dict[str, Any]] = []
+
+    def fake_persist(**kwargs: Any) -> None:
+        persist_calls.append(kwargs)
+
+    async def fake_retrieve(_cid: str, _p: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "turn_system_prompt": "s",
+            "turn_user_prompt": "u",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "result": {"categories": [], "items": [], "resources": []},
+        }
+
+    async def fake_turn(_cid: str, _p: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": True, "conversation_id": "c1", "response": "hi",
+            "response_target": "respond", "response_peer": "",
+            "apimw": None, "retrieve_ms": 1, "turn_ms": 1,
+        }
+
+    await mcp_tools.memu_turn_endpoint(
+        mcp_tools.MemuTurnRequest(
+            conversation_id="c1", user_id="u1", soul_id="s1",
+            message="hello",
+        ),
+        conversation_retrieve=fake_retrieve,
+        conversation_turn=fake_turn,
+        persist_user_message=fake_persist,
+    )
+
+    assert persist_calls == [], "persist must be skipped when external_message_id is absent"
+
+
+@pytest.mark.asyncio
+async def test_memu_turn_calls_persist_when_external_message_id_present() -> None:
+    persist_calls: list[dict[str, Any]] = []
+
+    def fake_persist(**kwargs: Any) -> None:
+        persist_calls.append(kwargs)
+
+    async def fake_retrieve(_cid: str, _p: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "turn_system_prompt": "s",
+            "turn_user_prompt": "u",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "result": {"categories": [], "items": [], "resources": []},
+        }
+
+    async def fake_turn(_cid: str, _p: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": True, "conversation_id": "c1", "response": "hi",
+            "response_target": "respond", "response_peer": "",
+            "apimw": None, "retrieve_ms": 1, "turn_ms": 1,
+        }
+
+    await mcp_tools.memu_turn_endpoint(
+        mcp_tools.MemuTurnRequest(
+            conversation_id="c1", user_id="u1", soul_id="s1",
+            message="hello", external_message_id="whatsapp-msg-123",
+            user_name="Marcos", chat_name="Marcos",
+        ),
+        conversation_retrieve=fake_retrieve,
+        conversation_turn=fake_turn,
+        persist_user_message=fake_persist,
+    )
+
+    assert len(persist_calls) == 1
+    assert persist_calls[0]["external_message_id"] == "whatsapp-msg-123"
+    assert persist_calls[0]["user_name"] == "Marcos"
+
+
 def test_memu_retrieve_request_requires_query_or_queries() -> None:
     with pytest.raises(ValidationError):
         mcp_tools.MemuRetrieveRequest(
