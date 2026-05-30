@@ -2637,6 +2637,9 @@ async def conversation_retrieve(
                     if isinstance(query, dict) and str(query.get("role") or "").strip() == "history":
                         current_history = str(query.get("content", {}).get("text", "") if isinstance(query.get("content"), dict) else "").strip()
                         section_header = _section_title_from_conversation_id(cid)
+                        # Strip embedded section header — _merge expects a raw chat block
+                        if current_history.startswith(section_header):
+                            current_history = current_history[len(section_header):].strip()
                         merged = _merge_current_into_conversations(cross_text, current_history, section_header)
                         queries[i] = {"role": "history", "content": {"text": merged}}
                         break
