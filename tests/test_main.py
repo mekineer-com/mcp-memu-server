@@ -514,6 +514,47 @@ def test_apply_turn_history_window_backfills_from_db_when_available(tmp_path: Pa
     assert [item["content"] for item in out] == [f"db {i}" for i in range(3, 11)]
 
 
+def test_apply_turn_history_window_db_returns_all_since_memorize_not_capped_at_8(tmp_path: Path):
+    """Floor of 8, not a cap. 15 unmemorized messages → all 15 returned."""
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.execute(
+            """
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                speaker TEXT,
+                chat_name TEXT,
+                content TEXT NOT NULL,
+                source_label TEXT,
+                received_at TEXT
+            )
+            """
+        )
+        for i in range(1, 16):
+            con.execute(
+                "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("cid", "user", "Marcos", f"msg {i}", "sillytavern", f"2026-05-08T00:00:{i:02d}+00:00"),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+    history_tail = [{"role": "user", "content": f"msg {i}"} for i in range(1, 16)]
+
+    out = main._apply_turn_history_window(
+        conversation_id="cid",
+        history_tail=history_tail,
+        history_full=history_tail,
+        db_path=db_path,
+    )
+
+    assert len(out) == 15, f"Expected all 15 unmemorized messages, got {len(out)} — floor of 8 means minimum, not cap"
+    assert [item["content"] for item in out] == [f"msg {i}" for i in range(1, 16)]
+
+
 def test_apply_turn_history_window_prefers_db_over_payload(tmp_path: Path):
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
