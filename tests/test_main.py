@@ -684,7 +684,7 @@ def test_slice_history_after_last_memorized_segment_reads_legacy_manifest_conver
     assert out[-1]["message_id"] == "m89"
 
 
-def test_build_retrieve_soul_context_queries_uses_last_8_messages_for_rewrite() -> None:
+def test_build_retrieve_soul_context_queries_includes_full_history() -> None:
     history = [
         {"message_id": f"m{i}", "role": "user", "content": f"msg {i}"}
         for i in range(1, 16)
@@ -699,9 +699,8 @@ def test_build_retrieve_soul_context_queries_uses_last_8_messages_for_rewrite() 
     assert len(history_rows) == 1
     text = str((history_rows[0].get("content") or {}).get("text") or "")
     assert "[user] current" in text
-    assert "[user] msg 9" in text
+    assert "[user] msg 1" in text
     assert "[user] msg 15" in text
-    assert "[user] msg 8" not in text
 
 
 def test_build_retrieve_soul_context_queries_uses_last_12_messages_for_apimw_rewrite() -> None:
