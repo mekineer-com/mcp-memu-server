@@ -2613,14 +2613,6 @@ async def conversation_retrieve(
                     cross_tail = _message_log.read_all_tails(_con, exclude_conversation_id=cid)
                 finally:
                     _con.close()
-                db_history = _apply_turn_history_window(
-                    conversation_id=cid,
-                    history_tail=history,
-                    history_full=history,
-                    db_path=_db_path,
-                )
-                if db_history:
-                    history = db_history
 
         if safe.get("queries") is None and uid and soul_id and message.strip() and state_row is not None:
             safe["queries"] = _build_retrieve_soul_context_queries(
