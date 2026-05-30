@@ -128,7 +128,8 @@ async def memu_turn_endpoint(
     if isinstance(req.memorize_chat, bool):
         retrieve_payload["memorize_chat"] = req.memorize_chat
 
-    if persist_user_message is not None:
+    ext_msg_id = str(req.external_message_id or "").strip() or None
+    if persist_user_message is not None and ext_msg_id:
         persist_user_message(
             conversation_id=conversation_id,
             user_id=str(req.user_id or "").strip(),
@@ -136,7 +137,7 @@ async def memu_turn_endpoint(
             message=message,
             user_name=user_name or None,
             chat_name=chat_name or None,
-            external_message_id=str(req.external_message_id or "").strip() or None,
+            external_message_id=ext_msg_id,
         )
 
     retrieve_out = await conversation_retrieve(conversation_id, retrieve_payload)
