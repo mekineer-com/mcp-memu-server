@@ -1792,21 +1792,22 @@ def _apply_turn_history_window(
     - If DB backfill is unavailable, fallback to payload history.
     """
     limit = TURN_HISTORY_WINDOW_MESSAGES
-    window = list(history_tail or [])
+    window: list[dict[str, Any]] = []
 
-    if len(window) < limit and db_path is not None and db_path.exists():
+    if db_path is not None and db_path.exists():
         _phcon = _sqlite_connect(db_path)
         try:
             _phcon.row_factory = sqlite3.Row
-            padded = _message_log.read_recent_for_conversation_ids(
+            window = _message_log.read_recent_for_conversation_ids(
                 _phcon,
                 _message_log.conversation_aliases(conversation_id),
                 limit=limit,
             )
         finally:
             _phcon.close()
-        if len(padded) > len(window):
-            window = padded
+
+    if not window:
+        window = list(history_tail or [])
 
     if len(window) < limit and history_full:
         fallback = list(history_full)[-limit:]
