@@ -555,6 +555,61 @@ def test_apply_turn_history_window_db_returns_all_since_memorize_not_capped_at_8
     assert [item["content"] for item in out] == [f"msg {i}" for i in range(1, 16)]
 
 
+@pytest.mark.parametrize("tail_size,expected_window", [
+    (0, 8),    # just memorized — backfill 8 from DB
+    (1, 8),
+    (3, 8),
+    (7, 8),
+    (8, 8),    # tail matches floor
+    (9, 9),    # tail exceeds floor — show all
+    (10, 10),
+    (12, 12),
+    (15, 15),
+])
+def test_apply_turn_history_window_floor_progression(tmp_path: Path, tail_size: int, expected_window: int):
+    """After memorize, window = max(unmemorized_tail, 8)."""
+    db_path = tmp_path / "Echo.db"
+    total_db_messages = 20
+    con = main._sqlite_connect(db_path)
+    try:
+        con.execute(
+            """
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                speaker TEXT,
+                chat_name TEXT,
+                content TEXT NOT NULL,
+                source_label TEXT,
+                received_at TEXT
+            )
+            """
+        )
+        for i in range(1, total_db_messages + 1):
+            con.execute(
+                "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("cid", "user", "Marcos", f"msg {i}", "sillytavern", f"2026-05-08T00:{i:02d}:00+00:00"),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+    history_tail = [{"role": "user", "content": f"msg {total_db_messages - tail_size + i + 1}"} for i in range(tail_size)]
+
+    out = main._apply_turn_history_window(
+        conversation_id="cid",
+        history_tail=history_tail,
+        history_full=history_tail,
+        db_path=db_path,
+    )
+
+    assert len(out) == expected_window, (
+        f"tail={tail_size} → expected {expected_window} messages, got {len(out)}. "
+        f"Floor of 8 means: show all since memorize, minimum 8."
+    )
+
+
 def test_apply_turn_history_window_prefers_db_over_payload(tmp_path: Path):
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
