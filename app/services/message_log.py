@@ -545,11 +545,11 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
 
     dir_names = _load_whatsapp_directory_names()
 
-    sections: dict[str, list[str]] = {}
+    sections: dict[str, list[tuple[str, str]]] = {}
     for cid, rows in by_conversation.items():
         kind, key = _conversation_kind_and_key(cid)
         section_key = _section_title(kind)
-        blocks = sections.setdefault(section_key, [])
+        entries = sections.setdefault(section_key, [])
         chat_name = ""
         for msg in reversed(rows):
             candidate = str(msg.get("chat_name") or "").strip()
@@ -560,7 +560,11 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
             _conversation_heading(kind, key, dir_names, chat_name or None)
         ]
         last_time_label: str | None = None
+        newest_ts = ""
         for msg in rows:
+            ts = str(msg.get("received_at") or "")
+            if ts > newest_ts:
+                newest_ts = ts
             time_label = format_relative_time_label(msg.get("received_at"))
             if time_label and time_label != last_time_label:
                 conv_lines.append(f"--- {time_label} ---")
@@ -568,8 +572,6 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
             role = str(msg.get("role") or "").strip()
             speaker = str(msg.get("speaker") or "").strip()
             content = str(msg.get("content") or "")
-            # Legacy fallback: pre-eb51570 group rows stored the raw "[Sender] body"
-            # text. The content prefix is the authoritative sender for groups.
             if role == "user" and kind == "whatsapp_group":
                 parsed = _parse_shared_group_sender_prefix(content)
                 if parsed is not None:
@@ -577,12 +579,14 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
             if not speaker:
                 speaker = role or "unknown"
             conv_lines.append(f"[{speaker}]: {content}")
-        blocks.append("\n".join(conv_lines))
+        entries.append((newest_ts, "\n".join(conv_lines)))
 
     lines: list[str] = []
-    for section_title, blocks in sections.items():
-        if not blocks:
+    for section_title, entries in sections.items():
+        if not entries:
             continue
+        entries.sort(key=lambda e: e[0])
+        blocks = [block for _, block in entries]
         if lines:
             lines.append("")
         lines.append(section_title)

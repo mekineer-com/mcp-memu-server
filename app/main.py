@@ -113,6 +113,8 @@ from app.services.turn_contract import (
     make_turn_system_prompt as _make_turn_system_prompt,
     parse_turn_contract as _parse_turn_contract,
     render_history as _render_history,
+    _merge_current_into_conversations,
+    _section_title_from_conversation_id,
 )
 
 
@@ -2627,15 +2629,19 @@ async def conversation_retrieve(
             )
 
         if cross_tail:
-            safe["_cross_conversation_history"] = _message_log.format_merged_history(cross_tail)
+            cross_text = _message_log.format_merged_history(cross_tail)
+            safe["_cross_conversation_history"] = cross_text
             queries = safe.get("queries")
             if isinstance(queries, list):
-                has_cross_conversation = any(
-                    isinstance(query, dict) and str(query.get("role") or "").strip() == "cross_conversation"
-                    for query in queries
-                )
-                if not has_cross_conversation:
-                    queries.insert(-1, {"role": "cross_conversation", "content": {"text": safe["_cross_conversation_history"]}})
+                for i, query in enumerate(queries):
+                    if isinstance(query, dict) and str(query.get("role") or "").strip() == "history":
+                        current_history = str(query.get("content", {}).get("text", "") if isinstance(query.get("content"), dict) else "").strip()
+                        section_header = _section_title_from_conversation_id(cid)
+                        merged = _merge_current_into_conversations(cross_text, current_history, section_header)
+                        queries[i] = {"role": "history", "content": {"text": merged}}
+                        break
+                else:
+                    queries.insert(-1, {"role": "history", "content": {"text": cross_text}})
 
         out = await _run_retrieve(safe, conversation_id=cid)
 
