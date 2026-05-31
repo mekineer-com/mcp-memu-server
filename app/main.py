@@ -3169,7 +3169,7 @@ async def conversation_turn(
             if ext_msg_id:
                 current_user_msg["external_message_id"] = ext_msg_id
             append_rows: list[dict[str, Any]] = [current_user_msg]
-            if response_text:
+            if response_text and response_target == "respond":
                 append_rows.append(
                     {"role": "assistant", "name": soul_id, "content": response_text}
                 )
