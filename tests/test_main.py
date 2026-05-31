@@ -118,9 +118,9 @@ def test_prompt_log_after_emits_single_block(caplog: pytest.LogCaptureFixture) -
         main._prompt_log_after(ctx, request_view, response_view, usage)
     text = caplog.text
     assert "===== TURN · respond" in text
-    assert "[PROMPT] req=req-1 op=turn step=respond model=minimax/minimax-m2.7" in text
-    assert "[PAYLOAD] req=req-1 op=turn step=respond kind=chat model=minimax/minimax-m2.7" in text
-    assert "[RESPONSE] req=req-1 op=turn step=respond" in text
+    assert "[PROMPT] chain=- req=req-1 op=turn step=respond model=minimax/minimax-m2.7" in text
+    assert "[PAYLOAD] chain=- req=req-1 op=turn step=respond kind=chat model=minimax/minimax-m2.7" in text
+    assert "[RESPONSE] chain=- req=req-1 op=turn step=respond" in text
     assert "content_chars=2" in text
     assert "\nok\n" in text
 
@@ -143,9 +143,9 @@ def test_prompt_log_on_error_emits_error_block(caplog: pytest.LogCaptureFixture)
         main._prompt_log_on_error(ctx, request_view, error, usage)
     text = caplog.text
     assert "===== RETRIEVE · decide_retrieval" in text
-    assert "[PROMPT] req=req-2 op=retrieve step=decide_retrieval model=minimax/minimax-m2.7" in text
-    assert "[PAYLOAD] req=req-2 op=retrieve step=decide_retrieval kind=chat model=minimax/minimax-m2.7" in text
-    assert "[ERROR] req=req-2 op=retrieve step=decide_retrieval" in text
+    assert "[PROMPT] chain=- req=req-2 op=retrieve step=decide_retrieval model=minimax/minimax-m2.7" in text
+    assert "[PAYLOAD] chain=- req=req-2 op=retrieve step=decide_retrieval kind=chat model=minimax/minimax-m2.7" in text
+    assert "[ERROR] chain=- req=req-2 op=retrieve step=decide_retrieval" in text
     assert "type=TimeoutError message=timed out" in text
 
 

@@ -72,6 +72,8 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
     assert out["response"] == "done"
     assert out["response_target"] == "private"
     assert out["response_peer"] == ""
+    assert isinstance(out.get("chain_id"), str)
+    assert len(str(out.get("chain_id") or "")) == 32
     assert [row[0] for row in captured] == ["retrieve", "turn"]
     retrieve_payload = captured[0][2]
     turn_payload = captured[1][2]
@@ -83,6 +85,8 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
     assert turn_payload.get("chat_name") == "Alice"
     assert turn_payload.get("chat_type") == "dm"
     assert turn_payload.get("memorize_chat") is False
+    assert retrieve_payload.get("chain_id") == out.get("chain_id")
+    assert turn_payload.get("chain_id") == out.get("chain_id")
     override_payload = turn_payload.get("prompt_override_payload")
     assert isinstance(override_payload, dict)
     assert override_payload.get("retrieve_ms") == 42
