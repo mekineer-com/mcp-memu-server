@@ -294,7 +294,6 @@ def read_all_tails(
 
         all_messages.extend(window)
 
-    all_messages.sort(key=lambda m: m.get("received_at") or "")
     if max_messages > 0:
         return all_messages[-max_messages:]
     return all_messages
