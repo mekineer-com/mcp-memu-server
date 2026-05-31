@@ -64,11 +64,9 @@ def _build_retrieve_identity_context(
     soul_name: str,
     *,
     apimw: bool = False,
-    format_time_anchor: Callable[[], str] | None = None,
 ) -> str:
     name = str(soul_name or "").strip() or "the assistant"
-    time_anchor = format_time_anchor or _format_time_anchor
-    anchor = f"Today is {time_anchor()}."
+    anchor = f"Today is {_format_time_anchor()}."
     if apimw:
         identity = (
             f"I, {name}, have everything that matters to me. "

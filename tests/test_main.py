@@ -438,7 +438,8 @@ def test_parse_as_of_datetime_rejects_invalid():
 
 def test_build_retrieve_identity_context_uses_shared_time_anchor(monkeypatch: pytest.MonkeyPatch):
     sentinel_anchor = "__ANCHOR_FROM_SHARED_FORMATTER__"
-    monkeypatch.setattr(main, "_format_time_anchor", lambda *_a, **_k: sentinel_anchor)
+    from app.services import retrieve_orchestration
+    monkeypatch.setattr(retrieve_orchestration, "_format_time_anchor", lambda *_a, **_k: sentinel_anchor)
     out = main._build_retrieve_identity_context("Echo")
     assert out.startswith(f"Today is {sentinel_anchor}.")
 

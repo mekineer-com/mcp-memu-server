@@ -832,14 +832,7 @@ _extract_retrieve_queries = _retrieve_orchestration._extract_retrieve_queries
 
 # ==== Turn prompt context builders ====
 
-def _build_retrieve_identity_context(soul_name: str, *, apimw: bool = False) -> str:
-    return _retrieve_orchestration._build_retrieve_identity_context(
-        soul_name,
-        apimw=apimw,
-        format_time_anchor=_format_time_anchor,
-    )
-
-
+_build_retrieve_identity_context = _retrieve_orchestration._build_retrieve_identity_context
 _build_retrieve_soul_context_queries = _retrieve_orchestration._build_retrieve_soul_context_queries
 
 
