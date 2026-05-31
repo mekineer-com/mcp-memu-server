@@ -2100,10 +2100,6 @@ async def force_consolidation(
 
         safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
         safe["conversation_id"] = cid
-        trace_id_raw = safe.get("trace_id")
-        if trace_id_raw is not None and not isinstance(trace_id_raw, str):
-            raise HTTPException(status_code=400, detail="'trace_id' must be a string")
-        trace_id = str(trace_id_raw or "").strip() or None
         svc = _get_service_from_payload(safe)
 
         state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
@@ -3035,6 +3031,10 @@ async def conversation_turn(
 
         safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
         safe["conversation_id"] = cid
+        trace_id_raw = safe.get("trace_id")
+        if trace_id_raw is not None and not isinstance(trace_id_raw, str):
+            raise HTTPException(status_code=400, detail="'trace_id' must be a string")
+        trace_id = str(trace_id_raw or "").strip() or None
 
         state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
 
