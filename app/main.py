@@ -1709,9 +1709,10 @@ def _persist_sillytavern_history_tail(
     soul_id: str,
     safe_payload: dict[str, Any],
     history: list[dict[str, Any]],
-    history_raw: Any,
 ) -> int:
     if _message_log.derive_source_label(conversation_id) != "sillytavern":
+        return 0
+    if not history:
         return 0
 
     _, db_path = _write_conversation_state(
@@ -1722,34 +1723,15 @@ def _persist_sillytavern_history_tail(
     )
 
     rows: list[dict[str, Any]] = []
-    if isinstance(history_raw, list):
-        source_items: list[dict[str, Any]] = [item for item in history_raw if isinstance(item, dict)]
-    else:
-        source_items = [item for item in history if isinstance(item, dict)]
-
-    for item in source_items:
-        content = _pick_str(item, "content", "text") or ""
+    for item in history:
+        content = str(item.get("content") or "").strip()
         if not content:
             continue
         role = str(item.get("role") or "user").strip() or "user"
         msg: dict[str, Any] = {"role": role, "content": content}
-        speaker = _pick_str(item, "name", "speaker") or ""
+        speaker = str(item.get("name") or "").strip()
         if speaker:
             msg["name"] = speaker
-        ts_ms = _parse_turn_ts_ms(item.get("ts_ms"))
-        if ts_ms is None:
-            ts_ms = _parse_turn_ts_ms(item.get("timestamp"))
-        if ts_ms is not None:
-            msg["ts_ms"] = ts_ms
-        explicit_message_id = _pick_str(
-            item,
-            "source_message_id",
-            "message_id",
-            "id",
-            "mid",
-        )
-        if explicit_message_id:
-            msg["external_message_id"] = explicit_message_id
         rows.append(msg)
     if not rows:
         return 0
@@ -2554,7 +2536,6 @@ async def conversation_retrieve(
                 soul_id=soul_id,
                 safe_payload=safe,
                 history=history,
-                history_raw=safe.get("history"),
             )
             state_row, _soul_card, _db_path = _load_turn_state_and_soul_card(
                 cid,
