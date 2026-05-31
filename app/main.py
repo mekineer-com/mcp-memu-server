@@ -589,7 +589,7 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
     op = getattr(ctx, "operation", None) or "-"
     step = getattr(ctx, "step_id", None) or "-"
     req_id = str(getattr(ctx, "request_id", "") or "").strip() or "-"
-    chain_id = str(getattr(ctx, "trace_id", "") or "").strip() or "-"
+    trace_id = str(getattr(ctx, "trace_id", "") or "").strip() or "-"
     model = getattr(ctx, "model", None) or "-"
     banner = f"===== {str(op).upper()} · {step} ".ljust(70, "=")
     lines = [
@@ -598,11 +598,11 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
         "",
         banner,
         "",
-        f"[PROMPT] chain={chain_id} req={req_id} op={op} step={step} model={model}",
+        f"[PROMPT] trace={trace_id} req={req_id} op={op} step={step} model={model}",
     ]
     if isinstance(payload, dict):
         payload_log_text = json.dumps(payload, ensure_ascii=False, indent=2).replace("\\n", "\n")
-        lines.append(f"[PAYLOAD] chain={chain_id} req={req_id} op={op} step={step} kind={kind or '-'} model={model}")
+        lines.append(f"[PAYLOAD] trace={trace_id} req={req_id} op={op} step={step} kind={kind or '-'} model={model}")
         lines.append(payload_log_text)
     finish_reason = getattr(usage, "finish_reason", None)
     in_tok = getattr(usage, "input_tokens", None)
@@ -610,7 +610,7 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
     total_tok = getattr(usage, "total_tokens", None)
     lines.append(
         (
-            f"[RESPONSE] chain={chain_id} req={req_id} op={op} step={step} elapsed={elapsed:.1f}s "
+            f"[RESPONSE] trace={trace_id} req={req_id} op={op} step={step} elapsed={elapsed:.1f}s "
             f"finish_reason={finish_reason} tokens=in:{in_tok}/out:{out_tok}/total:{total_tok} "
             f"content_chars={len(content or '')}"
         )
@@ -633,7 +633,7 @@ def _prompt_log_on_error(ctx: Any, request_view: Any, error: Any, usage: Any) ->
     op = getattr(ctx, "operation", None) or "-"
     step = getattr(ctx, "step_id", None) or "-"
     req_id = str(getattr(ctx, "request_id", "") or "").strip() or "-"
-    chain_id = str(getattr(ctx, "trace_id", "") or "").strip() or "-"
+    trace_id = str(getattr(ctx, "trace_id", "") or "").strip() or "-"
     model = getattr(ctx, "model", None) or "-"
     banner = f"===== {str(op).upper()} · {step} ".ljust(70, "=")
     lines = [
@@ -642,16 +642,16 @@ def _prompt_log_on_error(ctx: Any, request_view: Any, error: Any, usage: Any) ->
         "",
         banner,
         "",
-        f"[PROMPT] chain={chain_id} req={req_id} op={op} step={step} model={model}",
+        f"[PROMPT] trace={trace_id} req={req_id} op={op} step={step} model={model}",
     ]
     if isinstance(payload, dict):
         payload_log_text = json.dumps(payload, ensure_ascii=False, indent=2).replace("\\n", "\n")
         kind = getattr(request_view, "kind", None)
-        lines.append(f"[PAYLOAD] chain={chain_id} req={req_id} op={op} step={step} kind={kind or '-'} model={model}")
+        lines.append(f"[PAYLOAD] trace={trace_id} req={req_id} op={op} step={step} kind={kind or '-'} model={model}")
         lines.append(payload_log_text)
     lines.append(
         (
-            f"[ERROR] chain={chain_id} req={req_id} op={op} step={step} elapsed={elapsed:.1f}s "
+            f"[ERROR] trace={trace_id} req={req_id} op={op} step={step} elapsed={elapsed:.1f}s "
             f"type={type(error).__name__} message={error}"
         )
     )
@@ -2100,10 +2100,10 @@ async def force_consolidation(
 
         safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
         safe["conversation_id"] = cid
-        chain_id_raw = safe.get("chain_id")
-        if chain_id_raw is not None and not isinstance(chain_id_raw, str):
-            raise HTTPException(status_code=400, detail="'chain_id' must be a string")
-        chain_id = str(chain_id_raw or "").strip() or None
+        trace_id_raw = safe.get("trace_id")
+        if trace_id_raw is not None and not isinstance(trace_id_raw, str):
+            raise HTTPException(status_code=400, detail="'trace_id' must be a string")
+        trace_id = str(trace_id_raw or "").strip() or None
         svc = _get_service_from_payload(safe)
 
         state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
@@ -3074,7 +3074,7 @@ async def conversation_turn(
                 response_format=turn_response_format,
                 op="turn",
                 step="respond" if attempt == 1 else "respond_retry",
-                chain_id=chain_id,
+                trace_id=trace_id,
             )
             try:
                 turn_contract = _parse_turn_contract(turn_response_raw)
@@ -3214,8 +3214,8 @@ async def conversation_turn(
             "turn_prompt_chars": len(turn_user_prompt),
             "turn_system_chars": len(turn_system_prompt),
         }
-        if chain_id:
-            response_payload["chain_id"] = chain_id
+        if trace_id:
+            response_payload["trace_id"] = trace_id
         background_error = str((conversation_state_after or {}).get("last_background_error") or "").strip()
         if background_error:
             response_payload["background_error"] = background_error

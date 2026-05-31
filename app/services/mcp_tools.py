@@ -104,7 +104,7 @@ async def memu_turn_endpoint(
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
     scope = _scope(user_id=req.user_id, soul_id=req.soul_id, conversation_id=conversation_id)
-    chain_id = uuid.uuid4().hex
+    trace_id = uuid.uuid4().hex
 
     user_name = str(req.user_name or "").strip()
     chat_name = str(req.chat_name or "").strip()
@@ -116,7 +116,7 @@ async def memu_turn_endpoint(
         "history": list(req.history or []),
         "build_turn_prompt": True,
         "debug": bool(req.debug),
-        "chain_id": chain_id,
+        "trace_id": trace_id,
     }
     if user_name:
         retrieve_payload["user_name"] = user_name
@@ -166,7 +166,7 @@ async def memu_turn_endpoint(
         "history": list(req.history or []),
         "prompt_override_payload": prompt_override_payload,
         "debug": bool(req.debug),
-        "chain_id": chain_id,
+        "trace_id": trace_id,
     }
     if user_name:
         turn_payload["user_name"] = user_name
@@ -195,7 +195,7 @@ async def memu_turn_endpoint(
         "apimw": turn_out.get("apimw"),
         "retrieve_ms": turn_out.get("retrieve_ms"),
         "turn_ms": turn_out.get("turn_ms"),
-        "chain_id": chain_id,
+        "trace_id": trace_id,
     }
     if req.debug:
         compact["debug_payload"] = turn_out

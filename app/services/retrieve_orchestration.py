@@ -35,14 +35,14 @@ def _extract_force_retrieve(payload: dict[str, Any]) -> bool:
     raise HTTPException(status_code=400, detail="'force_retrieve' must be a boolean")
 
 
-def _extract_chain_id(payload: dict[str, Any]) -> str | None:
-    value = payload.get("chain_id")
+def _extract_trace_id(payload: dict[str, Any]) -> str | None:
+    value = payload.get("trace_id")
     if value is None:
         return None
     if not isinstance(value, str):
-        raise HTTPException(status_code=400, detail="'chain_id' must be a string")
-    chain_id = value.strip()
-    return chain_id or None
+        raise HTTPException(status_code=400, detail="'trace_id' must be a string")
+    trace_id = value.strip()
+    return trace_id or None
 
 
 def _extract_retrieve_where(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -211,7 +211,7 @@ async def _run_retrieve(
     scope = _extract_retrieve_where(safe)
     memu_queries = _extract_retrieve_queries(safe)
     force_retrieve = _extract_force_retrieve(safe)
-    chain_id = _extract_chain_id(safe)
+    trace_id = _extract_trace_id(safe)
     as_of = parse_as_of_datetime(safe.get("as_of"))
 
     soul_id = str((scope or {}).get("soul_id") or "").strip()
@@ -239,7 +239,7 @@ async def _run_retrieve(
         rewrite_angle=retrieve_rewrite_angle,
         mental_health_enabled=bool(safe.get("mental_health_addon")),
         force_retrieve=force_retrieve,
-        chain_id=chain_id,
+        trace_id=trace_id,
     )
     retrieve_ms = int((time.monotonic() - retrieve_started_at) * 1000)
     out: dict[str, Any] = {
