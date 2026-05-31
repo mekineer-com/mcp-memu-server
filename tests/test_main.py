@@ -182,6 +182,76 @@ def test_run_retrieve_forwards_mental_health_toggle(
     assert captured["mental_health_enabled"] is expected
 
 
+def test_run_retrieve_forwards_force_retrieve(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict[str, Any] = {}
+
+    class _FakeSvc:
+        async def retrieve(self, *_args, **kwargs):
+            captured.update(kwargs)
+            return {"items": []}
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+    out = asyncio.run(
+        main._run_retrieve(
+            {
+                "query": "hello",
+                "user": {"user_id": "u", "soul_id": "s"},
+                "force_retrieve": True,
+            }
+        )
+    )
+    assert out["method"] == "rag"
+    assert captured["force_retrieve"] is True
+
+
+@pytest.mark.asyncio
+async def test_apimw_retrieve_pass_sets_force_retrieve(monkeypatch: pytest.MonkeyPatch):
+    captured_payload: dict[str, Any] = {}
+
+    async def _fake_run_retrieve(
+        payload: dict[str, Any],
+        *,
+        conversation_id: str | None = None,
+    ) -> dict[str, Any]:
+        captured_payload.update(payload)
+        return {"result": {"items": []}}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    await main._apimw_retrieve_pass(
+        payload={"user": {"user_id": "u1", "soul_id": "Echo"}},
+        query_text="test topic",
+        soul_id="Echo",
+        history=[{"role": "user", "name": "Marcos", "content": "hello"}],
+        state_row={},
+        conversation_id="cid",
+        apimw_k=12,
+    )
+
+    assert captured_payload["force_retrieve"] is True
+
+
+def test_run_retrieve_rejects_non_boolean_force_retrieve(monkeypatch: pytest.MonkeyPatch):
+    class _FakeSvc:
+        async def retrieve(self, *_args, **_kwargs):
+            return {"items": []}
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+
+    with pytest.raises(main.HTTPException, match="'force_retrieve' must be a boolean"):
+        asyncio.run(
+            main._run_retrieve(
+                {
+                    "query": "hello",
+                    "user": {"user_id": "u", "soul_id": "s"},
+                    "force_retrieve": "true",
+                }
+            )
+        )
+
+
 def test_merge_memorize_segment_results_flattens_top_level_lists():
     out = main._merge_memorize_segment_results(
         [

@@ -26,6 +26,15 @@ RETRIEVE_REWRITE_HISTORY_MESSAGES = 0
 APIMW_RETRIEVE_REWRITE_HISTORY_MESSAGES = 12
 
 
+def _extract_force_retrieve(payload: dict[str, Any]) -> bool:
+    value = payload.get("force_retrieve")
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    raise HTTPException(status_code=400, detail="'force_retrieve' must be a boolean")
+
+
 def _extract_retrieve_where(payload: dict[str, Any]) -> dict[str, Any] | None:
     scope = payload.get("scope") or payload.get("where")
     if scope is not None and not isinstance(scope, dict):
@@ -191,6 +200,7 @@ async def _run_retrieve(
     svc = get_service_from_payload(safe)
     scope = _extract_retrieve_where(safe)
     memu_queries = _extract_retrieve_queries(safe)
+    force_retrieve = _extract_force_retrieve(safe)
     as_of = parse_as_of_datetime(safe.get("as_of"))
 
     soul_id = str((scope or {}).get("soul_id") or "").strip()
@@ -217,6 +227,7 @@ async def _run_retrieve(
         as_of=as_of,
         rewrite_angle=retrieve_rewrite_angle,
         mental_health_enabled=bool(safe.get("mental_health_addon")),
+        force_retrieve=force_retrieve,
     )
     retrieve_ms = int((time.monotonic() - retrieve_started_at) * 1000)
     out: dict[str, Any] = {

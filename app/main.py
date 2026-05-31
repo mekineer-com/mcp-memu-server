@@ -1184,6 +1184,7 @@ async def _apimw_retrieve_pass(
         "query": query_text,
         "queries": retrieve_queries,
         "conversation_id": conversation_id,
+        "force_retrieve": True,
     }
     retrieve_payload["retrieve_config"] = _build_apimw_retrieve_config(
         retrieve_payload.get("retrieve_config"),
