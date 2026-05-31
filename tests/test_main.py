@@ -1173,6 +1173,71 @@ async def test_conversation_retrieve_persists_sillytavern_history_tail(
     ]
 
 
+def test_persist_sillytavern_history_tail_replay_uses_explicit_ids_and_timestamps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_write_conversation_state",
+        lambda *_a, **_k: ({}, db_path),
+    )
+
+    first = [
+        {"role": "user", "name": "Marcos", "content": "m1", "message_id": "st-1", "ts_ms": 1_000},
+        {"role": "assistant", "name": "Echo", "content": "a1", "message_id": "st-2", "ts_ms": 2_000},
+    ]
+    appended_first = main._persist_sillytavern_history_tail(
+        conversation_id="integrity:chat-1",
+        user_id="u1",
+        soul_id="Echo",
+        safe_payload={"chat_name": "Echo"},
+        history=[],
+        history_raw=first,
+    )
+    assert appended_first == 2
+
+    replay_plus_new = [
+        {"role": "user", "name": "Marcos", "content": "m1", "message_id": "st-1", "ts_ms": 1_000},
+        {"role": "assistant", "name": "Echo", "content": "a1", "message_id": "st-2", "ts_ms": 2_000},
+        {"role": "user", "name": "Marcos", "content": "m2", "message_id": "st-3", "ts_ms": 3_000},
+    ]
+    appended_second = main._persist_sillytavern_history_tail(
+        conversation_id="integrity:chat-1",
+        user_id="u1",
+        soul_id="Echo",
+        safe_payload={"chat_name": "Echo"},
+        history=[],
+        history_raw=replay_plus_new,
+    )
+    assert appended_second == 1
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT content, external_message_id, received_at FROM messages WHERE conversation_id = ? ORDER BY id ASC",
+            ("integrity:chat-1",),
+        ).fetchall()
+    finally:
+        con.close()
+
+    assert [r["content"] for r in rows] == ["m1", "a1", "m2"]
+    assert [r["external_message_id"] for r in rows] == ["st-1", "st-2", "st-3"]
+    assert rows[0]["received_at"] == datetime.fromtimestamp(1.0, tz=UTC).isoformat()
+    assert rows[1]["received_at"] == datetime.fromtimestamp(2.0, tz=UTC).isoformat()
+    assert rows[2]["received_at"] == datetime.fromtimestamp(3.0, tz=UTC).isoformat()
+
+
 @pytest.mark.asyncio
 async def test_conversation_retrieve_does_not_duplicate_preexisting_cross_query(
     tmp_path: Path,

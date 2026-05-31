@@ -78,7 +78,7 @@ def append_messages(
     label = source_label or derive_source_label(conversation_id)
     chat_name_value = str(chat_name or "").strip() or None
     now_iso = datetime.now(UTC).isoformat()
-    incoming_rows: list[tuple[str, str | None, str, str | None]] = []
+    incoming_rows: list[tuple[str, str | None, str, str | None, str]] = []
     for msg in messages:
         role = str(msg.get("role") or "user").strip()
         content = str(msg.get("content") or msg.get("text") or "").strip()
@@ -86,12 +86,29 @@ def append_messages(
             content = str(msg["content"].get("text") or "").strip()
         speaker = str(msg.get("name") or msg.get("speaker") or "").strip() or None
         ext_id = str(msg.get("external_message_id") or "").strip() or None
+        received_at_raw = msg.get("received_at")
+        received_at = ""
+        if isinstance(received_at_raw, str):
+            text = received_at_raw.strip()
+            if text:
+                received_at = text
+        if not received_at:
+            ts_raw = msg.get("ts_ms")
+            if ts_raw is None:
+                ts_raw = msg.get("timestamp")
+            if ts_raw is None:
+                ts_raw = msg.get("created_at")
+            if isinstance(ts_raw, (int, float)):
+                try:
+                    received_at = datetime.fromtimestamp(float(ts_raw) / 1000.0, tz=UTC).isoformat()
+                except (OverflowError, OSError, ValueError):
+                    received_at = ""
         role, speaker, content = _normalize_row_for_overlap(
             conversation_id, role, speaker, content
         )
         if not content:
             continue
-        incoming_rows.append((role, speaker, content, ext_id))
+        incoming_rows.append((role, speaker, content, ext_id, received_at or now_iso))
 
     if not incoming_rows:
         return 0
@@ -114,7 +131,7 @@ def append_messages(
             )
             for row in recent_rows
         ]))
-        overlap_rows = [(r, s, c) for r, s, c, _ in incoming_rows]
+        overlap_rows = [(r, s, c) for r, s, c, _, _ in incoming_rows]
         max_overlap = min(len(existing_tail), len(overlap_rows))
         overlap = 0
         for k in range(max_overlap, 0, -1):
@@ -126,10 +143,10 @@ def append_messages(
     if not rows_data:
         return 0
 
-    has_external_id = any(ext_id for _, _, _, ext_id in rows_data)
+    has_external_id = any(ext_id for _, _, _, ext_id, _ in rows_data)
     rows = [
-        (conversation_id, role, speaker, chat_name_value, content, label, now_iso, ext_id)
-        for role, speaker, content, ext_id in rows_data
+        (conversation_id, role, speaker, chat_name_value, content, label, received_at, ext_id)
+        for role, speaker, content, ext_id, received_at in rows_data
     ]
 
     verb = "INSERT OR IGNORE" if has_external_id else "INSERT"
