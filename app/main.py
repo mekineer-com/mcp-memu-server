@@ -2574,6 +2574,15 @@ async def conversation_retrieve(
                 finally:
                     _con.close()
 
+        chat_name_for_prompt = str(safe.get("chat_name") or "").strip()
+        chat_type_for_prompt = str(safe.get("chat_type") or "").strip()
+        if chat_name_for_prompt and chat_type_for_prompt:
+            chat_label_for_prompt = f"[{chat_type_for_prompt}][{chat_name_for_prompt}]"
+        elif chat_name_for_prompt:
+            chat_label_for_prompt = f"[{chat_name_for_prompt}]"
+        else:
+            chat_label_for_prompt = None
+
         if safe.get("queries") is None and uid and soul_id and message.strip() and state_row is not None:
             safe["queries"] = _build_retrieve_soul_context_queries(
                 soul_id=soul_id,
@@ -2581,6 +2590,7 @@ async def conversation_retrieve(
                 history=history,
                 state_row=state_row,
                 conversation_id=cid,
+                chat_label=chat_label_for_prompt,
             )
 
         if cross_tail:
@@ -2632,14 +2642,6 @@ async def conversation_retrieve(
                     soul_card=soul_card,
                     response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
                 )
-                chat_name_for_prompt = str(safe.get("chat_name") or "").strip()
-                chat_type_for_prompt = str(safe.get("chat_type") or "").strip()
-                if chat_name_for_prompt and chat_type_for_prompt:
-                    chat_label_for_prompt = f"[{chat_type_for_prompt}][{chat_name_for_prompt}]"
-                elif chat_name_for_prompt:
-                    chat_label_for_prompt = f"[{chat_name_for_prompt}]"
-                else:
-                    chat_label_for_prompt = None
                 out["turn_user_prompt"] = _build_turn_prompt(
                     user_message=message,
                     history=turn_history,

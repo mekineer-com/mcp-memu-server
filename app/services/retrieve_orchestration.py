@@ -14,11 +14,10 @@ from app.services.intention_state import (
 )
 from app.services.payload import _canonicalize_scope_where, _extract_scope
 from app.services.turn_contract import (
-    _append_current_chat_marker,
-    _conversation_heading_from_conversation_id,
     format_time_anchor as _format_time_anchor,
     format_working_thoughts_lines as _format_working_thoughts_lines,
     render_history as _render_history,
+    resolve_current_chat_heading,
     _section_title_from_conversation_id,
 )
 
@@ -95,6 +94,7 @@ def _build_retrieve_soul_context_queries(
     state_row: dict[str, Any],
     identity_mode: str = "retrieve",
     conversation_id: str | None = None,
+    chat_label: str | None = None,
 ) -> list[dict[str, Any]]:
     memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
     intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
@@ -145,7 +145,7 @@ def _build_retrieve_soul_context_queries(
     history_text = _render_history(history_slice)
     if history_text:
         section_header = _section_title_from_conversation_id(conversation_id)
-        heading = _append_current_chat_marker(_conversation_heading_from_conversation_id(conversation_id))
+        heading = resolve_current_chat_heading(chat_label, conversation_id)
         heading_block = f"{heading}\n" if heading else ""
         soul_context_for_retrieve.append(
             {

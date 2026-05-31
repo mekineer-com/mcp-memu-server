@@ -468,6 +468,15 @@ def _conversation_heading_from_conversation_id(conversation_id: str | None) -> s
     return f"[dm][{cid or 'sillytavern'}]"
 
 
+def resolve_current_chat_heading(
+    chat_label: str | None = None,
+    conversation_id: str | None = None,
+) -> str:
+    return _append_current_chat_marker(
+        _text(chat_label) or _conversation_heading_from_conversation_id(conversation_id),
+    )
+
+
 def _append_current_chat_marker(heading: str) -> str:
     text = _text(heading)
     if not text:
@@ -653,9 +662,7 @@ def build_turn_prompt(
             synthetic["name"] = last_user_name
         history_for_render.append(synthetic)
 
-    heading = _append_current_chat_marker(
-        _text(chat_label) or _conversation_heading_from_conversation_id(conversation_id),
-    )
+    heading = resolve_current_chat_heading(chat_label, conversation_id)
     current_chat_block = "\n".join([heading, render_history(history_for_render)])
     current_section_header = _section_title_from_conversation_id(conversation_id)
     conversations_block = _merge_current_into_conversations(
