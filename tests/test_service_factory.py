@@ -59,7 +59,6 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         "claude_code": True,
         "claude_code_model": "claude-opus-4-7",
         "claude_code_effort": "medium",
-        "claude_code_scope": "retrieve_only",
     }
 
     out = service_factory._get_service_from_payload(
@@ -102,4 +101,3 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert captured["claude_code"] is True
     assert captured["claude_code_model"] == "claude-opus-4-7"
     assert captured["claude_code_effort"] == "medium"
-    assert captured["claude_code_scope"] == "retrieve_only"

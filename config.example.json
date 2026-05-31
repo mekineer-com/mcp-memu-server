@@ -56,7 +56,6 @@
   "claude_code": false,
   "claude_code_model": "claude-opus-4-7",
   "claude_code_effort": "medium",
-  "claude_code_scope": "retrieve_only",
   "pid_file": "./.memu-server.pid",
   "categories": {
     "defaults": [
