@@ -2,6 +2,7 @@ import logging
 
 import pytest
 from fastapi import HTTPException
+from pydantic import BaseModel
 
 from app.services import service_factory
 
@@ -38,3 +39,67 @@ def test_validated_step_models_raises_when_profile_missing() -> None:
             logger=logging.getLogger("test.step_models"),
         )
 
+
+def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeService:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    class _DummyUserModel(BaseModel):
+        text: str = ""
+
+    monkeypatch.setattr(service_factory, "MemoryService", _FakeService)
+    service_factory._SERVICES.clear()
+    service_factory._SERVICE_STORAGE_FP.clear()
+
+    cfg = {
+        "llm": {"step_models": {}},
+        "claude_code": True,
+        "claude_code_model": "claude-opus-4-7",
+        "claude_code_effort": "medium",
+        "claude_code_scope": "retrieve_only",
+    }
+
+    out = service_factory._get_service_from_payload(
+        {"user": {"user_id": "u", "soul_id": "echo"}},
+        config=cfg,
+        default_llm_profiles_from_server_config=lambda _cfg: {
+            "default": {
+                "provider": "openai",
+                "api_key": "k",
+                "base_url": "https://example.com/v1",
+                "chat_model": "m",
+                "embed_model": "e",
+            },
+            "embedding": {
+                "provider": "openai",
+                "api_key": "k",
+                "base_url": "https://example.com/v1",
+                "chat_model": "m",
+                "embed_model": "e",
+            },
+        },
+        database_config_from_cfg=lambda _cfg, scope=None: {"metadata_store": {"provider": "sqlite", "dsn": "sqlite:///:memory:"}},
+        blob_config_from_cfg=lambda _cfg: {"resources_dir": "./resources"},
+        categories_from_cfg=lambda _cfg: [],
+        normalize_sqlite_dsn=lambda dsn: dsn,
+        sqlite_dsn_for_scope=lambda _cfg, base, _scope: base,
+        sqlite_file_from_dsn=lambda _dsn: None,
+        extract_scope=lambda payload: payload.get("user"),
+        payload_signature=lambda _payload: "sig",
+        episodes_per_segment=1,
+        log_prompts=False,
+        prompt_log_before=lambda *a, **k: None,
+        prompt_log_after=lambda *a, **k: None,
+        prompt_log_on_error=lambda *a, **k: None,
+        st_user_model=_DummyUserModel,
+        logger=logging.getLogger("test.service_factory"),
+    )
+
+    assert isinstance(out, _FakeService)
+    assert captured["claude_code"] is True
+    assert captured["claude_code_model"] == "claude-opus-4-7"
+    assert captured["claude_code_effort"] == "medium"
+    assert captured["claude_code_scope"] == "retrieve_only"
