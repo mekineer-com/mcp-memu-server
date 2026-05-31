@@ -305,13 +305,19 @@ def format_shaped_by_line(
     return f"{prefix}{suffix_part} {summary}"
 
 
-def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, set[str]]:
-    if not isinstance(result, dict):
-        return "(none)", set()
+def _render_retrieve(
+    result: Any, *, now: datetime | None = None,
+) -> tuple[str, str, set[str]]:
+    """Return (category_paragraph, memories_block, item_terms).
 
-    lines: list[str] = []
+    category_paragraph: bare lines for retrieved category summaries (no heading).
+    memories_block: item list (no heading — caller adds "My Memories:").
+    """
+    if not isinstance(result, dict):
+        return "", "", set()
+
     item_terms: set[str] = set()
-    category_rows: list[tuple[str, str]] = []
+    category_lines: list[str] = []
 
     categories = result.get("categories")
     if isinstance(categories, list):
@@ -327,7 +333,10 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
             seen_categories.add(category_key)
             if category_summary:
                 item_terms.add(_norm_text(category_summary))
-            category_rows.append((category_name, category_summary))
+            if category_summary:
+                category_lines.append(f"[{category_name}] {category_summary}")
+            else:
+                category_lines.append(f"[{category_name}]")
 
     item_rows: list[tuple[dict[str, Any], str, str, str]] = []
     seen_items: set[str] = set()
@@ -350,46 +359,32 @@ def _render_retrieve(result: Any, *, now: datetime | None = None) -> tuple[str, 
 
     main_item_ids = {_text(item.get("id")) for item, _, _, _ in item_rows if _text(item.get("id"))}
 
-    if category_rows:
-        lines.append("Categories:")
-        for category_name, category_summary in category_rows:
-            if category_summary:
-                lines.append(f"- [{category_name}] {category_summary}")
-            else:
-                lines.append(f"- [{category_name}]")
-
+    memory_lines: list[str] = []
     if item_rows:
-        if lines:
-            lines.append("")
-        lines.append("Memories:")
         legend = format_memory_legend({mt for _, mt, _, _ in item_rows})
         if legend:
-            lines.append(legend)
+            memory_lines.append(legend)
         for item, memory_type, suffix, summary in item_rows:
             if memory_type == "procedural":
                 domain = _text(item.get("domain")).replace("_", "-") or "procedural"
                 speaker_label = _text(item.get("speaker_label"))
                 speaker_tag = f"[{speaker_label}]" if speaker_label else ""
-                lines.append(f"- [{domain}-procedural-memory]{speaker_tag} {summary}")
+                memory_lines.append(f"- [{domain}-procedural-memory]{speaker_tag} {summary}")
                 continue
-            lines.append(f"- {format_memory_line(item, now=now)}")
+            memory_lines.append(f"- {format_memory_line(item, now=now)}")
             shaped_by = item.get("shaped_by")
             if isinstance(shaped_by, dict):
                 seed_id = _text(shaped_by.get("id"))
                 if seed_id and seed_id in main_item_ids:
                     continue
-                lines.append(format_shaped_by_line(shaped_by, now=now))
+                memory_lines.append(format_shaped_by_line(shaped_by, now=now))
 
-    return ("\n".join(lines) if lines else "(none)"), item_terms
+    return (
+        "\n".join(category_lines),
+        "\n".join(memory_lines),
+        item_terms,
+    )
 
-
-def _render_empty_retrieve_label(result: Any) -> str:
-    if isinstance(result, dict):
-        if result.get("needs_retrieval") is False:
-            return "(no memories retrieved; route said no retrieval needed)"
-        if result.get("needs_retrieval") is True:
-            return "(no memories retrieved; retrieval ran but found no matches)"
-    return "(no memories retrieved)"
 
 
 def _render_all_categories_summary(
@@ -446,10 +441,10 @@ def _dedupe_prior_context(prior_context: str | None, blocked_terms: set[str]) ->
 def _section_title_from_conversation_id(conversation_id: str | None) -> str:
     cid = _text(conversation_id)
     if cid.startswith(("sillytavern", "integrity:", "chat:")):
-        return "## My SillyTavern Conversations:"
+        return "My SillyTavern Conversations:"
     if cid.startswith("whatsapp:"):
-        return "## My WhatsApp Conversations:"
-    return "## My SillyTavern Conversations:"
+        return "My WhatsApp Conversations:"
+    return "My SillyTavern Conversations:"
 
 
 def _conversation_heading_from_conversation_id(conversation_id: str | None) -> str:
@@ -494,10 +489,11 @@ def _split_markdown_sections(text: str) -> list[tuple[str, list[str]]]:
     current_header: str | None = None
     current_lines: list[str] = []
     for line in raw.splitlines():
-        if line.startswith("## "):
+        stripped = line.strip()
+        if stripped.startswith("My ") and stripped.endswith("Conversations:"):
             if current_header is not None:
                 sections.append((current_header, current_lines))
-            current_header = line.strip()
+            current_header = stripped
             current_lines = []
             continue
         if current_header is None:
@@ -591,7 +587,7 @@ def build_turn_prompt(
 ) -> str:
     cache_lines = format_working_thoughts_lines(memory_cache)
 
-    rendered_retrieve, item_terms = _render_retrieve(retrieve_rag, now=now)
+    category_paragraph, memories_block, item_terms = _render_retrieve(retrieve_rag, now=now)
     rendered_all_categories, all_categories_terms = _render_all_categories_summary(
         all_categories_summary,
         item_terms,
@@ -600,33 +596,24 @@ def build_turn_prompt(
 
     safe_prior = _dedupe_prior_context(prior_context, blocked_terms) or None
 
-    retrieve_text = _text(rendered_retrieve)
     all_categories_text = _text(rendered_all_categories)
     raw_all_categories_text = _text(all_categories_summary)
     if not raw_all_categories_text:
         all_categories_text = ""
     elif all_categories_text == "(none)":
-        all_categories_text = "(already covered by retrieved memory context this turn)"
+        all_categories_text = ""
     prior_text = _text(safe_prior)
-    has_retrieve = bool(retrieve_text and retrieve_text != "(none)")
-    has_all_categories = bool(all_categories_text)
     has_prior = bool(prior_text and prior_text != "(none)")
 
-    # Ordering contract for context blocks:
-    # 1) Retrieved memory (all-categories orientation first, then category/item hits),
-    # 2) prior context (residual background).
     context_blocks: list[str] = []
-    retrieved_sections: list[str] = []
-    if has_all_categories:
-        retrieved_sections.append(f"**My Life Overview**\n{all_categories_text}")
-    if has_retrieve:
-        retrieved_sections.append(retrieve_text)
-    if retrieved_sections:
-        context_blocks.extend(["\n\n".join(retrieved_sections), ""])
+    if all_categories_text:
+        context_blocks.extend([all_categories_text, ""])
+    if category_paragraph:
+        context_blocks.extend([category_paragraph, ""])
+    if memories_block:
+        context_blocks.extend(["My Memories:", memories_block, ""])
     if has_prior:
-        context_blocks.extend(["Prior context:", prior_text, ""])
-    if not context_blocks:
-        context_blocks.extend([_render_empty_retrieve_label(retrieve_rag), ""])
+        context_blocks.extend(["Prior Context:", prior_text, ""])
 
     # Echo the current user message at the end of history so the soul reads
     # history → new message as one continuous exchange. The cache + intentions
@@ -675,13 +662,13 @@ def build_turn_prompt(
         *context_blocks,
         conversations_block,
         "",
-        "My working thoughts:",
-        "\n".join(cache_lines) if cache_lines else "(empty)",
+        "My Working Thoughts:",
+        "\n".join(cache_lines) if cache_lines else "(none yet)",
         "",
-        "My intentions:",
+        "My Intentions:",
         format_intentions_for_prompt(intentions_active),
         "",
-        f"New message:\n{current_user_text}",
+        f"New Message:\n{current_user_text}",
         "",
         "**remember maximum lengths**",
     ]

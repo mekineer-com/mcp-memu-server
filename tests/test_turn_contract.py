@@ -132,7 +132,7 @@ def test_build_turn_prompt_integrity_id_uses_sillytavern_section_not_other():
         chat_label="[dm][Echo]",
         conversation_id="integrity:dc7b08fa-b7a9-4ccc-890c-8dc7eea5082e",
     )
-    assert "## My SillyTavern Conversations:" in prompt
+    assert "My SillyTavern Conversations:" in prompt
     assert "## Other Conversations:" not in prompt
     assert "[dm][Echo] ← current chat" in prompt
     assert "integrity:dc7b08fa-b7a9-4ccc-890c-8dc7eea5082e" not in prompt
@@ -149,11 +149,11 @@ def test_build_turn_prompt_includes_core_sections():
         intentions_active={"items": [{"id": "relax", "text": "Relax", "priority": 5, "kind": "relax"}]},
         conversation_id="sillytavern:Echo",
     )
-    assert "## My SillyTavern Conversations:" in prompt
-    assert "Prior context:" in prompt
+    assert "My SillyTavern Conversations:" in prompt
+    assert "Prior Context:" in prompt
     assert "[Goals] wants progress" in prompt
-    assert "My working thoughts:" in prompt
-    assert "My intentions:" in prompt
+    assert "My Working Thoughts:" in prompt
+    assert "My Intentions:" in prompt
 
 
 def test_build_turn_prompt_omits_wrapper_when_cross_history_already_has_markdown_sections():
@@ -162,7 +162,7 @@ def test_build_turn_prompt_omits_wrapper_when_cross_history_already_has_markdown
         history=[],
         prior_context=None,
         retrieve_rag=None,
-        cross_conversation_history="## My WhatsApp Conversations:\n[group][Friends]\n[Raquel]: hi",
+        cross_conversation_history="My WhatsApp Conversations:\n[group][Friends]\n[Raquel]: hi",
         all_categories_summary=None,
         memory_cache=[],
         intentions_active={},
@@ -171,8 +171,8 @@ def test_build_turn_prompt_omits_wrapper_when_cross_history_already_has_markdown
     )
 
     assert "Other conversations:" not in prompt
-    assert "## My WhatsApp Conversations:" in prompt
-    assert "## My SillyTavern Conversations:" in prompt
+    assert "My WhatsApp Conversations:" in prompt
+    assert "My SillyTavern Conversations:" in prompt
     assert "[dm][Echo] ← current chat" in prompt
     assert "Current chat:" not in prompt
 
@@ -185,7 +185,7 @@ def test_build_turn_prompt_appends_current_chat_to_existing_platform_section():
         retrieve_rag=None,
         cross_conversation_history="\n".join(
             [
-                "## My WhatsApp Conversations:",
+                "My WhatsApp Conversations:",
                 "",
                 "[dm][Liz]",
                 "[Liz]: older",
@@ -198,7 +198,7 @@ def test_build_turn_prompt_appends_current_chat_to_existing_platform_section():
         chat_label="[dm][Marcos]",
     )
 
-    assert prompt.count("## My WhatsApp Conversations:") == 1
+    assert prompt.count("My WhatsApp Conversations:") == 1
     assert "[dm][Marcos] ← current chat" in prompt
 
 
@@ -210,12 +210,12 @@ def test_build_turn_prompt_keeps_current_platform_section_last():
         retrieve_rag=None,
         cross_conversation_history="\n".join(
             [
-                "## My SillyTavern Conversations:",
+                "My SillyTavern Conversations:",
                 "",
                 "[dm][Echo]",
                 "[Echo]: old",
                 "",
-                "## My WhatsApp Conversations:",
+                "My WhatsApp Conversations:",
                 "",
                 "[dm][Liz]",
                 "[Liz]: old",
@@ -228,7 +228,7 @@ def test_build_turn_prompt_keeps_current_platform_section_last():
         chat_label="[dm][Echo]",
     )
 
-    assert prompt.rfind("## My SillyTavern Conversations:") > prompt.rfind("## My WhatsApp Conversations:")
+    assert prompt.rfind("My SillyTavern Conversations:") > prompt.rfind("My WhatsApp Conversations:")
 
 
 

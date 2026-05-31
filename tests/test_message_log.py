@@ -456,7 +456,7 @@ def test_format_merged_history_does_not_relabel_blank_speaker_rows() -> None:
         ]
     )
 
-    assert "## My WhatsApp Conversations:" in rendered
+    assert "My WhatsApp Conversations:" in rendered
     assert "[dm][abc]" in rendered
     assert "[Marcos]: first" in rendered
     assert "[user]: second" in rendered
@@ -494,10 +494,10 @@ def test_format_merged_history_groups_sections_and_conversations(tmp_path, monke
         ]
     )
 
-    assert "## My SillyTavern Conversations:" in rendered
+    assert "My SillyTavern Conversations:" in rendered
     assert "[dm][chat-a]" in rendered
     assert "[Marcos]: st message" in rendered
-    assert "## My WhatsApp Conversations:" in rendered
+    assert "My WhatsApp Conversations:" in rendered
     assert "[group][18322935409-1579788049@g.us]" in rendered
     assert "[Echo]: wa group message" in rendered
     assert "[dm][15133278228]" in rendered
@@ -519,7 +519,7 @@ def test_format_merged_history_integrity_id_uses_persisted_chat_name() -> None:
         ]
     )
 
-    assert "## My SillyTavern Conversations:" in rendered
+    assert "My SillyTavern Conversations:" in rendered
     assert "[dm][Echo]" in rendered
     assert "integrity:dc7b08fa-b7a9-4ccc-890c-8dc7eea5082e" not in rendered
     assert "[Echo]: integrity id message" in rendered

@@ -522,7 +522,7 @@ def test_build_retrieve_soul_context_queries_includes_current_chat_heading_for_w
     history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
     assert len(history_rows) == 1
     text = str((history_rows[0].get("content") or {}).get("text") or "")
-    assert "## My WhatsApp Conversations:" in text
+    assert "My WhatsApp Conversations:" in text
     assert "[dm][Marcos] \u2190 current chat" in text
 
 

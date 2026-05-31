@@ -533,10 +533,10 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
 
     def _section_title(kind: str) -> str:
         if kind.startswith("sillytavern_"):
-            return "## My SillyTavern Conversations:"
+            return "My SillyTavern Conversations:"
         if kind.startswith("whatsapp_"):
-            return "## My WhatsApp Conversations:"
-        return "## My SillyTavern Conversations:"
+            return "My WhatsApp Conversations:"
+        return "My SillyTavern Conversations:"
 
     by_conversation: dict[str, list[dict[str, Any]]] = {}
     for msg in messages:
