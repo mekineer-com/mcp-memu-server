@@ -57,9 +57,9 @@ def _canonicalize_scope_where(where: Mapping[str, Any] | None) -> dict[str, Any]
         out.pop(key, None)
 
     if user_id:
-        out["user_id"] = user_id.lower()
+        out["user_id"] = user_id
     if soul_id:
-        out["soul_id"] = soul_id.lower()
+        out["soul_id"] = soul_id
     return out
 
 
