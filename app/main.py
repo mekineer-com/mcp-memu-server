@@ -3134,34 +3134,21 @@ async def conversation_turn(
         response_target = str(turn_contract.get("response_target") or "").strip().lower()
         if response_target not in {"respond", "listen", "private"}:
             raise HTTPException(status_code=502, detail="turn contract missing or invalid response_target")
-        response_peer = str(turn_contract.get("response_peer") or "").strip()
         response_text = str(turn_contract.get("response") or "").strip()
 
         # Enforce response_target contract:
         # - listen: nothing is sent.
-        # - respond: if chat_name is present, response_peer must match it.
-        #   If chat_name is missing, proceed but log loudly.
+        # - respond: if chat_name is missing, proceed but log loudly.
         # - private: passes through; routing to the human's private chat is
         #   hermes-side (see HANDOFF for the wiring task).
         if response_target == "listen":
             response_text = ""
         elif response_target == "respond":
             chat_name = str(safe.get("chat_name") or "").strip()
-            if not response_peer:
-                raise HTTPException(status_code=502, detail="turn contract missing response_peer for respond target")
             if not chat_name:
                 logger.warning(
-                    "conversation_turn: missing chat_name for respond; skipping response_peer match validation"
+                    "conversation_turn: missing chat_name for respond; continuing without chat label"
                 )
-            else:
-                peer_norm = re.sub(r"\s+", " ", response_peer).strip().lower()
-                chat_norm = re.sub(r"\s+", " ", chat_name).strip().lower()
-                if peer_norm != chat_norm:
-                    logger.info(
-                        "conversation_turn: response dropped — response_peer=%r does not match chat_name=%r",
-                        response_peer, chat_name,
-                    )
-                    response_text = ""
         if not dry_run and conversation_state_path is not None and conversation_state_path.exists():
             user_name = str(safe.get("user_name") or "").strip() or uid
             chat_name_for_append = str(safe.get("chat_name") or "").strip() or None
@@ -3203,7 +3190,6 @@ async def conversation_turn(
             "conversation_id": cid,
             "response": response_text,
             "response_target": response_target,
-            "response_peer": response_peer,
             "apimw": apimw_status,
             "final_turn_payload": {
                 "system_prompt": turn_system_prompt,

@@ -1260,7 +1260,7 @@ async def test_conversation_turn_persists_assistant_message_for_cross_context(
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 '{"cache":null,"annulments":[],"rehearsal":"ok",'
-                '"response_target":"respond","response_peer":"Alice","response":"assistant says hi"}'
+                '"response_target":"respond","response":"assistant says hi"}'
             )
 
     async def _fake_persist_annulment_memories(**_kwargs):
@@ -1328,14 +1328,11 @@ async def test_conversation_turn_persists_assistant_message_for_cross_context(
 
 
 @pytest.mark.asyncio
-async def test_conversation_turn_drops_response_when_peer_mismatches_chat_name(
+async def test_conversation_turn_keeps_response_when_chat_name_differs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When response_target=respond points to a mismatched peer, response text
-    is dropped while the originating user turn is still persisted for history
-    continuity.
-    """
+    """respond no longer depends on chat_name matching."""
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -1347,12 +1344,9 @@ async def test_conversation_turn_drops_response_when_peer_mismatches_chat_name(
 
     class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
-            # Soul thinks she is responding to Alice, but the originating
-            # chat is with Bob — the validator must drop the reply.
             return (
-                '{"cache":null,"annulments":[],"rehearsal":"answering Alice",'
-                '"response_target":"respond","response_peer":"Alice",'
-                '"response":"hi Alice"}'
+                '{"cache":null,"annulments":[],"rehearsal":"answering",'
+                '"response_target":"respond","response":"hi Alice"}'
             )
 
     async def _fake_persist_annulment_memories(**_kwargs):
@@ -1396,9 +1390,8 @@ async def test_conversation_turn_drops_response_when_peer_mismatches_chat_name(
     out = await main.conversation_turn("cid-turn", payload)
 
     assert out["ok"] is True
-    assert out["response"] == ""
+    assert out["response"] == "hi Alice"
     assert out["response_target"] == "respond"
-    assert out["response_peer"] == "Alice"
 
     con = main._sqlite_connect(db_path)
     try:
@@ -1409,8 +1402,7 @@ async def test_conversation_turn_drops_response_when_peer_mismatches_chat_name(
         ).fetchall()
     finally:
         con.close()
-    # Mismatch drops assistant response, but user row still persists.
-    assert [r["role"] for r in rows] == ["user"]
+    assert [r["role"] for r in rows] == ["user", "assistant"]
 
 
 @pytest.mark.asyncio
@@ -1431,7 +1423,7 @@ async def test_conversation_turn_private_response_not_persisted_in_origin_chat(
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 '{"cache":null,"annulments":[],"rehearsal":"ok",'
-                '"response_target":"private","response_peer":"","response":"private note to Marcos"}'
+                '"response_target":"private","response":"private note to Marcos"}'
             )
 
     async def _fake_persist_annulment_memories(**_kwargs):
@@ -1516,11 +1508,11 @@ async def test_conversation_turn_retries_once_on_parse_failure(
             if self.calls == 1:
                 return (
                     '{"cache":null,"annulments":[],"rehearsal":"first malformed"},"response_target":"respond",'
-                    '"response_peer":"Alice","response":"assistant says hi"}'
+                    '"response":"assistant says hi"}'
                 )
             return (
                 '{"cache":null,"annulments":[],"rehearsal":"retry good",'
-                '"response_target":"respond","response_peer":"Alice","response":"assistant says hi"}'
+                '"response_target":"respond","response":"assistant says hi"}'
             )
 
     svc = _FakeSvc()
@@ -1589,7 +1581,7 @@ async def test_conversation_turn_allows_respond_when_chat_name_missing_and_logs_
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 '{"cache":null,"annulments":[],"rehearsal":"replying",'
-                '"response_target":"respond","response_peer":"Bob","response":"hi Bob"}'
+                '"response_target":"respond","response":"hi Bob"}'
             )
 
     async def _fake_persist_annulment_memories(**_kwargs):

@@ -46,7 +46,6 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
             "conversation_id": conversation_id,
             "response": "done",
             "response_target": "private",
-            "response_peer": "",
             "apimw": "not_started",
             "retrieve_ms": 42,
             "turn_ms": 9,
@@ -71,7 +70,6 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
     assert out["ok"] is True
     assert out["response"] == "done"
     assert out["response_target"] == "private"
-    assert out["response_peer"] == ""
     assert isinstance(out.get("trace_id"), str)
     assert len(str(out.get("trace_id") or "")) == 32
     assert [row[0] for row in captured] == ["retrieve", "turn"]
@@ -137,7 +135,6 @@ async def test_memu_turn_omits_blank_chat_fields() -> None:
             "conversation_id": conversation_id,
             "response": "done",
             "response_target": "listen",
-            "response_peer": "",
             "apimw": "not_started",
             "retrieve_ms": 1,
             "turn_ms": 1,
@@ -185,7 +182,7 @@ async def test_memu_turn_skips_persist_when_no_external_message_id() -> None:
     async def fake_turn(_cid: str, _p: dict[str, Any]) -> dict[str, Any]:
         return {
             "ok": True, "conversation_id": "c1", "response": "hi",
-            "response_target": "respond", "response_peer": "",
+            "response_target": "respond",
             "apimw": None, "retrieve_ms": 1, "turn_ms": 1,
         }
 
@@ -221,7 +218,7 @@ async def test_memu_turn_calls_persist_when_external_message_id_present() -> Non
     async def fake_turn(_cid: str, _p: dict[str, Any]) -> dict[str, Any]:
         return {
             "ok": True, "conversation_id": "c1", "response": "hi",
-            "response_target": "respond", "response_peer": "",
+            "response_target": "respond",
             "apimw": None, "retrieve_ms": 1, "turn_ms": 1,
         }
 

@@ -12,13 +12,12 @@ from app.services.turn_contract import (
 
 def test_parse_turn_contract_valid_json():
     parsed = parse_turn_contract(
-        '{"response":"Hi there","response_target":"respond","response_peer":"Alice","cache":{"entry":"thinking"},"intention_action":{"type":"boost","target_id":"a"},"annulments":[],"rehearsal":"hmm"}'
+        '{"response":"Hi there","response_target":"respond","cache":{"entry":"thinking"},"intention_action":{"type":"boost","target_id":"a"},"annulments":[],"rehearsal":"hmm"}'
     )
     assert parsed["response"] == "Hi there"
     assert parsed["cache_entry"] == "thinking"
     assert parsed["rehearsal"] == "hmm"
     assert parsed["response_target"] == "respond"
-    assert parsed["response_peer"] == "Alice"
 
 
 def test_parse_turn_contract_listen_target_allows_empty_response():
@@ -32,7 +31,7 @@ def test_parse_turn_contract_listen_target_allows_empty_response():
 def test_parse_turn_contract_respond_target_requires_response():
     with pytest.raises(ValueError, match="response is required"):
         parse_turn_contract(
-            '{"response":"","response_target":"respond","response_peer":"Alice","cache":null,"annulments":[],"rehearsal":"ok"}'
+            '{"response":"","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok"}'
         )
 
 
@@ -50,20 +49,12 @@ def test_parse_turn_contract_requires_target():
         )
 
 
-def test_parse_turn_contract_respond_target_requires_peer():
-    with pytest.raises(ValueError, match="response_peer is required"):
-        parse_turn_contract(
-            '{"response":"hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok"}'
-        )
-
-
 def test_parse_turn_contract_private_target():
     parsed = parse_turn_contract(
         '{"response":"context for you","response_target":"private","cache":null,"annulments":[],"rehearsal":"a quiet aside"}'
     )
     assert parsed["response_target"] == "private"
     assert parsed["response"] == "context for you"
-    assert parsed["response_peer"] == ""
 
 
 def test_parse_turn_contract_private_target_requires_response():
@@ -84,7 +75,7 @@ def test_parse_turn_contract_accepts_bare_string_cache(caplog):
     import logging
     caplog.set_level(logging.WARNING, logger="uvicorn.error")
     parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","response_peer":"Alice","cache":"a stray thought","intention_action":{"type":"none"},"annulments":[],"rehearsal":"ok"}'
+        '{"response":"hi","response_target":"respond","cache":"a stray thought","intention_action":{"type":"none"},"annulments":[],"rehearsal":"ok"}'
     )
     assert parsed["cache_entry"] == "a stray thought"
     warnings = [r for r in caplog.records if "bare string" in r.getMessage()]

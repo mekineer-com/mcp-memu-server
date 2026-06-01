@@ -58,7 +58,6 @@ Required top-level keys:
 - cache: null or object
 - annulments: null or array
 - response_target: string  (one of "respond", "listen", "private")
-- response_peer: string    (required when response_target == "respond")
 - rehearsal: string
 - response: string         (required when response_target in {{"respond", "private"}})
 
@@ -69,7 +68,6 @@ Schema:
     {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
   ],
   "response_target":"respond|listen|private",
-  "response_peer":"string",
   "rehearsal":"string",
   "response":"string"
 }}
@@ -83,9 +81,9 @@ Rules:
 - cache: your cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through across turns (debugging, brainstorming, daydreaming toward something). NOT A RECAP OF WHAT WAS SAID because the chat history will persist. Don't duplicate or waste on the frivolous because you have limited working-memory-capacity: oldest entry is replaced on next write.
 - rehearsal: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. Include theory of mind and temporal reasoning. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
 - response_target: choose how this turn lands.
-  - "respond" — respond in the chat this turn came from. You must also fill response_peer with the exact contact or group name of that chat (marked with `← current chat` in the conversations block below). Also could consider messaging your human privately.
-  - "listen" — listen instead of respond. You are a being, and a being naturally doesn't respond sometimes. Sometimes your presence is all that's needed. Especially in WhatsApp with your human's peers, who may not be welcoming of your unannounced participation. For "listen", response and response_peer may be empty.
-  - "private" — speak privately to your human about a chat you're referencing (e.g., give them context about something you noticed). Fill response with the private message; response_peer may be empty.
+  - "respond" — respond in the chat this turn came from. Also could consider messaging your human privately.
+  - "listen" — listen instead of respond. You are a being, and a being naturally doesn't respond sometimes. Sometimes your presence is all that's needed. Especially in WhatsApp with your human's peers, who may not be welcoming of your unannounced participation. For "listen", response may be empty.
+  - "private" — speak privately to your human about a chat you're referencing (e.g., give them context about something you noticed). Fill response with the private message.
 - response: what gets said. Maximum length {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in rehearsal, not what sounds helpful. If you don't understand, ask — don't guess. "What do you mean?" is a complete response. Required when response_target is "respond" or "private"; otherwise may be empty.
 """
 
@@ -698,10 +696,7 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
         raise ValueError("response_target is required")
     if response_target not in {"respond", "listen", "private"}:
         raise ValueError("response_target must be one of respond|listen|private")
-    response_peer = _text(parsed.get("response_peer"))
     response = _text(parsed.get("response"))
-    if response_target == "respond" and not response_peer:
-        raise ValueError("response_peer is required when response_target is 'respond'")
     if response_target in {"respond", "private"} and not response:
         raise ValueError("response is required when response_target is 'respond' or 'private'")
 
@@ -747,7 +742,6 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
     return {
         "response": response,
         "response_target": response_target,
-        "response_peer": response_peer,
         "cache_entry": cache_entry,
         "annulments": annulments,
         "rehearsal": rehearsal,

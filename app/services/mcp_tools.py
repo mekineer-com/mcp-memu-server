@@ -184,13 +184,11 @@ async def memu_turn_endpoint(
     response_target = str(turn_out.get("response_target") or "").strip().lower()
     if response_target not in {"respond", "listen", "private"}:
         raise HTTPException(status_code=502, detail="conversation_turn returned invalid response_target")
-    response_peer = str(turn_out.get("response_peer") or "").strip()
     compact: dict[str, Any] = {
         "ok": bool(turn_out.get("ok", False)),
         "conversation_id": str(turn_out.get("conversation_id") or conversation_id),
         "response": str(turn_out.get("response") or ""),
         "response_target": response_target,
-        "response_peer": response_peer,
         "apimw": turn_out.get("apimw"),
         "retrieve_ms": turn_out.get("retrieve_ms"),
         "turn_ms": turn_out.get("turn_ms"),
