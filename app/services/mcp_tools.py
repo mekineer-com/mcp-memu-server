@@ -30,7 +30,6 @@ class MemuRetrieveRequest(BaseModel):
     query: str | None = None
     queries: list[dict[str, Any]] | None = None
     conversation_id: str | None = None
-    method: str | None = None
     top_k: int | None = None
     as_of: str | None = None
     debug: bool = False
@@ -221,8 +220,6 @@ async def memu_retrieve_endpoint(
         payload["query"] = query_text
     if has_queries:
         payload["queries"] = req.queries
-    if req.method is not None:
-        payload["method"] = str(req.method)
     if req.top_k is not None:
         payload["top_k"] = int(req.top_k)
     if req.as_of is not None:

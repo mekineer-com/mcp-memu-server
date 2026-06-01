@@ -1182,7 +1182,6 @@ async def _apimw_retrieve_pass(
     )
     retrieve_payload = {
         **payload,
-        "method": "rag",
         "query": query_text,
         "queries": retrieve_queries,
         "conversation_id": conversation_id,

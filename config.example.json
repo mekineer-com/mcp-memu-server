@@ -88,7 +88,6 @@
     "semantic_dedupe_enabled": true
   },
   "retrieve": {
-    "method": "rag",
     "apimw_enabled": true,
     "apimw_cadence": 5,
     "apimw_memory_count": 25,

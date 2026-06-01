@@ -93,7 +93,6 @@ def default_config() -> dict[str, Any]:
             "dynamic_category_cluster_size": 3,
         },
         "retrieve": {
-            "method": "rag",
             "apimw_enabled": True,
             "apimw_cadence": 5,
             "apimw_memory_count": 25,

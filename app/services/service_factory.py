@@ -330,7 +330,6 @@ def _get_service_from_payload(
     if not isinstance(retrieve_config, dict):
         retrieve_config = {}
         payload["retrieve_config"] = retrieve_config
-    retrieve_config["method"] = "rag"
     if isinstance(step_models_cfg, dict):
         for cfg_key, profile_field in _STEP_MODEL_TO_RETRIEVE_PROFILE_FIELD.items():
             if profile_field not in retrieve_config and str(step_models_cfg.get(cfg_key) or "").strip():
