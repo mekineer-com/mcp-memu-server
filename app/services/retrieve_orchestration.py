@@ -23,7 +23,6 @@ from app.services.turn_contract import (
 
 
 RETRIEVE_REWRITE_HISTORY_MESSAGES = 0
-APIMW_RETRIEVE_REWRITE_HISTORY_MESSAGES = 12
 
 
 def _extract_force_retrieve(payload: dict[str, Any]) -> bool:
@@ -153,11 +152,7 @@ def _build_retrieve_soul_context_queries(
     if all_cats_summary:
         soul_context_for_retrieve.append({"role": "all_categories_summary", "content": {"text": all_cats_summary}})
 
-    history_limit = (
-        APIMW_RETRIEVE_REWRITE_HISTORY_MESSAGES
-        if identity_mode == "apimw"
-        else RETRIEVE_REWRITE_HISTORY_MESSAGES
-    )
+    history_limit = RETRIEVE_REWRITE_HISTORY_MESSAGES
     history_slice = history_for_render[-history_limit:] if history_limit > 0 else history_for_render
     history_text = _render_history(history_slice)
     if history_text:

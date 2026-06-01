@@ -533,7 +533,7 @@ def test_build_retrieve_soul_context_queries_includes_full_history() -> None:
     assert "[user] msg 15" in text
 
 
-def test_build_retrieve_soul_context_queries_uses_last_12_messages_for_apimw_rewrite() -> None:
+def test_build_retrieve_soul_context_queries_uses_full_history_for_apimw_rewrite() -> None:
     history = [
         {"message_id": f"m{i}", "role": "user", "content": f"msg {i}"}
         for i in range(1, 16)
@@ -549,9 +549,8 @@ def test_build_retrieve_soul_context_queries_uses_last_12_messages_for_apimw_rew
     assert len(history_rows) == 1
     text = str((history_rows[0].get("content") or {}).get("text") or "")
     assert "[user] current" in text
-    assert "[user] msg 5" in text
+    assert "[user] msg 1" in text
     assert "[user] msg 15" in text
-    assert "[user] msg 4" not in text
 
 
 def test_build_retrieve_soul_context_queries_orders_chats_before_working_and_intentions() -> None:
