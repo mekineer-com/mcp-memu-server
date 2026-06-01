@@ -1571,9 +1571,10 @@ async def test_conversation_turn_retries_once_on_parse_failure(
 
 
 @pytest.mark.asyncio
-async def test_conversation_turn_rejects_respond_when_chat_name_missing(
+async def test_conversation_turn_allows_respond_when_chat_name_missing_and_logs_warning(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
@@ -1627,8 +1628,12 @@ async def test_conversation_turn_rejects_respond_when_chat_name_missing(
         },
     }
 
-    with pytest.raises(main.HTTPException, match="chat_name is required"):
-        await main.conversation_turn("cid-turn", payload)
+    caplog.set_level(logging.WARNING)
+    out = await main.conversation_turn("cid-turn", payload)
+
+    assert out["ok"] is True
+    assert out["response"] == "hi Bob"
+    assert "missing chat_name for respond" in caplog.text
 
 
 def test_clear_background_error_if_apimw_owned_preserves_non_apimw_error(monkeypatch: pytest.MonkeyPatch) -> None:
