@@ -218,6 +218,21 @@ def _to_iso_utc(value: Any) -> str:
     return datetime.fromtimestamp(ts, tz=UTC).isoformat()
 
 
+def _resolve_whatsapp_row_speaker(
+    *,
+    sender_name: Any,
+    sender_id: Any,
+    session_user_name: str,
+) -> str:
+    name = str(sender_name or "").strip()
+    if name:
+        return name
+    normalized_sender = _normalize_whatsapp_identifier(str(sender_id or ""))
+    if normalized_sender:
+        return normalized_sender
+    return str(session_user_name or "").strip()
+
+
 def _slice_tail_with_floor(
     all_rows: Sequence[dict[str, Any]],
     *,
@@ -389,7 +404,7 @@ def load_whatsapp_tail(
     con.row_factory = sqlite3.Row
     try:
         rows = con.execute(
-            "SELECT id, session_id, role, content, timestamp FROM messages "
+            "SELECT id, session_id, role, content, timestamp, sender_id, sender_name FROM messages "
             f"WHERE session_id IN ({placeholders}) AND role IN ('user', 'assistant') "
             "ORDER BY timestamp ASC, id ASC",
             session_ids,
@@ -405,10 +420,17 @@ def load_whatsapp_tail(
             continue
         role = str(row["role"] or "").strip().lower()
         sid = str(row["session_id"] or "").strip()
+        speaker = ""
+        if role == "user":
+            speaker = _resolve_whatsapp_row_speaker(
+                sender_name=row["sender_name"],
+                sender_id=row["sender_id"],
+                session_user_name=session_user_name.get(sid, ""),
+            )
         all_rows.append(
             {
                 "role": role,
-                "speaker": session_user_name.get(sid) if role == "user" else "",
+                "speaker": speaker,
                 "chat_name": chat_name,
                 "content": content,
                 "source_label": source_label,
@@ -467,7 +489,7 @@ def load_whatsapp_tail_after_message_id(
     con.row_factory = sqlite3.Row
     try:
         rows = con.execute(
-            "SELECT id, session_id, role, content, timestamp FROM messages "
+            "SELECT id, session_id, role, content, timestamp, sender_id, sender_name FROM messages "
             f"WHERE session_id IN ({placeholders}) AND role IN ('user', 'assistant') AND id > ? "
             "ORDER BY timestamp ASC, id ASC",
             [*session_ids, cursor_id],
@@ -483,11 +505,18 @@ def load_whatsapp_tail_after_message_id(
             continue
         role = str(row["role"] or "").strip().lower()
         sid = str(row["session_id"] or "").strip()
+        speaker = ""
+        if role == "user":
+            speaker = _resolve_whatsapp_row_speaker(
+                sender_name=row["sender_name"],
+                sender_id=row["sender_id"],
+                session_user_name=session_user_name.get(sid, ""),
+            )
         out.append(
             {
                 "id": int(row["id"]),
                 "role": role,
-                "speaker": session_user_name.get(sid) if role == "user" else "",
+                "speaker": speaker,
                 "chat_name": chat_name,
                 "content": content,
                 "source_label": source_label,

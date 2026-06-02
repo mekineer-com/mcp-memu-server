@@ -7,21 +7,73 @@ import pytest
 from app.services import conversation_sources
 
 
-def _write_state_db(path: Path, rows: list[tuple[str, str, str, float]]) -> None:
+def _write_state_db(path: Path, rows: list[tuple]) -> None:
     con = sqlite3.connect(path)
     try:
         con.execute(
             "CREATE TABLE messages ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "session_id TEXT, role TEXT, content TEXT, timestamp REAL)"
+            "session_id TEXT, role TEXT, content TEXT, timestamp REAL, sender_id TEXT, sender_name TEXT)"
         )
+        normalized_rows: list[tuple[str, str, str, float, str | None, str | None]] = []
+        for row in rows:
+            if len(row) == 4:
+                session_id, role, content, timestamp = row
+                normalized_rows.append((session_id, role, content, timestamp, None, None))
+                continue
+            if len(row) == 6:
+                session_id, role, content, timestamp, sender_id, sender_name = row
+                normalized_rows.append((session_id, role, content, timestamp, sender_id, sender_name))
+                continue
+            raise ValueError(f"unexpected row shape for state db fixture: {row!r}")
         con.executemany(
-            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-            rows,
+            "INSERT INTO messages (session_id, role, content, timestamp, sender_id, sender_name) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            normalized_rows,
         )
         con.commit()
     finally:
         con.close()
+
+
+def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:140063262396533@lid": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "140063262396533@lid",
+                        "chat_name": "Raquel",
+                        "user_name": "Raquel",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s1", "user", "from me", 100.0, "15133278228@s.whatsapp.net", "Marcos"),
+            ("s1", "assistant", "reply", 101.0, None, None),
+            ("s1", "user", "from her", 102.0, "140063262396533@lid", "Raquel"),
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:dm:140063262396533",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    )
+    assert [row["speaker"] for row in rows] == ["Marcos", "", "Raquel"]
 
 
 def _write_lid_mapping_files(base_dir: Path, *, phone_local: str, lid_local: str) -> None:
