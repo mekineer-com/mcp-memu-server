@@ -200,15 +200,17 @@ def _load_background_rollup_tail(
     storage_dir, hermes_home_path, sessions_index_path, state_db_path = _resolve_cross_source_paths()
     source_label = _message_log.derive_source_label(conversation_id)
     if source_label.startswith("whatsapp:"):
-        return _conversation_sources.load_whatsapp_tail_after_message_id(
+        tail = _conversation_sources.load_whatsapp_tail_after_message_id(
             conversation_id=conversation_id,
             after_message_id=rolling_summary_cursor_id,
             hermes_home=hermes_home_path,
             sessions_index_path=sessions_index_path,
             state_db_path=state_db_path,
         )
+        _stamp_assistant_display_name(tail, soul_id)
+        return tail
     if source_label == "sillytavern":
-        return _conversation_sources.load_sillytavern_tail(
+        tail = _conversation_sources.load_sillytavern_tail(
             storage_dir=storage_dir,
             user_id=user_id,
             soul_id=soul_id,
@@ -216,6 +218,8 @@ def _load_background_rollup_tail(
             since_cursor=int(rolling_summary_cursor_id) if rolling_summary_cursor_id is not None else -1,
             recent_fallback_messages=0,
         )
+        _stamp_assistant_display_name(tail, soul_id)
+        return tail
     return []
 
 
@@ -1794,6 +1798,23 @@ def _resolve_cross_source_paths() -> tuple[Path, Path | None, Path | None, Path 
     return _get_storage_dir(_CONFIG), hermes_home_path, sessions_index_path, state_db_path
 
 
+def _stamp_assistant_display_name(messages: list[dict[str, Any]], soul_name: str) -> None:
+    display = str(soul_name or "").strip()
+    if not display:
+        return
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "").strip().lower()
+        if role != "assistant":
+            continue
+        existing = str(msg.get("name") or msg.get("speaker") or "").strip()
+        if existing:
+            continue
+        msg["name"] = display
+        msg["speaker"] = display
+
+
 def _load_tail_for_source_conversation(
     *,
     conversation_id: str,
@@ -1861,6 +1882,7 @@ def _load_cross_tail_from_sources(
         except Exception as exc:
             logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)
             continue
+        _stamp_assistant_display_name(tail, soul_id)
         all_messages.extend(tail)
     all_messages.sort(
         key=lambda msg: (
@@ -1905,6 +1927,7 @@ def _load_cross_memorize_tails_from_sources(
                     sessions_index_path=sessions_index_path,
                     state_db_path=state_db_path,
                 )
+                _stamp_assistant_display_name(tail, soul_id)
                 if not tail:
                     continue
                 for i, msg in enumerate(tail):
@@ -1936,6 +1959,7 @@ def _load_cross_memorize_tails_from_sources(
                 )
             else:
                 continue
+            _stamp_assistant_display_name(tail, soul_id)
             if not tail:
                 continue
             for msg in tail:
@@ -2741,6 +2765,7 @@ async def conversation_retrieve(
         soul_id = str(scope.get("soul_id") or "").strip()
         message = _pick_str(safe, "message", "query") or ""
         history = _normalize_turn_history(safe.get("history"))
+        _stamp_assistant_display_name(history, soul_id)
         state_row: dict[str, Any] | None = None
         cross_tail: list[dict[str, Any]] = []
         if uid and soul_id and message.strip():
@@ -3154,6 +3179,7 @@ async def conversation_turn(
             raise HTTPException(status_code=400, detail="message is required")
 
         history_full = _normalize_turn_history(safe.get("history"))
+        _stamp_assistant_display_name(history_full, soul_id)
         prompt_override_payload_raw = safe.get("prompt_override_payload")
         if not isinstance(prompt_override_payload_raw, dict):
             raise HTTPException(status_code=400, detail="prompt_override_payload is required")

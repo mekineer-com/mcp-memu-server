@@ -18,6 +18,20 @@ def test_placeholder():
     assert True
 
 
+def test_stamp_assistant_display_name_applies_only_when_missing():
+    rows = [
+        {"role": "assistant", "content": "a"},
+        {"role": "assistant", "name": "Existing", "content": "b"},
+        {"role": "user", "content": "c"},
+    ]
+    main._stamp_assistant_display_name(rows, "Siri")
+    assert rows[0]["name"] == "Siri"
+    assert rows[0]["speaker"] == "Siri"
+    assert rows[1]["name"] == "Existing"
+    assert "speaker" not in rows[1]
+    assert "name" not in rows[2]
+
+
 def test_merge_llm_profiles_rejects_null_fields_from_client():
     defaults = {
         "default": {
