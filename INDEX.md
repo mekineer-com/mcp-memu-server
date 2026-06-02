@@ -73,7 +73,7 @@ mcp-memu-server/
 | `app/services/diary.py` | Diary helpers for consolidation: episode parsing/excerpts, diary XML parsing, and diary/companion memory write helpers. |
 | `app/services/graph_edges.py` | Shared edge normalization + write/invalidate helpers used by APImw and consolidation (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`). |
 | `app/services/memorize_endpoint.py` | `/memorize` endpoint core, forced-memorize background runner (`run_memorize_episodes`), segment-file persistence (`chat_dir/segments/*.json`), rolling-summary row injection into segment payloads, progress/cancel handlers, and chat sleep-gap/token chunking helpers. |
-| `app/services/conversation_sources.py` | Source adapters for cross-conversation reads (currently WhatsApp from Hermes `sessions.json` + `state.db`) with digest-cursor slicing and floor backfill support |
+| `app/services/conversation_sources.py` | Source adapters for cross-conversation reads: WhatsApp from Hermes (`sessions.json` + `state.db`) and SillyTavern from per-conversation snapshots under `resources/st_chats/*/latest_history.json`, with digest-cursor slicing and floor backfill support |
 | `app/services/admin_routes.py` | Health/version/shutdown/diag endpoint handlers (including `/diag` and MCP-prefixed diag aliases). |
 | `app/services/payload.py` | Shared payload/scope/normalization helpers used across retrieve/turn/service-factory paths (scope extraction, turn history normalization, signature helpers, payload scrubbing). |
 | `app/services/service_factory.py` | Service cache + payload-driven `MemoryService` construction, llm profile merge, and config readers (`apimw_*`, consolidation interval, retrieve config shaping). |
