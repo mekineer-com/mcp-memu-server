@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from app import main
-from app.services import crud_endpoints
+from app.services import conversation_sources, crud_endpoints
 
 
 def test_placeholder():
@@ -1080,11 +1080,12 @@ async def test_conversation_retrieve_does_not_persist_current_user_message(
 
 
 @pytest.mark.asyncio
-async def test_conversation_retrieve_does_not_persist_sillytavern_history_tail(
+async def test_conversation_retrieve_writes_sillytavern_snapshot_not_messages_table(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "Echo.db"
+    storage_dir = tmp_path / "resources"
     con = main._sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
@@ -1098,6 +1099,7 @@ async def test_conversation_retrieve_does_not_persist_sillytavern_history_tail(
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
     )
+    monkeypatch.setattr(main, "_get_storage_dir", lambda *_a, **_k: storage_dir)
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id}
@@ -1129,6 +1131,79 @@ async def test_conversation_retrieve_does_not_persist_sillytavern_history_tail(
     finally:
         con.close()
     assert rows == []
+
+    snapshot_rows = conversation_sources.load_sillytavern_tail(
+        storage_dir=storage_dir,
+        user_id="u1",
+        soul_id="Echo",
+        conversation_id="integrity:chat-1",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+    )
+    assert [row["content"] for row in snapshot_rows] == ["m1", "a1"]
+
+
+@pytest.mark.asyncio
+async def test_conversation_retrieve_includes_sillytavern_cross_tail_from_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    storage_dir = tmp_path / "resources"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("whatsapp:dm:15133278228", 0),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("integrity:other-chat", 0),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=storage_dir,
+        user_id="u1",
+        soul_id="Echo",
+        conversation_id="integrity:other-chat",
+        history=[{"role": "assistant", "name": "Echo", "content": "st-other-msg"}],
+        chat_name="Echo",
+    )
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+    )
+    monkeypatch.setattr(main, "_get_storage_dir", lambda *_a, **_k: storage_dir)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        captured["safe"] = safe
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo"},
+        "message": "hello",
+        "query": "hello",
+        "history": [{"role": "user", "content": "hello"}],
+    }
+
+    out = await main.conversation_retrieve("whatsapp:dm:15133278228", payload)
+    assert out["ok"] is True
+    safe = captured["safe"]
+    assert isinstance(safe, dict)
+    cross_text = str(safe.get("_cross_conversation_history") or "")
+    assert "My SillyTavern Conversations:" in cross_text
+    assert "st-other-msg" in cross_text
 
 
 @pytest.mark.asyncio

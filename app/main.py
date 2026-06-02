@@ -1735,6 +1735,8 @@ def _make_consolidation_deps() -> ConsolidationDeps:
 def _load_cross_tail_from_sources(
     con: sqlite3.Connection,
     *,
+    user_id: str,
+    soul_id: str,
     exclude_conversation_id: str | None = None,
 ) -> list[dict[str, Any]]:
     hermes_cfg = _CONFIG.get("hermes") if isinstance(_CONFIG.get("hermes"), dict) else {}
@@ -1744,6 +1746,7 @@ def _load_cross_tail_from_sources(
     hermes_home_path = Path(hermes_home_raw).expanduser().resolve() if hermes_home_raw else None
     sessions_index_path = Path(sessions_index_raw).expanduser().resolve() if sessions_index_raw else None
     state_db_path = Path(state_db_raw).expanduser().resolve() if state_db_raw else None
+    storage_dir = _get_storage_dir(_CONFIG)
     excluded_id = str(exclude_conversation_id or "").strip()
     cursor_rows = con.execute(
         "SELECT conversation_id, digest_cursor, last_memorize_at FROM conversations"
@@ -1753,18 +1756,29 @@ def _load_cross_tail_from_sources(
         cid = str(row["conversation_id"] or "").strip()
         if not cid or cid == excluded_id:
             continue
-        if _message_log.derive_source_label(cid) != "whatsapp":
-            continue
         cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
         try:
-            tail = _conversation_sources.load_whatsapp_tail(
-                conversation_id=cid,
-                since_cursor=cursor,
-                recent_fallback_messages=_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
-                hermes_home=hermes_home_path,
-                sessions_index_path=sessions_index_path,
-                state_db_path=state_db_path,
-            )
+            source_label = _message_log.derive_source_label(cid)
+            if source_label == "whatsapp":
+                tail = _conversation_sources.load_whatsapp_tail(
+                    conversation_id=cid,
+                    since_cursor=cursor,
+                    recent_fallback_messages=_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
+                    hermes_home=hermes_home_path,
+                    sessions_index_path=sessions_index_path,
+                    state_db_path=state_db_path,
+                )
+            elif source_label == "sillytavern":
+                tail = _conversation_sources.load_sillytavern_tail(
+                    storage_dir=storage_dir,
+                    user_id=user_id,
+                    soul_id=soul_id,
+                    conversation_id=cid,
+                    since_cursor=cursor,
+                    recent_fallback_messages=_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
+                )
+            else:
+                continue
         except Exception as exc:
             logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)
             continue
@@ -2523,6 +2537,15 @@ async def conversation_retrieve(
         state_row: dict[str, Any] | None = None
         cross_tail: list[dict[str, Any]] = []
         if uid and soul_id and message.strip():
+            if _message_log.derive_source_label(cid) == "sillytavern" and history:
+                _conversation_sources.persist_sillytavern_history_snapshot(
+                    storage_dir=_get_storage_dir(_CONFIG),
+                    user_id=uid,
+                    soul_id=soul_id,
+                    conversation_id=cid,
+                    history=history,
+                    chat_name=_pick_str(safe, "chat_name") or None,
+                )
             state_row, _soul_card, _db_path = _load_turn_state_and_soul_card(
                 cid,
                 user_id=uid,
@@ -2533,7 +2556,12 @@ async def conversation_retrieve(
                 try:
                     _con.row_factory = sqlite3.Row
                     _sqlite_ensure_conversation_state_schema(_con)
-                    cross_tail = _load_cross_tail_from_sources(_con, exclude_conversation_id=cid)
+                    cross_tail = _load_cross_tail_from_sources(
+                        _con,
+                        user_id=uid,
+                        soul_id=soul_id,
+                        exclude_conversation_id=cid,
+                    )
                 finally:
                     _con.close()
 

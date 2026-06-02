@@ -4,12 +4,16 @@ import json
 import os
 import re
 import sqlite3
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.config import sanitize_db_filename
+from app.services import memorize_endpoint
 
 _NUMERIC_LIKE_RE = re.compile(r"^[0-9+\-() .]+$")
+_ST_SNAPSHOT_FILE = "latest_history.json"
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:
@@ -131,6 +135,119 @@ def _to_iso_utc(value: Any) -> str:
     return datetime.fromtimestamp(ts, tz=UTC).isoformat()
 
 
+def _slice_tail_with_floor(
+    all_rows: Sequence[dict[str, Any]],
+    *,
+    since_cursor: int,
+    recent_fallback_messages: int,
+) -> list[dict[str, Any]]:
+    if since_cursor < 0:
+        tail = list(all_rows)
+    else:
+        tail = list(all_rows[since_cursor + 1 :])
+    if recent_fallback_messages > 0 and len(tail) < recent_fallback_messages and len(all_rows) > len(tail):
+        tail = list(all_rows[-recent_fallback_messages:])
+    return tail
+
+
+def _sillytavern_snapshot_path(
+    *,
+    storage_dir: Path,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+) -> Path:
+    chats_dir = (storage_dir / "st_chats").resolve()
+    chat_dir, _chat_key, _source = memorize_endpoint.resolve_chat_storage_dir(
+        chats_dir,
+        user_id,
+        soul_id,
+        conversation_id,
+        sanitize_db_filename,
+    )
+    chat_dir.mkdir(parents=True, exist_ok=True)
+    return (chat_dir / _ST_SNAPSHOT_FILE).resolve()
+
+
+def persist_sillytavern_history_snapshot(
+    *,
+    storage_dir: Path,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    history: list[dict[str, Any]],
+    chat_name: str | None = None,
+) -> None:
+    payload = {
+        "conversation_id": str(conversation_id or "").strip(),
+        "chat_name": str(chat_name or "").strip(),
+        "updated_at": datetime.now(UTC).isoformat(),
+        "history": list(history or []),
+    }
+    path = _sillytavern_snapshot_path(
+        storage_dir=storage_dir,
+        user_id=user_id,
+        soul_id=soul_id,
+        conversation_id=conversation_id,
+    )
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def load_sillytavern_tail(
+    *,
+    storage_dir: Path,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    since_cursor: int,
+    recent_fallback_messages: int,
+) -> list[dict[str, Any]]:
+    path = _sillytavern_snapshot_path(
+        storage_dir=storage_dir,
+        user_id=user_id,
+        soul_id=soul_id,
+        conversation_id=conversation_id,
+    )
+    if not path.exists():
+        raise FileNotFoundError(f"sillytavern snapshot missing: {path}")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"sillytavern snapshot must be an object: {path}")
+    history = raw.get("history")
+    if not isinstance(history, list):
+        raise RuntimeError(f"sillytavern snapshot history must be a list: {path}")
+    chat_name = str(raw.get("chat_name") or "").strip()
+    all_rows: list[dict[str, Any]] = []
+    for idx, item in enumerate(history):
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        role = str(item.get("role") or "").strip() or "unknown"
+        speaker = str(item.get("name") or "").strip()
+        ts_ms = item.get("ts_ms")
+        received_at = _to_iso_utc((float(ts_ms) / 1000.0) if isinstance(ts_ms, (int, float)) else "")
+        all_rows.append(
+            {
+                "role": role,
+                "speaker": speaker,
+                "chat_name": chat_name,
+                "content": content,
+                "source_label": "sillytavern",
+                "received_at": received_at,
+                "conversation_id": conversation_id,
+                "source_conversation_id": conversation_id,
+                "source_conversation_index": idx,
+            }
+        )
+    return _slice_tail_with_floor(
+        all_rows,
+        since_cursor=since_cursor,
+        recent_fallback_messages=recent_fallback_messages,
+    )
+
+
 def load_whatsapp_tail(
     *,
     conversation_id: str,
@@ -199,10 +316,8 @@ def load_whatsapp_tail(
             }
         )
 
-    if since_cursor < 0:
-        tail = list(all_rows)
-    else:
-        tail = all_rows[since_cursor + 1 :]
-    if recent_fallback_messages > 0 and len(tail) < recent_fallback_messages and len(all_rows) > len(tail):
-        tail = all_rows[-recent_fallback_messages:]
-    return tail
+    return _slice_tail_with_floor(
+        all_rows,
+        since_cursor=since_cursor,
+        recent_fallback_messages=recent_fallback_messages,
+    )

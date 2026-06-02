@@ -138,3 +138,39 @@ def test_load_whatsapp_tail_raises_when_mapping_missing(tmp_path: Path) -> None:
             sessions_index_path=sessions_path,
             state_db_path=state_db_path,
         )
+
+
+def test_sillytavern_snapshot_round_trip_with_floor(tmp_path: Path) -> None:
+    storage_dir = tmp_path / "resources"
+    conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=storage_dir,
+        user_id="u1",
+        soul_id="Echo",
+        conversation_id="integrity:chat-a",
+        history=[{"role": "user", "name": "Marcos", "content": f"msg-{i}"} for i in range(10)],
+        chat_name="Echo",
+    )
+
+    rows = conversation_sources.load_sillytavern_tail(
+        storage_dir=storage_dir,
+        user_id="u1",
+        soul_id="Echo",
+        conversation_id="integrity:chat-a",
+        since_cursor=8,
+        recent_fallback_messages=8,
+    )
+    assert [row["content"] for row in rows] == [f"msg-{i}" for i in range(2, 10)]
+    assert all(row["source_label"] == "sillytavern" for row in rows)
+    assert all(row["chat_name"] == "Echo" for row in rows)
+
+
+def test_load_sillytavern_tail_raises_when_snapshot_missing(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="sillytavern snapshot missing"):
+        conversation_sources.load_sillytavern_tail(
+            storage_dir=tmp_path / "resources",
+            user_id="u1",
+            soul_id="Echo",
+            conversation_id="integrity:missing",
+            since_cursor=-1,
+            recent_fallback_messages=0,
+        )
