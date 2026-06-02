@@ -103,6 +103,16 @@ def _summary_from_category_line(line: str) -> str:
     return line.strip()
 
 
+def _display_speaker_label(item: dict[str, Any]) -> str:
+    explicit = _text(item.get("name"))
+    if explicit:
+        return explicit
+    role = _text(item.get("role")).lower()
+    if role == "assistant":
+        return "soul"
+    return role or "unknown"
+
+
 def render_history(history: list[dict[str, Any]]) -> str:
     if not history:
         return "(none)"
@@ -115,7 +125,7 @@ def render_history(history: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     last_time_label: str | None = None
     for item in reversed(selected):
-        role = _text(item.get("name") or item.get("role") or "unknown")
+        role = _display_speaker_label(item)
         content = _text(item.get("content"))
         time_label = format_relative_time_label(
             item.get("ts_ms") or item.get("created_at") or item.get("received_at"),

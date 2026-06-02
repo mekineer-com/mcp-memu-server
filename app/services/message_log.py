@@ -499,7 +499,7 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
                 if parsed is not None:
                     speaker, content = parsed
             if not speaker:
-                speaker = role or "unknown"
+                speaker = "soul" if role == "assistant" else (role or "unknown")
             conv_lines.append(f"[{speaker}]: {content}")
         entries.append((newest_ts, "\n".join(conv_lines)))
 

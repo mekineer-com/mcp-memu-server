@@ -80,7 +80,7 @@ def _build_retrieve_identity_context(
     *,
     apimw: bool = False,
 ) -> str:
-    name = str(soul_name or "").strip() or "the assistant"
+    name = str(soul_name or "").strip() or "the soul"
     anchor = f"Today is {_format_time_anchor()}."
     if apimw:
         identity = (
