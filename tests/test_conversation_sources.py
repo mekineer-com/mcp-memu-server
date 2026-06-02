@@ -36,6 +36,22 @@ def _write_state_db(path: Path, rows: list[tuple]) -> None:
         con.close()
 
 
+def _write_sessions_table(path: Path, rows: list[tuple[str, str | None]]) -> None:
+    con = sqlite3.connect(path)
+    try:
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS sessions ("
+            "id TEXT PRIMARY KEY, parent_session_id TEXT)"
+        )
+        con.executemany(
+            "INSERT OR REPLACE INTO sessions (id, parent_session_id) VALUES (?, ?)",
+            rows,
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
 def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) -> None:
     sessions_path = tmp_path / "sessions.json"
     state_db_path = tmp_path / "state.db"
@@ -74,6 +90,52 @@ def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) ->
         state_db_path=state_db_path,
     )
     assert [row["speaker"] for row in rows] == ["Marcos", "", "Raquel"]
+
+
+def test_load_whatsapp_tail_includes_parent_session_lineage(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:15133278228": {
+                    "session_id": "s2",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "15133278228@s.whatsapp.net",
+                        "chat_name": "Marcos",
+                        "user_name": "Marcos",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_sessions_table(
+        state_db_path,
+        [
+            ("s1", None),
+            ("s2", "s1"),
+        ],
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s1", "user", "older", 100.0, "15133278228@s.whatsapp.net", "Marcos"),
+            ("s2", "user", "newer", 101.0, "15133278228@s.whatsapp.net", "Marcos"),
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    )
+    assert [row["content"] for row in rows] == ["older", "newer"]
 
 
 def test_load_whatsapp_tail_preserves_assistant_sender_name_when_present(tmp_path: Path) -> None:

@@ -210,6 +210,39 @@ def _pick_chat_name(entries: list[dict[str, Any]], fallback: str, *, chat_type: 
     return min(names, key=lambda name: (int(bool(_NUMERIC_LIKE_RE.fullmatch(name))), len(name), name))
 
 
+def _expand_session_ids_with_lineage(db_path: Path, session_ids: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for sid in session_ids:
+        value = str(sid or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            ordered.append(value)
+    if not ordered:
+        return ordered
+
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    try:
+        queue = list(ordered)
+        while queue:
+            current = queue.pop(0)
+            row = con.execute(
+                "SELECT parent_session_id FROM sessions WHERE id = ? LIMIT 1",
+                (current,),
+            ).fetchone()
+            parent = str((row["parent_session_id"] if row else "") or "").strip()
+            if parent and parent not in seen:
+                seen.add(parent)
+                ordered.append(parent)
+                queue.append(parent)
+        return ordered
+    except sqlite3.OperationalError:
+        return ordered
+    finally:
+        con.close()
+
+
 def _to_iso_utc(value: Any) -> str:
     try:
         ts = float(value)
@@ -398,6 +431,7 @@ def load_whatsapp_tail(
         if sid and sid not in session_user_name:
             session_ids.append(sid)
             session_user_name[sid] = str(entry.get("user_name") or "").strip()
+    session_ids = _expand_session_ids_with_lineage(db_path, session_ids)
 
     placeholders = ",".join("?" for _ in session_ids)
     con = sqlite3.connect(db_path)
@@ -483,6 +517,7 @@ def load_whatsapp_tail_after_message_id(
         if sid and sid not in session_user_name:
             session_ids.append(sid)
             session_user_name[sid] = str(entry.get("user_name") or "").strip()
+    session_ids = _expand_session_ids_with_lineage(db_path, session_ids)
 
     placeholders = ",".join("?" for _ in session_ids)
     cursor_id = int(after_message_id or 0)
