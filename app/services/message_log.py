@@ -7,7 +7,6 @@ import os
 import re
 import sqlite3
 
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -62,84 +61,6 @@ def derive_source_label(conversation_id: str) -> str:
     if cid.startswith("cron:"):
         return "cron"
     return cid.split(":")[0] if ":" in cid else "unknown"
-
-
-def append_messages(
-    con: sqlite3.Connection,
-    conversation_id: str,
-    messages: list[dict[str, Any]],
-    source_label: str | None = None,
-    chat_name: str | None = None,
-) -> int:
-    """Append messages not already stored. Returns count of new messages appended."""
-    if not messages:
-        return 0
-
-    label = source_label or derive_source_label(conversation_id)
-    chat_name_value = str(chat_name or "").strip() or None
-    now_iso = datetime.now(UTC).isoformat()
-    incoming_rows: list[tuple[str, str | None, str, str | None]] = []
-    for msg in messages:
-        role = str(msg.get("role") or "user").strip()
-        content = str(msg.get("content") or msg.get("text") or "").strip()
-        if isinstance(msg.get("content"), dict):
-            content = str(msg["content"].get("text") or "").strip()
-        speaker = str(msg.get("name") or msg.get("speaker") or "").strip() or None
-        ext_id = str(msg.get("external_message_id") or "").strip() or None
-        role, speaker, content = _normalize_row_for_overlap(
-            conversation_id, role, speaker, content
-        )
-        if not content:
-            continue
-        incoming_rows.append((role, speaker, content, ext_id))
-
-    if not incoming_rows:
-        return 0
-
-    rows_data = incoming_rows
-    # WhatsApp ingress now owns dedupe using stable message identity. Non-WhatsApp
-    # callers may resend full history payloads, so keep suffix-only append there.
-    if not str(conversation_id or "").strip().startswith("whatsapp:"):
-        recent_rows = con.execute(
-            "SELECT role, speaker, content FROM messages "
-            "WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
-            (conversation_id, len(incoming_rows)),
-        ).fetchall()
-        existing_tail = list(reversed([
-            _normalize_row_for_overlap(
-                conversation_id,
-                str(row["role"] or "").strip(),
-                str(row["speaker"] or "").strip() or None,
-                str(row["content"] or "").strip(),
-            )
-            for row in recent_rows
-        ]))
-        overlap_rows = [(r, s, c) for r, s, c, _ in incoming_rows]
-        max_overlap = min(len(existing_tail), len(overlap_rows))
-        overlap = 0
-        for k in range(max_overlap, 0, -1):
-            if existing_tail[-k:] == overlap_rows[:k]:
-                overlap = k
-                break
-        rows_data = incoming_rows[overlap:]
-
-    if not rows_data:
-        return 0
-
-    has_external_id = any(ext_id for _, _, _, ext_id in rows_data)
-    rows = [
-        (conversation_id, role, speaker, chat_name_value, content, label, now_iso, ext_id)
-        for role, speaker, content, ext_id in rows_data
-    ]
-
-    verb = "INSERT OR IGNORE" if has_external_id else "INSERT"
-    before = con.total_changes
-    con.executemany(
-        f"{verb} INTO messages (conversation_id, role, speaker, chat_name, content, source_label, received_at, external_message_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        rows,
-    )
-    return con.total_changes - before
 
 
 def read_tail(

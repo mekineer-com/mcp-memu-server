@@ -13,10 +13,85 @@ def _con() -> sqlite3.Connection:
     return con
 
 
+def _append_messages(
+    con: sqlite3.Connection,
+    conversation_id: str,
+    messages: list[dict[str, object]],
+    source_label: str | None = None,
+    chat_name: str | None = None,
+) -> int:
+    if not messages:
+        return 0
+
+    label = source_label or message_log.derive_source_label(conversation_id)
+    chat_name_value = str(chat_name or "").strip() or None
+    now_iso = datetime.now(UTC).isoformat()
+    incoming_rows: list[tuple[str, str | None, str, str | None]] = []
+    for msg in messages:
+        role = str(msg.get("role") or "user").strip()
+        content = str(msg.get("content") or msg.get("text") or "").strip()
+        if isinstance(msg.get("content"), dict):
+            content = str(msg["content"].get("text") or "").strip()
+        speaker = str(msg.get("name") or msg.get("speaker") or "").strip() or None
+        ext_id = str(msg.get("external_message_id") or "").strip() or None
+        role, speaker, content = message_log._normalize_row_for_overlap(
+            conversation_id, role, speaker, content
+        )
+        if not content:
+            continue
+        incoming_rows.append((role, speaker, content, ext_id))
+
+    if not incoming_rows:
+        return 0
+
+    rows_data = incoming_rows
+    if not str(conversation_id or "").strip().startswith("whatsapp:"):
+        recent_rows = con.execute(
+            "SELECT role, speaker, content FROM messages "
+            "WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+            (conversation_id, len(incoming_rows)),
+        ).fetchall()
+        existing_tail = list(reversed([
+            message_log._normalize_row_for_overlap(
+                conversation_id,
+                str(row["role"] or "").strip(),
+                str(row["speaker"] or "").strip() or None,
+                str(row["content"] or "").strip(),
+            )
+            for row in recent_rows
+        ]))
+        overlap_rows = [(r, s, c) for r, s, c, _ in incoming_rows]
+        max_overlap = min(len(existing_tail), len(overlap_rows))
+        overlap = 0
+        for k in range(max_overlap, 0, -1):
+            if existing_tail[-k:] == overlap_rows[:k]:
+                overlap = k
+                break
+        rows_data = incoming_rows[overlap:]
+
+    if not rows_data:
+        return 0
+
+    has_external_id = any(ext_id for _, _, _, ext_id in rows_data)
+    rows = [
+        (conversation_id, role, speaker, chat_name_value, content, label, now_iso, ext_id)
+        for role, speaker, content, ext_id in rows_data
+    ]
+
+    verb = "INSERT OR IGNORE" if has_external_id else "INSERT"
+    before = con.total_changes
+    con.executemany(
+        f"{verb} INTO messages (conversation_id, role, speaker, chat_name, content, source_label, received_at, external_message_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    return con.total_changes - before
+
+
 def test_append_messages_cumulative_history_payload_is_appended_verbatim() -> None:
     con = _con()
     try:
-        added = message_log.append_messages(
+        added = _append_messages(
             con,
             "whatsapp:dm:c1",
             [
@@ -26,7 +101,7 @@ def test_append_messages_cumulative_history_payload_is_appended_verbatim() -> No
         )
         assert added == 2
 
-        added = message_log.append_messages(
+        added = _append_messages(
             con,
             "whatsapp:dm:c1",
             [
@@ -46,9 +121,9 @@ def test_append_messages_cumulative_history_payload_is_appended_verbatim() -> No
 def test_append_messages_incremental_payloads_append_new_rows() -> None:
     con = _con()
     try:
-        assert message_log.append_messages(con, "c2", [{"role": "user", "content": "one"}]) == 1
+        assert _append_messages(con, "c2", [{"role": "user", "content": "one"}]) == 1
         # New request contains only latest message (incremental mode).
-        assert message_log.append_messages(con, "c2", [{"role": "assistant", "content": "two"}]) == 1
+        assert _append_messages(con, "c2", [{"role": "assistant", "content": "two"}]) == 1
         rows = message_log.read_tail(con, "c2", after_cursor=0)
         assert [r["content"] for r in rows] == ["one", "two"]
     finally:
@@ -58,7 +133,7 @@ def test_append_messages_incremental_payloads_append_new_rows() -> None:
 def test_append_messages_incremental_overlap_is_not_suppressed() -> None:
     con = _con()
     try:
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:c3",
             [
@@ -68,7 +143,7 @@ def test_append_messages_incremental_overlap_is_not_suppressed() -> None:
         ) == 2
 
         # Incoming payload overlaps the existing tail on "two"; append stays literal.
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:c3",
             [
@@ -86,7 +161,7 @@ def test_append_messages_incremental_overlap_is_not_suppressed() -> None:
 def test_append_messages_non_whatsapp_overlap_suppresses_suffix_only() -> None:
     con = _con()
     try:
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "integrity:chat-overlap",
             [
@@ -94,7 +169,7 @@ def test_append_messages_non_whatsapp_overlap_suppresses_suffix_only() -> None:
                 {"role": "assistant", "content": "two"},
             ],
         ) == 2
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "integrity:chat-overlap",
             [
@@ -111,13 +186,13 @@ def test_append_messages_non_whatsapp_overlap_suppresses_suffix_only() -> None:
 def test_append_messages_existing_single_row_does_not_drop_new_user_row() -> None:
     con = _con()
     try:
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "c3-edge",
             [{"role": "user", "content": "existing one"}],
         ) == 1
 
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "c3-edge",
             [
@@ -139,7 +214,7 @@ def test_append_messages_existing_single_row_does_not_drop_new_user_row() -> Non
 def test_append_messages_shared_group_parses_sender_prefix_into_speaker() -> None:
     con = _con()
     try:
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:group:18322935409-1579788049@g.us",
             [{"role": "user", "name": "Marcos", "content": "[Raquel] Going to the gym now."}],
@@ -157,7 +232,7 @@ def test_append_messages_shared_group_parses_sender_prefix_into_speaker() -> Non
 def test_append_messages_dm_keeps_bracket_prefix_in_plain_content() -> None:
     con = _con()
     try:
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:15133278228",
             [{"role": "user", "name": "Marcos", "content": "[Raquel] Going to the gym now."}],
@@ -176,7 +251,7 @@ def test_append_messages_group_prefixed_rows_keep_sender_normalization() -> None
     con = _con()
     try:
         cid = "whatsapp:group:18322935409-1579788049@g.us"
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             cid,
             [{"role": "user", "content": "[Raquel] Going to the gym now."}],
@@ -184,7 +259,7 @@ def test_append_messages_group_prefixed_rows_keep_sender_normalization() -> None
         ) == 1
 
         # Same semantic row but with a fallback speaker from an older payload.
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             cid,
             [{"role": "user", "name": "Marcos", "content": "[Raquel] Going to the gym now."}],
@@ -208,7 +283,7 @@ def test_read_all_tails_for_memorize_background_uses_rowid_cursor() -> None:
             "INSERT INTO conversations (conversation_id, memorize_chat, rolling_summary_cursor_id) VALUES (?, ?, ?)",
             ("bg-1", 0, None),
         )
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "bg-1",
             [
@@ -274,7 +349,7 @@ def test_read_all_tails_falls_back_to_recent_when_unmemorized_tail_empty() -> No
             "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
             ("c4", 99, "2026-05-08T00:00:00+00:00"),
         )
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "c4",
             [
@@ -305,13 +380,13 @@ def test_read_all_tails_skips_sillytavern_scoped_conversations() -> None:
             "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
             ("integrity:chat-a", 0),
         )
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:15133278228",
             [{"role": "user", "content": "keep me"}],
             source_label="whatsapp:dm",
         ) == 1
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "integrity:chat-a",
             [{"role": "user", "content": "drop me"}],
@@ -334,7 +409,7 @@ def test_read_all_tails_backfills_short_unmemorized_tail_when_history_is_short()
             "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
             ("c5", 1, "2026-05-08T00:00:00+00:00"),
         )
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "c5",
             [
@@ -362,7 +437,7 @@ def test_read_all_tails_backfills_short_unmemorized_tail_to_floor() -> None:
             "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
             ("c5-floor", 6, "2026-05-08T00:00:00+00:00"),
         )
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "c5-floor",
             [{"role": "user", "content": f"msg-{i}"} for i in range(10)],
@@ -385,7 +460,7 @@ def test_read_all_tails_never_memorized_includes_first_message_without_fallback(
             "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
             ("c6", 0),
         )
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "c6",
             [{"role": "user", "content": "first"}],
@@ -418,13 +493,13 @@ def test_read_all_tails_keeps_full_unmemorized_tail_per_conversation() -> None:
         )
 
         many_rows = [{"role": "user", "content": f"dominant-{i}"} for i in range(20)]
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:dominant",
             many_rows,
             source_label="whatsapp:dm",
         ) == 20
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:group:small@g.us",
             [{"role": "user", "content": "small-1"}, {"role": "user", "content": "small-2"}],
@@ -459,7 +534,7 @@ def test_read_all_tails_fallback_remains_limited_per_conversation() -> None:
             ("c7", 999, "2026-05-08T00:00:00+00:00"),
         )
         rows = [{"role": "user", "content": f"msg-{i}"} for i in range(20)]
-        assert message_log.append_messages(con, "c7", rows) == 20
+        assert _append_messages(con, "c7", rows) == 20
 
         merged = message_log.read_all_tails(con, exclude_conversation_id="current")
         assert [m["content"] for m in merged] == [f"msg-{i}" for i in range(12, 20)]
@@ -918,13 +993,13 @@ def test_normalize_whatsapp_identifier_rejects_path_like_values() -> None:
 def test_read_recent_for_conversation_ids_merges_alias_rows() -> None:
     con = _con()
     try:
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:114628432556258",
             [{"role": "user", "name": "Marcos", "content": "older-lid"}],
             source_label="whatsapp:dm",
         ) == 1
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:15133278228",
             [{"role": "user", "name": "Marcos", "content": "newer-phone"}],
@@ -951,13 +1026,13 @@ def test_read_all_tails_excludes_only_exact_current_conversation_id() -> None:
             "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
             ("whatsapp:dm:15133278228", 0),
         )
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:114628432556258",
             [{"role": "user", "name": "Marcos", "content": "lid row"}],
             source_label="whatsapp:dm",
         ) == 1
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:15133278228",
             [{"role": "assistant", "name": "Echo", "content": "phone row"}],
@@ -987,13 +1062,13 @@ def test_read_all_tails_does_not_merge_mixed_alias_conversation_rows() -> None:
             "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
             ("whatsapp:dm:15133278228", 0),
         )
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:114628432556258",
             [{"role": "user", "name": "Marcos", "content": "same-row"}],
             source_label="whatsapp:dm",
         ) == 1
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:15133278228",
             [{"role": "user", "name": "Marcos", "content": "same-row"}],
@@ -1029,7 +1104,7 @@ def test_read_all_tails_mixed_alias_rows_keep_independent_cursors() -> None:
             "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
             ("whatsapp:dm:15133278228", 0),
         )
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:114628432556258",
             [
@@ -1038,7 +1113,7 @@ def test_read_all_tails_mixed_alias_rows_keep_independent_cursors() -> None:
             ],
             source_label="whatsapp:dm",
         ) == 2
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:15133278228",
             [
@@ -1059,13 +1134,13 @@ def test_read_all_tails_mixed_alias_rows_keep_independent_cursors() -> None:
         )
         con.commit()
 
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:114628432556258",
             [{"role": "user", "name": "Marcos", "content": "new-3"}],
             source_label="whatsapp:dm",
         ) == 1
-        assert message_log.append_messages(
+        assert _append_messages(
             con,
             "whatsapp:dm:15133278228",
             [{"role": "user", "name": "Marcos", "content": "new-3"}],

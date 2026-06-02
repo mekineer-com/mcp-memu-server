@@ -1890,62 +1890,66 @@ def _load_cross_memorize_tails_from_sources(
         cid = str(row["conversation_id"] or "").strip()
         if not cid or cid == excluded_id:
             continue
-        memorize_chat = True if row["memorize_chat"] is None else bool(int(row["memorize_chat"]))
-        if memorize_chat:
-            cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
-            tail = _load_tail_for_source_conversation(
-                conversation_id=cid,
-                user_id=user_id,
-                soul_id=soul_id,
-                since_cursor=cursor,
-                recent_fallback_messages=0,
-                storage_dir=storage_dir,
-                hermes_home_path=hermes_home_path,
-                sessions_index_path=sessions_index_path,
-                state_db_path=state_db_path,
-            )
+        try:
+            memorize_chat = True if row["memorize_chat"] is None else bool(int(row["memorize_chat"]))
+            if memorize_chat:
+                cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
+                tail = _load_tail_for_source_conversation(
+                    conversation_id=cid,
+                    user_id=user_id,
+                    soul_id=soul_id,
+                    since_cursor=cursor,
+                    recent_fallback_messages=0,
+                    storage_dir=storage_dir,
+                    hermes_home_path=hermes_home_path,
+                    sessions_index_path=sessions_index_path,
+                    state_db_path=state_db_path,
+                )
+                if not tail:
+                    continue
+                for i, msg in enumerate(tail):
+                    msg["source_conversation_id"] = cid
+                    if msg.get("source_conversation_index") is None:
+                        msg["source_conversation_index"] = cursor + 1 + i
+                    msg["memorize_chat"] = True
+                tails[cid] = tail
+                continue
+
+            rolling_cursor_id = row["rolling_summary_cursor_id"]
+            source_label = _message_log.derive_source_label(cid)
+            if source_label.startswith("whatsapp:"):
+                tail = _conversation_sources.load_whatsapp_tail_after_message_id(
+                    conversation_id=cid,
+                    after_message_id=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
+                    hermes_home=hermes_home_path,
+                    sessions_index_path=sessions_index_path,
+                    state_db_path=state_db_path,
+                )
+            elif source_label == "sillytavern":
+                tail = _conversation_sources.load_sillytavern_tail(
+                    storage_dir=storage_dir,
+                    user_id=user_id,
+                    soul_id=soul_id,
+                    conversation_id=cid,
+                    since_cursor=int(rolling_cursor_id) if rolling_cursor_id is not None else -1,
+                    recent_fallback_messages=0,
+                )
+            else:
+                continue
             if not tail:
                 continue
-            for i, msg in enumerate(tail):
+            for msg in tail:
                 msg["source_conversation_id"] = cid
                 if msg.get("source_conversation_index") is None:
-                    msg["source_conversation_index"] = cursor + 1 + i
-                msg["memorize_chat"] = True
+                    raise RuntimeError(
+                        f"cross-memorize listen-only tail missing source_conversation_index for {cid}"
+                    )
+                msg["source_conversation_index"] = int(msg["source_conversation_index"])
+                msg["memorize_chat"] = False
             tails[cid] = tail
+        except Exception as exc:
+            logger.error("cross-memorize source read failed for conversation_id=%s: %s", cid, exc)
             continue
-
-        rolling_cursor_id = row["rolling_summary_cursor_id"]
-        source_label = _message_log.derive_source_label(cid)
-        if source_label.startswith("whatsapp:"):
-            tail = _conversation_sources.load_whatsapp_tail_after_message_id(
-                conversation_id=cid,
-                after_message_id=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
-                hermes_home=hermes_home_path,
-                sessions_index_path=sessions_index_path,
-                state_db_path=state_db_path,
-            )
-        elif source_label == "sillytavern":
-            tail = _conversation_sources.load_sillytavern_tail(
-                storage_dir=storage_dir,
-                user_id=user_id,
-                soul_id=soul_id,
-                conversation_id=cid,
-                since_cursor=int(rolling_cursor_id) if rolling_cursor_id is not None else -1,
-                recent_fallback_messages=0,
-            )
-        else:
-            continue
-        if not tail:
-            continue
-        for msg in tail:
-            msg["source_conversation_id"] = cid
-            if msg.get("source_conversation_index") is None:
-                raise RuntimeError(
-                    f"cross-memorize listen-only tail missing source_conversation_index for {cid}"
-                )
-            msg["source_conversation_index"] = int(msg["source_conversation_index"])
-            msg["memorize_chat"] = False
-        tails[cid] = tail
     return tails
 
 

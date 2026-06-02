@@ -204,6 +204,46 @@ def test_load_whatsapp_tail_orders_equal_timestamps_by_row_id(tmp_path: Path) ->
     assert [row["content"] for row in rows] == ["first-insert", "second-insert"]
 
 
+def test_load_whatsapp_tail_since_cursor_handles_sparse_indices(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:15133278228": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "15133278228@s.whatsapp.net",
+                        "chat_name": "Marcos",
+                        "user_name": "Marcos",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s1", "user", "one", 100.0),
+            ("s1", "assistant", "", 101.0),
+            ("s1", "user", "three", 102.0),
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=1,
+        recent_fallback_messages=0,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    )
+    assert [row["content"] for row in rows] == ["three"]
+
+
 def test_load_whatsapp_tail_after_message_id_filters_by_row_id(tmp_path: Path) -> None:
     sessions_path = tmp_path / "sessions.json"
     state_db_path = tmp_path / "state.db"
@@ -371,6 +411,32 @@ def test_sillytavern_snapshot_round_trip_with_floor(tmp_path: Path) -> None:
     assert [row["content"] for row in rows] == [f"msg-{i}" for i in range(2, 10)]
     assert all(row["source_label"] == "sillytavern" for row in rows)
     assert all(row["chat_name"] == "Echo" for row in rows)
+
+
+def test_load_sillytavern_tail_since_cursor_handles_sparse_indices(tmp_path: Path) -> None:
+    storage_dir = tmp_path / "resources"
+    conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=storage_dir,
+        user_id="u1",
+        soul_id="Echo",
+        conversation_id="integrity:chat-a",
+        history=[
+            {"role": "user", "name": "Marcos", "content": "one"},
+            {"role": "assistant", "name": "Echo", "content": ""},
+            {"role": "user", "name": "Marcos", "content": "three"},
+        ],
+        chat_name="Echo",
+    )
+
+    rows = conversation_sources.load_sillytavern_tail(
+        storage_dir=storage_dir,
+        user_id="u1",
+        soul_id="Echo",
+        conversation_id="integrity:chat-a",
+        since_cursor=1,
+        recent_fallback_messages=0,
+    )
+    assert [row["content"] for row in rows] == ["three"]
 
 
 def test_load_sillytavern_tail_raises_when_snapshot_missing(tmp_path: Path) -> None:

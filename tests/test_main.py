@@ -534,6 +534,78 @@ def test_build_cross_conversation_payload_preserves_listen_only_cursor_semantics
     assert out["_final_cursors"]["whatsapp:dm:bg-chat"] == rows[0]["source_conversation_index"]
 
 
+def test_build_cross_conversation_payload_isolates_cross_source_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        now_iso = datetime.now(UTC).isoformat()
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, digest_cursor, last_memorize_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("trigger", 1, -1, None, now_iso),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, digest_cursor, last_memorize_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("bg-good", 1, -1, None, now_iso),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, digest_cursor, last_memorize_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("bg-bad", 1, -1, None, now_iso),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+
+    def _fake_tail_loader(**kwargs):
+        cid = str(kwargs.get("conversation_id") or "")
+        if cid == "bg-bad":
+            raise RuntimeError("source missing")
+        if cid == "bg-good":
+            return [
+                {
+                    "role": "user",
+                    "speaker": "Marcos",
+                    "chat_name": "Marcos",
+                    "content": "hello from good",
+                    "source_label": "whatsapp:dm",
+                    "received_at": "2026-05-01T00:01:00+00:00",
+                    "conversation_id": "bg-good",
+                    "source_conversation_id": "bg-good",
+                    "source_conversation_index": 0,
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(main, "_load_tail_for_source_conversation", _fake_tail_loader)
+
+    out = main._build_cross_conversation_payload(
+        "trigger",
+        "u1",
+        "Echo",
+        {"memorize_chat": True},
+        [{"role": "user", "content": "hello from trigger"}],
+        -1,
+        True,
+    )
+    assert isinstance(out, dict)
+    rows = [
+        row for row in list(out.get("conversation") or [])
+        if str(row.get("source_conversation_id") or "") == "bg-good"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["content"] == "hello from good"
+
+
 @pytest.mark.asyncio
 async def test_build_cross_conversation_payload_queues_background_rollup_for_listen_only_tail(
     tmp_path: Path,

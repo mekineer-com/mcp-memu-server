@@ -224,10 +224,27 @@ def _slice_tail_with_floor(
     since_cursor: int,
     recent_fallback_messages: int,
 ) -> list[dict[str, Any]]:
+    def _row_cursor_value(row: dict[str, Any], fallback_idx: int) -> int:
+        raw = row.get("source_conversation_index")
+        if isinstance(raw, bool):
+            return fallback_idx
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, float):
+            return int(raw)
+        try:
+            return int(str(raw).strip())
+        except (TypeError, ValueError):
+            return fallback_idx
+
     if since_cursor < 0:
         tail = list(all_rows)
     else:
-        tail = list(all_rows[since_cursor + 1 :])
+        tail = [
+            row
+            for idx, row in enumerate(all_rows)
+            if _row_cursor_value(row, idx) > since_cursor
+        ]
     if recent_fallback_messages > 0 and len(tail) < recent_fallback_messages and len(all_rows) > len(tail):
         tail = list(all_rows[-recent_fallback_messages:])
     return tail
