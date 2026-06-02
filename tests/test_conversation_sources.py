@@ -76,6 +76,45 @@ def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) ->
     assert [row["speaker"] for row in rows] == ["Marcos", "", "Raquel"]
 
 
+def test_load_whatsapp_tail_preserves_assistant_sender_name_when_present(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:140063262396533@lid": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "140063262396533@lid",
+                        "chat_name": "Raquel",
+                        "user_name": "Raquel",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s1", "assistant", "old soul reply", 101.0, None, "Echo"),
+            ("s1", "assistant", "new soul reply", 102.0, None, None),
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:dm:140063262396533",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    )
+    assert [row["speaker"] for row in rows] == ["Echo", ""]
+
+
 def _write_lid_mapping_files(base_dir: Path, *, phone_local: str, lid_local: str) -> None:
     session_dir = base_dir / "whatsapp" / "session"
     session_dir.mkdir(parents=True, exist_ok=True)

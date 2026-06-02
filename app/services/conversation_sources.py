@@ -421,11 +421,12 @@ def load_whatsapp_tail(
         role = str(row["role"] or "").strip().lower()
         sid = str(row["session_id"] or "").strip()
         speaker = ""
-        if role == "user":
+        if role in {"user", "assistant"}:
+            fallback_name = session_user_name.get(sid, "") if role == "user" else ""
             speaker = _resolve_whatsapp_row_speaker(
                 sender_name=row["sender_name"],
                 sender_id=row["sender_id"],
-                session_user_name=session_user_name.get(sid, ""),
+                session_user_name=fallback_name,
             )
         all_rows.append(
             {
@@ -506,11 +507,12 @@ def load_whatsapp_tail_after_message_id(
         role = str(row["role"] or "").strip().lower()
         sid = str(row["session_id"] or "").strip()
         speaker = ""
-        if role == "user":
+        if role in {"user", "assistant"}:
+            fallback_name = session_user_name.get(sid, "") if role == "user" else ""
             speaker = _resolve_whatsapp_row_speaker(
                 sender_name=row["sender_name"],
                 sender_id=row["sender_id"],
-                session_user_name=session_user_name.get(sid, ""),
+                session_user_name=fallback_name,
             )
         out.append(
             {
