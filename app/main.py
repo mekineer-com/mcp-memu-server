@@ -1737,6 +1737,13 @@ def _load_cross_tail_from_sources(
     *,
     exclude_conversation_id: str | None = None,
 ) -> list[dict[str, Any]]:
+    hermes_cfg = _CONFIG.get("hermes") if isinstance(_CONFIG.get("hermes"), dict) else {}
+    hermes_home_raw = str(hermes_cfg.get("home") or "").strip()
+    sessions_index_raw = str(hermes_cfg.get("sessions_index_path") or "").strip()
+    state_db_raw = str(hermes_cfg.get("state_db_path") or "").strip()
+    hermes_home_path = Path(hermes_home_raw).expanduser().resolve() if hermes_home_raw else None
+    sessions_index_path = Path(sessions_index_raw).expanduser().resolve() if sessions_index_raw else None
+    state_db_path = Path(state_db_raw).expanduser().resolve() if state_db_raw else None
     excluded_id = str(exclude_conversation_id or "").strip()
     cursor_rows = con.execute(
         "SELECT conversation_id, digest_cursor, last_memorize_at FROM conversations"
@@ -1754,6 +1761,9 @@ def _load_cross_tail_from_sources(
                 conversation_id=cid,
                 since_cursor=cursor,
                 recent_fallback_messages=_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
+                hermes_home=hermes_home_path,
+                sessions_index_path=sessions_index_path,
+                state_db_path=state_db_path,
             )
         except Exception as exc:
             logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)
