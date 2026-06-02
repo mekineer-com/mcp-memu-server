@@ -24,6 +24,19 @@ def _write_state_db(path: Path, rows: list[tuple[str, str, str, float]]) -> None
         con.close()
 
 
+def _write_lid_mapping_files(base_dir: Path, *, phone_local: str, lid_local: str) -> None:
+    session_dir = base_dir / "whatsapp" / "session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / f"lid-mapping-{phone_local}.json").write_text(
+        json.dumps(lid_local),
+        encoding="utf-8",
+    )
+    (session_dir / f"lid-mapping-{lid_local}_reverse.json").write_text(
+        json.dumps(phone_local),
+        encoding="utf-8",
+    )
+
+
 def test_load_whatsapp_tail_group_collapses_multiple_sessions(tmp_path: Path) -> None:
     sessions_path = tmp_path / "sessions.json"
     state_db_path = tmp_path / "state.db"
@@ -239,6 +252,59 @@ def test_load_whatsapp_tail_after_message_id_filters_by_row_id(tmp_path: Path) -
     )
     assert [row["content"] for row in rows] == ["three"]
     assert rows[0]["source_conversation_index"] > second_id
+
+
+def test_load_whatsapp_tail_dm_unions_phone_and_lid_sessions(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    sessions_path = sessions_dir / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    _write_lid_mapping_files(tmp_path, phone_local="15133278228", lid_local="114628432556258")
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:15133278228": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "15133278228@s.whatsapp.net",
+                        "chat_name": "Marcos",
+                        "user_name": "Marcos",
+                    },
+                },
+                "agent:main:whatsapp:dm:114628432556258": {
+                    "session_id": "s2",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "114628432556258@lid",
+                        "chat_name": "Marcos",
+                        "user_name": "Marcos",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s1", "user", "phone-side", 100.0),
+            ("s2", "assistant", "lid-side", 101.0),
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    )
+    assert [row["content"] for row in rows] == ["phone-side", "lid-side"]
 
 
 def test_sillytavern_snapshot_round_trip_with_floor(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sqlite3
+from collections import deque
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ from app.services import memorize_endpoint
 
 _NUMERIC_LIKE_RE = re.compile(r"^[0-9+\-() .]+$")
 _ST_SNAPSHOT_FILE = "latest_history.json"
+_LID_MAPPING_FILE_RE = re.compile(r"^lid-mapping-(.+?)(?:_reverse)?\.json$")
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:
@@ -58,10 +60,68 @@ def _parse_session_key_chat_token(session_key: str, *, chat_type: str) -> str:
     return tail.split(":", 1)[0]
 
 
+def _load_whatsapp_alias_graph(*, session_dir: Path) -> dict[str, set[str]]:
+    graph: dict[str, set[str]] = {}
+
+    def _link(a: str, b: str) -> None:
+        if not a or not b or a == b:
+            return
+        graph.setdefault(a, set()).add(b)
+        graph.setdefault(b, set()).add(a)
+
+    if session_dir.exists():
+        for path in session_dir.iterdir():
+            if not path.is_file():
+                continue
+            match = _LID_MAPPING_FILE_RE.match(path.name)
+            if not match:
+                continue
+            key_local = _normalize_whatsapp_identifier(match.group(1))
+            if not key_local:
+                continue
+            try:
+                mapped_local = _normalize_whatsapp_identifier(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError):
+                continue
+            _link(key_local, mapped_local)
+
+        creds_path = session_dir / "creds.json"
+        if creds_path.exists():
+            try:
+                parsed = json.loads(creds_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                parsed = None
+            me = parsed.get("me") if isinstance(parsed, dict) else None
+            if isinstance(me, dict):
+                phone_local = _normalize_whatsapp_identifier(me.get("id"))
+                lid_local = _normalize_whatsapp_identifier(me.get("lid"))
+                _link(phone_local, lid_local)
+
+    return graph
+
+
+def _expand_whatsapp_aliases(identifier: str, *, alias_graph: dict[str, set[str]]) -> set[str]:
+    start = _normalize_whatsapp_identifier(identifier)
+    if not start:
+        return set()
+    out: set[str] = set()
+    queue = deque([start])
+    while queue:
+        current = queue.popleft()
+        if current in out:
+            continue
+        out.add(current)
+        for nxt in alias_graph.get(current, set()):
+            if nxt and nxt not in out:
+                queue.append(nxt)
+    return out
+
+
 def _collect_whatsapp_session_entries(
     sessions_index: dict[str, Any],
     *,
     conversation_id: str,
+    alias_graph: dict[str, set[str]] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     cid = str(conversation_id or "").strip()
     if cid.startswith("whatsapp:group:"):
@@ -74,6 +134,11 @@ def _collect_whatsapp_session_entries(
         return [], ""
 
     target_norm = _normalize_whatsapp_identifier(target)
+    target_aliases = (
+        _expand_whatsapp_aliases(target_norm, alias_graph=alias_graph or {})
+        if chat_type == "dm"
+        else {target_norm}
+    )
     out: list[dict[str, Any]] = []
     for session_key, entry in sessions_index.items():
         if not isinstance(entry, dict):
@@ -93,8 +158,12 @@ def _collect_whatsapp_session_entries(
             _normalize_whatsapp_identifier(str(origin.get("chat_id") or "")),
             _normalize_whatsapp_identifier(_parse_session_key_chat_token(str(session_key), chat_type=chat_type)),
         ]
-        if target_norm and target_norm not in token_candidates:
-            continue
+        if target_norm:
+            if chat_type == "dm":
+                if not any(token and token in target_aliases for token in token_candidates):
+                    continue
+            elif target_norm not in token_candidates:
+                continue
 
         out.append(
             {
@@ -104,6 +173,18 @@ def _collect_whatsapp_session_entries(
             }
         )
     return out, chat_type
+
+
+def _resolve_hermes_base(
+    *,
+    hermes_home: Path | None,
+    sessions_path: Path,
+) -> Path:
+    if isinstance(hermes_home, Path):
+        return hermes_home.expanduser().resolve()
+    if sessions_path.name == "sessions.json" and sessions_path.parent.name == "sessions":
+        return sessions_path.parent.parent
+    return sessions_path.parent
 
 
 def _pick_chat_name(entries: list[dict[str, Any]], fallback: str, *, chat_type: str) -> str:
@@ -262,9 +343,12 @@ def load_whatsapp_tail(
         sessions_index_path=sessions_index_path,
         state_db_path=state_db_path,
     )
+    base_home = _resolve_hermes_base(hermes_home=hermes_home, sessions_path=sessions_path)
+    alias_graph = _load_whatsapp_alias_graph(session_dir=(base_home / "whatsapp" / "session"))
     entries, chat_type = _collect_whatsapp_session_entries(
         _load_sessions_index(sessions_path),
         conversation_id=conversation_id,
+        alias_graph=alias_graph,
     )
     if not entries:
         raise RuntimeError(f"no WhatsApp session mapping for conversation_id={conversation_id!r}")
@@ -339,6 +423,9 @@ def load_whatsapp_tail_after_message_id(
     entries, chat_type = _collect_whatsapp_session_entries(
         _load_sessions_index(sessions_path),
         conversation_id=conversation_id,
+        alias_graph=_load_whatsapp_alias_graph(
+            session_dir=(_resolve_hermes_base(hermes_home=hermes_home, sessions_path=sessions_path) / "whatsapp" / "session")
+        ),
     )
     if not entries:
         raise RuntimeError(f"no WhatsApp session mapping for conversation_id={conversation_id!r}")
