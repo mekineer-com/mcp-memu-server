@@ -93,7 +93,6 @@ from app.services.payload import (
     _normalize_turn_history,
     _parse_as_of_datetime,
     _payload_signature,
-    _parse_turn_ts_ms,
     _pick_str,
     _safe_payload,
 )
@@ -130,10 +129,8 @@ _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 4000
 _DEFAULT_EPISODES_PER_SEGMENT: int = 3
-_DEFAULT_BACKGROUND_SUMMARY_TOKENS: int = 1000
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
 _EPISODES_PER_SEGMENT: int = _DEFAULT_EPISODES_PER_SEGMENT
-_BACKGROUND_SUMMARY_TOKENS: int = _DEFAULT_BACKGROUND_SUMMARY_TOKENS
 # Uniform runaway-protection caps for LLM calls. Not business logic —
 _BACKGROUND_TASKS: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
 _LOG_PROMPTS: bool = False
@@ -142,7 +139,6 @@ _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferre
 
 # ==== Token estimation & segment planning ====
 
-_estimate_tokens = _memorize_endpoint.estimate_tokens
 _estimate_unmemorized_tokens = _memorize_endpoint.estimate_unmemorized_tokens
 
 
@@ -163,168 +159,6 @@ def _has_category_content(c: dict[str, Any]) -> bool:
     summary = str(c.get("summary") or "").strip()
     desc = str(c.get("description") or "").strip()
     return bool(summary or desc)
-
-
-def _background_sleep_gap_detected(
-    *,
-    history: list[dict[str, Any]],
-    safe: dict[str, Any],
-) -> bool:
-    gap_safe = dict(safe)
-    has_tz_name = bool(str(gap_safe.get("time_zone") or gap_safe.get("timeZone") or "").strip())
-    has_tz_off = isinstance(gap_safe.get("time_zone_offset_min"), (int, float)) or isinstance(
-        gap_safe.get("timeZoneOffsetMin"), (int, float)
-    )
-    if not has_tz_name and not has_tz_off:
-        gap_safe["time_zone_offset_min"] = 0
-    return _memorize_endpoint.unmemorized_sleep_gap_detected(
-        history,
-        digest_cursor=-1,
-        safe=gap_safe,
-        logger=logger,
-        min_chunk_tokens=_BACKGROUND_SUMMARY_TOKENS,
-        sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
-    )
-
-
-async def _run_background_rollup_for_conversation(
-    *,
-    conversation_id: str,
-    user_id: str,
-    soul_id: str,
-    safe_payload: dict[str, Any],
-    service: MemoryService | None = None,
-) -> str:
-    cid = str(conversation_id or "").strip()
-    uid = str(user_id or "").strip()
-    sid = str(soul_id or "").strip()
-    if not cid or not uid or not sid:
-        return "skipped_scope"
-
-    state_lock = _get_memorize_lock(_memorize_lock_key(uid, sid))
-    async with state_lock:
-        state_row, _soul_card, db_path = _load_turn_state_and_soul_card(
-            cid,
-            user_id=uid,
-            soul_id=sid,
-        )
-        if bool(state_row.get("memorize_chat", True)):
-            return "skipped_primary_chat"
-        if db_path is None or not db_path.exists():
-            return "skipped_no_db"
-
-        con = _sqlite_connect(db_path)
-        rollup_error: Exception | None = None
-        try:
-            con.row_factory = sqlite3.Row
-            _sqlite_ensure_conversation_state_schema(con)
-            rolling_cursor_id = state_row.get("rolling_summary_cursor_id")
-            tail = _message_log.read_tail_after_message_id(con, cid, rolling_cursor_id)
-            if len(tail) < 2:
-                return "skipped_short_tail"
-            tail_end_row_id = int(tail[-1].get("id") or 0)
-            if tail_end_row_id <= 0:
-                return "skipped_short_tail"
-
-            sleep_history: list[dict[str, Any]] = []
-            tokenize_messages: list[dict[str, Any]] = []
-            for msg in tail:
-                content = str(msg.get("content") or "").strip()
-                if not content:
-                    continue
-                ts_ms = _parse_turn_ts_ms(msg.get("received_at"))
-                if ts_ms is None:
-                    continue
-                sleep_history.append({"content": content, "ts_ms": ts_ms})
-                tokenize_messages.append({"content": content})
-            if len(sleep_history) < 2:
-                return "skipped_short_tail"
-
-            token_estimate = _estimate_tokens(tokenize_messages)
-            if token_estimate < _BACKGROUND_SUMMARY_TOKENS:
-                return "skipped_tokens"
-            if not _background_sleep_gap_detected(history=sleep_history, safe=safe_payload):
-                return "skipped_lull"
-
-            prior_summary = str(state_row.get("rolling_summary") or "").strip() or None
-            llm_service = service or _get_service_from_payload(
-                {
-                    **safe_payload,
-                    "user": {"user_id": uid, "soul_id": sid, "conversation_id": cid},
-                    "conversation_id": cid,
-                }
-            )
-            summary_input = [
-                {
-                    "role": str(msg.get("role") or "user"),
-                    "name": str(msg.get("speaker") or "").strip() or None,
-                    "content": str(msg.get("content") or ""),
-                    "source_label": msg.get("source_label"),
-                    "_message_index": int(msg.get("id") or 0),
-                }
-                for msg in tail
-            ]
-            new_summary = await llm_service.summarize_background_chat_rollup(
-                prior_summary=prior_summary,
-                messages=summary_input,
-            )
-            now_iso = datetime.now(UTC).isoformat()
-            con.execute(
-                "UPDATE conversations SET rolling_summary = ?, rolling_summary_cursor_id = ?, "
-                "rolling_summary_updated_at = ?, updated_at = ? WHERE conversation_id = ?",
-                (new_summary, tail_end_row_id, now_iso, now_iso, cid),
-            )
-            _message_log.delete_messages_through_id(con, cid, tail_end_row_id)
-            con.commit()
-            return "rolled_up"
-        except Exception as exc:
-            rollup_error = exc
-            raise
-        finally:
-            con.close()
-            if rollup_error is not None:
-                try:
-                    _set_background_error(
-                        cid,
-                        soul_id=sid,
-                        user_id=uid,
-                        code="background_rollup_failed",
-                        detail=f"{type(rollup_error).__name__}: {str(rollup_error)[:220]}",
-                    )
-                except Exception:
-                    logger.exception("failed to record background rollup error for %s", cid)
-
-
-def _queue_background_rollup_task(
-    *,
-    conversation_id: str,
-    user_id: str,
-    soul_id: str,
-    safe_payload: dict[str, Any],
-    service: MemoryService | None = None,
-) -> None:
-    marker = f"{user_id}::{soul_id}::{conversation_id}"
-    if not _mark_inflight(_BACKGROUND_ROLLUP_INFLIGHT, marker):
-        return
-    task = asyncio.create_task(
-        _run_background_rollup_for_conversation(
-            conversation_id=conversation_id,
-            user_id=user_id,
-            soul_id=soul_id,
-            safe_payload=safe_payload,
-            service=service,
-        )
-    )
-    _BACKGROUND_TASKS.add(task)
-    def _on_done(done_task: asyncio.Task) -> None:
-        try:
-            done_task.result()
-        except Exception:
-            logger.exception("background rollup task failed for %s", marker)
-        finally:
-            _BACKGROUND_TASKS.discard(done_task)
-            _clear_inflight(_BACKGROUND_ROLLUP_INFLIGHT, marker)
-    task.add_done_callback(_on_done)
 
 
 # ==== Server state (locks, inflight, shutdown) ====
@@ -351,7 +185,6 @@ _ACTIVE_HTTP_REQUESTS: int = 0
 _ACTIVE_WORK_REQUESTS: int = 0
 _SHUTDOWN_TASK: asyncio.Task | None = None
 _APIMW_INFLIGHT: set[str] = set()
-_BACKGROUND_ROLLUP_INFLIGHT: set[str] = set()
 _SHUTDOWN_STATE: dict[str, Any] = {
     "draining": False,
     "stopping": False,
@@ -549,7 +382,7 @@ class STUserModel(BaseModel):
 _CONFIG: dict[str, Any] = _load_config()
 
 def _refresh_runtime_limits() -> None:
-    global _MIN_CHUNK_TOKENS, _EPISODES_PER_SEGMENT, _BACKGROUND_SUMMARY_TOKENS
+    global _MIN_CHUNK_TOKENS, _EPISODES_PER_SEGMENT
     global _LOG_PROMPTS
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
     try:
@@ -560,13 +393,6 @@ def _refresh_runtime_limits() -> None:
         _EPISODES_PER_SEGMENT = max(1, int(memorize_cfg.get("episodes_per_segment", _DEFAULT_EPISODES_PER_SEGMENT)))
     except (TypeError, ValueError, OverflowError):
         _EPISODES_PER_SEGMENT = _DEFAULT_EPISODES_PER_SEGMENT
-    try:
-        _BACKGROUND_SUMMARY_TOKENS = max(
-            0,
-            int(memorize_cfg.get("background_summary_tokens", _DEFAULT_BACKGROUND_SUMMARY_TOKENS)),
-        )
-    except (TypeError, ValueError, OverflowError):
-        _BACKGROUND_SUMMARY_TOKENS = _DEFAULT_BACKGROUND_SUMMARY_TOKENS
     debug_cfg = _CONFIG.get("debug") if isinstance(_CONFIG.get("debug"), dict) else {}
     _LOG_PROMPTS = bool(debug_cfg.get("log_prompts", False))
 
@@ -1864,12 +1690,35 @@ def _load_cross_memorize_tails_from_sources(
             continue
 
         rolling_cursor_id = row["rolling_summary_cursor_id"]
-        tail = _message_log.read_tail_after_message_id(con, cid, rolling_cursor_id)
+        source_label = _message_log.derive_source_label(cid)
+        if source_label.startswith("whatsapp:"):
+            tail = _conversation_sources.load_whatsapp_tail_after_message_id(
+                conversation_id=cid,
+                after_message_id=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
+                hermes_home=hermes_home_path,
+                sessions_index_path=sessions_index_path,
+                state_db_path=state_db_path,
+            )
+        elif source_label == "sillytavern":
+            tail = _conversation_sources.load_sillytavern_tail(
+                storage_dir=storage_dir,
+                user_id=user_id,
+                soul_id=soul_id,
+                conversation_id=cid,
+                since_cursor=int(rolling_cursor_id) if rolling_cursor_id is not None else -1,
+                recent_fallback_messages=0,
+            )
+        else:
+            continue
         if not tail:
             continue
         for msg in tail:
             msg["source_conversation_id"] = cid
-            msg["source_conversation_index"] = int(msg["id"])
+            if msg.get("source_conversation_index") is None:
+                raise RuntimeError(
+                    f"cross-memorize listen-only tail missing source_conversation_index for {cid}"
+                )
+            msg["source_conversation_index"] = int(msg["source_conversation_index"])
             msg["memorize_chat"] = False
         tails[cid] = tail
     return tails
@@ -3024,74 +2873,6 @@ def _turn_launch_apimw(
     return "started"
 
 
-@app.post("/conversation/{conversation_id}/messages/append", operation_id="conversation_append_message")
-async def conversation_append_message(
-    conversation_id: str,
-    payload: dict[str, Any] = Body(...),
-):
-    """Append a single message to the per-conversation messages table.
-
-    Used by Hermes' listen-only policy: ingest the message into memU so it
-    flows into memorize and cross-chat context, without engaging the soul
-    for a response. No retrieve, no turn, no LLM calls — just a write.
-    """
-    cid = str(conversation_id or "").strip()
-    if not cid:
-        raise HTTPException(status_code=400, detail="conversation_id is required")
-    safe = _safe_payload(payload)
-    scope = _extract_scope(safe)
-    uid = str(scope.get("user_id") or "").strip()
-    soul_id = str(scope.get("soul_id") or "").strip()
-    if not uid or not soul_id:
-        raise HTTPException(status_code=400, detail="user_id and soul_id required")
-    message = _pick_str(safe, "message", "content") or ""
-    if not message.strip():
-        raise HTTPException(status_code=400, detail="message is required")
-    user_name = _pick_str(safe, "user_name") or ""
-    role = (_pick_str(safe, "role") or "user").strip()
-    chat_name_for_append = _pick_str(safe, "chat_name") or None
-    memorize_chat_raw = safe.get("memorize_chat")
-    memorize_chat = memorize_chat_raw if isinstance(memorize_chat_raw, bool) else None
-
-    write_updates: dict[str, Any] = {}
-    if isinstance(memorize_chat, bool):
-        write_updates["memorize_chat"] = memorize_chat
-    _write_conversation_state(
-        cid,
-        soul_id=soul_id,
-        user_id=uid,
-        updates=write_updates,
-    )
-
-    _state_row, _soul_card, db_path = _load_turn_state_and_soul_card(
-        cid, user_id=uid, soul_id=soul_id,
-    )
-    if db_path is None or not db_path.exists():
-        raise HTTPException(status_code=404, detail="conversation state not found")
-    _con = _sqlite_connect(db_path)
-    try:
-        _con.row_factory = sqlite3.Row
-        _sqlite_ensure_conversation_state_schema(_con)
-        msg: dict[str, Any] = {"role": role, "content": message}
-        if user_name:
-            msg["name"] = user_name
-        ext_msg_id = _pick_str(safe, "external_message_id") or None
-        if ext_msg_id:
-            msg["external_message_id"] = ext_msg_id
-        appended = _message_log.append_messages(_con, cid, [msg], chat_name=chat_name_for_append)
-        _con.commit()
-    finally:
-        _con.close()
-    if int(appended) > 0:
-        _queue_background_rollup_task(
-            conversation_id=cid,
-            user_id=uid,
-            soul_id=soul_id,
-            safe_payload=safe,
-        )
-    return {"ok": True, "conversation_id": cid, "appended": int(appended)}
-
-
 @app.post("/conversation/{conversation_id}/turn", operation_id="conversation_turn")
 async def conversation_turn(
     conversation_id: str,
@@ -3233,7 +3014,6 @@ async def conversation_turn(
         conversation_state_after = conversation_state_before
         conversation_state_path = db_path
         annulment_memory_ids: list[str] = []
-        turn_appended_count = 0
 
         if not dry_run:
             async with state_lock:
@@ -3278,41 +3058,6 @@ async def conversation_turn(
                 logger.warning(
                     "conversation_turn: missing chat_name for respond; continuing without chat label"
                 )
-        if not dry_run and conversation_state_path is not None and conversation_state_path.exists():
-            user_name = str(safe.get("user_name") or "").strip() or uid
-            chat_name_for_append = str(safe.get("chat_name") or "").strip() or None
-            current_user_msg: dict[str, Any] = {"role": "user", "content": message}
-            if user_name:
-                current_user_msg["name"] = user_name
-            ext_msg_id = _pick_str(safe, "external_message_id") or None
-            if ext_msg_id:
-                current_user_msg["external_message_id"] = ext_msg_id
-            append_rows: list[dict[str, Any]] = [current_user_msg]
-            if response_text and response_target == "respond":
-                append_rows.append(
-                    {"role": "assistant", "name": soul_id, "content": response_text}
-                )
-            _con = _sqlite_connect(conversation_state_path)
-            try:
-                _con.row_factory = sqlite3.Row
-                _sqlite_ensure_conversation_state_schema(_con)
-                turn_appended_count = _message_log.append_messages(
-                    _con,
-                    cid,
-                    append_rows,
-                    chat_name=chat_name_for_append,
-                )
-                _con.commit()
-            finally:
-                _con.close()
-        if (not dry_run) and turn_appended_count > 0:
-            _queue_background_rollup_task(
-                conversation_id=cid,
-                user_id=uid,
-                soul_id=soul_id,
-                safe_payload=safe,
-                service=memory_service,
-            )
 
         response_payload: dict[str, Any] = {
             "ok": True,
@@ -3426,42 +3171,12 @@ async def conversation_turn_undo(
     return {"status": "restored"}
 
 
-def _persist_inbound_user_message(
-    conversation_id: str,
-    user_id: str,
-    soul_id: str,
-    message: str,
-    user_name: str | None = None,
-    chat_name: str | None = None,
-    external_message_id: str | None = None,
-) -> None:
-    _write_conversation_state(conversation_id, soul_id=soul_id, user_id=user_id, updates={})
-    _, _, db_path = _load_turn_state_and_soul_card(conversation_id, user_id=user_id, soul_id=soul_id)
-    if db_path is None or not db_path.exists():
-        return
-    msg: dict[str, Any] = {"role": "user", "content": message}
-    speaker = str(user_name or "").strip() or user_id
-    if speaker:
-        msg["name"] = speaker
-    if external_message_id:
-        msg["external_message_id"] = external_message_id
-    con = _sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        _sqlite_ensure_conversation_state_schema(con)
-        _message_log.append_messages(con, conversation_id, [msg], chat_name=chat_name)
-        con.commit()
-    finally:
-        con.close()
-
-
 @app.post("/integration/memu/turn", operation_id="memu_turn", tags=["mcp_tools"])
 async def mcp_memu_turn(req: _mcp_tools.MemuTurnRequest):
     return await _mcp_tools.memu_turn_endpoint(
         req,
         conversation_retrieve=conversation_retrieve,
         conversation_turn=conversation_turn,
-        persist_user_message=_persist_inbound_user_message,
     )
 
 

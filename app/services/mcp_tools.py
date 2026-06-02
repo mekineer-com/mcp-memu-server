@@ -94,7 +94,6 @@ async def memu_turn_endpoint(
     *,
     conversation_retrieve: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
     conversation_turn: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
-    persist_user_message: Callable[..., None] | None = None,
 ) -> dict[str, Any]:
     conversation_id = str(req.conversation_id or "").strip()
     if not conversation_id:
@@ -129,18 +128,6 @@ async def memu_turn_endpoint(
         retrieve_payload["chat_type"] = chat_type
     if isinstance(req.memorize_chat, bool):
         retrieve_payload["memorize_chat"] = req.memorize_chat
-
-    ext_msg_id = str(req.external_message_id or "").strip() or None
-    if persist_user_message is not None and ext_msg_id:
-        persist_user_message(
-            conversation_id=conversation_id,
-            user_id=str(req.user_id or "").strip(),
-            soul_id=str(req.soul_id or "").strip(),
-            message=message,
-            user_name=user_name or None,
-            chat_name=chat_name or None,
-            external_message_id=ext_msg_id,
-        )
 
     retrieve_out = await conversation_retrieve(conversation_id, retrieve_payload)
     turn_user_prompt = str(retrieve_out.get("turn_user_prompt") or "").strip()

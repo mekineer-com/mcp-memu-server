@@ -288,8 +288,10 @@ def test_estimate_unmemorized_tokens_respects_digest_cursor():
         {"content": "four five six"},
         {"content": "seven eight nine"},
     ]
-    assert main._estimate_unmemorized_tokens(messages, -1) == main._estimate_tokens(messages)
-    assert main._estimate_unmemorized_tokens(messages, 1) == main._estimate_tokens(messages[2:])
+    full_tokens = main._estimate_unmemorized_tokens(messages, -1)
+    tail_tokens = main._estimate_unmemorized_tokens(messages, 1)
+    assert full_tokens > tail_tokens > 0
+    assert tail_tokens == main._estimate_unmemorized_tokens(messages[2:], -1)
     assert main._estimate_unmemorized_tokens(messages, 99) == 0
 
 
@@ -487,31 +489,31 @@ def test_build_cross_conversation_payload_preserves_listen_only_cursor_semantics
         con.execute(
             "INSERT INTO conversations (conversation_id, memorize_chat, rolling_summary_cursor_id, updated_at) "
             "VALUES (?, ?, ?, ?)",
-            ("bg-chat", 0, None, now_iso),
-        )
-        con.executemany(
-            "INSERT INTO messages (conversation_id, role, speaker, chat_name, content, source_label, received_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [
-                ("bg-chat", "user", "Marcos", "Marcos", "old", "whatsapp:dm", "2026-05-01T00:00:00+00:00"),
-                ("bg-chat", "user", "Marcos", "Marcos", "new", "whatsapp:dm", "2026-05-01T00:01:00+00:00"),
-            ],
-        )
-        first_id = int(
-            con.execute(
-                "SELECT MIN(id) AS id FROM messages WHERE conversation_id = ?",
-                ("bg-chat",),
-            ).fetchone()["id"]
-        )
-        con.execute(
-            "UPDATE conversations SET rolling_summary_cursor_id = ? WHERE conversation_id = ?",
-            (first_id, "bg-chat"),
+            ("whatsapp:dm:bg-chat", 0, 10, now_iso),
         )
         con.commit()
     finally:
         con.close()
 
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+    monkeypatch.setattr(
+        main._conversation_sources,
+        "load_whatsapp_tail_after_message_id",
+        lambda **_kwargs: [
+            {
+                "id": 11,
+                "role": "user",
+                "speaker": "Marcos",
+                "chat_name": "Marcos",
+                "content": "new",
+                "source_label": "whatsapp:dm",
+                "received_at": "2026-05-01T00:01:00+00:00",
+                "conversation_id": "whatsapp:dm:bg-chat",
+                "source_conversation_id": "whatsapp:dm:bg-chat",
+                "source_conversation_index": 11,
+            }
+        ],
+    )
     out = main._build_cross_conversation_payload(
         "trigger",
         "u1",
@@ -524,12 +526,12 @@ def test_build_cross_conversation_payload_preserves_listen_only_cursor_semantics
     assert isinstance(out, dict)
     rows = [
         row for row in list(out.get("conversation") or [])
-        if str(row.get("source_conversation_id") or "") == "bg-chat"
+        if str(row.get("source_conversation_id") or "") == "whatsapp:dm:bg-chat"
     ]
     assert len(rows) == 1
     assert rows[0]["content"] == "new"
     assert rows[0]["memorize_chat"] is False
-    assert out["_final_cursors"]["bg-chat"] == rows[0]["source_conversation_index"]
+    assert out["_final_cursors"]["whatsapp:dm:bg-chat"] == rows[0]["source_conversation_index"]
 
 
 def test_load_cross_tail_from_sources_reads_whatsapp_conversations(
@@ -1435,7 +1437,7 @@ async def test_conversation_retrieve_does_not_duplicate_preexisting_cross_query(
 
 
 @pytest.mark.asyncio
-async def test_conversation_turn_persists_assistant_message_for_cross_context(
+async def test_conversation_turn_does_not_persist_messages_to_table(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1508,15 +1510,7 @@ async def test_conversation_turn_persists_assistant_message_for_cross_context(
     finally:
         con.close()
 
-    # The current user message and the assistant response are persisted as a
-    # pair so that an aborted turn (no response) leaves no orphan user row.
-    assert len(rows) == 2
-    assert str(rows[0]["role"]) == "user"
-    assert str(rows[0]["speaker"]) == "Alice"
-    assert str(rows[0]["content"]) == "hello"
-    assert str(rows[1]["role"]) == "assistant"
-    assert str(rows[1]["speaker"]) == "Echo"
-    assert str(rows[1]["content"]) == "assistant says hi"
+    assert rows == []
 
 
 @pytest.mark.asyncio
@@ -1594,7 +1588,7 @@ async def test_conversation_turn_keeps_response_when_chat_name_differs(
         ).fetchall()
     finally:
         con.close()
-    assert [r["role"] for r in rows] == ["user", "assistant"]
+    assert rows == []
 
 
 @pytest.mark.asyncio
@@ -1671,10 +1665,7 @@ async def test_conversation_turn_private_response_not_persisted_in_origin_chat(
     finally:
         con.close()
 
-    assert len(rows) == 1
-    assert str(rows[0]["role"]) == "user"
-    assert str(rows[0]["speaker"]) == "Raquel"
-    assert str(rows[0]["content"]) == "Hello Siri."
+    assert rows == []
 
 
 @pytest.mark.asyncio
@@ -1860,136 +1851,3 @@ def test_clear_background_error_if_apimw_owned_clears_apimw_error(monkeypatch: p
     assert len(writes) == 1
     assert writes[0]["last_background_error"] is None
     assert writes[0]["last_background_error_at"] is None
-
-
-@pytest.mark.asyncio
-async def test_run_background_rollup_deletes_only_summarized_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    db_path = tmp_path / "Echo.db"
-    con = main._sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        main._sqlite_ensure_conversation_state_schema(con)
-        con.execute(
-            "INSERT INTO conversations (conversation_id, soul_id, user_id, memorize_chat, digest_cursor, rolling_summary_cursor_id, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("cid-rollup", "Echo", "u1", 0, 0, None, datetime.now(UTC).isoformat()),
-        )
-        con.executemany(
-            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-            [
-                ("cid-rollup", "user", "U", "old one", "sillytavern", "2026-05-19T00:00:00+00:00"),
-                ("cid-rollup", "assistant", "Echo", "old two", "sillytavern", "2026-05-19T00:00:01+00:00"),
-            ],
-        )
-        con.commit()
-    finally:
-        con.close()
-
-    monkeypatch.setattr(
-        main,
-        "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: (
-            {"memorize_chat": False, "rolling_summary_cursor_id": None, "rolling_summary": None},
-            None,
-            db_path,
-        ),
-    )
-    monkeypatch.setattr(main, "_BACKGROUND_SUMMARY_TOKENS", 1)
-    monkeypatch.setattr(main, "_background_sleep_gap_detected", lambda **_kwargs: True)
-
-    class _SlowSvc:
-        async def summarize_background_chat_rollup(self, *, prior_summary, messages):  # noqa: ARG002
-            c = main._sqlite_connect(db_path)
-            try:
-                c.execute(
-                    "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    ("cid-rollup", "user", "U", "NEW_UNSUMMARIZED", "sillytavern", "2026-05-19T00:00:02+00:00"),
-                )
-                c.commit()
-            finally:
-                c.close()
-            return "rolled summary"
-
-    status = await main._run_background_rollup_for_conversation(
-        conversation_id="cid-rollup",
-        user_id="u1",
-        soul_id="Echo",
-        safe_payload={},
-        service=_SlowSvc(),
-    )
-    assert status == "rolled_up"
-
-    con = main._sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        rows = con.execute(
-            "SELECT content FROM messages WHERE conversation_id = ? ORDER BY id ASC",
-            ("cid-rollup",),
-        ).fetchall()
-    finally:
-        con.close()
-    assert [str(row["content"]) for row in rows] == ["NEW_UNSUMMARIZED"]
-
-
-@pytest.mark.asyncio
-async def test_run_background_rollup_persists_background_error_on_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "Echo.db"
-    con = main._sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        main._sqlite_ensure_conversation_state_schema(con)
-        con.execute(
-            "INSERT INTO conversations (conversation_id, soul_id, user_id, memorize_chat, digest_cursor, rolling_summary_cursor_id, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("cid-fail", "Echo", "u1", 0, 0, None, datetime.now(UTC).isoformat()),
-        )
-        con.executemany(
-            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-            [
-                ("cid-fail", "user", "U", "one", "sillytavern", "2026-05-19T00:00:00+00:00"),
-                ("cid-fail", "assistant", "Echo", "two", "sillytavern", "2026-05-19T00:00:01+00:00"),
-            ],
-        )
-        con.commit()
-    finally:
-        con.close()
-
-    monkeypatch.setattr(
-        main,
-        "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: (
-            {"memorize_chat": False, "rolling_summary_cursor_id": None, "rolling_summary": None},
-            None,
-            db_path,
-        ),
-    )
-    monkeypatch.setattr(main, "_BACKGROUND_SUMMARY_TOKENS", 1)
-    monkeypatch.setattr(main, "_background_sleep_gap_detected", lambda **_kwargs: True)
-    writes: list[dict[str, object]] = []
-    monkeypatch.setattr(
-        main,
-        "_write_conversation_state",
-        lambda conversation_id, soul_id, user_id, updates: writes.append(dict(updates)) or ({"ok": True}, db_path),
-    )
-
-    class _FailingSvc:
-        async def summarize_background_chat_rollup(self, *, prior_summary, messages):  # noqa: ARG002
-            raise RuntimeError("summary failed")
-
-    with pytest.raises(RuntimeError, match="summary failed"):
-        await main._run_background_rollup_for_conversation(
-            conversation_id="cid-fail",
-            user_id="u1",
-            soul_id="Echo",
-            safe_payload={},
-            service=_FailingSvc(),
-        )
-    assert writes
-    assert str(writes[-1].get("last_background_error") or "").startswith(
-        "background_rollup_failed: RuntimeError: summary failed"
-    )
-    assert str(writes[-1].get("last_background_error_at") or "").strip()

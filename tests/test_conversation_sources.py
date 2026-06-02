@@ -191,6 +191,56 @@ def test_load_whatsapp_tail_orders_equal_timestamps_by_row_id(tmp_path: Path) ->
     assert [row["content"] for row in rows] == ["first-insert", "second-insert"]
 
 
+def test_load_whatsapp_tail_after_message_id_filters_by_row_id(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:15133278228": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "15133278228@s.whatsapp.net",
+                        "chat_name": "Marcos",
+                        "user_name": "Marcos",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s1", "user", "one", 100.0),
+            ("s1", "assistant", "two", 101.0),
+            ("s1", "user", "three", 102.0),
+        ],
+    )
+    con = sqlite3.connect(state_db_path)
+    try:
+        second_id = int(
+            con.execute(
+                "SELECT id FROM messages WHERE content = ?",
+                ("two",),
+            ).fetchone()[0]
+        )
+    finally:
+        con.close()
+
+    rows = conversation_sources.load_whatsapp_tail_after_message_id(
+        conversation_id="whatsapp:dm:15133278228",
+        after_message_id=second_id,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    )
+    assert [row["content"] for row in rows] == ["three"]
+    assert rows[0]["source_conversation_index"] > second_id
+
+
 def test_sillytavern_snapshot_round_trip_with_floor(tmp_path: Path) -> None:
     storage_dir = tmp_path / "resources"
     conversation_sources.persist_sillytavern_history_snapshot(

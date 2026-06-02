@@ -321,3 +321,74 @@ def load_whatsapp_tail(
         since_cursor=since_cursor,
         recent_fallback_messages=recent_fallback_messages,
     )
+
+
+def load_whatsapp_tail_after_message_id(
+    *,
+    conversation_id: str,
+    after_message_id: int | None,
+    hermes_home: Path | None = None,
+    sessions_index_path: Path | None = None,
+    state_db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    sessions_path, db_path = _resolve_hermes_paths(
+        hermes_home=hermes_home,
+        sessions_index_path=sessions_index_path,
+        state_db_path=state_db_path,
+    )
+    entries, chat_type = _collect_whatsapp_session_entries(
+        _load_sessions_index(sessions_path),
+        conversation_id=conversation_id,
+    )
+    if not entries:
+        raise RuntimeError(f"no WhatsApp session mapping for conversation_id={conversation_id!r}")
+    if not db_path.exists():
+        raise FileNotFoundError(f"Hermes state db missing: {db_path}")
+
+    fallback_name = str(conversation_id).split(":", 2)[-1].strip() or "contact"
+    chat_name = _pick_chat_name(entries, fallback_name, chat_type=chat_type)
+    session_ids: list[str] = []
+    session_user_name: dict[str, str] = {}
+    for entry in entries:
+        sid = str(entry.get("session_id") or "").strip()
+        if sid and sid not in session_user_name:
+            session_ids.append(sid)
+            session_user_name[sid] = str(entry.get("user_name") or "").strip()
+
+    placeholders = ",".join("?" for _ in session_ids)
+    cursor_id = int(after_message_id or 0)
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute(
+            "SELECT id, session_id, role, content, timestamp FROM messages "
+            f"WHERE session_id IN ({placeholders}) AND role IN ('user', 'assistant') AND id > ? "
+            "ORDER BY timestamp ASC, id ASC",
+            [*session_ids, cursor_id],
+        ).fetchall()
+    finally:
+        con.close()
+
+    source_label = f"whatsapp:{chat_type}"
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        content = str(row["content"] or "").strip()
+        if not content:
+            continue
+        role = str(row["role"] or "").strip().lower()
+        sid = str(row["session_id"] or "").strip()
+        out.append(
+            {
+                "id": int(row["id"]),
+                "role": role,
+                "speaker": session_user_name.get(sid) if role == "user" else "",
+                "chat_name": chat_name,
+                "content": content,
+                "source_label": source_label,
+                "received_at": _to_iso_utc(row["timestamp"]),
+                "conversation_id": conversation_id,
+                "source_conversation_id": conversation_id,
+                "source_conversation_index": int(row["id"]),
+            }
+        )
+    return out
