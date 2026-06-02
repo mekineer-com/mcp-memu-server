@@ -63,6 +63,17 @@ def test_load_whatsapp_tail_group_collapses_multiple_sessions(tmp_path: Path) ->
                         "user_name": "",
                     },
                 },
+                "agent:main:whatsapp:group:18322935409-1579788049@g.us:222685531500721": {
+                    "session_id": "s4",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "group",
+                        "chat_id": "18322935409-1579788049@g.us",
+                        "chat_name": "18322935409-1579788049",
+                        "user_name": "Nico",
+                    },
+                },
             }
         ),
         encoding="utf-8",
@@ -73,6 +84,7 @@ def test_load_whatsapp_tail_group_collapses_multiple_sessions(tmp_path: Path) ->
             ("s1", "user", "[Marcos] one", 100.0),
             ("s2", "user", "[Raquel] two", 101.0),
             ("s3", "assistant", "three", 102.0),
+            ("s4", "user", "[Nico] four", 103.0),
         ],
     )
 
@@ -83,7 +95,7 @@ def test_load_whatsapp_tail_group_collapses_multiple_sessions(tmp_path: Path) ->
         sessions_index_path=sessions_path,
         state_db_path=state_db_path,
     )
-    assert [row["content"] for row in rows] == ["[Marcos] one", "[Raquel] two", "three"]
+    assert [row["content"] for row in rows] == ["[Marcos] one", "[Raquel] two", "three", "[Nico] four"]
     assert all(row["chat_name"] == "Familia" for row in rows)
     assert all(row["source_label"] == "whatsapp:group" for row in rows)
 
@@ -138,6 +150,45 @@ def test_load_whatsapp_tail_raises_when_mapping_missing(tmp_path: Path) -> None:
             sessions_index_path=sessions_path,
             state_db_path=state_db_path,
         )
+
+
+def test_load_whatsapp_tail_orders_equal_timestamps_by_row_id(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:15133278228": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "15133278228@s.whatsapp.net",
+                        "chat_name": "Marcos",
+                        "user_name": "Marcos",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s1", "user", "first-insert", 100.0),
+            ("s1", "assistant", "second-insert", 100.0),
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    )
+    assert [row["content"] for row in rows] == ["first-insert", "second-insert"]
 
 
 def test_sillytavern_snapshot_round_trip_with_floor(tmp_path: Path) -> None:

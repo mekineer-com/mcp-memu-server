@@ -449,6 +449,11 @@ def test_build_cross_conversation_payload_includes_background_rolling_summaries(
     finally:
         con.close()
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+    monkeypatch.setattr(
+        main._message_log,
+        "read_background_rolling_summaries",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("legacy helper should not run")),
+    )
     out = main._build_cross_conversation_payload(
         "whatsapp:dm:123",
         "u1",
@@ -462,6 +467,155 @@ def test_build_cross_conversation_payload_includes_background_rolling_summaries(
     rs = out.get("_background_rolling_summaries")
     assert isinstance(rs, dict)
     assert rs.get("bg-chat", {}).get("summary") == "rolled summary"
+
+
+def test_build_cross_conversation_payload_preserves_listen_only_cursor_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        now_iso = datetime.now(UTC).isoformat()
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, digest_cursor, last_memorize_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("trigger", 1, -1, None, now_iso),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, rolling_summary_cursor_id, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("bg-chat", 0, None, now_iso),
+        )
+        con.executemany(
+            "INSERT INTO messages (conversation_id, role, speaker, chat_name, content, source_label, received_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("bg-chat", "user", "Marcos", "Marcos", "old", "whatsapp:dm", "2026-05-01T00:00:00+00:00"),
+                ("bg-chat", "user", "Marcos", "Marcos", "new", "whatsapp:dm", "2026-05-01T00:01:00+00:00"),
+            ],
+        )
+        first_id = int(
+            con.execute(
+                "SELECT MIN(id) AS id FROM messages WHERE conversation_id = ?",
+                ("bg-chat",),
+            ).fetchone()["id"]
+        )
+        con.execute(
+            "UPDATE conversations SET rolling_summary_cursor_id = ? WHERE conversation_id = ?",
+            (first_id, "bg-chat"),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+    out = main._build_cross_conversation_payload(
+        "trigger",
+        "u1",
+        "Echo",
+        {"memorize_chat": True},
+        [{"role": "user", "content": "hello"}],
+        -1,
+        True,
+    )
+    assert isinstance(out, dict)
+    rows = [
+        row for row in list(out.get("conversation") or [])
+        if str(row.get("source_conversation_id") or "") == "bg-chat"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["content"] == "new"
+    assert rows[0]["memorize_chat"] is False
+    assert out["_final_cursors"]["bg-chat"] == rows[0]["source_conversation_index"]
+
+
+def test_load_cross_tail_from_sources_reads_whatsapp_conversations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:dm:15133278228", 0, "2026-05-01T00:00:00+00:00"),
+        )
+        con.commit()
+
+        monkeypatch.setattr(
+            main._conversation_sources,
+            "load_whatsapp_tail",
+            lambda **_kwargs: [
+                {
+                    "conversation_id": "whatsapp:dm:15133278228",
+                    "source_conversation_index": 1,
+                    "received_at": "2026-05-01T00:00:00+00:00",
+                    "content": "hi",
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            main._conversation_sources,
+            "load_sillytavern_tail",
+            lambda **_kwargs: (_ for _ in ()).throw(AssertionError("should not call sillytavern loader")),
+        )
+        rows = main._load_cross_tail_from_sources(
+            con,
+            user_id="u1",
+            soul_id="Echo",
+            exclude_conversation_id="",
+        )
+    finally:
+        con.close()
+    assert len(rows) == 1
+    assert rows[0]["content"] == "hi"
+
+
+def test_turn_state_read_marks_background_error_when_source_assembly_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"memorize_chat": True, "digest_cursor": -1, "last_memorize_at": None},
+            None,
+            None,
+        ),
+    )
+    monkeypatch.setattr(main, "_estimate_unmemorized_tokens", lambda *_a, **_k: main._MIN_CHUNK_TOKENS + 1)
+    monkeypatch.setattr(main, "_unmemorized_sleep_gap_detected", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        main,
+        "_build_cross_conversation_payload",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        main,
+        "_set_background_error",
+        lambda _cid, **kwargs: captured.update(
+            {"code": str(kwargs.get("code") or ""), "detail": str(kwargs.get("detail") or "")}
+        ),
+    )
+    _state, _card, _db, _cache, _intentions, _tokens, queued = main._turn_state_read(
+        "cid",
+        "u1",
+        "Echo",
+        {},
+        [],
+        {"items": []},
+        False,
+        [{"role": "user", "content": "hello"}],
+    )
+    assert queued is None
+    assert captured["code"] == "forced_memorize_source_failed"
+    assert "RuntimeError: boom" in captured["detail"]
 
 
 def test_turn_state_read_excludes_background_chat_from_segment_trigger(monkeypatch: pytest.MonkeyPatch):

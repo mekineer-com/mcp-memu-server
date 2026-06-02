@@ -1732,13 +1732,7 @@ def _make_consolidation_deps() -> ConsolidationDeps:
     )
 
 
-def _load_cross_tail_from_sources(
-    con: sqlite3.Connection,
-    *,
-    user_id: str,
-    soul_id: str,
-    exclude_conversation_id: str | None = None,
-) -> list[dict[str, Any]]:
+def _resolve_cross_source_paths() -> tuple[Path, Path | None, Path | None, Path | None]:
     hermes_cfg = _CONFIG.get("hermes") if isinstance(_CONFIG.get("hermes"), dict) else {}
     hermes_home_raw = str(hermes_cfg.get("home") or "").strip()
     sessions_index_raw = str(hermes_cfg.get("sessions_index_path") or "").strip()
@@ -1746,7 +1740,51 @@ def _load_cross_tail_from_sources(
     hermes_home_path = Path(hermes_home_raw).expanduser().resolve() if hermes_home_raw else None
     sessions_index_path = Path(sessions_index_raw).expanduser().resolve() if sessions_index_raw else None
     state_db_path = Path(state_db_raw).expanduser().resolve() if state_db_raw else None
-    storage_dir = _get_storage_dir(_CONFIG)
+    return _get_storage_dir(_CONFIG), hermes_home_path, sessions_index_path, state_db_path
+
+
+def _load_tail_for_source_conversation(
+    *,
+    conversation_id: str,
+    user_id: str,
+    soul_id: str,
+    since_cursor: int,
+    recent_fallback_messages: int,
+    storage_dir: Path,
+    hermes_home_path: Path | None,
+    sessions_index_path: Path | None,
+    state_db_path: Path | None,
+) -> list[dict[str, Any]]:
+    source_label = _message_log.derive_source_label(conversation_id)
+    if source_label.startswith("whatsapp:"):
+        return _conversation_sources.load_whatsapp_tail(
+            conversation_id=conversation_id,
+            since_cursor=since_cursor,
+            recent_fallback_messages=recent_fallback_messages,
+            hermes_home=hermes_home_path,
+            sessions_index_path=sessions_index_path,
+            state_db_path=state_db_path,
+        )
+    if source_label == "sillytavern":
+        return _conversation_sources.load_sillytavern_tail(
+            storage_dir=storage_dir,
+            user_id=user_id,
+            soul_id=soul_id,
+            conversation_id=conversation_id,
+            since_cursor=since_cursor,
+            recent_fallback_messages=recent_fallback_messages,
+        )
+    return []
+
+
+def _load_cross_tail_from_sources(
+    con: sqlite3.Connection,
+    *,
+    user_id: str,
+    soul_id: str,
+    exclude_conversation_id: str | None = None,
+) -> list[dict[str, Any]]:
+    storage_dir, hermes_home_path, sessions_index_path, state_db_path = _resolve_cross_source_paths()
     excluded_id = str(exclude_conversation_id or "").strip()
     cursor_rows = con.execute(
         "SELECT conversation_id, digest_cursor, last_memorize_at FROM conversations"
@@ -1758,27 +1796,17 @@ def _load_cross_tail_from_sources(
             continue
         cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
         try:
-            source_label = _message_log.derive_source_label(cid)
-            if source_label == "whatsapp":
-                tail = _conversation_sources.load_whatsapp_tail(
-                    conversation_id=cid,
-                    since_cursor=cursor,
-                    recent_fallback_messages=_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
-                    hermes_home=hermes_home_path,
-                    sessions_index_path=sessions_index_path,
-                    state_db_path=state_db_path,
-                )
-            elif source_label == "sillytavern":
-                tail = _conversation_sources.load_sillytavern_tail(
-                    storage_dir=storage_dir,
-                    user_id=user_id,
-                    soul_id=soul_id,
-                    conversation_id=cid,
-                    since_cursor=cursor,
-                    recent_fallback_messages=_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
-                )
-            else:
-                continue
+            tail = _load_tail_for_source_conversation(
+                conversation_id=cid,
+                user_id=user_id,
+                soul_id=soul_id,
+                since_cursor=cursor,
+                recent_fallback_messages=_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
+                storage_dir=storage_dir,
+                hermes_home_path=hermes_home_path,
+                sessions_index_path=sessions_index_path,
+                state_db_path=state_db_path,
+            )
         except Exception as exc:
             logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)
             continue
@@ -1791,6 +1819,90 @@ def _load_cross_tail_from_sources(
         )
     )
     return all_messages
+
+
+def _load_cross_memorize_tails_from_sources(
+    con: sqlite3.Connection,
+    *,
+    user_id: str,
+    soul_id: str,
+    exclude_conversation_id: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    storage_dir, hermes_home_path, sessions_index_path, state_db_path = _resolve_cross_source_paths()
+    excluded_id = str(exclude_conversation_id or "").strip()
+    rows = con.execute(
+        "SELECT conversation_id, digest_cursor, last_memorize_at, memorize_chat, rolling_summary_cursor_id "
+        "FROM conversations"
+    ).fetchall()
+    tails: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        cid = str(row["conversation_id"] or "").strip()
+        if not cid or cid == excluded_id:
+            continue
+        memorize_chat = True if row["memorize_chat"] is None else bool(int(row["memorize_chat"]))
+        if memorize_chat:
+            cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
+            tail = _load_tail_for_source_conversation(
+                conversation_id=cid,
+                user_id=user_id,
+                soul_id=soul_id,
+                since_cursor=cursor,
+                recent_fallback_messages=0,
+                storage_dir=storage_dir,
+                hermes_home_path=hermes_home_path,
+                sessions_index_path=sessions_index_path,
+                state_db_path=state_db_path,
+            )
+            if not tail:
+                continue
+            for i, msg in enumerate(tail):
+                msg["source_conversation_id"] = cid
+                if msg.get("source_conversation_index") is None:
+                    msg["source_conversation_index"] = cursor + 1 + i
+                msg["memorize_chat"] = True
+            tails[cid] = tail
+            continue
+
+        rolling_cursor_id = row["rolling_summary_cursor_id"]
+        tail = _message_log.read_tail_after_message_id(con, cid, rolling_cursor_id)
+        if not tail:
+            continue
+        for msg in tail:
+            msg["source_conversation_id"] = cid
+            msg["source_conversation_index"] = int(msg["id"])
+            msg["memorize_chat"] = False
+        tails[cid] = tail
+    return tails
+
+
+def _read_background_rolling_summaries_from_conversations(
+    con: sqlite3.Connection,
+    *,
+    exclude_conversation_id: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    rows = con.execute(
+        "SELECT conversation_id, memorize_chat, rolling_summary, rolling_summary_updated_at "
+        "FROM conversations"
+    ).fetchall()
+    excluded_id = str(exclude_conversation_id or "").strip()
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        cid = str(row["conversation_id"] or "").strip()
+        if not cid or cid == excluded_id:
+            continue
+        memorize_chat = True if row["memorize_chat"] is None else bool(int(row["memorize_chat"]))
+        if memorize_chat:
+            continue
+        summary = str(row["rolling_summary"] or "").strip()
+        if not summary:
+            continue
+        out[cid] = {
+            "source_conversation_id": cid,
+            "source_label": _message_log.derive_source_label(cid),
+            "summary": summary,
+            "updated_at": row["rolling_summary_updated_at"],
+        }
+    return out
 
 
 async def _clear_consolidation_in_progress(
@@ -2713,8 +2825,13 @@ def _build_cross_conversation_payload(
     con = _sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        other_tails = _message_log.read_all_tails_for_memorize(con, exclude_conversation_id=cid)
-        rolling_summaries = _message_log.read_background_rolling_summaries(
+        other_tails = _load_cross_memorize_tails_from_sources(
+            con,
+            user_id=uid,
+            soul_id=soul_id,
+            exclude_conversation_id=cid,
+        )
+        rolling_summaries = _read_background_rolling_summaries_from_conversations(
             con,
             exclude_conversation_id=cid,
         )
@@ -2724,10 +2841,16 @@ def _build_cross_conversation_payload(
     for other_cid, tail_msgs in other_tails.items():
         if not tail_msgs:
             continue
-        final_cursors[other_cid] = tail_msgs[-1]["source_conversation_index"]
+        final_cursors[other_cid] = int(tail_msgs[-1]["source_conversation_index"])
         all_messages.extend(tail_msgs)
 
-    all_messages.sort(key=lambda m: m.get("received_at") or "")
+    all_messages.sort(
+        key=lambda m: (
+            str(m.get("received_at") or ""),
+            str(m.get("source_conversation_id") or m.get("conversation_id") or ""),
+            int(m.get("source_conversation_index") or 0),
+        )
+    )
 
     return {
         **safe,
@@ -2779,15 +2902,25 @@ def _turn_state_read(
             safe,
         )
         if has_sleep_gap:
-            queued_memorize_payload = _build_cross_conversation_payload(
-                cid,
-                uid,
-                soul_id,
-                safe,
-                primary_history,
-                unmemorized_digest_cursor,
-                True,
-            )
+            try:
+                queued_memorize_payload = _build_cross_conversation_payload(
+                    cid,
+                    uid,
+                    soul_id,
+                    safe,
+                    primary_history,
+                    unmemorized_digest_cursor,
+                    True,
+                )
+            except Exception as exc:
+                logger.error("forced memorize source assembly failed for conversation_id=%s: %s", cid, exc)
+                _set_background_error(
+                    cid,
+                    soul_id=soul_id,
+                    user_id=uid,
+                    code="forced_memorize_source_failed",
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
     return (
         conversation_state,
         soul_card,
