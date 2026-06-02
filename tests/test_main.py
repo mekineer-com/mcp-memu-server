@@ -620,6 +620,135 @@ def test_build_cross_conversation_payload_isolates_cross_source_failures(
     assert rows[0]["content"] == "hello from good"
 
 
+def test_build_cross_conversation_payload_uses_max_nonnegative_cursor_for_lineage_tail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        now_iso = datetime.now(UTC).isoformat()
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, digest_cursor, last_memorize_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("trigger", 1, -1, None, now_iso),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, digest_cursor, last_memorize_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("whatsapp:dm:bg-chat", 1, 0, now_iso, now_iso),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+    monkeypatch.setattr(
+        main,
+        "_load_tail_for_source_conversation",
+        lambda **kwargs: [
+            {
+                "role": "user",
+                "speaker": "Marcos",
+                "chat_name": "Marcos",
+                "content": "new child",
+                "source_label": "whatsapp:dm",
+                "received_at": "2026-05-01T00:01:00+00:00",
+                "conversation_id": kwargs["conversation_id"],
+                "source_conversation_id": kwargs["conversation_id"],
+                "source_conversation_index": 1,
+            },
+            {
+                "role": "user",
+                "speaker": "Marcos",
+                "chat_name": "Marcos",
+                "content": "newer parent context",
+                "source_label": "whatsapp:dm",
+                "received_at": "2026-05-01T00:02:00+00:00",
+                "conversation_id": kwargs["conversation_id"],
+                "source_conversation_id": kwargs["conversation_id"],
+                "source_conversation_index": -1,
+            },
+        ]
+        if kwargs["conversation_id"] == "whatsapp:dm:bg-chat"
+        else [],
+    )
+
+    out = main._build_cross_conversation_payload(
+        "trigger",
+        "u1",
+        "Echo",
+        {"memorize_chat": True},
+        [{"role": "user", "content": "hello from trigger"}],
+        -1,
+        True,
+    )
+    assert isinstance(out, dict)
+    assert out["_final_cursors"]["whatsapp:dm:bg-chat"] == 1
+
+
+def test_build_cross_conversation_payload_does_not_advance_cursor_for_parent_only_tail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        now_iso = datetime.now(UTC).isoformat()
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, digest_cursor, last_memorize_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("trigger", 1, -1, None, now_iso),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, digest_cursor, last_memorize_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("whatsapp:dm:bg-chat", 1, -1, None, now_iso),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+    monkeypatch.setattr(
+        main,
+        "_load_tail_for_source_conversation",
+        lambda **kwargs: [
+            {
+                "role": "user",
+                "speaker": "Marcos",
+                "chat_name": "Marcos",
+                "content": "parent only",
+                "source_label": "whatsapp:dm",
+                "received_at": "2026-05-01T00:01:00+00:00",
+                "conversation_id": kwargs["conversation_id"],
+                "source_conversation_id": kwargs["conversation_id"],
+                "source_conversation_index": -1,
+            }
+        ]
+        if kwargs["conversation_id"] == "whatsapp:dm:bg-chat"
+        else [],
+    )
+
+    out = main._build_cross_conversation_payload(
+        "trigger",
+        "u1",
+        "Echo",
+        {"memorize_chat": True},
+        [{"role": "user", "content": "hello from trigger"}],
+        -1,
+        True,
+    )
+    assert isinstance(out, dict)
+    assert "whatsapp:dm:bg-chat" not in out["_final_cursors"]
+
+
 @pytest.mark.asyncio
 async def test_build_cross_conversation_payload_queues_background_rollup_for_listen_only_tail(
     tmp_path: Path,

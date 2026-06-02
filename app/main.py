@@ -2024,6 +2024,20 @@ def _sillytavern_turn_history_with_floor(
     return window
 
 
+def _max_nonnegative_source_conversation_index(messages: list[dict[str, Any]]) -> int | None:
+    max_index: int | None = None
+    for msg in messages:
+        try:
+            idx = int(msg.get("source_conversation_index"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if idx < 0:
+            continue
+        if max_index is None or idx > max_index:
+            max_index = idx
+    return max_index
+
+
 async def _clear_consolidation_in_progress(
     *,
     state_lock: asyncio.Lock,
@@ -2960,7 +2974,9 @@ def _build_cross_conversation_payload(
     for other_cid, tail_msgs in other_tails.items():
         if not tail_msgs:
             continue
-        final_cursors[other_cid] = int(tail_msgs[-1]["source_conversation_index"])
+        final_cursor = _max_nonnegative_source_conversation_index(tail_msgs)
+        if final_cursor is not None:
+            final_cursors[other_cid] = final_cursor
         all_messages.extend(tail_msgs)
         if not bool(tail_msgs[0].get("memorize_chat", True)):
             token_estimate = _estimate_tokens(
