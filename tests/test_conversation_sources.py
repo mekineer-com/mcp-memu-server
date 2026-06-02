@@ -136,6 +136,56 @@ def test_load_whatsapp_tail_includes_parent_session_lineage(tmp_path: Path) -> N
         state_db_path=state_db_path,
     )
     assert [row["content"] for row in rows] == ["older", "newer"]
+    assert [row["source_conversation_index"] for row in rows] == [-1, 0]
+
+
+def test_load_whatsapp_tail_parent_lineage_does_not_shift_existing_cursor(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:15133278228": {
+                    "session_id": "s2",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "15133278228@s.whatsapp.net",
+                        "chat_name": "Marcos",
+                        "user_name": "Marcos",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_sessions_table(
+        state_db_path,
+        [
+            ("s1", None),
+            ("s2", "s1"),
+        ],
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s1", "user", "older parent", 100.0, "15133278228@s.whatsapp.net", "Marcos"),
+            ("s2", "user", "already memorized child", 101.0, "15133278228@s.whatsapp.net", "Marcos"),
+            ("s2", "user", "new child", 102.0, "15133278228@s.whatsapp.net", "Marcos"),
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=0,
+        recent_fallback_messages=0,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    )
+    assert [(row["content"], row["source_conversation_index"]) for row in rows] == [
+        ("new child", 1)
+    ]
 
 
 def test_load_whatsapp_tail_preserves_assistant_sender_name_when_present(tmp_path: Path) -> None:

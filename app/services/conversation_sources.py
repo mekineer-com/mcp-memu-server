@@ -431,6 +431,7 @@ def load_whatsapp_tail(
         if sid and sid not in session_user_name:
             session_ids.append(sid)
             session_user_name[sid] = str(entry.get("user_name") or "").strip()
+    primary_session_ids = set(session_ids)
     session_ids = _expand_session_ids_with_lineage(db_path, session_ids)
 
     placeholders = ",".join("?" for _ in session_ids)
@@ -448,12 +449,22 @@ def load_whatsapp_tail(
 
     source_label = f"whatsapp:{chat_type}"
     all_rows: list[dict[str, Any]] = []
-    for idx, row in enumerate(rows):
+    primary_index = 0
+    lineage_index = -1
+    for row in rows:
+        sid = str(row["session_id"] or "").strip()
+        if sid in primary_session_ids:
+            source_index = primary_index
+            primary_index += 1
+        else:
+            # Parent-session rows are historical context. Keep active-session
+            # cursors non-negative and stable across lineage expansion.
+            source_index = lineage_index
+            lineage_index -= 1
         content = str(row["content"] or "").strip()
         if not content:
             continue
         role = str(row["role"] or "").strip().lower()
-        sid = str(row["session_id"] or "").strip()
         speaker = ""
         if role in {"user", "assistant"}:
             fallback_name = session_user_name.get(sid, "") if role == "user" else ""
@@ -472,7 +483,7 @@ def load_whatsapp_tail(
                 "received_at": _to_iso_utc(row["timestamp"]),
                 "conversation_id": conversation_id,
                 "source_conversation_id": conversation_id,
-                "source_conversation_index": idx,
+                "source_conversation_index": source_index,
             }
         )
 
