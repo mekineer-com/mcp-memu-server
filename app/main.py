@@ -1698,60 +1698,6 @@ def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, con
     )
 
 
-TURN_HISTORY_WINDOW_MESSAGES = 8
-
-
-def _persist_sillytavern_history_tail(
-    *,
-    conversation_id: str,
-    user_id: str,
-    soul_id: str,
-    safe_payload: dict[str, Any],
-    history: list[dict[str, Any]],
-) -> int:
-    if _message_log.derive_source_label(conversation_id) != "sillytavern":
-        return 0
-    if not history:
-        return 0
-
-    _, db_path = _write_conversation_state(
-        conversation_id,
-        soul_id=soul_id,
-        user_id=user_id,
-        updates={},
-    )
-
-    rows: list[dict[str, Any]] = []
-    for item in history:
-        content = str(item.get("content") or "").strip()
-        if not content:
-            continue
-        role = str(item.get("role") or "user").strip() or "user"
-        msg: dict[str, Any] = {"role": role, "content": content}
-        speaker = str(item.get("name") or "").strip()
-        if speaker:
-            msg["name"] = speaker
-        rows.append(msg)
-    if not rows:
-        return 0
-
-    chat_name = _pick_str(safe_payload, "chat_name") or None
-    con = _sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        _sqlite_ensure_conversation_state_schema(con)
-        appended = _message_log.append_messages(
-            con,
-            conversation_id,
-            rows,
-            chat_name=chat_name,
-        )
-        con.commit()
-    finally:
-        con.close()
-    return int(appended)
-
-
 def _unmemorized_sleep_gap_detected(
     history: list[dict[str, Any]],
     digest_cursor: Any,
@@ -2529,13 +2475,6 @@ async def conversation_retrieve(
         state_row: dict[str, Any] | None = None
         cross_tail: list[dict[str, Any]] = []
         if uid and soul_id and message.strip():
-            _persist_sillytavern_history_tail(
-                conversation_id=cid,
-                user_id=uid,
-                soul_id=soul_id,
-                safe_payload=safe,
-                history=history,
-            )
             state_row, _soul_card, _db_path = _load_turn_state_and_soul_card(
                 cid,
                 user_id=uid,
@@ -2547,25 +2486,6 @@ async def conversation_retrieve(
                     _con.row_factory = sqlite3.Row
                     _sqlite_ensure_conversation_state_schema(_con)
                     cross_tail = _message_log.read_all_tails(_con, exclude_conversation_id=cid)
-                    cursor_row = _con.execute(
-                        "SELECT digest_cursor, last_memorize_at FROM conversations WHERE conversation_id = ?",
-                        (cid,),
-                    ).fetchone()
-                    cursor = int(cursor_row["digest_cursor"] or 0) if (cursor_row and cursor_row["last_memorize_at"]) else -1
-                    db_tail = _message_log.read_tail(_con, cid, after_cursor=cursor + 1)
-                    if len(db_tail) < TURN_HISTORY_WINDOW_MESSAGES:
-                        db_recent = _message_log.read_recent(_con, cid, limit=TURN_HISTORY_WINDOW_MESSAGES)
-                        if len(db_recent) > len(db_tail):
-                            db_tail = db_recent
-                    if db_tail:
-                        history = _normalize_turn_history([
-                            {
-                                "role": row.get("role"),
-                                "content": row.get("content"),
-                                "name": row.get("name") or row.get("speaker"),
-                            }
-                            for row in db_tail
-                        ])
                 finally:
                     _con.close()
 

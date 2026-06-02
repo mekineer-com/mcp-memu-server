@@ -290,6 +290,39 @@ def test_read_all_tails_falls_back_to_recent_when_unmemorized_tail_empty() -> No
         con.close()
 
 
+def test_read_all_tails_skips_sillytavern_scoped_conversations() -> None:
+    con = _con()
+    try:
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("current", 0),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("whatsapp:dm:15133278228", 0),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("integrity:chat-a", 0),
+        )
+        assert message_log.append_messages(
+            con,
+            "whatsapp:dm:15133278228",
+            [{"role": "user", "content": "keep me"}],
+            source_label="whatsapp:dm",
+        ) == 1
+        assert message_log.append_messages(
+            con,
+            "integrity:chat-a",
+            [{"role": "user", "content": "drop me"}],
+        ) == 1
+
+        merged = message_log.read_all_tails(con, exclude_conversation_id="current")
+        assert [m["content"] for m in merged] == ["keep me"]
+    finally:
+        con.close()
+
+
 def test_read_all_tails_backfills_short_unmemorized_tail_when_history_is_short() -> None:
     con = _con()
     try:

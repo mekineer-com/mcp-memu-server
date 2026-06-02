@@ -910,7 +910,7 @@ async def test_conversation_retrieve_injects_cross_context_even_with_prebuilt_qu
 
 
 @pytest.mark.asyncio
-async def test_conversation_retrieve_uses_db_history_for_primary_chat_queries(
+async def test_conversation_retrieve_uses_payload_history_for_primary_chat_queries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -922,14 +922,6 @@ async def test_conversation_retrieve_uses_db_history_for_primary_chat_queries(
         con.execute(
             "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
             ("whatsapp:dm:15133278228", 0, None),
-        )
-        con.execute(
-            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("whatsapp:dm:15133278228", "user", "Marcos", "prior db msg", "whatsapp:dm", "2026-05-08T10:00:00+00:00"),
-        )
-        con.execute(
-            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("whatsapp:dm:15133278228", "user", "Marcos", "current db msg", "whatsapp:dm", "2026-05-08T10:00:01+00:00"),
         )
         con.commit()
     finally:
@@ -951,9 +943,12 @@ async def test_conversation_retrieve_uses_db_history_for_primary_chat_queries(
 
     payload = {
         "user": {"user_id": "u1", "soul_id": "Echo"},
-        "message": "current db msg",
-        "query": "current db msg",
-        "history": [{"role": "user", "content": "payload-only current"}],
+        "message": "payload current",
+        "query": "payload current",
+        "history": [
+            {"role": "user", "name": "Marcos", "content": "payload prior"},
+            {"role": "user", "name": "Marcos", "content": "payload current"},
+        ],
     }
 
     out = await main.conversation_retrieve("whatsapp:dm:15133278228", payload)
@@ -969,13 +964,13 @@ async def test_conversation_retrieve_uses_db_history_for_primary_chat_queries(
     ]
     assert len(history_entries) == 1
     history_text = str(history_entries[0].get("content", {}).get("text", "")).strip()
-    assert "prior db msg" in history_text
-    assert "current db msg" in history_text
+    assert "payload prior" in history_text
+    assert "payload current" in history_text
     assert "[Marcos]" in history_text
 
 
 @pytest.mark.asyncio
-async def test_conversation_retrieve_uses_same_db_history_for_turn_prompt(
+async def test_conversation_retrieve_uses_same_payload_history_for_turn_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -987,14 +982,6 @@ async def test_conversation_retrieve_uses_same_db_history_for_turn_prompt(
         con.execute(
             "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
             ("whatsapp:dm:Marcos", 0, None),
-        )
-        con.execute(
-            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("whatsapp:dm:Marcos", "user", "Marcos", "db prior msg", "whatsapp:dm", "2026-05-08T10:00:00+00:00"),
-        )
-        con.execute(
-            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("whatsapp:dm:Marcos", "user", "Marcos", "db current msg", "whatsapp:dm", "2026-05-08T10:00:01+00:00"),
         )
         con.commit()
     finally:
@@ -1013,18 +1000,20 @@ async def test_conversation_retrieve_uses_same_db_history_for_turn_prompt(
 
     payload = {
         "user": {"user_id": "u1", "soul_id": "Echo"},
-        "message": "db current msg",
-        "query": "db current msg",
-        "history": [{"role": "user", "content": "payload only"}],
+        "message": "payload current",
+        "query": "payload current",
+        "history": [
+            {"role": "user", "content": "payload prior"},
+            {"role": "user", "content": "payload current"},
+        ],
         "build_turn_prompt": True,
     }
 
     out = await main.conversation_retrieve("whatsapp:dm:Marcos", payload)
     assert out["ok"] is True
     turn_prompt = str(out.get("turn_user_prompt") or "")
-    assert "db prior msg" in turn_prompt
-    assert "db current msg" in turn_prompt
-    assert "payload only" not in turn_prompt
+    assert "payload prior" in turn_prompt
+    assert "payload current" in turn_prompt
 
 
 @pytest.mark.asyncio
@@ -1087,7 +1076,7 @@ async def test_conversation_retrieve_does_not_persist_current_user_message(
 
 
 @pytest.mark.asyncio
-async def test_conversation_retrieve_persists_sillytavern_history_tail(
+async def test_conversation_retrieve_does_not_persist_sillytavern_history_tail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1104,11 +1093,6 @@ async def test_conversation_retrieve_persists_sillytavern_history_tail(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
-    )
-    monkeypatch.setattr(
-        main,
-        "_write_conversation_state",
-        lambda *_a, **_k: ({}, db_path),
     )
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
@@ -1140,36 +1124,7 @@ async def test_conversation_retrieve_persists_sillytavern_history_tail(
         ).fetchall()
     finally:
         con.close()
-    assert [(r["role"], r["speaker"], r["chat_name"], r["content"]) for r in rows] == [
-        ("user", "Marcos", "Echo", "m1"),
-        ("assistant", "Echo", "Echo", "a1"),
-    ]
-
-    payload2 = {
-        **payload,
-        "history": [
-            {"role": "user", "name": "Marcos", "content": "m1"},
-            {"role": "assistant", "name": "Echo", "content": "a1"},
-            {"role": "user", "name": "Marcos", "content": "m2"},
-        ],
-    }
-    out2 = await main.conversation_retrieve("integrity:chat-1", payload2)
-    assert out2["ok"] is True
-
-    con = main._sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        rows_after = con.execute(
-            "SELECT role, speaker, content FROM messages WHERE conversation_id = ? ORDER BY id ASC",
-            ("integrity:chat-1",),
-        ).fetchall()
-    finally:
-        con.close()
-    assert [(r["role"], r["speaker"], r["content"]) for r in rows_after] == [
-        ("user", "Marcos", "m1"),
-        ("assistant", "Echo", "a1"),
-        ("user", "Marcos", "m2"),
-    ]
+    assert rows == []
 
 
 @pytest.mark.asyncio

@@ -261,6 +261,8 @@ def read_all_tails(
         cid = str(row["conversation_id"])
         if cid == excluded_id:
             continue
+        if derive_source_label(cid) == "sillytavern":
+            continue
         cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
         tail = read_tail(con, cid, after_cursor=cursor + 1)
         window = [
