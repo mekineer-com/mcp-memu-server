@@ -307,6 +307,48 @@ def test_load_whatsapp_tail_dm_unions_phone_and_lid_sessions(tmp_path: Path) -> 
     assert [row["content"] for row in rows] == ["phone-side", "lid-side"]
 
 
+def test_load_whatsapp_tail_dm_phone_resolves_lid_only_session(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    sessions_path = sessions_dir / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    _write_lid_mapping_files(tmp_path, phone_local="447879696252", lid_local="247789598601266")
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:247789598601266": {
+                    "session_id": "s_lid_only",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "247789598601266@lid",
+                        "chat_name": "Liz Kalverda",
+                        "user_name": "Liz Kalverda",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s_lid_only", "user", "lid-only message", 100.0),
+            ("s_lid_only", "assistant", "reply from soul", 101.0),
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:dm:447879696252",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    )
+    assert [row["content"] for row in rows] == ["lid-only message", "reply from soul"]
+
+
 def test_sillytavern_snapshot_round_trip_with_floor(tmp_path: Path) -> None:
     storage_dir = tmp_path / "resources"
     conversation_sources.persist_sillytavern_history_snapshot(

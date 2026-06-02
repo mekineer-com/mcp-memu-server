@@ -61,6 +61,8 @@ def _parse_session_key_chat_token(session_key: str, *, chat_type: str) -> str:
 
 
 def _load_whatsapp_alias_graph(*, session_dir: Path) -> dict[str, set[str]]:
+    # Transitional Plan E read-path safety net.
+    # Remove in Phase 5 once source-side canonicalization is fully proven.
     graph: dict[str, set[str]] = {}
 
     def _link(a: str, b: str) -> None:
