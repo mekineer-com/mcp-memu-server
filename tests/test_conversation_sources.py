@@ -1,0 +1,140 @@
+import json
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from app.services import conversation_sources
+
+
+def _write_state_db(path: Path, rows: list[tuple[str, str, str, float]]) -> None:
+    con = sqlite3.connect(path)
+    try:
+        con.execute(
+            "CREATE TABLE messages ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "session_id TEXT, role TEXT, content TEXT, timestamp REAL)"
+        )
+        con.executemany(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_load_whatsapp_tail_group_collapses_multiple_sessions(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:group:18322935409-1579788049@g.us:114628432556258": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "group",
+                        "chat_id": "18322935409-1579788049@g.us",
+                        "chat_name": "18322935409-1579788049",
+                        "user_name": "Marcos",
+                    },
+                },
+                "agent:main:whatsapp:group:18322935409-1579788049@g.us:140063262396533": {
+                    "session_id": "s2",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "group",
+                        "chat_id": "18322935409-1579788049@g.us",
+                        "chat_name": "Familia",
+                        "user_name": "Raquel",
+                    },
+                },
+                "agent:main:whatsapp:group:18322935409-1579788049@g.us": {
+                    "session_id": "s3",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "group",
+                        "chat_id": "18322935409-1579788049@g.us",
+                        "chat_name": "Familia",
+                        "user_name": "",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s1", "user", "[Marcos] one", 100.0),
+            ("s2", "user", "[Raquel] two", 101.0),
+            ("s3", "assistant", "three", 102.0),
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:group:18322935409-1579788049@g.us",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    )
+    assert [row["content"] for row in rows] == ["[Marcos] one", "[Raquel] two", "three"]
+    assert all(row["chat_name"] == "Familia" for row in rows)
+    assert all(row["source_label"] == "whatsapp:group" for row in rows)
+
+
+def test_load_whatsapp_tail_applies_floor_backfill(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:15133278228": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "15133278228@s.whatsapp.net",
+                        "chat_name": "Marcos",
+                        "user_name": "Marcos",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [("s1", "user", f"msg-{i}", 100.0 + i) for i in range(10)],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=8,
+        recent_fallback_messages=8,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    )
+    assert [row["content"] for row in rows] == [f"msg-{i}" for i in range(2, 10)]
+
+
+def test_load_whatsapp_tail_raises_when_mapping_missing(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text("{}", encoding="utf-8")
+    _write_state_db(state_db_path, [])
+
+    with pytest.raises(RuntimeError, match="no WhatsApp session mapping"):
+        conversation_sources.load_whatsapp_tail(
+            conversation_id="whatsapp:dm:15133278228",
+            since_cursor=-1,
+            recent_fallback_messages=0,
+            sessions_index_path=sessions_path,
+            state_db_path=state_db_path,
+        )

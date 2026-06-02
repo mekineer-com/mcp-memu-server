@@ -853,18 +853,6 @@ async def test_conversation_retrieve_injects_cross_context_even_with_prebuilt_qu
             "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
             ("cid-current", 0),
         )
-        con.execute(
-            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
-            ("whatsapp:dm:other", 0),
-        )
-        con.execute(
-            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("whatsapp:dm:other", "user", "Marcos", "wa-1", "whatsapp:dm", "2026-05-08T11:00:00+00:00"),
-        )
-        con.execute(
-            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("whatsapp:dm:other", "assistant", "Echo", "wa-2", "whatsapp:dm", "2026-05-08T11:00:01+00:00"),
-        )
         con.commit()
     finally:
         con.close()
@@ -873,6 +861,22 @@ async def test_conversation_retrieve_injects_cross_context_even_with_prebuilt_qu
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+    )
+    monkeypatch.setattr(
+        main,
+        "_load_cross_tail_from_sources",
+        lambda *_a, **_k: [
+            {
+                "conversation_id": "whatsapp:dm:other",
+                "role": "assistant",
+                "speaker": "Echo",
+                "chat_name": "Marcos",
+                "content": "wa-2",
+                "source_label": "whatsapp:dm",
+                "received_at": "2026-05-08T11:00:01+00:00",
+                "source_conversation_index": 1,
+            }
+        ],
     )
 
     captured: dict[str, object] = {}
@@ -1141,18 +1145,6 @@ async def test_conversation_retrieve_does_not_duplicate_preexisting_cross_query(
             "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
             ("cid-current", 0),
         )
-        con.execute(
-            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
-            ("whatsapp:dm:other", 0),
-        )
-        con.execute(
-            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("whatsapp:dm:other", "user", "Marcos", "wa-1", "whatsapp:dm", "2026-05-08T11:00:00+00:00"),
-        )
-        con.execute(
-            "INSERT INTO messages (conversation_id, role, speaker, content, source_label, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("whatsapp:dm:other", "assistant", "Echo", "wa-2", "whatsapp:dm", "2026-05-08T11:00:01+00:00"),
-        )
         con.commit()
     finally:
         con.close()
@@ -1161,6 +1153,22 @@ async def test_conversation_retrieve_does_not_duplicate_preexisting_cross_query(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+    )
+    monkeypatch.setattr(
+        main,
+        "_load_cross_tail_from_sources",
+        lambda *_a, **_k: [
+            {
+                "conversation_id": "whatsapp:dm:other",
+                "role": "assistant",
+                "speaker": "Echo",
+                "chat_name": "Marcos",
+                "content": "wa-2",
+                "source_label": "whatsapp:dm",
+                "received_at": "2026-05-08T11:00:01+00:00",
+                "source_conversation_index": 1,
+            }
+        ],
     )
 
     captured: dict[str, object] = {}

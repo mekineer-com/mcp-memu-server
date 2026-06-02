@@ -74,6 +74,7 @@ from app.services.intention_state import (
     remove_intentions as _remove_intentions,
 )
 from app.services import crud_endpoints as _crud_endpoints
+from app.services import conversation_sources as _conversation_sources
 from app.services import mcp_tools as _mcp_tools
 from app.services import message_log as _message_log
 from app.services import retrieve_orchestration as _retrieve_orchestration
@@ -1731,6 +1732,43 @@ def _make_consolidation_deps() -> ConsolidationDeps:
     )
 
 
+def _load_cross_tail_from_sources(
+    con: sqlite3.Connection,
+    *,
+    exclude_conversation_id: str | None = None,
+) -> list[dict[str, Any]]:
+    excluded_id = str(exclude_conversation_id or "").strip()
+    cursor_rows = con.execute(
+        "SELECT conversation_id, digest_cursor, last_memorize_at FROM conversations"
+    ).fetchall()
+    all_messages: list[dict[str, Any]] = []
+    for row in cursor_rows:
+        cid = str(row["conversation_id"] or "").strip()
+        if not cid or cid == excluded_id:
+            continue
+        if _message_log.derive_source_label(cid) != "whatsapp":
+            continue
+        cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
+        try:
+            tail = _conversation_sources.load_whatsapp_tail(
+                conversation_id=cid,
+                since_cursor=cursor,
+                recent_fallback_messages=_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
+            )
+        except Exception as exc:
+            logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)
+            continue
+        all_messages.extend(tail)
+    all_messages.sort(
+        key=lambda msg: (
+            str(msg.get("received_at") or ""),
+            str(msg.get("conversation_id") or ""),
+            int(msg.get("source_conversation_index") or 0),
+        )
+    )
+    return all_messages
+
+
 async def _clear_consolidation_in_progress(
     *,
     state_lock: asyncio.Lock,
@@ -2485,7 +2523,7 @@ async def conversation_retrieve(
                 try:
                     _con.row_factory = sqlite3.Row
                     _sqlite_ensure_conversation_state_schema(_con)
-                    cross_tail = _message_log.read_all_tails(_con, exclude_conversation_id=cid)
+                    cross_tail = _load_cross_tail_from_sources(_con, exclude_conversation_id=cid)
                 finally:
                     _con.close()
 
