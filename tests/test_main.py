@@ -534,6 +534,164 @@ def test_build_cross_conversation_payload_preserves_listen_only_cursor_semantics
     assert out["_final_cursors"]["whatsapp:dm:bg-chat"] == rows[0]["source_conversation_index"]
 
 
+@pytest.mark.asyncio
+async def test_build_cross_conversation_payload_queues_background_rollup_for_listen_only_tail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        now_iso = datetime.now(UTC).isoformat()
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, digest_cursor, last_memorize_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("trigger", 1, -1, None, now_iso),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, rolling_summary_cursor_id, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("whatsapp:dm:bg-chat", 0, 10, now_iso),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+    monkeypatch.setattr(main, "_estimate_tokens", lambda *_a, **_k: 120)
+    monkeypatch.setattr(
+        main._conversation_sources,
+        "load_whatsapp_tail_after_message_id",
+        lambda **_kwargs: [
+            {
+                "id": 11,
+                "role": "user",
+                "speaker": "Marcos",
+                "chat_name": "Marcos",
+                "content": "new one",
+                "source_label": "whatsapp:dm",
+                "received_at": "2026-05-01T00:01:00+00:00",
+                "conversation_id": "whatsapp:dm:bg-chat",
+                "source_conversation_id": "whatsapp:dm:bg-chat",
+                "source_conversation_index": 11,
+            },
+            {
+                "id": 12,
+                "role": "user",
+                "speaker": "Marcos",
+                "chat_name": "Marcos",
+                "content": "new two",
+                "source_label": "whatsapp:dm",
+                "received_at": "2026-05-01T04:01:00+00:00",
+                "conversation_id": "whatsapp:dm:bg-chat",
+                "source_conversation_id": "whatsapp:dm:bg-chat",
+                "source_conversation_index": 12,
+            },
+        ],
+    )
+    queued: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        main,
+        "_queue_background_rollup_task",
+        lambda **kwargs: queued.append(kwargs),
+    )
+
+    out = main._build_cross_conversation_payload(
+        "trigger",
+        "u1",
+        "Echo",
+        {"memorize_chat": True},
+        [{"role": "user", "content": "hello"}],
+        -1,
+        True,
+    )
+    assert isinstance(out, dict)
+    assert len(queued) == 1
+    assert queued[0]["conversation_id"] == "whatsapp:dm:bg-chat"
+    assert queued[0]["trigger_min_tokens"] == main._BACKGROUND_SUMMARY_MIN_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_run_background_rollup_for_conversation_updates_summary_and_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    db_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {
+                "memorize_chat": False,
+                "rolling_summary": "old summary",
+                "rolling_summary_cursor_id": 10,
+            },
+            None,
+            db_path,
+        ),
+    )
+    monkeypatch.setattr(main, "_estimate_tokens", lambda *_a, **_k: 1200)
+    monkeypatch.setattr(main, "_background_sleep_gap_detected", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        main,
+        "_load_background_rollup_tail",
+        lambda **_kwargs: [
+            {
+                "role": "user",
+                "speaker": "Marcos",
+                "content": "first",
+                "source_label": "whatsapp:dm",
+                "source_conversation_index": 11,
+                "received_at": "2026-05-01T00:01:00+00:00",
+            },
+            {
+                "role": "user",
+                "speaker": "Marcos",
+                "content": "second",
+                "source_label": "whatsapp:dm",
+                "source_conversation_index": 12,
+                "received_at": "2026-05-01T04:01:00+00:00",
+            },
+        ],
+    )
+
+    class _FakeSvc:
+        async def summarize_background_chat_rollup(self, *, prior_summary: str | None, messages: list[dict[str, Any]]) -> str:
+            assert prior_summary == "old summary"
+            assert len(messages) == 2
+            return "rolled summary"
+
+    captured_updates: dict[str, Any] = {}
+
+    def _capture_write_state(
+        _conversation_id: str,
+        *,
+        soul_id: str,
+        user_id: str,
+        updates: dict[str, Any],
+    ) -> tuple[dict[str, Any], Path]:
+        captured_updates.update(updates)
+        return {}, db_path
+
+    monkeypatch.setattr(main, "_write_conversation_state", _capture_write_state)
+
+    status = await main._run_background_rollup_for_conversation(
+        conversation_id="whatsapp:dm:bg-chat",
+        user_id="u1",
+        soul_id="Echo",
+        safe_payload={},
+        trigger_min_tokens=1000,
+        service=_FakeSvc(),
+    )
+    assert status == "rolled_up"
+    assert captured_updates["rolling_summary"] == "rolled summary"
+    assert captured_updates["rolling_summary_cursor_id"] == 12
+    assert isinstance(captured_updates["rolling_summary_updated_at"], str)
+
+
 def test_load_cross_tail_from_sources_reads_whatsapp_conversations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1174,6 +1332,107 @@ async def test_conversation_retrieve_uses_same_payload_history_for_turn_prompt(
     turn_prompt = str(out.get("turn_user_prompt") or "")
     assert "payload prior" in turn_prompt
     assert "payload current" in turn_prompt
+
+
+@pytest.mark.asyncio
+async def test_conversation_retrieve_uses_sillytavern_floor_after_memorize(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("integrity:chat-1", 10, "2026-05-01T00:00:00+00:00"),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"digest_cursor": 10, "last_memorize_at": "2026-05-01T00:00:00+00:00", "all_categories_summary": ""},
+            None,
+            db_path,
+        ),
+    )
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo"},
+        "message": "msg_12",
+        "query": "msg_12",
+        "history": [
+            {"role": "user", "content": f"msg_{idx:02d}"}
+            for idx in range(1, 13)
+        ],
+        "build_turn_prompt": True,
+    }
+
+    out = await main.conversation_retrieve("integrity:chat-1", payload)
+    turn_prompt = str(out.get("turn_user_prompt") or "")
+    assert "msg_12" in turn_prompt
+    assert "msg_05" in turn_prompt
+    assert "msg_04" not in turn_prompt
+
+
+@pytest.mark.asyncio
+async def test_conversation_retrieve_sillytavern_floor_is_not_a_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("integrity:chat-1", 2, "2026-05-01T00:00:00+00:00"),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"digest_cursor": 2, "last_memorize_at": "2026-05-01T00:00:00+00:00", "all_categories_summary": ""},
+            None,
+            db_path,
+        ),
+    )
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo"},
+        "message": "msg_12",
+        "query": "msg_12",
+        "history": [
+            {"role": "user", "content": f"msg_{idx:02d}"}
+            for idx in range(1, 13)
+        ],
+        "build_turn_prompt": True,
+    }
+
+    out = await main.conversation_retrieve("integrity:chat-1", payload)
+    turn_prompt = str(out.get("turn_user_prompt") or "")
+    assert "msg_04" in turn_prompt
+    assert "msg_12" in turn_prompt
 
 
 @pytest.mark.asyncio

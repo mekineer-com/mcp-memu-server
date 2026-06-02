@@ -92,6 +92,7 @@ from app.services.payload import (
     _normalize_conversation,
     _normalize_turn_history,
     _parse_as_of_datetime,
+    _parse_turn_ts_ms,
     _payload_signature,
     _pick_str,
     _safe_payload,
@@ -129,8 +130,12 @@ _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 4000
 _DEFAULT_EPISODES_PER_SEGMENT: int = 3
+_DEFAULT_BACKGROUND_SUMMARY_TOKENS: int = 1000
+_DEFAULT_BACKGROUND_SUMMARY_MIN_TOKENS: int = 100
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
 _EPISODES_PER_SEGMENT: int = _DEFAULT_EPISODES_PER_SEGMENT
+_BACKGROUND_SUMMARY_TOKENS: int = _DEFAULT_BACKGROUND_SUMMARY_TOKENS
+_BACKGROUND_SUMMARY_MIN_TOKENS: int = _DEFAULT_BACKGROUND_SUMMARY_MIN_TOKENS
 # Uniform runaway-protection caps for LLM calls. Not business logic —
 _BACKGROUND_TASKS: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
 _LOG_PROMPTS: bool = False
@@ -139,6 +144,7 @@ _VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferre
 
 # ==== Token estimation & segment planning ====
 
+_estimate_tokens = _memorize_endpoint.estimate_tokens
 _estimate_unmemorized_tokens = _memorize_endpoint.estimate_unmemorized_tokens
 
 
@@ -159,6 +165,210 @@ def _has_category_content(c: dict[str, Any]) -> bool:
     summary = str(c.get("summary") or "").strip()
     desc = str(c.get("description") or "").strip()
     return bool(summary or desc)
+
+
+def _background_sleep_gap_detected(
+    *,
+    history: list[dict[str, Any]],
+    safe: dict[str, Any],
+    min_chunk_tokens: int,
+) -> bool:
+    gap_safe = dict(safe)
+    has_tz_name = bool(str(gap_safe.get("time_zone") or gap_safe.get("timeZone") or "").strip())
+    has_tz_off = isinstance(gap_safe.get("time_zone_offset_min"), (int, float)) or isinstance(
+        gap_safe.get("timeZoneOffsetMin"), (int, float)
+    )
+    if not has_tz_name and not has_tz_off:
+        gap_safe["time_zone_offset_min"] = 0
+    return _memorize_endpoint.unmemorized_sleep_gap_detected(
+        history,
+        digest_cursor=-1,
+        safe=gap_safe,
+        logger=logger,
+        min_chunk_tokens=min_chunk_tokens,
+        sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
+    )
+
+
+def _load_background_rollup_tail(
+    *,
+    conversation_id: str,
+    user_id: str,
+    soul_id: str,
+    rolling_summary_cursor_id: int | None,
+) -> list[dict[str, Any]]:
+    storage_dir, hermes_home_path, sessions_index_path, state_db_path = _resolve_cross_source_paths()
+    source_label = _message_log.derive_source_label(conversation_id)
+    if source_label.startswith("whatsapp:"):
+        return _conversation_sources.load_whatsapp_tail_after_message_id(
+            conversation_id=conversation_id,
+            after_message_id=rolling_summary_cursor_id,
+            hermes_home=hermes_home_path,
+            sessions_index_path=sessions_index_path,
+            state_db_path=state_db_path,
+        )
+    if source_label == "sillytavern":
+        return _conversation_sources.load_sillytavern_tail(
+            storage_dir=storage_dir,
+            user_id=user_id,
+            soul_id=soul_id,
+            conversation_id=conversation_id,
+            since_cursor=int(rolling_summary_cursor_id) if rolling_summary_cursor_id is not None else -1,
+            recent_fallback_messages=0,
+        )
+    return []
+
+
+async def _run_background_rollup_for_conversation(
+    *,
+    conversation_id: str,
+    user_id: str,
+    soul_id: str,
+    safe_payload: dict[str, Any],
+    trigger_min_tokens: int,
+    service: MemoryService | None = None,
+) -> str:
+    cid = str(conversation_id or "").strip()
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not cid or not uid or not sid:
+        return "skipped_scope"
+
+    state_lock = _get_memorize_lock(_memorize_lock_key(uid, sid))
+    async with state_lock:
+        state_row, _soul_card, db_path = _load_turn_state_and_soul_card(
+            cid,
+            user_id=uid,
+            soul_id=sid,
+        )
+        if bool(state_row.get("memorize_chat", True)):
+            return "skipped_primary_chat"
+        if db_path is None or not db_path.exists():
+            return "skipped_no_db"
+
+        rolling_cursor_id = state_row.get("rolling_summary_cursor_id")
+        tail = _load_background_rollup_tail(
+            conversation_id=cid,
+            user_id=uid,
+            soul_id=sid,
+            rolling_summary_cursor_id=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
+        )
+        if len(tail) < 2:
+            return "skipped_short_tail"
+
+        tail_end_cursor = int(tail[-1].get("source_conversation_index") or 0)
+        if tail_end_cursor <= 0:
+            return "skipped_short_tail"
+
+        sleep_history: list[dict[str, Any]] = []
+        tokenize_messages: list[dict[str, Any]] = []
+        for msg in tail:
+            content = str(msg.get("content") or "").strip()
+            if not content:
+                continue
+            ts_ms = _parse_turn_ts_ms(msg.get("received_at"))
+            if ts_ms is None:
+                continue
+            sleep_history.append({"content": content, "ts_ms": ts_ms})
+            tokenize_messages.append({"content": content})
+        if len(sleep_history) < 2:
+            return "skipped_short_tail"
+
+        token_estimate = _estimate_tokens(tokenize_messages)
+        if token_estimate < int(trigger_min_tokens):
+            return "skipped_tokens"
+        if not _background_sleep_gap_detected(
+            history=sleep_history,
+            safe=safe_payload,
+            min_chunk_tokens=int(trigger_min_tokens),
+        ):
+            return "skipped_lull"
+
+        prior_summary = str(state_row.get("rolling_summary") or "").strip() or None
+        llm_service = service or _get_service_from_payload(
+            {
+                **safe_payload,
+                "user": {"user_id": uid, "soul_id": sid, "conversation_id": cid},
+                "conversation_id": cid,
+            }
+        )
+        summary_input = [
+            {
+                "role": str(msg.get("role") or "user"),
+                "name": str(msg.get("speaker") or "").strip() or None,
+                "content": str(msg.get("content") or ""),
+                "source_label": msg.get("source_label"),
+                "_message_index": int(msg.get("source_conversation_index") or 0),
+            }
+            for msg in tail
+        ]
+        new_summary = str(
+            await llm_service.summarize_background_chat_rollup(
+                prior_summary=prior_summary,
+                messages=summary_input,
+            )
+            or ""
+        ).strip()
+        if not new_summary:
+            raise RuntimeError("background summarize returned empty summary")
+        now_iso = datetime.now(UTC).isoformat()
+        _write_conversation_state(
+            cid,
+            soul_id=sid,
+            user_id=uid,
+            updates={
+                "rolling_summary": new_summary,
+                "rolling_summary_cursor_id": tail_end_cursor,
+                "rolling_summary_updated_at": now_iso,
+                "updated_at": now_iso,
+                "last_background_error": None,
+                "last_background_error_at": None,
+            },
+        )
+        return "rolled_up"
+
+
+def _queue_background_rollup_task(
+    *,
+    conversation_id: str,
+    user_id: str,
+    soul_id: str,
+    safe_payload: dict[str, Any],
+    trigger_min_tokens: int,
+    service: MemoryService | None = None,
+) -> None:
+    marker = f"{user_id}::{soul_id}::{conversation_id}"
+    if not _mark_inflight(_BACKGROUND_ROLLUP_INFLIGHT, marker):
+        return
+    task = asyncio.create_task(
+        _run_background_rollup_for_conversation(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            soul_id=soul_id,
+            safe_payload=safe_payload,
+            trigger_min_tokens=trigger_min_tokens,
+            service=service,
+        )
+    )
+    _BACKGROUND_TASKS.add(task)
+
+    def _on_done(done_task: asyncio.Task) -> None:
+        try:
+            done_task.result()
+        except Exception as exc:
+            _set_background_error(
+                conversation_id,
+                soul_id=soul_id,
+                user_id=user_id,
+                code="background_rollup_failed",
+                detail=f"{type(exc).__name__}: {str(exc)[:220]}",
+            )
+            logger.exception("background rollup task failed for %s", marker)
+        finally:
+            _BACKGROUND_TASKS.discard(done_task)
+            _clear_inflight(_BACKGROUND_ROLLUP_INFLIGHT, marker)
+
+    task.add_done_callback(_on_done)
 
 
 # ==== Server state (locks, inflight, shutdown) ====
@@ -185,6 +395,7 @@ _ACTIVE_HTTP_REQUESTS: int = 0
 _ACTIVE_WORK_REQUESTS: int = 0
 _SHUTDOWN_TASK: asyncio.Task | None = None
 _APIMW_INFLIGHT: set[str] = set()
+_BACKGROUND_ROLLUP_INFLIGHT: set[str] = set()
 _SHUTDOWN_STATE: dict[str, Any] = {
     "draining": False,
     "stopping": False,
@@ -382,7 +593,7 @@ class STUserModel(BaseModel):
 _CONFIG: dict[str, Any] = _load_config()
 
 def _refresh_runtime_limits() -> None:
-    global _MIN_CHUNK_TOKENS, _EPISODES_PER_SEGMENT
+    global _MIN_CHUNK_TOKENS, _EPISODES_PER_SEGMENT, _BACKGROUND_SUMMARY_TOKENS, _BACKGROUND_SUMMARY_MIN_TOKENS
     global _LOG_PROMPTS
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
     try:
@@ -393,6 +604,20 @@ def _refresh_runtime_limits() -> None:
         _EPISODES_PER_SEGMENT = max(1, int(memorize_cfg.get("episodes_per_segment", _DEFAULT_EPISODES_PER_SEGMENT)))
     except (TypeError, ValueError, OverflowError):
         _EPISODES_PER_SEGMENT = _DEFAULT_EPISODES_PER_SEGMENT
+    try:
+        _BACKGROUND_SUMMARY_TOKENS = max(
+            0,
+            int(memorize_cfg.get("background_summary_tokens", _DEFAULT_BACKGROUND_SUMMARY_TOKENS)),
+        )
+    except (TypeError, ValueError, OverflowError):
+        _BACKGROUND_SUMMARY_TOKENS = _DEFAULT_BACKGROUND_SUMMARY_TOKENS
+    try:
+        _BACKGROUND_SUMMARY_MIN_TOKENS = max(
+            0,
+            int(memorize_cfg.get("background_summary_min_tokens", _DEFAULT_BACKGROUND_SUMMARY_MIN_TOKENS)),
+        )
+    except (TypeError, ValueError, OverflowError):
+        _BACKGROUND_SUMMARY_MIN_TOKENS = _DEFAULT_BACKGROUND_SUMMARY_MIN_TOKENS
     debug_cfg = _CONFIG.get("debug") if isinstance(_CONFIG.get("debug"), dict) else {}
     _LOG_PROMPTS = bool(debug_cfg.get("log_prompts", False))
 
@@ -1754,6 +1979,23 @@ def _read_background_rolling_summaries_from_conversations(
     return out
 
 
+TURN_HISTORY_WINDOW_MESSAGES = 8
+
+
+def _sillytavern_turn_history_with_floor(
+    history: list[dict[str, Any]],
+    state_row: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not history:
+        return []
+    digest_cursor = int(state_row.get("digest_cursor") or 0) if state_row.get("last_memorize_at") else -1
+    start = max(0, digest_cursor + 1)
+    window = history[start:] if start < len(history) else []
+    if len(window) < TURN_HISTORY_WINDOW_MESSAGES and len(history) > len(window):
+        window = history[-TURN_HISTORY_WINDOW_MESSAGES:]
+    return window
+
+
 async def _clear_consolidation_in_progress(
     *,
     state_lock: asyncio.Lock,
@@ -2582,10 +2824,9 @@ async def conversation_retrieve(
                 soul_card = payload_soul_card or soul_card
 
                 message = _pick_str(safe, "message", "query") or ""
-                # Canonical current-chat history is assembled once above
-                # (DB unmemorized tail + floor backfill) and reused here so
-                # retrieve + turn see the same context.
                 turn_history = history
+                if _message_log.derive_source_label(cid) == "sillytavern":
+                    turn_history = _sillytavern_turn_history_with_floor(history, _state_row)
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
 
@@ -2692,6 +2933,18 @@ def _build_cross_conversation_payload(
             continue
         final_cursors[other_cid] = int(tail_msgs[-1]["source_conversation_index"])
         all_messages.extend(tail_msgs)
+        if not bool(tail_msgs[0].get("memorize_chat", True)):
+            token_estimate = _estimate_tokens(
+                [{"content": str(msg.get("content") or "")} for msg in tail_msgs]
+            )
+            if token_estimate >= _BACKGROUND_SUMMARY_MIN_TOKENS:
+                _queue_background_rollup_task(
+                    conversation_id=other_cid,
+                    user_id=uid,
+                    soul_id=soul_id,
+                    safe_payload=safe,
+                    trigger_min_tokens=_BACKGROUND_SUMMARY_MIN_TOKENS,
+                )
 
     all_messages.sort(
         key=lambda m: (
@@ -3023,6 +3276,15 @@ async def conversation_turn(
                     turn_cache_entry, turn_annulment_ids,
                     retrieved_item_ids,
                     memorize_chat=memorize_chat,
+                )
+            if not bool(conversation_state_after.get("memorize_chat", True)):
+                _queue_background_rollup_task(
+                    conversation_id=cid,
+                    user_id=uid,
+                    soul_id=soul_id,
+                    safe_payload=safe,
+                    trigger_min_tokens=_BACKGROUND_SUMMARY_TOKENS,
+                    service=memory_service,
                 )
 
         if not dry_run:
