@@ -1817,19 +1817,34 @@ def _load_soul_active_since(
     )
 
 
-def _filter_current_whatsapp_history_for_soul(
+_ACTIVE_SINCE_UNSET = object()
+
+
+def _current_whatsapp_active_since_for_soul(
     conversation_id: str,
     soul_id: str,
-    history: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    if not history or not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
-        return history
+) -> float | None:
+    if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
+        return None
     _storage_dir, hermes_home_path, _sessions_index_path, state_db_path = _resolve_cross_source_paths()
-    active_since = _load_soul_active_since(
+    return _load_soul_active_since(
         soul_id,
         hermes_home_path=hermes_home_path,
         state_db_path=state_db_path,
     )
+
+
+def _filter_current_whatsapp_history_for_soul(
+    conversation_id: str,
+    soul_id: str,
+    history: list[dict[str, Any]],
+    *,
+    active_since: Any = _ACTIVE_SINCE_UNSET,
+) -> list[dict[str, Any]]:
+    if not history or not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
+        return history
+    if active_since is _ACTIVE_SINCE_UNSET:
+        active_since = _current_whatsapp_active_since_for_soul(conversation_id, soul_id)
     if active_since is None:
         return history
 
@@ -2839,8 +2854,14 @@ async def conversation_retrieve(
         uid = str(scope.get("user_id") or "").strip()
         soul_id = str(scope.get("soul_id") or "").strip()
         message = _pick_str(safe, "message", "query") or ""
+        current_whatsapp_active_since = _current_whatsapp_active_since_for_soul(cid, soul_id)
         history = _normalize_turn_history(safe.get("history"))
-        history = _filter_current_whatsapp_history_for_soul(cid, soul_id, history)
+        history = _filter_current_whatsapp_history_for_soul(
+            cid,
+            soul_id,
+            history,
+            active_since=current_whatsapp_active_since,
+        )
         safe["history"] = history
         _stamp_assistant_display_name(history, soul_id)
         state_row: dict[str, Any] | None = None
@@ -2883,12 +2904,24 @@ async def conversation_retrieve(
         else:
             chat_label_for_prompt = None
 
-        if safe.get("queries") is None and uid and soul_id and message.strip() and state_row is not None:
+        should_build_default_queries = (
+            safe.get("queries") is None
+            and uid
+            and soul_id
+            and message.strip()
+            and state_row is not None
+        )
+        should_rebuild_queries_for_cutoff = (
+            current_whatsapp_active_since is not None
+            and soul_id
+            and message.strip()
+        )
+        if should_build_default_queries or should_rebuild_queries_for_cutoff:
             safe["queries"] = _build_retrieve_soul_context_queries(
                 soul_id=soul_id,
                 message=message,
                 history=history,
-                state_row=state_row,
+                state_row=state_row or {},
                 conversation_id=cid,
                 chat_label=chat_label_for_prompt,
             )
@@ -2953,6 +2986,11 @@ async def conversation_retrieve(
                     chat_label=chat_label_for_prompt,
                     conversation_id=cid,
                 )
+                out["turn_prompt_source"] = "conversation_retrieve"
+                if current_whatsapp_active_since is not None:
+                    out["turn_prompt_active_since"] = current_whatsapp_active_since
+                if safe.get("_cross_conversation_history"):
+                    out["cross_conversation_history"] = safe.get("_cross_conversation_history")
 
         _record_call(
             "conversation.retrieve",
@@ -3257,14 +3295,51 @@ async def conversation_turn(
         if not message:
             raise HTTPException(status_code=400, detail="message is required")
 
+        current_whatsapp_active_since = _current_whatsapp_active_since_for_soul(cid, soul_id)
         history_full = _normalize_turn_history(safe.get("history"))
-        history_full = _filter_current_whatsapp_history_for_soul(cid, soul_id, history_full)
+        history_full = _filter_current_whatsapp_history_for_soul(
+            cid,
+            soul_id,
+            history_full,
+            active_since=current_whatsapp_active_since,
+        )
         safe["history"] = history_full
         _stamp_assistant_display_name(history_full, soul_id)
         prompt_override_payload_raw = safe.get("prompt_override_payload")
         if not isinstance(prompt_override_payload_raw, dict):
             raise HTTPException(status_code=400, detail="prompt_override_payload is required")
         prompt_override_payload = dict(prompt_override_payload_raw)
+        if (
+            current_whatsapp_active_since is not None
+            and str(prompt_override_payload.get("generated_by") or "").strip()
+            != "conversation_retrieve"
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "prompt_override_payload must be generated by conversation_retrieve "
+                    "when WhatsApp active_since cutoff is active"
+                ),
+            )
+        if current_whatsapp_active_since is not None:
+            try:
+                prompt_active_since = float(prompt_override_payload.get("active_since"))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "prompt_override_payload.active_since must match current "
+                        "WhatsApp active_since cutoff"
+                    ),
+                ) from exc
+            if prompt_active_since != current_whatsapp_active_since:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "prompt_override_payload.active_since must match current "
+                        "WhatsApp active_since cutoff"
+                    ),
+                )
         override_user_prompt = str(prompt_override_payload.get("user_prompt", "")).strip()
         if not override_user_prompt:
             raise HTTPException(

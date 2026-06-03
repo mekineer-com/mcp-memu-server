@@ -37,6 +37,7 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
             "intentions_active": {"items": []},
             "result": {"categories": [], "items": [], "resources": []},
             "retrieve_ms": 42,
+            "turn_prompt_active_since": 100.0,
         }
 
     async def fake_turn(conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -89,6 +90,8 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
     assert isinstance(override_payload, dict)
     assert override_payload.get("retrieve_ms") == 42
     assert override_payload.get("user_prompt") == "user"
+    assert override_payload.get("generated_by") == "conversation_retrieve"
+    assert override_payload.get("active_since") == 100.0
 
 
 @pytest.mark.asyncio

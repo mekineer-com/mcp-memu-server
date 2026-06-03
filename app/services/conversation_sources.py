@@ -80,8 +80,10 @@ def load_soul_active_since(
         return None
     try:
         return float(row[0])
-    except (TypeError, ValueError):
-        return None
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"invalid active_since for soul {selected!r} in {db_path}: {row[0]!r}"
+        ) from exc
 
 
 def _parse_session_key_chat_token(session_key: str, *, chat_type: str) -> str:

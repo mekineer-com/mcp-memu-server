@@ -1567,6 +1567,70 @@ async def test_conversation_retrieve_filters_whatsapp_history_before_prompt(
     assert "after intro" in history_text
 
 
+@pytest.mark.asyncio
+async def test_conversation_retrieve_rebuilds_prebuilt_queries_when_cutoff_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Cutoff.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:dm:15133278228", 0, None),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+    )
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+    monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: 100.0)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        captured["safe"] = safe
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Siri"},
+        "message": "new",
+        "query": "new",
+        "history": [
+            {"role": "user", "name": "Marcos", "content": "before intro", "ts_ms": 99_000},
+            {"role": "user", "name": "Marcos", "content": "after intro", "ts_ms": 101_000},
+        ],
+        "queries": [
+            {"role": "history", "content": {"text": "before intro\nafter intro"}},
+            {"role": "user", "content": {"text": "new"}},
+        ],
+    }
+
+    out = await main.conversation_retrieve("whatsapp:dm:15133278228", payload)
+    assert out["ok"] is True
+
+    safe = captured["safe"]
+    assert isinstance(safe, dict)
+    queries = safe.get("queries")
+    assert isinstance(queries, list)
+    history_text = "\n".join(
+        str(q.get("content", {}).get("text", ""))
+        for q in queries
+        if isinstance(q, dict) and str(q.get("role") or "").strip() == "history"
+    )
+    assert "before intro" not in history_text
+    assert "after intro" in history_text
+
+
 def test_filter_current_whatsapp_history_requires_ts_when_cutoff_active(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1580,6 +1644,90 @@ def test_filter_current_whatsapp_history_requires_ts_when_cutoff_active(
             "Siri",
             [{"role": "user", "content": "no timestamp"}],
         )
+
+
+@pytest.mark.asyncio
+async def test_conversation_turn_rejects_manual_prompt_override_when_cutoff_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+    monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: 100.0)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Siri", "conversation_id": "whatsapp:dm:15133278228"},
+        "message": "hello",
+        "history": [{"role": "user", "content": "hello", "ts_ms": 101_000}],
+        "prompt_override_payload": {
+            "user_prompt": "before intro\nhello",
+            "system_prompt": "system",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "retrieve_rag": {"items": [], "categories": [], "resources": []},
+        },
+    }
+
+    with pytest.raises(main.HTTPException, match="conversation_retrieve"):
+        await main.conversation_turn("whatsapp:dm:15133278228", payload)
+
+
+@pytest.mark.asyncio
+async def test_conversation_turn_accepts_generated_prompt_with_matching_cutoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Cutoff.db"
+
+    class _FakeSvc:
+        async def chat(self, *_args, **_kwargs) -> str:
+            return (
+                '{"cache":null,"annulments":[],"rehearsal":"ok",'
+                '"response_target":"respond","response":"after intro"}'
+            )
+
+    async def _fake_persist_annulment_memories(**_kwargs):
+        return []
+
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+    monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: 100.0)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        main,
+        "_turn_state_read",
+        lambda *_a, **_k: (
+            {"digest_cursor": 0},
+            None,
+            db_path,
+            [],
+            {"items": []},
+            0,
+            None,
+        ),
+    )
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
+    monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Siri", "conversation_id": "whatsapp:dm:15133278228"},
+        "message": "hello",
+        "history": [{"role": "user", "content": "hello", "ts_ms": 101_000}],
+        "prompt_override_payload": {
+            "user_prompt": "after intro\nhello",
+            "system_prompt": "system",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "retrieve_rag": {"items": [], "categories": [], "resources": []},
+            "generated_by": "conversation_retrieve",
+            "active_since": 100.0,
+        },
+    }
+
+    out = await main.conversation_turn("whatsapp:dm:15133278228", payload)
+
+    assert out["ok"] is True
+    assert out["response"] == "after intro"
 
 
 @pytest.mark.asyncio

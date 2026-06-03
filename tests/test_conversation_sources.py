@@ -627,6 +627,26 @@ def test_load_soul_active_since_reads_hermes_state_db(tmp_path: Path) -> None:
     assert conversation_sources.load_soul_active_since(soul_id="Echo", state_db_path=state_db_path) is None
 
 
+def test_load_soul_active_since_rejects_invalid_existing_value(tmp_path: Path) -> None:
+    state_db_path = tmp_path / "state.db"
+    con = sqlite3.connect(state_db_path)
+    try:
+        con.execute("CREATE TABLE souls (soul_id TEXT PRIMARY KEY, active_since REAL NOT NULL)")
+        con.execute(
+            "INSERT INTO souls (soul_id, active_since) VALUES (?, ?)",
+            ("Siri", "2026-06-03T00:00:00Z"),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    with pytest.raises(RuntimeError, match="invalid active_since"):
+        conversation_sources.load_soul_active_since(
+            soul_id="Siri",
+            state_db_path=state_db_path,
+        )
+
+
 def test_load_whatsapp_tail_dm_unions_phone_and_lid_sessions(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)

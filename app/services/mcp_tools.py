@@ -141,10 +141,15 @@ async def memu_turn_endpoint(
         "memory_cache": retrieve_out.get("memory_cache") or [],
         "intentions_active": retrieve_out.get("intentions_active") or {"items": []},
         "retrieve_rag": retrieve_out.get("result") or {"categories": [], "items": [], "resources": []},
+        "generated_by": retrieve_out.get("turn_prompt_source") or "conversation_retrieve",
     }
     retrieve_ms = retrieve_out.get("retrieve_ms")
     if isinstance(retrieve_ms, (int, float)):
         prompt_override_payload["retrieve_ms"] = int(retrieve_ms)
+    if retrieve_out.get("turn_prompt_active_since") is not None:
+        prompt_override_payload["active_since"] = retrieve_out.get("turn_prompt_active_since")
+    if retrieve_out.get("cross_conversation_history"):
+        prompt_override_payload["cross_conversation_history"] = retrieve_out.get("cross_conversation_history")
 
     turn_payload: dict[str, Any] = {
         "user": scope,
