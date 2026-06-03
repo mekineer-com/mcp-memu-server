@@ -72,7 +72,7 @@ Schema:
   "response":"string"
 }}
 
-Rules:
+My Protocol:
 - JSON only; no extra text at all.
 - cache.entry: One sentence, two if necessary.
 - annulments may be empty.
