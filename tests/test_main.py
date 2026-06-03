@@ -1503,6 +1503,86 @@ async def test_conversation_retrieve_uses_payload_history_for_primary_chat_queri
 
 
 @pytest.mark.asyncio
+async def test_conversation_retrieve_filters_whatsapp_history_before_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Siri.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:dm:15133278228", 0, None),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+    )
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+    monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: 100.0)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        captured["safe"] = safe
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Siri"},
+        "message": "new",
+        "query": "new",
+        "history": [
+            {"role": "user", "name": "Marcos", "content": "before intro", "ts_ms": 99_000},
+            {"role": "user", "name": "Marcos", "content": "at intro", "ts_ms": 100_000},
+            {"role": "user", "name": "Marcos", "content": "after intro", "ts_ms": 101_000},
+        ],
+    }
+
+    out = await main.conversation_retrieve("whatsapp:dm:15133278228", payload)
+    assert out["ok"] is True
+
+    safe = captured["safe"]
+    assert isinstance(safe, dict)
+    filtered_history = safe.get("history")
+    assert isinstance(filtered_history, list)
+    assert [row.get("content") for row in filtered_history] == ["at intro", "after intro"]
+    queries = safe.get("queries")
+    assert isinstance(queries, list)
+    history_text = "\n".join(
+        str(q.get("content", {}).get("text", ""))
+        for q in queries
+        if isinstance(q, dict) and str(q.get("role") or "").strip() == "history"
+    )
+    assert "before intro" not in history_text
+    assert "at intro" in history_text
+    assert "after intro" in history_text
+
+
+def test_filter_current_whatsapp_history_requires_ts_when_cutoff_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+    monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: 100.0)
+
+    with pytest.raises(main.HTTPException, match="missing ts_ms"):
+        main._filter_current_whatsapp_history_for_soul(
+            "whatsapp:dm:15133278228",
+            "Siri",
+            [{"role": "user", "content": "no timestamp"}],
+        )
+
+
+@pytest.mark.asyncio
 async def test_conversation_retrieve_uses_same_payload_history_for_turn_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -200,12 +200,18 @@ def _load_background_rollup_tail(
     storage_dir, hermes_home_path, sessions_index_path, state_db_path = _resolve_cross_source_paths()
     source_label = _message_log.derive_source_label(conversation_id)
     if source_label.startswith("whatsapp:"):
+        active_since = _load_soul_active_since(
+            soul_id,
+            hermes_home_path=hermes_home_path,
+            state_db_path=state_db_path,
+        )
         tail = _conversation_sources.load_whatsapp_tail_after_message_id(
             conversation_id=conversation_id,
             after_message_id=rolling_summary_cursor_id,
             hermes_home=hermes_home_path,
             sessions_index_path=sessions_index_path,
             state_db_path=state_db_path,
+            min_timestamp=active_since,
         )
         _stamp_assistant_display_name(tail, soul_id)
         return tail
@@ -1798,6 +1804,49 @@ def _resolve_cross_source_paths() -> tuple[Path, Path | None, Path | None, Path 
     return _get_storage_dir(_CONFIG), hermes_home_path, sessions_index_path, state_db_path
 
 
+def _load_soul_active_since(
+    soul_id: str,
+    *,
+    hermes_home_path: Path | None,
+    state_db_path: Path | None,
+) -> float | None:
+    return _conversation_sources.load_soul_active_since(
+        soul_id=soul_id,
+        hermes_home=hermes_home_path,
+        state_db_path=state_db_path,
+    )
+
+
+def _filter_current_whatsapp_history_for_soul(
+    conversation_id: str,
+    soul_id: str,
+    history: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not history or not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
+        return history
+    _storage_dir, hermes_home_path, _sessions_index_path, state_db_path = _resolve_cross_source_paths()
+    active_since = _load_soul_active_since(
+        soul_id,
+        hermes_home_path=hermes_home_path,
+        state_db_path=state_db_path,
+    )
+    if active_since is None:
+        return history
+
+    threshold_ms = active_since * 1000.0
+    out: list[dict[str, Any]] = []
+    for i, msg in enumerate(history):
+        ts_ms = msg.get("ts_ms")
+        if isinstance(ts_ms, bool) or not isinstance(ts_ms, (int, float)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"WhatsApp history row {i} is missing ts_ms for soul active_since cutoff",
+            )
+        if float(ts_ms) >= threshold_ms:
+            out.append(msg)
+    return out
+
+
 def _stamp_assistant_display_name(messages: list[dict[str, Any]], soul_name: str) -> None:
     display = str(soul_name or "").strip()
     if not display:
@@ -1829,6 +1878,11 @@ def _load_tail_for_source_conversation(
 ) -> list[dict[str, Any]]:
     source_label = _message_log.derive_source_label(conversation_id)
     if source_label.startswith("whatsapp:"):
+        active_since = _load_soul_active_since(
+            soul_id,
+            hermes_home_path=hermes_home_path,
+            state_db_path=state_db_path,
+        )
         return _conversation_sources.load_whatsapp_tail(
             conversation_id=conversation_id,
             since_cursor=since_cursor,
@@ -1836,6 +1890,7 @@ def _load_tail_for_source_conversation(
             hermes_home=hermes_home_path,
             sessions_index_path=sessions_index_path,
             state_db_path=state_db_path,
+            min_timestamp=active_since,
         )
     if source_label == "sillytavern":
         return _conversation_sources.load_sillytavern_tail(
@@ -1941,12 +1996,18 @@ def _load_cross_memorize_tails_from_sources(
             rolling_cursor_id = row["rolling_summary_cursor_id"]
             source_label = _message_log.derive_source_label(cid)
             if source_label.startswith("whatsapp:"):
+                active_since = _load_soul_active_since(
+                    soul_id,
+                    hermes_home_path=hermes_home_path,
+                    state_db_path=state_db_path,
+                )
                 tail = _conversation_sources.load_whatsapp_tail_after_message_id(
                     conversation_id=cid,
                     after_message_id=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
                     hermes_home=hermes_home_path,
                     sessions_index_path=sessions_index_path,
                     state_db_path=state_db_path,
+                    min_timestamp=active_since,
                 )
             elif source_label == "sillytavern":
                 tail = _conversation_sources.load_sillytavern_tail(
@@ -2779,6 +2840,8 @@ async def conversation_retrieve(
         soul_id = str(scope.get("soul_id") or "").strip()
         message = _pick_str(safe, "message", "query") or ""
         history = _normalize_turn_history(safe.get("history"))
+        history = _filter_current_whatsapp_history_for_soul(cid, soul_id, history)
+        safe["history"] = history
         _stamp_assistant_display_name(history, soul_id)
         state_row: dict[str, Any] | None = None
         cross_tail: list[dict[str, Any]] = []
@@ -3195,6 +3258,8 @@ async def conversation_turn(
             raise HTTPException(status_code=400, detail="message is required")
 
         history_full = _normalize_turn_history(safe.get("history"))
+        history_full = _filter_current_whatsapp_history_for_soul(cid, soul_id, history_full)
+        safe["history"] = history_full
         _stamp_assistant_display_name(history_full, soul_id)
         prompt_override_payload_raw = safe.get("prompt_override_payload")
         if not isinstance(prompt_override_payload_raw, dict):

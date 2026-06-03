@@ -49,6 +49,41 @@ def _load_sessions_index(path: Path) -> dict[str, Any]:
     return raw
 
 
+def load_soul_active_since(
+    *,
+    soul_id: str,
+    hermes_home: Path | None = None,
+    state_db_path: Path | None = None,
+) -> float | None:
+    selected = str(soul_id or "").strip()
+    if not selected:
+        return None
+    _sessions_path, db_path = _resolve_hermes_paths(
+        hermes_home=hermes_home,
+        state_db_path=state_db_path,
+    )
+    if not db_path.exists():
+        return None
+    con = sqlite3.connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT active_since FROM souls WHERE soul_id = ?",
+            (selected,),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return None
+        raise
+    finally:
+        con.close()
+    if row is None:
+        return None
+    try:
+        return float(row[0])
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_session_key_chat_token(session_key: str, *, chat_type: str) -> str:
     marker = f":whatsapp:{chat_type}:"
     idx = str(session_key).find(marker)
@@ -429,6 +464,7 @@ def load_whatsapp_tail(
     hermes_home: Path | None = None,
     sessions_index_path: Path | None = None,
     state_db_path: Path | None = None,
+    min_timestamp: float | None = None,
 ) -> list[dict[str, Any]]:
     sessions_path, db_path = _resolve_hermes_paths(
         hermes_home=hermes_home,
@@ -460,14 +496,22 @@ def load_whatsapp_tail(
     session_ids = _expand_session_ids_with_lineage(db_path, session_ids)
 
     placeholders = ",".join("?" for _ in session_ids)
+    where = (
+        f"session_id IN ({placeholders}) AND role IN ('user', 'assistant') "
+        "AND content IS NOT NULL AND TRIM(content) != ''"
+    )
+    params: list[Any] = list(session_ids)
+    if min_timestamp is not None:
+        where += " AND timestamp >= ?"
+        params.append(float(min_timestamp))
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     try:
         rows = con.execute(
             "SELECT id, session_id, role, content, timestamp, sender_id, sender_name FROM messages "
-            f"WHERE session_id IN ({placeholders}) AND role IN ('user', 'assistant') "
+            f"WHERE {where} "
             "ORDER BY timestamp ASC, id ASC",
-            session_ids,
+            params,
         ).fetchall()
     finally:
         con.close()
@@ -526,6 +570,7 @@ def load_whatsapp_tail_after_message_id(
     hermes_home: Path | None = None,
     sessions_index_path: Path | None = None,
     state_db_path: Path | None = None,
+    min_timestamp: float | None = None,
 ) -> list[dict[str, Any]]:
     sessions_path, db_path = _resolve_hermes_paths(
         hermes_home=hermes_home,
@@ -557,14 +602,22 @@ def load_whatsapp_tail_after_message_id(
 
     placeholders = ",".join("?" for _ in session_ids)
     cursor_id = int(after_message_id or 0)
+    where = (
+        f"session_id IN ({placeholders}) AND role IN ('user', 'assistant') AND id > ? "
+        "AND content IS NOT NULL AND TRIM(content) != ''"
+    )
+    params: list[Any] = [*session_ids, cursor_id]
+    if min_timestamp is not None:
+        where += " AND timestamp >= ?"
+        params.append(float(min_timestamp))
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     try:
         rows = con.execute(
             "SELECT id, session_id, role, content, timestamp, sender_id, sender_name FROM messages "
-            f"WHERE session_id IN ({placeholders}) AND role IN ('user', 'assistant') AND id > ? "
+            f"WHERE {where} "
             "ORDER BY timestamp ASC, id ASC",
-            [*session_ids, cursor_id],
+            params,
         ).fetchall()
     finally:
         con.close()

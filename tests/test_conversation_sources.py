@@ -461,12 +461,56 @@ def test_load_whatsapp_tail_since_cursor_handles_sparse_indices(tmp_path: Path) 
 
     rows = conversation_sources.load_whatsapp_tail(
         conversation_id="whatsapp:dm:15133278228",
-        since_cursor=1,
+        since_cursor=0,
         recent_fallback_messages=0,
         sessions_index_path=sessions_path,
         state_db_path=state_db_path,
     )
     assert [row["content"] for row in rows] == ["three"]
+    assert rows[0]["source_conversation_index"] == 1
+
+
+def test_load_whatsapp_tail_filters_by_min_timestamp_before_indexing(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:15133278228": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "15133278228@s.whatsapp.net",
+                        "chat_name": "Marcos",
+                        "user_name": "Marcos",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s1", "user", "before", 99.0),
+            ("s1", "assistant", "", 100.0),
+            ("s1", "user", "at-cutoff", 100.0),
+            ("s1", "user", "after", 101.0),
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+        min_timestamp=100.0,
+    )
+    assert [row["content"] for row in rows] == ["at-cutoff", "after"]
+    assert [row["source_conversation_index"] for row in rows] == [0, 1]
 
 
 def test_load_whatsapp_tail_after_message_id_filters_by_row_id(tmp_path: Path) -> None:
@@ -517,6 +561,70 @@ def test_load_whatsapp_tail_after_message_id_filters_by_row_id(tmp_path: Path) -
     )
     assert [row["content"] for row in rows] == ["three"]
     assert rows[0]["source_conversation_index"] > second_id
+
+
+def test_load_whatsapp_tail_after_message_id_filters_by_min_timestamp(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:15133278228": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "15133278228@s.whatsapp.net",
+                        "chat_name": "Marcos",
+                        "user_name": "Marcos",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s1", "user", "before", 99.0),
+            ("s1", "assistant", "", 100.0),
+            ("s1", "user", "at-cutoff", 100.0),
+            ("s1", "user", "after", 101.0),
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail_after_message_id(
+        conversation_id="whatsapp:dm:15133278228",
+        after_message_id=None,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+        min_timestamp=100.0,
+    )
+    assert [row["content"] for row in rows] == ["at-cutoff", "after"]
+
+
+def test_load_soul_active_since_reads_hermes_state_db(tmp_path: Path) -> None:
+    state_db_path = tmp_path / "state.db"
+    con = sqlite3.connect(state_db_path)
+    try:
+        con.execute("CREATE TABLE souls (soul_id TEXT PRIMARY KEY, active_since REAL NOT NULL)")
+        con.execute(
+            "INSERT INTO souls (soul_id, active_since) VALUES (?, ?)",
+            ("Siri", 100.0),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    assert (
+        conversation_sources.load_soul_active_since(
+            soul_id="Siri",
+            state_db_path=state_db_path,
+        )
+        == 100.0
+    )
+    assert conversation_sources.load_soul_active_since(soul_id="Echo", state_db_path=state_db_path) is None
 
 
 def test_load_whatsapp_tail_dm_unions_phone_and_lid_sessions(tmp_path: Path) -> None:
