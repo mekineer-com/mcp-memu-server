@@ -92,6 +92,28 @@ def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) ->
     assert [row["speaker"] for row in rows] == ["Marcos", "", "Raquel"]
 
 
+def test_pick_chat_name_dm_prefers_chat_name_over_shorter_user_name() -> None:
+    assert (
+        conversation_sources._pick_chat_name(
+            [{"chat_name": "Raquel Scarone", "user_name": "Marcos"}],
+            "fallback",
+            chat_type="dm",
+        )
+        == "Raquel Scarone"
+    )
+
+
+def test_pick_chat_name_dm_uses_user_name_when_chat_name_is_numeric() -> None:
+    assert (
+        conversation_sources._pick_chat_name(
+            [{"chat_name": "140063262396533", "user_name": "Raquel Scarone"}],
+            "fallback",
+            chat_type="dm",
+        )
+        == "Raquel Scarone"
+    )
+
+
 def test_load_whatsapp_tail_includes_parent_session_lineage(tmp_path: Path) -> None:
     sessions_path = tmp_path / "sessions.json"
     state_db_path = tmp_path / "state.db"

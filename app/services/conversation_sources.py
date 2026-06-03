@@ -190,16 +190,41 @@ def _resolve_hermes_base(
 
 
 def _pick_chat_name(entries: list[dict[str, Any]], fallback: str, *, chat_type: str) -> str:
+    def collect_names(keys: tuple[str, ...]) -> list[str]:
+        names: list[str] = []
+        seen: set[str] = set()
+        for entry in entries:
+            for key in keys:
+                value = str(entry.get(key) or "").strip()
+                if value and value not in seen:
+                    seen.add(value)
+                    names.append(value)
+        return names
+
+    if chat_type != "group":
+        chat_names = collect_names(("chat_name",))
+        non_numeric_chat_names = [name for name in chat_names if not _NUMERIC_LIKE_RE.fullmatch(name)]
+        if non_numeric_chat_names:
+            return min(non_numeric_chat_names, key=lambda name: (len(name), name))
+
+        user_names = collect_names(("user_name",))
+        non_numeric_user_names = [name for name in user_names if not _NUMERIC_LIKE_RE.fullmatch(name)]
+        if non_numeric_user_names:
+            return min(non_numeric_user_names, key=lambda name: (len(name), name))
+        if chat_names:
+            return min(chat_names, key=lambda name: (len(name), name))
+        if user_names:
+            return min(user_names, key=lambda name: (len(name), name))
+        return fallback
+
     names: list[str] = []
     seen: set[str] = set()
-    candidate_keys = ("chat_name",) if chat_type == "group" else ("chat_name", "user_name")
     for entry in entries:
-        for key in candidate_keys:
-            value = str(entry.get(key) or "").strip()
-            if value and value not in seen:
-                seen.add(value)
-                names.append(value)
-    if not names and chat_type == "group":
+        value = str(entry.get("chat_name") or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            names.append(value)
+    if not names:
         for entry in entries:
             value = str(entry.get("user_name") or "").strip()
             if value and value not in seen:
