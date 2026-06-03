@@ -21,7 +21,6 @@ class MemuTurnRequest(BaseModel):
     chat_name: str | None = None
     chat_type: str | None = None
     memorize_chat: bool | None = None
-    external_message_id: str | None = None
 
 
 class MemuRetrieveRequest(BaseModel):
@@ -169,9 +168,6 @@ async def memu_turn_endpoint(
         turn_payload["chat_type"] = chat_type
     if isinstance(req.memorize_chat, bool):
         turn_payload["memorize_chat"] = req.memorize_chat
-    if req.external_message_id:
-        turn_payload["external_message_id"] = req.external_message_id
-
     turn_out = await conversation_turn(conversation_id, turn_payload)
     response_target = str(turn_out.get("response_target") or "").strip().lower()
     if response_target not in {"respond", "listen", "private"}:

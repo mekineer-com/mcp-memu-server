@@ -14,6 +14,13 @@ from app import main
 from app.services import conversation_sources, crud_endpoints
 
 
+def _messages_table_exists(con: sqlite3.Connection) -> bool:
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
+    ).fetchone()
+    return row is not None
+
+
 def test_placeholder():
     assert True
 
@@ -465,11 +472,6 @@ def test_build_cross_conversation_payload_includes_background_rolling_summaries(
     finally:
         con.close()
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
-    monkeypatch.setattr(
-        main._message_log,
-        "read_background_rolling_summaries",
-        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("legacy helper should not run")),
-    )
     out = main._build_cross_conversation_payload(
         "whatsapp:dm:123",
         "u1",
@@ -1708,7 +1710,6 @@ async def test_conversation_turn_accepts_generated_prompt_with_matching_cutoff(
     monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
-
     payload = {
         "user": {"user_id": "u1", "soul_id": "Siri", "conversation_id": "whatsapp:dm:15133278228"},
         "message": "hello",
@@ -1883,10 +1884,7 @@ async def test_conversation_retrieve_does_not_persist_current_user_message(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """User message persistence is deferred to conversation_turn (paired with
-    the assistant response) so that aborted/inspected turns leave no orphan
-    rows in the messages table.
-    """
+    """Retrieve must not recreate the removed local chat warehouse table."""
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -1926,15 +1924,11 @@ async def test_conversation_retrieve_does_not_persist_current_user_message(
     con = main._sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        rows = con.execute(
-            "SELECT role, speaker, content FROM messages WHERE conversation_id = ?",
-            ("cid-current",),
-        ).fetchall()
+        has_messages_table = _messages_table_exists(con)
     finally:
         con.close()
 
-    # No rows should be persisted by retrieve alone: that is the orphan-prevention contract.
-    assert rows == []
+    assert has_messages_table is False
 
 
 @pytest.mark.asyncio
@@ -1982,13 +1976,10 @@ async def test_conversation_retrieve_writes_sillytavern_snapshot_not_messages_ta
     con = main._sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        rows = con.execute(
-            "SELECT role, speaker, chat_name, content FROM messages WHERE conversation_id = ? ORDER BY id ASC",
-            ("integrity:chat-1",),
-        ).fetchall()
+        has_messages_table = _messages_table_exists(con)
     finally:
         con.close()
-    assert rows == []
+    assert has_messages_table is False
 
     snapshot_rows = conversation_sources.load_sillytavern_tail(
         storage_dir=storage_dir,
@@ -2205,14 +2196,11 @@ async def test_conversation_turn_does_not_persist_messages_to_table(
     con = main._sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        rows = con.execute(
-            "SELECT role, speaker, content FROM messages WHERE conversation_id = ? ORDER BY id ASC",
-            ("cid-turn",),
-        ).fetchall()
+        has_messages_table = _messages_table_exists(con)
     finally:
         con.close()
 
-    assert rows == []
+    assert has_messages_table is False
 
 
 @pytest.mark.asyncio
@@ -2284,13 +2272,10 @@ async def test_conversation_turn_keeps_response_when_chat_name_differs(
     con = main._sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        rows = con.execute(
-            "SELECT role FROM messages WHERE conversation_id = ?",
-            ("cid-turn",),
-        ).fetchall()
+        has_messages_table = _messages_table_exists(con)
     finally:
         con.close()
-    assert rows == []
+    assert has_messages_table is False
 
 
 @pytest.mark.asyncio
@@ -2336,6 +2321,8 @@ async def test_conversation_turn_private_response_not_persisted_in_origin_chat(
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
 
+    monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
+
     payload = {
         "user": {"user_id": "u1", "soul_id": "Siri", "conversation_id": "whatsapp:dm:Raquel"},
         "message": "Hello Siri.",
@@ -2360,14 +2347,11 @@ async def test_conversation_turn_private_response_not_persisted_in_origin_chat(
     con = main._sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        rows = con.execute(
-            "SELECT role, speaker, content FROM messages WHERE conversation_id = ? ORDER BY id ASC",
-            ("whatsapp:dm:Raquel",),
-        ).fetchall()
+        has_messages_table = _messages_table_exists(con)
     finally:
         con.close()
 
-    assert rows == []
+    assert has_messages_table is False
 
 
 @pytest.mark.asyncio
