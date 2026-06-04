@@ -16,6 +16,10 @@ from app.services import memorize_endpoint
 _NUMERIC_LIKE_RE = re.compile(r"^[0-9+\-() .]+$")
 _ST_SNAPSHOT_FILE = "latest_history.json"
 _LID_MAPPING_FILE_RE = re.compile(r"^lid-mapping-(.+?)(?:_reverse)?\.json$")
+_GATEWAY_NOTICE_PREFIXES = (
+    "⚠️ Gateway shutting down — ",
+    "⚠️ Gateway restarting — ",
+)
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:
@@ -321,6 +325,11 @@ def _source_id_matches_any(source_message_id: str, expected_ids: set[str]) -> bo
     return bool(source and any(value == source or value in source for value in expected_ids))
 
 
+def _is_gateway_notice(content: str) -> bool:
+    text = str(content or "").strip()
+    return any(text.startswith(prefix) for prefix in _GATEWAY_NOTICE_PREFIXES)
+
+
 def load_whatsapp_assistant_source_message_ids(
     *,
     conversation_id: str,
@@ -469,7 +478,7 @@ def _web_source_row_to_tail(
     assistant_source_message_ids: set[str],
 ) -> dict[str, Any] | None:
     body = str(row["body"] or "").strip()
-    if not body:
+    if not body or _is_gateway_notice(body):
         return None
     resolved_chat_name = _contact_name(row, "chat") or chat_name
     from_me = bool(row["from_me"])
@@ -886,7 +895,7 @@ def load_whatsapp_tail(
             source_index = lineage_index
             lineage_index -= 1
         content = str(row["content"] or "").strip()
-        if not content:
+        if not content or _is_gateway_notice(content):
             continue
         role = str(row["role"] or "").strip().lower()
         speaker = ""
@@ -984,7 +993,7 @@ def load_whatsapp_tail_after_message_id(
     out: list[dict[str, Any]] = []
     for row in rows:
         content = str(row["content"] or "").strip()
-        if not content:
+        if not content or _is_gateway_notice(content):
             continue
         role = str(row["role"] or "").strip().lower()
         sid = str(row["session_id"] or "").strip()

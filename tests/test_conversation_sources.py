@@ -456,6 +456,33 @@ def test_load_whatsapp_web_source_tail_uses_assistant_source_message_ids(tmp_pat
     ]
 
 
+def test_load_whatsapp_web_source_tail_filters_gateway_notices(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(
+        web_db,
+        messages=[
+            {
+                "msg_key": "notice",
+                "timestamp": 100,
+                "body": "⚠️ Gateway shutting down — Your current task will be interrupted.",
+                "from_me": True,
+            },
+            {"msg_key": "real", "timestamp": 101, "body": "real message"},
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id="Siri",
+        reply_prefix="",
+        web_source_db_path=web_db,
+    )
+
+    assert [row["content"] for row in rows] == ["real message"]
+
+
 def test_load_whatsapp_assistant_source_message_ids_reads_state_db(tmp_path: Path) -> None:
     sessions_path = tmp_path / "sessions.json"
     state_db_path = tmp_path / "state.db"
@@ -498,6 +525,45 @@ def test_load_whatsapp_assistant_source_message_ids_reads_state_db(tmp_path: Pat
         sessions_index_path=sessions_path,
         state_db_path=state_db_path,
     ) == {"SENT-ID"}
+
+
+def test_load_whatsapp_tail_filters_gateway_notices(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:15133278228": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "15133278228@s.whatsapp.net",
+                        "user_name": "Marcos",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s1", "assistant", "⚠️ Gateway restarting — Your current task will be interrupted.", 100.0),
+            ("s1", "user", "real message", 101.0),
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    )
+
+    assert [row["content"] for row in rows] == ["real message"]
 
 
 def test_load_whatsapp_tail_includes_parent_session_lineage(tmp_path: Path) -> None:
