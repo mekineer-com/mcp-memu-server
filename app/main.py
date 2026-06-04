@@ -1974,6 +1974,7 @@ def _load_cross_tail_from_sources(
         cid = str(row["conversation_id"] or "").strip()
         if not cid or cid == excluded_id:
             continue
+        source_label = _message_log.derive_source_label(cid)
         cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
         try:
             tail = _load_tail_for_source_conversation(
@@ -1989,6 +1990,12 @@ def _load_cross_tail_from_sources(
             )
         except Exception as exc:
             logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)
+            is_web_source_whatsapp = (
+                source_label.startswith("whatsapp:")
+                and _resolve_whatsapp_source_config()[0] == "web_source"
+            )
+            if is_web_source_whatsapp:
+                raise RuntimeError(f"WhatsApp web_source read failed for {cid}: {exc}") from exc
             continue
         _stamp_assistant_display_name(tail, soul_id)
         all_messages.extend(tail)
@@ -2099,6 +2106,12 @@ def _load_cross_memorize_tails_from_sources(
             tails[cid] = tail
         except Exception as exc:
             logger.error("cross-memorize source read failed for conversation_id=%s: %s", cid, exc)
+            is_web_source_whatsapp = (
+                _message_log.derive_source_label(cid).startswith("whatsapp:")
+                and _resolve_whatsapp_source_config()[0] == "web_source"
+            )
+            if is_web_source_whatsapp:
+                raise RuntimeError(f"WhatsApp web_source read failed for {cid}: {exc}") from exc
             continue
     return tails
 

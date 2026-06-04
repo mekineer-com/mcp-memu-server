@@ -89,7 +89,7 @@ def default_config() -> dict[str, Any]:
         },
         "hermes": {
             "home": str(home / ".hermes"),
-            "whatsapp_history_source": "hermes_state",
+            "whatsapp_history_source": "web_source",
             "whatsapp_web_source_db": str(home / ".hermes" / "whatsapp" / "web_source.db"),
             "whatsapp_reply_prefix": "",
         },

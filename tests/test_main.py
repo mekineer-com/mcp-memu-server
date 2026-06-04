@@ -14,6 +14,19 @@ from app import main
 from app.services import conversation_sources, crud_endpoints
 
 
+def _use_hermes_state_whatsapp(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(
+        main._CONFIG,
+        "hermes",
+        {
+            "home": "~/.hermes",
+            "whatsapp_history_source": "hermes_state",
+            "whatsapp_web_source_db": "~/.hermes/whatsapp/web_source.db",
+            "whatsapp_reply_prefix": "",
+        },
+    )
+
+
 def _messages_table_exists(con: sqlite3.Connection) -> bool:
     row = con.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
@@ -491,6 +504,7 @@ def test_build_cross_conversation_payload_preserves_listen_only_cursor_semantics
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _use_hermes_state_whatsapp(monkeypatch)
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -804,6 +818,7 @@ async def test_build_cross_conversation_payload_queues_background_rollup_for_lis
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _use_hermes_state_whatsapp(monkeypatch)
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -961,6 +976,7 @@ def test_load_cross_tail_from_sources_reads_whatsapp_conversations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _use_hermes_state_whatsapp(monkeypatch)
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -999,6 +1015,47 @@ def test_load_cross_tail_from_sources_reads_whatsapp_conversations(
         con.close()
     assert len(rows) == 1
     assert rows[0]["content"] == "hi"
+
+
+def test_load_cross_tail_from_sources_fails_loud_for_broken_web_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:dm:15133278228", 0, "2026-05-01T00:00:00+00:00"),
+        )
+        con.commit()
+        monkeypatch.setitem(
+            main._CONFIG,
+            "hermes",
+            {
+                "home": "~/.hermes",
+                "whatsapp_history_source": "web_source",
+                "whatsapp_web_source_db": "~/.hermes/whatsapp/web_source.db",
+                "whatsapp_reply_prefix": "",
+            },
+        )
+        monkeypatch.setattr(
+            main,
+            "_load_tail_for_source_conversation",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("broken web source")),
+        )
+
+        with pytest.raises(RuntimeError, match="WhatsApp web_source read failed"):
+            main._load_cross_tail_from_sources(
+                con,
+                user_id="u1",
+                soul_id="Echo",
+                exclude_conversation_id="",
+            )
+    finally:
+        con.close()
 
 
 def test_turn_state_read_marks_background_error_when_source_assembly_fails(
