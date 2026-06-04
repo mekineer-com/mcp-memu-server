@@ -316,6 +316,65 @@ def _expand_session_ids_with_lineage(db_path: Path, session_ids: list[str]) -> l
         con.close()
 
 
+def _source_id_matches_any(source_message_id: str, expected_ids: set[str]) -> bool:
+    source = str(source_message_id or "").strip()
+    return bool(source and any(value == source or value in source for value in expected_ids))
+
+
+def load_whatsapp_assistant_source_message_ids(
+    *,
+    conversation_id: str,
+    hermes_home: Path | None = None,
+    sessions_index_path: Path | None = None,
+    state_db_path: Path | None = None,
+) -> set[str]:
+    sessions_path, db_path = _resolve_hermes_paths(
+        hermes_home=hermes_home,
+        sessions_index_path=sessions_index_path,
+        state_db_path=state_db_path,
+    )
+    if not sessions_path.exists() or not db_path.exists():
+        return set()
+    base_home = _resolve_hermes_base(hermes_home=hermes_home, sessions_path=sessions_path)
+    alias_graph = _load_whatsapp_alias_graph(session_dir=(base_home / "whatsapp" / "session"))
+    entries, _chat_type = _collect_whatsapp_session_entries(
+        _load_sessions_index(sessions_path),
+        conversation_id=conversation_id,
+        alias_graph=alias_graph,
+    )
+    session_ids = [
+        sid
+        for entry in entries
+        if (sid := str(entry.get("session_id") or "").strip())
+    ]
+    session_ids = _expand_session_ids_with_lineage(db_path, session_ids)
+    if not session_ids:
+        return set()
+
+    placeholders = ",".join("?" for _ in session_ids)
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    try:
+        columns = {
+            str(row[1])
+            for row in con.execute("PRAGMA table_info(messages)").fetchall()
+            if len(row) > 1
+        }
+        if "source_message_id" not in columns:
+            return set()
+        rows = con.execute(
+            f"SELECT source_message_id FROM messages "
+            f"WHERE session_id IN ({placeholders}) AND role = 'assistant' "
+            "AND source_message_id IS NOT NULL AND TRIM(source_message_id) != ''",
+            session_ids,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return set()
+    finally:
+        con.close()
+    return {str(row["source_message_id"] or "").strip() for row in rows if str(row["source_message_id"] or "").strip()}
+
+
 def _to_iso_utc(value: Any) -> str:
     try:
         ts = float(value)
@@ -339,9 +398,12 @@ def _resolve_whatsapp_row_speaker(
     return str(session_user_name or "").strip()
 
 
-def _strip_soul_prefix(body: str, soul_id: str) -> tuple[bool, str]:
+def _strip_soul_prefix(body: str, soul_id: str, reply_prefix: str = "") -> tuple[bool, str]:
     text = str(body or "")
     soul = str(soul_id or "").strip()
+    prefix = str(reply_prefix or "").replace("\\n", "\n")
+    if prefix.strip() and text.startswith(prefix):
+        return True, text[len(prefix):].strip()
     if not soul:
         return False, text
     escaped = re.escape(soul)
@@ -354,15 +416,6 @@ def _strip_soul_prefix(body: str, soul_id: str) -> tuple[bool, str]:
         if match:
             return True, text[match.end():].strip()
     return False, text
-
-
-def _validate_whatsapp_reply_prefix(*, soul_id: str, reply_prefix: str) -> None:
-    prefix = str(reply_prefix or "").replace("\\n", "\n")
-    if not prefix.strip():
-        raise RuntimeError("web_source WhatsApp reads require hermes.whatsapp_reply_prefix")
-    matched, stripped = _strip_soul_prefix(f"{prefix}probe", soul_id)
-    if not matched or stripped != "probe":
-        raise RuntimeError("hermes.whatsapp_reply_prefix must match soul_id for web_source WhatsApp reads")
 
 
 def _contact_name(row: sqlite3.Row, prefix: str) -> str:
@@ -412,13 +465,18 @@ def _web_source_row_to_tail(
     chat_type: str,
     chat_name: str,
     soul_id: str,
+    reply_prefix: str,
+    assistant_source_message_ids: set[str],
 ) -> dict[str, Any] | None:
     body = str(row["body"] or "").strip()
     if not body:
         return None
     resolved_chat_name = _contact_name(row, "chat") or chat_name
     from_me = bool(row["from_me"])
-    is_soul, stripped = _strip_soul_prefix(body, soul_id)
+    source_message_id = str(row["msg_key"] or "")
+    is_soul = _source_id_matches_any(source_message_id, assistant_source_message_ids)
+    prefix_is_soul, stripped = _strip_soul_prefix(body, soul_id, reply_prefix)
+    is_soul = is_soul or prefix_is_soul
     if from_me and is_soul:
         role = "assistant"
         content = stripped or body
@@ -435,7 +493,7 @@ def _web_source_row_to_tail(
             speaker = _normalize_whatsapp_identifier(str(row["author_id"] or row["from_id"] or ""))
     return {
         "id": int(row["rowid"]),
-        "source_message_id": str(row["msg_key"] or ""),
+        "source_message_id": source_message_id,
         "role": role,
         "speaker": speaker,
         "chat_name": resolved_chat_name,
@@ -459,6 +517,7 @@ def load_whatsapp_web_source_tail(
     web_source_db_path: Path | None = None,
     min_timestamp: float | None = None,
     max_messages: int | None = None,
+    assistant_source_message_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     return _load_whatsapp_web_source_tail(
         conversation_id=conversation_id,
@@ -471,6 +530,7 @@ def load_whatsapp_web_source_tail(
         web_source_db_path=web_source_db_path,
         min_timestamp=min_timestamp,
         max_messages=max_messages,
+        assistant_source_message_ids=assistant_source_message_ids,
     )
 
 
@@ -483,6 +543,7 @@ def load_whatsapp_web_source_tail_after_rowid(
     hermes_home: Path | None = None,
     web_source_db_path: Path | None = None,
     min_timestamp: float | None = None,
+    assistant_source_message_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     return _load_whatsapp_web_source_tail(
         conversation_id=conversation_id,
@@ -495,6 +556,7 @@ def load_whatsapp_web_source_tail_after_rowid(
         web_source_db_path=web_source_db_path,
         min_timestamp=min_timestamp,
         max_messages=None,
+        assistant_source_message_ids=assistant_source_message_ids,
     )
 
 
@@ -510,8 +572,8 @@ def _load_whatsapp_web_source_tail(
     web_source_db_path: Path | None,
     min_timestamp: float | None,
     max_messages: int | None,
+    assistant_source_message_ids: set[str] | None,
 ) -> list[dict[str, Any]]:
-    _validate_whatsapp_reply_prefix(soul_id=soul_id, reply_prefix=reply_prefix)
     db_path = _web_source_db_path(hermes_home=hermes_home, web_source_db_path=web_source_db_path)
     if not db_path.exists():
         raise FileNotFoundError(f"WhatsApp web_source db missing: {db_path}")
@@ -575,6 +637,11 @@ def _load_whatsapp_web_source_tail(
         con.close()
 
     chat_name = str(conversation_id).split(":", 2)[-1].strip() or "contact"
+    assistant_ids = {
+        str(value or "").strip()
+        for value in (assistant_source_message_ids or set())
+        if str(value or "").strip()
+    }
     all_rows = [
         item
         for row in rows
@@ -584,6 +651,8 @@ def _load_whatsapp_web_source_tail(
             chat_type=chat_type,
             chat_name=chat_name,
             soul_id=soul_id,
+            reply_prefix=reply_prefix,
+            assistant_source_message_ids=assistant_ids,
         ))
     ]
     if cursor_is_rowid:

@@ -401,19 +401,103 @@ def test_load_whatsapp_web_source_tail_max_messages_returns_newest_in_order(tmp_
     assert [row["content"] for row in rows] == ["two", "three"]
 
 
-def test_load_whatsapp_web_source_tail_rejects_unmatched_prefix(tmp_path: Path) -> None:
+def test_load_whatsapp_web_source_tail_does_not_require_matching_prefix(tmp_path: Path) -> None:
     web_db = tmp_path / "web_source.db"
-    _write_web_source_db(web_db, messages=[])
+    _write_web_source_db(
+        web_db,
+        messages=[
+            {
+                "msg_key": "from-me-no-prefix",
+                "timestamp": 100,
+                "body": "plain from me",
+                "from_me": True,
+            },
+        ],
+    )
 
-    with pytest.raises(RuntimeError, match="reply_prefix"):
-        conversation_sources.load_whatsapp_web_source_tail(
-            conversation_id="whatsapp:dm:15133278228",
-            since_cursor=-1,
-            recent_fallback_messages=0,
-            soul_id="Siri",
-            reply_prefix="⚕ *Hermes Agent*",
-            web_source_db_path=web_db,
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id="Siri",
+        reply_prefix="⚕ *Hermes Agent*",
+        web_source_db_path=web_db,
+    )
+
+    assert [(row["role"], row["content"]) for row in rows] == [("user", "plain from me")]
+
+
+def test_load_whatsapp_web_source_tail_uses_assistant_source_message_ids(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(
+        web_db,
+        messages=[
+            {
+                "msg_key": "true_15133278228_c_us_SENT-ID",
+                "timestamp": 100,
+                "body": "plain sent reply",
+                "from_me": True,
+            },
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id="Siri",
+        reply_prefix="",
+        web_source_db_path=web_db,
+        assistant_source_message_ids={"SENT-ID"},
+    )
+
+    assert [(row["role"], row["speaker"], row["content"]) for row in rows] == [
+        ("assistant", "Siri", "plain sent reply")
+    ]
+
+
+def test_load_whatsapp_assistant_source_message_ids_reads_state_db(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:15133278228": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "15133278228@s.whatsapp.net",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    con = sqlite3.connect(state_db_path)
+    try:
+        con.execute(
+            "CREATE TABLE messages ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, "
+            "content TEXT, source_message_id TEXT)"
         )
+        con.executemany(
+            "INSERT INTO messages (session_id, role, content, source_message_id) VALUES (?, ?, ?, ?)",
+            [
+                ("s1", "assistant", "sent", "SENT-ID"),
+                ("s1", "user", "inbound", "USER-ID"),
+            ],
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    assert conversation_sources.load_whatsapp_assistant_source_message_ids(
+        conversation_id="whatsapp:dm:15133278228",
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    ) == {"SENT-ID"}
 
 
 def test_load_whatsapp_tail_includes_parent_session_lineage(tmp_path: Path) -> None:
