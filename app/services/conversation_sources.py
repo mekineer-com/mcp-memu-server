@@ -327,6 +327,8 @@ def _source_id_matches_any(source_message_id: str, expected_ids: set[str]) -> bo
 
 def _is_gateway_notice(content: str) -> bool:
     text = str(content or "").strip()
+    text = re.sub(r"^\s*(?:✦\s*)?\*{0,2}[^:\[\]\n]{1,80}\*{0,2}\s*:\s*", "", text)
+    text = re.sub(r"^\s*\[[^\]\n]{1,80}\]\s*", "", text)
     return any(text.startswith(prefix) for prefix in _GATEWAY_NOTICE_PREFIXES)
 
 

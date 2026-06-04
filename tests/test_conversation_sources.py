@@ -464,7 +464,7 @@ def test_load_whatsapp_web_source_tail_filters_gateway_notices(tmp_path: Path) -
             {
                 "msg_key": "notice",
                 "timestamp": 100,
-                "body": "⚠️ Gateway shutting down — Your current task will be interrupted.",
+                "body": "✦ *Siri*: ⚠️ Gateway shutting down — Your current task will be interrupted.",
                 "from_me": True,
             },
             {"msg_key": "real", "timestamp": 101, "body": "real message"},
@@ -551,6 +551,7 @@ def test_load_whatsapp_tail_filters_gateway_notices(tmp_path: Path) -> None:
         state_db_path,
         [
             ("s1", "assistant", "⚠️ Gateway restarting — Your current task will be interrupted.", 100.0),
+            ("s1", "assistant", "✦ *Siri*: ⚠️ Gateway shutting down — Your current task will be interrupted.", 100.5),
             ("s1", "user", "real message", 101.0),
         ],
     )
