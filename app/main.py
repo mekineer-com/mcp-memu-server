@@ -205,6 +205,19 @@ def _load_background_rollup_tail(
             hermes_home_path=hermes_home_path,
             state_db_path=state_db_path,
         )
+        whatsapp_source, web_source_db_path, reply_prefix = _resolve_whatsapp_source_config()
+        if whatsapp_source == "web_source":
+            tail = _conversation_sources.load_whatsapp_web_source_tail_after_rowid(
+                conversation_id=conversation_id,
+                after_rowid=rolling_summary_cursor_id,
+                soul_id=soul_id,
+                reply_prefix=reply_prefix,
+                hermes_home=hermes_home_path,
+                web_source_db_path=web_source_db_path,
+                min_timestamp=active_since,
+            )
+            _stamp_assistant_display_name(tail, soul_id)
+            return tail
         tail = _conversation_sources.load_whatsapp_tail_after_message_id(
             conversation_id=conversation_id,
             after_message_id=rolling_summary_cursor_id,
@@ -1804,6 +1817,19 @@ def _resolve_cross_source_paths() -> tuple[Path, Path | None, Path | None, Path 
     return _get_storage_dir(_CONFIG), hermes_home_path, sessions_index_path, state_db_path
 
 
+def _resolve_whatsapp_source_config() -> tuple[str, Path | None, str]:
+    hermes_cfg = _CONFIG.get("hermes") if isinstance(_CONFIG.get("hermes"), dict) else {}
+    source = str(hermes_cfg.get("whatsapp_history_source") or "hermes_state").strip().lower()
+    if source in {"state_db", "hermes_state"}:
+        source = "hermes_state"
+    elif source != "web_source":
+        raise RuntimeError(f"unsupported hermes.whatsapp_history_source: {source!r}")
+    db_raw = str(hermes_cfg.get("whatsapp_web_source_db") or "").strip()
+    db_path = Path(db_raw).expanduser().resolve() if db_raw else None
+    reply_prefix = str(hermes_cfg.get("whatsapp_reply_prefix") or "")
+    return source, db_path, reply_prefix
+
+
 def _load_soul_active_since(
     soul_id: str,
     *,
@@ -1898,6 +1924,18 @@ def _load_tail_for_source_conversation(
             hermes_home_path=hermes_home_path,
             state_db_path=state_db_path,
         )
+        whatsapp_source, web_source_db_path, reply_prefix = _resolve_whatsapp_source_config()
+        if whatsapp_source == "web_source":
+            return _conversation_sources.load_whatsapp_web_source_tail(
+                conversation_id=conversation_id,
+                since_cursor=since_cursor,
+                recent_fallback_messages=recent_fallback_messages,
+                soul_id=soul_id,
+                reply_prefix=reply_prefix,
+                hermes_home=hermes_home_path,
+                web_source_db_path=web_source_db_path,
+                min_timestamp=active_since,
+            )
         return _conversation_sources.load_whatsapp_tail(
             conversation_id=conversation_id,
             since_cursor=since_cursor,
@@ -2016,14 +2054,26 @@ def _load_cross_memorize_tails_from_sources(
                     hermes_home_path=hermes_home_path,
                     state_db_path=state_db_path,
                 )
-                tail = _conversation_sources.load_whatsapp_tail_after_message_id(
-                    conversation_id=cid,
-                    after_message_id=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
-                    hermes_home=hermes_home_path,
-                    sessions_index_path=sessions_index_path,
-                    state_db_path=state_db_path,
-                    min_timestamp=active_since,
-                )
+                whatsapp_source, web_source_db_path, reply_prefix = _resolve_whatsapp_source_config()
+                if whatsapp_source == "web_source":
+                    tail = _conversation_sources.load_whatsapp_web_source_tail_after_rowid(
+                        conversation_id=cid,
+                        after_rowid=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
+                        soul_id=soul_id,
+                        reply_prefix=reply_prefix,
+                        hermes_home=hermes_home_path,
+                        web_source_db_path=web_source_db_path,
+                        min_timestamp=active_since,
+                    )
+                else:
+                    tail = _conversation_sources.load_whatsapp_tail_after_message_id(
+                        conversation_id=cid,
+                        after_message_id=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
+                        hermes_home=hermes_home_path,
+                        sessions_index_path=sessions_index_path,
+                        state_db_path=state_db_path,
+                        min_timestamp=active_since,
+                    )
             elif source_label == "sillytavern":
                 tail = _conversation_sources.load_sillytavern_tail(
                     storage_dir=storage_dir,

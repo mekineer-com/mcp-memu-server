@@ -328,6 +328,240 @@ def _resolve_whatsapp_row_speaker(
     return str(session_user_name or "").strip()
 
 
+def _strip_soul_prefix(body: str, soul_id: str) -> tuple[bool, str]:
+    text = str(body or "")
+    soul = str(soul_id or "").strip()
+    if not soul:
+        return False, text
+    escaped = re.escape(soul)
+    patterns = [
+        rf"^\s*(?:✦\s*)?\*{{0,2}}{escaped}\*{{0,2}}\s*:\s*",
+        rf"^\s*\[{escaped}\]\s*",
+    ]
+    for pattern in patterns:
+        match = re.match(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return True, text[match.end():].strip()
+    return False, text
+
+
+def _validate_whatsapp_reply_prefix(*, soul_id: str, reply_prefix: str) -> None:
+    prefix = str(reply_prefix or "").replace("\\n", "\n")
+    if not prefix.strip():
+        raise RuntimeError("web_source WhatsApp reads require hermes.whatsapp_reply_prefix")
+    matched, stripped = _strip_soul_prefix(f"{prefix}probe", soul_id)
+    if not matched or stripped != "probe":
+        raise RuntimeError("hermes.whatsapp_reply_prefix must match soul_id for web_source WhatsApp reads")
+
+
+def _contact_name(row: sqlite3.Row, prefix: str) -> str:
+    for suffix in ("short_name", "name", "push_name", "verified_name"):
+        key = f"{prefix}_{suffix}"
+        value = row[key] if key in row.keys() else None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _web_source_db_path(*, hermes_home: Path | None, web_source_db_path: Path | None) -> Path:
+    if web_source_db_path is not None:
+        return web_source_db_path.expanduser().resolve()
+    base = (hermes_home or Path(os.getenv("HERMES_HOME") or "~/.hermes")).expanduser().resolve()
+    return base / "whatsapp" / "web_source.db"
+
+
+def _web_source_chat_match(
+    conversation_id: str,
+    *,
+    hermes_home: Path | None,
+) -> tuple[str, set[str], str]:
+    cid = str(conversation_id or "").strip()
+    if cid.startswith("whatsapp:group:"):
+        chat_type = "group"
+        target = cid[len("whatsapp:group:") :]
+    elif cid.startswith("whatsapp:dm:"):
+        chat_type = "dm"
+        target = cid[len("whatsapp:dm:") :]
+    else:
+        return "", set(), ""
+    target_local = _normalize_whatsapp_identifier(target)
+    if chat_type == "dm":
+        base = (hermes_home or Path(os.getenv("HERMES_HOME") or "~/.hermes")).expanduser().resolve()
+        alias_graph = _load_whatsapp_alias_graph(session_dir=(base / "whatsapp" / "session"))
+        locals_ = _expand_whatsapp_aliases(target_local, alias_graph=alias_graph) or {target_local}
+    else:
+        locals_ = {target_local}
+    return target, {value for value in locals_ if value}, chat_type
+
+
+def _web_source_row_to_tail(
+    row: sqlite3.Row,
+    *,
+    conversation_id: str,
+    chat_type: str,
+    chat_name: str,
+    soul_id: str,
+) -> dict[str, Any] | None:
+    body = str(row["body"] or "").strip()
+    if not body:
+        return None
+    resolved_chat_name = _contact_name(row, "chat") or chat_name
+    from_me = bool(row["from_me"])
+    is_soul, stripped = _strip_soul_prefix(body, soul_id)
+    if from_me and is_soul:
+        role = "assistant"
+        content = stripped or body
+        speaker = soul_id
+    else:
+        role = "user"
+        content = body
+        speaker = ""
+        if row["author_id"]:
+            speaker = _contact_name(row, "author")
+        if not speaker and row["from_id"]:
+            speaker = _contact_name(row, "from")
+        if not speaker:
+            speaker = _normalize_whatsapp_identifier(str(row["author_id"] or row["from_id"] or ""))
+    return {
+        "id": int(row["rowid"]),
+        "role": role,
+        "speaker": speaker,
+        "chat_name": resolved_chat_name,
+        "content": content,
+        "source_label": f"whatsapp:{chat_type}",
+        "received_at": _to_iso_utc(row["timestamp"]),
+        "conversation_id": conversation_id,
+        "source_conversation_id": conversation_id,
+        "source_conversation_index": int(row["rowid"]),
+    }
+
+
+def load_whatsapp_web_source_tail(
+    *,
+    conversation_id: str,
+    since_cursor: int,
+    recent_fallback_messages: int,
+    soul_id: str,
+    reply_prefix: str,
+    hermes_home: Path | None = None,
+    web_source_db_path: Path | None = None,
+    min_timestamp: float | None = None,
+) -> list[dict[str, Any]]:
+    return _load_whatsapp_web_source_tail(
+        conversation_id=conversation_id,
+        cursor=int(since_cursor),
+        cursor_is_rowid=False,
+        recent_fallback_messages=recent_fallback_messages,
+        soul_id=soul_id,
+        reply_prefix=reply_prefix,
+        hermes_home=hermes_home,
+        web_source_db_path=web_source_db_path,
+        min_timestamp=min_timestamp,
+    )
+
+
+def load_whatsapp_web_source_tail_after_rowid(
+    *,
+    conversation_id: str,
+    after_rowid: int | None,
+    soul_id: str,
+    reply_prefix: str,
+    hermes_home: Path | None = None,
+    web_source_db_path: Path | None = None,
+    min_timestamp: float | None = None,
+) -> list[dict[str, Any]]:
+    return _load_whatsapp_web_source_tail(
+        conversation_id=conversation_id,
+        cursor=int(after_rowid or 0),
+        cursor_is_rowid=True,
+        recent_fallback_messages=0,
+        soul_id=soul_id,
+        reply_prefix=reply_prefix,
+        hermes_home=hermes_home,
+        web_source_db_path=web_source_db_path,
+        min_timestamp=min_timestamp,
+    )
+
+
+def _load_whatsapp_web_source_tail(
+    *,
+    conversation_id: str,
+    cursor: int,
+    cursor_is_rowid: bool,
+    recent_fallback_messages: int,
+    soul_id: str,
+    reply_prefix: str,
+    hermes_home: Path | None,
+    web_source_db_path: Path | None,
+    min_timestamp: float | None,
+) -> list[dict[str, Any]]:
+    _validate_whatsapp_reply_prefix(soul_id=soul_id, reply_prefix=reply_prefix)
+    db_path = _web_source_db_path(hermes_home=hermes_home, web_source_db_path=web_source_db_path)
+    if not db_path.exists():
+        raise FileNotFoundError(f"WhatsApp web_source db missing: {db_path}")
+    target, local_ids, chat_type = _web_source_chat_match(conversation_id, hermes_home=hermes_home)
+    if not chat_type or not local_ids:
+        return []
+
+    where = [
+        "m.revoked = 0",
+        "m.body IS NOT NULL",
+        "trim(m.body) != ''",
+        f"(m.chat_id = ? OR m.chat_local_id IN ({','.join('?' for _ in local_ids)}))",
+    ]
+    params: list[Any] = [target, *sorted(local_ids)]
+    if cursor_is_rowid:
+        where.append("m.rowid > ?")
+        params.append(int(cursor))
+    if min_timestamp is not None:
+        where.append("m.timestamp >= ?")
+        params.append(float(min_timestamp))
+
+    sql = f"""
+        SELECT
+          m.rowid, m.msg_key, m.chat_id, m.from_me, m.timestamp, m.body,
+          m.author_id, m.from_id,
+          cc.name AS chat_name, cc.short_name AS chat_short_name,
+          cc.push_name AS chat_push_name, cc.verified_name AS chat_verified_name,
+          ca.name AS author_name, ca.short_name AS author_short_name,
+          ca.push_name AS author_push_name, ca.verified_name AS author_verified_name,
+          cf.name AS from_name, cf.short_name AS from_short_name,
+          cf.push_name AS from_push_name, cf.verified_name AS from_verified_name
+        FROM whatsapp_messages m
+        LEFT JOIN whatsapp_contacts cc ON cc.contact_id = m.chat_id
+        LEFT JOIN whatsapp_contacts ca ON ca.contact_id = m.author_id
+        LEFT JOIN whatsapp_contacts cf ON cf.contact_id = m.from_id
+        WHERE {" AND ".join(where)}
+        ORDER BY m.timestamp ASC, m.rowid ASC
+    """
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute(sql, params).fetchall()
+    finally:
+        con.close()
+
+    chat_name = str(conversation_id).split(":", 2)[-1].strip() or "contact"
+    all_rows = [
+        item
+        for row in rows
+        if (item := _web_source_row_to_tail(
+            row,
+            conversation_id=conversation_id,
+            chat_type=chat_type,
+            chat_name=chat_name,
+            soul_id=soul_id,
+        ))
+    ]
+    if cursor_is_rowid:
+        return all_rows
+    return _slice_tail_with_floor(
+        all_rows,
+        since_cursor=cursor,
+        recent_fallback_messages=recent_fallback_messages,
+    )
+
+
 def _slice_tail_with_floor(
     all_rows: Sequence[dict[str, Any]],
     *,

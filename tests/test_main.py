@@ -692,6 +692,54 @@ def test_build_cross_conversation_payload_uses_max_nonnegative_cursor_for_lineag
     assert out["_final_cursors"]["whatsapp:dm:bg-chat"] == 1
 
 
+def test_load_tail_for_source_conversation_uses_web_source_when_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setitem(
+        main._CONFIG,
+        "hermes",
+        {
+            "whatsapp_history_source": "web_source",
+            "whatsapp_web_source_db": str(tmp_path / "web_source.db"),
+            "whatsapp_reply_prefix": "✦ *Siri*: ",
+        },
+    )
+    monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: 100.0)
+
+    def _fake_web_tail(**kwargs):
+        captured.update(kwargs)
+        return [
+            {
+                "role": "assistant",
+                "speaker": "Siri",
+                "content": "from web source",
+                "source_conversation_index": 12,
+            }
+        ]
+
+    monkeypatch.setattr(main._conversation_sources, "load_whatsapp_web_source_tail", _fake_web_tail)
+
+    rows = main._load_tail_for_source_conversation(
+        conversation_id="whatsapp:dm:15133278228",
+        user_id="u1",
+        soul_id="Siri",
+        since_cursor=10,
+        recent_fallback_messages=0,
+        storage_dir=tmp_path,
+        hermes_home_path=tmp_path / ".hermes",
+        sessions_index_path=None,
+        state_db_path=None,
+    )
+
+    assert rows[0]["content"] == "from web source"
+    assert captured["since_cursor"] == 10
+    assert captured["soul_id"] == "Siri"
+    assert captured["reply_prefix"] == "✦ *Siri*: "
+    assert captured["min_timestamp"] == 100.0
+
+
 def test_build_cross_conversation_payload_does_not_advance_cursor_for_parent_only_tail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

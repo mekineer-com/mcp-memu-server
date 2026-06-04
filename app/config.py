@@ -87,6 +87,12 @@ def default_config() -> dict[str, Any]:
             },
             "sqlite_dir": str(sqlite_path.parent),
         },
+        "hermes": {
+            "home": str(home / ".hermes"),
+            "whatsapp_history_source": "hermes_state",
+            "whatsapp_web_source_db": str(home / ".hermes" / "whatsapp" / "web_source.db"),
+            "whatsapp_reply_prefix": "",
+        },
         "categories": {
             "defaults": ["personal_info", "preferences", "relationships", "goals"],
             "max_total": 12,

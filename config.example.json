@@ -41,6 +41,12 @@
     },
     "sqlite_dir": "./sqlite"
   },
+  "hermes": {
+    "home": "~/.hermes",
+    "whatsapp_history_source": "hermes_state",
+    "whatsapp_web_source_db": "~/.hermes/whatsapp/web_source.db",
+    "whatsapp_reply_prefix": ""
+  },
   "mcp": {
     "http_path": "/mcp",
     "sse_path": "/sse"

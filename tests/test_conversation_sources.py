@@ -52,6 +52,97 @@ def _write_sessions_table(path: Path, rows: list[tuple[str, str | None]]) -> Non
         con.close()
 
 
+def _write_web_source_db(path: Path, *, messages: list[dict], contacts: list[dict] | None = None) -> None:
+    con = sqlite3.connect(path)
+    try:
+        con.executescript(
+            """
+            CREATE TABLE whatsapp_messages (
+              msg_key TEXT PRIMARY KEY,
+              chat_id TEXT NOT NULL,
+              chat_local_id TEXT NOT NULL,
+              from_me INTEGER NOT NULL,
+              timestamp INTEGER NOT NULL,
+              type TEXT NOT NULL,
+              body TEXT,
+              author_id TEXT,
+              author_local_id TEXT,
+              from_id TEXT,
+              from_local_id TEXT,
+              to_id TEXT,
+              to_local_id TEXT,
+              has_media INTEGER NOT NULL DEFAULT 0,
+              media_placeholder TEXT,
+              ack INTEGER,
+              revoked INTEGER NOT NULL DEFAULT 0,
+              revoke_source TEXT,
+              source TEXT NOT NULL,
+              first_seen_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              raw_json TEXT NOT NULL
+            );
+            CREATE TABLE whatsapp_contacts (
+              contact_id TEXT PRIMARY KEY,
+              contact_local_id TEXT NOT NULL,
+              name TEXT,
+              short_name TEXT,
+              push_name TEXT,
+              verified_name TEXT,
+              is_me INTEGER NOT NULL DEFAULT 0,
+              is_user INTEGER NOT NULL DEFAULT 0,
+              is_group INTEGER NOT NULL DEFAULT 0,
+              raw_json TEXT,
+              updated_at INTEGER NOT NULL
+            );
+            """
+        )
+        for contact in contacts or []:
+            con.execute(
+                """
+                INSERT INTO whatsapp_contacts (
+                  contact_id, contact_local_id, name, short_name, push_name, verified_name, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    contact["contact_id"],
+                    contact["contact_local_id"],
+                    contact.get("name"),
+                    contact.get("short_name"),
+                    contact.get("push_name"),
+                    contact.get("verified_name"),
+                ),
+            )
+        for msg in messages:
+            chat_id = msg.get("chat_id", "15133278228@c.us")
+            from_id = msg.get("from_id", "15133278228@c.us")
+            author_id = msg.get("author_id")
+            timestamp = int(msg["timestamp"])
+            con.execute(
+                """
+                INSERT INTO whatsapp_messages (
+                  msg_key, chat_id, chat_local_id, from_me, timestamp, type, body,
+                  author_id, author_local_id, from_id, from_local_id, to_id, to_local_id,
+                  has_media, source, first_seen_at, updated_at, raw_json
+                ) VALUES (?, ?, ?, ?, ?, 'chat', ?, ?, '', ?, '', null, '', 0, 'test', ?, ?, '{}')
+                """,
+                (
+                    msg["msg_key"],
+                    chat_id,
+                    chat_id.split("@", 1)[0],
+                    int(bool(msg.get("from_me"))),
+                    timestamp,
+                    msg.get("body", ""),
+                    author_id,
+                    from_id,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+
 def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) -> None:
     sessions_path = tmp_path / "sessions.json"
     state_db_path = tmp_path / "state.db"
@@ -112,6 +203,104 @@ def test_pick_chat_name_dm_uses_user_name_when_chat_name_is_numeric() -> None:
         )
         == "Raquel Scarone"
     )
+
+
+def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(
+        web_db,
+        contacts=[
+            {
+                "contact_id": "15133278228@c.us",
+                "contact_local_id": "15133278228",
+                "name": "Raquel Chat",
+                "short_name": "Raquel Chat",
+            },
+            {
+                "contact_id": "140063262396533@lid",
+                "contact_local_id": "140063262396533",
+                "name": "Raquel Scarone",
+                "short_name": "Raquel",
+            }
+        ],
+        messages=[
+            {
+                "msg_key": "old",
+                "timestamp": 99,
+                "body": "before active_since",
+                "author_id": "140063262396533@lid",
+                "from_id": "140063262396533@lid",
+            },
+            {
+                "msg_key": "inbound",
+                "timestamp": 100,
+                "body": "hi Siri",
+                "author_id": "140063262396533@lid",
+                "from_id": "140063262396533@lid",
+            },
+            {
+                "msg_key": "siri",
+                "timestamp": 101,
+                "body": "✦ *Siri*: hi back",
+                "from_me": True,
+                "from_id": "15133278228@c.us",
+            },
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id="Siri",
+        reply_prefix="✦ *Siri*: ",
+        web_source_db_path=web_db,
+        min_timestamp=100,
+    )
+
+    assert [(row["role"], row["speaker"], row["content"]) for row in rows] == [
+        ("user", "Raquel", "hi Siri"),
+        ("assistant", "Siri", "hi back"),
+    ]
+    assert {row["chat_name"] for row in rows} == {"Raquel Chat"}
+    assert [row["source_conversation_index"] for row in rows] == [2, 3]
+
+
+def test_load_whatsapp_web_source_tail_after_rowid_uses_monotonic_cursor(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(
+        web_db,
+        messages=[
+            {"msg_key": "one", "timestamp": 100, "body": "one"},
+            {"msg_key": "two", "timestamp": 101, "body": "two"},
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_web_source_tail_after_rowid(
+        conversation_id="whatsapp:dm:15133278228",
+        after_rowid=1,
+        soul_id="Siri",
+        reply_prefix="✦ *Siri*: ",
+        web_source_db_path=web_db,
+    )
+
+    assert [row["content"] for row in rows] == ["two"]
+    assert rows[0]["source_conversation_index"] == 2
+
+
+def test_load_whatsapp_web_source_tail_rejects_unmatched_prefix(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(web_db, messages=[])
+
+    with pytest.raises(RuntimeError, match="reply_prefix"):
+        conversation_sources.load_whatsapp_web_source_tail(
+            conversation_id="whatsapp:dm:15133278228",
+            since_cursor=-1,
+            recent_fallback_messages=0,
+            soul_id="Siri",
+            reply_prefix="⚕ *Hermes Agent*",
+            web_source_db_path=web_db,
+        )
 
 
 def test_load_whatsapp_tail_includes_parent_session_lineage(tmp_path: Path) -> None:
