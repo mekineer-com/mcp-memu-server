@@ -75,6 +75,7 @@ def test_current_whatsapp_history_uses_configured_web_source_and_filters_current
     assert captured["since_cursor"] == -1
     assert captured["recent_fallback_messages"] == 0
     assert captured["min_timestamp"] == 1780160400.0
+    assert captured["max_messages"] == 250
 
 
 def test_normalize_turn_history_preserves_source_speaker_and_received_at() -> None:

@@ -458,6 +458,7 @@ def load_whatsapp_web_source_tail(
     hermes_home: Path | None = None,
     web_source_db_path: Path | None = None,
     min_timestamp: float | None = None,
+    max_messages: int | None = None,
 ) -> list[dict[str, Any]]:
     return _load_whatsapp_web_source_tail(
         conversation_id=conversation_id,
@@ -469,6 +470,7 @@ def load_whatsapp_web_source_tail(
         hermes_home=hermes_home,
         web_source_db_path=web_source_db_path,
         min_timestamp=min_timestamp,
+        max_messages=max_messages,
     )
 
 
@@ -492,6 +494,7 @@ def load_whatsapp_web_source_tail_after_rowid(
         hermes_home=hermes_home,
         web_source_db_path=web_source_db_path,
         min_timestamp=min_timestamp,
+        max_messages=None,
     )
 
 
@@ -506,6 +509,7 @@ def _load_whatsapp_web_source_tail(
     hermes_home: Path | None,
     web_source_db_path: Path | None,
     min_timestamp: float | None,
+    max_messages: int | None,
 ) -> list[dict[str, Any]]:
     _validate_whatsapp_reply_prefix(soul_id=soul_id, reply_prefix=reply_prefix)
     db_path = _web_source_db_path(hermes_home=hermes_home, web_source_db_path=web_source_db_path)
@@ -529,7 +533,12 @@ def _load_whatsapp_web_source_tail(
         where.append("m.timestamp >= ?")
         params.append(float(min_timestamp))
 
-    sql = f"""
+    limit_tail = (
+        max(1, int(max_messages))
+        if max_messages is not None and not cursor_is_rowid and cursor < 0 and recent_fallback_messages <= 0
+        else None
+    )
+    select_sql = f"""
         SELECT
           m.rowid, m.msg_key, m.chat_id, m.from_me, m.timestamp, m.body,
           m.author_id, m.from_id,
@@ -544,8 +553,20 @@ def _load_whatsapp_web_source_tail(
         LEFT JOIN whatsapp_contacts ca ON ca.contact_id = m.author_id
         LEFT JOIN whatsapp_contacts cf ON cf.contact_id = m.from_id
         WHERE {" AND ".join(where)}
-        ORDER BY m.timestamp ASC, m.rowid ASC
     """
+    if limit_tail is not None:
+        sql = f"""
+            SELECT *
+            FROM (
+              {select_sql}
+              ORDER BY m.timestamp DESC, m.rowid DESC
+              LIMIT ?
+            )
+            ORDER BY timestamp ASC, rowid ASC
+        """
+        params.append(limit_tail)
+    else:
+        sql = f"{select_sql} ORDER BY m.timestamp ASC, m.rowid ASC"
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
     try:
@@ -713,6 +734,7 @@ def load_whatsapp_tail(
     sessions_index_path: Path | None = None,
     state_db_path: Path | None = None,
     min_timestamp: float | None = None,
+    max_messages: int | None = None,
 ) -> list[dict[str, Any]]:
     sessions_path, db_path = _resolve_hermes_paths(
         hermes_home=hermes_home,
@@ -752,17 +774,31 @@ def load_whatsapp_tail(
     if min_timestamp is not None:
         where += " AND timestamp >= ?"
         params.append(float(min_timestamp))
+    limit_tail = (
+        max(1, int(max_messages))
+        if max_messages is not None and since_cursor < 0 and recent_fallback_messages <= 0
+        else None
+    )
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     try:
         source_message_id_select = _messages_source_message_id_select(con)
-        rows = con.execute(
+        select_sql = (
             "SELECT id, session_id, role, content, timestamp, sender_id, sender_name, "
             f"{source_message_id_select} FROM messages "
-            f"WHERE {where} "
-            "ORDER BY timestamp ASC, id ASC",
-            params,
-        ).fetchall()
+            f"WHERE {where}"
+        )
+        if limit_tail is not None:
+            rows = con.execute(
+                f"SELECT * FROM ({select_sql} ORDER BY timestamp DESC, id DESC LIMIT ?) "
+                "ORDER BY timestamp ASC, id ASC",
+                [*params, limit_tail],
+            ).fetchall()
+        else:
+            rows = con.execute(
+                f"{select_sql} ORDER BY timestamp ASC, id ASC",
+                params,
+            ).fetchall()
     finally:
         con.close()
 

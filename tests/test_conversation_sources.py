@@ -232,6 +232,46 @@ def test_load_whatsapp_tail_preserves_state_db_source_message_id(tmp_path: Path)
     assert rows[0]["source_message_id"] == "BAILEYS-1"
 
 
+def test_load_whatsapp_tail_max_messages_returns_newest_in_order(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps({
+            "agent:main:whatsapp:dm:140063262396533@lid": {
+                "session_id": "s1",
+                "platform": "whatsapp",
+                "origin": {
+                    "platform": "whatsapp",
+                    "chat_type": "dm",
+                    "chat_id": "140063262396533@lid",
+                    "chat_name": "Raquel",
+                    "user_name": "Raquel",
+                },
+            }
+        }),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s1", "user", "one", 100.0),
+            ("s1", "user", "two", 101.0),
+            ("s1", "user", "three", 102.0),
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:dm:140063262396533",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+        max_messages=2,
+    )
+
+    assert [row["content"] for row in rows] == ["two", "three"]
+
+
 def test_pick_chat_name_dm_prefers_chat_name_over_shorter_user_name() -> None:
     assert (
         conversation_sources._pick_chat_name(
@@ -335,6 +375,30 @@ def test_load_whatsapp_web_source_tail_after_rowid_uses_monotonic_cursor(tmp_pat
 
     assert [row["content"] for row in rows] == ["two"]
     assert rows[0]["source_conversation_index"] == 2
+
+
+def test_load_whatsapp_web_source_tail_max_messages_returns_newest_in_order(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(
+        web_db,
+        messages=[
+            {"msg_key": "one", "timestamp": 100, "body": "one"},
+            {"msg_key": "two", "timestamp": 101, "body": "two"},
+            {"msg_key": "three", "timestamp": 102, "body": "three"},
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id="Siri",
+        reply_prefix="✦ *Siri*: ",
+        web_source_db_path=web_db,
+        max_messages=2,
+    )
+
+    assert [row["content"] for row in rows] == ["two", "three"]
 
 
 def test_load_whatsapp_web_source_tail_rejects_unmatched_prefix(tmp_path: Path) -> None:

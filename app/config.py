@@ -91,6 +91,7 @@ def default_config() -> dict[str, Any]:
             "home": str(home / ".hermes"),
             "whatsapp_history_source": "web_source",
             "whatsapp_web_source_db": str(home / ".hermes" / "whatsapp" / "web_source.db"),
+            "whatsapp_history_limit": 250,
             "whatsapp_reply_prefix": "",
         },
         "categories": {
