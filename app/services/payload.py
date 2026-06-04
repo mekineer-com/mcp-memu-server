@@ -222,7 +222,7 @@ def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
             continue
         role = _pick_str(item, "role") or "unknown"
         content = _pick_str(item, "content")
-        name = _pick_str(item, "name")
+        name = _pick_str(item, "name", "speaker", "sender_name")
         message_id = _pick_str(item, "source_message_id", "message_id", "id", "mid") or str(idx)
         if not content:
             continue
@@ -232,6 +232,8 @@ def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
         ts_ms = _parse_turn_ts_ms(item.get("ts_ms"))
         if ts_ms is None:
             ts_ms = _parse_turn_ts_ms(item.get("timestamp"))
+        if ts_ms is None:
+            ts_ms = _parse_turn_ts_ms(item.get("received_at"))
         if ts_ms is not None:
             item_out["ts_ms"] = ts_ms
         out.append(item_out)

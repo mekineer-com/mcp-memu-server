@@ -1888,6 +1888,52 @@ def _filter_current_whatsapp_history_for_soul(
     return out
 
 
+def _source_id_matches_external(source_id: Any, external_message_id: Any) -> bool:
+    source = str(source_id or "").strip()
+    external = str(external_message_id or "").strip()
+    return bool(source and external and (source == external or external in source))
+
+
+def _load_current_whatsapp_history_from_source(
+    conversation_id: str,
+    soul_id: str,
+    *,
+    active_since: float | None,
+    external_message_id: Any = None,
+) -> list[dict[str, Any]] | None:
+    if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
+        return None
+    _storage_dir, hermes_home_path, sessions_index_path, state_db_path = _resolve_cross_source_paths()
+    whatsapp_source, web_source_db_path, reply_prefix = _resolve_whatsapp_source_config()
+    if whatsapp_source == "web_source":
+        rows = _conversation_sources.load_whatsapp_web_source_tail(
+            conversation_id=conversation_id,
+            since_cursor=-1,
+            recent_fallback_messages=0,
+            soul_id=soul_id,
+            reply_prefix=reply_prefix,
+            hermes_home=hermes_home_path,
+            web_source_db_path=web_source_db_path,
+            min_timestamp=active_since,
+        )
+    else:
+        rows = _conversation_sources.load_whatsapp_tail(
+            conversation_id=conversation_id,
+            since_cursor=-1,
+            recent_fallback_messages=0,
+            hermes_home=hermes_home_path,
+            sessions_index_path=sessions_index_path,
+            state_db_path=state_db_path,
+            min_timestamp=active_since,
+        )
+    if not external_message_id:
+        return rows
+    return [
+        row for row in rows
+        if not _source_id_matches_external(row.get("source_message_id"), external_message_id)
+    ]
+
+
 def _stamp_assistant_display_name(messages: list[dict[str, Any]], soul_name: str) -> None:
     display = str(soul_name or "").strip()
     if not display:
@@ -2919,6 +2965,15 @@ async def conversation_retrieve(
         message = _pick_str(safe, "message", "query") or ""
         current_whatsapp_active_since = _current_whatsapp_active_since_for_soul(cid, soul_id)
         history = _normalize_turn_history(safe.get("history"))
+        if bool(safe.get("load_source_history")):
+            source_history = _load_current_whatsapp_history_from_source(
+                cid,
+                soul_id,
+                active_since=current_whatsapp_active_since,
+                external_message_id=safe.get("external_message_id"),
+            )
+            if source_history is not None:
+                history = _normalize_turn_history(source_history)
         history = _filter_current_whatsapp_history_for_soul(
             cid,
             soul_id,
@@ -3360,6 +3415,15 @@ async def conversation_turn(
 
         current_whatsapp_active_since = _current_whatsapp_active_since_for_soul(cid, soul_id)
         history_full = _normalize_turn_history(safe.get("history"))
+        if bool(safe.get("load_source_history")):
+            source_history = _load_current_whatsapp_history_from_source(
+                cid,
+                soul_id,
+                active_since=current_whatsapp_active_since,
+                external_message_id=safe.get("external_message_id"),
+            )
+            if source_history is not None:
+                history_full = _normalize_turn_history(source_history)
         history_full = _filter_current_whatsapp_history_for_soul(
             cid,
             soul_id,

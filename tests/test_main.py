@@ -38,6 +38,66 @@ def test_placeholder():
     assert True
 
 
+def test_current_whatsapp_history_uses_configured_web_source_and_filters_current(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        main,
+        "_resolve_cross_source_paths",
+        lambda: (tmp_path, tmp_path / ".hermes", None, tmp_path / "state.db"),
+    )
+    monkeypatch.setattr(
+        main,
+        "_resolve_whatsapp_source_config",
+        lambda: ("web_source", tmp_path / "web_source.db", "✦ *Siri*: "),
+    )
+
+    captured: dict[str, Any] = {}
+
+    def _fake_web_tail(**kwargs):
+        captured.update(kwargs)
+        return [
+            {"source_message_id": "before", "role": "user", "content": "before"},
+            {"source_message_id": "true_chat_CURRENT_me", "role": "user", "content": "current"},
+        ]
+
+    monkeypatch.setattr(main._conversation_sources, "load_whatsapp_web_source_tail", _fake_web_tail)
+
+    rows = main._load_current_whatsapp_history_from_source(
+        "whatsapp:dm:15133278228",
+        "Siri",
+        active_since=1780160400.0,
+        external_message_id="CURRENT",
+    )
+
+    assert [row["content"] for row in rows or []] == ["before"]
+    assert captured["since_cursor"] == -1
+    assert captured["recent_fallback_messages"] == 0
+    assert captured["min_timestamp"] == 1780160400.0
+
+
+def test_normalize_turn_history_preserves_source_speaker_and_received_at() -> None:
+    rows = main._normalize_turn_history([
+        {
+            "role": "user",
+            "speaker": "Raquel",
+            "content": "hi",
+            "received_at": "2026-05-30T17:00:00+00:00",
+        }
+    ])
+
+    assert rows == [
+        {
+            "role": "user",
+            "content": "hi",
+            "message_id": "0",
+            "name": "Raquel",
+            "ts_ms": 1780160400000,
+        }
+    ]
+
+
 def test_stamp_assistant_display_name_applies_only_when_missing():
     rows = [
         {"role": "assistant", "content": "a"},

@@ -21,6 +21,7 @@ class MemuTurnRequest(BaseModel):
     chat_name: str | None = None
     chat_type: str | None = None
     memorize_chat: bool | None = None
+    external_message_id: str | None = None
 
 
 class MemuRetrieveRequest(BaseModel):
@@ -106,6 +107,7 @@ async def memu_turn_endpoint(
     user_name = str(req.user_name or "").strip()
     chat_name = str(req.chat_name or "").strip()
     chat_type = str(req.chat_type or "").strip()
+    load_source_history = conversation_id.startswith("whatsapp:")
     retrieve_payload: dict[str, Any] = {
         "user": scope,
         "message": message,
@@ -115,6 +117,8 @@ async def memu_turn_endpoint(
         "debug": bool(req.debug),
         "trace_id": trace_id,
     }
+    if load_source_history:
+        retrieve_payload["load_source_history"] = True
     if user_name:
         retrieve_payload["user_name"] = user_name
     if req.soul_card:
@@ -127,6 +131,8 @@ async def memu_turn_endpoint(
         retrieve_payload["chat_type"] = chat_type
     if isinstance(req.memorize_chat, bool):
         retrieve_payload["memorize_chat"] = req.memorize_chat
+    if req.external_message_id:
+        retrieve_payload["external_message_id"] = str(req.external_message_id)
 
     retrieve_out = await conversation_retrieve(conversation_id, retrieve_payload)
     turn_user_prompt = str(retrieve_out.get("turn_user_prompt") or "").strip()
@@ -158,6 +164,8 @@ async def memu_turn_endpoint(
         "debug": bool(req.debug),
         "trace_id": trace_id,
     }
+    if load_source_history:
+        turn_payload["load_source_history"] = True
     if user_name:
         turn_payload["user_name"] = user_name
     if req.soul_card:
@@ -168,6 +176,8 @@ async def memu_turn_endpoint(
         turn_payload["chat_type"] = chat_type
     if isinstance(req.memorize_chat, bool):
         turn_payload["memorize_chat"] = req.memorize_chat
+    if req.external_message_id:
+        turn_payload["external_message_id"] = str(req.external_message_id)
     turn_out = await conversation_turn(conversation_id, turn_payload)
     response_target = str(turn_out.get("response_target") or "").strip().lower()
     if response_target not in {"respond", "listen", "private"}:

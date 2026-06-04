@@ -86,6 +86,17 @@ def load_soul_active_since(
         ) from exc
 
 
+def _messages_source_message_id_select(con: sqlite3.Connection) -> str:
+    columns = {
+        str(row[1])
+        for row in con.execute("PRAGMA table_info(messages)").fetchall()
+        if len(row) > 1
+    }
+    if "source_message_id" in columns:
+        return "source_message_id"
+    return "NULL AS source_message_id"
+
+
 def _parse_session_key_chat_token(session_key: str, *, chat_type: str) -> str:
     marker = f":whatsapp:{chat_type}:"
     idx = str(session_key).find(marker)
@@ -424,6 +435,7 @@ def _web_source_row_to_tail(
             speaker = _normalize_whatsapp_identifier(str(row["author_id"] or row["from_id"] or ""))
     return {
         "id": int(row["rowid"]),
+        "source_message_id": str(row["msg_key"] or ""),
         "role": role,
         "speaker": speaker,
         "chat_name": resolved_chat_name,
@@ -743,8 +755,10 @@ def load_whatsapp_tail(
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     try:
+        source_message_id_select = _messages_source_message_id_select(con)
         rows = con.execute(
-            "SELECT id, session_id, role, content, timestamp, sender_id, sender_name FROM messages "
+            "SELECT id, session_id, role, content, timestamp, sender_id, sender_name, "
+            f"{source_message_id_select} FROM messages "
             f"WHERE {where} "
             "ORDER BY timestamp ASC, id ASC",
             params,
@@ -784,6 +798,7 @@ def load_whatsapp_tail(
                 "speaker": speaker,
                 "chat_name": chat_name,
                 "content": content,
+                "source_message_id": str(row["source_message_id"] or ""),
                 "source_label": source_label,
                 "received_at": _to_iso_utc(row["timestamp"]),
                 "conversation_id": conversation_id,
@@ -849,8 +864,10 @@ def load_whatsapp_tail_after_message_id(
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     try:
+        source_message_id_select = _messages_source_message_id_select(con)
         rows = con.execute(
-            "SELECT id, session_id, role, content, timestamp, sender_id, sender_name FROM messages "
+            "SELECT id, session_id, role, content, timestamp, sender_id, sender_name, "
+            f"{source_message_id_select} FROM messages "
             f"WHERE {where} "
             "ORDER BY timestamp ASC, id ASC",
             params,
@@ -881,6 +898,7 @@ def load_whatsapp_tail_after_message_id(
                 "speaker": speaker,
                 "chat_name": chat_name,
                 "content": content,
+                "source_message_id": str(row["source_message_id"] or ""),
                 "source_label": source_label,
                 "received_at": _to_iso_utc(row["timestamp"]),
                 "conversation_id": conversation_id,

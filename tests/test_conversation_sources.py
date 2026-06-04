@@ -183,6 +183,55 @@ def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) ->
     assert [row["speaker"] for row in rows] == ["Marcos", "", "Raquel"]
 
 
+def test_load_whatsapp_tail_preserves_state_db_source_message_id(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:140063262396533@lid": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "140063262396533@lid",
+                        "chat_name": "Raquel",
+                        "user_name": "Raquel",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    con = sqlite3.connect(state_db_path)
+    try:
+        con.execute(
+            "CREATE TABLE messages ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "session_id TEXT, role TEXT, content TEXT, timestamp REAL, "
+            "sender_id TEXT, sender_name TEXT, source_message_id TEXT)"
+        )
+        con.execute(
+            "INSERT INTO messages "
+            "(session_id, role, content, timestamp, sender_id, sender_name, source_message_id) "
+            "VALUES ('s1', 'user', 'hello', 100.0, NULL, 'Raquel', 'BAILEYS-1')"
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:dm:140063262396533",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    )
+
+    assert rows[0]["source_message_id"] == "BAILEYS-1"
+
+
 def test_pick_chat_name_dm_prefers_chat_name_over_shorter_user_name() -> None:
     assert (
         conversation_sources._pick_chat_name(

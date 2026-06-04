@@ -80,10 +80,12 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
     assert retrieve_payload.get("chat_name") == "Alice"
     assert retrieve_payload.get("chat_type") == "dm"
     assert retrieve_payload.get("memorize_chat") is False
+    assert "load_source_history" not in retrieve_payload
     assert turn_payload.get("user_name") == "Alice"
     assert turn_payload.get("chat_name") == "Alice"
     assert turn_payload.get("chat_type") == "dm"
     assert turn_payload.get("memorize_chat") is False
+    assert "load_source_history" not in turn_payload
     assert retrieve_payload.get("trace_id") == out.get("trace_id")
     assert turn_payload.get("trace_id") == out.get("trace_id")
     override_payload = turn_payload.get("prompt_override_payload")
@@ -92,6 +94,52 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
     assert override_payload.get("user_prompt") == "user"
     assert override_payload.get("generated_by") == "conversation_retrieve"
     assert override_payload.get("active_since") == 100.0
+
+
+@pytest.mark.asyncio
+async def test_memu_turn_requests_source_history_for_whatsapp() -> None:
+    captured: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def fake_retrieve(conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        captured.append(("retrieve", conversation_id, payload))
+        return {
+            "turn_system_prompt": "system",
+            "turn_user_prompt": "user",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "result": {"categories": [], "items": [], "resources": []},
+        }
+
+    async def fake_turn(conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        captured.append(("turn", conversation_id, payload))
+        return {
+            "ok": True,
+            "conversation_id": conversation_id,
+            "response": "done",
+            "response_target": "respond",
+            "apimw": "not_started",
+            "retrieve_ms": 1,
+            "turn_ms": 1,
+        }
+
+    await mcp_tools.memu_turn_endpoint(
+        mcp_tools.MemuTurnRequest(
+            conversation_id="whatsapp:dm:15133278228",
+            user_id="u1",
+            soul_id="Siri",
+            message="hello",
+            external_message_id="CURRENT",
+        ),
+        conversation_retrieve=fake_retrieve,
+        conversation_turn=fake_turn,
+    )
+
+    retrieve_payload = captured[0][2]
+    turn_payload = captured[1][2]
+    assert retrieve_payload["load_source_history"] is True
+    assert retrieve_payload["external_message_id"] == "CURRENT"
+    assert turn_payload["load_source_history"] is True
+    assert turn_payload["external_message_id"] == "CURRENT"
 
 
 @pytest.mark.asyncio
