@@ -815,6 +815,53 @@ def test_load_tail_for_source_conversation_uses_web_source_when_configured(
     assert captured["min_timestamp"] == 100.0
 
 
+def test_load_background_rollup_tail_uses_assistant_source_ids_for_web_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        main,
+        "_resolve_cross_source_paths",
+        lambda: (tmp_path, tmp_path / ".hermes", tmp_path / "sessions.json", tmp_path / "state.db"),
+    )
+    monkeypatch.setattr(
+        main,
+        "_resolve_whatsapp_source_config",
+        lambda: ("web_source", tmp_path / "web_source.db", "✦ *Echo*: "),
+    )
+    monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: 100.0)
+    monkeypatch.setattr(
+        main._conversation_sources,
+        "load_whatsapp_assistant_source_message_ids",
+        lambda **_kwargs: {"ASSISTANT-ID"},
+    )
+    captured: dict[str, Any] = {}
+
+    def _fake_tail(**kwargs):
+        captured.update(kwargs)
+        return [
+            {
+                "role": "assistant",
+                "content": "reply",
+                "source_conversation_index": 11,
+            }
+        ]
+
+    monkeypatch.setattr(main._conversation_sources, "load_whatsapp_web_source_tail_after_rowid", _fake_tail)
+
+    rows = main._load_background_rollup_tail(
+        conversation_id="whatsapp:dm:bg-chat",
+        user_id="u1",
+        soul_id="Echo",
+        rolling_summary_cursor_id=10,
+    )
+
+    assert rows[0]["speaker"] == "Echo"
+    assert captured["assistant_source_message_ids"] == {"ASSISTANT-ID"}
+    assert captured["after_rowid"] == 10
+    assert captured["min_timestamp"] == 100.0
+
+
 def test_build_cross_conversation_payload_does_not_advance_cursor_for_parent_only_tail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1886,6 +1933,217 @@ def test_filter_current_whatsapp_history_requires_ts_when_cutoff_active(
             "Siri",
             [{"role": "user", "content": "no timestamp"}],
         )
+
+
+@pytest.mark.asyncio
+async def test_live_conversation_retrieve_degrades_source_history_load_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Live.db"
+    monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+    )
+    monkeypatch.setattr(
+        main,
+        "_load_current_whatsapp_history_from_source",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("web source down")),
+    )
+    captured: dict[str, Any] = {}
+
+    async def _fake_run_retrieve(safe: dict[str, Any], *, conversation_id: str | None = None) -> dict[str, Any]:
+        captured["safe"] = safe
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    out = await main.conversation_retrieve(
+        "whatsapp:dm:live",
+        {
+            "user": {"user_id": "u1", "soul_id": "Echo"},
+            "message": "new",
+            "query": "new",
+            "history": [{"role": "user", "content": "payload history"}],
+            "load_source_history": True,
+            "is_live_turn": True,
+        },
+    )
+
+    assert out["ok"] is True
+    assert captured["safe"]["history"][0]["content"] == "payload history"
+
+
+@pytest.mark.asyncio
+async def test_non_live_conversation_retrieve_fails_on_source_history_load_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        main,
+        "_load_current_whatsapp_history_from_source",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("web source down")),
+    )
+
+    with pytest.raises(main.HTTPException) as exc:
+        await main.conversation_retrieve(
+            "whatsapp:dm:live",
+            {
+                "user": {"user_id": "u1", "soul_id": "Echo"},
+                "message": "new",
+                "query": "new",
+                "load_source_history": True,
+            },
+        )
+    assert exc.value.status_code == 500
+
+
+@pytest.mark.asyncio
+async def test_live_conversation_retrieve_degrades_active_since_filter_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Live.db"
+    monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: 100.0)
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+    )
+    captured: dict[str, Any] = {}
+
+    async def _fake_run_retrieve(safe: dict[str, Any], *, conversation_id: str | None = None) -> dict[str, Any]:
+        captured["safe"] = safe
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    out = await main.conversation_retrieve(
+        "whatsapp:dm:live",
+        {
+            "user": {"user_id": "u1", "soul_id": "Echo"},
+            "message": "new",
+            "query": "new",
+            "history": [
+                {"role": "user", "content": "missing timestamp"},
+                {"role": "user", "content": "in scope", "ts_ms": 101_000},
+            ],
+            "is_live_turn": True,
+        },
+    )
+
+    assert out["ok"] is True
+    assert [row["content"] for row in captured["safe"]["history"]] == ["in scope"]
+
+
+def _patch_turn_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: Path,
+    captured: dict[str, Any],
+) -> None:
+    class _FakeSvc:
+        async def chat(self, *_args, **_kwargs) -> str:
+            return (
+                '{"cache":null,"annulments":[],"rehearsal":"ok",'
+                '"response_target":"respond","response":"ok"}'
+            )
+
+    async def _fake_persist_annulment_memories(**_kwargs):
+        return []
+
+    def _fake_turn_state_read(
+        _cid: str,
+        _uid: str,
+        _soul_id: str,
+        safe: dict[str, Any],
+        *_args,
+        **_kwargs,
+    ):
+        captured["history"] = list(safe.get("history") or [])
+        return ({"digest_cursor": 0}, None, db_path, [], {"items": []}, 0, None)
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(main, "_turn_state_read", _fake_turn_state_read)
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
+    monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
+
+
+@pytest.mark.asyncio
+async def test_live_conversation_turn_degrades_source_history_load_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Live.db"
+    captured: dict[str, Any] = {}
+    _patch_turn_dependencies(monkeypatch, db_path, captured)
+    monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        main,
+        "_load_current_whatsapp_history_from_source",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("web source down")),
+    )
+
+    out = await main.conversation_turn(
+        "whatsapp:dm:live",
+        {
+            "user": {"user_id": "u1", "soul_id": "Echo", "conversation_id": "whatsapp:dm:live"},
+            "message": "hello",
+            "history": [{"role": "user", "content": "payload history"}],
+            "load_source_history": True,
+            "is_live_turn": True,
+            "prompt_override_payload": {
+                "user_prompt": "prompt",
+                "system_prompt": "system",
+                "memory_cache": [],
+                "intentions_active": {"items": []},
+                "retrieve_rag": {"items": [], "categories": [], "resources": []},
+            },
+        },
+    )
+
+    assert out["ok"] is True
+    assert captured["history"][0]["content"] == "payload history"
+
+
+@pytest.mark.asyncio
+async def test_live_conversation_turn_degrades_active_since_filter_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Live.db"
+    captured: dict[str, Any] = {}
+    _patch_turn_dependencies(monkeypatch, db_path, captured)
+    monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: 100.0)
+
+    out = await main.conversation_turn(
+        "whatsapp:dm:live",
+        {
+            "user": {"user_id": "u1", "soul_id": "Echo", "conversation_id": "whatsapp:dm:live"},
+            "message": "hello",
+            "history": [
+                {"role": "user", "content": "missing timestamp"},
+                {"role": "user", "content": "in scope", "ts_ms": 101_000},
+            ],
+            "is_live_turn": True,
+            "prompt_override_payload": {
+                "user_prompt": "prompt",
+                "system_prompt": "system",
+                "memory_cache": [],
+                "intentions_active": {"items": []},
+                "retrieve_rag": {"items": [], "categories": [], "resources": []},
+                "generated_by": "conversation_retrieve",
+                "active_since": 100.0,
+            },
+        },
+    )
+
+    assert out["ok"] is True
+    assert [row["content"] for row in captured["history"]] == ["in scope"]
 
 
 @pytest.mark.asyncio

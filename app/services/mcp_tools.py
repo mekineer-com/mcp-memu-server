@@ -119,6 +119,7 @@ async def memu_turn_endpoint(
     }
     if load_source_history:
         retrieve_payload["load_source_history"] = True
+        retrieve_payload["is_live_turn"] = True
     if user_name:
         retrieve_payload["user_name"] = user_name
     if req.soul_card:
@@ -166,6 +167,7 @@ async def memu_turn_endpoint(
     }
     if load_source_history:
         turn_payload["load_source_history"] = True
+        turn_payload["is_live_turn"] = True
     if user_name:
         turn_payload["user_name"] = user_name
     if req.soul_card:

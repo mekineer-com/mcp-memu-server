@@ -137,8 +137,10 @@ async def test_memu_turn_requests_source_history_for_whatsapp() -> None:
     retrieve_payload = captured[0][2]
     turn_payload = captured[1][2]
     assert retrieve_payload["load_source_history"] is True
+    assert retrieve_payload["is_live_turn"] is True
     assert retrieve_payload["external_message_id"] == "CURRENT"
     assert turn_payload["load_source_history"] is True
+    assert turn_payload["is_live_turn"] is True
     assert turn_payload["external_message_id"] == "CURRENT"
 
 
