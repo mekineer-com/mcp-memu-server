@@ -19,6 +19,7 @@ _LID_MAPPING_FILE_RE = re.compile(r"^lid-mapping-(.+?)(?:_reverse)?\.json$")
 _GATEWAY_NOTICE_PREFIXES = (
     "⚠️ Gateway shutting down — ",
     "⚠️ Gateway restarting — ",
+    "memU turn failed",
 )
 
 
