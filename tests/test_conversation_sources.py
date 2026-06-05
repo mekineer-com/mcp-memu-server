@@ -456,6 +456,35 @@ def test_load_whatsapp_web_source_tail_uses_assistant_source_message_ids(tmp_pat
     ]
 
 
+def test_load_whatsapp_web_source_tail_does_not_substring_match_assistant_ids(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(
+        web_db,
+        messages=[
+            {
+                "msg_key": "true_15133278228_c_us_prefix-SENT-ID-suffix",
+                "timestamp": 100,
+                "body": "human sent from linked device",
+                "from_me": True,
+            },
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id="Siri",
+        reply_prefix="",
+        web_source_db_path=web_db,
+        assistant_source_message_ids={"SENT-ID"},
+    )
+
+    assert [(row["role"], row["speaker"], row["content"]) for row in rows] == [
+        ("user", "15133278228", "human sent from linked device")
+    ]
+
+
 def test_load_whatsapp_web_source_tail_filters_gateway_notices(tmp_path: Path) -> None:
     web_db = tmp_path / "web_source.db"
     _write_web_source_db(

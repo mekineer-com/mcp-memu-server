@@ -323,7 +323,19 @@ def _expand_session_ids_with_lineage(db_path: Path, session_ids: list[str]) -> l
 
 def _source_id_matches_any(source_message_id: str, expected_ids: set[str]) -> bool:
     source = str(source_message_id or "").strip()
-    return bool(source and any(value == source or value in source for value in expected_ids))
+    if not source:
+        return False
+    for raw in expected_ids:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        if value == source:
+            return True
+        if source.endswith(value):
+            prefix = source[: -len(value)]
+            if prefix and prefix[-1] in "_-:":
+                return True
+    return False
 
 
 def _is_gateway_notice(content: str) -> bool:
