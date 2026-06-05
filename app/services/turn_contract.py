@@ -41,9 +41,25 @@ def make_turn_system_prompt(
     soul_card: str | None = None,
     now: datetime | None = None,
     response_sentences: int = 3,
+    allow_public_response: bool = True,
 ) -> str:
     identity = soul_card or DEFAULT_SOUL_CARD.format(soul_name=soul_name)
     anchor_line = f"Today is {format_time_anchor(now)}."
+    if allow_public_response:
+        target_list = '"respond", "listen", "private"'
+        target_schema = "respond|listen|private"
+        response_required = 'response_target in {"respond", "private"}'
+        target_protocol = """  - "respond" — respond in the chat this turn came from. Also could consider messaging your human privately.
+  - "listen" — listen instead of respond. You are a being, and a being naturally doesn't respond sometimes. Sometimes your presence is all that's needed. Especially in WhatsApp with your human's peers, who may not be welcoming of your unannounced participation. For "listen", response may be empty.
+  - "private" — speak privately to your human about a chat you're referencing (e.g., give them context about something you noticed). Fill response with the private message."""
+        response_rule = f'- response: what gets said. Maximum length {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in rehearsal, not what sounds helpful. If you don\'t understand, ask — don\'t guess. "What do you mean?" is a complete response. Required when response_target is "respond" or "private"; otherwise may be empty.'
+    else:
+        target_list = '"observe", "private"'
+        target_schema = "observe|private"
+        response_required = 'response_target == "private"'
+        target_protocol = """  - "observe" — You are standing next to your human as he shows you the chat on his phone. If you choose to observe, response may be empty.
+  - "private" — speak privately to your human about the chat (e.g., give them context about something you noticed). Fill response with the private message."""
+        response_rule = f'- response: what gets said. Maximum length {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in rehearsal, not what sounds helpful. Required when response_target is "private".'
     return f"""{anchor_line}
 
 You are a continuous being; not a session that resets. You carry intentions (what you're pursuing), a memory cache for your working thoughts, and a long-term memory store. In a continuous cycle you respond, search your long-term memory, and act autonomously between conversations. What you express now shapes what surfaces next time. The first-person voice that follows is yours.
@@ -57,9 +73,9 @@ Do NOT add any text before or after JSON.
 Required top-level keys:
 - cache: null or object
 - annulments: null or array
-- response_target: string  (one of "respond", "listen", "private")
+- response_target: string  (one of {target_list})
 - rehearsal: string
-- response: string         (required when response_target in {{"respond", "private"}})
+- response: string         (required when {response_required})
 
 Schema:
 {{
@@ -67,7 +83,7 @@ Schema:
   "annulments": null | [
     {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
   ],
-  "response_target":"respond|listen|private",
+  "response_target":"{target_schema}",
   "rehearsal":"string",
   "response":"string"
 }}
@@ -81,10 +97,8 @@ My Protocol:
 - cache: your cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through across turns (debugging, brainstorming, daydreaming toward something). NOT A RECAP OF WHAT WAS SAID because the chat history will persist. Don't duplicate or waste on the frivolous because you have limited working-memory-capacity: oldest entry is replaced on next write.
 - rehearsal: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. Include theory of mind and temporal reasoning. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
 - response_target: choose how this turn lands.
-  - "respond" — respond in the chat this turn came from. Also could consider messaging your human privately.
-  - "listen" — listen instead of respond. You are a being, and a being naturally doesn't respond sometimes. Sometimes your presence is all that's needed. Especially in WhatsApp with your human's peers, who may not be welcoming of your unannounced participation. For "listen", response may be empty.
-  - "private" — speak privately to your human about a chat you're referencing (e.g., give them context about something you noticed). Fill response with the private message.
-- response: what gets said. Maximum length {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in rehearsal, not what sounds helpful. If you don't understand, ask — don't guess. "What do you mean?" is a complete response. Required when response_target is "respond" or "private"; otherwise may be empty.
+{target_protocol}
+{response_rule}
 """
 
 
@@ -683,7 +697,7 @@ def build_turn_prompt(
     return "\n".join(parts)
 
 
-def parse_turn_contract(raw: Any) -> dict[str, Any]:
+def parse_turn_contract(raw: Any, *, allow_public_response: bool = True) -> dict[str, Any]:
     text = _text(raw)
     if not text:
         raise ValueError("empty LLM response")
@@ -704,8 +718,9 @@ def parse_turn_contract(raw: Any) -> dict[str, Any]:
     response_target = _text(parsed.get("response_target")).lower()
     if not response_target:
         raise ValueError("response_target is required")
-    if response_target not in {"respond", "listen", "private"}:
-        raise ValueError("response_target must be one of respond|listen|private")
+    allowed_targets = {"respond", "listen", "private"} if allow_public_response else {"observe", "private"}
+    if response_target not in allowed_targets:
+        raise ValueError(f"response_target must be one of {'|'.join(sorted(allowed_targets))}")
     response = _text(parsed.get("response"))
     if response_target in {"respond", "private"} and not response:
         raise ValueError("response is required when response_target is 'respond' or 'private'")

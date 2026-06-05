@@ -22,6 +22,7 @@ class MemuTurnRequest(BaseModel):
     chat_type: str | None = None
     memorize_chat: bool | None = None
     external_message_id: str | None = None
+    allow_public_response: bool | None = None
 
 
 class MemuRetrieveRequest(BaseModel):
@@ -132,6 +133,8 @@ async def memu_turn_endpoint(
         retrieve_payload["chat_type"] = chat_type
     if isinstance(req.memorize_chat, bool):
         retrieve_payload["memorize_chat"] = req.memorize_chat
+    if isinstance(req.allow_public_response, bool):
+        retrieve_payload["allow_public_response"] = req.allow_public_response
     if req.external_message_id:
         retrieve_payload["external_message_id"] = str(req.external_message_id)
 
@@ -181,11 +184,13 @@ async def memu_turn_endpoint(
         turn_payload["chat_type"] = chat_type
     if isinstance(req.memorize_chat, bool):
         turn_payload["memorize_chat"] = req.memorize_chat
+    if isinstance(req.allow_public_response, bool):
+        turn_payload["allow_public_response"] = req.allow_public_response
     if req.external_message_id:
         turn_payload["external_message_id"] = str(req.external_message_id)
     turn_out = await conversation_turn(conversation_id, turn_payload)
     response_target = str(turn_out.get("response_target") or "").strip().lower()
-    if response_target not in {"respond", "listen", "private"}:
+    if response_target not in {"respond", "listen", "observe", "private"}:
         raise HTTPException(status_code=502, detail="conversation_turn returned invalid response_target")
     compact: dict[str, Any] = {
         "ok": bool(turn_out.get("ok", False)),

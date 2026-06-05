@@ -28,6 +28,23 @@ def test_parse_turn_contract_listen_target_allows_empty_response():
     assert parsed["response"] == ""
 
 
+def test_parse_turn_contract_observe_target_allows_empty_response_when_public_response_forbidden():
+    parsed = parse_turn_contract(
+        '{"response":"","response_target":"observe","cache":null,"annulments":[],"rehearsal":"watching"}',
+        allow_public_response=False,
+    )
+    assert parsed["response_target"] == "observe"
+    assert parsed["response"] == ""
+
+
+def test_parse_turn_contract_rejects_respond_when_public_response_forbidden():
+    with pytest.raises(ValueError, match="observe\\|private"):
+        parse_turn_contract(
+            '{"response":"hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok"}',
+            allow_public_response=False,
+        )
+
+
 def test_parse_turn_contract_respond_target_requires_response():
     with pytest.raises(ValueError, match="response is required"):
         parse_turn_contract(
@@ -230,6 +247,14 @@ def test_make_turn_system_prompt_includes_time_anchor() -> None:
     )
     assert "Today is " in prompt
     assert "2026" in prompt
+
+
+def test_make_turn_system_prompt_forbids_public_response_when_requested() -> None:
+    prompt = make_turn_system_prompt("Siri", allow_public_response=False)
+    assert '"response_target":"observe|private"' in prompt
+    assert '"respond"' not in prompt
+    assert '"listen"' not in prompt
+    assert '"observe"' in prompt
 
 
 def test_build_turn_prompt_renders_relative_time() -> None:

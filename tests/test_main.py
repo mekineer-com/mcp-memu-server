@@ -2101,6 +2101,7 @@ def _patch_turn_dependencies(
     monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
+    monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
 
 
 @pytest.mark.asyncio
@@ -2704,6 +2705,7 @@ async def test_conversation_turn_does_not_persist_messages_to_table(
     monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
+    monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
 
     payload = {
         "user": {"user_id": "u1", "soul_id": "Echo", "conversation_id": "cid-turn"},
@@ -2885,6 +2887,77 @@ async def test_conversation_turn_private_response_not_persisted_in_origin_chat(
         con.close()
 
     assert has_messages_table is False
+
+
+@pytest.mark.asyncio
+async def test_conversation_turn_observe_mode_forbids_public_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+
+    captured: dict[str, str] = {}
+
+    class _FakeSvc:
+        async def chat(self, *_args, **kwargs) -> str:
+            captured["system_prompt"] = str(kwargs.get("system_prompt") or "")
+            return (
+                '{"cache":null,"annulments":[],"rehearsal":"watching",'
+                '"response_target":"observe","response":""}'
+            )
+
+    async def _fake_persist_annulment_memories(**_kwargs):
+        return []
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        main,
+        "_turn_state_read",
+        lambda *_a, **_k: (
+            {"digest_cursor": 0},
+            None,
+            db_path,
+            [],
+            {"items": []},
+            0,
+            None,
+        ),
+    )
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
+    monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
+    monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Siri", "conversation_id": "whatsapp:group:familia"},
+        "message": "Siri is listening.",
+        "chat_name": "Familia",
+        "chat_type": "group",
+        "history": [],
+        "allow_public_response": False,
+        "prompt_override_payload": {
+            "user_prompt": "prompt",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "retrieve_rag": {"items": [], "categories": [], "resources": []},
+        },
+    }
+
+    out = await main.conversation_turn("whatsapp:group:familia", payload)
+
+    assert out["ok"] is True
+    assert out["response_target"] == "observe"
+    assert out["response"] == ""
+    assert '"response_target":"observe|private"' in captured["system_prompt"]
+    assert '"respond"' not in captured["system_prompt"]
 
 
 @pytest.mark.asyncio

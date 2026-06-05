@@ -3222,6 +3222,7 @@ async def conversation_retrieve(
                     soul_id,
                     soul_card=soul_card,
                     response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
+                    allow_public_response=bool(safe.get("allow_public_response", True)),
                 )
                 out["turn_user_prompt"] = _build_turn_prompt(
                     user_message=message,
@@ -3645,6 +3646,7 @@ async def conversation_turn(
         include_debug = bool(safe.get("debug", False))
         memorize_chat_raw = safe.get("memorize_chat")
         memorize_chat = memorize_chat_raw if isinstance(memorize_chat_raw, bool) else None
+        allow_public_response = bool(safe.get("allow_public_response", True))
         if dry_run:
             run_apimw = False
 
@@ -3679,6 +3681,7 @@ async def conversation_turn(
             soul_id,
             soul_card=soul_card,
             response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
+            allow_public_response=allow_public_response,
         )
         turn_user_prompt = override_user_prompt
 
@@ -3696,7 +3699,10 @@ async def conversation_turn(
                 trace_id=trace_id,
             )
             try:
-                turn_contract = _parse_turn_contract(turn_response_raw)
+                turn_contract = _parse_turn_contract(
+                    turn_response_raw,
+                    allow_public_response=allow_public_response,
+                )
                 break
             except Exception as exc:
                 raw_snippet = str(turn_response_raw or "")[:200]
@@ -3760,16 +3766,16 @@ async def conversation_turn(
             )
 
         response_target = str(turn_contract.get("response_target") or "").strip().lower()
-        if response_target not in {"respond", "listen", "private"}:
+        if response_target not in {"respond", "listen", "observe", "private"}:
             raise HTTPException(status_code=502, detail="turn contract missing or invalid response_target")
         response_text = str(turn_contract.get("response") or "").strip()
 
         # Enforce response_target contract:
-        # - listen: nothing is sent.
+        # - listen/observe: nothing is sent.
         # - respond: if chat_name is missing, proceed but log loudly.
         # - private: passes through; routing to the human's private chat is
         #   hermes-side (see HANDOFF for the wiring task).
-        if response_target == "listen":
+        if response_target in {"listen", "observe"}:
             response_text = ""
         elif response_target == "respond":
             chat_name = str(safe.get("chat_name") or "").strip()
