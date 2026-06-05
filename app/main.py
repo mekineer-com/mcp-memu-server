@@ -128,7 +128,7 @@ app = FastAPI(title="mcp-memu-server", version="0.4.0")
 
 _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
-_DEFAULT_MIN_CHUNK_TOKENS: int = 4000
+_DEFAULT_MIN_CHUNK_TOKENS: int = 8000
 _DEFAULT_EPISODES_PER_SEGMENT: int = 3
 _DEFAULT_BACKGROUND_SUMMARY_TOKENS: int = 1000
 _DEFAULT_BACKGROUND_SUMMARY_MIN_TOKENS: int = 100
@@ -1777,13 +1777,15 @@ def _unmemorized_sleep_gap_detected(
     history: list[dict[str, Any]],
     digest_cursor: Any,
     safe: dict[str, Any],
+    *,
+    min_chunk_tokens: int | None = None,
 ) -> bool:
     return _memorize_endpoint.unmemorized_sleep_gap_detected(
         history,
         digest_cursor,
         safe,
         logger=logger,
-        min_chunk_tokens=_MIN_CHUNK_TOKENS,
+        min_chunk_tokens=_MIN_CHUNK_TOKENS if min_chunk_tokens is None else int(min_chunk_tokens),
         sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
     )
 
@@ -3262,6 +3264,15 @@ def _build_cross_conversation_payload(
     }
 
 
+def _estimate_primary_memorize_tokens(messages: list[dict[str, Any]]) -> int:
+    primary = [
+        {"content": str(msg.get("content") or "")}
+        for msg in messages
+        if bool(msg.get("memorize_chat", True))
+    ]
+    return _estimate_tokens(primary)
+
+
 def _turn_state_read(
     cid: str,
     uid: str,
@@ -3294,15 +3305,16 @@ def _turn_state_read(
     primary_history = history_full if chat_is_primary else []
     unmemorized_tokens = _estimate_unmemorized_tokens(primary_history, unmemorized_digest_cursor)
     queued_memorize_payload: dict[str, Any] | None = None
-    if (not dry_run) and primary_history and unmemorized_tokens >= _MIN_CHUNK_TOKENS:
+    if (not dry_run) and primary_history:
         has_sleep_gap = _unmemorized_sleep_gap_detected(
             primary_history,
             unmemorized_digest_cursor,
             safe,
+            min_chunk_tokens=0,
         )
         if has_sleep_gap:
             try:
-                queued_memorize_payload = _build_cross_conversation_payload(
+                candidate_payload = _build_cross_conversation_payload(
                     cid,
                     uid,
                     soul_id,
@@ -3311,6 +3323,12 @@ def _turn_state_read(
                     unmemorized_digest_cursor,
                     True,
                 )
+                if candidate_payload is not None:
+                    unmemorized_tokens = _estimate_primary_memorize_tokens(
+                        list(candidate_payload.get("conversation") or [])
+                    )
+                    if unmemorized_tokens >= _MIN_CHUNK_TOKENS:
+                        queued_memorize_payload = candidate_payload
             except Exception as exc:
                 logger.error("forced memorize source assembly failed for conversation_id=%s: %s", cid, exc)
                 _set_background_error(

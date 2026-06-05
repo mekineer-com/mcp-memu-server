@@ -1161,6 +1161,80 @@ def test_turn_state_read_marks_background_error_when_source_assembly_fails(
     assert "RuntimeError: boom" in captured["detail"]
 
 
+def test_turn_state_read_triggers_on_summed_primary_tails(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 100)
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"memorize_chat": True, "digest_cursor": -1, "last_memorize_at": None},
+            None,
+            None,
+        ),
+    )
+    monkeypatch.setattr(main, "_unmemorized_sleep_gap_detected", lambda *_a, **_k: True)
+    payload = {
+        "conversation": [
+            {"role": "user", "content": "short current", "memorize_chat": True},
+            {"role": "user", "content": "w " * 120, "memorize_chat": True},
+            {"role": "user", "content": "w " * 1000, "memorize_chat": False},
+        ]
+    }
+    monkeypatch.setattr(main, "_build_cross_conversation_payload", lambda *_a, **_k: payload)
+
+    _state, _card, _db, _cache, _intentions, tokens, queued = main._turn_state_read(
+        "cid",
+        "u1",
+        "Echo",
+        {},
+        [],
+        {"items": []},
+        False,
+        [{"role": "user", "content": "short current"}],
+    )
+
+    assert tokens >= 100
+    assert queued is payload
+
+
+def test_turn_state_read_ignores_background_tails_for_segment_trigger(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 100)
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"memorize_chat": True, "digest_cursor": -1, "last_memorize_at": None},
+            None,
+            None,
+        ),
+    )
+    monkeypatch.setattr(main, "_unmemorized_sleep_gap_detected", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        main,
+        "_build_cross_conversation_payload",
+        lambda *_a, **_k: {
+            "conversation": [
+                {"role": "user", "content": "short current", "memorize_chat": True},
+                {"role": "user", "content": "w " * 1000, "memorize_chat": False},
+            ]
+        },
+    )
+
+    _state, _card, _db, _cache, _intentions, tokens, queued = main._turn_state_read(
+        "cid",
+        "u1",
+        "Echo",
+        {},
+        [],
+        {"items": []},
+        False,
+        [{"role": "user", "content": "short current"}],
+    )
+
+    assert tokens < 100
+    assert queued is None
+
+
 def test_turn_state_read_excludes_background_chat_from_segment_trigger(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         main,

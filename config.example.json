@@ -87,7 +87,7 @@
     "dynamic_category_cluster_size": 3
   },
   "memorize": {
-    "min_chunk_tokens": 4000,
+    "min_chunk_tokens": 8000,
     "episodes_per_segment": 3,
     "background_summary_tokens": 1000,
     "background_summary_min_tokens": 100,
