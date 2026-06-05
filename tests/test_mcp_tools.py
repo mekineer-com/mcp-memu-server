@@ -105,6 +105,7 @@ async def test_memu_turn_requests_source_history_for_whatsapp() -> None:
         return {
             "turn_system_prompt": "system",
             "turn_user_prompt": "user",
+            "turn_history": [{"role": "user", "content": "from retrieve history"}],
             "memory_cache": [],
             "intentions_active": {"items": []},
             "result": {"categories": [], "items": [], "resources": []},
@@ -139,8 +140,9 @@ async def test_memu_turn_requests_source_history_for_whatsapp() -> None:
     assert retrieve_payload["load_source_history"] is True
     assert retrieve_payload["is_live_turn"] is True
     assert retrieve_payload["external_message_id"] == "CURRENT"
-    assert turn_payload["load_source_history"] is True
+    assert "load_source_history" not in turn_payload
     assert turn_payload["is_live_turn"] is True
+    assert turn_payload["history"] == [{"role": "user", "content": "from retrieve history"}]
     assert turn_payload["external_message_id"] == "CURRENT"
 
 

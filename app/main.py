@@ -2002,6 +2002,60 @@ def _load_current_whatsapp_history_from_source(
     ]
 
 
+def _prepare_current_whatsapp_history(
+    *,
+    conversation_id: str,
+    soul_id: str,
+    raw_history: Any,
+    active_since: float | None,
+    load_source_history: bool,
+    external_message_id: Any,
+    is_live_turn: bool,
+    op: str,
+) -> list[dict[str, Any]]:
+    history = _normalize_turn_history(raw_history)
+    if load_source_history:
+        try:
+            source_history = _load_current_whatsapp_history_from_source(
+                conversation_id,
+                soul_id,
+                active_since=active_since,
+                external_message_id=external_message_id,
+            )
+        except Exception as exc:
+            if not is_live_turn:
+                raise
+            logger.warning(
+                "%s: live WhatsApp source history load failed; continuing with payload history "
+                "conversation_id=%s soul_id=%s: %s",
+                op,
+                conversation_id,
+                soul_id,
+                exc,
+            )
+            source_history = None
+        if source_history is not None:
+            history = _normalize_turn_history(source_history)
+    try:
+        return _filter_current_whatsapp_history_for_soul(
+            conversation_id,
+            soul_id,
+            history,
+            active_since=active_since,
+        )
+    except HTTPException as exc:
+        if not is_live_turn:
+            raise
+        return _degrade_live_whatsapp_history_after_filter_error(
+            conversation_id=conversation_id,
+            soul_id=soul_id,
+            history=history,
+            active_since=active_since,
+            exc=exc,
+            op=op,
+        )
+
+
 def _stamp_assistant_display_name(messages: list[dict[str, Any]], soul_name: str) -> None:
     display = str(soul_name or "").strip()
     if not display:
@@ -3046,47 +3100,17 @@ async def conversation_retrieve(
         soul_id = str(scope.get("soul_id") or "").strip()
         message = _pick_str(safe, "message", "query") or ""
         current_whatsapp_active_since = _current_whatsapp_active_since_for_soul(cid, soul_id)
-        history = _normalize_turn_history(safe.get("history"))
         is_live_turn = bool(safe.get("is_live_turn")) and _message_log.derive_source_label(cid).startswith("whatsapp:")
-        if bool(safe.get("load_source_history")):
-            try:
-                source_history = _load_current_whatsapp_history_from_source(
-                    cid,
-                    soul_id,
-                    active_since=current_whatsapp_active_since,
-                    external_message_id=safe.get("external_message_id"),
-                )
-            except Exception as exc:
-                if not is_live_turn:
-                    raise
-                logger.warning(
-                    "conversation.retrieve: live WhatsApp source history load failed; "
-                    "continuing with payload history conversation_id=%s soul_id=%s: %s",
-                    cid,
-                    soul_id,
-                    exc,
-                )
-                source_history = None
-            if source_history is not None:
-                history = _normalize_turn_history(source_history)
-        try:
-            history = _filter_current_whatsapp_history_for_soul(
-                cid,
-                soul_id,
-                history,
-                active_since=current_whatsapp_active_since,
-            )
-        except HTTPException as exc:
-            if not is_live_turn:
-                raise
-            history = _degrade_live_whatsapp_history_after_filter_error(
-                conversation_id=cid,
-                soul_id=soul_id,
-                history=history,
-                active_since=current_whatsapp_active_since,
-                exc=exc,
-                op="conversation.retrieve",
-            )
+        history = _prepare_current_whatsapp_history(
+            conversation_id=cid,
+            soul_id=soul_id,
+            raw_history=safe.get("history"),
+            active_since=current_whatsapp_active_since,
+            load_source_history=bool(safe.get("load_source_history")),
+            external_message_id=safe.get("external_message_id"),
+            is_live_turn=is_live_turn,
+            op="conversation.retrieve",
+        )
         safe["history"] = history
         _stamp_assistant_display_name(history, soul_id)
         state_row: dict[str, Any] | None = None
@@ -3212,10 +3236,12 @@ async def conversation_retrieve(
                     conversation_id=cid,
                 )
                 out["turn_prompt_source"] = "conversation_retrieve"
-                if current_whatsapp_active_since is not None:
-                    out["turn_prompt_active_since"] = current_whatsapp_active_since
-                if safe.get("_cross_conversation_history"):
-                    out["cross_conversation_history"] = safe.get("_cross_conversation_history")
+            if current_whatsapp_active_since is not None:
+                out["turn_prompt_active_since"] = current_whatsapp_active_since
+            if safe.get("_cross_conversation_history"):
+                out["cross_conversation_history"] = safe.get("_cross_conversation_history")
+            if is_live_turn:
+                out["turn_history"] = history
 
         _record_call(
             "conversation.retrieve",
@@ -3537,47 +3563,17 @@ async def conversation_turn(
             raise HTTPException(status_code=400, detail="message is required")
 
         current_whatsapp_active_since = _current_whatsapp_active_since_for_soul(cid, soul_id)
-        history_full = _normalize_turn_history(safe.get("history"))
         is_live_turn = bool(safe.get("is_live_turn")) and _message_log.derive_source_label(cid).startswith("whatsapp:")
-        if bool(safe.get("load_source_history")):
-            try:
-                source_history = _load_current_whatsapp_history_from_source(
-                    cid,
-                    soul_id,
-                    active_since=current_whatsapp_active_since,
-                    external_message_id=safe.get("external_message_id"),
-                )
-            except Exception as exc:
-                if not is_live_turn:
-                    raise
-                logger.warning(
-                    "conversation.turn: live WhatsApp source history load failed; "
-                    "continuing with payload history conversation_id=%s soul_id=%s: %s",
-                    cid,
-                    soul_id,
-                    exc,
-                )
-                source_history = None
-            if source_history is not None:
-                history_full = _normalize_turn_history(source_history)
-        try:
-            history_full = _filter_current_whatsapp_history_for_soul(
-                cid,
-                soul_id,
-                history_full,
-                active_since=current_whatsapp_active_since,
-            )
-        except HTTPException as exc:
-            if not is_live_turn:
-                raise
-            history_full = _degrade_live_whatsapp_history_after_filter_error(
-                conversation_id=cid,
-                soul_id=soul_id,
-                history=history_full,
-                active_since=current_whatsapp_active_since,
-                exc=exc,
-                op="conversation.turn",
-            )
+        history_full = _prepare_current_whatsapp_history(
+            conversation_id=cid,
+            soul_id=soul_id,
+            raw_history=safe.get("history"),
+            active_since=current_whatsapp_active_since,
+            load_source_history=bool(safe.get("load_source_history")),
+            external_message_id=safe.get("external_message_id"),
+            is_live_turn=is_live_turn,
+            op="conversation.turn",
+        )
         safe["history"] = history_full
         _stamp_assistant_display_name(history_full, soul_id)
         prompt_override_payload_raw = safe.get("prompt_override_payload")

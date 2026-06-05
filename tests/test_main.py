@@ -2297,6 +2297,7 @@ async def test_conversation_retrieve_uses_same_payload_history_for_turn_prompt(
             {"role": "user", "content": "payload current"},
         ],
         "build_turn_prompt": True,
+        "is_live_turn": True,
     }
 
     out = await main.conversation_retrieve("whatsapp:dm:Marcos", payload)
@@ -2304,6 +2305,10 @@ async def test_conversation_retrieve_uses_same_payload_history_for_turn_prompt(
     turn_prompt = str(out.get("turn_user_prompt") or "")
     assert "payload prior" in turn_prompt
     assert "payload current" in turn_prompt
+    assert [row["content"] for row in out.get("turn_history") or []] == [
+        "payload prior",
+        "payload current",
+    ]
 
 
 @pytest.mark.asyncio

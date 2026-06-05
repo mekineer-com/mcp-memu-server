@@ -156,17 +156,20 @@ async def memu_turn_endpoint(
         prompt_override_payload["active_since"] = retrieve_out.get("turn_prompt_active_since")
     if retrieve_out.get("cross_conversation_history"):
         prompt_override_payload["cross_conversation_history"] = retrieve_out.get("cross_conversation_history")
+    turn_history = retrieve_out.get("turn_history")
+    turn_has_retrieve_history = isinstance(turn_history, list)
 
     turn_payload: dict[str, Any] = {
         "user": scope,
         "message": message,
-        "history": list(req.history or []),
+        "history": list(turn_history) if turn_has_retrieve_history else list(req.history or []),
         "prompt_override_payload": prompt_override_payload,
         "debug": bool(req.debug),
         "trace_id": trace_id,
     }
-    if load_source_history:
+    if load_source_history and not turn_has_retrieve_history:
         turn_payload["load_source_history"] = True
+    if load_source_history:
         turn_payload["is_live_turn"] = True
     if user_name:
         turn_payload["user_name"] = user_name
