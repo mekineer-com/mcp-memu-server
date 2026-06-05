@@ -78,6 +78,36 @@ def test_current_whatsapp_history_uses_configured_web_source_and_filters_current
     assert captured["max_messages"] == 250
 
 
+def test_current_whatsapp_history_empty_web_source_does_not_fallback_to_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        main,
+        "_resolve_cross_source_paths",
+        lambda: (tmp_path, tmp_path / ".hermes", None, tmp_path / "state.db"),
+    )
+    monkeypatch.setattr(
+        main,
+        "_resolve_whatsapp_source_config",
+        lambda: ("web_source", tmp_path / "web_source.db", "✦ *Echo*: "),
+    )
+    monkeypatch.setattr(main._conversation_sources, "load_whatsapp_web_source_tail", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        main._conversation_sources,
+        "load_whatsapp_tail",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("state.db fallback should not run")),
+    )
+
+    rows = main._load_current_whatsapp_history_from_source(
+        "whatsapp:dm:15133278228",
+        "Echo",
+        active_since=None,
+    )
+
+    assert rows == []
+
+
 def test_normalize_turn_history_preserves_source_speaker_and_received_at() -> None:
     rows = main._normalize_turn_history([
         {
@@ -1796,7 +1826,7 @@ async def test_conversation_retrieve_filters_whatsapp_history_before_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db_path = tmp_path / "Siri.db"
+    db_path = tmp_path / "Cutoff.db"
     con = main._sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row

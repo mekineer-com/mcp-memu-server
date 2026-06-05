@@ -489,6 +489,34 @@ def test_load_whatsapp_web_source_tail_filters_gateway_notices(tmp_path: Path) -
     assert [row["content"] for row in rows] == ["real message"]
 
 
+def test_load_whatsapp_web_source_tail_omits_revoked_rows(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(
+        web_db,
+        messages=[
+            {"msg_key": "deleted", "timestamp": 100, "body": "deleted message"},
+            {"msg_key": "kept", "timestamp": 101, "body": "kept message"},
+        ],
+    )
+    con = sqlite3.connect(web_db)
+    try:
+        con.execute("UPDATE whatsapp_messages SET revoked = 1 WHERE msg_key = 'deleted'")
+        con.commit()
+    finally:
+        con.close()
+
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id="Echo",
+        reply_prefix="",
+        web_source_db_path=web_db,
+    )
+
+    assert [row["content"] for row in rows] == ["kept message"]
+
+
 def test_load_whatsapp_assistant_source_message_ids_reads_state_db(tmp_path: Path) -> None:
     sessions_path = tmp_path / "sessions.json"
     state_db_path = tmp_path / "state.db"
