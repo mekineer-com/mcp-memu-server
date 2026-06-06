@@ -722,7 +722,7 @@ def parse_turn_contract(raw: Any, *, allow_public_response: bool = True) -> dict
     if response_target not in allowed_targets:
         raise ValueError(f"response_target must be one of {'|'.join(sorted(allowed_targets))}")
     response = _text(parsed.get("response"))
-    if response_target in {"respond", "private"} and not response:
+    if (response_target == "private" or (allow_public_response and response_target == "respond")) and not response:
         raise ValueError("response is required when response_target is 'respond' or 'private'")
 
     # LLM outputs cache.entry → parsed as cache_entry → appended to memory_cache list
