@@ -2,6 +2,7 @@
   "claude_code": false,
   "claude_code_model": "claude-opus-4-7",
   "claude_code_effort": "medium",
+  "claude_code_workspace": "~/.cache/memu-claude-workspace",
   "llm": {
     "provider": "openai",
     "api_key": "YOUR_API_KEY_HERE",

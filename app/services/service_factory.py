@@ -365,6 +365,7 @@ def _get_service_from_payload(
             claude_code=bool(config.get("claude_code", False)),
             claude_code_model=str(config.get("claude_code_model", "claude-opus-4-7")),
             claude_code_effort=str(config.get("claude_code_effort", "medium")),
+            claude_code_workspace=str(config.get("claude_code_workspace", "")).strip() or None,
         )
         if log_prompts:
             svc.intercept_before_llm_call(prompt_log_before, name="prompt_logger")
