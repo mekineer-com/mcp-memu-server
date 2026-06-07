@@ -59,6 +59,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         "claude_code": True,
         "claude_code_model": "claude-opus-4-7",
         "claude_code_effort": "medium",
+        "claude_code_permission_mode": "bypassPermissions",
         "claude_code_workspace": "/home/marcos/Desktop/siri",
     }
 
@@ -102,4 +103,5 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert captured["claude_code"] is True
     assert captured["claude_code_model"] == "claude-opus-4-7"
     assert captured["claude_code_effort"] == "medium"
+    assert captured["claude_code_permission_mode"] == "bypassPermissions"
     assert captured["claude_code_workspace"] == "/home/marcos/Desktop/siri"
