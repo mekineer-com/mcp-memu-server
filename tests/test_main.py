@@ -3038,6 +3038,130 @@ async def test_conversation_turn_retries_once_on_parse_failure(
 
 
 @pytest.mark.asyncio
+async def test_conversation_turn_reuses_session_id_for_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+
+    class _FakeSvc:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.session_ids: list[str | None] = []
+
+        async def chat(self, *_args, **kwargs) -> str:
+            self.calls += 1
+            self.session_ids.append(kwargs.get("session_id"))
+            if self.calls == 1:
+                return '{"cache":null,"annulments":[],"rehearsal":"bad"}'
+            return (
+                '{"cache":null,"annulments":[],"rehearsal":"retry good",'
+                '"response_target":"respond","response":"assistant says hi"}'
+            )
+
+    svc = _FakeSvc()
+
+    async def _fake_persist_annulment_memories(**_kwargs):
+        return []
+
+    monkeypatch.setattr(main, "_CONFIG", {**main._CONFIG, "claude_code": True})
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: svc)
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        main,
+        "_turn_state_read",
+        lambda *_a, **_k: (
+            {"digest_cursor": 0},
+            None,
+            db_path,
+            [],
+            {"items": []},
+            0,
+            None,
+        ),
+    )
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
+    monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo", "conversation_id": "cid-turn"},
+        "message": "hello",
+        "user_name": "Alice",
+        "chat_name": "Alice",
+        "chat_type": "dm",
+        "history": [{"role": "user", "content": "hello"}],
+        "prompt_override_payload": {
+            "user_prompt": "prompt",
+            "system_prompt": "system",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "retrieve_rag": {"items": [], "categories": [], "resources": []},
+        },
+    }
+
+    out = await main.conversation_turn("cid-turn", payload)
+
+    assert out["ok"] is True
+    assert svc.calls == 2
+    assert svc.session_ids[0]
+    assert svc.session_ids[0] == svc.session_ids[1]
+
+
+@pytest.mark.asyncio
+async def test_free_turn_chain_caps_at_three_and_persists_summaries() -> None:
+    class _FakeSvc:
+        def __init__(self) -> None:
+            self.chat_calls: list[dict[str, object]] = []
+            self.memorize_calls: list[dict[str, object]] = []
+
+        async def chat(self, *_args, **kwargs) -> str:
+            self.chat_calls.append(dict(kwargs))
+            return (
+                '{"cache":null,"annulments":[],"rehearsal":"continued",'
+                '"response_target":"listen","response":"",'
+                '"continue_reason":"task"}'
+            )
+
+        async def memorize(self, **kwargs) -> dict[str, object]:
+            self.memorize_calls.append(dict(kwargs))
+            return {"ok": True}
+
+    svc = _FakeSvc()
+    try:
+        await main._run_free_turn_chain(
+            marker="u1::Siri",
+            service=svc,
+            user_id="u1",
+            soul_id="Siri",
+            conversation_id="whatsapp:dm:Marcos",
+            session_id="session-123",
+            initial_reason="task",
+            initial_contract={
+                "response_target": "listen",
+                "response": "",
+                "rehearsal": "starting",
+            },
+            system_prompt="system",
+            allow_public_response=True,
+            soul_card=None,
+        )
+    finally:
+        main._FREE_TURN_INFLIGHT.clear()
+
+    assert len(svc.chat_calls) == 3
+    assert len(svc.memorize_calls) == 3
+    assert all(call["resume_session_id"] == "session-123" for call in svc.chat_calls)
+
+
+@pytest.mark.asyncio
 async def test_conversation_turn_allows_respond_when_chat_name_missing_and_logs_warning(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

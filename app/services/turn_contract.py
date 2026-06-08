@@ -85,7 +85,9 @@ Schema:
   ],
   "response_target":"{target_schema}",
   "rehearsal":"string",
-  "response":"string"
+  "response":"string",
+  "continue_reason": null | "task" | "research" | "diary" | "follow_up",
+  "follow_up_at": null | "timestamp string"
 }}
 
 My Protocol:
@@ -99,6 +101,8 @@ My Protocol:
 - response_target: choose how this turn lands.
 {target_protocol}
 {response_rule}
+- continue_reason: omit or use null unless you need an extra agentic turn for a specific purpose. Valid continuation purposes are "task", "research", "diary", and "follow_up".
+- follow_up_at: include only when continue_reason is "follow_up"; use the same timestamp style as the "Today is ..." line.
 """
 
 
@@ -252,6 +256,7 @@ _MEMORY_TYPE_LEGEND = {
     "social": "dynamics between people",
     "knowledge": "what you've learned",
 }
+_CONTINUATION_REASONS = {"task", "research", "diary", "follow_up"}
 
 
 def format_memory_legend(memory_types: set[str]) -> str:
@@ -262,6 +267,34 @@ def format_memory_legend(memory_types: set[str]) -> str:
     if not entries:
         return ""
     return "Key: " + " · ".join(entries)
+
+
+def _disable_continuation(reason: str) -> tuple[str | None, None]:
+    _logger.warning("turn_contract: invalid continuation metadata disabled; %s", reason)
+    return None, None
+
+
+def _parse_continuation_fields(parsed: dict[str, Any]) -> tuple[str | None, str | None]:
+    raw_reason = parsed.get("continue_reason")
+    continue_reason = _text(raw_reason).lower() if raw_reason is not None else ""
+    follow_up_at = _text(parsed.get("follow_up_at")) if parsed.get("follow_up_at") is not None else None
+
+    if not continue_reason:
+        if follow_up_at:
+            _logger.warning("turn_contract: follow_up_at ignored because continue_reason is not follow_up")
+        return None, None
+
+    if continue_reason not in _CONTINUATION_REASONS:
+        return _disable_continuation(f"unknown continue_reason={continue_reason!r}")
+
+    if continue_reason == "follow_up":
+        if not follow_up_at:
+            return _disable_continuation("continue_reason follow_up requires follow_up_at")
+        return "follow_up", follow_up_at
+
+    if follow_up_at:
+        _logger.warning("turn_contract: follow_up_at ignored because continue_reason is not follow_up")
+    return continue_reason, None
 
 
 def _format_item_suffix(item: dict[str, Any], *, now: datetime | None = None) -> str:
@@ -764,10 +797,13 @@ def parse_turn_contract(raw: Any, *, allow_public_response: bool = True) -> dict
         annulments.append({"intention_id": intention_id, "status": status, "note": note})
 
     rehearsal = _text(parsed.get("rehearsal"))
+    continue_reason, follow_up_at = _parse_continuation_fields(parsed)
     return {
         "response": response,
         "response_target": response_target,
         "cache_entry": cache_entry,
         "annulments": annulments,
         "rehearsal": rehearsal,
+        "continue_reason": continue_reason,
+        "follow_up_at": follow_up_at,
     }

@@ -401,6 +401,187 @@ def _queue_background_rollup_task(
     task.add_done_callback(_on_done)
 
 
+def _build_free_turn_prompt(
+    *,
+    reason: str,
+    continuation_index: int,
+    origin_conversation_id: str,
+    previous_contract: dict[str, Any],
+) -> str:
+    response_target = str(previous_contract.get("response_target") or "").strip().lower()
+    response = str(previous_contract.get("response") or "").strip()
+    rehearsal = str(previous_contract.get("rehearsal") or "").strip()
+    return "\n".join(
+        [
+            f"You chose continue_reason={reason!r} after the live turn from {origin_conversation_id}.",
+            f"This is continuation turn {continuation_index} of 3.",
+            "Continue only the specific task/research/diary purpose you chose.",
+            "Return the same strict turn-contract JSON. Do not invent a new user message.",
+            "If you choose response_target respond/private in this phase, it will be recorded for later delivery work but not sent yet.",
+            "",
+            "Previous turn outcome:",
+            f"- response_target: {response_target or 'unknown'}",
+            f"- response: {response or '(empty)'}",
+            f"- rehearsal: {rehearsal or '(empty)'}",
+        ]
+    )
+
+
+async def _persist_free_turn_summary(
+    *,
+    service: MemoryService,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    reason: str,
+    continuation_index: int,
+    contract: dict[str, Any],
+    soul_card: str | None,
+) -> None:
+    response_target = str(contract.get("response_target") or "").strip().lower()
+    response = str(contract.get("response") or "").strip()
+    rehearsal = str(contract.get("rehearsal") or "").strip()
+    cache_entry = str(contract.get("cache_entry") or "").strip()
+    summary_lines = [
+        f"{soul_id} took an agentic continuation turn.",
+        f"Purpose: {reason}.",
+        f"Origin conversation: {conversation_id}.",
+        f"Continuation index: {continuation_index}.",
+    ]
+    if rehearsal:
+        summary_lines.append(f"What {soul_id} worked through: {rehearsal}")
+    if cache_entry:
+        summary_lines.append(f"Working note: {cache_entry}")
+    if response:
+        summary_lines.append(f"Message intent ({response_target}): {response}")
+    await service.memorize(
+        resource_url=f"agentic-continuation:{uuid.uuid4()}",
+        modality="conversation",
+        raw_text="\n".join(summary_lines),
+        user={
+            "user_id": user_id,
+            "soul_id": soul_id,
+            "conversation_id": f"agentic:{conversation_id}",
+        },
+        soul_card=soul_card,
+    )
+
+
+async def _run_free_turn_chain(
+    *,
+    marker: str,
+    service: MemoryService,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    session_id: str,
+    initial_reason: str,
+    initial_contract: dict[str, Any],
+    system_prompt: str,
+    allow_public_response: bool,
+    soul_card: str | None,
+) -> None:
+    reason = initial_reason
+    previous_contract = initial_contract
+    try:
+        for continuation_index in range(1, 4):
+            prompt = _build_free_turn_prompt(
+                reason=reason,
+                continuation_index=continuation_index,
+                origin_conversation_id=conversation_id,
+                previous_contract=previous_contract,
+            )
+            raw = await service.chat(
+                prompt,
+                system_prompt=system_prompt,
+                response_format={"type": "json_object"},
+                op="free_turn",
+                step=f"continue_{continuation_index}",
+                resume_session_id=session_id,
+            )
+            contract = _parse_turn_contract(raw, allow_public_response=allow_public_response)
+            await _persist_free_turn_summary(
+                service=service,
+                user_id=user_id,
+                soul_id=soul_id,
+                conversation_id=conversation_id,
+                reason=reason,
+                continuation_index=continuation_index,
+                contract=contract,
+                soul_card=soul_card,
+            )
+            response_target = str(contract.get("response_target") or "").strip().lower()
+            response = str(contract.get("response") or "").strip()
+            if response_target in {"respond", "private"} and response:
+                logger.info(
+                    "free_turn: outbound intent ignored until pending-outbound store exists; target=%s conversation_id=%s",
+                    response_target,
+                    conversation_id,
+                )
+            cache_entry = str(contract.get("cache_entry") or "").strip()
+            annulments = contract.get("annulments") if isinstance(contract.get("annulments"), list) else []
+            if cache_entry or annulments:
+                logger.info("free_turn: cache_entry/annulments intentionally ignored for continuation state")
+            next_reason = str(contract.get("continue_reason") or "").strip().lower()
+            if next_reason not in {"task", "research", "diary"}:
+                if next_reason == "follow_up":
+                    logger.info("free_turn: follow_up parsed but deferred until scheduler phase")
+                return
+            reason = next_reason
+            previous_contract = contract
+    except Exception:
+        logger.exception("free_turn: continuation chain failed for %s", marker)
+    finally:
+        _clear_inflight(_FREE_TURN_INFLIGHT, marker)
+
+
+def _queue_free_turn_chain(
+    *,
+    service: MemoryService,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    session_id: str,
+    initial_reason: str,
+    initial_contract: dict[str, Any],
+    system_prompt: str,
+    allow_public_response: bool,
+    soul_card: str | None,
+) -> bool:
+    marker = f"{user_id}::{soul_id}"
+    if not _mark_inflight(_FREE_TURN_INFLIGHT, marker):
+        logger.info("free_turn: continuation skipped because one is already running for %s", marker)
+        return False
+    task = asyncio.create_task(
+        _run_free_turn_chain(
+            marker=marker,
+            service=service,
+            user_id=user_id,
+            soul_id=soul_id,
+            conversation_id=conversation_id,
+            session_id=session_id,
+            initial_reason=initial_reason,
+            initial_contract=initial_contract,
+            system_prompt=system_prompt,
+            allow_public_response=allow_public_response,
+            soul_card=soul_card,
+        )
+    )
+    _BACKGROUND_TASKS.add(task)
+
+    def _on_done(done_task: asyncio.Task) -> None:
+        try:
+            done_task.result()
+        except Exception:
+            logger.exception("free_turn: background task failed for %s", marker)
+            _clear_inflight(_FREE_TURN_INFLIGHT, marker)
+        finally:
+            _BACKGROUND_TASKS.discard(done_task)
+
+    task.add_done_callback(_on_done)
+    return True
+
+
 # ==== Server state (locks, inflight, shutdown) ====
 
 _SERVER_INSTANCE_ID: str = str(uuid.uuid4())
@@ -426,6 +607,7 @@ _ACTIVE_WORK_REQUESTS: int = 0
 _SHUTDOWN_TASK: asyncio.Task | None = None
 _APIMW_INFLIGHT: set[str] = set()
 _BACKGROUND_ROLLUP_INFLIGHT: set[str] = set()
+_FREE_TURN_INFLIGHT: set[str] = set()
 _SHUTDOWN_STATE: dict[str, Any] = {
     "draining": False,
     "stopping": False,
@@ -3688,7 +3870,12 @@ async def conversation_turn(
         memory_service = _get_service_from_payload(safe)
         turn_started_at = time.monotonic()
         turn_contract: dict[str, Any] | None = None
+        use_claude_session = bool(_CONFIG.get("claude_code", False))
+        turn_session_id = str(uuid.uuid4()) if use_claude_session else None
+        if turn_session_id:
+            logger.info("conversation_turn: claude session_id=%s conversation_id=%s", turn_session_id, cid)
         for attempt in (1, 2):
+            chat_kwargs = {"session_id": turn_session_id} if turn_session_id else {}
             turn_response_raw = await memory_service.chat(
                 turn_user_prompt,
                 system_prompt=turn_system_prompt,
@@ -3697,6 +3884,7 @@ async def conversation_turn(
                 op="turn",
                 step="respond" if attempt == 1 else "respond_retry",
                 trace_id=trace_id,
+                **chat_kwargs,
             )
             try:
                 turn_contract = _parse_turn_contract(
@@ -3769,6 +3957,27 @@ async def conversation_turn(
         if response_target not in {"respond", "listen", "observe", "private"}:
             raise HTTPException(status_code=502, detail="turn contract missing or invalid response_target")
         response_text = str(turn_contract.get("response") or "").strip()
+        continuation_reason = str(turn_contract.get("continue_reason") or "").strip().lower()
+        continuation_queued = False
+        if not dry_run and continuation_reason:
+            if continuation_reason in {"task", "research", "diary"}:
+                if turn_session_id:
+                    continuation_queued = _queue_free_turn_chain(
+                        service=memory_service,
+                        user_id=uid,
+                        soul_id=soul_id,
+                        conversation_id=cid,
+                        session_id=turn_session_id,
+                        initial_reason=continuation_reason,
+                        initial_contract=turn_contract,
+                        system_prompt=turn_system_prompt,
+                        allow_public_response=allow_public_response,
+                        soul_card=soul_card,
+                    )
+                else:
+                    logger.warning("free_turn: continuation requested but claude_code is disabled")
+            elif continuation_reason == "follow_up":
+                logger.info("free_turn: follow_up parsed but deferred until scheduler phase")
 
         # Enforce response_target contract:
         # - listen/observe: nothing is sent.
@@ -3801,6 +4010,7 @@ async def conversation_turn(
             "reply_chars": len(response_text),
             "turn_prompt_chars": len(turn_user_prompt),
             "turn_system_chars": len(turn_system_prompt),
+            "continuation_queued": continuation_queued,
         }
         if trace_id:
             response_payload["trace_id"] = trace_id

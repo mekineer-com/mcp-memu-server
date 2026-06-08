@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 
 import pytest
@@ -18,7 +19,72 @@ def test_parse_turn_contract_valid_json():
     assert parsed["cache_entry"] == "thinking"
     assert parsed["rehearsal"] == "hmm"
     assert parsed["response_target"] == "respond"
+    assert parsed["continue_reason"] is None
+    assert parsed["follow_up_at"] is None
 
+
+def test_parse_turn_contract_null_reason_means_no_continuation():
+    parsed = parse_turn_contract(
+        '{"response":"Hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"hmm","continue_reason":null}'
+    )
+    assert parsed["continue_reason"] is None
+    assert parsed["follow_up_at"] is None
+
+
+def test_parse_turn_contract_accepts_valid_task_continuation():
+    parsed = parse_turn_contract(
+        '{"response":"I will look into it","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ready","continue_reason":"task"}'
+    )
+    assert parsed["continue_reason"] == "task"
+    assert parsed["follow_up_at"] is None
+
+
+def test_parse_turn_contract_accepts_valid_follow_up_continuation():
+    parsed = parse_turn_contract(
+        '{"response":"I will check later","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ready","continue_reason":"follow_up","follow_up_at":"Monday, June 8, 2026 19:00 PET"}'
+    )
+    assert parsed["continue_reason"] == "follow_up"
+    assert parsed["follow_up_at"] == "Monday, June 8, 2026 19:00 PET"
+
+
+def test_parse_turn_contract_invalid_continuation_reason_logs_and_disables(caplog):
+    caplog.set_level(logging.WARNING, logger="uvicorn.error")
+    parsed = parse_turn_contract(
+        '{"response":"hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok","continue_reason":"wander","follow_up_at":null}'
+    )
+    assert parsed["continue_reason"] is None
+    assert parsed["follow_up_at"] is None
+    assert any("invalid continuation metadata disabled" in r.getMessage() for r in caplog.records)
+
+
+def test_parse_turn_contract_follow_up_without_time_logs_and_disables(caplog):
+    caplog.set_level(logging.WARNING, logger="uvicorn.error")
+    parsed = parse_turn_contract(
+        '{"response":"hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok","continue_reason":"follow_up","follow_up_at":null}'
+    )
+    assert parsed["continue_reason"] is None
+    assert parsed["follow_up_at"] is None
+    assert any("follow_up requires follow_up_at" in r.getMessage() for r in caplog.records)
+
+
+def test_parse_turn_contract_non_follow_up_time_logs_and_ignores(caplog):
+    caplog.set_level(logging.WARNING, logger="uvicorn.error")
+    parsed = parse_turn_contract(
+        '{"response":"hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok","continue_reason":"diary","follow_up_at":"Monday, June 8, 2026 19:00 PET"}'
+    )
+    assert parsed["continue_reason"] == "diary"
+    assert parsed["follow_up_at"] is None
+    assert any("follow_up_at ignored" in r.getMessage() for r in caplog.records)
+
+
+def test_parse_turn_contract_time_without_reason_logs_and_ignores(caplog):
+    caplog.set_level(logging.WARNING, logger="uvicorn.error")
+    parsed = parse_turn_contract(
+        '{"response":"hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok","follow_up_at":"Monday, June 8, 2026 19:00 PET"}'
+    )
+    assert parsed["continue_reason"] is None
+    assert parsed["follow_up_at"] is None
+    assert any("follow_up_at ignored" in r.getMessage() for r in caplog.records)
 
 def test_parse_turn_contract_listen_target_allows_empty_response():
     parsed = parse_turn_contract(
@@ -89,7 +155,6 @@ def test_parse_turn_contract_rejects_non_json_text():
 def test_parse_turn_contract_accepts_bare_string_cache(caplog):
     # Observed drift: some models emit cache as a bare string instead of
     # {"entry": "..."}. Auto-wrap for flow; WARN-log for drift visibility.
-    import logging
     caplog.set_level(logging.WARNING, logger="uvicorn.error")
     parsed = parse_turn_contract(
         '{"response":"hi","response_target":"respond","cache":"a stray thought","intention_action":{"type":"none"},"annulments":[],"rehearsal":"ok"}'
