@@ -513,11 +513,19 @@ async def _run_free_turn_chain(
             response_target = str(contract.get("response_target") or "").strip().lower()
             response = str(contract.get("response") or "").strip()
             if response_target in {"respond", "private"} and response:
-                logger.info(
-                    "free_turn: outbound intent ignored until pending-outbound store exists; target=%s conversation_id=%s",
-                    response_target,
-                    conversation_id,
+                out_id = _insert_whatsapp_outbound(
+                    user_id=user_id,
+                    soul_id=soul_id,
+                    origin_conversation_id=conversation_id,
+                    target=response_target,
+                    response_text=response,
+                    metadata={
+                        "reason": reason,
+                        "continuation_index": continuation_index,
+                        "source": "free_turn",
+                    },
                 )
+                logger.info("free_turn: queued WhatsApp outbound %s target=%s", out_id, response_target)
             cache_entry = str(contract.get("cache_entry") or "").strip()
             annulments = contract.get("annulments") if isinstance(contract.get("annulments"), list) else []
             if cache_entry or annulments:
@@ -1088,6 +1096,241 @@ def _write_conversation_state(
         write_conversation_state_impl=_write_conversation_state_impl,
         sqlite_current_path=_sqlite_current_path,
     )
+
+
+def _ensure_whatsapp_outbounds_schema(con: sqlite3.Connection) -> None:
+    con.execute(
+        """
+CREATE TABLE IF NOT EXISTS whatsapp_pending_outbounds (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    soul_id TEXT NOT NULL,
+    origin_conversation_id TEXT NOT NULL,
+    target TEXT NOT NULL CHECK (target IN ('respond', 'private')),
+    target_conversation_id TEXT,
+    response_text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'claimed', 'sent', 'failed')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    claimed_at TEXT,
+    claimed_by TEXT,
+    sent_at TEXT,
+    failed_at TEXT,
+    provider_message_id TEXT,
+    last_error TEXT,
+    metadata_json TEXT
+)
+"""
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_whatsapp_pending_outbounds_claim "
+        "ON whatsapp_pending_outbounds(status, created_at)"
+    )
+    con.commit()
+
+
+def _whatsapp_outbound_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "soul_id": row["soul_id"],
+        "origin_conversation_id": row["origin_conversation_id"],
+        "target": row["target"],
+        "target_conversation_id": row["target_conversation_id"],
+        "response_text": row["response_text"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "claimed_at": row["claimed_at"],
+        "claimed_by": row["claimed_by"],
+        "sent_at": row["sent_at"],
+        "failed_at": row["failed_at"],
+        "provider_message_id": row["provider_message_id"],
+        "last_error": row["last_error"],
+        "metadata": _json_from_db(row["metadata_json"]) or {},
+    }
+
+
+def _insert_whatsapp_outbound(
+    *,
+    user_id: str,
+    soul_id: str,
+    origin_conversation_id: str,
+    target: str,
+    response_text: str,
+    metadata: Mapping[str, Any] | None = None,
+) -> str:
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    cid = str(origin_conversation_id or "").strip()
+    target_clean = str(target or "").strip().lower()
+    text = str(response_text or "").strip()
+    if not uid or not sid or not cid:
+        raise ValueError("user_id, soul_id, and origin_conversation_id are required")
+    if target_clean not in {"respond", "private"}:
+        raise ValueError("target must be respond|private")
+    if not text:
+        raise ValueError("response_text is required")
+
+    db_path = _sqlite_current_path(uid, sid)
+    if db_path is None:
+        raise ValueError("sqlite path unavailable for outbound scope")
+    _sqlite_ensure_nonempty(db_path)
+    out_id = f"waout_{uuid.uuid4().hex}"
+    now_iso = datetime.now(UTC).isoformat()
+    target_conversation_id = cid if target_clean == "respond" else None
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _ensure_whatsapp_outbounds_schema(con)
+        con.execute(
+            """
+INSERT INTO whatsapp_pending_outbounds (
+    id, user_id, soul_id, origin_conversation_id, target, target_conversation_id,
+    response_text, status, created_at, updated_at, metadata_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+""",
+            (
+                out_id,
+                uid,
+                sid,
+                cid,
+                target_clean,
+                target_conversation_id,
+                text,
+                now_iso,
+                now_iso,
+                _json_to_db(dict(metadata or {})),
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return out_id
+
+
+def _claim_whatsapp_outbounds(
+    *,
+    user_id: str,
+    soul_id: str,
+    claimed_by: str,
+    limit: int = 10,
+    claim_timeout_seconds: int = 300,
+) -> list[dict[str, Any]]:
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    claimer = str(claimed_by or "").strip() or "hermes"
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    db_path = _sqlite_current_path(uid, sid)
+    if db_path is None:
+        raise HTTPException(status_code=400, detail="sqlite path unavailable for outbound scope")
+    _sqlite_ensure_nonempty(db_path)
+    now = datetime.now(UTC)
+    now_iso = now.isoformat()
+    stale_before = (now - timedelta(seconds=max(1, int(claim_timeout_seconds)))).isoformat()
+    claim_limit = max(1, min(50, int(limit)))
+    claimed: list[dict[str, Any]] = []
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _ensure_whatsapp_outbounds_schema(con)
+        rows = con.execute(
+            """
+SELECT id
+FROM whatsapp_pending_outbounds
+WHERE user_id = ? AND soul_id = ?
+  AND (status = 'pending' OR (status = 'claimed' AND claimed_at < ?))
+ORDER BY created_at ASC
+LIMIT ?
+""",
+            (uid, sid, stale_before, claim_limit),
+        ).fetchall()
+        for row in rows:
+            out_id = str(row["id"])
+            cur = con.execute(
+                """
+UPDATE whatsapp_pending_outbounds
+SET status = 'claimed', claimed_at = ?, claimed_by = ?, updated_at = ?
+WHERE id = ? AND user_id = ? AND soul_id = ?
+  AND (status = 'pending' OR (status = 'claimed' AND claimed_at < ?))
+""",
+                (now_iso, claimer, now_iso, out_id, uid, sid, stale_before),
+            )
+            if cur.rowcount != 1:
+                continue
+            claimed_row = con.execute(
+                "SELECT * FROM whatsapp_pending_outbounds WHERE id = ? LIMIT 1",
+                (out_id,),
+            ).fetchone()
+            if claimed_row is not None:
+                claimed.append(_whatsapp_outbound_row(claimed_row))
+        con.commit()
+    finally:
+        con.close()
+    return claimed
+
+
+def _mark_whatsapp_outbound(
+    *,
+    user_id: str,
+    soul_id: str,
+    outbound_id: str,
+    status: str,
+    provider_message_id: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    out_id = str(outbound_id or "").strip()
+    final_status = str(status or "").strip().lower()
+    if not uid or not sid or not out_id:
+        raise HTTPException(status_code=400, detail="user_id, soul_id, and outbound_id are required")
+    if final_status not in {"sent", "failed"}:
+        raise HTTPException(status_code=400, detail="status must be sent|failed")
+    db_path = _sqlite_current_path(uid, sid)
+    if db_path is None:
+        raise HTTPException(status_code=400, detail="sqlite path unavailable for outbound scope")
+    _sqlite_ensure_nonempty(db_path)
+    now_iso = datetime.now(UTC).isoformat()
+    sent_at = now_iso if final_status == "sent" else None
+    failed_at = now_iso if final_status == "failed" else None
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _ensure_whatsapp_outbounds_schema(con)
+        cur = con.execute(
+            """
+UPDATE whatsapp_pending_outbounds
+SET status = ?, updated_at = ?, sent_at = ?, failed_at = ?,
+    provider_message_id = COALESCE(?, provider_message_id),
+    last_error = ?
+WHERE id = ? AND user_id = ? AND soul_id = ? AND status = 'claimed'
+""",
+            (
+                final_status,
+                now_iso,
+                sent_at,
+                failed_at,
+                str(provider_message_id or "").strip() or None,
+                str(error or "").strip() or None,
+                out_id,
+                uid,
+                sid,
+            ),
+        )
+        if cur.rowcount != 1:
+            raise HTTPException(status_code=409, detail="outbound is not claimed or does not exist")
+        row = con.execute(
+            "SELECT * FROM whatsapp_pending_outbounds WHERE id = ? LIMIT 1",
+            (out_id,),
+        ).fetchone()
+        con.commit()
+    finally:
+        con.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail="outbound not found")
+    return _whatsapp_outbound_row(row)
 
 
 # ==== Retrieve payload helpers ====
@@ -4181,6 +4424,33 @@ async def mcp_memu_state(req: _mcp_tools.MemuStateRequest):
         get_state=get_conversation_state,
         patch_state=patch_conversation_state,
     )
+
+
+@app.post("/integration/whatsapp/outbounds/claim", operation_id="whatsapp_outbounds_claim", tags=["integration"])
+async def whatsapp_outbounds_claim(payload: dict[str, Any] = Body(...)):
+    return {
+        "ok": True,
+        "outbounds": _claim_whatsapp_outbounds(
+            user_id=str(payload.get("user_id") or ""),
+            soul_id=str(payload.get("soul_id") or ""),
+            claimed_by=str(payload.get("claimed_by") or payload.get("claimer") or "hermes"),
+            limit=int(payload.get("limit", 10)),
+            claim_timeout_seconds=int(payload.get("claim_timeout_seconds", 300)),
+        ),
+    }
+
+
+@app.post("/integration/whatsapp/outbounds/mark", operation_id="whatsapp_outbounds_mark", tags=["integration"])
+async def whatsapp_outbounds_mark(payload: dict[str, Any] = Body(...)):
+    row = _mark_whatsapp_outbound(
+        user_id=str(payload.get("user_id") or ""),
+        soul_id=str(payload.get("soul_id") or ""),
+        outbound_id=str(payload.get("outbound_id") or payload.get("id") or ""),
+        status=str(payload.get("status") or ""),
+        provider_message_id=str(payload.get("provider_message_id") or "").strip() or None,
+        error=str(payload.get("error") or "").strip() or None,
+    )
+    return {"ok": True, "outbound": row}
 
 
 # =============================================================================

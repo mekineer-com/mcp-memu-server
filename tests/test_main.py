@@ -3162,6 +3162,100 @@ async def test_free_turn_chain_caps_at_three_and_persists_summaries() -> None:
 
 
 @pytest.mark.asyncio
+async def test_whatsapp_outbound_claim_and_mark(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "SiriTest.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
+
+    out_id = main._insert_whatsapp_outbound(
+        user_id="u1",
+        soul_id="Siri",
+        origin_conversation_id="whatsapp:dm:Marcos",
+        target="respond",
+        response_text="hello",
+        metadata={"source": "test"},
+    )
+
+    claimed = await main.whatsapp_outbounds_claim(
+        {"user_id": "u1", "soul_id": "Siri", "claimed_by": "hermes-test", "limit": 10}
+    )
+    assert [row["id"] for row in claimed["outbounds"]] == [out_id]
+    assert claimed["outbounds"][0]["target_conversation_id"] == "whatsapp:dm:Marcos"
+    assert claimed["outbounds"][0]["metadata"] == {"source": "test"}
+
+    claimed_again = await main.whatsapp_outbounds_claim(
+        {"user_id": "u1", "soul_id": "Siri", "claimed_by": "hermes-test", "limit": 10}
+    )
+    assert claimed_again["outbounds"] == []
+
+    marked = await main.whatsapp_outbounds_mark(
+        {
+            "user_id": "u1",
+            "soul_id": "Siri",
+            "outbound_id": out_id,
+            "status": "sent",
+            "provider_message_id": "wa-msg-1",
+        }
+    )
+    assert marked["outbound"]["status"] == "sent"
+    assert marked["outbound"]["provider_message_id"] == "wa-msg-1"
+
+
+@pytest.mark.asyncio
+async def test_free_turn_chain_queues_whatsapp_outbound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "SiriTest.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
+
+    class _FakeSvc:
+        async def chat(self, *_args, **_kwargs) -> str:
+            return (
+                '{"cache":null,"annulments":[],"rehearsal":"continued",'
+                '"response_target":"private","response":"I found something."}'
+            )
+
+        async def memorize(self, **_kwargs) -> dict[str, object]:
+            return {"ok": True}
+
+    try:
+        await main._run_free_turn_chain(
+            marker="u1::Siri",
+            service=_FakeSvc(),
+            user_id="u1",
+            soul_id="Siri",
+            conversation_id="whatsapp:dm:Marcos",
+            session_id="session-123",
+            initial_reason="research",
+            initial_contract={
+                "response_target": "listen",
+                "response": "",
+                "rehearsal": "starting",
+            },
+            system_prompt="system",
+            allow_public_response=True,
+            soul_card=None,
+        )
+    finally:
+        main._FREE_TURN_INFLIGHT.clear()
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute("SELECT * FROM whatsapp_pending_outbounds").fetchall()
+    finally:
+        con.close()
+
+    assert len(rows) == 1
+    assert rows[0]["target"] == "private"
+    assert rows[0]["target_conversation_id"] is None
+    assert rows[0]["response_text"] == "I found something."
+
+
+@pytest.mark.asyncio
 async def test_conversation_turn_allows_respond_when_chat_name_missing_and_logs_warning(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
