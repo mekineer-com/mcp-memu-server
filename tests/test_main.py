@@ -1,6 +1,7 @@
 """Basic tests for the application."""
 
 import asyncio
+import json
 import logging
 import sqlite3
 from datetime import UTC, datetime, timedelta
@@ -3340,6 +3341,7 @@ def test_free_turn_follow_up_schedule_persists_pending_row(
         soul_id="Siri",
         conversation_id="whatsapp:dm:Marcos",
         follow_up_at=(datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+        follow_up_reason="Check whether Marcos got home safely.",
         safe_payload={"user": {"user_id": "u1", "soul_id": "Siri"}},
     )
 
@@ -3353,6 +3355,8 @@ def test_free_turn_follow_up_schedule_persists_pending_row(
     assert row is not None
     assert row["status"] == "pending"
     assert row["conversation_id"] == "whatsapp:dm:Marcos"
+    payload = json.loads(row["payload_json"])
+    assert payload["follow_up_reason"] == "Check whether Marcos got home safely."
 
 
 @pytest.mark.asyncio
@@ -3369,6 +3373,7 @@ async def test_due_free_turn_follow_up_runs_fresh_turn_and_queues_outbound(
         soul_id="Siri",
         conversation_id="whatsapp:dm:Marcos",
         follow_up_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        follow_up_reason="Check whether Marcos got home safely.",
         safe_payload={
             "user": {"user_id": "u1", "soul_id": "Siri"},
             "chat_name": "Marcos",
@@ -3402,6 +3407,7 @@ async def test_due_free_turn_follow_up_runs_fresh_turn_and_queues_outbound(
 
     assert calls["retrieve"]["payload"]["load_source_history"] is True
     assert calls["retrieve"]["payload"]["is_live_turn"] is False
+    assert "Check whether Marcos got home safely." in calls["retrieve"]["payload"]["message"]
     assert calls["turn"]["payload"]["prompt_override_payload"]["user_prompt"] == "fresh prompt"
 
     con = main._sqlite_connect(db_path)

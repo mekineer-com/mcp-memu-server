@@ -571,6 +571,7 @@ async def _run_free_turn_chain(
                         soul_id=soul_id,
                         conversation_id=conversation_id,
                         follow_up_at=str(contract.get("follow_up_at") or ""),
+                        follow_up_reason=str(contract.get("follow_up_reason") or ""),
                         safe_payload={"allow_public_response": allow_public_response},
                     )
                 return
@@ -1466,8 +1467,13 @@ def _schedule_free_turn_follow_up(
     soul_id: str,
     conversation_id: str,
     follow_up_at: str,
+    follow_up_reason: str,
     safe_payload: dict[str, Any],
 ) -> str | None:
+    reason = str(follow_up_reason or "").strip()
+    if not reason:
+        logger.warning("free_turn: follow_up ignored because follow_up_reason is missing")
+        return None
     due_at = _parse_free_turn_follow_up_at(follow_up_at, safe_payload)
     if due_at is None:
         logger.warning("free_turn: invalid follow_up_at ignored: %r", follow_up_at)
@@ -1480,6 +1486,7 @@ def _schedule_free_turn_follow_up(
     now_iso = datetime.now(UTC).isoformat()
     followup_id = f"wafup_{uuid.uuid4().hex}"
     payload = _free_turn_followup_payload(safe_payload)
+    payload["follow_up_reason"] = reason
     con = _sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
@@ -1620,8 +1627,10 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
         soul_id = str(row.get("soul_id") or "").strip()
         conversation_id = str(row.get("conversation_id") or "").strip()
         user_scope = {"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id}
+        follow_up_reason = str(payload.get("follow_up_reason") or "").strip()
         message = (
             f"Scheduled follow-up due now. You asked to wake at {row.get('follow_up_at')}. "
+            f"Reason you gave: {follow_up_reason}. "
             "Use fresh memory and current chat history, then decide whether to send a WhatsApp message."
         )
         retrieve_payload = {
@@ -4585,6 +4594,7 @@ async def conversation_turn(
                         soul_id=soul_id,
                         conversation_id=cid,
                         follow_up_at=str(turn_contract.get("follow_up_at") or ""),
+                        follow_up_reason=str(turn_contract.get("follow_up_reason") or ""),
                         safe_payload=safe,
                     )
                 )
