@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -3253,6 +3253,96 @@ async def test_free_turn_chain_queues_whatsapp_outbound(
     assert rows[0]["target"] == "private"
     assert rows[0]["target_conversation_id"] is None
     assert rows[0]["response_text"] == "I found something."
+
+
+def test_free_turn_follow_up_schedule_persists_pending_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "SiriTest.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
+
+    followup_id = main._schedule_free_turn_follow_up(
+        user_id="u1",
+        soul_id="Siri",
+        conversation_id="whatsapp:dm:Marcos",
+        follow_up_at=(datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+        safe_payload={"user": {"user_id": "u1", "soul_id": "Siri"}},
+    )
+
+    assert followup_id
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        row = con.execute("SELECT * FROM free_turn_followups WHERE id = ?", (followup_id,)).fetchone()
+    finally:
+        con.close()
+    assert row is not None
+    assert row["status"] == "pending"
+    assert row["conversation_id"] == "whatsapp:dm:Marcos"
+
+
+@pytest.mark.asyncio
+async def test_due_free_turn_follow_up_runs_fresh_turn_and_queues_outbound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "SiriTest.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
+    monkeypatch.setattr(main, "_free_turn_followup_db_paths", lambda: [db_path])
+
+    followup_id = main._schedule_free_turn_follow_up(
+        user_id="u1",
+        soul_id="Siri",
+        conversation_id="whatsapp:dm:Marcos",
+        follow_up_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        safe_payload={
+            "user": {"user_id": "u1", "soul_id": "Siri"},
+            "chat_name": "Marcos",
+            "allow_public_response": True,
+        },
+    )
+    assert followup_id
+    calls: dict[str, Any] = {}
+
+    async def _fake_retrieve(conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        calls["retrieve"] = {"conversation_id": conversation_id, "payload": payload}
+        return {
+            "ok": True,
+            "turn_user_prompt": "fresh prompt",
+            "turn_system_prompt": "system",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "result": {"categories": [], "items": [], "resources": []},
+            "turn_prompt_source": "conversation_retrieve",
+            "turn_history": [{"role": "user", "content": "fresh history"}],
+        }
+
+    async def _fake_turn(conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        calls["turn"] = {"conversation_id": conversation_id, "payload": payload}
+        return {"ok": True, "response_target": "private", "response": "follow-up note"}
+
+    monkeypatch.setattr(main, "conversation_retrieve", _fake_retrieve)
+    monkeypatch.setattr(main, "conversation_turn", _fake_turn)
+
+    assert await main._run_due_free_turn_followups_once() == 1
+
+    assert calls["retrieve"]["payload"]["load_source_history"] is True
+    assert calls["retrieve"]["payload"]["is_live_turn"] is False
+    assert calls["turn"]["payload"]["prompt_override_payload"]["user_prompt"] == "fresh prompt"
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        followup = con.execute("SELECT * FROM free_turn_followups WHERE id = ?", (followup_id,)).fetchone()
+        outbounds = con.execute("SELECT * FROM whatsapp_pending_outbounds").fetchall()
+    finally:
+        con.close()
+
+    assert followup["status"] == "completed"
+    assert len(outbounds) == 1
+    assert outbounds[0]["target"] == "private"
+    assert outbounds[0]["response_text"] == "follow-up note"
 
 
 @pytest.mark.asyncio

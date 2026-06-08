@@ -124,7 +124,26 @@ from app.services.turn_contract import (
 logger = logging.getLogger(__name__)
 _PROMPT_LOGGER = logging.getLogger("uvicorn.error")
 
-app = FastAPI(title="mcp-memu-server", version="0.4.0")
+
+@asynccontextmanager
+async def _app_lifespan(_app: FastAPI):
+    global _FREE_TURN_FOLLOW_UP_TASK
+    if _FREE_TURN_FOLLOW_UP_TASK is None or _FREE_TURN_FOLLOW_UP_TASK.done():
+        _FREE_TURN_FOLLOW_UP_TASK = asyncio.create_task(_free_turn_followup_scheduler())
+    try:
+        yield
+    finally:
+        task = _FREE_TURN_FOLLOW_UP_TASK
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        _FREE_TURN_FOLLOW_UP_TASK = None
+
+
+app = FastAPI(title="mcp-memu-server", version="0.4.0", lifespan=_app_lifespan)
 
 _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
@@ -417,7 +436,7 @@ def _build_free_turn_prompt(
             f"This is continuation turn {continuation_index} of 3.",
             "Continue only the specific task/research/diary purpose you chose.",
             "Return the same strict turn-contract JSON. Do not invent a new user message.",
-            "If you choose response_target respond/private in this phase, it will be recorded for later delivery work but not sent yet.",
+            "If you choose response_target respond/private, it can be sent through WhatsApp.",
             "",
             "Previous turn outcome:",
             f"- response_target: {response_target or 'unknown'}",
@@ -533,7 +552,13 @@ async def _run_free_turn_chain(
             next_reason = str(contract.get("continue_reason") or "").strip().lower()
             if next_reason not in {"task", "research", "diary"}:
                 if next_reason == "follow_up":
-                    logger.info("free_turn: follow_up parsed but deferred until scheduler phase")
+                    _schedule_free_turn_follow_up(
+                        user_id=user_id,
+                        soul_id=soul_id,
+                        conversation_id=conversation_id,
+                        follow_up_at=str(contract.get("follow_up_at") or ""),
+                        safe_payload={"allow_public_response": allow_public_response},
+                    )
                 return
             reason = next_reason
             previous_contract = contract
@@ -616,6 +641,8 @@ _SHUTDOWN_TASK: asyncio.Task | None = None
 _APIMW_INFLIGHT: set[str] = set()
 _BACKGROUND_ROLLUP_INFLIGHT: set[str] = set()
 _FREE_TURN_INFLIGHT: set[str] = set()
+_FREE_TURN_FOLLOW_UP_INFLIGHT: set[str] = set()
+_FREE_TURN_FOLLOW_UP_TASK: asyncio.Task | None = None
 _SHUTDOWN_STATE: dict[str, Any] = {
     "draining": False,
     "stopping": False,
@@ -1331,6 +1358,328 @@ WHERE id = ? AND user_id = ? AND soul_id = ? AND status = 'claimed'
     if row is None:
         raise HTTPException(status_code=404, detail="outbound not found")
     return _whatsapp_outbound_row(row)
+
+
+def _ensure_free_turn_followups_schema(con: sqlite3.Connection) -> None:
+    con.execute(
+        """
+CREATE TABLE IF NOT EXISTS free_turn_followups (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    soul_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    follow_up_at TEXT NOT NULL,
+    due_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    claimed_at TEXT,
+    completed_at TEXT,
+    failed_at TEXT,
+    last_error TEXT,
+    payload_json TEXT NOT NULL
+)
+"""
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_free_turn_followups_due "
+        "ON free_turn_followups(status, due_at)"
+    )
+    con.commit()
+
+
+def _free_turn_followup_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "soul_id": row["soul_id"],
+        "conversation_id": row["conversation_id"],
+        "follow_up_at": row["follow_up_at"],
+        "due_at": row["due_at"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "claimed_at": row["claimed_at"],
+        "completed_at": row["completed_at"],
+        "failed_at": row["failed_at"],
+        "last_error": row["last_error"],
+        "payload": _json_from_db(row["payload_json"]) or {},
+    }
+
+
+def _parse_free_turn_follow_up_at(raw: str, safe: dict[str, Any]) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = _parse_as_of_datetime(text)
+        return parsed.astimezone(UTC) if parsed is not None else None
+    except HTTPException:
+        pass
+
+    zone = _memorize_endpoint.resolve_turn_timezone(safe, logger)
+    if zone is None:
+        zone = datetime.now().astimezone().tzinfo or UTC
+    candidates = [text, text.rsplit(" ", 1)[0]]
+    for candidate in candidates:
+        for fmt in ("%A, %B %d, %Y %H:%M", "%B %d, %Y %H:%M"):
+            try:
+                dt = datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+            return dt.replace(tzinfo=zone).astimezone(UTC)
+    return None
+
+
+def _free_turn_followup_payload(safe: dict[str, Any]) -> dict[str, Any]:
+    kept: dict[str, Any] = {}
+    for key in (
+        "user",
+        "user_name",
+        "chat_name",
+        "chat_type",
+        "channel_mode",
+        "soul_card",
+        "memorize_chat",
+        "allow_public_response",
+        "time_zone",
+        "timeZone",
+        "time_zone_offset_min",
+        "timeZoneOffsetMin",
+    ):
+        if key in safe:
+            kept[key] = safe[key]
+    return kept
+
+
+def _schedule_free_turn_follow_up(
+    *,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    follow_up_at: str,
+    safe_payload: dict[str, Any],
+) -> str | None:
+    due_at = _parse_free_turn_follow_up_at(follow_up_at, safe_payload)
+    if due_at is None:
+        logger.warning("free_turn: invalid follow_up_at ignored: %r", follow_up_at)
+        return None
+    db_path = _sqlite_current_path(user_id, soul_id)
+    if db_path is None:
+        logger.warning("free_turn: follow_up ignored because sqlite path is unavailable")
+        return None
+    _sqlite_ensure_nonempty(db_path)
+    now_iso = datetime.now(UTC).isoformat()
+    followup_id = f"wafup_{uuid.uuid4().hex}"
+    payload = _free_turn_followup_payload(safe_payload)
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _ensure_free_turn_followups_schema(con)
+        con.execute(
+            """
+INSERT INTO free_turn_followups (
+    id, user_id, soul_id, conversation_id, follow_up_at, due_at,
+    status, created_at, updated_at, payload_json
+) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+""",
+            (
+                followup_id,
+                user_id,
+                soul_id,
+                conversation_id,
+                follow_up_at,
+                due_at.isoformat(),
+                now_iso,
+                now_iso,
+                _json_to_db(payload),
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+    logger.info("free_turn: scheduled follow_up %s due_at=%s", followup_id, due_at.isoformat())
+    return followup_id
+
+
+def _free_turn_followup_db_paths() -> list[Path]:
+    base_dsn = str(_STORAGE_STATUS.get("dsn") or "")
+    sqlite_dir = _sqlite_dir_from_cfg(_CONFIG, fallback_dsn=base_dsn)
+    try:
+        return sorted(path for path in sqlite_dir.glob("*.db") if path.is_file())
+    except OSError:
+        logger.exception("free_turn: failed to scan follow_up sqlite dir %s", sqlite_dir)
+        return []
+
+
+def _claim_due_free_turn_followups(
+    db_path: Path,
+    *,
+    now: datetime,
+    limit: int = 5,
+    claim_timeout_seconds: int = 7200,
+) -> list[dict[str, Any]]:
+    claimed: list[dict[str, Any]] = []
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        table = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'free_turn_followups'"
+        ).fetchone()
+        if table is None:
+            return []
+        now_iso = now.astimezone(UTC).isoformat()
+        stale_before = (now.astimezone(UTC) - timedelta(seconds=max(1, int(claim_timeout_seconds)))).isoformat()
+        rows = con.execute(
+            """
+SELECT id
+FROM free_turn_followups
+WHERE (status = 'pending' AND due_at <= ?)
+   OR (status = 'running' AND claimed_at < ?)
+ORDER BY due_at ASC
+LIMIT ?
+""",
+            (now_iso, stale_before, max(1, min(20, int(limit)))),
+        ).fetchall()
+        for row in rows:
+            followup_id = str(row["id"])
+            cur = con.execute(
+                """
+UPDATE free_turn_followups
+SET status = 'running', claimed_at = ?, updated_at = ?
+WHERE id = ?
+  AND ((status = 'pending' AND due_at <= ?) OR (status = 'running' AND claimed_at < ?))
+""",
+                (now_iso, now_iso, followup_id, now_iso, stale_before),
+            )
+            if cur.rowcount != 1:
+                continue
+            claimed_row = con.execute(
+                "SELECT * FROM free_turn_followups WHERE id = ? LIMIT 1",
+                (followup_id,),
+            ).fetchone()
+            if claimed_row is not None:
+                claimed.append(_free_turn_followup_row(claimed_row))
+        con.commit()
+    finally:
+        con.close()
+    return claimed
+
+
+def _mark_free_turn_followup(
+    db_path: Path,
+    followup_id: str,
+    *,
+    status: str,
+    error: str | None = None,
+) -> None:
+    final_status = str(status or "").strip().lower()
+    if final_status not in {"completed", "failed"}:
+        raise ValueError("followup status must be completed|failed")
+    now_iso = datetime.now(UTC).isoformat()
+    completed_at = now_iso if final_status == "completed" else None
+    failed_at = now_iso if final_status == "failed" else None
+    con = _sqlite_connect(db_path)
+    try:
+        con.execute(
+            """
+UPDATE free_turn_followups
+SET status = ?, updated_at = ?, completed_at = ?, failed_at = ?, last_error = ?
+WHERE id = ? AND status = 'running'
+""",
+            (
+                final_status,
+                now_iso,
+                completed_at,
+                failed_at,
+                str(error or "").strip() or None,
+                followup_id,
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
+    followup_id = str(row.get("id") or "").strip()
+    marker = f"followup::{followup_id}"
+    if not _mark_inflight(_FREE_TURN_FOLLOW_UP_INFLIGHT, marker):
+        return
+    try:
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        user_id = str(row.get("user_id") or "").strip()
+        soul_id = str(row.get("soul_id") or "").strip()
+        conversation_id = str(row.get("conversation_id") or "").strip()
+        user_scope = {"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id}
+        message = (
+            f"Scheduled follow-up due now. You asked to wake at {row.get('follow_up_at')}. "
+            "Use fresh memory and current chat history, then decide whether to send a WhatsApp message."
+        )
+        retrieve_payload = {
+            **payload,
+            "user": user_scope,
+            "message": message,
+            "query": message,
+            "history": [],
+            "build_turn_prompt": True,
+            "load_source_history": conversation_id.startswith("whatsapp:"),
+            "is_live_turn": False,
+        }
+        retrieve_out = await conversation_retrieve(conversation_id, retrieve_payload)
+        prompt_override_payload = _mcp_tools.build_prompt_override_payload(retrieve_out)
+        if not str(prompt_override_payload.get("user_prompt") or "").strip():
+            raise RuntimeError("conversation_retrieve returned empty turn_user_prompt")
+        turn_payload = {
+            **payload,
+            "user": user_scope,
+            "message": message,
+            "history": retrieve_out.get("turn_history") if isinstance(retrieve_out.get("turn_history"), list) else [],
+            "prompt_override_payload": prompt_override_payload,
+            "load_source_history": conversation_id.startswith("whatsapp:"),
+            "is_live_turn": False,
+        }
+        result = await conversation_turn(conversation_id, turn_payload)
+        response_target = str(result.get("response_target") or "").strip().lower()
+        response = str(result.get("response") or "").strip()
+        if response_target in {"respond", "private"} and response:
+            if conversation_id.startswith("whatsapp:"):
+                _insert_whatsapp_outbound(
+                    user_id=user_id,
+                    soul_id=soul_id,
+                    origin_conversation_id=conversation_id,
+                    target=response_target,
+                    response_text=response,
+                    metadata={"source": "free_turn_follow_up", "followup_id": followup_id},
+                )
+            else:
+                logger.info("free_turn: follow_up response ignored for non-WhatsApp conversation")
+        _mark_free_turn_followup(db_path, followup_id, status="completed")
+    except Exception as exc:
+        logger.exception("free_turn: follow_up failed id=%s", followup_id)
+        _mark_free_turn_followup(db_path, followup_id, status="failed", error=f"{type(exc).__name__}: {exc}")
+    finally:
+        _clear_inflight(_FREE_TURN_FOLLOW_UP_INFLIGHT, marker)
+
+
+async def _run_due_free_turn_followups_once() -> int:
+    count = 0
+    for db_path in _free_turn_followup_db_paths():
+        for row in _claim_due_free_turn_followups(db_path, now=datetime.now(UTC)):
+            count += 1
+            await _run_free_turn_followup(row, db_path)
+    return count
+
+
+async def _free_turn_followup_scheduler() -> None:
+    while True:
+        try:
+            await _run_due_free_turn_followups_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("free_turn: follow_up scheduler pass failed")
+        await asyncio.sleep(30)
 
 
 # ==== Retrieve payload helpers ====
@@ -4220,7 +4569,15 @@ async def conversation_turn(
                 else:
                     logger.warning("free_turn: continuation requested but claude_code is disabled")
             elif continuation_reason == "follow_up":
-                logger.info("free_turn: follow_up parsed but deferred until scheduler phase")
+                continuation_queued = bool(
+                    _schedule_free_turn_follow_up(
+                        user_id=uid,
+                        soul_id=soul_id,
+                        conversation_id=cid,
+                        follow_up_at=str(turn_contract.get("follow_up_at") or ""),
+                        safe_payload=safe,
+                    )
+                )
 
         # Enforce response_target contract:
         # - listen/observe: nothing is sent.

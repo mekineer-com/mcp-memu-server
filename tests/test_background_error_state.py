@@ -47,7 +47,6 @@ def test_background_error_fields_round_trip_through_state() -> None:
         state, _ = write_conversation_state(
             cid,
             sqlite_current_path=lambda _user, _soul: db_path,
-            sqlite_dir=sqlite_dir,
             soul_id="SoulA",
             user_id="UserA",
             updates={
@@ -83,7 +82,6 @@ def test_empty_background_error_state_defaults_to_none() -> None:
         state, _ = write_conversation_state(
             cid,
             sqlite_current_path=lambda _user, _soul: db_path,
-            sqlite_dir=sqlite_dir,
             soul_id="SoulB",
             user_id="UserB",
             updates={},
@@ -104,7 +102,6 @@ def test_consolidation_error_fields_round_trip_through_state() -> None:
         state, _ = write_conversation_state(
             cid,
             sqlite_current_path=lambda _user, _soul: db_path,
-            sqlite_dir=sqlite_dir,
             soul_id="SoulD",
             user_id="UserD",
             updates={

@@ -90,6 +90,25 @@ def _scope(*, user_id: str, soul_id: str, conversation_id: str | None = None) ->
     return scope
 
 
+def build_prompt_override_payload(retrieve_out: dict[str, Any]) -> dict[str, Any]:
+    prompt_override_payload = {
+        "system_prompt": str(retrieve_out.get("turn_system_prompt") or "").strip(),
+        "user_prompt": str(retrieve_out.get("turn_user_prompt") or "").strip(),
+        "memory_cache": retrieve_out.get("memory_cache") or [],
+        "intentions_active": retrieve_out.get("intentions_active") or {"items": []},
+        "retrieve_rag": retrieve_out.get("result") or {"categories": [], "items": [], "resources": []},
+        "generated_by": retrieve_out.get("turn_prompt_source") or "conversation_retrieve",
+    }
+    retrieve_ms = retrieve_out.get("retrieve_ms")
+    if isinstance(retrieve_ms, (int, float)):
+        prompt_override_payload["retrieve_ms"] = int(retrieve_ms)
+    if retrieve_out.get("turn_prompt_active_since") is not None:
+        prompt_override_payload["active_since"] = retrieve_out.get("turn_prompt_active_since")
+    if retrieve_out.get("cross_conversation_history"):
+        prompt_override_payload["cross_conversation_history"] = retrieve_out.get("cross_conversation_history")
+    return prompt_override_payload
+
+
 async def memu_turn_endpoint(
     req: MemuTurnRequest,
     *,
@@ -140,25 +159,10 @@ async def memu_turn_endpoint(
 
     retrieve_out = await conversation_retrieve(conversation_id, retrieve_payload)
     turn_user_prompt = str(retrieve_out.get("turn_user_prompt") or "").strip()
-    turn_system_prompt = str(retrieve_out.get("turn_system_prompt") or "").strip()
     if not turn_user_prompt:
         raise HTTPException(status_code=502, detail="conversation_retrieve returned empty turn_user_prompt")
 
-    prompt_override_payload = {
-        "system_prompt": turn_system_prompt,
-        "user_prompt": turn_user_prompt,
-        "memory_cache": retrieve_out.get("memory_cache") or [],
-        "intentions_active": retrieve_out.get("intentions_active") or {"items": []},
-        "retrieve_rag": retrieve_out.get("result") or {"categories": [], "items": [], "resources": []},
-        "generated_by": retrieve_out.get("turn_prompt_source") or "conversation_retrieve",
-    }
-    retrieve_ms = retrieve_out.get("retrieve_ms")
-    if isinstance(retrieve_ms, (int, float)):
-        prompt_override_payload["retrieve_ms"] = int(retrieve_ms)
-    if retrieve_out.get("turn_prompt_active_since") is not None:
-        prompt_override_payload["active_since"] = retrieve_out.get("turn_prompt_active_since")
-    if retrieve_out.get("cross_conversation_history"):
-        prompt_override_payload["cross_conversation_history"] = retrieve_out.get("cross_conversation_history")
+    prompt_override_payload = build_prompt_override_payload(retrieve_out)
     turn_history = retrieve_out.get("turn_history")
     turn_has_retrieve_history = isinstance(turn_history, list)
 

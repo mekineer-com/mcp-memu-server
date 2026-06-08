@@ -291,7 +291,6 @@ def test_write_consolidation_outputs_clears_pending_episode_ids() -> None:
         write_conversation_state(
             cid,
             sqlite_current_path=lambda _user, _soul: db_path,
-            sqlite_dir=tmp_dir,
             soul_id=soul_id,
             user_id=user_id,
             updates={"pending_episode_ids": ["ep:1-2"], "intentions_active": []},
@@ -307,7 +306,6 @@ def test_write_consolidation_outputs_clears_pending_episode_ids() -> None:
             write_conversation_state=lambda conversation_id, *, soul_id, user_id, updates: write_conversation_state(
                 conversation_id,
                 sqlite_current_path=lambda _user, _soul: db_path,
-                sqlite_dir=tmp_dir,
                 soul_id=soul_id,
                 user_id=user_id,
                 updates=updates,
@@ -373,7 +371,6 @@ def test_gather_consolidation_inputs_skips_when_no_pending_episodes() -> None:
         write_conversation_state(
             cid,
             sqlite_current_path=lambda _user, _soul: db_path,
-            sqlite_dir=tmp_dir,
             soul_id=soul_id,
             user_id=user_id,
             updates={"pending_episode_ids": []},
@@ -389,7 +386,6 @@ def test_gather_consolidation_inputs_skips_when_no_pending_episodes() -> None:
             write_conversation_state=lambda conversation_id, *, soul_id, user_id, updates: write_conversation_state(
                 conversation_id,
                 sqlite_current_path=lambda _user, _soul: db_path,
-                sqlite_dir=tmp_dir,
                 soul_id=soul_id,
                 user_id=user_id,
                 updates=updates,
