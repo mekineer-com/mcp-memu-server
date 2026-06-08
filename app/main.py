@@ -613,13 +613,7 @@ def _queue_free_turn_chain(
     _BACKGROUND_TASKS.add(task)
 
     def _on_done(done_task: asyncio.Task) -> None:
-        try:
-            done_task.result()
-        except Exception:
-            logger.exception("free_turn: background task failed for %s", marker)
-            _clear_inflight(_FREE_TURN_INFLIGHT, marker)
-        finally:
-            _BACKGROUND_TASKS.discard(done_task)
+        _BACKGROUND_TASKS.discard(done_task)
 
     task.add_done_callback(_on_done)
     return True
