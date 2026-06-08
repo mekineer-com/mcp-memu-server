@@ -4471,11 +4471,12 @@ async def conversation_turn(
         turn_started_at = time.monotonic()
         turn_contract: dict[str, Any] | None = None
         use_claude_session = bool(_CONFIG.get("claude_code", False))
-        turn_session_id = str(uuid.uuid4()) if use_claude_session else None
-        if turn_session_id:
-            logger.info("conversation_turn: claude session_id=%s conversation_id=%s", turn_session_id, cid)
+        turn_session_id: str | None = None
         for attempt in (1, 2):
-            chat_kwargs = {"session_id": turn_session_id} if turn_session_id else {}
+            attempt_session_id = str(uuid.uuid4()) if use_claude_session else None
+            if attempt_session_id:
+                logger.info("conversation_turn: claude session_id=%s conversation_id=%s", attempt_session_id, cid)
+            chat_kwargs = {"session_id": attempt_session_id} if attempt_session_id else {}
             turn_response_raw = await memory_service.chat(
                 turn_user_prompt,
                 system_prompt=turn_system_prompt,
@@ -4491,6 +4492,7 @@ async def conversation_turn(
                     turn_response_raw,
                     allow_public_response=allow_public_response,
                 )
+                turn_session_id = attempt_session_id
                 break
             except Exception as exc:
                 raw_snippet = str(turn_response_raw or "")[:200]

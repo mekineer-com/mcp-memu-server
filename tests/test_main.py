@@ -3055,7 +3055,7 @@ async def test_conversation_turn_retries_once_on_parse_failure(
 
 
 @pytest.mark.asyncio
-async def test_conversation_turn_reuses_session_id_for_retry(
+async def test_conversation_turn_uses_fresh_session_id_for_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3129,7 +3129,8 @@ async def test_conversation_turn_reuses_session_id_for_retry(
     assert out["ok"] is True
     assert svc.calls == 2
     assert svc.session_ids[0]
-    assert svc.session_ids[0] == svc.session_ids[1]
+    assert svc.session_ids[1]
+    assert svc.session_ids[0] != svc.session_ids[1]
 
 
 @pytest.mark.asyncio
