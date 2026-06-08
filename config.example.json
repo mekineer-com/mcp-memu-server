@@ -5,6 +5,7 @@
   "claude_code_permission_mode": "default",
   "claude_code_settings": "",
   "claude_code_workspace": "~/.cache/memu-claude-workspace",
+  "claude_code_timeout_seconds": 3600,
   "llm": {
     "provider": "openai",
     "api_key": "YOUR_API_KEY_HERE",

@@ -3161,6 +3161,19 @@ async def test_free_turn_chain_caps_at_three_and_persists_summaries() -> None:
     assert all(call["resume_session_id"] == "session-123" for call in svc.chat_calls)
 
 
+def test_free_turn_prompt_uses_observe_for_listen_only_policy() -> None:
+    prompt = main._build_free_turn_prompt(
+        reason="research",
+        continuation_index=1,
+        origin_conversation_id="whatsapp:group:familia",
+        previous_contract={"response_target": "observe", "response": "", "rehearsal": "thinking"},
+        allow_public_response=False,
+    )
+
+    assert "observe/private" in prompt
+    assert "Do not use listen/respond" in prompt
+
+
 @pytest.mark.asyncio
 async def test_whatsapp_outbound_claim_and_mark(
     tmp_path: Path,
@@ -3253,6 +3266,48 @@ async def test_free_turn_chain_queues_whatsapp_outbound(
     assert rows[0]["target"] == "private"
     assert rows[0]["target_conversation_id"] is None
     assert rows[0]["response_text"] == "I found something."
+
+
+@pytest.mark.asyncio
+async def test_free_turn_chain_ignores_non_whatsapp_outbound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "SiriTest.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
+
+    class _FakeSvc:
+        async def chat(self, *_args, **_kwargs) -> str:
+            return (
+                '{"cache":null,"annulments":[],"rehearsal":"continued",'
+                '"response_target":"private","response":"I found something."}'
+            )
+
+        async def memorize(self, **_kwargs) -> dict[str, object]:
+            return {"ok": True}
+
+    try:
+        await main._run_free_turn_chain(
+            marker="u1::Siri",
+            service=_FakeSvc(),
+            user_id="u1",
+            soul_id="Siri",
+            conversation_id="sillytavern:chat-1",
+            session_id="session-123",
+            initial_reason="research",
+            initial_contract={
+                "response_target": "listen",
+                "response": "",
+                "rehearsal": "starting",
+            },
+            system_prompt="system",
+            allow_public_response=True,
+            soul_card=None,
+        )
+    finally:
+        main._FREE_TURN_INFLIGHT.clear()
+
+    assert not db_path.exists()
 
 
 def test_free_turn_follow_up_schedule_persists_pending_row(

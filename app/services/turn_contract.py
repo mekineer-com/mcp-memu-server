@@ -688,7 +688,7 @@ def build_turn_prompt(
         current_user_text
         and isinstance(last_history_item, dict)
         and _text(last_history_item.get("role")).lower() == "user"
-        and _text(last_history_item.get("content")) == current_user_text
+        and _norm_text(_text(last_history_item.get("content"))) == _norm_text(current_user_text)
     )
     if current_user_text and not already_has_current_user_message:
         last_user_name = ""

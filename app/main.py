@@ -426,17 +426,23 @@ def _build_free_turn_prompt(
     continuation_index: int,
     origin_conversation_id: str,
     previous_contract: dict[str, Any],
+    allow_public_response: bool,
 ) -> str:
     response_target = str(previous_contract.get("response_target") or "").strip().lower()
     response = str(previous_contract.get("response") or "").strip()
     rehearsal = str(previous_contract.get("rehearsal") or "").strip()
+    target_instruction = (
+        "If you choose response_target respond/private, it can be sent through WhatsApp."
+        if allow_public_response
+        else "Valid response_target values here are observe/private. Do not use listen/respond."
+    )
     return "\n".join(
         [
             f"You chose continue_reason={reason!r} after the live turn from {origin_conversation_id}.",
             f"This is continuation turn {continuation_index} of 3.",
             "Continue only the specific task/research/diary purpose you chose.",
             "Return the same strict turn-contract JSON. Do not invent a new user message.",
-            "If you choose response_target respond/private, it can be sent through WhatsApp.",
+            target_instruction,
             "",
             "Previous turn outcome:",
             f"- response_target: {response_target or 'unknown'}",
@@ -509,6 +515,7 @@ async def _run_free_turn_chain(
                 continuation_index=continuation_index,
                 origin_conversation_id=conversation_id,
                 previous_contract=previous_contract,
+                allow_public_response=allow_public_response,
             )
             raw = await service.chat(
                 prompt,
@@ -532,19 +539,22 @@ async def _run_free_turn_chain(
             response_target = str(contract.get("response_target") or "").strip().lower()
             response = str(contract.get("response") or "").strip()
             if response_target in {"respond", "private"} and response:
-                out_id = _insert_whatsapp_outbound(
-                    user_id=user_id,
-                    soul_id=soul_id,
-                    origin_conversation_id=conversation_id,
-                    target=response_target,
-                    response_text=response,
-                    metadata={
-                        "reason": reason,
-                        "continuation_index": continuation_index,
-                        "source": "free_turn",
-                    },
-                )
-                logger.info("free_turn: queued WhatsApp outbound %s target=%s", out_id, response_target)
+                if conversation_id.startswith("whatsapp:"):
+                    out_id = _insert_whatsapp_outbound(
+                        user_id=user_id,
+                        soul_id=soul_id,
+                        origin_conversation_id=conversation_id,
+                        target=response_target,
+                        response_text=response,
+                        metadata={
+                            "reason": reason,
+                            "continuation_index": continuation_index,
+                            "source": "free_turn",
+                        },
+                    )
+                    logger.info("free_turn: queued WhatsApp outbound %s target=%s", out_id, response_target)
+                else:
+                    logger.info("free_turn: response ignored for non-WhatsApp conversation")
             cache_entry = str(contract.get("cache_entry") or "").strip()
             annulments = contract.get("annulments") if isinstance(contract.get("annulments"), list) else []
             if cache_entry or annulments:

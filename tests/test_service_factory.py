@@ -62,6 +62,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         "claude_code_permission_mode": "bypassPermissions",
         "claude_code_settings": "/home/marcos/.config/memu/siri-claude-settings.json",
         "claude_code_workspace": "/home/marcos/Desktop/siri",
+        "claude_code_timeout_seconds": 3600,
     }
 
     out = service_factory._get_service_from_payload(
@@ -107,3 +108,4 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert captured["claude_code_permission_mode"] == "bypassPermissions"
     assert captured["claude_code_settings"] == "/home/marcos/.config/memu/siri-claude-settings.json"
     assert captured["claude_code_workspace"] == "/home/marcos/Desktop/siri"
+    assert captured["claude_code_timeout_seconds"] == 3600

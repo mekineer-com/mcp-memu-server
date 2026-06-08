@@ -368,6 +368,7 @@ def _get_service_from_payload(
             claude_code_permission_mode=str(config.get("claude_code_permission_mode", "")).strip() or None,
             claude_code_settings=str(config.get("claude_code_settings", "")).strip() or None,
             claude_code_workspace=str(config.get("claude_code_workspace", "")).strip() or None,
+            claude_code_timeout_seconds=_cfg_int(config, "claude_code_timeout_seconds", 3600, minimum=1),
         )
         if log_prompts:
             svc.intercept_before_llm_call(prompt_log_before, name="prompt_logger")

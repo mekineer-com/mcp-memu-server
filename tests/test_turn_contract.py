@@ -461,3 +461,19 @@ def test_build_turn_prompt_does_not_duplicate_current_user_message_when_already_
         intentions_active={},
     )
     assert prompt.count("[user] hello") == 1
+
+
+def test_build_turn_prompt_does_not_duplicate_current_user_message_when_whitespace_differs() -> None:
+    prompt = build_turn_prompt(
+        user_message="hello   there",
+        history=[
+            {"role": "assistant", "content": "old 1"},
+            {"role": "user", "content": "hello\nthere"},
+        ],
+        prior_context=None,
+        retrieve_rag=None,
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+    )
+    assert prompt.count("[user]") == 1
