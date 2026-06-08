@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -35,3 +36,17 @@ def test_enforce_single_instance_clears_live_foreign_pid(tmp_path: Path, monkeyp
 
     server_run._enforce_single_instance(_cfg_with_pid_file(pid_file))
     assert not pid_file.exists()
+
+
+def test_quiet_access_filter_suppresses_whatsapp_outbound_claim() -> None:
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg='127.0.0.1:54446 - "POST /integration/whatsapp/outbounds/claim HTTP/1.1" 200',
+        args=(),
+        exc_info=None,
+    )
+
+    assert server_run._QuietAccessFilter().filter(record) is False

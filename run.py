@@ -214,7 +214,12 @@ def _log_file_path(cfg: dict) -> Path:
     return (ROOT / "mcp-memu-server.log").resolve()
 
 
-_QUIET_PATHS = {"/health", "/memorize/progress", "/categories/search"}
+_QUIET_PATHS = {
+    "/health",
+    "/memorize/progress",
+    "/categories/search",
+    "/integration/whatsapp/outbounds/claim",
+}
 
 
 class _QuietAccessFilter(logging.Filter):

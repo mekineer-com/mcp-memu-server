@@ -192,6 +192,17 @@ def _background_sleep_gap_detected(
     safe: dict[str, Any],
     min_chunk_tokens: int,
 ) -> bool:
+    return _memorize_endpoint.unmemorized_sleep_gap_detected(
+        history,
+        digest_cursor=-1,
+        safe=_safe_with_default_timezone(safe),
+        logger=logger,
+        min_chunk_tokens=min_chunk_tokens,
+        sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
+    )
+
+
+def _safe_with_default_timezone(safe: dict[str, Any]) -> dict[str, Any]:
     gap_safe = dict(safe)
     has_tz_name = bool(str(gap_safe.get("time_zone") or gap_safe.get("timeZone") or "").strip())
     has_tz_off = isinstance(gap_safe.get("time_zone_offset_min"), (int, float)) or isinstance(
@@ -199,14 +210,7 @@ def _background_sleep_gap_detected(
     )
     if not has_tz_name and not has_tz_off:
         gap_safe["time_zone_offset_min"] = 0
-    return _memorize_endpoint.unmemorized_sleep_gap_detected(
-        history,
-        digest_cursor=-1,
-        safe=gap_safe,
-        logger=logger,
-        min_chunk_tokens=min_chunk_tokens,
-        sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
-    )
+    return gap_safe
 
 
 def _load_background_rollup_tail(
@@ -2568,7 +2572,7 @@ def _unmemorized_sleep_gap_detected(
     return _memorize_endpoint.unmemorized_sleep_gap_detected(
         history,
         digest_cursor,
-        safe,
+        _safe_with_default_timezone(safe),
         logger=logger,
         min_chunk_tokens=_MIN_CHUNK_TOKENS if min_chunk_tokens is None else int(min_chunk_tokens),
         sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,

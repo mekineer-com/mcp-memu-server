@@ -1274,6 +1274,23 @@ def test_turn_state_read_triggers_on_summed_primary_tails(monkeypatch: pytest.Mo
     assert queued is payload
 
 
+def test_unmemorized_sleep_gap_detected_defaults_missing_timezone_to_utc() -> None:
+    def _ts(y: int, m: int, d: int, hh: int, mm: int = 0) -> int:
+        return int(datetime(y, m, d, hh, mm, tzinfo=UTC).timestamp() * 1000)
+
+    history = [
+        {"ts_ms": _ts(2026, 1, 1, 1, 0), "content": "small"},
+        {"ts_ms": _ts(2026, 1, 1, 7, 0), "content": "small"},
+    ]
+
+    assert main._unmemorized_sleep_gap_detected(
+        history,
+        -1,
+        {},
+        min_chunk_tokens=0,
+    ) is True
+
+
 def test_turn_state_read_ignores_background_tails_for_segment_trigger(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 100)
     monkeypatch.setattr(
