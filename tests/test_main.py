@@ -361,6 +361,41 @@ async def test_apimw_retrieve_items_sets_force_retrieve_and_item_count(monkeypat
     assert captured_payload["retrieve_config"]["item"]["top_k"] == 12
 
 
+@pytest.mark.asyncio
+async def test_apimw_random_items_request_active_only(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, Any] = {}
+
+    async def _fake_retrieve_items(*_args, **_kwargs):
+        return {}, []
+
+    class _Repo:
+        def list_items(self, scope, *, include_superseded=False):
+            captured["scope"] = scope
+            captured["include_superseded"] = include_superseded
+            return {}
+
+    monkeypatch.setattr(main, "_apimw_retrieve_items", _fake_retrieve_items)
+    svc = SimpleNamespace(database=SimpleNamespace(memory_item_repo=_Repo()))
+
+    await main._apimw_collect_memory_items(
+        svc,
+        payload={"user": {"user_id": "u1", "soul_id": "Echo"}},
+        focus_text="recent conversation",
+        history=[],
+        state_row={},
+        conversation_id="cid",
+        soul_id="Echo",
+        apimw_k=20,
+        apimw_random_count=5,
+        scope={"user_id": "u1", "soul_id": "Echo"},
+    )
+
+    assert captured == {
+        "scope": {"user_id": "u1", "soul_id": "Echo"},
+        "include_superseded": False,
+    }
+
+
 def test_run_retrieve_rejects_non_boolean_force_retrieve(monkeypatch: pytest.MonkeyPatch):
     class _FakeSvc:
         async def retrieve(self, *_args, **_kwargs):

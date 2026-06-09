@@ -2069,7 +2069,7 @@ async def _apimw_collect_memory_items(
         combined_items.append(item)
 
     if apimw_random_count > 0:
-        pool = svc.database.memory_item_repo.list_items(scope)
+        pool = svc.database.memory_item_repo.list_items(scope, include_superseded=False)
         candidates: list[dict[str, Any]] = []
         for item in pool.values():
             item_id = str(item.id or "").strip()
