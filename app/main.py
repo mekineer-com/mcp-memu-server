@@ -1635,8 +1635,8 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
         retrieve_payload = {
             **payload,
             "user": user_scope,
-            "message": message,
-            "query": message,
+            "self_turn_directive": message,
+            "self_turn_label": "Scheduled wake",
             "history": [],
             "build_turn_prompt": True,
             "load_source_history": conversation_id.startswith("whatsapp:"),
@@ -1649,7 +1649,8 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
         turn_payload = {
             **payload,
             "user": user_scope,
-            "message": message,
+            "self_turn_directive": message,
+            "self_turn_label": "Scheduled wake",
             "history": retrieve_out.get("turn_history") if isinstance(retrieve_out.get("turn_history"), list) else [],
             "prompt_override_payload": prompt_override_payload,
             "load_source_history": conversation_id.startswith("whatsapp:"),
@@ -3825,6 +3826,9 @@ async def conversation_retrieve(
         uid = str(scope.get("user_id") or "").strip()
         soul_id = str(scope.get("soul_id") or "").strip()
         message = _pick_str(safe, "message", "query") or ""
+        self_turn_directive = _pick_str(safe, "self_turn_directive") or ""
+        self_turn_label = _pick_str(safe, "self_turn_label") or ""
+        retrieve_focus = self_turn_directive or message
         current_whatsapp_active_since = _current_whatsapp_active_since_for_soul(cid, soul_id)
         is_live_turn = bool(safe.get("is_live_turn")) and _message_log.derive_source_label(cid).startswith("whatsapp:")
         history = _prepare_current_whatsapp_history(
@@ -3841,8 +3845,8 @@ async def conversation_retrieve(
         _stamp_assistant_display_name(history, soul_id)
         state_row: dict[str, Any] | None = None
         cross_tail: list[dict[str, Any]] = []
-        if uid and soul_id and message.strip():
-            if _message_log.derive_source_label(cid) == "sillytavern" and history:
+        if uid and soul_id and retrieve_focus.strip():
+            if _message_log.derive_source_label(cid) == "sillytavern" and history and message.strip():
                 _conversation_sources.persist_sillytavern_history_snapshot(
                     storage_dir=_get_storage_dir(_CONFIG),
                     user_id=uid,
@@ -3883,22 +3887,24 @@ async def conversation_retrieve(
             safe.get("queries") is None
             and uid
             and soul_id
-            and message.strip()
+            and retrieve_focus.strip()
             and state_row is not None
         )
         should_rebuild_queries_for_cutoff = (
             current_whatsapp_active_since is not None
             and soul_id
-            and message.strip()
+            and retrieve_focus.strip()
         )
         if should_build_default_queries or should_rebuild_queries_for_cutoff:
             safe["queries"] = _build_retrieve_soul_context_queries(
                 soul_id=soul_id,
-                message=message,
+                message=retrieve_focus,
                 history=history,
                 state_row=state_row or {},
                 conversation_id=cid,
                 chat_label=chat_label_for_prompt,
+                self_turn_directive=self_turn_directive or None,
+                self_turn_label=self_turn_label or None,
             )
 
         if cross_tail:
@@ -3938,6 +3944,8 @@ async def conversation_retrieve(
                 soul_card = payload_soul_card or soul_card
 
                 message = _pick_str(safe, "message", "query") or ""
+                self_turn_directive = _pick_str(safe, "self_turn_directive") or ""
+                self_turn_label = _pick_str(safe, "self_turn_label") or ""
                 turn_history = history
                 if _message_log.derive_source_label(cid) == "sillytavern":
                     turn_history = _sillytavern_turn_history_with_floor(history, _state_row)
@@ -3962,6 +3970,8 @@ async def conversation_retrieve(
                     cross_conversation_history=safe.get("_cross_conversation_history"),
                     chat_label=chat_label_for_prompt,
                     conversation_id=cid,
+                    self_turn_directive=self_turn_directive or None,
+                    self_turn_label=self_turn_label or None,
                 )
                 out["turn_prompt_source"] = "conversation_retrieve"
             if current_whatsapp_active_since is not None:
@@ -4288,8 +4298,9 @@ async def conversation_turn(
             raise HTTPException(status_code=400, detail="user_id and soul_id required")
 
         message = str(safe.get("message") or "").strip()
-        if not message:
-            raise HTTPException(status_code=400, detail="message is required")
+        self_turn_directive = str(safe.get("self_turn_directive") or "").strip()
+        if not message and not self_turn_directive:
+            raise HTTPException(status_code=400, detail="message or self_turn_directive is required")
 
         current_whatsapp_active_since = _current_whatsapp_active_since_for_soul(cid, soul_id)
         is_live_turn = bool(safe.get("is_live_turn")) and _message_log.derive_source_label(cid).startswith("whatsapp:")

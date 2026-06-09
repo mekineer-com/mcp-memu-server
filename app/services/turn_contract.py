@@ -648,6 +648,8 @@ def build_turn_prompt(
     cross_conversation_history: str | None = None,
     chat_label: str | None = None,
     conversation_id: str | None = None,
+    self_turn_directive: str | None = None,
+    self_turn_label: str | None = None,
     now: datetime | None = None,
 ) -> str:
     cache_lines = format_working_thoughts_lines(memory_cache)
@@ -692,6 +694,7 @@ def build_turn_prompt(
     # item's name so the echo renders with the correct speaker label.
     history_for_render = list(history or [])
     current_user_text = _text(user_message)
+    directive_text = _text(self_turn_directive)
     last_history_item: dict[str, Any] | None = None
     for item in reversed(history_for_render):
         if not isinstance(item, dict):
@@ -701,11 +704,12 @@ def build_turn_prompt(
             break
     already_has_current_user_message = bool(
         current_user_text
+        and not directive_text
         and isinstance(last_history_item, dict)
         and _text(last_history_item.get("role")).lower() == "user"
         and _norm_text(_text(last_history_item.get("content"))) == _norm_text(current_user_text)
     )
-    if current_user_text and not already_has_current_user_message:
+    if current_user_text and not directive_text and not already_has_current_user_message:
         last_user_name = ""
         for item in history_for_render:
             if not isinstance(item, dict):
@@ -738,7 +742,9 @@ def build_turn_prompt(
         "My Intentions:",
         format_intentions_for_prompt(intentions_active),
         "",
-        f"New Message:\n{current_user_text}",
+        f"{_text(self_turn_label) or 'Self-turn directive'}:\n{directive_text}"
+        if directive_text
+        else f"New Message:\n{current_user_text}",
         "",
         "**remember maximum lengths**",
     ]

@@ -1501,6 +1501,33 @@ def test_build_retrieve_soul_context_queries_includes_current_chat_heading_for_w
     assert "[dm][Marcos] \u2190 current chat" in text
 
 
+def test_build_retrieve_soul_context_queries_keeps_self_turn_out_of_user_history() -> None:
+    queries = main._build_retrieve_soul_context_queries(
+        soul_id="Siri",
+        message="Scheduled follow-up due now. Reason you gave: Check on Marcos.",
+        history=[
+            {"message_id": "m1", "role": "user", "name": "Marcos", "content": "Going to nap."},
+            {"message_id": "m2", "role": "assistant", "name": "Siri", "content": "Rest close."},
+        ],
+        state_row={"memory_cache": [], "intentions_active": {"items": []}},
+        conversation_id="whatsapp:dm:Marcos",
+        self_turn_directive="Scheduled follow-up due now. Reason you gave: Check on Marcos.",
+        self_turn_label="Scheduled wake",
+    )
+
+    history_text = "\n".join(
+        str((q.get("content") or {}).get("text") or "")
+        for q in queries
+        if isinstance(q, dict) and q.get("role") == "history"
+    )
+    self_turn_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "self_turn"]
+    assert "[Marcos] Scheduled follow-up due now" not in history_text
+    assert len(self_turn_rows) == 1
+    assert "Scheduled wake:\nScheduled follow-up due now." in str(
+        (self_turn_rows[0].get("content") or {}).get("text") or ""
+    )
+
+
 @pytest.mark.asyncio
 async def test_run_memorize_episodes_records_failure_progress_on_exception(tmp_path):
     segments_dir = tmp_path / "segments"
@@ -3536,7 +3563,13 @@ async def test_due_free_turn_follow_up_runs_fresh_turn_and_queues_outbound(
 
     assert calls["retrieve"]["payload"]["load_source_history"] is True
     assert calls["retrieve"]["payload"]["is_live_turn"] is False
-    assert "Check whether Marcos got home safely." in calls["retrieve"]["payload"]["message"]
+    assert "message" not in calls["retrieve"]["payload"]
+    assert "query" not in calls["retrieve"]["payload"]
+    assert calls["retrieve"]["payload"]["self_turn_label"] == "Scheduled wake"
+    assert "Check whether Marcos got home safely." in calls["retrieve"]["payload"]["self_turn_directive"]
+    assert "message" not in calls["turn"]["payload"]
+    assert calls["turn"]["payload"]["self_turn_label"] == "Scheduled wake"
+    assert "Check whether Marcos got home safely." in calls["turn"]["payload"]["self_turn_directive"]
     assert calls["turn"]["payload"]["prompt_override_payload"]["user_prompt"] == "fresh prompt"
 
     con = main._sqlite_connect(db_path)

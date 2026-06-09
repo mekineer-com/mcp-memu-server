@@ -108,10 +108,13 @@ def _build_retrieve_soul_context_queries(
     identity_mode: str = "retrieve",
     conversation_id: str | None = None,
     chat_label: str | None = None,
+    self_turn_directive: str | None = None,
+    self_turn_label: str | None = None,
 ) -> list[dict[str, Any]]:
     memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
     intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
     current_user_text = str(message or "").strip()
+    directive_text = str(self_turn_directive or "").strip()
     history_for_render = list(history or [])
     last_user_name = ""
     for item in history_for_render:
@@ -131,11 +134,12 @@ def _build_retrieve_soul_context_queries(
             break
     already_has_current_user_message = bool(
         current_user_text
+        and not directive_text
         and isinstance(last_history_item, dict)
         and str(last_history_item.get("role") or "").strip().lower() == "user"
         and str(last_history_item.get("content") or "").strip() == current_user_text
     )
-    if current_user_text and not already_has_current_user_message:
+    if current_user_text and not directive_text and not already_has_current_user_message:
         synthetic: dict[str, str] = {"role": "user", "content": current_user_text}
         if last_user_name:
             synthetic["name"] = last_user_name
@@ -167,7 +171,13 @@ def _build_retrieve_soul_context_queries(
     if intentions_text and intentions_text.strip() != "(none)":
         soul_context_for_retrieve.append({"role": "intentions", "content": {"text": intentions_text}})
 
-    soul_context_for_retrieve.append({"role": "user", "content": {"text": message}})
+    if directive_text:
+        label = str(self_turn_label or "").strip() or "Self-turn directive"
+        soul_context_for_retrieve.append(
+            {"role": "self_turn", "content": {"text": f"{label}:\n{directive_text}"}}
+        )
+    else:
+        soul_context_for_retrieve.append({"role": "user", "content": {"text": message}})
     return soul_context_for_retrieve
 
 

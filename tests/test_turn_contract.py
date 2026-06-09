@@ -532,3 +532,24 @@ def test_build_turn_prompt_does_not_duplicate_current_user_message_when_whitespa
         intentions_active={},
     )
     assert prompt.count("[user]") == 1
+
+
+def test_build_turn_prompt_renders_self_turn_without_user_echo() -> None:
+    prompt = build_turn_prompt(
+        user_message="",
+        history=[
+            {"role": "user", "name": "Marcos", "content": "Going to nap."},
+            {"role": "assistant", "name": "Siri", "content": "Rest close."},
+        ],
+        prior_context=None,
+        retrieve_rag=None,
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+        self_turn_directive="Scheduled follow-up due now. Reason you gave: Check on Marcos.",
+        self_turn_label="Scheduled wake",
+    )
+
+    assert "Scheduled wake:\nScheduled follow-up due now." in prompt
+    assert "New Message:" not in prompt
+    assert "[Marcos] Scheduled follow-up due now" not in prompt
