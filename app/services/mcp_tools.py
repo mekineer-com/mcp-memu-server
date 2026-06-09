@@ -23,6 +23,8 @@ class MemuTurnRequest(BaseModel):
     memorize_chat: bool | None = None
     external_message_id: str | None = None
     allow_public_response: bool | None = None
+    time_zone: str | None = None
+    time_zone_offset_min: int | None = None
 
 
 class MemuRetrieveRequest(BaseModel):
@@ -156,6 +158,10 @@ async def memu_turn_endpoint(
         retrieve_payload["allow_public_response"] = req.allow_public_response
     if req.external_message_id:
         retrieve_payload["external_message_id"] = str(req.external_message_id)
+    if req.time_zone:
+        retrieve_payload["time_zone"] = str(req.time_zone)
+    if req.time_zone_offset_min is not None:
+        retrieve_payload["time_zone_offset_min"] = int(req.time_zone_offset_min)
 
     retrieve_out = await conversation_retrieve(conversation_id, retrieve_payload)
     turn_user_prompt = str(retrieve_out.get("turn_user_prompt") or "").strip()
@@ -192,6 +198,10 @@ async def memu_turn_endpoint(
         turn_payload["allow_public_response"] = req.allow_public_response
     if req.external_message_id:
         turn_payload["external_message_id"] = str(req.external_message_id)
+    if req.time_zone:
+        turn_payload["time_zone"] = str(req.time_zone)
+    if req.time_zone_offset_min is not None:
+        turn_payload["time_zone_offset_min"] = int(req.time_zone_offset_min)
     turn_out = await conversation_turn(conversation_id, turn_payload)
     response_target = str(turn_out.get("response_target") or "").strip().lower()
     if response_target not in {"respond", "listen", "observe", "private"}:
