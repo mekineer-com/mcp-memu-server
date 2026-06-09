@@ -90,6 +90,35 @@ def test_empty_background_error_state_defaults_to_none() -> None:
         assert state["last_background_error_at"] is None
         assert state["last_consolidation_error"] is None
         assert state["last_consolidation_error_at"] is None
+        assert state["apimw_message_to_self"] is None
+
+
+def test_apimw_message_to_self_round_trip_through_state() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        db_path, sqlite_dir = _tmp_sqlite_setup(tmp_dir, soul_id="SoulC")
+
+        state, _ = write_conversation_state(
+            "conv-apimw",
+            sqlite_current_path=lambda _user, _soul: db_path,
+            soul_id="SoulC",
+            user_id="UserC",
+            updates={"apimw_message_to_self": "notice the quiet signal"},
+        )
+
+        assert state["apimw_message_to_self"] == "notice the quiet signal"
+
+        con = sqlite3.connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            row = conversation_state_row(con, "conv-apimw")
+            assert row is not None
+            loaded = conversation_state_from_row(row)
+        finally:
+            con.close()
+
+        assert loaded is not None
+        assert loaded["apimw_message_to_self"] == "notice the quiet signal"
 
 
 def test_consolidation_error_fields_round_trip_through_state() -> None:

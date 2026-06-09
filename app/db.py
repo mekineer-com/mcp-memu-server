@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     rolling_summary_cursor_id INTEGER,
     rolling_summary_updated_at DATETIME,
     prior_context TEXT,
+    apimw_message_to_self TEXT,
     pending_episode_ids JSON DEFAULT '[]',
     last_memorize_at DATETIME,
     updated_at DATETIME,
@@ -129,6 +130,8 @@ CREATE TABLE IF NOT EXISTS conversations (
         con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary_cursor_id INTEGER")
     if "rolling_summary_updated_at" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary_updated_at DATETIME")
+    if "apimw_message_to_self" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN apimw_message_to_self TEXT")
     if "last_consolidation_error" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN last_consolidation_error TEXT")
     if "last_consolidation_error_at" not in conversation_cols:

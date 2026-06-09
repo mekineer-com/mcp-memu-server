@@ -644,6 +644,7 @@ def build_turn_prompt(
     all_categories_summary: str | None,
     memory_cache: Any,
     intentions_active: Any,
+    apimw_message_to_self: str | None = None,
     cross_conversation_history: str | None = None,
     chat_label: str | None = None,
     conversation_id: str | None = None,
@@ -674,6 +675,11 @@ def build_turn_prompt(
         context_blocks.extend([all_categories_text, ""])
     if category_paragraph:
         context_blocks.extend([category_paragraph, ""])
+    message_to_self = _text(apimw_message_to_self)
+    if message_to_self:
+        memories_block = "\n".join(
+            line for line in (f"- [subconscious] {message_to_self}", memories_block) if line
+        )
     if memories_block:
         context_blocks.extend(["My Memories:", memories_block, ""])
     if has_prior:

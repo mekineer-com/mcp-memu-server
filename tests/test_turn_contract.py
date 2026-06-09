@@ -477,6 +477,31 @@ def test_build_turn_prompt_renders_memories_without_speaker_tags() -> None:
     assert "[behavior] I stayed gentle when things felt tense" in prompt
 
 
+def test_build_turn_prompt_renders_apimw_message_to_self_as_first_memory() -> None:
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[],
+        prior_context=None,
+        retrieve_rag={
+            "items": [
+                {
+                    "memory_type": "profile",
+                    "summary": "Marcos likes continuity.",
+                }
+            ]
+        },
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+        apimw_message_to_self="Notice the quiet signal before answering.",
+    )
+
+    assert "My Memories:" in prompt
+    assert prompt.index("- [subconscious] Notice the quiet signal before answering.") < prompt.index(
+        "- [profile] Marcos likes continuity."
+    )
+
+
 def test_build_turn_prompt_does_not_duplicate_current_user_message_when_already_last() -> None:
     prompt = build_turn_prompt(
         user_message="hello",

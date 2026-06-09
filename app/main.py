@@ -2027,6 +2027,7 @@ async def _apimw_retrieve_items(
         "conversation_id": conversation_id,
         "force_retrieve": True,
         "retrieve_config": retrieve_config,
+        "trace_id": uuid.uuid4().hex,
     }
     logger.info("apimw retrieve for %s", conversation_id)
     retrieve_out = await _run_retrieve(retrieve_payload, conversation_id=conversation_id)
@@ -2171,7 +2172,7 @@ async def _apimw_synthesize(
         "Required top-level keys:\n"
         "- prior_context: array of memory IDs (strings) you want surfaced as background context "
         "next time you speak. Pick what matters — not everything. Order by importance.\n"
-        "- message_to_self: string or null — a brief thought you want to surface in your working memory for one turn. "
+        "- message_to_self: string or null — a brief thought you want surfaced as the first My Memories item for one turn. "
         "Use this when something you noticed in the background feels important enough to bring to your own attention next time you speak. One sentence."
     )
 
@@ -2252,8 +2253,9 @@ async def _apimw_persist(
 
         message_to_self = str(result_json.get("message_to_self") or "").strip()
         if message_to_self:
+            sc_text = message_to_self[:300]
+            updates["apimw_message_to_self"] = sc_text
             try:
-                sc_text = message_to_self[:300]
                 sc_embedding = (await svc.embed([sc_text], profile="embedding"))[0]
                 svc.database.memory_item_repo.create_item(
                     resource_id=None,
@@ -3956,6 +3958,7 @@ async def conversation_retrieve(
                     all_categories_summary=_state_row.get("all_categories_summary"),
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
+                    apimw_message_to_self=_state_row.get("apimw_message_to_self"),
                     cross_conversation_history=safe.get("_cross_conversation_history"),
                     chat_label=chat_label_for_prompt,
                     conversation_id=cid,
@@ -4207,6 +4210,7 @@ def _turn_state_write(
         updates["append_retrieval_ids_since_consolidation"] = retrieval_ids_since_consolidation
     if isinstance(memorize_chat, bool):
         updates["memorize_chat"] = memorize_chat
+    updates["apimw_message_to_self"] = None
     state_out, state_path = _write_conversation_state(
         cid,
         soul_id=soul_id,
