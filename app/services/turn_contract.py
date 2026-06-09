@@ -370,7 +370,10 @@ def format_shaped_by_line(
 
 
 def _render_retrieve(
-    result: Any, *, now: datetime | None = None,
+    result: Any,
+    *,
+    now: datetime | None = None,
+    one_shot_subconscious: str | None = None,
 ) -> tuple[str, str, set[str]]:
     """Return (category_paragraph, memories_block, item_terms).
 
@@ -404,6 +407,7 @@ def _render_retrieve(
 
     item_rows: list[tuple[dict[str, Any], str, str, str]] = []
     seen_items: set[str] = set()
+    one_shot_key = _norm_text(one_shot_subconscious)
     items = result.get("items")
     if isinstance(items, list):
         for item in items[:12]:
@@ -412,6 +416,12 @@ def _render_retrieve(
             memory_type = _text(item.get("memory_type") or "memory")
             summary = _text(item.get("summary"))
             if not summary:
+                continue
+            if (
+                memory_type == "subconscious"
+                and one_shot_key
+                and _norm_text(summary) == one_shot_key
+            ):
                 continue
             speaker_key = _norm_text(_text(item.get("speaker_id")))
             summary_key = f"{_norm_text(summary)}|{speaker_key}"
@@ -654,7 +664,12 @@ def build_turn_prompt(
 ) -> str:
     cache_lines = format_working_thoughts_lines(memory_cache)
 
-    category_paragraph, memories_block, item_terms = _render_retrieve(retrieve_rag, now=now)
+    message_to_self = _text(apimw_message_to_self)
+    category_paragraph, memories_block, item_terms = _render_retrieve(
+        retrieve_rag,
+        now=now,
+        one_shot_subconscious=message_to_self,
+    )
     rendered_all_categories, all_categories_terms = _render_all_categories_summary(
         all_categories_summary,
         item_terms,
@@ -677,7 +692,6 @@ def build_turn_prompt(
         context_blocks.extend([all_categories_text, ""])
     if category_paragraph:
         context_blocks.extend([category_paragraph, ""])
-    message_to_self = _text(apimw_message_to_self)
     if message_to_self:
         memories_block = "\n".join(
             line for line in (f"- [subconscious] {message_to_self}", memories_block) if line

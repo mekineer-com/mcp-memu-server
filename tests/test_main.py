@@ -1775,6 +1775,7 @@ async def test_apimw_persist_remaps_numbered_prior_context_ids(monkeypatch: pyte
 @pytest.mark.asyncio
 async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest.MonkeyPatch):
     captured_updates: dict[str, object] = {}
+    captured_item: dict[str, object] = {}
 
     monkeypatch.setattr(
         main,
@@ -1788,8 +1789,20 @@ async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest
 
     monkeypatch.setattr(main, "_write_conversation_state", _fake_write_conversation_state)
 
+    async def _embed(texts: list[str], profile: str) -> list[list[float]]:
+        assert texts == ["remember the quiet signal"]
+        assert profile == "embedding"
+        return [[0.1, 0.2]]
+
+    def _create_item(**kwargs):
+        captured_item.update(kwargs)
+        return SimpleNamespace(id="subconscious_1")
+
     await main._apimw_persist(
-        svc=SimpleNamespace(),
+        svc=SimpleNamespace(
+            embed=_embed,
+            database=SimpleNamespace(memory_item_repo=SimpleNamespace(create_item=_create_item)),
+        ),
         result_json={"message_to_self": "remember the quiet signal"},
         items_by_id={},
         id_map={},
@@ -1801,6 +1814,9 @@ async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest
     )
 
     assert captured_updates["apimw_message_to_self"] == "remember the quiet signal"
+    assert captured_item["memory_type"] == "subconscious"
+    assert captured_item["summary"] == "remember the quiet signal"
+    assert captured_item["extra"] == {"apimw_message_to_self": True}
 
 
 @pytest.mark.asyncio
@@ -3326,6 +3342,7 @@ async def test_free_turn_chain_caps_at_three_and_persists_summaries() -> None:
             },
             system_prompt="system",
             allow_public_response=True,
+            safe_payload={"timezone": "America/Lima"},
             soul_card=None,
         )
     finally:
@@ -3425,6 +3442,7 @@ async def test_free_turn_chain_queues_whatsapp_outbound(
             },
             system_prompt="system",
             allow_public_response=True,
+            safe_payload={"timezone": "America/Lima"},
             soul_card=None,
         )
     finally:
@@ -3477,12 +3495,64 @@ async def test_free_turn_chain_ignores_non_whatsapp_outbound(
             },
             system_prompt="system",
             allow_public_response=True,
+            safe_payload={"timezone": "America/Lima"},
             soul_card=None,
         )
     finally:
         main._FREE_TURN_INFLIGHT.clear()
 
     assert not db_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_free_turn_chain_follow_up_preserves_turn_timezone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_safe_payload: dict[str, object] = {}
+
+    class _FakeSvc:
+        async def chat(self, *_args, **_kwargs) -> str:
+            return (
+                '{"cache":null,"annulments":[],"rehearsal":"continued",'
+                '"response_target":"listen","response":"",'
+                '"continue_reason":"follow_up",'
+                '"follow_up_at":"Saturday, June 13, 2026 12:00",'
+                '"follow_up_reason":"Check in at noon."}'
+            )
+
+        async def memorize(self, **_kwargs) -> dict[str, object]:
+            return {"ok": True}
+
+    def _capture_follow_up(**kwargs):
+        captured_safe_payload.update(kwargs["safe_payload"])
+        return "followup-1"
+
+    monkeypatch.setattr(main, "_schedule_free_turn_follow_up", _capture_follow_up)
+
+    try:
+        await main._run_free_turn_chain(
+            marker="u1::Siri",
+            service=_FakeSvc(),
+            user_id="u1",
+            soul_id="Siri",
+            conversation_id="whatsapp:dm:Marcos",
+            session_id="session-123",
+            initial_reason="research",
+            initial_contract={
+                "response_target": "listen",
+                "response": "",
+                "rehearsal": "starting",
+            },
+            system_prompt="system",
+            allow_public_response=True,
+            safe_payload={"timezone": "America/Lima", "time_zone_offset_min": -300},
+            soul_card=None,
+        )
+    finally:
+        main._FREE_TURN_INFLIGHT.clear()
+
+    assert captured_safe_payload["timezone"] == "America/Lima"
+    assert captured_safe_payload["time_zone_offset_min"] == -300
 
 
 def test_free_turn_follow_up_schedule_persists_pending_row(

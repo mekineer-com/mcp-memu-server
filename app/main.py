@@ -508,6 +508,7 @@ async def _run_free_turn_chain(
     initial_contract: dict[str, Any],
     system_prompt: str,
     allow_public_response: bool,
+    safe_payload: dict[str, Any],
     soul_card: str | None,
 ) -> None:
     reason = initial_reason
@@ -572,7 +573,7 @@ async def _run_free_turn_chain(
                         conversation_id=conversation_id,
                         follow_up_at=str(contract.get("follow_up_at") or ""),
                         follow_up_reason=str(contract.get("follow_up_reason") or ""),
-                        safe_payload={"allow_public_response": allow_public_response},
+                        safe_payload=safe_payload,
                     )
                 return
             reason = next_reason
@@ -594,6 +595,7 @@ def _queue_free_turn_chain(
     initial_contract: dict[str, Any],
     system_prompt: str,
     allow_public_response: bool,
+    safe_payload: dict[str, Any],
     soul_card: str | None,
 ) -> bool:
     marker = f"{user_id}::{soul_id}"
@@ -612,6 +614,7 @@ def _queue_free_turn_chain(
             initial_contract=initial_contract,
             system_prompt=system_prompt,
             allow_public_response=allow_public_response,
+            safe_payload=safe_payload,
             soul_card=soul_card,
         )
     )
@@ -2269,6 +2272,7 @@ async def _apimw_persist(
                     source_role="soul",
                     summary=sc_text,
                     embedding=sc_embedding,
+                    extra={"apimw_message_to_self": True},
                     user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
                     conversation_id=conversation_id,
                 )
@@ -4536,6 +4540,7 @@ async def conversation_turn(
                         initial_contract=turn_contract,
                         system_prompt=turn_system_prompt,
                         allow_public_response=allow_public_response,
+                        safe_payload=safe,
                         soul_card=soul_card,
                     )
                 else:
