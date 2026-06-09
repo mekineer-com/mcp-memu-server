@@ -1627,6 +1627,7 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
         conversation_id = str(row.get("conversation_id") or "").strip()
         user_scope = {"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id}
         follow_up_reason = str(payload.get("follow_up_reason") or "").strip()
+        trace_id = uuid.uuid4().hex
         message = (
             f"Scheduled follow-up due now. You asked to wake at {row.get('follow_up_at')}. "
             f"Reason you gave: {follow_up_reason}. "
@@ -1641,6 +1642,7 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
             "build_turn_prompt": True,
             "load_source_history": conversation_id.startswith("whatsapp:"),
             "is_live_turn": False,
+            "trace_id": trace_id,
         }
         retrieve_out = await conversation_retrieve(conversation_id, retrieve_payload)
         prompt_override_payload = _mcp_tools.build_prompt_override_payload(retrieve_out)
@@ -1655,22 +1657,25 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
             "prompt_override_payload": prompt_override_payload,
             "load_source_history": conversation_id.startswith("whatsapp:"),
             "is_live_turn": False,
+            "trace_id": trace_id,
         }
         result = await conversation_turn(conversation_id, turn_payload)
         response_target = str(result.get("response_target") or "").strip().lower()
         response = str(result.get("response") or "").strip()
         if response_target in {"respond", "private"} and response:
-            if conversation_id.startswith("whatsapp:"):
-                _insert_whatsapp_outbound(
-                    user_id=user_id,
-                    soul_id=soul_id,
-                    origin_conversation_id=conversation_id,
-                    target=response_target,
-                    response_text=response,
-                    metadata={"source": "free_turn_follow_up", "followup_id": followup_id},
-                )
-            else:
-                logger.info("free_turn: follow_up response ignored for non-WhatsApp conversation")
+            outbound_target = response_target if conversation_id.startswith("whatsapp:") else "private"
+            _insert_whatsapp_outbound(
+                user_id=user_id,
+                soul_id=soul_id,
+                origin_conversation_id=conversation_id,
+                target=outbound_target,
+                response_text=response,
+                metadata={
+                    "source": "free_turn_follow_up",
+                    "followup_id": followup_id,
+                    "requested_target": response_target,
+                },
+            )
         _mark_free_turn_followup(db_path, followup_id, status="completed")
     except Exception as exc:
         logger.exception("free_turn: follow_up failed id=%s", followup_id)

@@ -3571,6 +3571,10 @@ async def test_due_free_turn_follow_up_runs_fresh_turn_and_queues_outbound(
     assert calls["turn"]["payload"]["self_turn_label"] == "Scheduled wake"
     assert "Check whether Marcos got home safely." in calls["turn"]["payload"]["self_turn_directive"]
     assert calls["turn"]["payload"]["prompt_override_payload"]["user_prompt"] == "fresh prompt"
+    trace_id = calls["retrieve"]["payload"]["trace_id"]
+    assert isinstance(trace_id, str)
+    assert len(trace_id) == 32
+    assert calls["turn"]["payload"]["trace_id"] == trace_id
 
     con = main._sqlite_connect(db_path)
     try:
@@ -3584,6 +3588,116 @@ async def test_due_free_turn_follow_up_runs_fresh_turn_and_queues_outbound(
     assert len(outbounds) == 1
     assert outbounds[0]["target"] == "private"
     assert outbounds[0]["response_text"] == "follow-up note"
+    metadata = json.loads(outbounds[0]["metadata_json"])
+    assert metadata["followup_id"] == followup_id
+    assert metadata["requested_target"] == "private"
+
+
+@pytest.mark.asyncio
+async def test_due_free_turn_follow_up_from_sillytavern_queues_private_whatsapp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "SiriTest.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
+    monkeypatch.setattr(main, "_free_turn_followup_db_paths", lambda: [db_path])
+
+    followup_id = main._schedule_free_turn_follow_up(
+        user_id="u1",
+        soul_id="Siri",
+        conversation_id="sillytavern:chat-1",
+        follow_up_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        follow_up_reason="Tell Marcos what I found.",
+        safe_payload={"user": {"user_id": "u1", "soul_id": "Siri"}},
+    )
+    assert followup_id
+
+    async def _fake_retrieve(_conversation_id: str, _payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "turn_user_prompt": "fresh prompt",
+            "turn_system_prompt": "system",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "result": {"categories": [], "items": [], "resources": []},
+            "turn_prompt_source": "conversation_retrieve",
+        }
+
+    async def _fake_turn(_conversation_id: str, _payload: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True, "response_target": "respond", "response": "I found it."}
+
+    monkeypatch.setattr(main, "conversation_retrieve", _fake_retrieve)
+    monkeypatch.setattr(main, "conversation_turn", _fake_turn)
+
+    assert await main._run_due_free_turn_followups_once() == 1
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        followup = con.execute("SELECT * FROM free_turn_followups WHERE id = ?", (followup_id,)).fetchone()
+        outbounds = con.execute("SELECT * FROM whatsapp_pending_outbounds").fetchall()
+    finally:
+        con.close()
+
+    assert followup["status"] == "completed"
+    assert len(outbounds) == 1
+    assert outbounds[0]["origin_conversation_id"] == "sillytavern:chat-1"
+    assert outbounds[0]["target"] == "private"
+    metadata = json.loads(outbounds[0]["metadata_json"])
+    assert metadata["requested_target"] == "respond"
+
+
+@pytest.mark.asyncio
+async def test_due_free_turn_follow_up_enqueue_failure_marks_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "SiriTest.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
+    monkeypatch.setattr(main, "_free_turn_followup_db_paths", lambda: [db_path])
+
+    followup_id = main._schedule_free_turn_follow_up(
+        user_id="u1",
+        soul_id="Siri",
+        conversation_id="whatsapp:dm:Marcos",
+        follow_up_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        follow_up_reason="Check in.",
+        safe_payload={"user": {"user_id": "u1", "soul_id": "Siri"}},
+    )
+    assert followup_id
+
+    async def _fake_retrieve(_conversation_id: str, _payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "turn_user_prompt": "fresh prompt",
+            "turn_system_prompt": "system",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "result": {"categories": [], "items": [], "resources": []},
+            "turn_prompt_source": "conversation_retrieve",
+        }
+
+    async def _fake_turn(_conversation_id: str, _payload: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True, "response_target": "private", "response": "Checking in."}
+
+    def _fail_insert(**_kwargs: Any) -> str:
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr(main, "conversation_retrieve", _fake_retrieve)
+    monkeypatch.setattr(main, "conversation_turn", _fake_turn)
+    monkeypatch.setattr(main, "_insert_whatsapp_outbound", _fail_insert)
+
+    assert await main._run_due_free_turn_followups_once() == 1
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        followup = con.execute("SELECT * FROM free_turn_followups WHERE id = ?", (followup_id,)).fetchone()
+    finally:
+        con.close()
+
+    assert followup["status"] == "failed"
+    assert "RuntimeError: queue unavailable" in followup["last_error"]
 
 
 @pytest.mark.asyncio
