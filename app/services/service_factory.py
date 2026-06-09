@@ -131,7 +131,7 @@ def _apimw_cadence_from_cfg(cfg: Mapping[str, Any] | None) -> int:
 
 
 def _apimw_memory_count_from_cfg(cfg: Mapping[str, Any] | None) -> int:
-    return _cfg_int(cfg, "apimw_memory_count", 25, minimum=1, section="retrieve")
+    return _cfg_int(cfg, "apimw_memory_count", 20, minimum=1, section="retrieve")
 
 
 def _apimw_random_count_from_cfg(cfg: Mapping[str, Any] | None) -> int:
@@ -140,18 +140,6 @@ def _apimw_random_count_from_cfg(cfg: Mapping[str, Any] | None) -> int:
 
 def _consolidation_interval_days_from_cfg(cfg: Mapping[str, Any] | None) -> int:
     return _cfg_int(cfg, "consolidation_interval_days", 7, minimum=1)
-
-
-def _build_apimw_retrieve_config(base_cfg: Any, *, item_top_k: int) -> dict[str, Any]:
-    cfg = dict(base_cfg) if isinstance(base_cfg, dict) else {}
-    item_cfg = cfg.get("item")
-    if not isinstance(item_cfg, dict):
-        item_cfg = {}
-    else:
-        item_cfg = dict(item_cfg)
-    item_cfg["top_k"] = max(1, int(item_top_k))
-    cfg["item"] = item_cfg
-    return cfg
 
 
 def _count_soul_messages(history: list[dict[str, Any]], soul_id: str) -> int:

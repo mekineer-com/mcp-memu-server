@@ -981,7 +981,6 @@ _apimw_cadence_from_cfg = _service_factory._apimw_cadence_from_cfg
 _apimw_memory_count_from_cfg = _service_factory._apimw_memory_count_from_cfg
 _apimw_random_count_from_cfg = _service_factory._apimw_random_count_from_cfg
 _consolidation_interval_days_from_cfg = _service_factory._consolidation_interval_days_from_cfg
-_build_apimw_retrieve_config = _service_factory._build_apimw_retrieve_config
 _count_soul_messages = _service_factory._count_soul_messages
 _merge_llm_profiles = _service_factory._merge_llm_profiles
 _clear_cached_services = _service_factory._clear_cached_services
@@ -1967,8 +1966,7 @@ def _set_background_error(
 
 
 _APIMW_BACKGROUND_ERROR_PREFIXES = (
-    "apimw_topic_failed:",
-    "apimw_def_parse_failed:",
+    "apimw_synthesis_parse_failed:",
     "apimw_failed:",
 )
 
@@ -2000,45 +1998,10 @@ def _clear_background_error_if_apimw_owned(
     )
 
 
-async def _apimw_topic_statement(
-    svc: Any,
-    *,
-    topic_user: str,
-    payload: dict[str, Any],
-    identity_context: str,
-    conversation_id: str,
-) -> tuple[str, bool]:
-    logger.info("apimw step A: topic statement for %s", conversation_id)
-    topic_system = (
-        f"{identity_context}\n\n"
-        "State the topic of the CURRENT episode in 1-2 sentences. The previous episode is provided only as context — "
-        "if the current episode is brief, use it to understand what the new message means, but describe only where the conversation is now."
-    )
-    topic_statement = await svc.chat(
-        topic_user,
-        profile="topic_statement",
-        system_prompt=topic_system,
-        op="apimw",
-        step="topic_statement",
-    )
-    parsed_topic = str(topic_statement or "").strip()
-    if parsed_topic:
-        return parsed_topic, False
-    fallback = _pick_str(payload, "message", "query") or ""
-    if fallback:
-        logger.warning(
-            "apimw step A: empty topic statement for %s; falling back to message/query",
-            conversation_id,
-        )
-        return fallback, True
-    logger.warning("apimw step A: empty topic statement for %s; no message/query fallback", conversation_id)
-    return "", True
-
-
-async def _apimw_retrieve_pass(
+async def _apimw_retrieve_items(
     payload: dict[str, Any],
     *,
-    query_text: str,
+    focus_text: str,
     soul_id: str,
     history: list[dict[str, Any]],
     state_row: dict[str, Any],
@@ -2047,23 +2010,24 @@ async def _apimw_retrieve_pass(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     retrieve_queries = _build_retrieve_soul_context_queries(
         soul_id=soul_id,
-        message=query_text,
+        message=focus_text,
         history=history,
         state_row=state_row,
         identity_mode="apimw",
         conversation_id=conversation_id,
     )
+    retrieve_config = dict(payload.get("retrieve_config")) if isinstance(payload.get("retrieve_config"), dict) else {}
+    item_config = dict(retrieve_config.get("item")) if isinstance(retrieve_config.get("item"), dict) else {}
+    item_config["top_k"] = max(1, int(apimw_k))
+    retrieve_config["item"] = item_config
     retrieve_payload = {
         **payload,
-        "query": query_text,
+        "query": focus_text,
         "queries": retrieve_queries,
         "conversation_id": conversation_id,
         "force_retrieve": True,
+        "retrieve_config": retrieve_config,
     }
-    retrieve_payload["retrieve_config"] = _build_apimw_retrieve_config(
-        retrieve_payload.get("retrieve_config"),
-        item_top_k=apimw_k,
-    )
     logger.info("apimw retrieve for %s", conversation_id)
     retrieve_out = await _run_retrieve(retrieve_payload, conversation_id=conversation_id)
     retrieve_result_data = retrieve_out.get("result") or {}
@@ -2072,11 +2036,11 @@ async def _apimw_retrieve_pass(
     return retrieve_result_data, retrieved_items
 
 
-async def _apimw_retrieve_and_merge(
+async def _apimw_collect_memory_items(
     svc: Any,
     payload: dict[str, Any],
     *,
-    topic_statement: str,
+    focus_text: str,
     history: list[dict[str, Any]],
     state_row: dict[str, Any],
     conversation_id: str,
@@ -2085,9 +2049,9 @@ async def _apimw_retrieve_and_merge(
     apimw_random_count: int,
     scope: dict[str, str],
 ) -> list[dict[str, Any]]:
-    first_pass_result, first_pass_items = await _apimw_retrieve_pass(
+    _retrieve_result, retrieved_items = await _apimw_retrieve_items(
         payload,
-        query_text=topic_statement,
+        focus_text=focus_text,
         soul_id=soul_id,
         history=history,
         state_row=state_row,
@@ -2095,22 +2059,9 @@ async def _apimw_retrieve_and_merge(
         apimw_k=apimw_k,
     )
 
-    second_pass_items: list[dict[str, Any]] = []
-    second_query = str(first_pass_result.get("next_step_query") or "").strip()
-    if second_query and _norm_result_sig(second_query) != _norm_result_sig(topic_statement):
-        _second_pass_result, second_pass_items = await _apimw_retrieve_pass(
-            payload,
-            query_text=second_query,
-            soul_id=soul_id,
-            history=history,
-            state_row=state_row,
-            conversation_id=conversation_id,
-            apimw_k=apimw_k,
-        )
-
     combined_items: list[dict[str, Any]] = []
     seen_item_sigs: set[str] = set()
-    for item in first_pass_items + second_pass_items:
+    for item in retrieved_items:
         sig = _item_sig(item)
         if not sig or sig in seen_item_sigs:
             continue
@@ -2122,12 +2073,13 @@ async def _apimw_retrieve_and_merge(
         candidates: list[dict[str, Any]] = []
         for item in pool.values():
             item_id = str(item.id or "").strip()
+            memory_type = str(item.memory_type or "memory")
             summary = str(item.summary or "").strip()
-            if not item_id or not summary:
+            if not item_id or not summary or memory_type == "narrative_self":
                 continue
             row = {
                 "id": item_id,
-                "memory_type": str(item.memory_type or "memory"),
+                "memory_type": memory_type,
                 "summary": summary,
                 "happened_at": item.happened_at,
                 "created_at": item.created_at,
@@ -2149,7 +2101,7 @@ async def _apimw_retrieve_and_merge(
     return combined_items
 
 
-async def _apimw_def_call(
+async def _apimw_synthesize(
     svc: Any,
     *,
     combined_items: list[dict[str, Any]],
@@ -2161,8 +2113,8 @@ async def _apimw_def_call(
     conversation_id: str,
     scope: dict[str, str],
     llm_profile: str | None = None,
-) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
-    logger.info("apimw step D+E+F: combined call for %s", conversation_id)
+) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]], dict[str, str]]:
+    logger.info("apimw synthesis for %s", conversation_id)
     formatted_memory_lines: list[str] = []
     items_by_id: dict[str, dict[str, Any]] = {}
     id_map: dict[str, str] = {}
@@ -2238,20 +2190,20 @@ async def _apimw_def_call(
         system_prompt=apimw_system_prompt,
         response_format={"type": "json_object"},
         op="apimw",
-        step="def_call",
+        step="synthesis",
     )
 
     apimw_response_text = str(llm_raw or "").strip()
     try:
         result_json = json.loads(apimw_response_text)
     except json.JSONDecodeError:
-        logger.error("apimw D+E+F: JSON parse failed, raw=%s", apimw_response_text[:200])
+        logger.error("apimw synthesis: JSON parse failed, raw=%s", apimw_response_text[:200])
         return None, items_by_id, id_map
     if not isinstance(result_json, dict):
-        logger.error("apimw D+E+F: expected dict, got %s", type(result_json).__name__)
+        logger.error("apimw synthesis: expected dict, got %s", type(result_json).__name__)
         return None, items_by_id, id_map
 
-    logger.info("apimw D+E+F: parsed JSON with keys %s for %s", list(result_json.keys()), conversation_id)
+    logger.info("apimw synthesis: parsed JSON with keys %s for %s", list(result_json.keys()), conversation_id)
     return result_json, items_by_id, id_map
 
 
@@ -2266,12 +2218,17 @@ async def _apimw_persist(
     conversation_id: str,
     user_id: str,
     soul_id: str,
+    expected_prior_context: str = "",
 ) -> None:
     async with _retrieve_scope_lock(user_id, soul_id):
         updates: dict[str, Any] = {}
         resolved_prior_context_ids: list[str] = []
 
         fresh_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=user_id, soul_id=soul_id)
+        existing_prior = str(fresh_row.get("prior_context") or "").strip()
+        if existing_prior != str(expected_prior_context or "").strip():
+            logger.warning("apimw: stale prior_context for %s; skipping APImw persist", conversation_id)
+            return
 
         prior_context_ids_raw = result_json.get("prior_context") or []
         if isinstance(prior_context_ids_raw, list) and prior_context_ids_raw:
@@ -2291,12 +2248,6 @@ async def _apimw_persist(
                     prior_context_lines.append(_format_shaped_by_line(shaped_by))
             if prior_context_lines:
                 new_prior = "\n".join(prior_context_lines)
-                existing_prior = str(fresh_row.get("prior_context") or "").strip()
-                if existing_prior and existing_prior != new_prior:
-                    logger.warning(
-                        "apimw: overwriting non-empty prior_context for %s (may indicate concurrent turn write)",
-                        conversation_id,
-                    )
                 updates["prior_context"] = new_prior
 
         message_to_self = str(result_json.get("message_to_self") or "").strip()
@@ -2351,35 +2302,16 @@ async def _run_apimw(
 
         recent_history = history[-30:] if history else []
         episode_text = _render_history(recent_history)
-        topic_user = f"Recent conversation:\n{episode_text or '(none)'}"
-
         identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
-        topic_statement, used_topic_fallback = await _apimw_topic_statement(
-            svc,
-            topic_user=topic_user,
-            payload=payload,
-            identity_context=identity_context,
-            conversation_id=conversation_id,
-        )
-        if used_topic_fallback:
-            detail = "topic_statement empty; used message/query fallback" if topic_statement else "topic_statement empty and no fallback"
-            try:
-                _set_background_error(
-                    conversation_id,
-                    soul_id=soul_id,
-                    user_id=user_id,
-                    code="apimw_topic_failed",
-                    detail=detail,
-                )
-            except Exception:
-                logger.exception("failed to record APImw topic fallback state for %s", conversation_id)
-        if not topic_statement:
+        focus_text = episode_text.strip()
+        if not focus_text:
+            logger.info("apimw skipped for %s: no recent conversation text", conversation_id)
             return
 
-        combined_items = await _apimw_retrieve_and_merge(
+        combined_items = await _apimw_collect_memory_items(
             svc,
             payload,
-            topic_statement=topic_statement,
+            focus_text=focus_text,
             history=history,
             state_row=state_row,
             conversation_id=conversation_id,
@@ -2390,7 +2322,7 @@ async def _run_apimw(
         )
 
         apimw_heavy_profile = _resolve_profile(svc, "memory_extract")
-        result_json, items_by_id, apimw_id_map = await _apimw_def_call(
+        result_json, items_by_id, apimw_id_map = await _apimw_synthesize(
             svc,
             combined_items=combined_items,
             identity_context=identity_context,
@@ -2408,11 +2340,11 @@ async def _run_apimw(
                     conversation_id,
                     soul_id=soul_id,
                     user_id=user_id,
-                    code="apimw_def_parse_failed",
-                    detail="step D+E+F response was not valid JSON object",
+                    code="apimw_synthesis_parse_failed",
+                    detail="synthesis response was not valid JSON object",
                 )
             except Exception:
-                logger.exception("failed to record APImw def-parse failure for %s", conversation_id)
+                logger.exception("failed to record APImw synthesis-parse failure for %s", conversation_id)
             return
 
         await _apimw_persist(
@@ -2425,6 +2357,7 @@ async def _run_apimw(
             conversation_id=conversation_id,
             user_id=user_id,
             soul_id=soul_id,
+            expected_prior_context=str(state_row.get("prior_context") or ""),
         )
         try:
             _clear_background_error_if_apimw_owned(conversation_id, soul_id=soul_id, user_id=user_id)

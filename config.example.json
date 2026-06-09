@@ -32,8 +32,7 @@
       "reflection": "",
       "ranking": "",
       "consolidation": "",
-      "holistic_summary": 0.3,
-      "topic_statement": 0.1
+      "holistic_summary": 0.3
     }
   },
   "storage": {
@@ -102,7 +101,7 @@
   "retrieve": {
     "apimw_enabled": true,
     "apimw_cadence": 5,
-    "apimw_memory_count": 25,
+    "apimw_memory_count": 20,
     "apimw_random_count": 5
   },
   "consolidation_interval_days": 7,

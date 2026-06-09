@@ -102,7 +102,7 @@ def default_config() -> dict[str, Any]:
         "retrieve": {
             "apimw_enabled": True,
             "apimw_cadence": 5,
-            "apimw_memory_count": 25,
+            "apimw_memory_count": 20,
             "apimw_random_count": 5,
         },
         "consolidation_interval_days": 7,

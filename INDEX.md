@@ -121,7 +121,7 @@ storage:    resources_dir, metadata_store (provider + dsn)
 listen:     host, port
 memu:       path (to memu/src)
 categories: defaults[], dynamic-category thresholds
-retrieve:   apimw_enabled (bool; toggles APImw pipeline), apimw_cadence (int, default 3; APImw runs every N soul messages), apimw_memory_count (int, default 25; APImw item.top_k), apimw_random_count (int, default 5; APImw random sample size)
+retrieve:   apimw_enabled (bool; toggles APImw pipeline), apimw_cadence (int, default 3; APImw runs every N soul messages), apimw_memory_count (int, default 20; APImw item.top_k), apimw_random_count (int, default 5; APImw random sample size)
 memorize:   min_chunk_tokens (default 4000; floor for sleep-gap-triggered memorize), background_summary_tokens (default 1000; token threshold that triggers rolling-summary for memorize_chat=false chats), background_summary_min_tokens (default 100; minimum token threshold when rollup is queued from cross-memorize assembly), background_extra_messages_tokens (memu preprocessor floor for background message rendering)
 consolidation_interval_days: cadence gate for consolidation after successful memorize runs (default 7)
 debug:      log_prompts (bool) — dumps exact LLM prompt + response for memorize/consolidation steps to console

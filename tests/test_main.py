@@ -333,7 +333,7 @@ def test_run_retrieve_forwards_force_retrieve(
 
 
 @pytest.mark.asyncio
-async def test_apimw_retrieve_pass_sets_force_retrieve(monkeypatch: pytest.MonkeyPatch):
+async def test_apimw_retrieve_items_sets_force_retrieve_and_item_count(monkeypatch: pytest.MonkeyPatch):
     captured_payload: dict[str, Any] = {}
 
     async def _fake_run_retrieve(
@@ -346,9 +346,9 @@ async def test_apimw_retrieve_pass_sets_force_retrieve(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
-    await main._apimw_retrieve_pass(
+    await main._apimw_retrieve_items(
         payload={"user": {"user_id": "u1", "soul_id": "Echo"}},
-        query_text="test topic",
+        focus_text="recent conversation",
         soul_id="Echo",
         history=[{"role": "user", "name": "Marcos", "content": "hello"}],
         state_row={},
@@ -357,6 +357,8 @@ async def test_apimw_retrieve_pass_sets_force_retrieve(monkeypatch: pytest.Monke
     )
 
     assert captured_payload["force_retrieve"] is True
+    assert captured_payload["query"] == "recent conversation"
+    assert captured_payload["retrieve_config"]["item"]["top_k"] == 12
 
 
 def test_run_retrieve_rejects_non_boolean_force_retrieve(monkeypatch: pytest.MonkeyPatch):
@@ -1703,6 +1705,37 @@ async def test_apimw_persist_remaps_numbered_prior_context_ids(monkeypatch: pyte
     )
 
     assert captured_updates["append_prior_context_ids_since_consolidation"] == ["mem_one", "mem_raw", "mem_two"]
+
+
+@pytest.mark.asyncio
+async def test_apimw_persist_skips_when_prior_context_changed(monkeypatch: pytest.MonkeyPatch):
+    writes: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"prior_context": "newer context"}, None, None),
+    )
+    monkeypatch.setattr(
+        main,
+        "_write_conversation_state",
+        lambda conversation_id, soul_id, user_id, updates: writes.append(dict(updates)) or ({"ok": True}, Path("/tmp/fake.db")),
+    )
+
+    await main._apimw_persist(
+        svc=SimpleNamespace(),
+        result_json={"prior_context": ["mem_one"], "message_to_self": "notice this"},
+        items_by_id={"mem_one": {"id": "mem_one", "memory_type": "profile", "summary": "Marcos likes continuity."}},
+        id_map={},
+        combined_items=[],
+        scope={"user_id": "u", "soul_id": "s"},
+        conversation_id="c",
+        user_id="u",
+        soul_id="s",
+        expected_prior_context="old context",
+    )
+
+    assert writes == []
 
 
 @pytest.mark.asyncio
