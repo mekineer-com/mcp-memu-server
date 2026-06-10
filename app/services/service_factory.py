@@ -20,7 +20,6 @@ _STEP_MODEL_TO_MEMORIZE_PROFILE_FIELD: dict[str, str] = {
 }
 _STEP_MODEL_TO_RETRIEVE_PROFILE_FIELD: dict[str, str] = {
     "reflection": "sufficiency_check_llm_profile",
-    "ranking": "llm_ranking_llm_profile",
 }
 _VALID_STEP_MODEL_KEYS: set[str] = set(_STEP_MODEL_TO_MEMORIZE_PROFILE_FIELD) | set(_STEP_MODEL_TO_RETRIEVE_PROFILE_FIELD) | {
     "consolidation"
