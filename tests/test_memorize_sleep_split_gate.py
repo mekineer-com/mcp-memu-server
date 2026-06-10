@@ -47,7 +47,6 @@ def test_unmemorized_sleep_gap_detected_requires_floor_before_split() -> None:
         unmemorized_sleep_gap_detected(
             history,
             digest_cursor=-1,
-            safe={"time_zone_offset_min": 0},
             logger=None,
             min_chunk_tokens=4000,
             sleep_split_min_lull_seconds=3 * 60 * 60,

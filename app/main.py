@@ -195,22 +195,10 @@ def _background_sleep_gap_detected(
     return _memorize_endpoint.unmemorized_sleep_gap_detected(
         history,
         digest_cursor=-1,
-        safe=_safe_with_default_timezone(safe),
         logger=logger,
         min_chunk_tokens=min_chunk_tokens,
         sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
     )
-
-
-def _safe_with_default_timezone(safe: dict[str, Any]) -> dict[str, Any]:
-    gap_safe = dict(safe)
-    has_tz_name = bool(str(gap_safe.get("time_zone") or gap_safe.get("timeZone") or "").strip())
-    has_tz_off = isinstance(gap_safe.get("time_zone_offset_min"), (int, float)) or isinstance(
-        gap_safe.get("timeZoneOffsetMin"), (int, float)
-    )
-    if not has_tz_name and not has_tz_off:
-        gap_safe["time_zone_offset_min"] = 0
-    return gap_safe
 
 
 def _load_background_rollup_tail(
@@ -1435,7 +1423,7 @@ def _free_turn_followup_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def _parse_free_turn_follow_up_at(raw: str, safe: dict[str, Any]) -> datetime | None:
+def _parse_free_turn_follow_up_at(raw: str) -> datetime | None:
     text = str(raw or "").strip()
     if not text:
         return None
@@ -1445,9 +1433,7 @@ def _parse_free_turn_follow_up_at(raw: str, safe: dict[str, Any]) -> datetime | 
     except HTTPException:
         pass
 
-    zone = _memorize_endpoint.resolve_turn_timezone(safe, logger)
-    if zone is None:
-        zone = datetime.now().astimezone().tzinfo or UTC
+    zone = _memorize_endpoint.server_timezone()
     candidates = [text, text.rsplit(" ", 1)[0]]
     for candidate in candidates:
         for fmt in ("%A, %B %d, %Y %H:%M", "%B %d, %Y %H:%M"):
@@ -1470,10 +1456,6 @@ def _free_turn_followup_payload(safe: dict[str, Any]) -> dict[str, Any]:
         "soul_card",
         "memorize_chat",
         "allow_public_response",
-        "time_zone",
-        "timeZone",
-        "time_zone_offset_min",
-        "timeZoneOffsetMin",
     ):
         if key in safe:
             kept[key] = safe[key]
@@ -1493,7 +1475,7 @@ def _schedule_free_turn_follow_up(
     if not reason:
         logger.warning("free_turn: follow_up ignored because follow_up_reason is missing")
         return None
-    due_at = _parse_free_turn_follow_up_at(follow_up_at, safe_payload)
+    due_at = _parse_free_turn_follow_up_at(follow_up_at)
     if due_at is None:
         logger.warning("free_turn: invalid follow_up_at ignored: %r", follow_up_at)
         return None
@@ -2536,14 +2518,13 @@ def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, con
 def _unmemorized_sleep_gap_detected(
     history: list[dict[str, Any]],
     digest_cursor: Any,
-    safe: dict[str, Any],
+    _safe: dict[str, Any],
     *,
     min_chunk_tokens: int | None = None,
 ) -> bool:
     return _memorize_endpoint.unmemorized_sleep_gap_detected(
         history,
         digest_cursor,
-        _safe_with_default_timezone(safe),
         logger=logger,
         min_chunk_tokens=_MIN_CHUNK_TOKENS if min_chunk_tokens is None else int(min_chunk_tokens),
         sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
@@ -3333,7 +3314,6 @@ async def _run_memorize_episodes(
     safe: dict[str, Any],
     resource_url: str,
     chat_key: str | None,
-    tz_name: str | None,
     prev_len: int,
     merged_len: int,
     force: bool,
@@ -3354,7 +3334,6 @@ async def _run_memorize_episodes(
         safe=safe,
         resource_url=resource_url,
         chat_key=chat_key,
-        tz_name=tz_name,
         prev_len=prev_len,
         merged_len=merged_len,
         force=force,

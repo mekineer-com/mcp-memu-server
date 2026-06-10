@@ -6,17 +6,12 @@ import time as _time
 import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, time as dtime, timedelta, timezone
+from datetime import UTC, datetime, time as dtime, timedelta
 from pathlib import Path
 from typing import Any, TypedDict
 
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
-
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:  # pragma: no cover
-    ZoneInfo = None  # type: ignore
 
 
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
@@ -173,7 +168,6 @@ async def run_memorize_episodes(
     safe: dict[str, Any],
     resource_url: str,
     chat_key: str | None,
-    tz_name: str | None,
     prev_len: int,
     merged_len: int,
     force: bool,
@@ -492,7 +486,7 @@ async def run_memorize_episodes(
                     "resource_url": resource_url,
                     "conversationId": conversation_id,
                     "chatKey": chat_key,
-                    "timeZone": tz_name,
+                    "serverTimeZone": str(zi or ""),
                     "messages_prev": prev_len,
                     "messages_in": merged_len,
                     "messages_merged": merged_len,
@@ -579,6 +573,10 @@ def _local_dt(ts_ms: int, zi: Any | None) -> datetime:
     return dt_utc.astimezone(zi) if zi is not None else dt_utc
 
 
+def server_timezone() -> Any:
+    return datetime.now().astimezone().tzinfo or UTC
+
+
 def date_label(ts_ms: int | None, zi: Any | None) -> str:
     if ts_ms is None:
         return "undated"
@@ -591,18 +589,14 @@ def date_label(ts_ms: int | None, zi: Any | None) -> str:
 def split_indices_by_sleep(
     msgs: list[dict[str, Any]],
     zi: Any | None,
-    tz_ok: bool,
     min_lull_seconds: int,
 ) -> tuple[list[int], dict[str, Any]]:
-    if not tz_ok:
-        return ([], {"tz_ok": False})
-
     ts: list[int | None] = []
     for m in msgs:
         v = m.get("ts_ms")
         ts.append(int(v) if isinstance(v, int) else None)
     if sum(1 for x in ts if x is not None) < 2:
-        return ([], {"tz_ok": True, "timestamps_ok": False})
+        return ([], {"timestamps_ok": False})
 
     best_gap_per_night: dict[Any, tuple[float, int]] = {}
     for i in range(len(ts) - 1):
@@ -651,7 +645,6 @@ def split_indices_by_sleep(
     return (
         splits,
         {
-            "tz_ok": True,
             "timestamps_ok": True,
             "nights_total": nights_total,
             "nights_qual": nights_qual,
@@ -776,31 +769,9 @@ def slice_history_after_last_memorized_segment(
     return history[tail_start:]
 
 
-def resolve_turn_timezone(safe: dict[str, Any], logger: Any) -> Any | None:
-    tz_name = str(safe.get("time_zone") or safe.get("timeZone") or "").strip() or None
-    raw_off = safe.get("time_zone_offset_min")
-    if raw_off is None:
-        raw_off = safe.get("timeZoneOffsetMin")
-    tz_off_min: int | None = None
-    if isinstance(raw_off, (int, float)) and math.isfinite(raw_off):
-        tz_off_min = int(raw_off)
-    if tz_name and ZoneInfo is not None:
-        try:
-            return ZoneInfo(str(tz_name))
-        except (KeyError, OSError, ValueError):
-            logger.debug("invalid time zone name: %s", tz_name, exc_info=True)
-    if tz_off_min is not None:
-        try:
-            return timezone(timedelta(minutes=tz_off_min))
-        except (TypeError, ValueError, OverflowError):
-            logger.debug("invalid time zone offset minutes: %s", tz_off_min, exc_info=True)
-    return None
-
-
 def unmemorized_sleep_gap_detected(
     history: list[dict[str, Any]],
     digest_cursor: Any,
-    safe: dict[str, Any],
     *,
     logger: Any,
     min_chunk_tokens: int,
@@ -814,10 +785,7 @@ def unmemorized_sleep_gap_detected(
     unproc = history[start:] if isinstance(history, list) else []
     if len(unproc) < 2:
         return False
-    zi = resolve_turn_timezone(safe, logger)
-    if zi is None:
-        return False
-    splits, _stats = split_indices_by_sleep(unproc, zi, True, sleep_split_min_lull_seconds)
+    splits, _stats = split_indices_by_sleep(unproc, server_timezone(), sleep_split_min_lull_seconds)
     eligible_splits = select_sleep_splits_after_min_tokens(
         unproc,
         start_index=0,
@@ -916,28 +884,7 @@ async def memorize_endpoint(
                     str(item).strip() for item in raw_pending_ids
                 )
 
-            tz_name = endpoint_ctx.pick_str(safe, "time_zone")
-            tz_off_raw = safe.get("time_zone_offset_min")
-            tz_off_min = int(tz_off_raw) if isinstance(tz_off_raw, (int, float)) and math.isfinite(tz_off_raw) else None
-
-            tz_ok = False
-            zi = None
-            if tz_name and ZoneInfo is not None:
-                try:
-                    zi = ZoneInfo(str(tz_name))
-                    tz_ok = True
-                except (KeyError, ValueError):
-                    zi = None
-                    tz_ok = False
-            if not tz_ok and tz_off_min is not None:
-                try:
-                    zi = timezone(timedelta(minutes=tz_off_min))
-                    tz_ok = True
-                    if not tz_name:
-                        tz_name = f"offset({tz_off_min})"
-                except (ValueError, OverflowError):
-                    zi = None
-                    tz_ok = False
+            zi = server_timezone()
 
             rawm = manifest_path.read_text(encoding="utf-8") if manifest_path.exists() else ""
             manifest: dict[str, Any] = json.loads(rawm) if rawm.strip() else {}
@@ -948,7 +895,7 @@ async def memorize_endpoint(
             resource_url = str(chat_dir)
             sleep_stats: Any | None = None
             new_segments: list[dict[str, Any]] = []
-            if not tail and not is_cross and tz_ok and isinstance(merged, list) and any(isinstance(m.get("ts_ms"), int) for m in merged):
+            if not tail and not is_cross and isinstance(merged, list) and any(isinstance(m.get("ts_ms"), int) for m in merged):
                 tail_n = 2500
                 if not segments:
                     rebuild_from = 0
@@ -971,7 +918,7 @@ async def memorize_endpoint(
 
                 ctx_start = max(0, rebuild_from - 1)
                 splits_rel, sleep_stats = split_indices_by_sleep(
-                    merged[ctx_start:], zi, tz_ok, ctx.sleep_split_min_lull_seconds,
+                    merged[ctx_start:], zi, ctx.sleep_split_min_lull_seconds,
                 )
                 candidate_splits = [ctx_start + i for i in splits_rel if (ctx_start + i) > rebuild_from]
                 splits = select_sleep_splits_after_min_tokens(
@@ -991,7 +938,7 @@ async def memorize_endpoint(
                 segments = keep_segments + new_segments
                 manifest_out = {
                     "v": 1,
-                    "tz": str(tz_name or ""),
+                    "tz": str(zi),
                     "segments": segments,
                     "split": {
                         "min_lull_seconds": ctx.sleep_split_min_lull_seconds,
@@ -999,7 +946,6 @@ async def memorize_endpoint(
                     "source": {
                         "conversation_id": conversation_id or "",
                         "conversationId": conversation_id or "",
-                        "timeZoneOffsetMin": tz_off_min if tz_off_min is not None else None,
                         "chatKey": chat_key,
                         "chatKeySource": chat_key_source or "",
                     },
@@ -1103,7 +1049,6 @@ async def memorize_endpoint(
                 safe=safe,
                 resource_url=resource_url,
                 chat_key=chat_key,
-                tz_name=tz_name,
                 prev_len=prev_len,
                 merged_len=len(merged) if isinstance(merged, list) else 0,
                 force=force,

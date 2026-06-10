@@ -476,7 +476,6 @@ def test_split_indices_by_sleep_keeps_all_qualifying_boundaries():
     splits, stats = main._split_indices_by_sleep(
         messages,
         UTC,
-        True,
         3 * 60 * 60,
     )
 
@@ -1315,7 +1314,7 @@ def test_turn_state_read_triggers_on_summed_primary_tails(monkeypatch: pytest.Mo
     assert queued is payload
 
 
-def test_unmemorized_sleep_gap_detected_defaults_missing_timezone_to_utc() -> None:
+def test_unmemorized_sleep_gap_detected_uses_server_timezone_without_caller_timezone() -> None:
     def _ts(y: int, m: int, d: int, hh: int, mm: int = 0) -> int:
         return int(datetime(y, m, d, hh, mm, tzinfo=UTC).timestamp() * 1000)
 
@@ -1558,7 +1557,6 @@ async def test_run_memorize_episodes_records_failure_progress_on_exception(tmp_p
             safe={},
             resource_url="/tmp/day.json",
             chat_key=None,
-            tz_name=None,
             prev_len=0,
             merged_len=1,
             force=True,
@@ -1619,7 +1617,6 @@ async def test_run_memorize_episodes_clears_pending_ids_on_extraction_failure(mo
             safe={},
             resource_url="/tmp/day.json",
             chat_key=None,
-            tz_name=None,
             prev_len=0,
             merged_len=1,
             force=False,
@@ -3342,7 +3339,7 @@ async def test_free_turn_chain_caps_at_three_and_persists_summaries() -> None:
             },
             system_prompt="system",
             allow_public_response=True,
-            safe_payload={"timezone": "America/Lima"},
+            safe_payload={},
             soul_card=None,
         )
     finally:
@@ -3560,55 +3557,19 @@ async def test_free_turn_chain_ignores_non_whatsapp_outbound(
     assert not db_path.exists()
 
 
-@pytest.mark.asyncio
-async def test_free_turn_chain_follow_up_preserves_turn_timezone(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured_safe_payload: dict[str, object] = {}
+def test_free_turn_follow_up_payload_excludes_caller_timezone() -> None:
+    payload = main._free_turn_followup_payload(
+        {
+            "user": {"user_id": "u1", "soul_id": "Siri"},
+            "chat_name": "Marcos",
+            "time_zone": "America/Lima",
+            "time_zone_offset_min": -300,
+        }
+    )
 
-    class _FakeSvc:
-        async def chat(self, *_args, **_kwargs) -> str:
-            return (
-                '{"cache":null,"annulments":[],"rehearsal":"continued",'
-                '"response_target":"listen","response":"",'
-                '"continue_reason":"follow_up",'
-                '"follow_up_at":"Saturday, June 13, 2026 12:00",'
-                '"follow_up_reason":"Check in at noon."}'
-            )
-
-        async def memorize(self, **_kwargs) -> dict[str, object]:
-            return {"ok": True}
-
-    def _capture_follow_up(**kwargs):
-        captured_safe_payload.update(kwargs["safe_payload"])
-        return "followup-1"
-
-    monkeypatch.setattr(main, "_schedule_free_turn_follow_up", _capture_follow_up)
-
-    try:
-        await main._run_free_turn_chain(
-            marker="u1::Siri",
-            service=_FakeSvc(),
-            user_id="u1",
-            soul_id="Siri",
-            conversation_id="whatsapp:dm:Marcos",
-            session_id="session-123",
-            initial_reason="research",
-            initial_contract={
-                "response_target": "listen",
-                "response": "",
-                "rehearsal": "starting",
-            },
-            system_prompt="system",
-            allow_public_response=True,
-            safe_payload={"timezone": "America/Lima", "time_zone_offset_min": -300},
-            soul_card=None,
-        )
-    finally:
-        main._FREE_TURN_INFLIGHT.clear()
-
-    assert captured_safe_payload["timezone"] == "America/Lima"
-    assert captured_safe_payload["time_zone_offset_min"] == -300
+    assert payload["chat_name"] == "Marcos"
+    assert "time_zone" not in payload
+    assert "time_zone_offset_min" not in payload
 
 
 def test_free_turn_follow_up_schedule_persists_pending_row(

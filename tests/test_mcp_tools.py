@@ -64,8 +64,6 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
             chat_type="dm",
             memorize_chat=False,
             allow_public_response=False,
-            time_zone="America/Lima",
-            time_zone_offset_min=-300,
         ),
         conversation_retrieve=fake_retrieve,
         conversation_turn=fake_turn,
@@ -84,16 +82,16 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
     assert retrieve_payload.get("chat_type") == "dm"
     assert retrieve_payload.get("memorize_chat") is False
     assert retrieve_payload.get("allow_public_response") is False
-    assert retrieve_payload.get("time_zone") == "America/Lima"
-    assert retrieve_payload.get("time_zone_offset_min") == -300
+    assert "time_zone" not in retrieve_payload
+    assert "time_zone_offset_min" not in retrieve_payload
     assert "load_source_history" not in retrieve_payload
     assert turn_payload.get("user_name") == "Alice"
     assert turn_payload.get("chat_name") == "Alice"
     assert turn_payload.get("chat_type") == "dm"
     assert turn_payload.get("memorize_chat") is False
     assert turn_payload.get("allow_public_response") is False
-    assert turn_payload.get("time_zone") == "America/Lima"
-    assert turn_payload.get("time_zone_offset_min") == -300
+    assert "time_zone" not in turn_payload
+    assert "time_zone_offset_min" not in turn_payload
     assert "load_source_history" not in turn_payload
     assert retrieve_payload.get("trace_id") == out.get("trace_id")
     assert turn_payload.get("trace_id") == out.get("trace_id")
