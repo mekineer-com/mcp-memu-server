@@ -493,11 +493,11 @@ def test_build_turn_prompt_renders_apimw_message_to_self_under_working_thoughts(
         all_categories_summary=None,
         memory_cache=[],
         intentions_active={},
-        apimw_message_to_self="Notice the quiet signal before answering.",
+        apimw_message_to_self="[subconscious] notice this before answering.",
     )
 
-    assert "- [subconscious] Notice the quiet signal before answering." not in prompt
-    assert "My Working Thoughts:\n(none yet)\n  Notice the quiet signal before answering." in prompt
+    assert "- [subconscious] notice this before answering." not in prompt
+    assert "My Working Thoughts:\n(none yet)\n  [subconscious] notice this before answering." in prompt
     assert prompt.index("- [profile] Marcos likes continuity.") < prompt.index("My Working Thoughts:")
 
 

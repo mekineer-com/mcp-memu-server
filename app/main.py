@@ -2260,7 +2260,7 @@ async def _apimw_persist(
         message_to_self = str(result_json.get("message_to_self") or "").strip()
         if message_to_self:
             sc_text = message_to_self[:300]
-            updates["apimw_message_to_self"] = sc_text
+            updates["apimw_message_to_self"] = f"[subconscious] {sc_text}"
             try:
                 sc_embedding = (await svc.embed([sc_text], profile="embedding"))[0]
                 svc.database.memory_item_repo.create_item(

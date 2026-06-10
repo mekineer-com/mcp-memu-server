@@ -1759,7 +1759,6 @@ async def test_apimw_persist_remaps_numbered_prior_context_ids(monkeypatch: pyte
             "mem_raw": {"id": "mem_raw", "memory_type": "knowledge", "summary": "Raw IDs can still appear."},
         },
         id_map={"1": "mem_one", "2": "mem_two"},
-        combined_items=[],
         scope={"user_id": "u", "soul_id": "s"},
         conversation_id="c",
         user_id="u",
@@ -1803,14 +1802,13 @@ async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest
         result_json={"message_to_self": "remember the quiet signal"},
         items_by_id={},
         id_map={},
-        combined_items=[],
         scope={"user_id": "u", "soul_id": "s"},
         conversation_id="c",
         user_id="u",
         soul_id="s",
     )
 
-    assert captured_updates["apimw_message_to_self"] == "remember the quiet signal"
+    assert captured_updates["apimw_message_to_self"] == "[subconscious] remember the quiet signal"
     assert captured_item["memory_type"] == "subconscious"
     assert captured_item["summary"] == "remember the quiet signal"
     assert captured_item["extra"] == {"apimw_message_to_self": True}
@@ -1836,7 +1834,6 @@ async def test_apimw_persist_skips_when_prior_context_changed(monkeypatch: pytes
         result_json={"prior_context": ["mem_one"], "message_to_self": "notice this"},
         items_by_id={"mem_one": {"id": "mem_one", "memory_type": "profile", "summary": "Marcos likes continuity."}},
         id_map={},
-        combined_items=[],
         scope={"user_id": "u", "soul_id": "s"},
         conversation_id="c",
         user_id="u",
