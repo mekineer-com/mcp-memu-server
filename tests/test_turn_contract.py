@@ -524,12 +524,12 @@ def test_build_turn_prompt_dedupes_one_shot_subconscious_memory() -> None:
     assert prompt.count("Notice the quiet signal before answering.") == 1
 
 
-def test_build_turn_prompt_does_not_duplicate_current_user_message_when_already_last() -> None:
+def test_build_turn_prompt_renders_current_message_locator_when_already_last() -> None:
     prompt = build_turn_prompt(
-        user_message="hello",
+        user_message="hello there this is the current message",
         history=[
             {"role": "assistant", "content": "old 1"},
-            {"role": "user", "content": "hello"},
+            {"role": "user", "content": "hello there this is the current message"},
         ],
         prior_context=None,
         retrieve_rag=None,
@@ -537,15 +537,17 @@ def test_build_turn_prompt_does_not_duplicate_current_user_message_when_already_
         memory_cache=[],
         intentions_active={},
     )
-    assert prompt.count("[user] hello") == 1
+    assert "[user] hello there this is the ..." in prompt
+    assert "New Message:\nhello there this is the current message" in prompt
+    assert "[user] hello there this is the current message" not in prompt
 
 
-def test_build_turn_prompt_does_not_duplicate_current_user_message_when_whitespace_differs() -> None:
+def test_build_turn_prompt_renders_current_message_locator_when_whitespace_differs() -> None:
     prompt = build_turn_prompt(
-        user_message="hello   there",
+        user_message="hello   there from the current turn",
         history=[
             {"role": "assistant", "content": "old 1"},
-            {"role": "user", "content": "hello\nthere"},
+            {"role": "user", "content": "hello\nthere from the current turn"},
         ],
         prior_context=None,
         retrieve_rag=None,
@@ -553,7 +555,27 @@ def test_build_turn_prompt_does_not_duplicate_current_user_message_when_whitespa
         memory_cache=[],
         intentions_active={},
     )
-    assert prompt.count("[user]") == 1
+    assert "[user] hello there from the current ..." in prompt
+    assert "New Message:\nhello   there from the current turn" in prompt
+    assert "[user] hello\nthere from the current turn" not in prompt
+
+
+def test_build_turn_prompt_appends_current_message_locator_when_missing_from_history() -> None:
+    prompt = build_turn_prompt(
+        user_message="hello there from the current turn",
+        history=[
+            {"role": "assistant", "content": "old 1"},
+            {"role": "user", "content": "previous message"},
+        ],
+        prior_context=None,
+        retrieve_rag=None,
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+    )
+    assert "[user] previous message" in prompt
+    assert "[user] hello there from the current ..." in prompt
+    assert "New Message:\nhello there from the current turn" in prompt
 
 
 def test_build_turn_prompt_renders_self_turn_without_user_echo() -> None:

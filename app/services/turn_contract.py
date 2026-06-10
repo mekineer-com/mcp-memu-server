@@ -351,6 +351,13 @@ def format_working_thoughts_lines(memory_cache: Any) -> list[str]:
     return cache_lines
 
 
+def _current_message_locator(text: str) -> str:
+    words = _text(text).split()
+    if not words:
+        return ""
+    return f"{' '.join(words[:5])} ..."
+
+
 def format_shaped_by_line(
     shaped_by: dict[str, Any],
     *,
@@ -701,12 +708,9 @@ def build_turn_prompt(
     if has_prior:
         context_blocks.extend(["Prior Context:", prior_text, ""])
 
-    # Echo the current user message at the end of history so the soul reads
-    # history → new message as one continuous exchange. The cache + intentions
-    # blocks sit between the history block and the "New message:" footer, so
-    # without this echo the flow reads as interrupted. Carry the prior user
-    # item's name so the echo renders with the correct speaker label.
-    history_for_render = list(history or [])
+    # Put a short current-message locator in the chat block so the soul reads
+    # history → current turn → working thoughts/intentions → full new message.
+    history_for_render = [dict(item) if isinstance(item, dict) else item for item in (history or [])]
     current_user_text = _text(user_message)
     directive_text = _text(self_turn_directive)
     last_history_item: dict[str, Any] | None = None
@@ -723,7 +727,10 @@ def build_turn_prompt(
         and _text(last_history_item.get("role")).lower() == "user"
         and _norm_text(_text(last_history_item.get("content"))) == _norm_text(current_user_text)
     )
-    if current_user_text and not directive_text and not already_has_current_user_message:
+    current_locator = _current_message_locator(current_user_text)
+    if current_locator and not directive_text and already_has_current_user_message:
+        last_history_item["content"] = current_locator
+    elif current_locator and not directive_text:
         last_user_name = ""
         for item in history_for_render:
             if not isinstance(item, dict):
@@ -732,7 +739,7 @@ def build_turn_prompt(
                 name = _text(item.get("name"))
                 if name:
                     last_user_name = name
-        synthetic: dict[str, Any] = {"role": "user", "content": current_user_text}
+        synthetic: dict[str, Any] = {"role": "user", "content": current_locator}
         if last_user_name:
             synthetic["name"] = last_user_name
         history_for_render.append(synthetic)
