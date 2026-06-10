@@ -456,6 +456,23 @@ def _build_free_turn_prompt(
     )
 
 
+def _parse_free_turn_contract(raw: Any, *, allow_public_response: bool) -> dict[str, Any]:
+    try:
+        return _parse_turn_contract(raw, allow_public_response=allow_public_response)
+    except (ValueError, json.JSONDecodeError):
+        text = str(raw or "").strip()
+        try:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start < 0 or end <= start:
+                raise ValueError("No complete JSON object found")
+            parsed = json.loads(text[start : end + 1])
+        except (ValueError, json.JSONDecodeError):
+            raise
+        logger.warning("free_turn: Claude Code returned prose around JSON; extracted turn contract")
+        return _parse_turn_contract(json.dumps(parsed), allow_public_response=allow_public_response)
+
+
 async def _persist_free_turn_summary(
     *,
     service: MemoryService,
@@ -530,7 +547,7 @@ async def _run_free_turn_chain(
                 step=f"continue_{continuation_index}",
                 resume_session_id=session_id,
             )
-            contract = _parse_turn_contract(raw, allow_public_response=allow_public_response)
+            contract = _parse_free_turn_contract(raw, allow_public_response=allow_public_response)
             await _persist_free_turn_summary(
                 service=service,
                 user_id=user_id,

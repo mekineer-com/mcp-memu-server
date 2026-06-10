@@ -3462,6 +3462,62 @@ async def test_free_turn_chain_queues_whatsapp_outbound(
 
 
 @pytest.mark.asyncio
+async def test_free_turn_chain_extracts_json_contract_after_prose(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    db_path = tmp_path / "SiriTest.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
+
+    class _FakeSvc:
+        async def chat(self, *_args, **_kwargs) -> str:
+            return (
+                "Good. Research is saved. I'll message him privately.\n\n"
+                '{"cache":null,"annulments":[],"rehearsal":"continued",'
+                '"response_target":"private","response":"Research is ready."}'
+            )
+
+        async def memorize(self, **_kwargs) -> dict[str, object]:
+            return {"ok": True}
+
+    try:
+        with caplog.at_level(logging.WARNING):
+            await main._run_free_turn_chain(
+                marker="u1::Siri",
+                service=_FakeSvc(),
+                user_id="u1",
+                soul_id="Siri",
+                conversation_id="whatsapp:dm:Marcos",
+                session_id="session-123",
+                initial_reason="research",
+                initial_contract={
+                    "response_target": "listen",
+                    "response": "",
+                    "rehearsal": "starting",
+                },
+                system_prompt="system",
+                allow_public_response=True,
+                safe_payload={"timezone": "America/Lima"},
+                soul_card=None,
+            )
+    finally:
+        main._FREE_TURN_INFLIGHT.clear()
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute("SELECT * FROM whatsapp_pending_outbounds").fetchall()
+    finally:
+        con.close()
+
+    assert len(rows) == 1
+    assert rows[0]["target"] == "private"
+    assert rows[0]["response_text"] == "Research is ready."
+    assert any("extracted turn contract" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_free_turn_chain_ignores_non_whatsapp_outbound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
