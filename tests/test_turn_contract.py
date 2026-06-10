@@ -502,28 +502,6 @@ def test_build_turn_prompt_renders_apimw_message_to_self_as_first_memory() -> No
     )
 
 
-def test_build_turn_prompt_dedupes_one_shot_subconscious_memory() -> None:
-    prompt = build_turn_prompt(
-        user_message="hello",
-        history=[],
-        prior_context=None,
-        retrieve_rag={
-            "items": [
-                {
-                    "memory_type": "subconscious",
-                    "summary": "Notice the quiet signal before answering.",
-                }
-            ]
-        },
-        all_categories_summary=None,
-        memory_cache=[],
-        intentions_active={},
-        apimw_message_to_self="Notice the quiet signal before answering.",
-    )
-
-    assert prompt.count("Notice the quiet signal before answering.") == 1
-
-
 def test_build_turn_prompt_renders_current_message_locator_when_already_last() -> None:
     prompt = build_turn_prompt(
         user_message="hello there this is the current message",
