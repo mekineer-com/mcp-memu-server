@@ -330,7 +330,6 @@ def register_admin_routes(
                 "category_id",
                 "narrative_self",
                 "source",
-                "target_date",
                 "related_memory_ids",
             ]
             ban = {"embedding", "extra"}
