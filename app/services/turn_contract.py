@@ -690,10 +690,6 @@ def build_turn_prompt(
         context_blocks.extend([all_categories_text, ""])
     if category_paragraph:
         context_blocks.extend([category_paragraph, ""])
-    if message_to_self:
-        memories_block = "\n".join(
-            line for line in (f"- [subconscious] {message_to_self}", memories_block) if line
-        )
     if memories_block:
         context_blocks.extend(["My Memories:", memories_block, ""])
     if has_prior:
@@ -750,6 +746,7 @@ def build_turn_prompt(
         "",
         "My Working Thoughts:",
         "\n".join(cache_lines) if cache_lines else "(none yet)",
+        *([f"  {message_to_self}"] if message_to_self else []),
         "",
         "My Intentions:",
         format_intentions_for_prompt(intentions_active),

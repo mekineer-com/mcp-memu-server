@@ -477,7 +477,7 @@ def test_build_turn_prompt_renders_memories_without_speaker_tags() -> None:
     assert "[behavior] I stayed gentle when things felt tense" in prompt
 
 
-def test_build_turn_prompt_renders_apimw_message_to_self_as_first_memory() -> None:
+def test_build_turn_prompt_renders_apimw_message_to_self_under_working_thoughts() -> None:
     prompt = build_turn_prompt(
         user_message="hello",
         history=[],
@@ -496,10 +496,9 @@ def test_build_turn_prompt_renders_apimw_message_to_self_as_first_memory() -> No
         apimw_message_to_self="Notice the quiet signal before answering.",
     )
 
-    assert "My Memories:" in prompt
-    assert prompt.index("- [subconscious] Notice the quiet signal before answering.") < prompt.index(
-        "- [profile] Marcos likes continuity."
-    )
+    assert "- [subconscious] Notice the quiet signal before answering." not in prompt
+    assert "My Working Thoughts:\n(none yet)\n  Notice the quiet signal before answering." in prompt
+    assert prompt.index("- [profile] Marcos likes continuity.") < prompt.index("My Working Thoughts:")
 
 
 def test_build_turn_prompt_renders_current_message_locator_when_already_last() -> None:
