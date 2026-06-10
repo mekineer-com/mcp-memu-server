@@ -5,7 +5,7 @@ from typing import Any
 import uuid
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, model_validator
 
 
 class MemuTurnRequest(BaseModel):
@@ -59,19 +59,6 @@ class MemuConsolidateRequest(BaseModel):
     user_id: str
     soul_id: str
 
-
-class MemuIntentionsRequest(BaseModel):
-    user_id: str
-    soul_id: str
-    status: str = "active"
-
-
-class MemuStateRequest(BaseModel):
-    action: str = Field(default="get", pattern="^(get|patch)$")
-    conversation_id: str
-    user_id: str
-    soul_id: str
-    updates: dict[str, Any] | None = None
 
 
 def _scope(*, user_id: str, soul_id: str, conversation_id: str | None = None) -> dict[str, str]:
@@ -267,32 +254,3 @@ async def memu_consolidate_endpoint(
     return await force_consolidation(conversation_id, {"user": scope, "conversation_id": conversation_id})
 
 
-async def memu_intentions_endpoint(
-    req: MemuIntentionsRequest,
-    *,
-    list_intentions: Callable[[str, str, str], Awaitable[Any]],
-) -> dict[str, Any]:
-    soul_id = _scope(user_id=req.user_id, soul_id=req.soul_id)["soul_id"]
-    user_id = str(req.user_id).strip()
-    items = await list_intentions(soul_id=soul_id, user_id=user_id, status=str(req.status or "active"))
-    return {"intentions": items}
-
-
-async def memu_state_endpoint(
-    req: MemuStateRequest,
-    *,
-    get_state: Callable[[str, str | None, str | None], Awaitable[dict[str, Any]]],
-    patch_state: Callable[[str, dict[str, Any] | None, str | None, str | None], Awaitable[dict[str, Any]]],
-) -> dict[str, Any]:
-    conversation_id = str(req.conversation_id or "").strip()
-    if not conversation_id:
-        raise HTTPException(status_code=400, detail="conversation_id is required")
-    scope = _scope(user_id=req.user_id, soul_id=req.soul_id, conversation_id=conversation_id)
-    if req.action == "get":
-        return await get_state(conversation_id=conversation_id, soul_id=scope["soul_id"], user_id=scope["user_id"])
-    return await patch_state(
-        conversation_id=conversation_id,
-        payload=dict(req.updates or {}),
-        soul_id=scope["soul_id"],
-        user_id=scope["user_id"],
-    )

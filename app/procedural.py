@@ -41,25 +41,6 @@ CREATE INDEX IF NOT EXISTS idx_procedural_domain ON procedural_memory_items(doma
 
 def ensure_schema(con: sqlite3.Connection) -> None:
     con.executescript(_SCHEMA_SQL)
-    cols = con.execute("PRAGMA table_info(procedural_memory_items)").fetchall()
-    pk_map = {str(row[1]): int(row[5] or 0) for row in cols if len(row) > 5}
-    if pk_map.get("id") == 1 and pk_map.get("domain") == 2:
-        return
-
-    con.execute("ALTER TABLE procedural_memory_items RENAME TO procedural_memory_items__old")
-    con.executescript(_SCHEMA_SQL)
-    con.execute(
-        """
-INSERT INTO procedural_memory_items (
-    id, domain, framework, summary, applicable_when, source, tags, embedding, embedding_model, source_hash, updated_at
-)
-SELECT
-    id, domain, framework, summary, applicable_when, source, tags, embedding, embedding_model, source_hash, updated_at
-FROM procedural_memory_items__old
-"""
-    )
-    con.execute("DROP TABLE procedural_memory_items__old")
-    con.commit()
 
 
 def _entry_hash(entry: dict[str, Any]) -> str:

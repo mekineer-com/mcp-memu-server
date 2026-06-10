@@ -62,14 +62,6 @@ CREATE TABLE IF NOT EXISTS narrative_history (
 )
 """
     )
-    tables = {
-        str(row[0])
-        for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-        if row and row[0]
-    }
-    if "memu_intentions" in tables and "intentions" not in tables:
-        con.execute("ALTER TABLE memu_intentions RENAME TO intentions")
-
     con.execute(
         """
 CREATE TABLE IF NOT EXISTS intentions (
@@ -80,10 +72,7 @@ CREATE TABLE IF NOT EXISTS intentions (
     status TEXT NOT NULL DEFAULT 'active',
     resolution_note TEXT,
     source TEXT,
-    confidence REAL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    target_date TEXT,
-    related_memory_ids TEXT,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
 """

@@ -887,10 +887,10 @@ ORDER BY updated_at ASC, id ASC
             con.execute(
                 """
 INSERT INTO intentions (
-    id, soul_id, user_id, description, status, source, confidence, target_date, related_memory_ids, updated_at
-) VALUES (?, ?, ?, ?, 'active', 'life_goal', NULL, NULL, ?, ?)
+    id, soul_id, user_id, description, status, source, updated_at
+) VALUES (?, ?, ?, ?, 'active', 'life_goal', ?)
 """,
-                (goal_id, soul_id, user_id, text, deps.json_to_db([]), now_iso),
+                (goal_id, soul_id, user_id, text, now_iso),
             )
         con.commit()
     finally:

@@ -49,7 +49,7 @@ def default_config() -> dict[str, Any]:
     home = home_dir()
 
     memu_guess = None
-    for cand in (home / "apps" / "memu-1.4.0", home / "apps" / "memu"):
+    for cand in (home / "apps" / "memu",):
         if cand.exists():
             memu_guess = cand
             break

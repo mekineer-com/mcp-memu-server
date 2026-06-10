@@ -1117,10 +1117,7 @@ def _conversation_state_from_row(row: sqlite3.Row | None, *, con: sqlite3.Connec
 
 
 def _intention_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    return _sqlite_scope.intention_row_to_dict(
-        row,
-        normalize_text_list=_normalize_text_list,
-    )
+    return _sqlite_scope.intention_row_to_dict(row)
 
 
 def _write_conversation_state(
@@ -3595,24 +3592,6 @@ async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)
     )
 
 
-@app.patch("/intentions/{intention_id}", operation_id="patch_intention")
-async def patch_intention(
-    intention_id: str,
-    soul_id: str,
-    payload: dict[str, Any] | None = Body(default=None),
-):
-    return await _crud_endpoints.patch_intention_endpoint(
-        intention_id=intention_id,
-        soul_id=soul_id,
-        payload=payload,
-        valid_intention_statuses=_VALID_INTENTION_STATUSES,
-        sqlite_current_path=_sqlite_current_path,
-        sqlite_connect=_sqlite_connect,
-        sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
-        intention_row_to_dict=_intention_row_to_dict,
-    )
-
-
 # ---- Conversation state endpoints ----
 
 @app.get("/conversation/{conversation_id}/state", operation_id="get_conversation_state")
@@ -4735,23 +4714,6 @@ async def mcp_memu_consolidate(req: _mcp_tools.MemuConsolidateRequest):
     )
 
 
-@app.post("/integration/memu/intentions", operation_id="memu_intentions", tags=["mcp_tools"])
-async def mcp_memu_intentions(req: _mcp_tools.MemuIntentionsRequest):
-    return await _mcp_tools.memu_intentions_endpoint(
-        req,
-        list_intentions=list_intentions,
-    )
-
-
-@app.post("/integration/memu/state", operation_id="memu_state", tags=["mcp_tools"])
-async def mcp_memu_state(req: _mcp_tools.MemuStateRequest):
-    return await _mcp_tools.memu_state_endpoint(
-        req,
-        get_state=get_conversation_state,
-        patch_state=patch_conversation_state,
-    )
-
-
 @app.post("/integration/whatsapp/outbounds/claim", operation_id="whatsapp_outbounds_claim", tags=["integration"])
 async def whatsapp_outbounds_claim(payload: dict[str, Any] = Body(...)):
     return {
@@ -4803,7 +4765,6 @@ try:
             "memu_retrieve",
             "memu_memorize",
             "memu_consolidate",
-            "memu_intentions",
         ],
     )
     http_path = str(_CONFIG.get("mcp", {}).get("http_path") or "/mcp")

@@ -20,7 +20,6 @@ def test_mcp_tool_registration_exposes_expected_operations() -> None:
         "memu_retrieve",
         "memu_memorize",
         "memu_consolidate",
-        "memu_intentions",
     }
 
 
@@ -273,46 +272,3 @@ async def test_mcp_memu_memorize_returns_before_background_finishes(monkeypatch:
     await asyncio.wait_for(finished.wait(), timeout=1.0)
 
 
-@pytest.mark.asyncio
-async def test_memu_state_get_and_patch_routes() -> None:
-    calls: list[tuple[str, str, Any, Any]] = []
-
-    async def fake_get(conversation_id: str, soul_id: str | None, user_id: str | None) -> dict[str, Any]:
-        calls.append(("get", conversation_id, soul_id, user_id))
-        return {"ok": True, "state": {"digest_cursor": 1}}
-
-    async def fake_patch(
-        conversation_id: str,
-        payload: dict[str, Any] | None,
-        soul_id: str | None,
-        user_id: str | None,
-    ) -> dict[str, Any]:
-        calls.append(("patch", conversation_id, soul_id, user_id))
-        return {"ok": True, "state": payload or {}}
-
-    get_out = await mcp_tools.memu_state_endpoint(
-        mcp_tools.MemuStateRequest(
-            action="get",
-            conversation_id="c1",
-            user_id="u1",
-            soul_id="s1",
-        ),
-        get_state=fake_get,
-        patch_state=fake_patch,
-    )
-    patch_out = await mcp_tools.memu_state_endpoint(
-        mcp_tools.MemuStateRequest(
-            action="patch",
-            conversation_id="c1",
-            user_id="u1",
-            soul_id="s1",
-            updates={"digest_cursor": 9},
-        ),
-        get_state=fake_get,
-        patch_state=fake_patch,
-    )
-
-    assert get_out["ok"] is True
-    assert patch_out["ok"] is True
-    assert calls[0] == ("get", "c1", "s1", "u1")
-    assert calls[1] == ("patch", "c1", "s1", "u1")

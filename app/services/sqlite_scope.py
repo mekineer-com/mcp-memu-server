@@ -59,14 +59,8 @@ def sqlite_file_info(p: Path) -> dict[str, Any]:
         return {"exists": p.exists(), "path": str(p), "error": f"{type(e).__name__}: {e}"}
 
 
-def intention_row_to_dict(
-    row: Any,
-    *,
-    normalize_text_list: Callable[[Any], list[str]],
-) -> dict[str, Any]:
-    item = {k: row[k] for k in row.keys()}
-    item["related_memory_ids"] = normalize_text_list(item.get("related_memory_ids"))
-    return item
+def intention_row_to_dict(row: Any) -> dict[str, Any]:
+    return {k: row[k] for k in row.keys()}
 
 
 def write_conversation_state(
