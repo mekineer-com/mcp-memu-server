@@ -168,7 +168,6 @@ async def run_memorize_episodes(
     safe: dict[str, Any],
     resource_url: str,
     chat_key: str | None,
-    prev_len: int,
     merged_len: int,
     force: bool,
     sleep_stats: Any,
@@ -487,7 +486,6 @@ async def run_memorize_episodes(
                     "conversationId": conversation_id,
                     "chatKey": chat_key,
                     "serverTimeZone": str(zi or ""),
-                    "messages_prev": prev_len,
                     "messages_in": merged_len,
                     "messages_merged": merged_len,
                     "force": force,
@@ -866,7 +864,6 @@ async def memorize_endpoint(
             manifest_path = (chat_dir / "manifest.json").resolve()
 
             merged: list[dict[str, Any]] = conv_norm if isinstance(conv_norm, list) else []
-            prev_len = 0
 
             processed_cursor = -1
             has_pending_episodes = False
@@ -1049,7 +1046,6 @@ async def memorize_endpoint(
                 safe=safe,
                 resource_url=resource_url,
                 chat_key=chat_key,
-                prev_len=prev_len,
                 merged_len=len(merged) if isinstance(merged, list) else 0,
                 force=force,
                 sleep_stats=sleep_stats,

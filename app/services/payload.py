@@ -81,8 +81,6 @@ def _normalize_conversation(conv: Any) -> Any:
         if not isinstance(m, dict):
             continue
         role = m.get("role")
-        if role == "participant":
-            role = "user"
 
         ts_ms: int | None = None
         raw_ts = m.get("ts_ms")
@@ -127,7 +125,6 @@ def _safe_payload(payload: dict[str, Any]) -> dict[str, Any]:
     out = dict(payload)
     out.pop("api_key", None)
     out.pop("OPENAI_API_KEY", None)
-    out.pop("NANOGPT_API_KEY", None)
     return out
 
 

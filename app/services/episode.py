@@ -32,11 +32,6 @@ def _message_happened_at(msg: dict[str, Any]) -> datetime | None:
     return datetime.fromtimestamp(float(ts_ms) / 1000.0, UTC)
 
 
-def _message_utc_iso(msg: dict[str, Any]) -> str | None:
-    happened_at = _message_happened_at(msg)
-    return happened_at.isoformat() if happened_at is not None else None
-
-
 def _format_time_range(start_msg: dict[str, Any], end_msg: dict[str, Any]) -> str | None:
     start_dt = _message_happened_at(start_msg) if isinstance(start_msg, dict) else None
     end_dt = _message_happened_at(end_msg) if isinstance(end_msg, dict) else None

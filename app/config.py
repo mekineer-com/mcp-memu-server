@@ -35,8 +35,6 @@ def is_ephemeral_db(cfg: dict[str, Any]) -> bool:
     provider = str(ms.get("provider") or "").lower()
     dsn = str(ms.get("dsn") or "")
 
-    if provider in ("memory", "inmemory", "in-memory"):
-        return True
     if provider == "sqlite" and ":memory:" in dsn:
         return True
     return False
@@ -75,7 +73,6 @@ def default_config() -> dict[str, Any]:
             "base_url": "https://api.openai.com/v1",
             "chat_model": "",
             "embed_model": "",
-            "client_backend": "httpx",
             "endpoint_overrides": {},
         },
         "storage": {
@@ -389,8 +386,6 @@ def database_config_from_cfg(cfg: dict[str, Any], scope: dict[str, Any] | None =
 
     provider = meta.get("provider") or "sqlite"
     provider = str(provider).strip().lower() or "sqlite"
-    if provider == "inmemory":
-        provider = "sqlite"
     if provider != "sqlite":
         raise RuntimeError(f"Unsupported storage.metadata_store.provider={provider!r}; only 'sqlite' is supported.")
 
@@ -423,7 +418,6 @@ def default_llm_profiles_from_server_config(cfg: dict[str, Any]) -> dict[str, An
     chat_model = str(llm.get("chat_model") or "")
     embed_model = str(llm.get("embed_model") or "")
     provider = str(llm.get("provider") or "openai")
-    client_backend = str(llm.get("client_backend") or "httpx")
     endpoint_overrides = llm.get("endpoint_overrides") or {}
     temperature = llm.get("temperature")
     default_profile: dict[str, Any] = {
@@ -432,7 +426,6 @@ def default_llm_profiles_from_server_config(cfg: dict[str, Any]) -> dict[str, An
         "base_url": base_url,
         "chat_model": chat_model,
         "embed_model": embed_model,
-        "client_backend": client_backend,
         "endpoint_overrides": endpoint_overrides,
     }
     if temperature is not None:

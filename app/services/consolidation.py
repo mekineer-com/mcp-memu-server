@@ -487,16 +487,6 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
                         continue
                     if isinstance(parsed, list):
                         messages.extend(m for m in parsed if isinstance(m, dict))
-            if not messages:
-                days_dir = (chat_dir / "days").resolve()
-                for seg in sorted(
-                    (s for s in raw_segments if isinstance(s, dict)),
-                    key=lambda s: int(s.get("start", 0)),
-                ):
-                    fn = seg.get("file")
-                    if not isinstance(fn, str) or not fn:
-                        continue
-                    messages.extend(deps.read_list((days_dir / fn).resolve()))
             episode_inputs = build_episode_inputs(messages, pending_episode_ids)
             if len(episode_inputs) != len(pending_episode_ids):
                 raise HTTPException(status_code=400, detail="queued episodes are not present in conversation history")
