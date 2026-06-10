@@ -107,7 +107,6 @@ from app.services.state import (
 from app.services.turn_contract import (
     LIFE_GOALS_FREE_WILL_HEADER as _LIFE_GOALS_FREE_WILL_HEADER,
     build_turn_prompt as _build_turn_prompt,
-    format_time_anchor as _format_time_anchor,
     format_memory_line as _format_memory_line,
     format_memory_legend as _format_memory_legend,
     format_shaped_by_line as _format_shaped_by_line,
@@ -2222,7 +2221,6 @@ async def _apimw_persist(
     result_json: dict[str, Any],
     items_by_id: dict[str, dict[str, Any]],
     id_map: dict[str, str],
-    combined_items: list[dict[str, Any]],
     scope: dict[str, str],
     conversation_id: str,
     user_id: str,
@@ -2363,7 +2361,6 @@ async def _run_apimw(
             result_json=result_json,
             items_by_id=items_by_id,
             id_map=apimw_id_map,
-            combined_items=combined_items,
             scope=scope,
             conversation_id=conversation_id,
             user_id=user_id,

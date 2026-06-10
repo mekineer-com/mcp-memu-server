@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS soul_state (
     retrieve_rewrite_angle INTEGER DEFAULT 0,
     retrieval_ids_since_consolidation JSON DEFAULT '[]',
     prior_context_ids_since_consolidation JSON DEFAULT '[]',
-    subconscious_message TEXT,
     last_consolidation_at DATETIME,
     consolidation_in_progress BOOLEAN DEFAULT 0,
     consolidation_started_at DATETIME,
@@ -44,7 +43,6 @@ def read(con: sqlite3.Connection) -> dict[str, Any]:
         "retrieve_rewrite_angle": int(row["retrieve_rewrite_angle"] or 0),
         "retrieval_ids_since_consolidation": normalize_text_list(row["retrieval_ids_since_consolidation"]),
         "prior_context_ids_since_consolidation": normalize_text_list(row["prior_context_ids_since_consolidation"]),
-        "subconscious_message": row["subconscious_message"],
         "last_consolidation_at": row["last_consolidation_at"],
         "consolidation_in_progress": bool(row["consolidation_in_progress"]),
         "consolidation_started_at": row["consolidation_started_at"],
@@ -61,7 +59,6 @@ def defaults() -> dict[str, Any]:
         "retrieve_rewrite_angle": 0,
         "retrieval_ids_since_consolidation": [],
         "prior_context_ids_since_consolidation": [],
-        "subconscious_message": None,
         "last_consolidation_at": None,
         "consolidation_in_progress": False,
         "consolidation_started_at": None,
@@ -77,7 +74,7 @@ _JSON_FIELDS = {
 _VALID_FIELDS = {
     "narrative_self", "all_categories_summary", "memory_cache", "intentions_active",
     "retrieve_rewrite_angle", "retrieval_ids_since_consolidation",
-    "prior_context_ids_since_consolidation", "subconscious_message",
+    "prior_context_ids_since_consolidation",
     "last_consolidation_at", "consolidation_in_progress", "consolidation_started_at",
 }
 
