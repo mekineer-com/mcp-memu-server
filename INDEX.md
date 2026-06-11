@@ -62,6 +62,7 @@ mcp-memu-server/
 | `/config` | GET/POST | Read or update runtime config |
 | `/reload` | POST | Reload config from disk |
 | `/diag`, `/diag/calls`, `/diag/http`, `/diag/sqlite`, `/diag/sqlite/counts`, `/diag/sqlite/recent` | GET | Diagnostic pages (recent memories, SQLite browser, last 50 memorize/retrieve calls, HTTP introspection). Read-only (no schema writes/migrations on diag reads; never use diag calls for DB bootstrap) |
+| `/diag/memorize/pending` | GET | Global memorize pressure (`?soul_id=`, optional `?user_id=`): summed unmemorized primary tokens across all conversations via the same source loaders the turn path uses, vs `min_chunk_tokens` threshold, plus `sleep_gap_ready`. Pure read, handler in `app/main.py` next to `_estimate_primary_memorize_tokens` |
 
 ## Extracted Modules
 

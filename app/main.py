@@ -4088,6 +4088,47 @@ def _estimate_primary_memorize_tokens(messages: list[dict[str, Any]]) -> int:
     return _estimate_tokens(primary)
 
 
+@app.get(f"{_DIAG_PREFIX}/diag/memorize/pending")
+@app.get("/diag/memorize/pending", operation_id="diag_memorize_pending")
+async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
+    """Read-only snapshot of memorize pressure: summed unmemorized primary tokens vs threshold."""
+    uid = user_id.strip()
+    sid = soul_id.strip()
+    db_path = _sqlite_current_path(uid or None, sid or None)
+    if db_path is None:
+        return {"ok": False, "reason": "soul_id_required"}
+    if not db_path.exists():
+        return {"ok": False, "reason": "sqlite_file_missing", "path": str(db_path)}
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        tails = _load_cross_memorize_tails_from_sources(con, user_id=uid, soul_id=sid)
+    finally:
+        con.close()
+    merged = [msg for tail in tails.values() for msg in tail]
+    merged.sort(
+        key=lambda m: (
+            str(m.get("received_at") or ""),
+            str(m.get("source_conversation_id") or m.get("conversation_id") or ""),
+            int(m.get("source_conversation_index") or 0),
+        )
+    )
+    for msg in merged:
+        if msg.get("ts_ms") is None:
+            ts_ms = _parse_turn_ts_ms(msg.get("received_at"))
+            if ts_ms is not None:
+                msg["ts_ms"] = ts_ms
+    summed = _estimate_primary_memorize_tokens(merged)
+    threshold = _MIN_CHUNK_TOKENS
+    return {
+        "summed_unmemorized_tokens": summed,
+        "threshold": threshold,
+        "pct": round(summed * 100 / threshold) if threshold else 0,
+        "sleep_gap_ready": _unmemorized_sleep_gap_detected(merged, -1, {}, min_chunk_tokens=0),
+        "computed_at": datetime.now(UTC).isoformat(),
+    }
+
+
 def _turn_state_read(
     cid: str,
     uid: str,

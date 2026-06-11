@@ -137,6 +137,7 @@ def register_admin_routes(
 <li><a href='/diag/sqlite'>/diag/sqlite</a></li>
 <li><a href='/diag/sqlite/counts'>/diag/sqlite/counts</a> <small>(add ?user_id=...&soul_id=...)</small></li>
 <li><a href='/diag/sqlite/recent?table=memory_items&limit=10'>/diag/sqlite/recent</a> <small>(add scope params)</small></li>
+<li><a href='/diag/memorize/pending'>/diag/memorize/pending</a> <small>(add ?soul_id=...; summed unmemorized tokens vs memorize threshold)</small></li>
 </ul>
 <p><b>Scope tip:</b> if your ST extension uses <code>user_id</code> + <code>soul_id</code>, but your tests omit one, retrieval can look empty. Use the same scope in <code>/diag/sqlite/*</code>.</p>
 </body></html>"""
