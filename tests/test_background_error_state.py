@@ -156,6 +156,84 @@ def test_consolidation_error_fields_round_trip_through_state() -> None:
         assert loaded["last_consolidation_error_at"] == now_iso
 
 
+def test_apimw_failure_clears_prior_context() -> None:
+    """APImw failure path must clear prior_context so a stale value doesn't linger."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        db_path, _ = _tmp_sqlite_setup(tmp_dir, soul_id="SoulE")
+
+        cid = "conv-apimw-fail"
+        # Seed a prior_context value (as if a previous successful APImw run wrote it).
+        write_conversation_state(
+            cid,
+            sqlite_current_path=lambda _user, _soul: db_path,
+            soul_id="SoulE",
+            user_id="UserE",
+            updates={"prior_context": "some stale context"},
+        )
+
+        # Simulate APImw failure: write error + clear prior_context (same as main.py does).
+        write_conversation_state(
+            cid,
+            sqlite_current_path=lambda _user, _soul: db_path,
+            soul_id="SoulE",
+            user_id="UserE",
+            updates={
+                "last_background_error": "apimw_failed: RuntimeError: boom",
+                "last_background_error_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        state, _ = write_conversation_state(
+            cid,
+            sqlite_current_path=lambda _user, _soul: db_path,
+            soul_id="SoulE",
+            user_id="UserE",
+            updates={"prior_context": None},
+        )
+
+        assert state["prior_context"] is None
+        assert state["last_background_error"].startswith("apimw_failed:")
+
+        # Verify via fresh read.
+        con = sqlite3.connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            row = conversation_state_row(con, cid)
+            loaded = conversation_state_from_row(row)
+        finally:
+            con.close()
+
+        assert loaded["prior_context"] is None
+
+
+def test_apimw_success_writes_prior_context() -> None:
+    """APImw success path writes prior_context; absence after failure is not permanent."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        db_path, _ = _tmp_sqlite_setup(tmp_dir, soul_id="SoulF")
+
+        cid = "conv-apimw-ok"
+        # Simulate a failure that cleared prior_context.
+        write_conversation_state(
+            cid,
+            sqlite_current_path=lambda _user, _soul: db_path,
+            soul_id="SoulF",
+            user_id="UserF",
+            updates={"prior_context": None},
+        )
+
+        # Simulate next-turn APImw success: writes a fresh prior_context.
+        state, _ = write_conversation_state(
+            cid,
+            sqlite_current_path=lambda _user, _soul: db_path,
+            soul_id="SoulF",
+            user_id="UserF",
+            updates={"prior_context": "fresh context after recovery"},
+        )
+
+        assert state["prior_context"] == "fresh context after recovery"
+
+
 @pytest.mark.asyncio
 async def test_forced_memorize_raises_if_state_error_write_fails() -> None:
     class _Logger:
