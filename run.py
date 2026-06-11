@@ -233,12 +233,24 @@ def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
     log_path = _log_file_path(cfg)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
+    errors_log_path = ROOT / "logs" / "errors.log"
+    errors_log_path.parent.mkdir(parents=True, exist_ok=True)
+
     handlers = log_cfg.setdefault("handlers", {})
     handlers["memu_file"] = {
         "class": "logging.handlers.WatchedFileHandler",
         "formatter": "default",
         "filename": str(log_path),
         "encoding": "utf-8",
+    }
+    handlers["memu_errors"] = {
+        "class": "logging.handlers.RotatingFileHandler",
+        "formatter": "default",
+        "filename": str(errors_log_path),
+        "encoding": "utf-8",
+        "maxBytes": 512_000,
+        "backupCount": 2,
+        "level": "ERROR",
     }
 
     log_cfg.setdefault("filters", {})["quiet_access"] = {
@@ -259,6 +271,14 @@ def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
         if "quiet_access" not in filters_list:
             filters_list.append("quiet_access")
         logger_cfg["filters"] = filters_list
+
+    # Attach error-only handler to the root logger so errors from all modules
+    # (including the memu engine) land in logs/errors.log.
+    root_cfg = loggers.setdefault("", {})
+    root_handlers = list(root_cfg.get("handlers") or [])
+    if "memu_errors" not in root_handlers:
+        root_handlers.append("memu_errors")
+    root_cfg["handlers"] = root_handlers
 
     return log_cfg
 

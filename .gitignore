@@ -1,5 +1,6 @@
 /_local/
 /data
+/logs/
 config.json
 config.json.orig
 resources/
