@@ -387,6 +387,8 @@ def _render_retrieve(
     memories_block: item list (no heading — caller adds "My Memories:").
     """
     if not isinstance(result, dict):
+        if result:
+            _logger.error("_render_retrieve: expected dict, got %s", type(result).__name__)
         return "", "", set()
 
     item_terms: set[str] = set()

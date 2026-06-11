@@ -574,3 +574,18 @@ def test_build_turn_prompt_renders_self_turn_without_user_echo() -> None:
     assert "Scheduled wake:\nScheduled follow-up due now." in prompt
     assert "New Message:" not in prompt
     assert "[Marcos] Scheduled follow-up due now" not in prompt
+
+
+def test_render_retrieve_non_dict_logs_error_and_returns_empties(caplog) -> None:
+    with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
+        prompt = build_turn_prompt(
+            user_message="hello",
+            history=[],
+            prior_context=None,
+            retrieve_rag=["unexpected", "list"],
+            all_categories_summary=None,
+            memory_cache=[],
+            intentions_active={},
+        )
+    assert "My Memories:" not in prompt
+    assert any("_render_retrieve" in r.message for r in caplog.records)
