@@ -543,7 +543,7 @@ LIMIT 24
                 if isinstance(ids, list):
                     all_prior_context_ids.extend(str(rid).strip() for rid in ids if str(rid).strip())
         except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
-            log.warning("consolidation: failed loading resource prior_context history", exc_info=True)
+            log.error("consolidation: failed loading resource prior_context history", exc_info=True)
         clean_ids = list(dict.fromkeys(all_prior_context_ids))
         if clean_ids:
             placeholders = ",".join("?" for _ in clean_ids)
@@ -791,30 +791,11 @@ def write_consolidation_outputs(
     narrative_self = str(llm_results.get("narrative_self") or "").strip() or None
 
     old_narrative_text = llm_results.get("old_narrative_text")
-    if old_narrative_text:
-        snapshot_previous_narrative_self(
-            svc,
-            scope={"user_id": user_id, "soul_id": soul_id},
-            old_text=old_narrative_text,
-            old_embedding=llm_results["old_narrative_embedding"],
-        )
-
     companion_memory_id = None
     companion_text = str(llm_results.get("companion_memory") or "").strip()
     companion_embedding = llm_results.get("companion_embedding")
-    if companion_text:
-        if not isinstance(companion_embedding, list):
-            raise HTTPException(status_code=500, detail="missing companion memory embedding")
-        companion_happened_at = datetime.now(UTC)
-        companion_memory_id = create_companion_memory(
-            svc,
-            user_id=user_id,
-            soul_id=soul_id,
-            conversation_id=conversation_id,
-            summary=companion_text,
-            embedding=companion_embedding,
-            happened_at=companion_happened_at,
-        )
+    if companion_text and not isinstance(companion_embedding, list):
+        raise HTTPException(status_code=500, detail="missing companion memory embedding")
 
     deps.sqlite_ensure_nonempty(db_path)
     con = deps.sqlite_connect(db_path)
@@ -937,6 +918,8 @@ INSERT INTO intentions (
         "consolidation_in_progress": False,
         "consolidation_started_at": None,
         "intentions_active": current_intentions,
+        "retrieval_ids_since_consolidation": [],
+        "prior_context_ids_since_consolidation": [],
     }
     state_after, _ = deps.write_conversation_state(
         conversation_id,
@@ -944,6 +927,26 @@ INSERT INTO intentions (
         user_id=user_id,
         updates=state_updates,
     )
+
+    if old_narrative_text:
+        snapshot_previous_narrative_self(
+            svc,
+            scope={"user_id": user_id, "soul_id": soul_id},
+            old_text=old_narrative_text,
+            old_embedding=llm_results["old_narrative_embedding"],
+        )
+    if companion_text:
+        companion_happened_at = datetime.now(UTC)
+        companion_memory_id = create_companion_memory(
+            svc,
+            user_id=user_id,
+            soul_id=soul_id,
+            conversation_id=conversation_id,
+            summary=companion_text,
+            embedding=companion_embedding,
+            happened_at=companion_happened_at,
+        )
+
     scope = {"user_id": user_id, "soul_id": soul_id}
     wrote = write_memory_edges(svc.database.triple_repo, llm_results["edges"], scope=scope)
     invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results["edge_invalidations"], scope=scope)

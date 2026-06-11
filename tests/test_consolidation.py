@@ -9,10 +9,12 @@ from app.services.consolidation import ConsolidationDeps, write_consolidation_ou
 from app.services.graph_edges import invalidate_memory_edges, write_memory_edges
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
 from app.services.state import conversation_state_from_row, conversation_state_row, write_conversation_state
+from app.services import soul_state as _soul_state
 import sqlite3
 import tempfile
 from pathlib import Path
 from datetime import timedelta
+from unittest.mock import patch, MagicMock
 
 
 def test_parse_consolidation_xml_edges_and_write_helpers() -> None:
@@ -451,3 +453,191 @@ async def test_run_consolidation_llm_strips_relax_boost_from_intention_actions()
         llm_profile=None,
     )
     assert out["intention_actions"] == [], "relax boost must be stripped"
+
+
+def _make_consolidation_deps(db_path: Path, tmp_dir: Path) -> ConsolidationDeps:
+    """Helper: wires up a ConsolidationDeps pointing at a single db_path."""
+    return ConsolidationDeps(
+        sqlite_current_path=lambda _user, _soul: db_path,
+        sqlite_ensure_nonempty=sqlite_ensure_nonempty,
+        sqlite_connect=sqlite_connect,
+        sqlite_ensure_conversation_state_schema=sqlite_ensure_conversation_state_schema,
+        conversation_state_row=conversation_state_row,
+        conversation_state_from_row=lambda row, **kw: conversation_state_from_row(row),
+        write_conversation_state=lambda cid, *, soul_id, user_id, updates: write_conversation_state(
+            cid,
+            sqlite_current_path=lambda _u, _s: db_path,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates=updates,
+        ),
+        get_storage_dir=lambda _cfg: tmp_dir,
+        config={},
+        find_chat_dir_for_conversation=lambda _a, _b, _c, _d: None,
+        read_list=lambda _p: [],
+        normalize_text_list=normalize_text_list,
+        json_to_db=json_to_db,
+    )
+
+
+def _make_svc_stub() -> object:
+    class _TripleRepo:
+        def add(self, _t, user_data=None): return None
+        def invalidate(self, _s, _p, _o, scope=None): return None
+
+    class _SvcStub:
+        def __init__(self) -> None:
+            self.database = type("DB", (), {"triple_repo": _TripleRepo()})()
+
+    return _SvcStub()
+
+
+def _base_llm_results(**overrides) -> dict:
+    base = {
+        "narrative_self": None,
+        "old_narrative_text": None,
+        "old_narrative_embedding": None,
+        "companion_memory": None,
+        "companion_embedding": None,
+        "life_goal_add": [],
+        "life_goal_remove": [],
+        "edges": [],
+        "edge_invalidations": [],
+        "intention_actions": [],
+    }
+    base.update(overrides)
+    return base
+
+
+def test_write_consolidation_outputs_clears_accumulators() -> None:
+    """After a successful run the retrieval and prior-context accumulators are reset to []."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        db_path = tmp_dir / "soul.db"
+        con = sqlite3.connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            sqlite_ensure_conversation_state_schema(con)
+            _soul_state.ensure_schema(con)
+            con.commit()
+        finally:
+            con.close()
+
+        cid = "conv-accum"
+        soul_id = "SoulA"
+        user_id = "UserA"
+
+        # Seed some accumulator ids
+        write_conversation_state(
+            cid,
+            sqlite_current_path=lambda _u, _s: db_path,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={
+                "pending_episode_ids": ["ep:1"],
+                "intentions_active": [],
+                "append_retrieval_ids_since_consolidation": ["mem-r1", "mem-r2"],
+                "append_prior_context_ids_since_consolidation": ["mem-p1"],
+            },
+        )
+
+        # Verify they were stored
+        check_con = sqlite_connect(db_path)
+        check_con.row_factory = sqlite3.Row
+        ss_before = _soul_state.read(check_con)
+        check_con.close()
+        assert ss_before["retrieval_ids_since_consolidation"] == ["mem-r1", "mem-r2"]
+        assert ss_before["prior_context_ids_since_consolidation"] == ["mem-p1"]
+
+        write_consolidation_outputs(
+            _make_consolidation_deps(db_path, tmp_dir),
+            _make_svc_stub(),
+            inputs={"db_path": db_path},
+            llm_results=_base_llm_results(),
+            conversation_id=cid,
+            soul_id=soul_id,
+            user_id=user_id,
+        )
+
+        check_con2 = sqlite_connect(db_path)
+        check_con2.row_factory = sqlite3.Row
+        ss_after = _soul_state.read(check_con2)
+        check_con2.close()
+        assert ss_after["retrieval_ids_since_consolidation"] == []
+        assert ss_after["prior_context_ids_since_consolidation"] == []
+
+
+def test_write_consolidation_outputs_db_failure_produces_no_companion_memory() -> None:
+    """If the DB transaction fails, companion memory must NOT be created (it runs after the state write)."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        db_path = tmp_dir / "soul.db"
+        con = sqlite3.connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            sqlite_ensure_conversation_state_schema(con)
+            _soul_state.ensure_schema(con)
+            con.commit()
+        finally:
+            con.close()
+
+        cid = "conv-db-fail"
+        soul_id = "SoulB"
+        user_id = "UserB"
+
+        write_conversation_state(
+            cid,
+            sqlite_current_path=lambda _u, _s: db_path,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={"pending_episode_ids": ["ep:2"], "intentions_active": []},
+        )
+
+        companion_calls: list[str] = []
+
+        def _fake_write_state(cid, *, soul_id, user_id, updates):
+            raise RuntimeError("simulated DB failure")
+
+        failing_deps = ConsolidationDeps(
+            sqlite_current_path=lambda _u, _s: db_path,
+            sqlite_ensure_nonempty=sqlite_ensure_nonempty,
+            sqlite_connect=sqlite_connect,
+            sqlite_ensure_conversation_state_schema=sqlite_ensure_conversation_state_schema,
+            conversation_state_row=conversation_state_row,
+            conversation_state_from_row=lambda row, **kw: conversation_state_from_row(row),
+            write_conversation_state=_fake_write_state,
+            get_storage_dir=lambda _cfg: tmp_dir,
+            config={},
+            find_chat_dir_for_conversation=lambda _a, _b, _c, _d: None,
+            read_list=lambda _p: [],
+            normalize_text_list=normalize_text_list,
+            json_to_db=json_to_db,
+        )
+
+        import app.services.consolidation as _consol_mod
+
+        original_create = _consol_mod.create_companion_memory
+
+        def _tracking_create(*args, **kwargs):
+            companion_calls.append("called")
+            return original_create(*args, **kwargs)
+
+        _consol_mod.create_companion_memory = _tracking_create
+        try:
+            with pytest.raises(RuntimeError, match="simulated DB failure"):
+                write_consolidation_outputs(
+                    failing_deps,
+                    _make_svc_stub(),
+                    inputs={"db_path": db_path},
+                    llm_results=_base_llm_results(
+                        companion_memory="Something to remember.",
+                        companion_embedding=[0.1, 0.2, 0.3],
+                    ),
+                    conversation_id=cid,
+                    soul_id=soul_id,
+                    user_id=user_id,
+                )
+        finally:
+            _consol_mod.create_companion_memory = original_create
+
+        assert companion_calls == [], "companion memory must not be created when DB phase fails"
