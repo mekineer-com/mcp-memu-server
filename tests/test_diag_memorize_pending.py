@@ -132,3 +132,53 @@ async def test_diag_pending_requires_soul_id(monkeypatch: pytest.MonkeyPatch) ->
     out = await main.diag_memorize_pending()
 
     assert out == {"ok": False, "reason": "soul_id_required"}
+
+
+def _seed_conversations(tmp_path: Path, user_ids: list[str]) -> Path:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    main._sqlite_ensure_conversation_state_schema(con)
+    con.executemany(
+        "INSERT INTO conversations (conversation_id, soul_id, user_id) VALUES (?, 'Echo', ?)",
+        [(f"c{i}", uid) for i, uid in enumerate(user_ids)],
+    )
+    con.commit()
+    con.close()
+    return db_path
+
+
+@pytest.mark.asyncio
+async def test_diag_pending_resolves_user_id_from_conversations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tails = _fixture_tails()
+    db_path = _seed_conversations(tmp_path, ["u1", "u1"])
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+
+    def _loader(_con: sqlite3.Connection, **kwargs: object) -> dict[str, list[dict]]:
+        # Mirror production: a wrong/empty uid loses the SillyTavern tail.
+        if kwargs.get("user_id") != "u1":
+            return {k: v for k, v in tails.items() if k != "st-chat"}
+        return tails
+
+    monkeypatch.setattr(main, "_load_cross_memorize_tails_from_sources", _loader)
+    monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 500)
+
+    out = await main.diag_memorize_pending(soul_id="Echo")
+
+    merged = [msg for tail in tails.values() for msg in tail]
+    assert out["summed_unmemorized_tokens"] == main._estimate_primary_memorize_tokens(merged)
+
+
+@pytest.mark.asyncio
+async def test_diag_pending_ambiguous_user_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = _seed_conversations(tmp_path, ["u1", "u2"])
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+
+    out = await main.diag_memorize_pending(soul_id="Echo")
+
+    assert out == {"ok": False, "reason": "user_id_ambiguous"}

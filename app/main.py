@@ -4102,6 +4102,15 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
     con = _sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
+        if not uid:
+            _sqlite_ensure_conversation_state_schema(con)
+            rows = con.execute(
+                "SELECT DISTINCT user_id FROM conversations WHERE user_id IS NOT NULL AND user_id != ''"
+            ).fetchall()
+            if len(rows) > 1:
+                return {"ok": False, "reason": "user_id_ambiguous"}
+            if rows:
+                uid = str(rows[0]["user_id"])
         tails = _load_cross_memorize_tails_from_sources(con, user_id=uid, soul_id=sid)
     finally:
         con.close()
