@@ -1,6 +1,9 @@
+import pytest
+
 from app.services.intention_state import (
     apply_intention_action,
     apply_intention_turn_maintenance,
+    format_intentions_for_prompt,
     normalize_intentions_stack,
     normalize_memory_cache,
     remove_intentions,
@@ -108,3 +111,38 @@ def test_remove_intentions():
     items = _items_by_id(updated)
     assert "b" not in items
     assert "a" in items
+
+
+def test_maintenance_drops_item_decayed_to_zero():
+    # decay_per_turn defaults to 0.1; set priority = 0.05 so one tick drops it to <= 0
+    stack = normalize_intentions_stack(
+        {
+            "turn_index": 0,
+            "decay_per_turn": 0.1,
+            "items": [
+                {"id": "low", "text": "fading", "priority": 0.05, "ephemeral": False},
+                {"id": "high", "text": "strong", "priority": 5.0, "ephemeral": False},
+            ],
+        }
+    )
+    result = apply_intention_turn_maintenance(stack)
+    items = _items_by_id(result)
+    assert "low" not in items
+    assert "high" in items
+    assert items["high"]["priority"] == pytest.approx(4.9)
+
+
+def test_format_intentions_for_prompt_default_max_is_7():
+    stack = normalize_intentions_stack(
+        {
+            "items": [
+                {"id": f"t-{i}", "text": f"task {i}", "priority": float(10 - i), "ephemeral": False}
+                for i in range(10)
+            ]
+        }
+    )
+    text = format_intentions_for_prompt(stack)
+    # relax is always prepended by normalize; the non-relax items are t-0..t-9 (10 items)
+    # default max_items=7 means at most 7 lines total (including relax if present)
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    assert len(lines) <= 7

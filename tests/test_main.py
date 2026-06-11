@@ -1817,6 +1817,50 @@ async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
+async def test_apimw_persist_message_to_self_not_truncated(monkeypatch: pytest.MonkeyPatch):
+    long_text = "x" * 500
+    captured_updates: dict[str, object] = {}
+    captured_item: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"prior_context": ""}, None, None),
+    )
+
+    def _fake_write(conversation_id, soul_id, user_id, updates):
+        captured_updates.update(updates)
+        return {"conversation_id": conversation_id, **updates}, Path("/tmp/fake.json")
+
+    monkeypatch.setattr(main, "_write_conversation_state", _fake_write)
+
+    async def _embed(texts, profile):
+        return [[0.1] * len(texts[0])]
+
+    def _create_item(**kwargs):
+        captured_item.update(kwargs)
+        return SimpleNamespace(id="subconscious_x")
+
+    await main._apimw_persist(
+        svc=SimpleNamespace(
+            embed=_embed,
+            database=SimpleNamespace(memory_item_repo=SimpleNamespace(create_item=_create_item)),
+        ),
+        result_json={"message_to_self": long_text},
+        items_by_id={},
+        id_map={},
+        scope={"user_id": "u", "soul_id": "s"},
+        conversation_id="c",
+        user_id="u",
+        soul_id="s",
+    )
+
+    assert captured_updates["apimw_message_to_self"] == f"[subconscious] {long_text}"
+    assert captured_item["summary"] == long_text
+    assert len(captured_item["summary"]) == 500
+
+
+@pytest.mark.asyncio
 async def test_apimw_persist_skips_when_prior_context_changed(monkeypatch: pytest.MonkeyPatch):
     writes: list[dict[str, object]] = []
 

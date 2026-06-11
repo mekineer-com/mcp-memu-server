@@ -252,7 +252,10 @@ def apply_intention_turn_maintenance(
             kept.append(next_item)
             continue
 
-        next_item["priority"] = max(0.0, _float(item.get("priority"), 0.0) - decay)
+        next_priority = _float(item.get("priority"), 0.0) - decay
+        if next_priority <= 0.0:
+            continue
+        next_item["priority"] = next_priority
         next_item["updated_at"] = now
         kept.append(next_item)
 
@@ -457,7 +460,7 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
     )
 
 
-def format_intentions_for_prompt(stack_value: Any, *, max_items: int = 12, include_internals: bool = False) -> str:
+def format_intentions_for_prompt(stack_value: Any, *, max_items: int = 7, include_internals: bool = False) -> str:
     stack = normalize_intentions_stack(stack_value)
     lines: list[str] = []
     for item in (stack.get("items") or [])[: max(1, int(max_items))]:
