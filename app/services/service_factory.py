@@ -30,17 +30,19 @@ def _services_cached() -> int:
     return len(_SERVICES)
 
 
-def _resolve_profile(svc: Any, name: str | None) -> str | None:
-    """Return *name* only when the service explicitly exposes that profile."""
+def _resolve_profile_if_configured(svc: Any, name: str | None) -> str | None:
+    """Return *name* when the service exposes that profile, else None (default profile).
+
+    A step profile named in llm.step_models but absent from llm_profiles is
+    rejected at service build by _validated_step_models.
+    """
     if not name:
         return None
     llm_profiles = getattr(svc, "llm_profiles", None)
     profiles = getattr(llm_profiles, "profiles", None)
     if not isinstance(profiles, Mapping):
         raise HTTPException(status_code=500, detail="service llm_profiles.profiles is unavailable")
-    if name not in profiles:
-        raise HTTPException(status_code=500, detail=f"llm profile '{name}' is not configured")
-    return name
+    return name if name in profiles else None
 
 
 def _close_service_quiet(svc: MemoryService | None) -> None:

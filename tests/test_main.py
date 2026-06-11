@@ -192,10 +192,14 @@ def test_retrieve_apimw_enabled_from_cfg_defaults_and_override():
     assert main._retrieve_apimw_enabled_from_cfg({"retrieve": {"apimw_enabled": False}}) is False
 
 
-def test_resolve_profile_raises_when_profile_missing():
+def test_resolve_profile_if_configured_defaults_when_step_profile_missing():
     svc = SimpleNamespace(llm_profiles=SimpleNamespace(profiles={"default": {}}))
-    with pytest.raises(main.HTTPException, match="llm profile 'memory_extract' is not configured"):
-        main._resolve_profile(svc, "memory_extract")
+    assert main._resolve_profile_if_configured(svc, "memory_extract") is None
+
+
+def test_resolve_profile_if_configured_uses_named_step_profile():
+    svc = SimpleNamespace(llm_profiles=SimpleNamespace(profiles={"default": {}, "memory_extract": {}}))
+    assert main._resolve_profile_if_configured(svc, "memory_extract") == "memory_extract"
 
 
 def test_imports():

@@ -981,7 +981,7 @@ if _DIAG_PREFIX == "":
     _DIAG_PREFIX = "/mcp"
 
 
-_resolve_profile = _service_factory._resolve_profile
+_resolve_profile_if_configured = _service_factory._resolve_profile_if_configured
 _retrieve_apimw_enabled_from_cfg = _service_factory._retrieve_apimw_enabled_from_cfg
 _cfg_int = _service_factory._cfg_int
 _apimw_cadence_from_cfg = _service_factory._apimw_cadence_from_cfg
@@ -2327,7 +2327,7 @@ async def _run_apimw(
             scope=scope,
         )
 
-        apimw_heavy_profile = _resolve_profile(svc, "memory_extract")
+        apimw_heavy_profile = _resolve_profile_if_configured(svc, "memory_extract")
         result_json, items_by_id, apimw_id_map = await _apimw_synthesize(
             svc,
             combined_items=combined_items,
@@ -3133,7 +3133,7 @@ async def _run_consolidation_pipeline_once(
         svc,
         inputs=prep,
         soul_id=soul_id,
-        llm_profile=_resolve_profile(svc, "consolidation"),
+        llm_profile=_resolve_profile_if_configured(svc, "consolidation"),
     )
     async with state_lock:
         result = _write_consolidation_outputs(
