@@ -4616,12 +4616,37 @@ async def conversation_turn(
                     "conversation_turn: missing chat_name for respond; continuing without chat label"
                 )
 
+        if attachment and not dry_run:
+            if response_target in {"respond", "private"} and cid.startswith("whatsapp:"):
+                out_id = _insert_whatsapp_outbound(
+                    user_id=uid,
+                    soul_id=soul_id,
+                    origin_conversation_id=cid,
+                    target=response_target,
+                    response_text="",
+                    media_path=attachment,
+                    metadata={"source": "turn_attachment"},
+                )
+                logger.info(
+                    "conversation_turn: queued attachment outbound %s target=%s",
+                    out_id,
+                    response_target,
+                )
+            elif not cid.startswith("whatsapp:"):
+                logger.error(
+                    "conversation_turn: attachment dropped — not a WhatsApp conversation (cid=%s)", cid
+                )
+            else:
+                logger.error(
+                    "conversation_turn: attachment dropped — response_target=%s cannot carry attachment",
+                    response_target,
+                )
+
         response_payload: dict[str, Any] = {
             "ok": True,
             "conversation_id": cid,
             "response": response_text,
             "response_target": response_target,
-            "attachment": attachment,
             "apimw": apimw_status,
             "final_turn_payload": {
                 "system_prompt": turn_system_prompt,

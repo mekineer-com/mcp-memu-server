@@ -4024,3 +4024,152 @@ CREATE TABLE whatsapp_pending_outbounds (
     cols = {row[1] for row in con.execute("PRAGMA table_info(whatsapp_pending_outbounds)")}
     assert "media_path" in cols
     con.close()
+
+
+# --- normal-turn attachment delivery ---
+
+def _make_turn_monkeypatches(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: "Path",
+    chat_response: str,
+) -> None:
+    """Shared setup for conversation_turn attachment tests."""
+
+    class _FakeSvc:
+        async def chat(self, *_args, **_kwargs) -> str:
+            return chat_response
+
+    async def _fake_persist_annulment_memories(**_kwargs):
+        return []
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        main,
+        "_turn_state_read",
+        lambda *_a, **_k: (
+            {"digest_cursor": 0},
+            None,
+            db_path,
+            [],
+            {"items": []},
+            0,
+            None,
+        ),
+    )
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
+    monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
+    monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+
+
+@pytest.mark.asyncio
+async def test_conversation_turn_attachment_enqueues_outbound_with_empty_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Normal WhatsApp turn with attachment queues a media-only outbound row."""
+    db_path = tmp_path / "SiriTest.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+
+    media = "/home/marcos/Desktop/siri/report.pdf"
+    _make_turn_monkeypatches(
+        monkeypatch,
+        db_path,
+        '{"cache":null,"annulments":[],"rehearsal":"done",'
+        f'"response_target":"respond","response":"Here is your report.",'
+        f'"attachment":"{media}"}}',
+    )
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Siri", "conversation_id": "whatsapp:dm:Marcos"},
+        "message": "send me the report",
+        "user_name": "Marcos",
+        "chat_name": "Marcos",
+        "chat_type": "dm",
+        "history": [],
+        "prompt_override_payload": {
+            "user_prompt": "prompt",
+            "system_prompt": "system",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "retrieve_rag": {"items": [], "categories": [], "resources": []},
+        },
+    }
+
+    out = await main.conversation_turn("whatsapp:dm:Marcos", payload)
+
+    assert out["ok"] is True
+    assert out["response"] == "Here is your report."
+    assert "attachment" not in out
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute("SELECT * FROM whatsapp_pending_outbounds").fetchall()
+    finally:
+        con.close()
+
+    assert len(rows) == 1
+    assert rows[0]["response_text"] == ""
+    assert rows[0]["media_path"] == media
+    assert rows[0]["target"] == "respond"
+    import json as _json
+    meta = _json.loads(rows[0]["metadata_json"] or "{}")
+    assert meta.get("source") == "turn_attachment"
+
+
+@pytest.mark.asyncio
+async def test_conversation_turn_listen_target_attachment_does_not_enqueue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Attachment on a listen-target turn is logged as an error but not enqueued."""
+    db_path = tmp_path / "SiriTest.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+
+    media = "/home/marcos/Desktop/siri/note.txt"
+    _make_turn_monkeypatches(
+        monkeypatch,
+        db_path,
+        '{"cache":null,"annulments":[],"rehearsal":"watching",'
+        f'"response_target":"listen","response":"",'
+        f'"attachment":"{media}"}}',
+    )
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Siri", "conversation_id": "whatsapp:dm:Marcos"},
+        "message": "quiet",
+        "user_name": "Marcos",
+        "chat_name": "Marcos",
+        "chat_type": "dm",
+        "history": [],
+        "prompt_override_payload": {
+            "user_prompt": "prompt",
+            "system_prompt": "system",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "retrieve_rag": {"items": [], "categories": [], "resources": []},
+        },
+    }
+
+    with caplog.at_level(logging.ERROR):
+        out = await main.conversation_turn("whatsapp:dm:Marcos", payload)
+
+    assert out["ok"] is True
+    assert out["response"] == ""
+    assert any("attachment dropped" in r.getMessage() for r in caplog.records)
