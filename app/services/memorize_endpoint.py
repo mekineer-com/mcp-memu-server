@@ -329,7 +329,7 @@ async def run_memorize_episodes(
                     active=True,
                     phase="extracting",
                     current=0,
-                    total=total_segments,
+                    total=0,
                 )
                 ep_start = _time.monotonic()
                 batch_results = await svc.memorize_episodes_batch(
@@ -349,6 +349,14 @@ async def run_memorize_episodes(
                     memory_retrieve_history=cached_retrieval_ids or None,
                     memory_prior_context=cached_prior_context_ids or None,
                     conversation_id=conversation_id,
+                    on_extraction_progress=lambda current, total: _set_memorize_progress(
+                        ctx.memorize_progress,
+                        progress_key,
+                        active=True,
+                        phase="extracting",
+                        current=current,
+                        total=total,
+                    ),
                 )
                 if len(batch_results) != len(segment_jobs):
                     msg = (
