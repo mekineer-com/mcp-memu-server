@@ -14,6 +14,7 @@ from app.services.intention_state import (
 )
 from app.services.payload import _canonicalize_scope_where, _extract_scope
 from app.services.turn_contract import (
+    _norm_text,
     format_time_anchor as _format_time_anchor,
     format_working_thoughts_lines as _format_working_thoughts_lines,
     render_history as _render_history,
@@ -136,8 +137,8 @@ def _build_retrieve_soul_context_queries(
         current_user_text
         and not directive_text
         and isinstance(last_history_item, dict)
-        and str(last_history_item.get("role") or "").strip().lower() == "user"
-        and str(last_history_item.get("content") or "").strip() == current_user_text
+        and _norm_text(str(last_history_item.get("role") or "")) == "user"
+        and _norm_text(str(last_history_item.get("content") or "")) == _norm_text(current_user_text)
     )
     if current_user_text and not directive_text and not already_has_current_user_message:
         synthetic: dict[str, str] = {"role": "user", "content": current_user_text}

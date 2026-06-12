@@ -1531,6 +1531,25 @@ def test_build_retrieve_soul_context_queries_keeps_self_turn_out_of_user_history
     )
 
 
+def test_build_retrieve_soul_context_queries_no_duplicate_when_whitespace_differs() -> None:
+    # Last history item content matches message except for internal whitespace;
+    # guard must normalise both sides so no synthetic user turn is appended.
+    history = [
+        {"message_id": "m1", "role": "user", "content": "hello   world"},
+    ]
+    queries = main._build_retrieve_soul_context_queries(
+        soul_id="Echo",
+        message="hello world",
+        history=history,
+        state_row={"memory_cache": [], "intentions_active": {"items": []}},
+    )
+    history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
+    assert len(history_rows) == 1
+    text = str((history_rows[0].get("content") or {}).get("text") or "")
+    # "hello world" should appear exactly once — no duplicate user turn
+    assert text.count("hello") == 1
+
+
 @pytest.mark.asyncio
 async def test_run_memorize_episodes_records_failure_progress_on_exception(tmp_path):
     segments_dir = tmp_path / "segments"
