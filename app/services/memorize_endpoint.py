@@ -188,6 +188,7 @@ async def run_memorize_episodes(
     cached_retrieval_ids: list[str] = []
     cached_prior_context_ids: list[str] = []
     conversation_rolling_summary: str | None = None
+    consumed_background_summary_ids: set[str] = set()
     total_segments = 0
     had_existing_pending = False
     consolidation_started = False
@@ -292,6 +293,7 @@ async def run_memorize_episodes(
                         "anchor_index": int(idx),
                     }
                 )
+                consumed_background_summary_ids.add(source_cid)
             segment_jobs.append(
                 {
                     "segment_payload": {
@@ -447,6 +449,16 @@ async def run_memorize_episodes(
                         soul_id=soul_id,
                         user_id=uid,
                         updates=updates,
+                    )
+                for bg_cid in consumed_background_summary_ids:
+                    ctx.write_conversation_state(
+                        bg_cid,
+                        soul_id=soul_id,
+                        user_id=uid,
+                        updates={
+                            "rolling_summary": None,
+                            "rolling_summary_updated_at": None,
+                        },
                     )
             elif conversation_id and has_results:
                 ctx.write_conversation_state(

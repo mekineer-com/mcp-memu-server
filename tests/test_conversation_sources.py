@@ -894,6 +894,42 @@ def test_load_whatsapp_tail_applies_floor_backfill(tmp_path: Path) -> None:
     assert [row["content"] for row in rows] == [f"msg-{i}" for i in range(2, 10)]
 
 
+def test_load_whatsapp_tail_does_not_floor_without_new_rows(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:15133278228": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "15133278228@s.whatsapp.net",
+                        "chat_name": "Marcos",
+                        "user_name": "Marcos",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [("s1", "user", f"msg-{i}", 100.0 + i) for i in range(10)],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=9,
+        recent_fallback_messages=8,
+        sessions_index_path=sessions_path,
+        state_db_path=state_db_path,
+    )
+    assert rows == []
+
+
 def test_load_whatsapp_tail_raises_when_mapping_missing(tmp_path: Path) -> None:
     sessions_path = tmp_path / "sessions.json"
     state_db_path = tmp_path / "state.db"

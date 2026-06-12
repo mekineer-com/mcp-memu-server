@@ -1651,6 +1651,107 @@ async def test_run_memorize_episodes_clears_pending_ids_on_extraction_failure(mo
     assert row.get("last_result") == "failure"
 
 
+@pytest.mark.asyncio
+async def test_run_memorize_episodes_clears_consumed_background_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+
+    class _FakeService:
+        async def memorize_episodes_batch(self, **_kwargs):
+            return [{"pending_episode_ids": ["trigger:0-1"]}]
+
+    state_rows: dict[str, dict[str, Any]] = {
+        "trigger": {
+            "digest_cursor": -1,
+            "pending_episode_ids": [],
+            "all_categories_summary": "",
+        },
+        "whatsapp:dm:bg-chat": {
+            "digest_cursor": -1,
+            "rolling_summary": "old rolled summary",
+            "rolling_summary_cursor_id": 11,
+            "rolling_summary_updated_at": "2026-05-01T00:00:00+00:00",
+        },
+    }
+    writes: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_load_turn_state_and_soul_card(cid: str, **_kwargs):
+        return dict(state_rows.get(cid, {})), None, tmp_path / "Echo.db"
+
+    def fake_write_conversation_state(cid: str, *, updates: dict[str, Any], **_kwargs):
+        writes.append((cid, dict(updates)))
+        state_rows.setdefault(cid, {}).update(updates)
+        if updates.get("rolling_summary") is None:
+            state_rows[cid]["rolling_summary"] = None
+        return dict(state_rows[cid]), tmp_path / "Echo.db"
+
+    async def fake_summary(**_kwargs):
+        return "summary"
+
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
+    monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
+    monkeypatch.setattr(main, "_compute_holistic_categories_summary", fake_summary)
+
+    await main._run_memorize_episodes(
+        memorize_segments=[
+            (
+                "/tmp/day.json",
+                [
+                    {
+                        "role": "user",
+                        "content": "new primary",
+                        "memorize_chat": True,
+                        "source_conversation_id": "trigger",
+                        "source_conversation_index": 0,
+                    },
+                    {
+                        "role": "user",
+                        "content": "new background",
+                        "memorize_chat": False,
+                        "source_conversation_id": "whatsapp:dm:bg-chat",
+                        "source_conversation_index": 12,
+                    },
+                ],
+                0,
+                1,
+            )
+        ],
+        svc=_FakeService(),
+        scope={"user_id": "u", "soul_id": "s"},
+        conversation_id="trigger",
+        soul_id="s",
+        uid="u",
+        processed_cursor=-1,
+        safe={
+            "_background_rolling_summaries": {
+                "whatsapp:dm:bg-chat": {
+                    "summary": "old rolled summary",
+                    "source_label": "whatsapp:dm",
+                }
+            }
+        },
+        resource_url="/tmp/day.json",
+        chat_key=None,
+        merged_len=2,
+        force=False,
+        sleep_stats=None,
+        segments_dir=segments_dir,
+        cross_memorize=True,
+        final_cursors={"trigger": 0, "whatsapp:dm:bg-chat": 12},
+    )
+
+    clear_writes = [
+        updates for cid, updates in writes
+        if cid == "whatsapp:dm:bg-chat" and "rolling_summary" in updates
+    ]
+    assert clear_writes == [{"rolling_summary": None, "rolling_summary_updated_at": None}]
+    assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary"] is None
+    assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary_cursor_id"] == 11
+
+
 def test_timeline_endpoint_returns_entity_edges(monkeypatch: pytest.MonkeyPatch):
     class _EntityRepo:
         def list_all(self, where=None):
@@ -2722,6 +2823,68 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
     assert "msg_04" in turn_prompt
     assert "msg_03" not in turn_prompt
     assert "msg_11" in turn_prompt
+
+
+@pytest.mark.asyncio
+async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:dm:15133278228", 11, "2026-05-01T00:00:00+00:00"),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"digest_cursor": 11, "last_memorize_at": "2026-05-01T00:00:00+00:00", "all_categories_summary": ""},
+            None,
+            db_path,
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "_load_current_whatsapp_history_from_source",
+        lambda *_a, **_k: [
+            {
+                "role": "user",
+                "content": f"msg_{idx:02d}",
+                "source_conversation_index": idx,
+            }
+            for idx in range(12)
+        ],
+    )
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo"},
+        "message": "current message",
+        "query": "current message",
+        "history": [],
+        "build_turn_prompt": True,
+        "load_source_history": True,
+        "is_live_turn": True,
+    }
+
+    out = await main.conversation_retrieve("whatsapp:dm:15133278228", payload)
+    turn_prompt = str(out.get("turn_user_prompt") or "")
+    assert "msg_04" not in turn_prompt
+    assert "msg_11" not in turn_prompt
+    assert "current message" in turn_prompt
 
 
 @pytest.mark.asyncio
