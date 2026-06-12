@@ -3615,6 +3615,67 @@ def test_free_turn_follow_up_payload_excludes_caller_timezone() -> None:
     assert "time_zone_offset_min" not in payload
 
 
+def test_parse_free_turn_follow_up_at_naive_iso_uses_server_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    import zoneinfo
+    fake_tz = zoneinfo.ZoneInfo("America/Lima")  # UTC-5
+    monkeypatch.setattr(main._memorize_endpoint, "server_timezone", lambda: fake_tz)
+
+    result = main._parse_free_turn_follow_up_at("2026-06-15T14:00:00")
+
+    assert result is not None
+    assert result.tzinfo is not None
+    # Lima is UTC-5 → 14:00 local = 19:00 UTC
+    assert result.hour == 19
+    assert result.minute == 0
+
+
+def test_parse_free_turn_follow_up_at_tz_aware_iso_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    import zoneinfo
+    fake_tz = zoneinfo.ZoneInfo("America/Lima")
+    monkeypatch.setattr(main._memorize_endpoint, "server_timezone", lambda: fake_tz)
+
+    # Explicit +02:00 → 14:00+02:00 = 12:00 UTC, not affected by server tz
+    result = main._parse_free_turn_follow_up_at("2026-06-15T14:00:00+02:00")
+
+    assert result is not None
+    assert result.hour == 12
+    assert result.minute == 0
+
+
+def test_parse_free_turn_follow_up_at_z_suffix_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    import zoneinfo
+    fake_tz = zoneinfo.ZoneInfo("America/Lima")
+    monkeypatch.setattr(main._memorize_endpoint, "server_timezone", lambda: fake_tz)
+
+    result = main._parse_free_turn_follow_up_at("2026-06-15T14:00:00Z")
+
+    assert result is not None
+    assert result.hour == 14  # already UTC
+    assert result.minute == 0
+
+
+def test_parse_free_turn_follow_up_at_human_format_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
+    import zoneinfo
+    fake_tz = zoneinfo.ZoneInfo("America/Lima")
+    monkeypatch.setattr(main._memorize_endpoint, "server_timezone", lambda: fake_tz)
+
+    result = main._parse_free_turn_follow_up_at("Monday, June 15, 2026 14:00 PET")
+
+    assert result is not None
+    assert result.hour == 19  # Lima UTC-5
+    assert result.minute == 0
+
+
+def test_parse_free_turn_follow_up_at_garbage_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    import zoneinfo
+    fake_tz = zoneinfo.ZoneInfo("America/Lima")
+    monkeypatch.setattr(main._memorize_endpoint, "server_timezone", lambda: fake_tz)
+
+    assert main._parse_free_turn_follow_up_at("not a date at all") is None
+    assert main._parse_free_turn_follow_up_at("") is None
+    assert main._parse_free_turn_follow_up_at(None) is None  # type: ignore[arg-type]
+
+
 def test_free_turn_follow_up_schedule_persists_pending_row(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

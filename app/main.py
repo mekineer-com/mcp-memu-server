@@ -1435,9 +1435,11 @@ def _parse_free_turn_follow_up_at(raw: str) -> datetime | None:
     if not text:
         return None
     try:
-        parsed = _parse_as_of_datetime(text)
-        return parsed.astimezone(UTC) if parsed is not None else None
-    except HTTPException:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_memorize_endpoint.server_timezone())
+        return dt.astimezone(UTC)
+    except ValueError:
         pass
 
     zone = _memorize_endpoint.server_timezone()
