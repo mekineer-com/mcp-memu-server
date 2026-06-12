@@ -2932,11 +2932,12 @@ def _load_cross_tail_from_sources(
             )
         except Exception as exc:
             logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)
+            is_lid_gap = "LID↔phone mapping gap" in str(exc)
             is_web_source_whatsapp = (
                 source_label.startswith("whatsapp:")
                 and _resolve_whatsapp_source_config()[0] == "web_source"
             )
-            if is_web_source_whatsapp:
+            if is_web_source_whatsapp and not is_lid_gap:
                 raise RuntimeError(f"WhatsApp web_source read failed for {cid}: {exc}") from exc
             continue
         _stamp_assistant_display_name(tail, soul_id)
@@ -3055,11 +3056,12 @@ def _load_cross_memorize_tails_from_sources(
             tails[cid] = tail
         except Exception as exc:
             logger.error("cross-memorize source read failed for conversation_id=%s: %s", cid, exc)
+            is_lid_gap = "LID↔phone mapping gap" in str(exc)
             is_web_source_whatsapp = (
                 _message_log.derive_source_label(cid).startswith("whatsapp:")
                 and _resolve_whatsapp_source_config()[0] == "web_source"
             )
-            if is_web_source_whatsapp:
+            if is_web_source_whatsapp and not is_lid_gap:
                 raise RuntimeError(f"WhatsApp web_source read failed for {cid}: {exc}") from exc
             continue
     return tails

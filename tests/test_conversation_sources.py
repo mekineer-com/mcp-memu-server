@@ -11,9 +11,10 @@ def _write_state_db(path: Path, rows: list[tuple]) -> None:
     con = sqlite3.connect(path)
     try:
         con.execute(
-            "CREATE TABLE messages ("
+            "CREATE TABLE IF NOT EXISTS messages ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "session_id TEXT, role TEXT, content TEXT, timestamp REAL, sender_id TEXT, sender_name TEXT)"
+            "session_id TEXT, role TEXT, content TEXT, timestamp REAL, "
+            "sender_id TEXT, sender_name TEXT, source_message_id TEXT)"
         )
         normalized_rows: list[tuple[str, str, str, float, str | None, str | None]] = []
         for row in rows:
@@ -1319,3 +1320,86 @@ def test_load_sillytavern_tail_raises_when_snapshot_missing(tmp_path: Path) -> N
             since_cursor=-1,
             recent_fallback_messages=0,
         )
+
+
+def test_messages_source_message_id_select_raises_when_column_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, content TEXT)")
+        con.commit()
+        with pytest.raises(RuntimeError, match="missing required column messages.source_message_id"):
+            conversation_sources._messages_source_message_id_select(con, db_path)
+    finally:
+        con.close()
+
+
+def test_expand_session_ids_propagates_when_parent_session_id_column_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    con = sqlite3.connect(db_path)
+    try:
+        # sessions table exists but lacks parent_session_id column
+        con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
+        con.execute("INSERT INTO sessions (id) VALUES ('s1')")
+        con.commit()
+    finally:
+        con.close()
+    with pytest.raises(sqlite3.OperationalError, match="no such column"):
+        conversation_sources._expand_session_ids_with_lineage(db_path, ["s1"])
+
+
+def test_load_whatsapp_web_source_tail_raises_on_initial_read_with_no_matching_rows(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(web_db, messages=[])
+
+    with pytest.raises(RuntimeError, match="LID.*phone mapping gap"):
+        conversation_sources.load_whatsapp_web_source_tail(
+            conversation_id="whatsapp:dm:99999999999",
+            since_cursor=-1,
+            recent_fallback_messages=0,
+            soul_id="Siri",
+            reply_prefix="",
+            web_source_db_path=web_db,
+        )
+
+
+def test_load_whatsapp_web_source_tail_no_error_on_initial_read_with_messages_filtered_by_timestamp(
+    tmp_path: Path,
+) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(
+        web_db,
+        messages=[
+            {"msg_key": "old", "timestamp": 50, "body": "before cutoff"},
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id="Siri",
+        reply_prefix="",
+        web_source_db_path=web_db,
+        min_timestamp=100.0,
+    )
+    assert rows == []
+
+
+def test_load_whatsapp_web_source_tail_after_rowid_no_error_when_no_new_rows(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(
+        web_db,
+        messages=[
+            {"msg_key": "one", "timestamp": 100, "body": "already seen"},
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_web_source_tail_after_rowid(
+        conversation_id="whatsapp:dm:15133278228",
+        after_rowid=999,
+        soul_id="Siri",
+        reply_prefix="",
+        web_source_db_path=web_db,
+    )
+    assert rows == []

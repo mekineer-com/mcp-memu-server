@@ -91,7 +91,7 @@ def load_soul_active_since(
         ) from exc
 
 
-def _messages_source_message_id_select(con: sqlite3.Connection) -> str:
+def _messages_source_message_id_select(con: sqlite3.Connection, db_path: Path) -> str:
     columns = {
         str(row[1])
         for row in con.execute("PRAGMA table_info(messages)").fetchall()
@@ -99,7 +99,9 @@ def _messages_source_message_id_select(con: sqlite3.Connection) -> str:
     }
     if "source_message_id" in columns:
         return "source_message_id"
-    return "NULL AS source_message_id"
+    raise RuntimeError(
+        f"state.db missing required column messages.source_message_id: {db_path}"
+    )
 
 
 def _parse_session_key_chat_token(session_key: str, *, chat_type: str) -> str:
@@ -305,17 +307,20 @@ def _expand_session_ids_with_lineage(db_path: Path, session_ids: list[str]) -> l
         queue = list(ordered)
         while queue:
             current = queue.pop(0)
-            row = con.execute(
-                "SELECT parent_session_id FROM sessions WHERE id = ? LIMIT 1",
-                (current,),
-            ).fetchone()
+            try:
+                row = con.execute(
+                    "SELECT parent_session_id FROM sessions WHERE id = ? LIMIT 1",
+                    (current,),
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc).lower():
+                    break
+                raise
             parent = str((row["parent_session_id"] if row else "") or "").strip()
             if parent and parent not in seen:
                 seen.add(parent)
                 ordered.append(parent)
                 queue.append(parent)
-        return ordered
-    except sqlite3.OperationalError:
         return ordered
     finally:
         con.close()
@@ -379,21 +384,12 @@ def load_whatsapp_assistant_source_message_ids(
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     try:
-        columns = {
-            str(row[1])
-            for row in con.execute("PRAGMA table_info(messages)").fetchall()
-            if len(row) > 1
-        }
-        if "source_message_id" not in columns:
-            return set()
         rows = con.execute(
             f"SELECT source_message_id FROM messages "
             f"WHERE session_id IN ({placeholders}) AND role = 'assistant' "
             "AND source_message_id IS NOT NULL AND TRIM(source_message_id) != ''",
             session_ids,
         ).fetchall()
-    except sqlite3.OperationalError:
-        return set()
     finally:
         con.close()
     return {str(row["source_message_id"] or "").strip() for row in rows if str(row["source_message_id"] or "").strip()}
@@ -657,6 +653,18 @@ def _load_whatsapp_web_source_tail(
     con.row_factory = sqlite3.Row
     try:
         rows = con.execute(sql, params).fetchall()
+        if not rows and not cursor_is_rowid and cursor < 0:
+            any_rows = con.execute(
+                f"SELECT 1 FROM whatsapp_messages WHERE "
+                f"(chat_id = ? OR chat_local_id IN ({','.join('?' for _ in local_ids)})) LIMIT 1",
+                [target, *sorted(local_ids)],
+            ).fetchone()
+            if not any_rows:
+                raise RuntimeError(
+                    f"web_source returned no rows for conversation_id={conversation_id!r} "
+                    f"— likely LID↔phone mapping gap (lid-mapping file missing) "
+                    f"or web_source clone not synced"
+                )
     finally:
         con.close()
 
@@ -875,7 +883,7 @@ def load_whatsapp_tail(
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     try:
-        source_message_id_select = _messages_source_message_id_select(con)
+        source_message_id_select = _messages_source_message_id_select(con, db_path)
         select_sql = (
             "SELECT id, session_id, role, content, timestamp, sender_id, sender_name, "
             f"{source_message_id_select} FROM messages "
@@ -993,7 +1001,7 @@ def load_whatsapp_tail_after_message_id(
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     try:
-        source_message_id_select = _messages_source_message_id_select(con)
+        source_message_id_select = _messages_source_message_id_select(con, db_path)
         rows = con.execute(
             "SELECT id, session_id, role, content, timestamp, sender_id, sender_name, "
             f"{source_message_id_select} FROM messages "
