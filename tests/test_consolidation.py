@@ -641,3 +641,65 @@ def test_write_consolidation_outputs_db_failure_produces_no_companion_memory() -
             _consol_mod.create_companion_memory = original_create
 
         assert companion_calls == [], "companion memory must not be created when DB phase fails"
+
+
+def test_write_consolidation_outputs_late_failure_keeps_pending_episode_ids() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        db_path = tmp_dir / "soul.db"
+        con = sqlite3.connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            sqlite_ensure_conversation_state_schema(con)
+            _soul_state.ensure_schema(con)
+            con.commit()
+        finally:
+            con.close()
+
+        cid = "conv-late-fail"
+        soul_id = "SoulC"
+        user_id = "UserC"
+        pending = ["ep:late"]
+
+        write_conversation_state(
+            cid,
+            sqlite_current_path=lambda _u, _s: db_path,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={"pending_episode_ids": pending, "intentions_active": []},
+        )
+
+        import app.services.consolidation as _consol_mod
+
+        original_create = _consol_mod.create_companion_memory
+
+        def _failing_create(*args, **kwargs):
+            raise RuntimeError("simulated companion failure")
+
+        _consol_mod.create_companion_memory = _failing_create
+        try:
+            with pytest.raises(RuntimeError, match="simulated companion failure"):
+                write_consolidation_outputs(
+                    _make_consolidation_deps(db_path, tmp_dir),
+                    _make_svc_stub(),
+                    inputs={"db_path": db_path},
+                    llm_results=_base_llm_results(
+                        companion_memory="Something to remember.",
+                        companion_embedding=[0.1, 0.2, 0.3],
+                    ),
+                    conversation_id=cid,
+                    soul_id=soul_id,
+                    user_id=user_id,
+                )
+        finally:
+            _consol_mod.create_companion_memory = original_create
+
+        check_con = sqlite_connect(db_path)
+        try:
+            check_con.row_factory = sqlite3.Row
+            state = conversation_state_from_row(conversation_state_row(check_con, cid))
+        finally:
+            check_con.close()
+
+        assert state is not None
+        assert state["pending_episode_ids"] == pending

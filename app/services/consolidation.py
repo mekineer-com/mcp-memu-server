@@ -912,20 +912,11 @@ INSERT INTO intentions (
             if aid and aid.lower() != "relax":
                 current_intentions = remove_intentions(current_intentions, [aid])
 
-    state_updates: dict[str, Any] = {
-        "pending_episode_ids": [],
-        "last_consolidation_at": now_iso,
-        "consolidation_in_progress": False,
-        "consolidation_started_at": None,
-        "intentions_active": current_intentions,
-        "retrieval_ids_since_consolidation": [],
-        "prior_context_ids_since_consolidation": [],
-    }
-    state_after, _ = deps.write_conversation_state(
+    deps.write_conversation_state(
         conversation_id,
         soul_id=soul_id,
         user_id=user_id,
-        updates=state_updates,
+        updates={},
     )
 
     if old_narrative_text:
@@ -950,6 +941,22 @@ INSERT INTO intentions (
     scope = {"user_id": user_id, "soul_id": soul_id}
     wrote = write_memory_edges(svc.database.triple_repo, llm_results["edges"], scope=scope)
     invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results["edge_invalidations"], scope=scope)
+
+    state_updates: dict[str, Any] = {
+        "pending_episode_ids": [],
+        "last_consolidation_at": now_iso,
+        "consolidation_in_progress": False,
+        "consolidation_started_at": None,
+        "intentions_active": current_intentions,
+        "retrieval_ids_since_consolidation": [],
+        "prior_context_ids_since_consolidation": [],
+    }
+    state_after, _ = deps.write_conversation_state(
+        conversation_id,
+        soul_id=soul_id,
+        user_id=user_id,
+        updates=state_updates,
+    )
 
     return {
         "conversation_id": conversation_id,
