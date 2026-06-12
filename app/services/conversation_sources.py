@@ -478,6 +478,26 @@ def _web_source_chat_match(
     return target, {value for value in locals_ if value}, chat_type
 
 
+def _render_reactions(reactions_json: str | None, contact_map: dict[str, str]) -> str:
+    if not reactions_json:
+        return ""
+    try:
+        reactions: dict[str, str] = json.loads(reactions_json)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(reactions, dict) or not reactions:
+        return ""
+    parts = []
+    for sender_local_id, emoji in reactions.items():
+        if not emoji:
+            continue
+        name = contact_map.get(sender_local_id) or sender_local_id
+        parts.append(f"{emoji} — {name}")
+    if not parts:
+        return ""
+    return f" [reacted {', '.join(parts)}]"
+
+
 def _web_source_row_to_tail(
     row: sqlite3.Row,
     *,
@@ -487,6 +507,7 @@ def _web_source_row_to_tail(
     soul_id: str,
     reply_prefix: str,
     assistant_source_message_ids: set[str],
+    contact_map: dict[str, str],
 ) -> dict[str, Any] | None:
     body = str(row["body"] or "").strip()
     if not body or _is_gateway_notice(body):
@@ -511,6 +532,9 @@ def _web_source_row_to_tail(
             speaker = _contact_name(row, "from")
         if not speaker:
             speaker = _normalize_whatsapp_identifier(str(row["author_id"] or row["from_id"] or ""))
+    reaction_tag = _render_reactions(row["reactions"], contact_map)
+    if reaction_tag:
+        content = content + reaction_tag
     return {
         "id": int(row["rowid"]),
         "source_message_id": source_message_id,
@@ -623,7 +647,7 @@ def _load_whatsapp_web_source_tail(
     select_sql = f"""
         SELECT
           m.rowid, m.msg_key, m.chat_id, m.from_me, m.timestamp, m.body,
-          m.author_id, m.from_id,
+          m.author_id, m.from_id, m.reactions,
           cc.name AS chat_name, cc.short_name AS chat_short_name,
           cc.push_name AS chat_push_name, cc.verified_name AS chat_verified_name,
           ca.name AS author_name, ca.short_name AS author_short_name,
@@ -652,6 +676,15 @@ def _load_whatsapp_web_source_tail(
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
     try:
+        msg_cols = {
+            str(r[1])
+            for r in con.execute("PRAGMA table_info(whatsapp_messages)").fetchall()
+        }
+        if "reactions" not in msg_cols:
+            raise RuntimeError(
+                f"web_source.db schema is outdated — reactions column missing: {db_path}. "
+                "Restart the web-source daemon to apply the migration."
+            )
         rows = con.execute(sql, params).fetchall()
         if not rows and not cursor_is_rowid and cursor < 0:
             any_rows = con.execute(
@@ -665,8 +698,23 @@ def _load_whatsapp_web_source_tail(
                     f"— likely LID↔phone mapping gap (lid-mapping file missing) "
                     f"or web_source clone not synced"
                 )
+        contact_rows = con.execute(
+            "SELECT contact_local_id, name, short_name, push_name, verified_name "
+            "FROM whatsapp_contacts"
+        ).fetchall()
     finally:
         con.close()
+
+    contact_map: dict[str, str] = {}
+    for cr in contact_rows:
+        local_id = str(cr["contact_local_id"] or "").strip()
+        if not local_id:
+            continue
+        for field in ("name", "short_name", "push_name", "verified_name"):
+            value = str(cr[field] or "").strip()
+            if value:
+                contact_map[local_id] = value
+                break
 
     chat_name = str(conversation_id).split(":", 2)[-1].strip() or "contact"
     assistant_ids = {
@@ -685,6 +733,7 @@ def _load_whatsapp_web_source_tail(
             soul_id=soul_id,
             reply_prefix=reply_prefix,
             assistant_source_message_ids=assistant_ids,
+            contact_map=contact_map,
         ))
     ]
     if cursor_is_rowid:

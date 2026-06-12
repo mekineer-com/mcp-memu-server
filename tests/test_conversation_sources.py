@@ -80,7 +80,8 @@ def _write_web_source_db(path: Path, *, messages: list[dict], contacts: list[dic
               source TEXT NOT NULL,
               first_seen_at INTEGER NOT NULL,
               updated_at INTEGER NOT NULL,
-              raw_json TEXT NOT NULL
+              raw_json TEXT NOT NULL,
+              reactions TEXT
             );
             CREATE TABLE whatsapp_contacts (
               contact_id TEXT PRIMARY KEY,
@@ -123,8 +124,8 @@ def _write_web_source_db(path: Path, *, messages: list[dict], contacts: list[dic
                 INSERT INTO whatsapp_messages (
                   msg_key, chat_id, chat_local_id, from_me, timestamp, type, body,
                   author_id, author_local_id, from_id, from_local_id, to_id, to_local_id,
-                  has_media, source, first_seen_at, updated_at, raw_json
-                ) VALUES (?, ?, ?, ?, ?, 'chat', ?, ?, '', ?, '', null, '', 0, 'test', ?, ?, '{}')
+                  has_media, source, first_seen_at, updated_at, raw_json, reactions
+                ) VALUES (?, ?, ?, ?, ?, 'chat', ?, ?, '', ?, '', null, '', 0, 'test', ?, ?, '{}', ?)
                 """,
                 (
                     msg["msg_key"],
@@ -137,6 +138,7 @@ def _write_web_source_db(path: Path, *, messages: list[dict], contacts: list[dic
                     from_id,
                     timestamp,
                     timestamp,
+                    msg.get("reactions"),
                 ),
             )
         con.commit()
@@ -1403,3 +1405,135 @@ def test_load_whatsapp_web_source_tail_after_rowid_no_error_when_no_new_rows(tmp
         web_source_db_path=web_db,
     )
     assert rows == []
+
+
+def test_web_source_reaction_rendered_into_content(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(
+        web_db,
+        messages=[
+            {
+                "msg_key": "m1",
+                "timestamp": 100,
+                "body": "hello",
+                "reactions": '{"15133278228": "❤️"}',
+            }
+        ],
+        contacts=[
+            {
+                "contact_id": "15133278228@c.us",
+                "contact_local_id": "15133278228",
+                "name": "Marcos",
+            }
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id="Siri",
+        reply_prefix="",
+        web_source_db_path=web_db,
+    )
+    assert len(rows) == 1
+    assert rows[0]["content"] == "hello [reacted ❤️ — Marcos]"
+    assert rows[0]["role"] == "user"
+
+
+def test_web_source_multiple_reactors(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(
+        web_db,
+        messages=[
+            {
+                "msg_key": "m1",
+                "timestamp": 100,
+                "body": "hey",
+                "reactions": '{"aaa": "❤️", "bbb": "😂"}',
+            }
+        ],
+        contacts=[
+            {"contact_id": "aaa@c.us", "contact_local_id": "aaa", "name": "Alice"},
+            {"contact_id": "bbb@c.us", "contact_local_id": "bbb", "name": "Bob"},
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id="Siri",
+        reply_prefix="",
+        web_source_db_path=web_db,
+    )
+    assert len(rows) == 1
+    content = rows[0]["content"]
+    assert content.startswith("hey [reacted ")
+    assert "❤️ — Alice" in content
+    assert "😂 — Bob" in content
+
+
+def test_web_source_outdated_schema_raises(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    # Create DB without the reactions column (old schema)
+    con = sqlite3.connect(str(web_db))
+    try:
+        con.executescript(
+            """
+            CREATE TABLE whatsapp_messages (
+              msg_key TEXT PRIMARY KEY,
+              chat_id TEXT NOT NULL,
+              chat_local_id TEXT NOT NULL,
+              from_me INTEGER NOT NULL,
+              timestamp INTEGER NOT NULL,
+              type TEXT NOT NULL,
+              body TEXT,
+              author_id TEXT,
+              author_local_id TEXT,
+              from_id TEXT,
+              from_local_id TEXT,
+              to_id TEXT,
+              to_local_id TEXT,
+              has_media INTEGER NOT NULL DEFAULT 0,
+              media_placeholder TEXT,
+              ack INTEGER,
+              revoked INTEGER NOT NULL DEFAULT 0,
+              revoke_source TEXT,
+              source TEXT NOT NULL,
+              first_seen_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              raw_json TEXT NOT NULL
+            );
+            CREATE TABLE whatsapp_contacts (
+              contact_id TEXT PRIMARY KEY,
+              contact_local_id TEXT NOT NULL,
+              name TEXT,
+              short_name TEXT,
+              push_name TEXT,
+              verified_name TEXT,
+              is_me INTEGER NOT NULL DEFAULT 0,
+              is_user INTEGER NOT NULL DEFAULT 0,
+              is_group INTEGER NOT NULL DEFAULT 0,
+              raw_json TEXT,
+              updated_at INTEGER NOT NULL
+            );
+            INSERT INTO whatsapp_messages (
+              msg_key, chat_id, chat_local_id, from_me, timestamp, type, source,
+              first_seen_at, updated_at, raw_json
+            ) VALUES ('k1', '15133278228@c.us', '15133278228', 0, 100, 'chat', 'test', 100, 100, '{}');
+            """
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    with pytest.raises(RuntimeError, match="reactions column missing"):
+        conversation_sources.load_whatsapp_web_source_tail(
+            conversation_id="whatsapp:dm:15133278228",
+            since_cursor=-1,
+            recent_fallback_messages=0,
+            soul_id="Siri",
+            reply_prefix="",
+            web_source_db_path=web_db,
+        )
