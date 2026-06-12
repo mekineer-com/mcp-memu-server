@@ -4126,11 +4126,11 @@ def _make_turn_monkeypatches(
 
 
 @pytest.mark.asyncio
-async def test_conversation_turn_attachment_enqueues_outbound_with_empty_text(
+async def test_conversation_turn_attachment_enqueues_captioned_outbound_without_inline_response(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Normal WhatsApp turn with attachment queues a media-only outbound row."""
+    """Normal WhatsApp turn with attachment queues one captioned media outbound row."""
     db_path = tmp_path / "SiriTest.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -4140,7 +4140,12 @@ async def test_conversation_turn_attachment_enqueues_outbound_with_empty_text(
     finally:
         con.close()
 
-    media = "/home/marcos/Desktop/siri/report.pdf"
+    workspace = tmp_path / "siri-workspace"
+    workspace.mkdir()
+    media_path = workspace / "report.pdf"
+    media_path.write_text("report")
+    media = str(media_path)
+    monkeypatch.setitem(main._CONFIG, "claude_code_workspace", str(workspace))
     _make_turn_monkeypatches(
         monkeypatch,
         db_path,
@@ -4168,7 +4173,7 @@ async def test_conversation_turn_attachment_enqueues_outbound_with_empty_text(
     out = await main.conversation_turn("whatsapp:dm:Marcos", payload)
 
     assert out["ok"] is True
-    assert out["response"] == "Here is your report."
+    assert out["response"] == ""
     assert "attachment" not in out
 
     con = main._sqlite_connect(db_path)
@@ -4179,7 +4184,7 @@ async def test_conversation_turn_attachment_enqueues_outbound_with_empty_text(
         con.close()
 
     assert len(rows) == 1
-    assert rows[0]["response_text"] == ""
+    assert rows[0]["response_text"] == "Here is your report."
     assert rows[0]["media_path"] == media
     assert rows[0]["target"] == "respond"
     import json as _json
@@ -4203,7 +4208,12 @@ async def test_conversation_turn_listen_target_attachment_does_not_enqueue(
     finally:
         con.close()
 
-    media = "/home/marcos/Desktop/siri/note.txt"
+    workspace = tmp_path / "siri-workspace"
+    workspace.mkdir()
+    media_path = workspace / "note.txt"
+    media_path.write_text("note")
+    media = str(media_path)
+    monkeypatch.setitem(main._CONFIG, "claude_code_workspace", str(workspace))
     _make_turn_monkeypatches(
         monkeypatch,
         db_path,

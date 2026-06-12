@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SIRI_WORKSPACE = Path("~/Desktop/siri").expanduser()
+_SIRI_WORKSPACE = Path("~/Desktop/siri")
 
 from app.services.intention_state import MAX_MEMORY_CACHE_ENTRIES, format_intentions_for_prompt, normalize_memory_cache
 
@@ -768,7 +768,7 @@ def build_turn_prompt(
     return "\n".join(parts)
 
 
-def _parse_attachment(raw: Any) -> str | None:
+def _parse_attachment(raw: Any, *, workspace: str | Path | None = None) -> str | None:
     raw_str = _text(raw)
     if not raw_str:
         return None
@@ -777,19 +777,28 @@ def _parse_attachment(raw: Any) -> str | None:
     except (ValueError, OSError):
         _logger.error("turn_contract: attachment path unresolvable, dropped: %r", raw_str)
         return None
-    workspace = _SIRI_WORKSPACE.resolve()
+    root = Path(workspace).expanduser() if workspace else _SIRI_WORKSPACE.expanduser()
+    workspace_path = root.resolve()
     try:
-        resolved.relative_to(workspace)
+        resolved.relative_to(workspace_path)
     except ValueError:
         _logger.error(
             "turn_contract: attachment outside workspace, dropped: %r (resolved=%s)",
             raw_str, resolved,
         )
         return None
+    if not resolved.is_file() or not os.access(resolved, os.R_OK):
+        _logger.error("turn_contract: attachment missing or unreadable, dropped: %r (resolved=%s)", raw_str, resolved)
+        return None
     return str(resolved)
 
 
-def parse_turn_contract(raw: Any, *, allow_public_response: bool = True) -> dict[str, Any]:
+def parse_turn_contract(
+    raw: Any,
+    *,
+    allow_public_response: bool = True,
+    attachment_workspace: str | Path | None = None,
+) -> dict[str, Any]:
     text = _text(raw)
     if not text:
         raise ValueError("empty LLM response")
@@ -857,7 +866,7 @@ def parse_turn_contract(raw: Any, *, allow_public_response: bool = True) -> dict
 
     rehearsal = _text(parsed.get("rehearsal"))
     continue_reason, follow_up_at, follow_up_reason = _parse_continuation_fields(parsed)
-    attachment = _parse_attachment(parsed.get("attachment"))
+    attachment = _parse_attachment(parsed.get("attachment"), workspace=attachment_workspace)
     return {
         "response": response,
         "response_target": response_target,

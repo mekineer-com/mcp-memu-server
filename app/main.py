@@ -443,9 +443,18 @@ def _build_free_turn_prompt(
     )
 
 
+def _attachment_workspace() -> str | None:
+    workspace = str(_CONFIG.get("claude_code_workspace") or "").strip()
+    return workspace or None
+
+
 def _parse_free_turn_contract(raw: Any, *, allow_public_response: bool) -> dict[str, Any]:
     try:
-        return _parse_turn_contract(raw, allow_public_response=allow_public_response)
+        return _parse_turn_contract(
+            raw,
+            allow_public_response=allow_public_response,
+            attachment_workspace=_attachment_workspace(),
+        )
     except (ValueError, json.JSONDecodeError):
         text = str(raw or "").strip()
         try:
@@ -457,7 +466,11 @@ def _parse_free_turn_contract(raw: Any, *, allow_public_response: bool) -> dict[
         except (ValueError, json.JSONDecodeError):
             raise
         logger.warning("free_turn: Claude Code returned prose around JSON; extracted turn contract")
-        return _parse_turn_contract(json.dumps(parsed), allow_public_response=allow_public_response)
+        return _parse_turn_contract(
+            json.dumps(parsed),
+            allow_public_response=allow_public_response,
+            attachment_workspace=_attachment_workspace(),
+        )
 
 
 async def _persist_free_turn_summary(
@@ -4503,6 +4516,7 @@ async def conversation_turn(
                 turn_contract = _parse_turn_contract(
                     turn_response_raw,
                     allow_public_response=allow_public_response,
+                    attachment_workspace=_attachment_workspace(),
                 )
                 turn_session_id = attempt_session_id
                 break
@@ -4625,10 +4639,11 @@ async def conversation_turn(
                     soul_id=soul_id,
                     origin_conversation_id=cid,
                     target=response_target,
-                    response_text="",
+                    response_text=response_text,
                     media_path=attachment,
                     metadata={"source": "turn_attachment"},
                 )
+                response_text = ""
                 logger.info(
                     "conversation_turn: queued attachment outbound %s target=%s",
                     out_id,

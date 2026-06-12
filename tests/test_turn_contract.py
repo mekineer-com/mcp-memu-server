@@ -666,6 +666,39 @@ def test_parse_attachment_none_returns_none() -> None:
     assert _parse_attachment("") is None
 
 
+def test_parse_attachment_rejects_missing_file(tmp_path: Path, caplog) -> None:
+    import app.services.turn_contract as tc
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    original = tc._SIRI_WORKSPACE
+    tc._SIRI_WORKSPACE = workspace
+    try:
+        with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
+            result = tc._parse_attachment(str(workspace / "missing.pdf"))
+        assert result is None
+        assert any("missing or unreadable" in r.getMessage() for r in caplog.records)
+    finally:
+        tc._SIRI_WORKSPACE = original
+
+
+def test_parse_turn_contract_uses_configured_attachment_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "custom-workspace"
+    workspace.mkdir()
+    f = workspace / "report.md"
+    f.write_text("report")
+    import json
+    payload = {
+        "response": "Here you go.",
+        "response_target": "respond",
+        "cache": None,
+        "annulments": [],
+        "rehearsal": "ok",
+        "attachment": str(f),
+    }
+    parsed = parse_turn_contract(json.dumps(payload), attachment_workspace=workspace)
+    assert parsed["attachment"] == str(f.resolve())
+
+
 def test_parse_turn_contract_carries_attachment(tmp_path: Path) -> None:
     import app.services.turn_contract as tc
     workspace = tmp_path / "workspace"
