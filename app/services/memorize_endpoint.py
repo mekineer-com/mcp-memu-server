@@ -818,18 +818,24 @@ async def memorize_endpoint(
     background_tasks: BackgroundTasks,
     force: bool,
     tail: bool = False,
+    rebuild: bool = False,
     *,
     endpoint_ctx: MemorizeEndpointContext,
 ) -> JSONResponse:
     """Memorize a SillyTavern conversation.
 
+    force=True   — bypass sleep-split/min-token gating and process immediately.
+    rebuild=True — archive the live DB, reset cursor, clear segments, then re-memorize
+                   from scratch (implies force).
+
     Preferred: send the full memU payload (llm_profiles/database_config/etc) so per-step routing works.
     """
+    if rebuild:
+        force = True
     ctx = endpoint_ctx.base
     try:
         safe = endpoint_ctx.safe_payload(payload)
         is_cross = bool(safe.get("_cross_memorize"))
-        svc = endpoint_ctx.get_service_from_payload(safe)
 
         scope = safe.get("user")
         if not isinstance(scope, dict):
@@ -856,7 +862,7 @@ async def memorize_endpoint(
         # scope is validated dict with non-empty soul_id above; no need to re-guard.
         uid = str(scope.get("user_id") or "user")
         async with ctx.get_memorize_lock(ctx.memorize_lock_key(uid, soul_id)):
-            if force:
+            if rebuild:
                 db_path = endpoint_ctx.sqlite_current_path(uid, soul_id)
                 if db_path is not None and db_path.exists():
                     ts = datetime.now(UTC).strftime("%y%m%d-%H%M%S")
@@ -868,6 +874,9 @@ async def memorize_endpoint(
                             wal_file.rename(archive_path.with_name(archive_path.name + wal_suffix))
                     ctx.logger.info("re-memorize: archived %s → %s", db_path.name, archive_path.name)
                     endpoint_ctx.clear_cached_services()
+            # Acquire (or re-acquire after archive) the service so schema creation runs against
+            # the correct file. Must happen after clear_cached_services() in the rebuild path.
+            svc = endpoint_ctx.get_service_from_payload(safe)
             storage_dir = endpoint_ctx.get_storage_dir(endpoint_ctx.get_config())
             chats_dir = (storage_dir / "st_chats").resolve()
             chat_dir, chat_key, chat_key_source = resolve_chat_storage_dir(
@@ -1015,7 +1024,7 @@ async def memorize_endpoint(
                         status_code=200,
                         content={"ok": True, "status": "nothing_to_memorize", "conversation_id": conversation_id},
                     )
-            elif force:
+            elif rebuild:
                 processed_cursor = -1
                 if segments_dir and segments_dir.exists():
                     for old_seg in segments_dir.glob("*.json"):
@@ -1038,7 +1047,7 @@ async def memorize_endpoint(
                         continue
                     memorize_segments.append((resource_url, seg_messages, effective_start, seg_end))
 
-            if force and not tail and not is_cross and not memorize_segments:
+            if rebuild and not tail and not is_cross and not memorize_segments:
                 if isinstance(merged, list) and merged:
                     memorize_segments = [(resource_url, merged, 0, len(merged) - 1)]
                 else:
