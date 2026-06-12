@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+_SIRI_WORKSPACE = Path("~/Desktop/siri").expanduser()
 
 from app.services.intention_state import MAX_MEMORY_CACHE_ENTRIES, format_intentions_for_prompt, normalize_memory_cache
 
@@ -88,7 +92,8 @@ Schema:
   "response":"string",
   "continue_reason": null | "task" | "research" | "diary" | "follow_up",
   "follow_up_at": null | "timestamp string",
-  "follow_up_reason": null | "short reason string"
+  "follow_up_reason": null | "short reason string",
+  "attachment": null | "absolute path string"
 }}
 
 My Protocol:
@@ -105,6 +110,7 @@ My Protocol:
 - continue_reason: omit or use null unless you need an extra agentic turn for a specific purpose. Valid continuation purposes are "task", "research", "diary", and "follow_up".
 - follow_up_at: include only when continue_reason is "follow_up"; use the same timestamp style as the "Today is ..." line.
 - follow_up_reason: include only when continue_reason is "follow_up"; state why you want to wake later in one short sentence.
+- attachment: absolute path inside ~/Desktop/siri/ to attach that file to your reply as a document; omit otherwise.
 """
 
 
@@ -762,6 +768,27 @@ def build_turn_prompt(
     return "\n".join(parts)
 
 
+def _parse_attachment(raw: Any) -> str | None:
+    raw_str = _text(raw)
+    if not raw_str:
+        return None
+    try:
+        resolved = Path(raw_str).resolve()
+    except (ValueError, OSError):
+        _logger.error("turn_contract: attachment path unresolvable, dropped: %r", raw_str)
+        return None
+    workspace = _SIRI_WORKSPACE.resolve()
+    try:
+        resolved.relative_to(workspace)
+    except ValueError:
+        _logger.error(
+            "turn_contract: attachment outside workspace, dropped: %r (resolved=%s)",
+            raw_str, resolved,
+        )
+        return None
+    return str(resolved)
+
+
 def parse_turn_contract(raw: Any, *, allow_public_response: bool = True) -> dict[str, Any]:
     text = _text(raw)
     if not text:
@@ -830,6 +857,7 @@ def parse_turn_contract(raw: Any, *, allow_public_response: bool = True) -> dict
 
     rehearsal = _text(parsed.get("rehearsal"))
     continue_reason, follow_up_at, follow_up_reason = _parse_continuation_fields(parsed)
+    attachment = _parse_attachment(parsed.get("attachment"))
     return {
         "response": response,
         "response_target": response_target,
@@ -839,4 +867,5 @@ def parse_turn_contract(raw: Any, *, allow_public_response: bool = True) -> dict
         "continue_reason": continue_reason,
         "follow_up_at": follow_up_at,
         "follow_up_reason": follow_up_reason,
+        "attachment": attachment,
     }

@@ -547,7 +547,8 @@ async def _run_free_turn_chain(
             )
             response_target = str(contract.get("response_target") or "").strip().lower()
             response = str(contract.get("response") or "").strip()
-            if response_target in {"respond", "private"} and response:
+            media_path = str(contract.get("attachment") or "").strip() or None
+            if response_target in {"respond", "private"} and (response or media_path):
                 if conversation_id.startswith("whatsapp:"):
                     out_id = _insert_whatsapp_outbound(
                         user_id=user_id,
@@ -555,6 +556,7 @@ async def _run_free_turn_chain(
                         origin_conversation_id=conversation_id,
                         target=response_target,
                         response_text=response,
+                        media_path=media_path,
                         metadata={
                             "reason": reason,
                             "continuation_index": continuation_index,
@@ -1157,10 +1159,15 @@ CREATE TABLE IF NOT EXISTS whatsapp_pending_outbounds (
     failed_at TEXT,
     provider_message_id TEXT,
     last_error TEXT,
-    metadata_json TEXT
+    metadata_json TEXT,
+    media_path TEXT
 )
 """
     )
+    try:
+        con.execute("ALTER TABLE whatsapp_pending_outbounds ADD COLUMN media_path TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_whatsapp_pending_outbounds_claim "
         "ON whatsapp_pending_outbounds(status, created_at)"
@@ -1187,6 +1194,7 @@ def _whatsapp_outbound_row(row: sqlite3.Row) -> dict[str, Any]:
         "provider_message_id": row["provider_message_id"],
         "last_error": row["last_error"],
         "metadata": _json_from_db(row["metadata_json"]) or {},
+        "media_path": row["media_path"],
     }
 
 
@@ -1197,6 +1205,7 @@ def _insert_whatsapp_outbound(
     origin_conversation_id: str,
     target: str,
     response_text: str,
+    media_path: str | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> str:
     uid = str(user_id or "").strip()
@@ -1204,12 +1213,13 @@ def _insert_whatsapp_outbound(
     cid = str(origin_conversation_id or "").strip()
     target_clean = str(target or "").strip().lower()
     text = str(response_text or "").strip()
+    mpath = str(media_path or "").strip() or None
     if not uid or not sid or not cid:
         raise ValueError("user_id, soul_id, and origin_conversation_id are required")
     if target_clean not in {"respond", "private"}:
         raise ValueError("target must be respond|private")
-    if not text:
-        raise ValueError("response_text is required")
+    if not text and not mpath:
+        raise ValueError("response_text or media_path is required")
 
     db_path = _sqlite_current_path(uid, sid)
     if db_path is None:
@@ -1226,8 +1236,8 @@ def _insert_whatsapp_outbound(
             """
 INSERT INTO whatsapp_pending_outbounds (
     id, user_id, soul_id, origin_conversation_id, target, target_conversation_id,
-    response_text, status, created_at, updated_at, metadata_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+    response_text, status, created_at, updated_at, metadata_json, media_path
+) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
 """,
             (
                 out_id,
@@ -1240,6 +1250,7 @@ INSERT INTO whatsapp_pending_outbounds (
                 now_iso,
                 now_iso,
                 _json_to_db(dict(metadata or {})),
+                mpath,
             ),
         )
         con.commit()
@@ -1660,7 +1671,8 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
         result = await conversation_turn(conversation_id, turn_payload)
         response_target = str(result.get("response_target") or "").strip().lower()
         response = str(result.get("response") or "").strip()
-        if response_target in {"respond", "private"} and response:
+        media_path = str(result.get("attachment") or "").strip() or None
+        if response_target in {"respond", "private"} and (response or media_path):
             outbound_target = response_target if conversation_id.startswith("whatsapp:") else "private"
             _insert_whatsapp_outbound(
                 user_id=user_id,
@@ -1668,6 +1680,7 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
                 origin_conversation_id=conversation_id,
                 target=outbound_target,
                 response_text=response,
+                media_path=media_path,
                 metadata={
                     "source": "free_turn_follow_up",
                     "followup_id": followup_id,
@@ -4556,6 +4569,7 @@ async def conversation_turn(
         if response_target not in {"respond", "listen", "observe", "private"}:
             raise HTTPException(status_code=502, detail="turn contract missing or invalid response_target")
         response_text = str(turn_contract.get("response") or "").strip()
+        attachment = turn_contract.get("attachment") or None
         continuation_reason = str(turn_contract.get("continue_reason") or "").strip().lower()
         continuation_queued = False
         if not dry_run and continuation_reason:
@@ -4607,6 +4621,7 @@ async def conversation_turn(
             "conversation_id": cid,
             "response": response_text,
             "response_target": response_target,
+            "attachment": attachment,
             "apimw": apimw_status,
             "final_turn_payload": {
                 "system_prompt": turn_system_prompt,

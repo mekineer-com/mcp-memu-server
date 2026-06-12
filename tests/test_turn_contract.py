@@ -1,9 +1,12 @@
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 from app.services.turn_contract import (
+    _SIRI_WORKSPACE,
+    _parse_attachment,
     build_turn_prompt,
     format_relative_time_label,
     make_turn_system_prompt,
@@ -589,3 +592,128 @@ def test_render_retrieve_non_dict_logs_error_and_returns_empties(caplog) -> None
         )
     assert "My Memories:" not in prompt
     assert any("_render_retrieve" in r.message for r in caplog.records)
+
+
+# --- attachment gate ---
+
+def test_parse_attachment_accepts_path_inside_workspace(tmp_path: Path) -> None:
+    # Patch the workspace to tmp_path so tests are hermetic.
+    import app.services.turn_contract as tc
+    original = tc._SIRI_WORKSPACE
+    tc._SIRI_WORKSPACE = tmp_path
+    try:
+        real_file = tmp_path / "research" / "foo.md"
+        real_file.parent.mkdir(parents=True, exist_ok=True)
+        real_file.write_text("content")
+        result = tc._parse_attachment(str(real_file))
+        assert result == str(real_file.resolve())
+    finally:
+        tc._SIRI_WORKSPACE = original
+
+
+def test_parse_attachment_rejects_path_outside_workspace(tmp_path: Path, caplog) -> None:
+    import app.services.turn_contract as tc
+    original = tc._SIRI_WORKSPACE
+    tc._SIRI_WORKSPACE = tmp_path / "workspace"
+    (tmp_path / "workspace").mkdir()
+    try:
+        with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
+            result = tc._parse_attachment("/etc/passwd")
+        assert result is None
+        assert any("outside workspace" in r.getMessage() for r in caplog.records)
+    finally:
+        tc._SIRI_WORKSPACE = original
+
+
+def test_parse_attachment_rejects_traversal(tmp_path: Path, caplog) -> None:
+    import app.services.turn_contract as tc
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret")
+    original = tc._SIRI_WORKSPACE
+    tc._SIRI_WORKSPACE = workspace
+    try:
+        with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
+            result = tc._parse_attachment(str(workspace / ".." / "secret.txt"))
+        assert result is None
+        assert any("outside workspace" in r.getMessage() for r in caplog.records)
+    finally:
+        tc._SIRI_WORKSPACE = original
+
+
+def test_parse_attachment_rejects_symlink_escape(tmp_path: Path, caplog) -> None:
+    import app.services.turn_contract as tc
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret")
+    link = workspace / "escape.txt"
+    link.symlink_to(outside)
+    original = tc._SIRI_WORKSPACE
+    tc._SIRI_WORKSPACE = workspace
+    try:
+        with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
+            result = tc._parse_attachment(str(link))
+        assert result is None
+        assert any("outside workspace" in r.getMessage() for r in caplog.records)
+    finally:
+        tc._SIRI_WORKSPACE = original
+
+
+def test_parse_attachment_none_returns_none() -> None:
+    assert _parse_attachment(None) is None
+    assert _parse_attachment("") is None
+
+
+def test_parse_turn_contract_carries_attachment(tmp_path: Path) -> None:
+    import app.services.turn_contract as tc
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    f = workspace / "report.md"
+    f.write_text("report")
+    original = tc._SIRI_WORKSPACE
+    tc._SIRI_WORKSPACE = workspace
+    try:
+        payload = {
+            "response": "Here you go.",
+            "response_target": "respond",
+            "cache": None,
+            "annulments": [],
+            "rehearsal": "ok",
+            "attachment": str(f),
+        }
+        import json
+        parsed = parse_turn_contract(json.dumps(payload))
+        assert parsed["attachment"] == str(f.resolve())
+    finally:
+        tc._SIRI_WORKSPACE = original
+
+
+def test_parse_turn_contract_drops_bad_attachment(tmp_path: Path, caplog) -> None:
+    import app.services.turn_contract as tc
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    original = tc._SIRI_WORKSPACE
+    tc._SIRI_WORKSPACE = workspace
+    try:
+        import json
+        payload = {
+            "response": "No file for you.",
+            "response_target": "respond",
+            "cache": None,
+            "annulments": [],
+            "rehearsal": "ok",
+            "attachment": "/etc/passwd",
+        }
+        with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
+            parsed = parse_turn_contract(json.dumps(payload))
+        assert parsed["attachment"] is None
+        assert any("outside workspace" in r.getMessage() for r in caplog.records)
+    finally:
+        tc._SIRI_WORKSPACE = original
+
+
+def test_make_turn_system_prompt_mentions_attachment() -> None:
+    prompt = make_turn_system_prompt("Siri")
+    assert "attachment" in prompt
