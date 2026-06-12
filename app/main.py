@@ -3100,18 +3100,18 @@ def _read_background_rolling_summaries_from_conversations(
 TURN_HISTORY_WINDOW_MESSAGES = 8
 
 
-def _sillytavern_turn_history_with_floor(
+def _turn_history_with_floor(
     history: list[dict[str, Any]],
     state_row: dict[str, Any],
 ) -> list[dict[str, Any]]:
     if not history:
         return []
     digest_cursor = int(state_row.get("digest_cursor") or 0) if state_row.get("last_memorize_at") else -1
-    start = max(0, digest_cursor + 1)
-    window = history[start:] if start < len(history) else []
-    if len(window) < TURN_HISTORY_WINDOW_MESSAGES and len(history) > len(window):
-        window = history[-TURN_HISTORY_WINDOW_MESSAGES:]
-    return window
+    return _conversation_sources.slice_tail_with_floor(
+        history,
+        since_cursor=digest_cursor,
+        recent_fallback_messages=TURN_HISTORY_WINDOW_MESSAGES,
+    )
 
 
 def _max_nonnegative_source_conversation_index(messages: list[dict[str, Any]]) -> int | None:
@@ -3966,9 +3966,7 @@ async def conversation_retrieve(
                 message = _pick_str(safe, "message", "query") or ""
                 self_turn_directive = _pick_str(safe, "self_turn_directive") or ""
                 self_turn_label = _pick_str(safe, "self_turn_label") or ""
-                turn_history = history
-                if _message_log.derive_source_label(cid) == "sillytavern":
-                    turn_history = _sillytavern_turn_history_with_floor(history, _state_row)
+                turn_history = _turn_history_with_floor(history, _state_row)
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
 

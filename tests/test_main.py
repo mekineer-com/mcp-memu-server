@@ -2663,6 +2663,68 @@ async def test_conversation_retrieve_sillytavern_floor_is_not_a_cap(
 
 
 @pytest.mark.asyncio
+async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:dm:15133278228", 10, "2026-05-01T00:00:00+00:00"),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"digest_cursor": 10, "last_memorize_at": "2026-05-01T00:00:00+00:00", "all_categories_summary": ""},
+            None,
+            db_path,
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "_load_current_whatsapp_history_from_source",
+        lambda *_a, **_k: [
+            {
+                "role": "user",
+                "content": f"msg_{idx:02d}",
+                "source_conversation_index": idx,
+            }
+            for idx in range(12)
+        ],
+    )
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo"},
+        "message": "current message",
+        "query": "current message",
+        "history": [],
+        "build_turn_prompt": True,
+        "load_source_history": True,
+        "is_live_turn": True,
+    }
+
+    out = await main.conversation_retrieve("whatsapp:dm:15133278228", payload)
+    turn_prompt = str(out.get("turn_user_prompt") or "")
+    assert "msg_04" in turn_prompt
+    assert "msg_03" not in turn_prompt
+    assert "msg_11" in turn_prompt
+
+
+@pytest.mark.asyncio
 async def test_conversation_retrieve_does_not_persist_current_user_message(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

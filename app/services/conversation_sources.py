@@ -735,14 +735,14 @@ def _load_whatsapp_web_source_tail(
     ]
     if cursor_is_rowid:
         return all_rows
-    return _slice_tail_with_floor(
+    return slice_tail_with_floor(
         all_rows,
         since_cursor=cursor,
         recent_fallback_messages=recent_fallback_messages,
     )
 
 
-def _slice_tail_with_floor(
+def slice_tail_with_floor(
     all_rows: Sequence[dict[str, Any]],
     *,
     since_cursor: int,
@@ -865,7 +865,7 @@ def load_sillytavern_tail(
                 "source_conversation_index": idx,
             }
         )
-    return _slice_tail_with_floor(
+    return slice_tail_with_floor(
         all_rows,
         since_cursor=since_cursor,
         recent_fallback_messages=recent_fallback_messages,
@@ -990,7 +990,7 @@ def load_whatsapp_tail(
             }
         )
 
-    return _slice_tail_with_floor(
+    return slice_tail_with_floor(
         all_rows,
         since_cursor=since_cursor,
         recent_fallback_messages=recent_fallback_messages,
