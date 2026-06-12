@@ -481,10 +481,7 @@ def _web_source_chat_match(
 def _render_reactions(reactions_json: str | None, contact_map: dict[str, str]) -> str:
     if not reactions_json:
         return ""
-    try:
-        reactions: dict[str, str] = json.loads(reactions_json)
-    except (json.JSONDecodeError, TypeError):
-        return ""
+    reactions: dict[str, str] = json.loads(reactions_json)
     if not isinstance(reactions, dict) or not reactions:
         return ""
     parts = []
