@@ -113,6 +113,18 @@ CREATE TABLE IF NOT EXISTS conversations (
     conversation_cols = set(sqlite_table_columns(con, "conversations"))
     if "memorize_chat" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN memorize_chat INTEGER DEFAULT 1")
+    if "pending_segment_ids" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN pending_segment_ids JSON DEFAULT '[]'")
+        if "pending_episode_ids" in conversation_cols:
+            con.execute(
+                """
+                UPDATE conversations
+                SET pending_segment_ids = pending_episode_ids
+                WHERE pending_episode_ids IS NOT NULL
+                  AND trim(CAST(pending_episode_ids AS TEXT)) != ''
+                  AND (pending_segment_ids IS NULL OR pending_segment_ids = '[]')
+                """
+            )
     if "rolling_summary" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary TEXT")
     if "rolling_summary_cursor_id" not in conversation_cols:

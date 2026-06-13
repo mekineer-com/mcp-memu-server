@@ -39,6 +39,49 @@ def test_placeholder():
     assert True
 
 
+def test_conversation_state_schema_migrates_pending_segment_ids_from_old_name(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.db"
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        con.execute(
+            """
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                soul_id TEXT,
+                user_id TEXT,
+                pending_episode_ids JSON DEFAULT '[]',
+                memorize_chat INTEGER DEFAULT 1,
+                digest_cursor INTEGER DEFAULT 0,
+                rolling_summary TEXT,
+                rolling_summary_cursor_id INTEGER,
+                rolling_summary_updated_at DATETIME,
+                prior_context TEXT,
+                apimw_message_to_self TEXT,
+                last_memorize_at DATETIME,
+                updated_at DATETIME,
+                undo_snapshot JSON,
+                last_background_error TEXT,
+                last_background_error_at DATETIME,
+                last_consolidation_error TEXT,
+                last_consolidation_error_at DATETIME
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, pending_episode_ids) VALUES (?, ?)",
+            ("cid-old", json.dumps(["cid-old:0-1"])),
+        )
+
+        main._sqlite_ensure_conversation_state_schema(con)
+        row = main._conversation_state_row(con, "cid-old")
+        state = main._conversation_state_from_row(row)
+
+    assert state is not None
+    assert state["pending_segment_ids"] == ["cid-old:0-1"]
+
+
 def test_current_whatsapp_history_uses_configured_web_source_and_filters_current(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1800,6 +1843,103 @@ async def test_run_memorize_segments_clears_consumed_background_summaries(
         segments_dir=segments_dir,
         cross_memorize=True,
         final_cursors={"trigger": 0, "whatsapp:dm:bg-chat": 12},
+    )
+
+    clear_writes = [
+        updates for cid, updates in writes
+        if cid == "whatsapp:dm:bg-chat" and "rolling_summary" in updates
+    ]
+    assert clear_writes == [{"rolling_summary": None, "rolling_summary_updated_at": None}]
+    assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary"] is None
+    assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary_cursor_id"] == 11
+
+
+@pytest.mark.asyncio
+async def test_run_memorize_segments_clears_consumed_background_summaries_without_final_cursors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+
+    class _FakeService:
+        async def memorize_segments_batch(self, **_kwargs):
+            return [{"pending_segment_ids": ["trigger:0-1"]}]
+
+    state_rows: dict[str, dict[str, Any]] = {
+        "trigger": {
+            "digest_cursor": -1,
+            "pending_segment_ids": [],
+            "all_categories_summary": "",
+        },
+        "whatsapp:dm:bg-chat": {
+            "digest_cursor": -1,
+            "rolling_summary": "old rolled summary",
+            "rolling_summary_cursor_id": 11,
+            "rolling_summary_updated_at": "2026-05-01T00:00:00+00:00",
+        },
+    }
+    writes: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_load_turn_state_and_soul_card(cid: str, **_kwargs):
+        return dict(state_rows.get(cid, {})), None, tmp_path / "Echo.db"
+
+    def fake_write_conversation_state(cid: str, *, updates: dict[str, Any], **_kwargs):
+        writes.append((cid, dict(updates)))
+        state_rows.setdefault(cid, {}).update(updates)
+        return dict(state_rows[cid]), tmp_path / "Echo.db"
+
+    async def fake_summary(**_kwargs):
+        return "summary"
+
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
+    monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
+    monkeypatch.setattr(main, "_compute_holistic_categories_summary", fake_summary)
+
+    await main._run_memorize_segments(
+        memorize_segments=[
+            (
+                "/tmp/day.json",
+                [
+                    {
+                        "role": "user",
+                        "content": "new primary",
+                        "memorize_chat": True,
+                        "source_conversation_id": "trigger",
+                        "source_conversation_index": 0,
+                    },
+                    {
+                        "role": "user",
+                        "content": "new background",
+                        "memorize_chat": False,
+                        "source_conversation_id": "whatsapp:dm:bg-chat",
+                        "source_conversation_index": 12,
+                    },
+                ],
+                0,
+                1,
+            )
+        ],
+        svc=_FakeService(),
+        scope={"user_id": "u", "soul_id": "s"},
+        conversation_id="trigger",
+        soul_id="s",
+        uid="u",
+        processed_cursor=-1,
+        safe={
+            "_background_rolling_summaries": {
+                "whatsapp:dm:bg-chat": {
+                    "summary": "old rolled summary",
+                    "source_label": "whatsapp:dm",
+                }
+            }
+        },
+        resource_url="/tmp/day.json",
+        chat_key=None,
+        merged_len=2,
+        force=False,
+        sleep_stats=None,
+        segments_dir=segments_dir,
     )
 
     clear_writes = [

@@ -197,6 +197,7 @@ def test_force_without_rebuild_does_not_archive_db(
     """force=True (turn-valve path) must NOT rename / archive the DB file."""
     db_file = tmp_path / "TestSoul.db"
     db_file.write_text("fake-db")
+    recorded: list[dict] = []
 
     def fake_sqlite_current_path(uid: str, soul_id: str):
         return db_file
@@ -204,14 +205,19 @@ def test_force_without_rebuild_does_not_archive_db(
     def fake_write_conversation_state(*_a, **_k):
         return ({}, tmp_path / "fake_state.db")
 
+    async def fake_run(**kwargs) -> None:
+        recorded.append({"segment_count": len(kwargs.get("memorize_segments") or [])})
+
     monkeypatch.setattr(main_module, "_get_service_from_payload", lambda *a, **k: object())
-    monkeypatch.setattr(main_module, "_run_memorize_segments", _noop_run)
+    monkeypatch.setattr(main_module, "_run_memorize_segments", fake_run)
     monkeypatch.setattr(main_module, "_sqlite_current_path", fake_sqlite_current_path)
     monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)
     monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
 
     resp = client.post("/memorize?force=true", json=_make_stub_payload("u1", "TestSoul", "cid-f"))
-    assert resp.status_code in (200, 202), f"status={resp.status_code} body={resp.text[:300]}"
+    assert resp.status_code == 202, f"status={resp.status_code} body={resp.text[:300]}"
+    assert resp.json()["segment_count"] == 1
+    assert recorded == [{"segment_count": 1}]
     # DB file must still exist — force-only must not rename it.
     assert db_file.exists(), "force=True without rebuild must NOT archive the DB file"
     bak_files = list(tmp_path.glob("*.bak-*"))

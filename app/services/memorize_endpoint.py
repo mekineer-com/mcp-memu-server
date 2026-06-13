@@ -450,16 +450,6 @@ async def run_memorize_segments(
                         user_id=uid,
                         updates=updates,
                     )
-                for bg_cid in consumed_background_summary_ids:
-                    ctx.write_conversation_state(
-                        bg_cid,
-                        soul_id=soul_id,
-                        user_id=uid,
-                        updates={
-                            "rolling_summary": None,
-                            "rolling_summary_updated_at": None,
-                        },
-                    )
             elif conversation_id and has_results:
                 ctx.write_conversation_state(
                     conversation_id,
@@ -472,6 +462,17 @@ async def run_memorize_segments(
                         "all_categories_summary": current_all_categories_summary,
                     },
                 )
+            if has_results:
+                for bg_cid in consumed_background_summary_ids:
+                    ctx.write_conversation_state(
+                        bg_cid,
+                        soul_id=soul_id,
+                        user_id=uid,
+                        updates={
+                            "rolling_summary": None,
+                            "rolling_summary_updated_at": None,
+                        },
+                    )
 
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
             if conversation_id and (has_results or had_existing_pending):
@@ -1047,10 +1048,12 @@ async def memorize_endpoint(
                         continue
                     memorize_segments.append((resource_url, seg_messages, effective_start, seg_end))
 
-            if rebuild and not tail and not is_cross and not memorize_segments:
+            if force and not tail and not is_cross and not memorize_segments:
                 if isinstance(merged, list) and merged:
-                    memorize_segments = [(resource_url, merged, 0, len(merged) - 1)]
-                else:
+                    force_start = max(0, processed_cursor + 1)
+                    if force_start < len(merged):
+                        memorize_segments = [(resource_url, merged[force_start:], force_start, len(merged) - 1)]
+                if not memorize_segments:
                     _set_memorize_progress(
                         ctx.memorize_progress,
                         ctx.memorize_lock_key(uid, soul_id),
