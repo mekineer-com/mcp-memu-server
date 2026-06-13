@@ -78,7 +78,7 @@ class MemorizeEndpointContext:
     sqlite_current_path: Callable[[str | None, str], Path | None]
     clear_cached_services: Callable[[], None]
     get_storage_dir: Callable[[dict[str, Any]], Path]
-    run_memorize_episodes: Callable[..., Awaitable[None]]
+    run_memorize_segments: Callable[..., Awaitable[None]]
     run_consolidation_task: Callable[..., Awaitable[dict[str, Any]]]
     get_config: Callable[[], dict[str, Any]]
     sanitize_db_filename: Callable[[str], str]
@@ -156,7 +156,7 @@ async def run_forced_memorize_from_turn(
             raise RuntimeError(msg) from state_write_error
 
 
-async def run_memorize_episodes(
+async def run_memorize_segments(
     *,
     memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]],
     svc: Any,
@@ -181,7 +181,7 @@ async def run_memorize_episodes(
     progress_key = ctx.memorize_lock_key(uid, soul_id)
     mem_lock = ctx.get_memorize_lock(progress_key)
     has_results = False
-    pending_episode_ids: list[str] = []
+    pending_segment_ids: list[str] = []
     processed_end_cursor = processed_cursor
     current_all_categories_summary: str | None = None
     soul_card_for_memorize: str | None = None
@@ -213,11 +213,11 @@ async def run_memorize_episodes(
                 raw_pc_ids = state_row.get("prior_context_ids_since_consolidation")
                 if isinstance(raw_pc_ids, list):
                     cached_prior_context_ids = [str(rid).strip() for rid in raw_pc_ids if str(rid).strip()]
-                had_existing_pending = bool(run_ctx.normalize_text_list(state_row.get("pending_episode_ids")))
+                had_existing_pending = bool(run_ctx.normalize_text_list(state_row.get("pending_segment_ids")))
                 conversation_rolling_summary = str(state_row.get("rolling_summary") or "").strip() or None
 
         # Phase 2: persist each memorize segment as a single file and feed one
-        # synthetic episode payload per segment into batch memorize.
+        # synthetic segment payload per segment into batch memorize.
         segment_jobs: list[SegmentMemorizeJob] = []
         cancelled = False
         for _seg_idx, (
@@ -334,14 +334,14 @@ async def run_memorize_episodes(
                     total=0,
                 )
                 ep_start = _time.monotonic()
-                batch_results = await svc.memorize_episodes_batch(
+                batch_results = await svc.memorize_segments_batch(
                     modality="conversation",
-                    episodes=[
+                    segments=[
                         {
                             "resource_url": job["segment_resource_url"],
                             "local_path": job["segment_resource_url"],
                             "raw_text": job["segment_raw_text"],
-                            "episode": job["segment_payload"],
+                            "segment": job["segment_payload"],
                         }
                         for job in segment_jobs
                     ],
@@ -362,7 +362,7 @@ async def run_memorize_episodes(
                 )
                 if len(batch_results) != len(segment_jobs):
                     msg = (
-                        f"memorize_episodes_batch returned {len(batch_results)} results "
+                        f"memorize_segments_batch returned {len(batch_results)} results "
                         f"for {len(segment_jobs)} segment jobs"
                     )
                     raise RuntimeError(msg)
@@ -389,7 +389,7 @@ async def run_memorize_episodes(
                     ep_result = batch_results[seg_num - 1] if seg_num - 1 < len(batch_results) else None
                     if isinstance(ep_result, dict):
                         has_results = True
-                        pending_episode_ids.extend(run_ctx.normalize_text_list(ep_result.get("pending_episode_ids")))
+                        pending_segment_ids.extend(run_ctx.normalize_text_list(ep_result.get("pending_segment_ids")))
                     segment_end_index = segment_job["segment_end_index"]
                     if conversation_id and not cross_memorize:
                         # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
@@ -403,7 +403,7 @@ async def run_memorize_episodes(
                             if fresh_cursor <= segment_end_index:
                                 processed_end_cursor = max(processed_end_cursor, segment_end_index)
                                 # per-segment advance — crash recovery needs the cursor to move
-                                # only after all episodes in a segment complete.
+                                # only after the whole segment completes.
                                 ctx.write_conversation_state(
                                     conversation_id,
                                     soul_id=soul_id,
@@ -442,7 +442,7 @@ async def run_memorize_episodes(
                         "last_memorize_at": now_iso,
                     }
                     if fc_cid == conversation_id:
-                        updates["append_pending_episode_ids"] = pending_episode_ids
+                        updates["append_pending_segment_ids"] = pending_segment_ids
                         updates["all_categories_summary"] = current_all_categories_summary
                     ctx.write_conversation_state(
                         fc_cid,
@@ -468,7 +468,7 @@ async def run_memorize_episodes(
                     updates={
                         "digest_cursor": max(0, processed_end_cursor),
                         "last_memorize_at": datetime.now(UTC).isoformat(),
-                        "append_pending_episode_ids": pending_episode_ids,
+                        "append_pending_segment_ids": pending_segment_ids,
                         "all_categories_summary": current_all_categories_summary,
                     },
                 )
@@ -513,7 +513,7 @@ async def run_memorize_episodes(
                     "memorizeSegmentPersistedCount": total_segments,
                     "minChunkTokens": ctx.min_chunk_tokens,
                     "memorizeDeferred": not force and not has_results,
-                    "pendingEpisodeRetryOnly": bool(had_existing_pending and not has_results),
+                    "pendingSegmentRetryOnly": bool(had_existing_pending and not has_results),
                     "sleepSplitMinLullSeconds": ctx.sleep_split_min_lull_seconds,
                     "sleepSplitStats": sleep_stats,
                 },
@@ -554,7 +554,7 @@ async def run_memorize_episodes(
                     conversation_id,
                     soul_id=soul_id,
                     user_id=uid,
-                    updates={"pending_episode_ids": []},
+                    updates={"pending_segment_ids": []},
                 )
         raise
     finally:
@@ -895,7 +895,7 @@ async def memorize_endpoint(
             merged: list[dict[str, Any]] = conv_norm if isinstance(conv_norm, list) else []
 
             processed_cursor = -1
-            has_pending_episodes = False
+            has_pending_segments = False
             if conversation_id:
                 state_out, _db_path = ctx.write_conversation_state(
                     conversation_id,
@@ -905,8 +905,8 @@ async def memorize_endpoint(
                 )
                 if state_out.get("last_memorize_at"):
                     processed_cursor = int(state_out.get("digest_cursor") or 0)
-                raw_pending_ids = state_out.get("pending_episode_ids")
-                has_pending_episodes = isinstance(raw_pending_ids, list) and any(
+                raw_pending_ids = state_out.get("pending_segment_ids")
+                has_pending_segments = isinstance(raw_pending_ids, list) and any(
                     str(item).strip() for item in raw_pending_ids
                 )
 
@@ -985,7 +985,7 @@ async def memorize_endpoint(
                     memorize_segments = [(resource_url, merged[tail_start:], tail_start, len(merged) - 1)]
                 if not memorize_segments:
                     progress_key = ctx.memorize_lock_key(uid, soul_id)
-                    if conversation_id and has_pending_episodes:
+                    if conversation_id and has_pending_segments:
                         _set_memorize_progress(
                             ctx.memorize_progress,
                             progress_key,
@@ -1010,7 +1010,7 @@ async def memorize_endpoint(
                                 "status": "accepted",
                                 "conversation_id": conversation_id,
                                 "segment_count": 0,
-                                "pending_episode_retry": True,
+                                "pending_segment_retry": True,
                             },
                             background=background_tasks,
                         )
@@ -1064,7 +1064,7 @@ async def memorize_endpoint(
 
             expected_cursor = memorize_segments[-1][3] if memorize_segments else processed_cursor
             background_tasks.add_task(
-                endpoint_ctx.run_memorize_episodes,
+                endpoint_ctx.run_memorize_segments,
                 memorize_segments=memorize_segments,
                 svc=svc,
                 scope=scope,

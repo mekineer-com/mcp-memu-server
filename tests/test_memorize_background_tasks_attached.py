@@ -1,6 +1,6 @@
 """Contract test for /memorize: the endpoint's BackgroundTasks must actually run.
 
-History: the endpoint adds `_run_memorize_episodes` via `background_tasks.add_task(...)`
+History: the endpoint adds `_run_memorize_segments` via `background_tasks.add_task(...)`
 but returns a `JSONResponse(status_code=202, ...)` built inline. In FastAPI,
 when an endpoint returns a Response object directly, tasks on the injected
 `BackgroundTasks` parameter are NOT auto-attached — you have to pass
@@ -12,7 +12,7 @@ creates its own BackgroundTasks and awaits it manually, so it's unaffected.
 Only direct `POST /memorize` calls (Re-memorize chat button, st-api.sh, and
 every agent smoke-test driver) hit this hole.
 
-This test is the regression guard: it stubs `_run_memorize_episodes` with a
+This test is the regression guard: it stubs `_run_memorize_segments` with a
 recorder, posts to /memorize, and asserts the task actually ran.
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ def test_memorize_background_task_runs(client: TestClient, monkeypatch: pytest.M
         recorded.append({"ran": True, "segment_count": len(kwargs.get("memorize_segments") or [])})
 
     # Stub the heavy work so we can verify the task fires without LLM calls.
-    monkeypatch.setattr(main_module, "_run_memorize_episodes", fake_run)
+    monkeypatch.setattr(main_module, "_run_memorize_segments", fake_run)
 
     # Stub _get_service_from_payload to avoid real service construction.
     class _FakeSvc:
@@ -70,7 +70,7 @@ def test_memorize_background_task_runs(client: TestClient, monkeypatch: pytest.M
     assert recorded[0]["segment_count"] == body.get("segment_count")
 
 
-def test_memorize_tail_retries_consolidation_when_pending_episodes_exist(
+def test_memorize_tail_retries_consolidation_when_pending_segments_exist(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -88,8 +88,8 @@ def test_memorize_tail_retries_consolidation_when_pending_episodes_exist(
     ) -> None:
         recorded.append({"conversation_id": conversation_id, "soul_id": soul_id, "uid": uid})
 
-    async def fake_run_memorize_episodes(**_kwargs) -> None:  # pragma: no cover - should not run in this branch
-        raise AssertionError("run_memorize_episodes should not run when no tail segments exist")
+    async def fake_run_memorize_segments(**_kwargs) -> None:  # pragma: no cover - should not run in this branch
+        raise AssertionError("run_memorize_segments should not run when no tail segments exist")
 
     class _FakeSvc:
         pass
@@ -99,13 +99,13 @@ def test_memorize_tail_retries_consolidation_when_pending_episodes_exist(
             {
                 "last_memorize_at": "2026-05-09T00:00:00+00:00",
                 "digest_cursor": 1,  # with 2-message input below, tail is empty
-                "pending_episode_ids": ["cid-2:0-1"],
+                "pending_segment_ids": ["cid-2:0-1"],
             },
             tmp_path / "Echo.db",
         )
 
     monkeypatch.setattr(main_module, "_get_service_from_payload", lambda *a, **k: _FakeSvc())
-    monkeypatch.setattr(main_module, "_run_memorize_episodes", fake_run_memorize_episodes)
+    monkeypatch.setattr(main_module, "_run_memorize_segments", fake_run_memorize_segments)
     monkeypatch.setattr(main_module, "_run_consolidation_task", fake_consolidation_task)
     monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)
     monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
@@ -123,7 +123,7 @@ def test_memorize_tail_retries_consolidation_when_pending_episodes_exist(
     resp = client.post("/memorize?tail=true", json=payload)
     assert resp.status_code == 202, f"unexpected status: {resp.status_code} body={resp.text[:300]}"
     body = resp.json()
-    assert body.get("pending_episode_retry") is True
+    assert body.get("pending_segment_retry") is True
     assert recorded == [{"conversation_id": "cid-2", "soul_id": "test_soul", "uid": "test_user"}]
 
 
@@ -140,7 +140,7 @@ def test_memorize_tail_nothing_to_memorize_sets_terminal_progress(
             {
                 "last_memorize_at": "2026-05-09T00:00:00+00:00",
                 "digest_cursor": 1,  # with 2-message input below, tail is empty
-                "pending_episode_ids": [],
+                "pending_segment_ids": [],
             },
             tmp_path / "Echo.db",
         )
@@ -205,7 +205,7 @@ def test_force_without_rebuild_does_not_archive_db(
         return ({}, tmp_path / "fake_state.db")
 
     monkeypatch.setattr(main_module, "_get_service_from_payload", lambda *a, **k: object())
-    monkeypatch.setattr(main_module, "_run_memorize_episodes", _noop_run)
+    monkeypatch.setattr(main_module, "_run_memorize_segments", _noop_run)
     monkeypatch.setattr(main_module, "_sqlite_current_path", fake_sqlite_current_path)
     monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)
     monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
@@ -243,7 +243,7 @@ def test_rebuild_archives_db_and_service_reacquired_after_archive(
         return ({}, tmp_path / "fake_state.db")
 
     monkeypatch.setattr(main_module, "_get_service_from_payload", fake_get_service)
-    monkeypatch.setattr(main_module, "_run_memorize_episodes", _noop_run)
+    monkeypatch.setattr(main_module, "_run_memorize_segments", _noop_run)
     monkeypatch.setattr(main_module, "_sqlite_current_path", fake_sqlite_current_path)
     monkeypatch.setattr(main_module, "_clear_cached_services", fake_clear_cached_services)
     monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)

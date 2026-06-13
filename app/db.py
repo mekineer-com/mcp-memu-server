@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     rolling_summary_updated_at DATETIME,
     prior_context TEXT,
     apimw_message_to_self TEXT,
-    pending_episode_ids JSON DEFAULT '[]',
+    pending_segment_ids JSON DEFAULT '[]',
     last_memorize_at DATETIME,
     updated_at DATETIME,
     undo_snapshot JSON,

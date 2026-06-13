@@ -47,7 +47,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
             if "apimw_message_to_self" in row.keys()
             else None
         ),
-        "pending_episode_ids": normalize_text_list(row["pending_episode_ids"]),
+        "pending_segment_ids": normalize_text_list(row["pending_segment_ids"]),
         "last_memorize_at": row["last_memorize_at"],
         "updated_at": row["updated_at"],
         "undo_snapshot": json_from_db(row["undo_snapshot"]),
@@ -62,7 +62,7 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
     return con.execute(
         "SELECT conversation_id, soul_id, user_id, memorize_chat, digest_cursor, "
         "rolling_summary, rolling_summary_cursor_id, rolling_summary_updated_at, prior_context, "
-        "apimw_message_to_self, pending_episode_ids, last_memorize_at, "
+        "apimw_message_to_self, pending_segment_ids, last_memorize_at, "
         "updated_at, undo_snapshot, "
         "last_background_error, last_background_error_at, "
         "last_consolidation_error, last_consolidation_error_at "
@@ -87,7 +87,7 @@ def conversation_state_empty(
         "rolling_summary_updated_at": None,
         "prior_context": None,
         "apimw_message_to_self": None,
-        "pending_episode_ids": [],
+        "pending_segment_ids": [],
         "last_memorize_at": None,
         "updated_at": None,
         "undo_snapshot": None,
@@ -137,7 +137,7 @@ def write_conversation_state(
 INSERT OR IGNORE INTO conversations (
     conversation_id, soul_id, user_id, memorize_chat,
     digest_cursor, rolling_summary, rolling_summary_cursor_id, rolling_summary_updated_at,
-    prior_context, apimw_message_to_self, pending_episode_ids,
+    prior_context, apimw_message_to_self, pending_segment_ids,
     last_memorize_at,
     updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -153,7 +153,7 @@ INSERT OR IGNORE INTO conversations (
                     seed.get("rolling_summary_updated_at"),
                     seed.get("prior_context"),
                     seed.get("apimw_message_to_self"),
-                    json_to_db(seed.get("pending_episode_ids") or []),
+                    json_to_db(seed.get("pending_segment_ids") or []),
                     seed.get("last_memorize_at"),
                     seed.get("updated_at"),
                 ),
@@ -173,7 +173,7 @@ INSERT OR IGNORE INTO conversations (
                 soul_updates[field] = merge_unique_text_lists(current.get(field), appended)
         if soul_updates:
             _soul_state.write(con, soul_updates)
-        append_pending_episode_ids = raw_updates.pop("append_pending_episode_ids", None)
+        append_pending_segment_ids = raw_updates.pop("append_pending_segment_ids", None)
         field_updates: dict[str, Any] = {}
 
         for key, value in raw_updates.items():
@@ -185,7 +185,7 @@ INSERT OR IGNORE INTO conversations (
                 "rolling_summary_updated_at",
                 "prior_context",
                 "apimw_message_to_self",
-                "pending_episode_ids",
+                "pending_segment_ids",
                 "last_memorize_at",
                 "undo_snapshot",
                 "last_background_error",
@@ -195,13 +195,13 @@ INSERT OR IGNORE INTO conversations (
             }:
                 field_updates[key] = value
 
-        if append_pending_episode_ids is not None:
+        if append_pending_segment_ids is not None:
             base_pending = field_updates.get(
-                "pending_episode_ids", existing_state.get("pending_episode_ids")
+                "pending_segment_ids", existing_state.get("pending_segment_ids")
             )
-            field_updates["pending_episode_ids"] = merge_unique_text_lists(
+            field_updates["pending_segment_ids"] = merge_unique_text_lists(
                 base_pending,
-                append_pending_episode_ids,
+                append_pending_segment_ids,
             )
 
         if "digest_cursor" in field_updates:
@@ -237,8 +237,8 @@ INSERT OR IGNORE INTO conversations (
             field_updates["apimw_message_to_self"] = (
                 None if raw_message_to_self is None else (str(raw_message_to_self).strip() or None)
             )
-        if "pending_episode_ids" in field_updates:
-            field_updates["pending_episode_ids"] = normalize_text_list(field_updates["pending_episode_ids"])
+        if "pending_segment_ids" in field_updates:
+            field_updates["pending_segment_ids"] = normalize_text_list(field_updates["pending_segment_ids"])
 
         if scoped_soul is not None:
             field_updates["soul_id"] = scoped_soul
@@ -251,7 +251,7 @@ INSERT OR IGNORE INTO conversations (
             params: list[Any] = []
             for key, value in field_updates.items():
                 assignments.append(f"{key} = ?")
-                if key in {"pending_episode_ids", "undo_snapshot"}:
+                if key in {"pending_segment_ids", "undo_snapshot"}:
                     params.append(json_to_db(value))
                 elif key == "memorize_chat":
                     params.append(1 if bool(value) else 0)

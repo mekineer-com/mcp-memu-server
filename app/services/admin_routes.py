@@ -319,7 +319,7 @@ def register_admin_routes(
                 "prior_context",
                 "intentions_active",
                 "memory_cache",
-                "pending_episode_ids",
+                "pending_segment_ids",
                 "last_memorize_at",
                 "unresolved",
                 "resource_id",

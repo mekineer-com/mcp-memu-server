@@ -147,11 +147,11 @@ app = FastAPI(title="mcp-memu-server", version="0.4.0", lifespan=_app_lifespan)
 _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 8000
-_DEFAULT_EPISODES_PER_SEGMENT: int = 3
+_DEFAULT_EPISODE_ITEMS_PER_SEGMENT: int = 3
 _DEFAULT_BACKGROUND_SUMMARY_TOKENS: int = 1000
 _DEFAULT_BACKGROUND_SUMMARY_MIN_TOKENS: int = 100
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
-_EPISODES_PER_SEGMENT: int = _DEFAULT_EPISODES_PER_SEGMENT
+_EPISODE_ITEMS_PER_SEGMENT: int = _DEFAULT_EPISODE_ITEMS_PER_SEGMENT
 _BACKGROUND_SUMMARY_TOKENS: int = _DEFAULT_BACKGROUND_SUMMARY_TOKENS
 _BACKGROUND_SUMMARY_MIN_TOKENS: int = _DEFAULT_BACKGROUND_SUMMARY_MIN_TOKENS
 # Uniform runaway-protection caps for LLM calls. Not business logic —
@@ -872,7 +872,7 @@ class STUserModel(BaseModel):
 _CONFIG: dict[str, Any] = _load_config()
 
 def _refresh_runtime_limits() -> None:
-    global _MIN_CHUNK_TOKENS, _EPISODES_PER_SEGMENT, _BACKGROUND_SUMMARY_TOKENS, _BACKGROUND_SUMMARY_MIN_TOKENS
+    global _MIN_CHUNK_TOKENS, _EPISODE_ITEMS_PER_SEGMENT, _BACKGROUND_SUMMARY_TOKENS, _BACKGROUND_SUMMARY_MIN_TOKENS
     global _LOG_PROMPTS
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
     try:
@@ -880,9 +880,9 @@ def _refresh_runtime_limits() -> None:
     except (TypeError, ValueError, OverflowError):
         _MIN_CHUNK_TOKENS = _DEFAULT_MIN_CHUNK_TOKENS
     try:
-        _EPISODES_PER_SEGMENT = max(1, int(memorize_cfg.get("episodes_per_segment", _DEFAULT_EPISODES_PER_SEGMENT)))
+        _EPISODE_ITEMS_PER_SEGMENT = max(1, int(memorize_cfg.get("episode_items_per_segment", _DEFAULT_EPISODE_ITEMS_PER_SEGMENT)))
     except (TypeError, ValueError, OverflowError):
-        _EPISODES_PER_SEGMENT = _DEFAULT_EPISODES_PER_SEGMENT
+        _EPISODE_ITEMS_PER_SEGMENT = _DEFAULT_EPISODE_ITEMS_PER_SEGMENT
     try:
         _BACKGROUND_SUMMARY_TOKENS = max(
             0,
@@ -1022,7 +1022,7 @@ def _get_service_from_payload(payload: dict[str, Any]):
         sqlite_file_from_dsn=_sqlite_file_from_dsn,
         extract_scope=_extract_scope,
         payload_signature=_payload_signature,
-        episodes_per_segment=_EPISODES_PER_SEGMENT,
+        episode_items_per_segment=_EPISODE_ITEMS_PER_SEGMENT,
         log_prompts=_LOG_PROMPTS,
         prompt_log_before=_prompt_log_before,
         prompt_log_after=_prompt_log_after,
@@ -1850,7 +1850,7 @@ async def _persist_annulment_memories(
 
 def _merge_memorize_segment_results(
     segment_results: list[dict[str, Any]],
-    pending_episode_ids: list[str] | None = None,
+    pending_segment_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     def _merge_record_list(values: list[Any], *, id_keys: tuple[str, ...] = ("id",)) -> list[Any]:
         out: list[Any] = []
@@ -1899,7 +1899,7 @@ def _merge_memorize_segment_results(
         "items": _merge_record_list(flat_items),
         "categories": _merge_record_list(flat_categories, id_keys=("id", "name")),
         "relations": _merge_record_list(flat_relations, id_keys=("item_id", "category_id")),
-        "pending_episode_ids": _normalize_text_list(pending_episode_ids),
+        "pending_segment_ids": _normalize_text_list(pending_segment_ids),
     }
     merged_resources = _merge_record_list(flat_resources, id_keys=("id", "url", "local_path"))
     if len(merged_resources) == 1:
@@ -2141,7 +2141,7 @@ async def _apimw_synthesize(
     combined_items: list[dict[str, Any]],
     identity_context: str,
     state_row: dict[str, Any],
-    episode_text: str,
+    segment_text: str,
     user_id: str,
     soul_id: str,
     conversation_id: str,
@@ -2215,7 +2215,7 @@ async def _apimw_synthesize(
         f"Your working thoughts:\n{formatted_cache}\n\n"
         f"Intentions:\n{formatted_intentions}\n\n"
         f"{_LIFE_GOALS_FREE_WILL_HEADER}\n{formatted_life_goals}\n\n"
-        f"Recent conversation:\n{episode_text}"
+        f"Recent conversation:\n{segment_text}"
     )
 
     llm_raw = await svc.chat(
@@ -2335,9 +2335,9 @@ async def _run_apimw(
         apimw_random_count = _apimw_random_count_from_cfg(_CONFIG)
 
         recent_history = history[-30:] if history else []
-        episode_text = _render_history(recent_history)
+        segment_text = _render_history(recent_history)
         identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
-        focus_text = episode_text.strip()
+        focus_text = segment_text.strip()
         if not focus_text:
             logger.info("apimw skipped for %s: no recent conversation text", conversation_id)
             return
@@ -2361,7 +2361,7 @@ async def _run_apimw(
             combined_items=combined_items,
             identity_context=identity_context,
             state_row=state_row,
-            episode_text=episode_text,
+            segment_text=segment_text,
             user_id=user_id,
             soul_id=soul_id,
             conversation_id=conversation_id,
@@ -3331,14 +3331,14 @@ def _make_memorize_endpoint_context() -> _memorize_endpoint.MemorizeEndpointCont
         sqlite_current_path=_sqlite_current_path,
         clear_cached_services=_clear_cached_services,
         get_storage_dir=_get_storage_dir,
-        run_memorize_episodes=_run_memorize_episodes,
+        run_memorize_segments=_run_memorize_segments,
         run_consolidation_task=_run_consolidation_task,
         get_config=lambda: _CONFIG,
         sanitize_db_filename=_sanitize_db_filename,
     )
 
 
-async def _run_memorize_episodes(
+async def _run_memorize_segments(
     *,
     memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]],
     svc: Any,
@@ -3358,7 +3358,7 @@ async def _run_memorize_episodes(
     cross_memorize: bool = False,
     final_cursors: dict[str, int] | None = None,
 ) -> None:
-    await _memorize_endpoint.run_memorize_episodes(
+    await _memorize_endpoint.run_memorize_segments(
         memorize_segments=memorize_segments,
         svc=svc,
         scope=scope,

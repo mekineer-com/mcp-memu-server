@@ -92,7 +92,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         sqlite_file_from_dsn=lambda _dsn: None,
         extract_scope=lambda payload: payload.get("user"),
         payload_signature=lambda _payload: "sig",
-        episodes_per_segment=1,
+        episode_items_per_segment=1,
         log_prompts=False,
         prompt_log_before=lambda *a, **k: None,
         prompt_log_after=lambda *a, **k: None,

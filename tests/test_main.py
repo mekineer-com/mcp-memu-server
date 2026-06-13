@@ -446,7 +446,7 @@ def test_merge_memorize_segment_results_flattens_top_level_lists():
     assert out["segment_count"] == 2
     assert [item["id"] for item in out["items"]] == ["m1", "m2"]
     assert [cat["id"] for cat in out["categories"]] == ["c1", "c2"]
-    assert out["pending_episode_ids"] == ["m2", "m1"]
+    assert out["pending_segment_ids"] == ["m2", "m1"]
     assert out["skipped_reasons"] == ["skip-a", "skip-b"]
     assert "results" in out
     assert [res["id"] for res in out["resources"]] == ["r1", "r2"]
@@ -1558,12 +1558,12 @@ def test_build_retrieve_soul_context_queries_no_duplicate_when_whitespace_differ
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_episodes_records_failure_progress_on_exception(tmp_path):
+async def test_run_memorize_segments_records_failure_progress_on_exception(tmp_path):
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
 
     class _FailingService:
-        async def memorize_episodes_batch(self, **_kwargs):
+        async def memorize_segments_batch(self, **_kwargs):
             raise RuntimeError("boom")
 
     user_id = "u"
@@ -1573,7 +1573,7 @@ async def test_run_memorize_episodes_records_failure_progress_on_exception(tmp_p
     main._MEMORIZE_CANCEL.discard(key)
 
     with pytest.raises(RuntimeError):
-        await main._run_memorize_episodes(
+        await main._run_memorize_segments(
             memorize_segments=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0, 0)],
             svc=_FailingService(),
             scope={"user_id": user_id, "soul_id": soul_id},
@@ -1598,15 +1598,15 @@ async def test_run_memorize_episodes_records_failure_progress_on_exception(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_episodes_batches_one_job_per_persisted_segment(tmp_path: Path) -> None:
+async def test_run_memorize_segments_batches_one_job_per_persisted_segment(tmp_path: Path) -> None:
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
     captured: dict[str, Any] = {}
 
     class _FakeService:
-        async def memorize_episodes_batch(self, **kwargs):
+        async def memorize_segments_batch(self, **kwargs):
             captured.update(kwargs)
-            return [{} for _ in kwargs["episodes"]]
+            return [{} for _ in kwargs["segments"]]
 
     segment_messages = [
         [
@@ -1624,7 +1624,7 @@ async def test_run_memorize_episodes_batches_one_job_per_persisted_segment(tmp_p
     main._MEMORIZE_PROGRESS.pop(key, None)
     main._MEMORIZE_CANCEL.discard(key)
 
-    await main._run_memorize_episodes(
+    await main._run_memorize_segments(
         memorize_segments=[
             ("/tmp/day.json", segment_messages[0], 0, 1),
             ("/tmp/day.json", segment_messages[1], 2, 2),
@@ -1644,21 +1644,21 @@ async def test_run_memorize_episodes_batches_one_job_per_persisted_segment(tmp_p
         segments_dir=segments_dir,
     )
 
-    episodes = captured["episodes"]
-    assert len(episodes) == len(segment_messages)
-    for episode_job, messages in zip(episodes, segment_messages, strict=True):
-        payload = episode_job["episode"]
+    segments = captured["segments"]
+    assert len(segments) == len(segment_messages)
+    for segment_job, messages in zip(segments, segment_messages, strict=True):
+        payload = segment_job["segment"]
         assert payload["message_indices"] == list(range(len(messages)))
-        assert json.loads(episode_job["raw_text"]) == messages
+        assert json.loads(segment_job["raw_text"]) == messages
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_episodes_clears_pending_ids_on_extraction_failure(monkeypatch: pytest.MonkeyPatch, tmp_path):
+async def test_run_memorize_segments_clears_pending_ids_on_extraction_failure(monkeypatch: pytest.MonkeyPatch, tmp_path):
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
 
     class _FailingService:
-        async def memorize_episodes_batch(self, **_kwargs):
+        async def memorize_segments_batch(self, **_kwargs):
             raise RuntimeError("boom")
 
     user_id = "u"
@@ -1669,7 +1669,7 @@ async def test_run_memorize_episodes_clears_pending_ids_on_extraction_failure(mo
     main._MEMORIZE_CANCEL.discard(key)
 
     state_row: dict[str, Any] = {
-        "pending_episode_ids": ["cid-1:0-1"],
+        "pending_segment_ids": ["cid-1:0-1"],
         "digest_cursor": 0,
     }
 
@@ -1677,8 +1677,8 @@ async def test_run_memorize_episodes_clears_pending_ids_on_extraction_failure(mo
         return dict(state_row), None, None
 
     def fake_write_conversation_state(_cid: str, *, updates: dict[str, Any], **_kwargs):
-        if "pending_episode_ids" in updates:
-            state_row["pending_episode_ids"] = list(updates.get("pending_episode_ids") or [])
+        if "pending_segment_ids" in updates:
+            state_row["pending_segment_ids"] = list(updates.get("pending_segment_ids") or [])
         if "digest_cursor" in updates:
             state_row["digest_cursor"] = int(updates["digest_cursor"])
         return dict(state_row), tmp_path / "Echo.db"
@@ -1687,7 +1687,7 @@ async def test_run_memorize_episodes_clears_pending_ids_on_extraction_failure(mo
     monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
 
     with pytest.raises(RuntimeError):
-        await main._run_memorize_episodes(
+        await main._run_memorize_segments(
             memorize_segments=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0, 0)],
             svc=_FailingService(),
             scope={"user_id": user_id, "soul_id": soul_id},
@@ -1704,14 +1704,14 @@ async def test_run_memorize_episodes_clears_pending_ids_on_extraction_failure(mo
             segments_dir=segments_dir,
         )
 
-    assert state_row["pending_episode_ids"] == []
+    assert state_row["pending_segment_ids"] == []
     row = main._MEMORIZE_PROGRESS.get(key) or {}
     assert row.get("active") is False
     assert row.get("last_result") == "failure"
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_episodes_clears_consumed_background_summaries(
+async def test_run_memorize_segments_clears_consumed_background_summaries(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1719,13 +1719,13 @@ async def test_run_memorize_episodes_clears_consumed_background_summaries(
     segments_dir.mkdir()
 
     class _FakeService:
-        async def memorize_episodes_batch(self, **_kwargs):
-            return [{"pending_episode_ids": ["trigger:0-1"]}]
+        async def memorize_segments_batch(self, **_kwargs):
+            return [{"pending_segment_ids": ["trigger:0-1"]}]
 
     state_rows: dict[str, dict[str, Any]] = {
         "trigger": {
             "digest_cursor": -1,
-            "pending_episode_ids": [],
+            "pending_segment_ids": [],
             "all_categories_summary": "",
         },
         "whatsapp:dm:bg-chat": {
@@ -1754,7 +1754,7 @@ async def test_run_memorize_episodes_clears_consumed_background_summaries(
     monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
     monkeypatch.setattr(main, "_compute_holistic_categories_summary", fake_summary)
 
-    await main._run_memorize_episodes(
+    await main._run_memorize_segments(
         memorize_segments=[
             (
                 "/tmp/day.json",

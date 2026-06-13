@@ -91,7 +91,7 @@
   },
   "memorize": {
     "min_chunk_tokens": 8000,
-    "episodes_per_segment": 3,
+    "episode_items_per_segment": 3,
     "background_summary_tokens": 1000,
     "background_summary_min_tokens": 100,
     "background_extra_messages_tokens": 100,

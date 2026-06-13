@@ -7,21 +7,21 @@ if TYPE_CHECKING:
     from memu.app import MemoryService
 
 
-def parse_episode_range(episode_id: str) -> tuple[int, int]:
-    text = str(episode_id or "").strip()
+def parse_segment_range(segment_id: str) -> tuple[int, int]:
+    text = str(segment_id or "").strip()
     if not text or ":" not in text:
-        raise ValueError(f"invalid episode_id: {episode_id}")
+        raise ValueError(f"invalid segment_id: {segment_id}")
     range_part = text.rsplit(":", 1)[1]
     if "-" not in range_part:
-        raise ValueError(f"invalid episode_id: {episode_id}")
+        raise ValueError(f"invalid segment_id: {segment_id}")
     start_text, end_text = range_part.split("-", 1)
     try:
         start_idx = int(start_text)
         end_idx = int(end_text)
     except (TypeError, ValueError):
-        raise ValueError(f"invalid episode_id: {episode_id}") from None
+        raise ValueError(f"invalid segment_id: {segment_id}") from None
     if end_idx < start_idx:
-        raise ValueError(f"invalid episode_id: {episode_id}")
+        raise ValueError(f"invalid segment_id: {segment_id}")
     return start_idx, end_idx
 
 
@@ -45,10 +45,10 @@ def _format_time_range(start_msg: dict[str, Any], end_msg: dict[str, Any]) -> st
     return start_str
 
 
-def format_episode_excerpt(
+def format_segment_excerpt(
     messages: list[dict[str, Any]],
     *,
-    episode_id: str,
+    segment_id: str,
     start_idx: int,
     end_idx: int,
 ) -> str:
@@ -76,22 +76,22 @@ def format_episode_excerpt(
     return "\n".join(lines).strip()
 
 
-def build_episode_inputs(
+def build_segment_inputs(
     messages: list[dict[str, Any]],
-    episode_ids: list[str],
+    segment_ids: list[str],
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for episode_id in episode_ids:
-        start_idx, end_idx = parse_episode_range(episode_id)
+    for segment_id in segment_ids:
+        start_idx, end_idx = parse_segment_range(segment_id)
         if not messages:
             continue
         start = max(0, start_idx)
         end = min(len(messages) - 1, end_idx)
         if start > end:
             continue
-        excerpt = format_episode_excerpt(
+        excerpt = format_segment_excerpt(
             messages,
-            episode_id=episode_id,
+            segment_id=segment_id,
             start_idx=start,
             end_idx=end,
         )
@@ -101,14 +101,14 @@ def build_episode_inputs(
         happened_at = _message_happened_at(msg) if isinstance(msg, dict) else None
         out.append(
             {
-                "episode_id": episode_id,
+                "segment_id": segment_id,
                 "start_idx": start,
                 "end_idx": end,
                 "excerpt": excerpt,
                 "happened_at": happened_at,
             }
         )
-    out.sort(key=lambda row: (int(row.get("start_idx") or 0), int(row.get("end_idx") or 0), str(row.get("episode_id") or "")))
+    out.sort(key=lambda row: (int(row.get("start_idx") or 0), int(row.get("end_idx") or 0), str(row.get("segment_id") or "")))
     return out
 
 

@@ -735,8 +735,8 @@ async def patch_conversation_state_endpoint(
     if "memory_cache" in body:
         updates["memory_cache"] = body.get("memory_cache")
 
-    if "pending_episode_ids" in body:
-        updates["pending_episode_ids"] = body.get("pending_episode_ids")
+    if "pending_segment_ids" in body:
+        updates["pending_segment_ids"] = body.get("pending_segment_ids")
 
     if "last_memorize_at" in body:
         updates["last_memorize_at"] = body.get("last_memorize_at")

@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.consolidation import _format_episode_block_for_prompt
+from app.services.consolidation import _format_segment_block_for_prompt
 from app.services.consolidation import _remap_edges_with_memory_ids
 from app.services.consolidation import _parse_consolidation_xml
 from app.services.consolidation import run_consolidation_llm
@@ -168,7 +168,7 @@ async def test_run_consolidation_llm_retries_once_on_missing_root() -> None:
             "active_life_goals": [],
             "removed_life_goals": [],
             "intention_activity": [],
-            "episode_inputs": [],
+            "segment_inputs": [],
             "narrative_self": None,
             "state": {"intentions_active": {"items": [{"id": "relax", "text": "Relax", "kind": "relax"}]}},
             "retrieved_memories": [],
@@ -218,7 +218,7 @@ async def test_run_consolidation_llm_retries_once_on_malformed_xml() -> None:
             "active_life_goals": [],
             "removed_life_goals": [],
             "intention_activity": [],
-            "episode_inputs": [],
+            "segment_inputs": [],
             "narrative_self": None,
             "state": {"intentions_active": {"items": [{"id": "relax", "text": "Relax", "kind": "relax"}]}},
             "retrieved_memories": [],
@@ -230,13 +230,13 @@ async def test_run_consolidation_llm_retries_once_on_malformed_xml() -> None:
     assert out["narrative_self"] == "steady"
 
 
-def test_format_episode_block_for_prompt_shows_memory_ids() -> None:
+def test_format_segment_block_for_prompt_shows_memory_ids() -> None:
     id_map: dict[str, str] = {}
     counter: list[int] = [1]
-    out = _format_episode_block_for_prompt(
+    out = _format_segment_block_for_prompt(
         [
             {
-                "episode_id": "ep:1-2",
+                "segment_id": "ep:1-2",
                 "excerpt": "hello",
                 "memory_summaries": [
                     {"id": "mem_1", "summary": "one"},
@@ -275,7 +275,7 @@ def test_remap_edges_with_memory_ids_drops_unresolved_ids() -> None:
     assert mapped == []
 
 
-def test_write_consolidation_outputs_clears_pending_episode_ids() -> None:
+def test_write_consolidation_outputs_clears_pending_segment_ids() -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp_dir = Path(td)
         db_path = tmp_dir / "soul.db"
@@ -295,7 +295,7 @@ def test_write_consolidation_outputs_clears_pending_episode_ids() -> None:
             sqlite_current_path=lambda _user, _soul: db_path,
             soul_id=soul_id,
             user_id=user_id,
-            updates={"pending_episode_ids": ["ep:1-2"], "intentions_active": []},
+            updates={"pending_segment_ids": ["ep:1-2"], "intentions_active": []},
         )
 
         deps = ConsolidationDeps(
@@ -352,10 +352,10 @@ def test_write_consolidation_outputs_clears_pending_episode_ids() -> None:
             user_id=user_id,
         )
 
-        assert result["state"]["pending_episode_ids"] == []
+        assert result["state"]["pending_segment_ids"] == []
 
 
-def test_gather_consolidation_inputs_skips_when_no_pending_episodes() -> None:
+def test_gather_consolidation_inputs_skips_when_no_pending_segments() -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp_dir = Path(td)
         db_path = tmp_dir / "soul.db"
@@ -375,7 +375,7 @@ def test_gather_consolidation_inputs_skips_when_no_pending_episodes() -> None:
             sqlite_current_path=lambda _user, _soul: db_path,
             soul_id=soul_id,
             user_id=user_id,
-            updates={"pending_episode_ids": []},
+            updates={"pending_segment_ids": []},
         )
 
         deps = ConsolidationDeps(
@@ -409,7 +409,7 @@ def test_gather_consolidation_inputs_skips_when_no_pending_episodes() -> None:
             interval_days=7,
             stale_after=timedelta(seconds=3600),
         )
-        assert out == {"status": "skip", "reason": "no_pending_episodes"}
+        assert out == {"status": "skip", "reason": "no_pending_segments"}
 
         check_con = sqlite_connect(db_path)
         try:
@@ -446,7 +446,7 @@ async def test_run_consolidation_llm_strips_relax_boost_from_intention_actions()
         _Svc(),
         inputs={
             "categories": [], "active_life_goals": [], "removed_life_goals": [],
-            "intention_activity": [], "episode_inputs": [], "narrative_self": None,
+            "intention_activity": [], "segment_inputs": [], "narrative_self": None,
             "state": {"intentions_active": None}, "retrieved_memories": [],
         },
         soul_id="Echo",
@@ -534,7 +534,7 @@ def test_write_consolidation_outputs_clears_accumulators() -> None:
             soul_id=soul_id,
             user_id=user_id,
             updates={
-                "pending_episode_ids": ["ep:1"],
+                "pending_segment_ids": ["ep:1"],
                 "intentions_active": [],
                 "append_retrieval_ids_since_consolidation": ["mem-r1", "mem-r2"],
                 "append_prior_context_ids_since_consolidation": ["mem-p1"],
@@ -590,7 +590,7 @@ def test_write_consolidation_outputs_db_failure_produces_no_companion_memory() -
             sqlite_current_path=lambda _u, _s: db_path,
             soul_id=soul_id,
             user_id=user_id,
-            updates={"pending_episode_ids": ["ep:2"], "intentions_active": []},
+            updates={"pending_segment_ids": ["ep:2"], "intentions_active": []},
         )
 
         companion_calls: list[str] = []
@@ -643,7 +643,7 @@ def test_write_consolidation_outputs_db_failure_produces_no_companion_memory() -
         assert companion_calls == [], "companion memory must not be created when DB phase fails"
 
 
-def test_write_consolidation_outputs_late_failure_keeps_pending_episode_ids() -> None:
+def test_write_consolidation_outputs_late_failure_keeps_pending_segment_ids() -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp_dir = Path(td)
         db_path = tmp_dir / "soul.db"
@@ -666,7 +666,7 @@ def test_write_consolidation_outputs_late_failure_keeps_pending_episode_ids() ->
             sqlite_current_path=lambda _u, _s: db_path,
             soul_id=soul_id,
             user_id=user_id,
-            updates={"pending_episode_ids": pending, "intentions_active": []},
+            updates={"pending_segment_ids": pending, "intentions_active": []},
         )
 
         import app.services.consolidation as _consol_mod
@@ -702,4 +702,4 @@ def test_write_consolidation_outputs_late_failure_keeps_pending_episode_ids() ->
             check_con.close()
 
         assert state is not None
-        assert state["pending_episode_ids"] == pending
+        assert state["pending_segment_ids"] == pending

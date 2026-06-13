@@ -17,8 +17,8 @@ log = logging.getLogger(__name__)
 from fastapi import HTTPException
 from memu.prompts.consolidation import consolidation as consolidation_prompt
 
-from app.services.episode import (
-    build_episode_inputs,
+from app.services.segment import (
+    build_segment_inputs,
     create_companion_memory,
 )
 from app.services.xml_utils import extract_xml_fragment, xml_text
@@ -38,12 +38,12 @@ if TYPE_CHECKING:
     from memu.app import MemoryService
 
 
-_EPISODE_SUFFIX_RE = re.compile(r"_(\d+)\.json$")
+_SEGMENT_SUFFIX_RE = re.compile(r"_(\d+)\.json$")
 
 
-def _episode_file_sort_key(path: Path) -> tuple[str, int]:
+def _segment_file_sort_key(path: Path) -> tuple[str, int]:
     stem = path.stem
-    m = _EPISODE_SUFFIX_RE.search(path.name)
+    m = _SEGMENT_SUFFIX_RE.search(path.name)
     if m:
         return (path.name[:m.start()], int(m.group(1)))
     return (stem, 0)
@@ -258,15 +258,15 @@ def _format_intention_activity_for_prompt(rows: list[dict[str, str]]) -> str:
 
 
 
-def _format_episode_block_for_prompt(
-    episodes: list[dict[str, Any]],
+def _format_segment_block_for_prompt(
+    segments: list[dict[str, Any]],
     id_map: dict[str, str],
     counter: list[int],
 ) -> str:
-    if not episodes:
+    if not segments:
         return "(none queued)"
     all_types: set[str] = set()
-    for row in episodes:
+    for row in segments:
         for s in row.get("memory_summaries") or []:
             if isinstance(s, dict):
                 all_types.add(str(s.get("memory_type") or ""))
@@ -274,14 +274,14 @@ def _format_episode_block_for_prompt(
     legend = format_memory_legend(all_types)
     if legend:
         lines.append(legend)
-    for idx, row in enumerate(episodes, 1):
+    for idx, row in enumerate(segments, 1):
         excerpt = str(row.get("excerpt") or "").strip()
         summaries = row.get("memory_summaries") or []
-        lines.append(f"Episode {idx}")
+        lines.append(f"Segment {idx}")
         if excerpt:
             lines.append(excerpt)
         if summaries:
-            lines.append(f"Episode {idx} memories:")
+            lines.append(f"Segment {idx} memories:")
             for s in summaries:
                 if isinstance(s, dict):
                     mid = s["id"]
@@ -402,9 +402,9 @@ def gather_consolidation_inputs(
                 if now < due_at:
                     return {"status": "skip", "reason": "interval_gate"}
 
-        pending_episode_ids = deps.normalize_text_list(state.get("pending_episode_ids"))
-        if not pending_episode_ids:
-            return {"status": "skip", "reason": "no_pending_episodes"}
+        pending_segment_ids = deps.normalize_text_list(state.get("pending_segment_ids"))
+        if not pending_segment_ids:
+            return {"status": "skip", "reason": "no_pending_segments"}
 
         category_rows = con.execute(
             """
@@ -460,8 +460,8 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
 
         narrative_self = str(state.get("narrative_self") or "").strip() or None
 
-        episode_inputs: list[dict[str, Any]] = []
-        if pending_episode_ids:
+        segment_inputs: list[dict[str, Any]] = []
+        if pending_segment_ids:
             storage_dir = deps.get_storage_dir(deps.config)
             chats_dir = (storage_dir / "st_chats").resolve()
             chat_dir = deps.find_chat_dir_for_conversation(chats_dir, user_id, soul_id, conversation_id)
@@ -480,24 +480,24 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
             segments_dir = (chat_dir / "segments").resolve()
             messages: list[dict[str, Any]] = []
             if segments_dir.is_dir():
-                for ep_file in sorted(segments_dir.glob("*.json"), key=_episode_file_sort_key):
+                for ep_file in sorted(segments_dir.glob("*.json"), key=_segment_file_sort_key):
                     try:
                         parsed = json.loads(ep_file.read_text(encoding="utf-8"))
                     except (OSError, json.JSONDecodeError):
                         continue
                     if isinstance(parsed, list):
                         messages.extend(m for m in parsed if isinstance(m, dict))
-            episode_inputs = build_episode_inputs(messages, pending_episode_ids)
-            if len(episode_inputs) != len(pending_episode_ids):
-                raise HTTPException(status_code=400, detail="queued episodes are not present in conversation history")
+            segment_inputs = build_segment_inputs(messages, pending_segment_ids)
+            if len(segment_inputs) != len(pending_segment_ids):
+                raise HTTPException(status_code=400, detail="queued segments are not present in conversation history")
 
-            for entry in episode_inputs:
-                episode_id = str(entry["episode_id"])
+            for entry in segment_inputs:
+                segment_id = str(entry["segment_id"])
                 rows = con.execute(
                     """
 SELECT id, summary, memory_type, happened_at, created_at
 FROM memory_items
-WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND episode_id = ? AND memory_type NOT IN ('narrative_self')
+WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND segment_id = ? AND memory_type NOT IN ('narrative_self')
   AND (merged_into IS NULL OR TRIM(merged_into) = '')
   AND NOT EXISTS (
     SELECT 1 FROM triples t
@@ -508,7 +508,7 @@ WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND episode_id = ? AND
 ORDER BY created_at ASC, id ASC
 LIMIT 24
 """,
-                    (soul_id, user_id, conversation_id, episode_id),
+                    (soul_id, user_id, conversation_id, segment_id),
                 ).fetchall()
                 entry["memory_summaries"] = [
                     {
@@ -603,12 +603,12 @@ LIMIT 24
             "status": "ready",
             "db_path": db_path,
             "state": state,
-            "episode_ids": pending_episode_ids,
+            "segment_ids": pending_segment_ids,
             "categories": category_rows,
             "active_life_goals": active_goals,
             "removed_life_goals": removed_goals,
             "intention_activity": intention_activity,
-            "episode_inputs": episode_inputs,
+            "segment_inputs": segment_inputs,
             "narrative_self": narrative_self,
             "last_consolidation_at": state.get("last_consolidation_at"),
             "started_at": now.isoformat(),
@@ -633,7 +633,7 @@ async def run_consolidation_llm(
     intention_text = _format_intention_activity_for_prompt(inputs["intention_activity"])
     id_map: dict[str, str] = {}
     counter: list[int] = [1]
-    episodes_text = _format_episode_block_for_prompt(inputs["episode_inputs"], id_map, counter)
+    segments_text = _format_segment_block_for_prompt(inputs["segment_inputs"], id_map, counter)
 
     narrative = str(inputs.get("narrative_self") or "").strip()
     soul_card = narrative or DEFAULT_SOUL_CARD.format(soul_name=soul_id)
@@ -685,7 +685,7 @@ async def run_consolidation_llm(
         current_intentions=svc._escape_prompt_value(current_intentions_text),
         intention_activity=svc._escape_prompt_value(intention_text),
         retrieved_memories=svc._escape_prompt_value(retrieved_text),
-        episodes=svc._escape_prompt_value(episodes_text),
+        segments=svc._escape_prompt_value(segments_text),
     )
 
     parsed: dict[str, Any] | None = None
@@ -943,7 +943,7 @@ INSERT INTO intentions (
     invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results["edge_invalidations"], scope=scope)
 
     state_updates: dict[str, Any] = {
-        "pending_episode_ids": [],
+        "pending_segment_ids": [],
         "last_consolidation_at": now_iso,
         "consolidation_in_progress": False,
         "consolidation_started_at": None,
