@@ -1563,9 +1563,6 @@ async def test_run_memorize_episodes_records_failure_progress_on_exception(tmp_p
     segments_dir.mkdir()
 
     class _FailingService:
-        async def split_segment_into_episodes(self, **_kwargs):
-            return [{"text": "episode text", "caption": "episode"}]
-
         async def memorize_episodes_batch(self, **_kwargs):
             raise RuntimeError("boom")
 
@@ -1598,6 +1595,61 @@ async def test_run_memorize_episodes_records_failure_progress_on_exception(tmp_p
     assert row.get("last_result") == "failure"
     assert "RuntimeError: boom" in str(row.get("error") or "")
     assert key not in main._MEMORIZE_CANCEL
+
+
+@pytest.mark.asyncio
+async def test_run_memorize_episodes_batches_one_job_per_persisted_segment(tmp_path: Path) -> None:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    captured: dict[str, Any] = {}
+
+    class _FakeService:
+        async def memorize_episodes_batch(self, **kwargs):
+            captured.update(kwargs)
+            return [{} for _ in kwargs["episodes"]]
+
+    segment_messages = [
+        [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "second"},
+        ],
+        [
+            {"role": "user", "content": "third"},
+        ],
+    ]
+
+    user_id = "u"
+    soul_id = "s"
+    key = main._memorize_lock_key(user_id, soul_id)
+    main._MEMORIZE_PROGRESS.pop(key, None)
+    main._MEMORIZE_CANCEL.discard(key)
+
+    await main._run_memorize_episodes(
+        memorize_segments=[
+            ("/tmp/day.json", segment_messages[0], 0, 1),
+            ("/tmp/day.json", segment_messages[1], 2, 2),
+        ],
+        svc=_FakeService(),
+        scope={"user_id": user_id, "soul_id": soul_id},
+        conversation_id=None,
+        soul_id=soul_id,
+        uid=user_id,
+        processed_cursor=-1,
+        safe={},
+        resource_url="/tmp/day.json",
+        chat_key=None,
+        merged_len=3,
+        force=True,
+        sleep_stats=None,
+        segments_dir=segments_dir,
+    )
+
+    episodes = captured["episodes"]
+    assert len(episodes) == len(segment_messages)
+    for episode_job, messages in zip(episodes, segment_messages, strict=True):
+        payload = episode_job["episode"]
+        assert payload["message_indices"] == list(range(len(messages)))
+        assert json.loads(episode_job["raw_text"]) == messages
 
 
 @pytest.mark.asyncio
