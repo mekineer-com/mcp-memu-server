@@ -346,6 +346,7 @@ async def _run_background_rollup_for_conversation(
             await llm_service.summarize_background_chat_rollup(
                 prior_summary=prior_summary,
                 messages=summary_input,
+                soul_name=sid,
             )
             or ""
         ).strip()
@@ -3989,6 +3990,7 @@ async def conversation_retrieve(
                     cross_conversation_history=safe.get("_cross_conversation_history"),
                     chat_label=chat_label_for_prompt,
                     conversation_id=cid,
+                    soul_name=soul_id,
                     self_turn_directive=self_turn_directive or None,
                     self_turn_label=self_turn_label or None,
                 )

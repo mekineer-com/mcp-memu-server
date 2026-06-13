@@ -154,7 +154,7 @@ def _build_retrieve_soul_context_queries(
     if all_cats_summary:
         soul_context_for_retrieve.append({"role": "all_categories_summary", "content": {"text": all_cats_summary}})
 
-    history_text = _render_history(history_for_render)
+    history_text = _render_history(history_for_render, soul_name=soul_id)
     if history_text:
         section_header = _section_title_from_conversation_id(conversation_id)
         heading = resolve_current_chat_heading(chat_label, conversation_id)

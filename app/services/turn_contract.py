@@ -12,6 +12,7 @@ from typing import Any
 _SIRI_WORKSPACE = Path("~/Desktop/siri")
 
 from app.services.intention_state import MAX_MEMORY_CACHE_ENTRIES, format_intentions_for_prompt, normalize_memory_cache
+from memu.utils.conversation import format_speaker_message
 
 _logger = logging.getLogger("uvicorn.error")
 
@@ -129,17 +130,7 @@ def _summary_from_category_line(line: str) -> str:
     return line.strip()
 
 
-def _display_speaker_label(item: dict[str, Any]) -> str:
-    explicit = _text(item.get("name"))
-    if explicit:
-        return explicit
-    role = _text(item.get("role")).lower()
-    if role == "assistant":
-        return "soul"
-    return role or "unknown"
-
-
-def render_history(history: list[dict[str, Any]]) -> str:
+def render_history(history: list[dict[str, Any]], *, soul_name: str | None = None) -> str:
     if not history:
         return "(none)"
     selected: list[dict[str, Any]] = []
@@ -151,7 +142,6 @@ def render_history(history: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     last_time_label: str | None = None
     for item in reversed(selected):
-        role = _display_speaker_label(item)
         content = _text(item.get("content"))
         time_label = format_relative_time_label(
             item.get("ts_ms") or item.get("created_at") or item.get("received_at"),
@@ -161,7 +151,7 @@ def render_history(history: list[dict[str, Any]]) -> str:
                 lines.append("")
             lines.append(f"--- {time_label} ---")
             last_time_label = time_label
-        lines.append(f"[{role}] {content}")
+        lines.append(format_speaker_message(item, soul_name=soul_name))
     return "\n".join(lines) or "(none)"
 
 
@@ -665,6 +655,7 @@ def build_turn_prompt(
     cross_conversation_history: str | None = None,
     chat_label: str | None = None,
     conversation_id: str | None = None,
+    soul_name: str | None = None,
     self_turn_directive: str | None = None,
     self_turn_label: str | None = None,
     now: datetime | None = None,
@@ -740,7 +731,7 @@ def build_turn_prompt(
         history_for_render.append(synthetic)
 
     heading = resolve_current_chat_heading(chat_label, conversation_id)
-    current_chat_block = "\n".join([heading, render_history(history_for_render)])
+    current_chat_block = "\n".join([heading, render_history(history_for_render, soul_name=soul_name)])
     current_section_header = _section_title_from_conversation_id(conversation_id)
     conversations_block = _merge_current_into_conversations(
         cross_conversation_history,

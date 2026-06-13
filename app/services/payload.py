@@ -96,13 +96,17 @@ def _normalize_conversation(conv: Any) -> Any:
                 ts_ms = int(dt.timestamp() * 1000)
             except (ValueError, OverflowError):
                 ts_ms = None
+        name = m.get("name")
+        if name is None:
+            name = m.get("speaker")
 
         out.append(
             {
                 "role": role or "unknown",
-                "name": m.get("name"),
+                "name": name,
                 "content": m.get("content") or "",
                 **({"ts_ms": ts_ms} if ts_ms is not None else {}),
+                **({"speaker": m.get("speaker")} if m.get("speaker") is not None else {}),
                 **({"source_label": m.get("source_label")} if m.get("source_label") is not None else {}),
                 **(
                     {"source_conversation_id": m.get("source_conversation_id")}

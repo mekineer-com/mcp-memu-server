@@ -522,6 +522,24 @@ def test_build_turn_prompt_renders_current_message_locator_when_already_last() -
     assert "[user] hello there this is the current message" not in prompt
 
 
+def test_build_turn_prompt_renders_assistant_role_as_soul_name_when_available() -> None:
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[
+            {"role": "assistant", "content": "old 1"},
+            {"role": "user", "content": "hello"},
+        ],
+        prior_context=None,
+        retrieve_rag=None,
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+        soul_name="Siri",
+    )
+    assert "[Siri] old 1" in prompt
+    assert "[assistant] old 1" not in prompt
+
+
 def test_build_turn_prompt_renders_current_message_locator_when_whitespace_differs() -> None:
     prompt = build_turn_prompt(
         user_message="hello   there from the current turn",
