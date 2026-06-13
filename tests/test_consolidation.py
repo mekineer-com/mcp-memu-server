@@ -248,6 +248,9 @@ def test_format_segment_block_for_prompt_shows_memory_ids() -> None:
         counter,
     )
     assert "memories:" in out
+    assert "Segment 1" not in out
+    assert "Conversation excerpt:" in out
+    assert "Related memories:" in out
     assert "- [1] [memory] one" in out
     assert "- [2] [memory] two" in out
     assert id_map == {"1": "mem_1", "2": "mem_2"}

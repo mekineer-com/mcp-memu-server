@@ -274,14 +274,14 @@ def _format_segment_block_for_prompt(
     legend = format_memory_legend(all_types)
     if legend:
         lines.append(legend)
-    for idx, row in enumerate(segments, 1):
+    for row in segments:
         excerpt = str(row.get("excerpt") or "").strip()
         summaries = row.get("memory_summaries") or []
-        lines.append(f"Segment {idx}")
         if excerpt:
+            lines.append("Conversation excerpt:")
             lines.append(excerpt)
         if summaries:
-            lines.append(f"Segment {idx} memories:")
+            lines.append("Related memories:")
             for s in summaries:
                 if isinstance(s, dict):
                     mid = s["id"]

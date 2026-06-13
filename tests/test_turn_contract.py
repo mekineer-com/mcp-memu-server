@@ -11,6 +11,7 @@ from app.services.turn_contract import (
     format_relative_time_label,
     make_turn_system_prompt,
     parse_turn_contract,
+    render_history,
 )
 
 
@@ -538,6 +539,23 @@ def test_build_turn_prompt_renders_assistant_role_as_soul_name_when_available() 
     )
     assert "[Siri] old 1" in prompt
     assert "[assistant] old 1" not in prompt
+
+
+def test_render_history_uses_canonical_speaker_lines() -> None:
+    rendered = render_history(
+        [
+            {"role": "user", "name": "Marcos", "content": "Can you hear me?"},
+            {"role": "group_member", "name": "Raquel", "content": "She's helping you?"},
+            {"role": "assistant", "content": "I can hear you."},
+        ],
+        soul_name="Siri",
+    )
+
+    assert "[Marcos] Can you hear me?" in rendered
+    assert "[Raquel] She's helping you?" in rendered
+    assert "[Siri] I can hear you." in rendered
+    assert "[assistant]" not in rendered
+    assert "[whatsapp:group]" not in rendered
 
 
 def test_build_turn_prompt_renders_current_message_locator_when_whitespace_differs() -> None:
