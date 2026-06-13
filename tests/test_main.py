@@ -1121,7 +1121,13 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
     )
 
     class _FakeSvc:
-        async def summarize_background_chat_rollup(self, *, prior_summary: str | None, messages: list[dict[str, Any]], soul_name: str | None = None) -> str:
+        async def summarize_background_chat_rollup(
+            self,
+            *,
+            prior_summary: str | None,
+            messages: list[dict[str, Any]],
+            soul_name: str | None = None,
+        ) -> str:
             assert prior_summary == "old summary"
             assert len(messages) == 2
             assert soul_name == "Echo"
