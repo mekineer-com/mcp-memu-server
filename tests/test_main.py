@@ -1644,6 +1644,57 @@ def test_build_retrieve_soul_context_queries_uses_full_history_for_apimw_rewrite
     assert "[user] msg 15" in text
 
 
+@pytest.mark.asyncio
+async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: object())
+    monkeypatch.setattr(main, "_apimw_memory_count_from_cfg", lambda *_a, **_k: 5)
+    monkeypatch.setattr(main, "_apimw_random_count_from_cfg", lambda *_a, **_k: 0)
+    monkeypatch.setattr(main, "_load_cross_tail_for_ai", lambda **_kwargs: [])
+
+    async def _fake_collect(
+        _svc,
+        _payload,
+        *,
+        focus_text: str,
+        conversations_block: str,
+        **_kwargs,
+    ) -> list[dict[str, Any]]:
+        captured["focus_text"] = focus_text
+        captured["conversations_block"] = conversations_block
+        return []
+
+    async def _fake_synthesize(*_args, **_kwargs):
+        return {}, {}, {}
+
+    async def _fake_persist(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(main, "_apimw_collect_memory_items", _fake_collect)
+    monkeypatch.setattr(main, "_resolve_profile_if_configured", lambda *_a, **_k: None)
+    monkeypatch.setattr(main, "_apimw_synthesize", _fake_synthesize)
+    monkeypatch.setattr(main, "_apimw_persist", _fake_persist)
+
+    history = [
+        {"role": "user", "name": "Marcos", "content": f"msg {idx}"}
+        for idx in range(1, 36)
+    ]
+
+    await main._run_apimw(
+        {},
+        conversation_id="whatsapp:dm:15133278228",
+        soul_id="Siri",
+        user_id="u1",
+        state_row={},
+        history=history,
+    )
+
+    assert "msg 1" in captured["focus_text"]
+    assert "msg 35" in captured["focus_text"]
+    assert captured["focus_text"] == captured["conversations_block"]
+
+
 def test_build_retrieve_soul_context_queries_orders_chats_before_working_and_intentions() -> None:
     history = [
         {"message_id": "m1", "role": "user", "content": "msg 1"},

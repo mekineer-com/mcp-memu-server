@@ -2335,14 +2335,13 @@ async def _run_apimw(
         apimw_item_top_k = _apimw_memory_count_from_cfg(_CONFIG)
         apimw_random_count = _apimw_random_count_from_cfg(_CONFIG)
 
-        recent_history = history[-30:] if history else []
         cross_tail = _load_cross_tail_for_ai(
             user_id=user_id,
             soul_id=soul_id,
             conversation_id=conversation_id,
         )
         segment_text = _format_all_chat_history_for_ai(
-            current_history=recent_history,
+            current_history=history,
             cross_tail=cross_tail,
             conversation_id=conversation_id,
             soul_id=soul_id,
