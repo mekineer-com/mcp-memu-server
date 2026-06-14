@@ -88,7 +88,6 @@ from app.services.payload import (
     _extract_result_item_ids,
     _extract_scope,
     _item_sig,
-    _norm_result_sig,
     _normalize_conversation,
     _normalize_turn_history,
     _parse_as_of_datetime,
