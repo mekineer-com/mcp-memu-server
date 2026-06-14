@@ -699,7 +699,7 @@ async def run_consolidation_llm(
             profile=llm_profile,
             system_prompt=system_prompt,
             op="consolidation",
-            step="main",
+            step="reflection",
         )
         try:
             parsed = _parse_consolidation_xml(str(raw or ""))
