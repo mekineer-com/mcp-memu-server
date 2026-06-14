@@ -619,6 +619,42 @@ def test_normalize_conversation_preserves_cross_memorize_metadata():
     assert out[0]["memorize_chat"] is False
 
 
+def test_normalize_conversation_preserves_chat_name_for_rendering():
+    conv = [
+        {
+            "role": "user",
+            "name": "Marcos",
+            "chat_name": "Siri",
+            "content": "hello",
+        }
+    ]
+    out = main._normalize_conversation(conv)
+    assert isinstance(out, list) and out
+    assert out[0]["chat_name"] == "Siri"
+
+
+def test_stamp_current_conversation_metadata_adds_render_labels():
+    rows = [
+        {"role": "user", "name": "Marcos", "content": "hello"},
+        {
+            "role": "user",
+            "name": "Liz",
+            "content": "cross",
+            "source_conversation_id": "whatsapp:dm:447879696252",
+            "chat_name": "Liz Kalverda",
+        },
+    ]
+    main._memorize_endpoint.stamp_current_conversation_metadata(
+        rows,
+        conversation_id="integrity:32bfed88-ee89-4053-81f8-3dba8b973857",
+        chat_name="Siri",
+    )
+    assert rows[0]["source_conversation_id"] == "integrity:32bfed88-ee89-4053-81f8-3dba8b973857"
+    assert rows[0]["chat_name"] == "Siri"
+    assert rows[1]["source_conversation_id"] == "whatsapp:dm:447879696252"
+    assert rows[1]["chat_name"] == "Liz Kalverda"
+
+
 def test_build_cross_conversation_payload_uses_state_default_memorize_flag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

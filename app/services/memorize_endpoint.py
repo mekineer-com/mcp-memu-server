@@ -32,6 +32,27 @@ def estimate_unmemorized_tokens(messages: list[dict[str, Any]], digest_cursor: A
     return estimate_tokens(messages[start:])
 
 
+def stamp_current_conversation_metadata(
+    messages: list[dict[str, Any]],
+    *,
+    conversation_id: str | None,
+    chat_name: str | None,
+) -> None:
+    cid = str(conversation_id or "").strip()
+    name = str(chat_name or "").strip()
+    if not cid and not name:
+        return
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        source_cid = str(msg.get("source_conversation_id") or "").strip()
+        if not source_cid and cid:
+            msg["source_conversation_id"] = cid
+            source_cid = cid
+        if name and source_cid == cid and not str(msg.get("chat_name") or "").strip():
+            msg["chat_name"] = name
+
+
 
 
 class SegmentMemorizeJob(TypedDict):
@@ -894,6 +915,11 @@ async def memorize_endpoint(
             manifest_path = (chat_dir / "manifest.json").resolve()
 
             merged: list[dict[str, Any]] = conv_norm if isinstance(conv_norm, list) else []
+            stamp_current_conversation_metadata(
+                merged,
+                conversation_id=conversation_id,
+                chat_name=endpoint_ctx.pick_str(safe, "chat_name"),
+            )
 
             processed_cursor = -1
             has_pending_segments = False
