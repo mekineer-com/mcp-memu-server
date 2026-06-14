@@ -769,7 +769,12 @@ def slice_tail_with_floor(
             for idx, row in enumerate(all_rows)
             if _row_cursor_value(row, idx) > since_cursor
         ]
-    if tail and recent_fallback_messages > 0 and len(tail) < recent_fallback_messages and len(all_rows) > len(tail):
+    if (
+        since_cursor >= 0
+        and recent_fallback_messages > 0
+        and len(tail) < recent_fallback_messages
+        and len(all_rows) > len(tail)
+    ):
         tail = list(all_rows[-recent_fallback_messages:])
     return tail
 

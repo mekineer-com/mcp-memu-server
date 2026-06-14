@@ -608,6 +608,34 @@ def test_turn_launch_apimw_uses_periodic_cadence(monkeypatch: pytest.MonkeyPatch
     assert status_four == "skipped_cadence"
 
 
+@pytest.mark.asyncio
+async def test_turn_launch_apimw_passes_floored_history_after_memorize(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main, "_apimw_cadence_from_cfg", lambda *_a, **_k: 1)
+    monkeypatch.setattr(main, "_mark_apimw_inflight", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"digest_cursor": 9, "last_memorize_at": "2026-05-01T00:00:00+00:00"}, None, None),
+    )
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_apimw(*_args: object, **kwargs: object) -> None:
+        captured["history"] = kwargs.get("history")
+
+    monkeypatch.setattr(main, "_run_apimw", _fake_run_apimw)
+
+    history = [
+        {"role": "assistant", "content": f"msg_{idx}", "source_conversation_index": idx}
+        for idx in range(10)
+    ]
+    status = main._turn_launch_apimw("cid", "u1", "Echo", {}, history)
+    await asyncio.sleep(0)
+
+    assert status == "started"
+    assert [row["content"] for row in captured.get("history") or []] == [f"msg_{idx}" for idx in range(2, 10)]
+
+
 
 def test_normalize_conversation_uses_created_at_when_timestamp_missing():
     conv = [{"role": "user", "content": "hello", "created_at": "2026-04-16T12:00:00Z"}]
@@ -3160,7 +3188,10 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
         ],
     )
 
+    captured: dict[str, object] = {}
+
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -3180,10 +3211,20 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
     assert "msg_04" in turn_prompt
     assert "msg_03" not in turn_prompt
     assert "msg_11" in turn_prompt
+    assert [row["content"] for row in out.get("turn_history") or []] == [f"msg_{idx:02d}" for idx in range(4, 12)]
+    safe = captured["safe"]
+    assert isinstance(safe, dict)
+    query_text = "\n".join(
+        str((query.get("content") or {}).get("text") or "")
+        for query in safe.get("queries") or []
+        if isinstance(query, dict)
+    )
+    assert "msg_04" in query_text
+    assert "msg_03" not in query_text
 
 
 @pytest.mark.asyncio
-async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
+async def test_conversation_retrieve_uses_whatsapp_floor_when_no_new_messages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3239,9 +3280,11 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
 
     out = await main.conversation_retrieve("whatsapp:dm:15133278228", payload)
     turn_prompt = str(out.get("turn_user_prompt") or "")
-    assert "msg_04" not in turn_prompt
-    assert "msg_11" not in turn_prompt
+    assert "msg_04" in turn_prompt
+    assert "msg_03" not in turn_prompt
+    assert "msg_11" in turn_prompt
     assert "current message" in turn_prompt
+    assert [row["content"] for row in out.get("turn_history") or []] == [f"msg_{idx:02d}" for idx in range(4, 12)]
 
 
 @pytest.mark.asyncio

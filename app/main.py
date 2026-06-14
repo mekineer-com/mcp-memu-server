@@ -4001,6 +4001,7 @@ async def conversation_retrieve(
                     _con.close()
 
         chat_label_for_prompt = _chat_label_for_prompt(safe)
+        history_for_ai = _turn_history_with_floor(history, state_row or {})
 
         should_build_default_queries = (
             safe.get("queries") is None
@@ -4018,7 +4019,7 @@ async def conversation_retrieve(
             safe["queries"] = _build_retrieve_soul_context_queries(
                 soul_id=soul_id,
                 message=retrieve_focus,
-                history=history,
+                history=history_for_ai,
                 state_row=state_row or {},
                 conversation_id=cid,
                 chat_label=chat_label_for_prompt,
@@ -4052,6 +4053,7 @@ async def conversation_retrieve(
             scope = _extract_scope(safe)
             uid = str(scope.get("user_id") or "").strip()
             soul_id = str(scope.get("soul_id") or "").strip()
+            turn_history = history_for_ai
 
             if uid and soul_id:
                 _state_row, soul_card, _db_path = _load_turn_state_and_soul_card(
@@ -4097,7 +4099,7 @@ async def conversation_retrieve(
             if safe.get("_cross_conversation_history"):
                 out["cross_conversation_history"] = safe.get("_cross_conversation_history")
             if is_live_turn:
-                out["turn_history"] = history
+                out["turn_history"] = turn_history
 
         _record_call(
             "conversation.retrieve",
@@ -4421,6 +4423,7 @@ def _turn_launch_apimw(
         user_id=uid,
         soul_id=soul_id,
     )
+    history_for_ai = _turn_history_with_floor(history_full, apimw_state_row)
     try:
         apimw_task = asyncio.create_task(
             _run_apimw(
@@ -4429,7 +4432,7 @@ def _turn_launch_apimw(
                 soul_id=soul_id,
                 user_id=uid,
                 state_row=apimw_state_row,
-                history=history_full,
+                history=history_for_ai,
             )
         )
     except Exception:

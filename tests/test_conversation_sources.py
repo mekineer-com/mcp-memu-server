@@ -894,7 +894,7 @@ def test_load_whatsapp_tail_applies_floor_backfill(tmp_path: Path) -> None:
     assert [row["content"] for row in rows] == [f"msg-{i}" for i in range(2, 10)]
 
 
-def test_load_whatsapp_tail_does_not_floor_without_new_rows(tmp_path: Path) -> None:
+def test_load_whatsapp_tail_floors_without_new_rows(tmp_path: Path) -> None:
     sessions_path = tmp_path / "sessions.json"
     state_db_path = tmp_path / "state.db"
     sessions_path.write_text(
@@ -927,7 +927,7 @@ def test_load_whatsapp_tail_does_not_floor_without_new_rows(tmp_path: Path) -> N
         sessions_index_path=sessions_path,
         state_db_path=state_db_path,
     )
-    assert rows == []
+    assert [row["content"] for row in rows] == [f"msg-{i}" for i in range(2, 10)]
 
 
 def test_load_whatsapp_tail_raises_when_mapping_missing(tmp_path: Path) -> None:
@@ -1320,6 +1320,21 @@ def test_sillytavern_snapshot_round_trip_with_floor(tmp_path: Path) -> None:
     assert [row["content"] for row in rows] == [f"msg-{i}" for i in range(2, 10)]
     assert all(row["source_label"] == "sillytavern" for row in rows)
     assert all(row["chat_name"] == "Echo" for row in rows)
+
+
+def test_tail_floor_applies_when_no_rows_are_new() -> None:
+    rows = [
+        {"content": f"msg-{idx}", "source_conversation_index": idx}
+        for idx in range(10)
+    ]
+
+    tail = conversation_sources.slice_tail_with_floor(
+        rows,
+        since_cursor=9,
+        recent_fallback_messages=8,
+    )
+
+    assert [row["content"] for row in tail] == [f"msg-{idx}" for idx in range(2, 10)]
 
 
 def test_load_sillytavern_tail_since_cursor_handles_sparse_indices(tmp_path: Path) -> None:
