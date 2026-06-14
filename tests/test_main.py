@@ -630,7 +630,7 @@ async def test_turn_launch_apimw_passes_floored_history_after_memorize(monkeypat
     captured: dict[str, object] = {}
 
     async def _fake_run_apimw(*_args: object, **kwargs: object) -> None:
-        captured["history"] = kwargs.get("history")
+        captured["current_history"] = kwargs.get("current_history")
 
     monkeypatch.setattr(main, "_run_apimw", _fake_run_apimw)
 
@@ -642,7 +642,7 @@ async def test_turn_launch_apimw_passes_floored_history_after_memorize(monkeypat
     await asyncio.sleep(0)
 
     assert status == "started"
-    assert [row["content"] for row in captured.get("history") or []] == [f"msg_{idx}" for idx in range(2, 10)]
+    assert [row["content"] for row in captured.get("current_history") or []] == [f"msg_{idx}" for idx in range(2, 10)]
 
 
 
@@ -1687,7 +1687,7 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
         soul_id="Siri",
         user_id="u1",
         state_row={},
-        history=history,
+        current_history=history,
     )
 
     assert "msg 1" in captured["focus_text"]

@@ -2327,7 +2327,7 @@ async def _run_apimw(
     soul_id: str,
     user_id: str,
     state_row: dict[str, Any],
-    history: list[dict[str, Any]],
+    current_history: list[dict[str, Any]],
 ) -> None:
     try:
         svc = _get_service_from_payload(payload)
@@ -2341,7 +2341,7 @@ async def _run_apimw(
             conversation_id=conversation_id,
         )
         segment_text = _format_all_chat_history_for_ai(
-            current_history=history,
+            current_history=current_history,
             cross_tail=cross_tail,
             conversation_id=conversation_id,
             soul_id=soul_id,
@@ -2358,7 +2358,7 @@ async def _run_apimw(
             payload,
             focus_text=focus_text,
             conversations_block=segment_text,
-            history=history,
+            history=current_history,
             state_row=state_row,
             conversation_id=conversation_id,
             soul_id=soul_id,
@@ -4418,7 +4418,7 @@ def _turn_launch_apimw(
                 soul_id=soul_id,
                 user_id=uid,
                 state_row=apimw_state_row,
-                history=history_for_ai,
+                current_history=history_for_ai,
             )
         )
     except Exception:
