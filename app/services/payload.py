@@ -73,6 +73,27 @@ def _extract_conversation_id(payload: dict[str, Any]) -> str | None:
     return conversation_id
 
 
+def _parse_turn_ts_ms(value: Any) -> int | None:
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return int(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            parsed_num = float(s)
+        except (TypeError, ValueError, OverflowError):
+            parsed_num = None
+        if parsed_num is not None:
+            return int(parsed_num)
+        try:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            return int(dt.timestamp() * 1000)
+        except (ValueError, OverflowError):
+            return None
+    return None
+
+
 def _normalize_conversation(conv: Any) -> Any:
     if not isinstance(conv, list):
         return conv
@@ -87,15 +108,10 @@ def _normalize_conversation(conv: Any) -> Any:
         if raw_ts is None:
             raw_ts = m.get("timestamp")
         if raw_ts is None:
+            raw_ts = m.get("received_at")
+        if raw_ts is None:
             raw_ts = m.get("created_at")
-        if isinstance(raw_ts, (int, float)) and math.isfinite(raw_ts):
-            ts_ms = int(raw_ts)
-        elif isinstance(raw_ts, str) and raw_ts.strip():
-            try:
-                dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
-                ts_ms = int(dt.timestamp() * 1000)
-            except (ValueError, OverflowError):
-                ts_ms = None
+        ts_ms = _parse_turn_ts_ms(raw_ts)
         name = m.get("name")
         if name is None:
             name = m.get("speaker")
@@ -172,27 +188,6 @@ def _item_sig(row: Any) -> str:
     if summary:
         return f"summary:{summary}"
     return ""
-
-
-def _parse_turn_ts_ms(value: Any) -> int | None:
-    if isinstance(value, (int, float)) and math.isfinite(value):
-        return int(value)
-    if isinstance(value, str):
-        s = value.strip()
-        if not s:
-            return None
-        try:
-            parsed_num = float(s)
-        except (TypeError, ValueError, OverflowError):
-            parsed_num = None
-        if parsed_num is not None:
-            return int(parsed_num)
-        try:
-            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-            return int(dt.timestamp() * 1000)
-        except (ValueError, OverflowError):
-            return None
-    return None
 
 
 def _parse_as_of_datetime(value: Any) -> datetime | None:

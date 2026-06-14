@@ -6,6 +6,7 @@ from app.services.consolidation import _parse_consolidation_xml
 from app.services.consolidation import run_consolidation_llm
 from app.services.consolidation import gather_consolidation_inputs
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
+from app.services import segment
 from app.services.segment import format_segment_excerpt
 from app.services.graph_edges import invalidate_memory_edges, write_memory_edges
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
@@ -14,7 +15,7 @@ from app.services import soul_state as _soul_state
 import sqlite3
 import tempfile
 from pathlib import Path
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch, MagicMock
 
 
@@ -335,6 +336,14 @@ def test_format_segment_excerpt_uses_grouped_chat_display() -> None:
     assert "[group][Familia]" in out
     assert "[Marcos]: hello" in out
     assert "[Siri]: hi" in out
+
+
+def test_build_segment_inputs_dates_received_at_only_rows() -> None:
+    messages = [{"role": "user", "content": "hi", "received_at": "2026-04-16T12:00:00Z"}]
+    rows = segment.build_segment_inputs(messages, ["cid:0-0"])
+
+    assert rows
+    assert rows[0]["happened_at"] == datetime(2026, 4, 16, 12, 0, tzinfo=UTC)
 
 
 def test_remap_edges_with_memory_ids_accepts_numbered_and_bracketed_refs() -> None:

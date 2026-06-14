@@ -18,6 +18,7 @@ recorder, posts to /memorize, and asserts the task actually ran.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -213,6 +214,14 @@ def test_cross_manifest_ranges_are_non_rebuildable_and_non_overlapping() -> None
     assert main_module._memorize_endpoint._canonical_manifest_segments(out) == [
         {"start": 0, "end": 7},
     ]
+
+
+def test_message_ts_ms_accepts_received_at_for_segment_filenames() -> None:
+    ts_ms = main_module._memorize_endpoint.message_ts_ms(
+        {"role": "user", "content": "hello", "received_at": "2026-04-16T12:00:00Z"}
+    )
+
+    assert ts_ms == int(datetime(2026, 4, 16, 12, 0, tzinfo=UTC).timestamp() * 1000)
 
 
 def test_cross_memorize_endpoint_marks_manifest_range(

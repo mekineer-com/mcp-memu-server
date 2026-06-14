@@ -617,6 +617,15 @@ def test_normalize_conversation_uses_created_at_when_timestamp_missing():
     assert out[0]["ts_ms"] == int(datetime(2026, 4, 16, 12, 0, tzinfo=UTC).timestamp() * 1000)
 
 
+def test_normalize_conversation_uses_received_at_when_timestamp_missing():
+    conv = [{"role": "user", "content": "hello", "received_at": "2026-04-16T12:00:00Z"}]
+    out = main._normalize_conversation(conv)
+
+    assert isinstance(out, list) and out
+    assert out[0]["ts_ms"] == int(datetime(2026, 4, 16, 12, 0, tzinfo=UTC).timestamp() * 1000)
+    assert out[0]["received_at"] == "2026-04-16T12:00:00Z"
+
+
 def test_normalize_conversation_preserves_cross_memorize_metadata():
     conv = [
         {

@@ -13,6 +13,8 @@ from typing import Any, TypedDict
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 
+from app.services.payload import _parse_turn_ts_ms
+
 
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
     words = sum(len(str(m.get("content") or m.get("mes") or "").split()) for m in messages)
@@ -255,18 +257,10 @@ async def run_memorize_segments(
                 terminal_result = "cancelled"
                 break
             segment_raw_text = json.dumps(segment_messages, ensure_ascii=False)
-            first_ts = (
-                segment_messages[0].get("ts_ms")
-                if segment_messages and isinstance(segment_messages[0], dict)
-                else None
-            )
-            last_ts = (
-                segment_messages[-1].get("ts_ms")
-                if segment_messages and isinstance(segment_messages[-1], dict)
-                else None
-            )
-            d1 = date_label(first_ts if isinstance(first_ts, int) else None, zi)
-            d2 = date_label(last_ts if isinstance(last_ts, int) else None, zi)
+            first_ts = message_ts_ms(segment_messages[0]) if segment_messages and isinstance(segment_messages[0], dict) else None
+            last_ts = message_ts_ms(segment_messages[-1]) if segment_messages and isinstance(segment_messages[-1], dict) else None
+            d1 = date_label(first_ts, zi)
+            d2 = date_label(last_ts, zi)
             fn = f"{d1}.json" if d1 == d2 else f"{d1}__{d2}.json"
             segment_path = (segments_dir / fn).resolve()
             n = 1
@@ -629,6 +623,14 @@ def date_label(ts_ms: int | None, zi: Any | None) -> str:
         return _local_dt(ts_ms, zi).date().isoformat()
     except (ValueError, OverflowError, OSError):
         return "undated"
+
+
+def message_ts_ms(message: dict[str, Any]) -> int | None:
+    for key in ("ts_ms", "timestamp", "received_at", "created_at"):
+        ts_ms = _parse_turn_ts_ms(message.get(key))
+        if ts_ms is not None:
+            return ts_ms
+    return None
 
 
 def _merge_manifest_segments(

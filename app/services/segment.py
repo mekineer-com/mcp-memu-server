@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Any
 
 from memu.utils.conversation import format_grouped_chat_history, format_relative_time_label
 
+from app.services.payload import _parse_turn_ts_ms
+
 if TYPE_CHECKING:
     from memu.app import MemoryService
 
@@ -28,10 +30,14 @@ def parse_segment_range(segment_id: str) -> tuple[int, int]:
 
 
 def _message_happened_at(msg: dict[str, Any]) -> datetime | None:
-    ts_ms = msg.get("ts_ms")
-    if not isinstance(ts_ms, (int, float)):
+    ts_ms: int | None = None
+    for key in ("ts_ms", "timestamp", "received_at", "created_at"):
+        ts_ms = _parse_turn_ts_ms(msg.get(key))
+        if ts_ms is not None:
+            break
+    if ts_ms is None:
         return None
-    return datetime.fromtimestamp(float(ts_ms) / 1000.0, UTC)
+    return datetime.fromtimestamp(ts_ms / 1000.0, UTC)
 
 
 def _segment_conversation_id(segment_id: str) -> str:
