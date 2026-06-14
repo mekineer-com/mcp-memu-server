@@ -219,7 +219,7 @@ async def test_run_consolidation_llm_includes_all_chat_history() -> None:
             "removed_life_goals": [],
             "intention_activity": [],
             "segment_inputs": [],
-            "all_chat_history": "My WhatsApp Conversations:\n\n[dm][Raquel]\n[Raquel]: cross hello",
+            "all_chat_history": "My WhatsApp Conversations:\n\n[dm][Raquel]\n[Raquel] cross hello",
             "narrative_self": None,
             "state": {"intentions_active": {"items": [{"id": "relax", "text": "Relax", "kind": "relax"}]}},
             "retrieved_memories": [],
@@ -231,7 +231,7 @@ async def test_run_consolidation_llm_includes_all_chat_history() -> None:
     assert "# My conversations" not in svc.prompt
     assert "My WhatsApp Conversations:" in svc.prompt
     assert "[dm][Raquel]" in svc.prompt
-    assert "[Raquel]: cross hello" in svc.prompt
+    assert "[Raquel] cross hello" in svc.prompt
 
 
 @pytest.mark.asyncio
@@ -335,8 +335,8 @@ def test_format_segment_excerpt_uses_grouped_chat_display() -> None:
 
     assert "My WhatsApp Conversations:" in out
     assert "[group][Familia]" in out
-    assert "[Marcos]: hello" in out
-    assert "[Siri]: hi" in out
+    assert "[Marcos] hello" in out
+    assert "[Siri] hi" in out
 
 
 def test_build_segment_inputs_dates_received_at_only_rows() -> None:

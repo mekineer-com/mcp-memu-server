@@ -62,7 +62,7 @@ def test_format_all_chat_history_for_ai_merges_current_and_cross_chats() -> None
 
     assert "My SillyTavern Conversations:" in rendered
     assert "[dm][Siri]" in rendered
-    assert "[Siri]: cross hello" in rendered
+    assert "[Siri] cross hello" in rendered
     assert "My WhatsApp Conversations:" in rendered
     assert "[group][Familia] \u2190 current chat" in rendered
     assert "[Marcos] current hello" in rendered

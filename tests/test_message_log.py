@@ -27,9 +27,9 @@ def test_format_merged_history_does_not_relabel_blank_speaker_rows() -> None:
 
     assert "My WhatsApp Conversations:" in rendered
     assert "[dm][abc]" in rendered
-    assert "[Marcos]: first" in rendered
-    assert "[user]: second" in rendered
-    assert "[Marcos]: second" not in rendered
+    assert "[Marcos] first" in rendered
+    assert "[user] second" in rendered
+    assert "[Marcos] second" not in rendered
 
 
 def test_format_merged_history_groups_sections_and_conversations(tmp_path, monkeypatch) -> None:
@@ -65,12 +65,12 @@ def test_format_merged_history_groups_sections_and_conversations(tmp_path, monke
 
     assert "My SillyTavern Conversations:" in rendered
     assert "[dm][chat-a]" in rendered
-    assert "[Marcos]: st message" in rendered
+    assert "[Marcos] st message" in rendered
     assert "My WhatsApp Conversations:" in rendered
     assert "[group][18322935409-1579788049@g.us]" in rendered
-    assert "[Echo]: wa group message" in rendered
+    assert "[Echo] wa group message" in rendered
     assert "[dm][15133278228]" in rendered
-    assert "[Marcos]: wa dm message" in rendered
+    assert "[Marcos] wa dm message" in rendered
 
 
 def test_format_merged_history_integrity_id_uses_persisted_chat_name() -> None:
@@ -91,7 +91,7 @@ def test_format_merged_history_integrity_id_uses_persisted_chat_name() -> None:
     assert "My SillyTavern Conversations:" in rendered
     assert "[dm][Echo]" in rendered
     assert "integrity:dc7b08fa-b7a9-4ccc-890c-8dc7eea5082e" not in rendered
-    assert "[Echo]: integrity id message" in rendered
+    assert "[Echo] integrity id message" in rendered
 
 
 def test_format_merged_history_multiple_integrity_conversations_use_distinct_chat_names() -> None:
@@ -141,8 +141,8 @@ def test_format_merged_history_parses_legacy_group_prefix_at_render_time() -> No
         ]
     )
 
-    assert "[Marcos]: [Raquel] Going to the gym now." not in rendered
-    assert "[Raquel]: Going to the gym now." in rendered
+    assert "[Marcos] [Raquel] Going to the gym now." not in rendered
+    assert "[Raquel] Going to the gym now." in rendered
 
 
 def test_format_merged_history_preserves_same_day_duplicate_lines() -> None:
@@ -167,7 +167,7 @@ def test_format_merged_history_preserves_same_day_duplicate_lines() -> None:
         ]
     )
 
-    assert rendered.count("[Raquel]: Going to the gym now.") == 2
+    assert rendered.count("[Raquel] Going to the gym now.") == 2
 
 
 def test_format_merged_history_uses_channel_directory_names(tmp_path, monkeypatch) -> None:
@@ -301,7 +301,7 @@ def test_format_merged_history_whatsapp_dm_heading_prefers_named_alias_over_nume
 
     assert "[dm][Marcos]" in rendered
     assert "[dm][15133278228]" not in rendered
-    assert "[Marcos]: hello from dm" in rendered
+    assert "[Marcos] hello from dm" in rendered
 
 
 def test_format_merged_history_dm_preserves_explicit_speaker_per_row(tmp_path, monkeypatch) -> None:
@@ -346,8 +346,8 @@ def test_format_merged_history_dm_preserves_explicit_speaker_per_row(tmp_path, m
     )
 
     assert "[dm][Alice]" in rendered
-    assert "[Marcos]: did news travel?" in rendered
-    assert "[Alice]: yes I saw it" in rendered
+    assert "[Marcos] did news travel?" in rendered
+    assert "[Alice] yes I saw it" in rendered
 
 
 def test_format_merged_history_dm_does_not_infer_blank_speaker_from_other_rows(tmp_path, monkeypatch) -> None:
@@ -388,9 +388,9 @@ def test_format_merged_history_dm_does_not_infer_blank_speaker_from_other_rows(t
         ]
     )
 
-    assert "[Marcos]: from me" in rendered
-    assert "[user]: missing speaker row" in rendered
-    assert "[Marcos]: missing speaker row" not in rendered
+    assert "[Marcos] from me" in rendered
+    assert "[user] missing speaker row" in rendered
+    assert "[Marcos] missing speaker row" not in rendered
 
 
 def test_format_merged_history_whatsapp_dm_keeps_self_speaker_for_self_chat(tmp_path, monkeypatch) -> None:
@@ -437,7 +437,7 @@ def test_format_merged_history_whatsapp_dm_keeps_self_speaker_for_self_chat(tmp_
     )
 
     assert "[dm][Marcos]" in rendered
-    assert "[Marcos]: self message" in rendered
+    assert "[Marcos] self message" in rendered
 
 
 def test_normalize_whatsapp_identifier_rejects_path_like_values() -> None:
