@@ -282,7 +282,6 @@ async def run_memorize_segments(
             if conversation_rolling_summary and conversation_id and not cross_memorize:
                 segment_background_rows.append(
                     {
-                        "after_index": None,
                         "summary": conversation_rolling_summary,
                         "source_label": "conversation-prehistory",
                         "source_conversation_id": conversation_id,
@@ -308,7 +307,6 @@ async def run_memorize_segments(
                 source_label = str(summary_row.get("source_label") or msg.get("source_label") or "background").strip() or "background"
                 segment_background_rows.append(
                     {
-                        "after_index": None,
                         "summary": summary,
                         "source_label": source_label,
                         "source_conversation_id": source_cid,
