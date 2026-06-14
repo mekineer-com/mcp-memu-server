@@ -636,29 +636,92 @@ def date_label(ts_ms: int | None, zi: Any | None) -> str:
 def _merge_manifest_segments(
     existing: list[dict[str, Any]],
     memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]],
-) -> list[dict[str, int]]:
-    out: list[dict[str, int]] = []
-    seen: set[tuple[int, int]] = set()
+    *,
+    kind: str | None = None,
+) -> list[dict[str, Any]]:
+    canonical: list[tuple[int, int]] = []
+    synthetic: list[dict[str, int | str]] = []
+    seen_synthetic: set[tuple[int, int, str]] = set()
 
-    def add(start: Any, end: Any) -> None:
+    def parsed_range(start: Any, end: Any) -> tuple[int, int] | None:
         try:
             st_i = int(start)
             en_i = int(end)
         except (TypeError, ValueError):
-            return
+            return None
         if en_i < st_i:
-            return
-        key = (st_i, en_i)
-        if key in seen:
-            return
-        seen.add(key)
-        out.append({"start": st_i, "end": en_i})
+            return None
+        return st_i, en_i
 
     for segment in existing:
         if isinstance(segment, dict):
-            add(segment.get("start"), segment.get("end"))
+            parsed = parsed_range(segment.get("start"), segment.get("end"))
+            if parsed is None:
+                continue
+            st_i, en_i = parsed
+            segment_kind = str(segment.get("kind") or "").strip()
+            if segment_kind:
+                key = (st_i, en_i, segment_kind)
+                if key not in seen_synthetic:
+                    seen_synthetic.add(key)
+                    synthetic.append({"start": st_i, "end": en_i, "kind": segment_kind})
+            else:
+                canonical.append((st_i, en_i))
     for _resource_url, _messages, start, end in memorize_segments:
-        add(start, end)
+        parsed = parsed_range(start, end)
+        if parsed is None:
+            continue
+        st_i, en_i = parsed
+        if kind:
+            key = (st_i, en_i, kind)
+            if key not in seen_synthetic:
+                seen_synthetic.add(key)
+                synthetic.append({"start": st_i, "end": en_i, "kind": kind})
+        else:
+            canonical.append((st_i, en_i))
+
+    merged: list[dict[str, int]] = []
+    for st_i, en_i in sorted(canonical):
+        if merged and st_i <= int(merged[-1]["end"]) + 1:
+            merged[-1]["end"] = max(int(merged[-1]["end"]), en_i)
+        else:
+            merged.append({"start": st_i, "end": en_i})
+    synthetic.sort(key=lambda row: (int(row["start"]), int(row["end"]), str(row["kind"])))
+    return [*merged, *synthetic]
+
+
+def _canonical_manifest_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        segment
+        for segment in segments
+        if isinstance(segment, dict) and not str(segment.get("kind") or "").strip()
+    ]
+
+
+def _next_manifest_start(segments: list[dict[str, Any]]) -> int:
+    max_end = -1
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        try:
+            end = int(segment.get("end"))
+        except (TypeError, ValueError):
+            continue
+        max_end = max(max_end, end)
+    return max_end + 1
+
+
+def _offset_memorize_segments(
+    memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]],
+    *,
+    start: int,
+) -> list[tuple[str, list[dict[str, Any]], int, int]]:
+    out: list[tuple[str, list[dict[str, Any]], int, int]] = []
+    cursor = max(0, start)
+    for resource_url, messages, _old_start, _old_end in memorize_segments:
+        end = cursor + len(messages) - 1
+        out.append((resource_url, messages, cursor, end))
+        cursor = end + 1
     return out
 
 
@@ -977,9 +1040,11 @@ async def memorize_endpoint(
 
             rawm = manifest_path.read_text(encoding="utf-8") if manifest_path.exists() else ""
             manifest: dict[str, Any] = json.loads(rawm) if rawm.strip() else {}
-            segments: list[dict[str, Any]] = (
-                manifest.get("segments") if isinstance(manifest.get("segments"), list) else []
-            )
+            raw_segments = manifest.get("segments") if isinstance(manifest.get("segments"), list) else []
+            manifest_segments_existing: list[dict[str, Any]] = [
+                segment for segment in raw_segments if isinstance(segment, dict)
+            ]
+            segments = _canonical_manifest_segments(manifest_segments_existing)
 
             resource_url = str(chat_dir)
             sleep_stats: Any | None = None
@@ -1046,6 +1111,11 @@ async def memorize_endpoint(
                 tail_start = 0 if is_cross else max(0, processed_cursor + 1)
                 if tail_start < len(merged):
                     memorize_segments = [(resource_url, merged[tail_start:], tail_start, len(merged) - 1)]
+                    if is_cross:
+                        memorize_segments = _offset_memorize_segments(
+                            memorize_segments,
+                            start=_next_manifest_start(manifest_segments_existing),
+                        )
                 if not memorize_segments:
                     progress_key = ctx.memorize_lock_key(uid, soul_id)
                     if conversation_id and has_pending_segments:
@@ -1128,7 +1198,11 @@ async def memorize_endpoint(
                     )
 
             if conversation_id and memorize_segments:
-                manifest_segments = _merge_manifest_segments(segments, memorize_segments)
+                manifest_segments = _merge_manifest_segments(
+                    manifest_segments_existing,
+                    memorize_segments,
+                    kind="cross" if is_cross else None,
+                )
                 manifest_out = {
                     "v": 1,
                     "tz": str(zi),

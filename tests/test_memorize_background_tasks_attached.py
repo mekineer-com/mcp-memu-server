@@ -191,6 +191,81 @@ async def _noop_run(**kwargs) -> None:
     pass
 
 
+def test_cross_manifest_ranges_are_marked_and_non_overlapping() -> None:
+    existing = [{"start": 0, "end": 4}, {"start": 3, "end": 7}]
+    start = main_module._memorize_endpoint._next_manifest_start(existing)
+    cross_segments = main_module._memorize_endpoint._offset_memorize_segments(
+        [("memory://cross", [{"content": "a"}, {"content": "b"}, {"content": "c"}], 0, 2)],
+        start=start,
+    )
+
+    out = main_module._memorize_endpoint._merge_manifest_segments(
+        existing,
+        cross_segments,
+        kind="cross",
+    )
+
+    assert cross_segments[0][2:] == (8, 10)
+    assert out == [
+        {"start": 0, "end": 7},
+        {"start": 8, "end": 10, "kind": "cross"},
+    ]
+    assert main_module._memorize_endpoint._canonical_manifest_segments(out) == [
+        {"start": 0, "end": 7},
+    ]
+
+
+def test_cross_memorize_endpoint_marks_manifest_range(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    recorded: list[tuple[int, int]] = []
+
+    async def fake_run(**kwargs) -> None:
+        recorded.extend((start, end) for _url, _messages, start, end in kwargs.get("memorize_segments") or [])
+
+    def fake_write_conversation_state(*_a, **_k):
+        return ({"digest_cursor": 7, "last_memorize_at": "2026-06-14T00:00:00+00:00", "pending_segment_ids": []}, tmp_path / "state.db")
+
+    monkeypatch.setattr(main_module, "_get_service_from_payload", lambda *a, **k: object())
+    monkeypatch.setattr(main_module, "_run_memorize_segments", fake_run)
+    monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)
+    monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
+
+    chats_dir = tmp_path / "st_chats"
+    chat_dir, _chat_key, _source = main_module._memorize_endpoint.resolve_chat_storage_dir(
+        chats_dir,
+        "u1",
+        "TestSoul",
+        "cid-cross",
+        main_module._sanitize_db_filename,
+    )
+    chat_dir.mkdir(parents=True)
+    (chat_dir / "manifest.json").write_text(
+        json.dumps({"segments": [{"start": 0, "end": 4}, {"start": 5, "end": 7}]}),
+        encoding="utf-8",
+    )
+
+    payload = _make_stub_payload("u1", "TestSoul", "cid-cross")
+    payload["_cross_memorize"] = True
+    payload["conversation"] = [
+        {"role": "user", "name": "u1", "content": "one"},
+        {"role": "assistant", "name": "TestSoul", "content": "two"},
+        {"role": "user", "name": "u1", "content": "three"},
+    ]
+
+    resp = client.post("/memorize", json=payload)
+
+    assert resp.status_code == 202, f"status={resp.status_code} body={resp.text[:300]}"
+    assert recorded == [(8, 10)]
+    manifest = json.loads((chat_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["segments"] == [
+        {"start": 0, "end": 7},
+        {"start": 8, "end": 10, "kind": "cross"},
+    ]
+
+
 def test_force_without_rebuild_does_not_archive_db(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
