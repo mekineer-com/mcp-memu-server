@@ -664,7 +664,7 @@ def test_build_cross_conversation_payload_request_flag_overrides_state_default(
         "whatsapp:dm:123",
         "u1",
         "Echo",
-        {"memorize_chat": True},
+        {"memorize_chat": True, "chat_name": "Liz Kalverda"},
         [{"role": "user", "content": "hello"}],
         -1,
         False,
@@ -673,6 +673,7 @@ def test_build_cross_conversation_payload_request_flag_overrides_state_default(
     conversation = out.get("conversation")
     assert isinstance(conversation, list) and conversation
     assert conversation[0].get("memorize_chat") is True
+    assert conversation[0].get("chat_name") == "Liz Kalverda"
 
 
 def test_build_cross_conversation_payload_includes_background_rolling_summaries(

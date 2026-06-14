@@ -7,8 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from app.services.turn_contract import format_relative_time_label
-from memu.utils.conversation import format_grouped_chat_history, normalize_whatsapp_identifier
+from memu.utils.conversation import format_grouped_chat_history, format_relative_time_label, normalize_whatsapp_identifier
 
 
 def derive_source_label(conversation_id: str) -> str:

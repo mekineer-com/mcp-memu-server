@@ -4127,6 +4127,7 @@ def _build_cross_conversation_payload(
     trigger_label = _message_log.derive_source_label(cid)
     trigger_memorize_raw = safe.get("memorize_chat")
     trigger_memorize = trigger_memorize_raw if isinstance(trigger_memorize_raw, bool) else trigger_memorize_default
+    trigger_chat_name = str(safe.get("chat_name") or "").strip()
     trigger_cursor = max(0, digest_cursor + 1)
     trigger_tail = _normalize_conversation(history_full[trigger_cursor:]) if trigger_cursor < len(history_full) else []
     if not trigger_tail:
@@ -4137,6 +4138,8 @@ def _build_cross_conversation_payload(
         msg["source_conversation_id"] = cid
         msg["source_conversation_index"] = digest_cursor + 1 + i
         msg["memorize_chat"] = trigger_memorize
+        if trigger_chat_name and not str(msg.get("chat_name") or "").strip():
+            msg["chat_name"] = trigger_chat_name
         ts = msg.get("ts_ms")
         if isinstance(ts, (int, float)) and "received_at" not in msg:
             msg["received_at"] = datetime.fromtimestamp(ts / 1000.0, tz=UTC).isoformat()

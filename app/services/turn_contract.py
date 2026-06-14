@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import re
 from datetime import datetime, timezone
@@ -12,7 +11,7 @@ from typing import Any
 _SIRI_WORKSPACE = Path("~/Desktop/siri")
 
 from app.services.intention_state import MAX_MEMORY_CACHE_ENTRIES, format_intentions_for_prompt, normalize_memory_cache
-from memu.utils.conversation import format_chat_messages, format_speaker_message
+from memu.utils.conversation import format_chat_messages, format_relative_time_label, format_speaker_message
 
 _logger = logging.getLogger("uvicorn.error")
 
@@ -148,99 +147,6 @@ def render_history(history: list[dict[str, Any]], *, soul_name: str | None = Non
         blank_line_before_time_label=True,
     )
     return rendered or "(none)"
-
-
-def _elapsed_calendar_months(older: datetime, newer: datetime) -> int:
-    months = ((newer.year - older.year) * 12) + (newer.month - older.month)
-    if newer.day < older.day:
-        months -= 1
-    return max(0, months)
-
-
-def _parse_happened_at(raw: Any) -> datetime | None:
-    parsed: datetime | None = None
-    if isinstance(raw, datetime):
-        parsed = raw
-    elif isinstance(raw, (int, float)) and math.isfinite(raw):
-        epoch = float(raw)
-        if abs(epoch) > 1_000_000_000_000:
-            epoch = epoch / 1000.0
-        try:
-            parsed = datetime.fromtimestamp(epoch, tz=timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            return None
-    elif isinstance(raw, str):
-        text = _text(raw)
-        if not text:
-            return None
-        if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
-            try:
-                numeric = float(text)
-            except ValueError:
-                return None
-            return _parse_happened_at(numeric)
-        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
-        try:
-            parsed = datetime.fromisoformat(normalized)
-        except ValueError:
-            return None
-    if parsed is None:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone()
-
-
-def format_relative_time_label(happened_at: Any, *, now: datetime | None = None) -> str | None:
-    happened = _parse_happened_at(happened_at)
-    if happened is None:
-        return None
-    anchor = _local_now(now)
-    day_delta = (anchor.date() - happened.date()).days
-
-    if day_delta >= 0:
-        if day_delta == 0:
-            return "today"
-        if day_delta == 1:
-            return "yesterday"
-        if day_delta <= 6:
-            return happened.strftime("%A")
-        if day_delta <= 13:
-            return f"last {happened.strftime('%A')}"
-        if day_delta <= 29:
-            weeks = max(1, day_delta // 7)
-            return f"{weeks} week{'s' if weeks != 1 else ''} ago"
-        months = _elapsed_calendar_months(happened, anchor)
-        if months < 1:
-            months = 1
-        if months < 12:
-            return f"{months} month{'s' if months != 1 else ''} ago"
-        years = months // 12
-        rem_months = months % 12
-        if rem_months:
-            return f"{years} year{'s' if years != 1 else ''}, {rem_months} month{'s' if rem_months != 1 else ''} ago"
-        return f"{years} year{'s' if years != 1 else ''} ago"
-
-    future_days = abs(day_delta)
-    if future_days == 1:
-        return "tomorrow"
-    if future_days <= 6:
-        return happened.strftime("%A")
-    if future_days <= 13:
-        return f"next {happened.strftime('%A')}"
-    if future_days <= 29:
-        weeks = max(1, future_days // 7)
-        return f"in {weeks} week{'s' if weeks != 1 else ''}"
-    months = _elapsed_calendar_months(anchor, happened)
-    if months < 1:
-        months = 1
-    if months < 12:
-        return f"in {months} month{'s' if months != 1 else ''}"
-    years = months // 12
-    rem_months = months % 12
-    if rem_months:
-        return f"in {years} year{'s' if years != 1 else ''}, {rem_months} month{'s' if rem_months != 1 else ''}"
-    return f"in {years} year{'s' if years != 1 else ''}"
 
 
 _MEMORY_TYPE_LEGEND = {
