@@ -441,11 +441,14 @@ async def run_memorize_segments(
                 current=total_segments,
                 total=max(1, total_segments),
             )
-            current_all_categories_summary = await run_ctx.compute_holistic_categories_summary(
-                svc=svc,
-                soul_id=soul_id,
-                user_id=uid,
-            )
+            try:
+                current_all_categories_summary = await run_ctx.compute_holistic_categories_summary(
+                    svc=svc,
+                    soul_id=soul_id,
+                    user_id=uid,
+                )
+            except Exception:
+                ctx.logger.exception("memorize holistic category summary failed after extraction; continuing")
 
         # Phase 4: final state flush + bookkeeping under lock.
         async with mem_lock:

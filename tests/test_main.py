@@ -1850,6 +1850,68 @@ async def test_run_memorize_segments_clears_pending_ids_on_extraction_failure(mo
 
 
 @pytest.mark.asyncio
+async def test_run_memorize_segments_keeps_results_when_summary_fails(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+
+    class _FakeService:
+        async def memorize_segments_batch(self, **_kwargs):
+            return [{"pending_segment_ids": ["cid-1:0-0"]}]
+
+    user_id = "u"
+    soul_id = "s"
+    conversation_id = "cid-1"
+    key = main._memorize_lock_key(user_id, soul_id)
+    main._MEMORIZE_PROGRESS.pop(key, None)
+    main._MEMORIZE_CANCEL.discard(key)
+
+    state_row: dict[str, Any] = {
+        "pending_segment_ids": [],
+        "digest_cursor": -1,
+    }
+
+    def fake_load_turn_state_and_soul_card(*_args, **_kwargs):
+        return dict(state_row), None, None
+
+    def fake_write_conversation_state(_cid: str, *, updates: dict[str, Any], **_kwargs):
+        if "digest_cursor" in updates:
+            state_row["digest_cursor"] = int(updates["digest_cursor"])
+        if "append_pending_segment_ids" in updates:
+            state_row["pending_segment_ids"].extend(updates["append_pending_segment_ids"])
+        if "pending_segment_ids" in updates:
+            state_row["pending_segment_ids"] = list(updates.get("pending_segment_ids") or [])
+        return dict(state_row), tmp_path / "Echo.db"
+
+    async def fail_summary(**_kwargs):
+        raise RuntimeError("summary boom")
+
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
+    monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
+    monkeypatch.setattr(main, "_compute_holistic_categories_summary", fail_summary)
+
+    await main._run_memorize_segments(
+        memorize_segments=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0, 0)],
+        svc=_FakeService(),
+        scope={"user_id": user_id, "soul_id": soul_id},
+        conversation_id=conversation_id,
+        soul_id=soul_id,
+        uid=user_id,
+        processed_cursor=-1,
+        safe={},
+        resource_url="/tmp/day.json",
+        chat_key=None,
+        merged_len=1,
+        force=False,
+        sleep_stats=None,
+        segments_dir=segments_dir,
+    )
+
+    assert [p.name for p in segments_dir.glob("*.json")] == ["undated.json"]
+    assert state_row["digest_cursor"] == 0
+    assert state_row["pending_segment_ids"] == ["cid-1:0-0"]
+
+
+@pytest.mark.asyncio
 async def test_run_memorize_segments_clears_consumed_background_summaries(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
