@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from memu.utils.conversation import render_chat_messages
+
 from app.services.turn_contract import format_relative_time_label
 
 _SHARED_GROUP_PREFIX_RE = re.compile(r"^\[([^\]]+)\]\s+(.+)$")
@@ -195,19 +197,13 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
             if candidate:
                 chat_name = candidate
                 break
-        conv_lines: list[str] = [
-            _conversation_heading(kind, key, dir_names, chat_name or None)
-        ]
-        last_time_label: str | None = None
+        conv_lines: list[str] = [_conversation_heading(kind, key, dir_names, chat_name or None)]
+        rendered_rows: list[dict[str, Any]] = []
         newest_ts = ""
         for msg in rows:
             ts = str(msg.get("received_at") or "")
             if ts > newest_ts:
                 newest_ts = ts
-            time_label = format_relative_time_label(msg.get("received_at"))
-            if time_label and time_label != last_time_label:
-                conv_lines.append(f"--- {time_label} ---")
-                last_time_label = time_label
             role = str(msg.get("role") or "").strip()
             speaker = str(msg.get("speaker") or "").strip()
             content = str(msg.get("content") or "")
@@ -215,9 +211,21 @@ def format_merged_history(messages: list[dict[str, Any]]) -> str:
                 parsed = _parse_shared_group_sender_prefix(content)
                 if parsed is not None:
                     speaker, content = parsed
-            if not speaker:
-                speaker = "soul" if role == "assistant" else (role or "unknown")
-            conv_lines.append(f"[{speaker}]: {content}")
+            rendered_rows.append(
+                {
+                    "role": role,
+                    "speaker": speaker,
+                    "content": content,
+                    "received_at": msg.get("received_at"),
+                }
+            )
+        rendered_block = render_chat_messages(
+            rendered_rows,
+            default_role="unknown",
+            time_label_resolver=lambda item: format_relative_time_label(item.get("received_at")),
+        )
+        if rendered_block:
+            conv_lines.append(rendered_block)
         entries.append((newest_ts, "\n".join(conv_lines)))
 
     lines: list[str] = []

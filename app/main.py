@@ -88,7 +88,6 @@ from app.services.payload import (
     _extract_result_item_ids,
     _extract_scope,
     _item_sig,
-    _norm_result_sig,
     _normalize_conversation,
     _normalize_turn_history,
     _parse_as_of_datetime,
@@ -114,6 +113,7 @@ from app.services.turn_contract import (
     parse_turn_contract as _parse_turn_contract,
     render_history as _render_history,
     _merge_current_into_conversations,
+    resolve_current_chat_heading as _resolve_current_chat_heading,
     _section_title_from_conversation_id,
 )
 
@@ -338,6 +338,7 @@ async def _run_background_rollup_for_conversation(
                 "name": str(msg.get("speaker") or "").strip() or None,
                 "content": str(msg.get("content") or ""),
                 "source_label": msg.get("source_label"),
+                "source_conversation_id": cid,
                 "_message_index": int(msg.get("source_conversation_index") or 0),
             }
             for msg in tail
@@ -347,6 +348,7 @@ async def _run_background_rollup_for_conversation(
                 prior_summary=prior_summary,
                 messages=summary_input,
                 soul_name=sid,
+                current_conversation_id=cid,
             )
             or ""
         ).strip()
@@ -2319,6 +2321,66 @@ async def _apimw_persist(
             logger.info("apimw state written for %s (keys: %s)", conversation_id, list(updates.keys()))
 
 
+def _apimw_chat_label_from_payload(payload: dict[str, Any]) -> str | None:
+    chat_name_for_prompt = str(payload.get("chat_name") or "").strip()
+    chat_type_for_prompt = str(payload.get("chat_type") or "").strip()
+    if chat_name_for_prompt and chat_type_for_prompt:
+        return f"[{chat_type_for_prompt}][{chat_name_for_prompt}]"
+    if chat_name_for_prompt:
+        return f"[{chat_name_for_prompt}]"
+    return None
+
+
+def _build_apimw_recent_conversation(
+    *,
+    conversation_id: str,
+    soul_id: str,
+    user_id: str,
+    state_row: dict[str, Any],
+    history: list[dict[str, Any]],
+    chat_label: str | None,
+) -> tuple[str, list[dict[str, Any]]]:
+    primary_history = _turn_history_with_floor(history, state_row)
+    if primary_history:
+        _stamp_assistant_display_name(primary_history, soul_id)
+    current_history_text = _render_history(primary_history, soul_name=soul_id)
+    if current_history_text == "(none)":
+        current_history_text = ""
+    heading = _resolve_current_chat_heading(chat_label, conversation_id)
+    current_chat_block = "\n".join(part for part in [heading, current_history_text] if part).strip()
+    current_section_header = _section_title_from_conversation_id(conversation_id)
+
+    cross_tail: list[dict[str, Any]] = []
+    _state_row, _soul_card, db_path = _load_turn_state_and_soul_card(
+        conversation_id,
+        user_id=user_id,
+        soul_id=soul_id,
+    )
+    if db_path is not None and db_path.exists():
+        con = _sqlite_connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            _sqlite_ensure_conversation_state_schema(con)
+            cross_tail = _load_cross_tail_from_sources(
+                con,
+                user_id=user_id,
+                soul_id=soul_id,
+                exclude_conversation_id=conversation_id,
+            )
+        finally:
+            con.close()
+
+    cross_text = _message_log.format_merged_history(cross_tail).strip() if cross_tail else ""
+    if cross_text and current_chat_block:
+        merged = _merge_current_into_conversations(cross_text, current_chat_block, current_section_header)
+        return merged.strip(), primary_history
+    if cross_text:
+        return cross_text, primary_history
+    if current_chat_block:
+        return f"{current_section_header}\n\n{current_chat_block}".strip(), primary_history
+    return "", primary_history
+
+
 async def _run_apimw(
     payload: dict[str, Any],
     *,
@@ -2333,9 +2395,15 @@ async def _run_apimw(
         scope = {"user_id": user_id, "soul_id": soul_id}
         apimw_item_top_k = _apimw_memory_count_from_cfg(_CONFIG)
         apimw_random_count = _apimw_random_count_from_cfg(_CONFIG)
-
-        recent_history = history[-30:] if history else []
-        segment_text = _render_history(recent_history)
+        chat_label = _apimw_chat_label_from_payload(payload)
+        segment_text, primary_history = _build_apimw_recent_conversation(
+            conversation_id=conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+            state_row=state_row,
+            history=history,
+            chat_label=chat_label,
+        )
         identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
         focus_text = segment_text.strip()
         if not focus_text:
@@ -2346,7 +2414,7 @@ async def _run_apimw(
             svc,
             payload,
             focus_text=focus_text,
-            history=history,
+            history=primary_history,
             state_row=state_row,
             conversation_id=conversation_id,
             soul_id=soul_id,
