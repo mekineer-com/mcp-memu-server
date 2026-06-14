@@ -210,6 +210,7 @@ async def run_memorize_segments(
     cached_prior_context_ids: list[str] = []
     conversation_rolling_summary: str | None = None
     consumed_background_summary_ids: set[str] = set()
+    created_segment_paths: list[Path] = []
     total_segments = 0
     had_existing_pending = False
     consolidation_started = False
@@ -274,6 +275,7 @@ async def run_memorize_segments(
                 fn_base = f"{d1}" if d1 == d2 else f"{d1}__{d2}"
                 segment_path = (segments_dir / f"{fn_base}_{n}.json").resolve()
             segment_path.write_text(segment_raw_text, encoding="utf-8")
+            created_segment_paths.append(segment_path)
             segment_id = f"{conversation_id or 'cross'}:{segment_start_index}-{segment_end_index}"
             segment_background_rows: list[dict[str, Any]] = []
             seen_background_sources: set[str] = set()
@@ -563,6 +565,11 @@ async def run_memorize_segments(
                     last_result="success",
                 )
     except Exception as exc:
+        for segment_path in created_segment_paths:
+            try:
+                segment_path.unlink(missing_ok=True)
+            except OSError:
+                ctx.logger.warning("failed to remove failed memorize segment file %s", segment_path)
         _set_memorize_progress(
             ctx.memorize_progress,
             progress_key,
@@ -624,6 +631,35 @@ def date_label(ts_ms: int | None, zi: Any | None) -> str:
         return _local_dt(ts_ms, zi).date().isoformat()
     except (ValueError, OverflowError, OSError):
         return "undated"
+
+
+def _merge_manifest_segments(
+    existing: list[dict[str, Any]],
+    memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]],
+) -> list[dict[str, int]]:
+    out: list[dict[str, int]] = []
+    seen: set[tuple[int, int]] = set()
+
+    def add(start: Any, end: Any) -> None:
+        try:
+            st_i = int(start)
+            en_i = int(end)
+        except (TypeError, ValueError):
+            return
+        if en_i < st_i:
+            return
+        key = (st_i, en_i)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({"start": st_i, "end": en_i})
+
+    for segment in existing:
+        if isinstance(segment, dict):
+            add(segment.get("start"), segment.get("end"))
+    for _resource_url, _messages, start, end in memorize_segments:
+        add(start, end)
+    return out
 
 
 def split_indices_by_sleep(
@@ -1090,6 +1126,24 @@ async def memorize_endpoint(
                         status_code=200,
                         content={"ok": True, "status": "nothing_to_memorize", "conversation_id": conversation_id},
                     )
+
+            if conversation_id and memorize_segments:
+                manifest_segments = _merge_manifest_segments(segments, memorize_segments)
+                manifest_out = {
+                    "v": 1,
+                    "tz": str(zi),
+                    "segments": manifest_segments,
+                    "split": {
+                        "min_lull_seconds": ctx.sleep_split_min_lull_seconds,
+                    },
+                    "source": {
+                        "conversation_id": conversation_id,
+                        "conversationId": conversation_id,
+                        "chatKey": chat_key,
+                        "chatKeySource": chat_key_source or "",
+                    },
+                }
+                manifest_path.write_text(json.dumps(manifest_out, ensure_ascii=False, indent=2), encoding="utf-8")
 
             expected_cursor = memorize_segments[-1][3] if memorize_segments else processed_cursor
             background_tasks.add_task(

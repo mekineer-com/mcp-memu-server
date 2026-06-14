@@ -17,6 +17,8 @@ recorder, posts to /memorize, and asserts the task actually ran.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -222,6 +224,12 @@ def test_force_without_rebuild_does_not_archive_db(
     assert db_file.exists(), "force=True without rebuild must NOT archive the DB file"
     bak_files = list(tmp_path.glob("*.bak-*"))
     assert not bak_files, f"force=True without rebuild must not create .bak files, got: {bak_files}"
+
+    manifests = list((tmp_path / "st_chats").glob("*/manifest.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert manifest["source"]["conversation_id"] == "cid-f"
+    assert manifest["segments"] == [{"start": 0, "end": 1}]
 
 
 def test_rebuild_archives_db_and_service_reacquired_after_archive(
