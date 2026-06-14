@@ -1,10 +1,9 @@
 """Verify that _build_uvicorn_log_config wires an ERROR-level RotatingFileHandler
-to the root logger so errors from all modules land in logs/errors.log."""
+to the root logger so errors from all modules land in errors.log."""
 from __future__ import annotations
 
 import logging
 import logging.handlers
-import types
 from pathlib import Path
 
 import pytest
@@ -42,16 +41,15 @@ def test_error_handler_wired_to_root_logger(tmp_path: Path) -> None:
     err_handler_cfg = handlers["memu_errors"]
     assert "RotatingFileHandler" in err_handler_cfg.get("class", ""), "must be RotatingFileHandler"
     assert err_handler_cfg.get("level") == "ERROR", "handler level must be ERROR"
-    assert "errors.log" in err_handler_cfg.get("filename", ""), "must write to errors.log"
+    assert err_handler_cfg.get("filename") == str(server_run.ROOT / "errors.log")
 
     root_cfg = log_cfg.get("loggers", {}).get("", {})
     assert "memu_errors" in (root_cfg.get("handlers") or []), "memu_errors must be on root logger"
 
 
 def test_error_handler_writes_errors_to_file(tmp_path: Path) -> None:
-    """An ERROR log message reaches logs/errors.log when the handler is attached."""
-    errors_log = tmp_path / "logs" / "errors.log"
-    errors_log.parent.mkdir(parents=True, exist_ok=True)
+    """An ERROR log message reaches errors.log when the handler is attached."""
+    errors_log = tmp_path / "errors.log"
 
     handler = logging.handlers.RotatingFileHandler(
         filename=str(errors_log),
@@ -75,3 +73,20 @@ def test_error_handler_writes_errors_to_file(tmp_path: Path) -> None:
 
     content = errors_log.read_text(encoding="utf-8")
     assert "sentinel error message for test" in content
+
+
+def test_resolve_errors_log_path_migrates_legacy_logs_subfolder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server_run, "ROOT", tmp_path)
+    legacy = tmp_path / "logs" / "errors.log"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("legacy\n", encoding="utf-8")
+
+    resolved = server_run._resolve_errors_log_path()
+
+    assert resolved == (tmp_path / "errors.log").resolve()
+    assert resolved.exists()
+    assert resolved.read_text(encoding="utf-8") == "legacy\n"
+    assert not legacy.exists()

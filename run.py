@@ -233,8 +233,7 @@ def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
     log_path = _log_file_path(cfg)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    errors_log_path = ROOT / "logs" / "errors.log"
-    errors_log_path.parent.mkdir(parents=True, exist_ok=True)
+    errors_log_path = _resolve_errors_log_path()
 
     handlers = log_cfg.setdefault("handlers", {})
     handlers["memu_file"] = {
@@ -273,7 +272,7 @@ def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
         logger_cfg["filters"] = filters_list
 
     # Attach error-only handler to the root logger so errors from all modules
-    # (including the memu engine) land in logs/errors.log.
+    # (including the memu engine) land in errors.log.
     root_cfg = loggers.setdefault("", {})
     root_handlers = list(root_cfg.get("handlers") or [])
     if "memu_errors" not in root_handlers:
@@ -281,6 +280,15 @@ def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
     root_cfg["handlers"] = root_handlers
 
     return log_cfg
+
+
+def _resolve_errors_log_path() -> Path:
+    errors_log_path = (ROOT / "errors.log").resolve()
+    legacy_errors_log_path = (ROOT / "logs" / "errors.log").resolve()
+    if legacy_errors_log_path.exists() and not errors_log_path.exists():
+        errors_log_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy_errors_log_path.replace(errors_log_path)
+    return errors_log_path
 
 
 def main() -> None:

@@ -25,7 +25,7 @@ mcp-memu-server/
 ├── tests/                   # pytest suite; see `TESTING.md` for run command
 ├── alembic/                 # DB migration scripts
 ├── storage/                 # Default SQLite DB + resource dir
-├── logs/errors.log          # ERROR-level log (RotatingFileHandler, 512KB, 2 backups) — gitignored
+├── errors.log               # ERROR-level log (RotatingFileHandler, 512KB, 2 backups) — gitignored
 ├── Makefile                 # make install/run/test/check
 └── pyproject.toml           # Python 3.12+ deps
 ```
