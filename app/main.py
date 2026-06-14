@@ -113,9 +113,6 @@ from app.services.turn_contract import (
     make_turn_system_prompt as _make_turn_system_prompt,
     parse_turn_contract as _parse_turn_contract,
     render_history as _render_history,
-    _merge_current_into_conversations,
-    resolve_current_chat_heading as _resolve_current_chat_heading,
-    _section_title_from_conversation_id,
 )
 
 
@@ -2220,7 +2217,7 @@ async def _apimw_synthesize(
         f"Your working thoughts:\n{formatted_cache}\n\n"
         f"Intentions:\n{formatted_intentions}\n\n"
         f"{_LIFE_GOALS_FREE_WILL_HEADER}\n{formatted_life_goals}\n\n"
-        f"Recent conversation:\n{segment_text}"
+        f"{segment_text}"
     )
 
     llm_raw = await svc.chat(
@@ -4015,8 +4012,7 @@ async def conversation_retrieve(
         )
 
         should_build_default_queries = (
-            safe.get("queries") is None
-            and uid
+            uid
             and soul_id
             and retrieve_focus.strip()
             and state_row is not None
@@ -4026,7 +4022,6 @@ async def conversation_retrieve(
             and soul_id
             and retrieve_focus.strip()
         )
-        built_queries = False
         if should_build_default_queries or should_rebuild_queries_for_cutoff:
             safe["queries"] = _build_retrieve_soul_context_queries(
                 soul_id=soul_id,
@@ -4039,23 +4034,6 @@ async def conversation_retrieve(
                 self_turn_directive=self_turn_directive or None,
                 self_turn_label=self_turn_label or None,
             )
-            built_queries = True
-
-        if cross_text and not built_queries:
-            queries = safe.get("queries")
-            if isinstance(queries, list):
-                for i, query in enumerate(queries):
-                    if isinstance(query, dict) and str(query.get("role") or "").strip() == "history":
-                        current_history = str(query.get("content", {}).get("text", "") if isinstance(query.get("content"), dict) else "").strip()
-                        section_header = _section_title_from_conversation_id(cid)
-                        # Strip embedded section header — _merge expects a raw chat block
-                        if current_history.startswith(section_header):
-                            current_history = current_history[len(section_header):].strip()
-                        merged = _merge_current_into_conversations(cross_text, current_history, section_header)
-                        queries[i] = {"role": "history", "content": {"text": merged}}
-                        break
-                else:
-                    queries.insert(-1, {"role": "history", "content": {"text": cross_text}})
 
         out = await _run_retrieve(safe, conversation_id=cid)
 

@@ -228,7 +228,8 @@ async def test_run_consolidation_llm_includes_all_chat_history() -> None:
         llm_profile=None,
     )
 
-    assert "# My conversations" in svc.prompt
+    assert "# My conversations" not in svc.prompt
+    assert "My WhatsApp Conversations:" in svc.prompt
     assert "[dm][Raquel]" in svc.prompt
     assert "[Raquel]: cross hello" in svc.prompt
 

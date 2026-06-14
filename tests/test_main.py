@@ -2432,7 +2432,7 @@ def test_turn_state_write_clears_one_shot_message_to_self(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_conversation_retrieve_injects_cross_context_even_with_prebuilt_queries(
+async def test_conversation_retrieve_rebuilds_prebuilt_queries_with_unified_chat_display(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3471,7 +3471,7 @@ async def test_conversation_retrieve_includes_sillytavern_cross_tail_from_snapsh
 
 
 @pytest.mark.asyncio
-async def test_conversation_retrieve_does_not_duplicate_preexisting_cross_query(
+async def test_conversation_retrieve_replaces_preexisting_cross_query_with_unified_chat_display(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3536,12 +3536,19 @@ async def test_conversation_retrieve_does_not_duplicate_preexisting_cross_query(
     assert isinstance(safe, dict)
     queries = safe.get("queries")
     assert isinstance(queries, list)
+    history_text = "\n".join(
+        str((q.get("content") or {}).get("text") or "")
+        for q in queries
+        if isinstance(q, dict) and str(q.get("role") or "").strip() == "history"
+    )
     cross_roles = [
         str(q.get("role") or "").strip()
         for q in queries
         if isinstance(q, dict)
     ]
-    assert cross_roles.count("cross_conversation") == 1
+    assert cross_roles.count("cross_conversation") == 0
+    assert "My WhatsApp Conversations:" in history_text
+    assert "wa-2" in history_text
 
 
 @pytest.mark.asyncio
