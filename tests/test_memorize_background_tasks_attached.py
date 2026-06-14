@@ -191,7 +191,7 @@ async def _noop_run(**kwargs) -> None:
     pass
 
 
-def test_cross_manifest_ranges_are_marked_and_non_overlapping() -> None:
+def test_cross_manifest_ranges_are_non_rebuildable_and_non_overlapping() -> None:
     existing = [{"start": 0, "end": 4}, {"start": 3, "end": 7}]
     start = main_module._memorize_endpoint._next_manifest_start(existing)
     cross_segments = main_module._memorize_endpoint._offset_memorize_segments(
@@ -202,13 +202,13 @@ def test_cross_manifest_ranges_are_marked_and_non_overlapping() -> None:
     out = main_module._memorize_endpoint._merge_manifest_segments(
         existing,
         cross_segments,
-        kind="cross",
+        rebuildable=False,
     )
 
     assert cross_segments[0][2:] == (8, 10)
     assert out == [
         {"start": 0, "end": 7},
-        {"start": 8, "end": 10, "kind": "cross"},
+        {"start": 8, "end": 10, "rebuildable": False},
     ]
     assert main_module._memorize_endpoint._canonical_manifest_segments(out) == [
         {"start": 0, "end": 7},
@@ -262,7 +262,7 @@ def test_cross_memorize_endpoint_marks_manifest_range(
     manifest = json.loads((chat_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["segments"] == [
         {"start": 0, "end": 7},
-        {"start": 8, "end": 10, "kind": "cross"},
+        {"start": 8, "end": 10, "rebuildable": False},
     ]
 
 

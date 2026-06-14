@@ -637,11 +637,11 @@ def _merge_manifest_segments(
     existing: list[dict[str, Any]],
     memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]],
     *,
-    kind: str | None = None,
+    rebuildable: bool = True,
 ) -> list[dict[str, Any]]:
     canonical: list[tuple[int, int]] = []
-    synthetic: list[dict[str, int | str]] = []
-    seen_synthetic: set[tuple[int, int, str]] = set()
+    non_rebuildable: list[dict[str, Any]] = []
+    seen_non_rebuildable: set[tuple[int, int]] = set()
 
     def parsed_range(start: Any, end: Any) -> tuple[int, int] | None:
         try:
@@ -659,12 +659,11 @@ def _merge_manifest_segments(
             if parsed is None:
                 continue
             st_i, en_i = parsed
-            segment_kind = str(segment.get("kind") or "").strip()
-            if segment_kind:
-                key = (st_i, en_i, segment_kind)
-                if key not in seen_synthetic:
-                    seen_synthetic.add(key)
-                    synthetic.append({"start": st_i, "end": en_i, "kind": segment_kind})
+            if segment.get("rebuildable") is False:
+                key = (st_i, en_i)
+                if key not in seen_non_rebuildable:
+                    seen_non_rebuildable.add(key)
+                    non_rebuildable.append({"start": st_i, "end": en_i, "rebuildable": False})
             else:
                 canonical.append((st_i, en_i))
     for _resource_url, _messages, start, end in memorize_segments:
@@ -672,13 +671,13 @@ def _merge_manifest_segments(
         if parsed is None:
             continue
         st_i, en_i = parsed
-        if kind:
-            key = (st_i, en_i, kind)
-            if key not in seen_synthetic:
-                seen_synthetic.add(key)
-                synthetic.append({"start": st_i, "end": en_i, "kind": kind})
-        else:
+        if rebuildable:
             canonical.append((st_i, en_i))
+        else:
+            key = (st_i, en_i)
+            if key not in seen_non_rebuildable:
+                seen_non_rebuildable.add(key)
+                non_rebuildable.append({"start": st_i, "end": en_i, "rebuildable": False})
 
     merged: list[dict[str, int]] = []
     for st_i, en_i in sorted(canonical):
@@ -686,15 +685,15 @@ def _merge_manifest_segments(
             merged[-1]["end"] = max(int(merged[-1]["end"]), en_i)
         else:
             merged.append({"start": st_i, "end": en_i})
-    synthetic.sort(key=lambda row: (int(row["start"]), int(row["end"]), str(row["kind"])))
-    return [*merged, *synthetic]
+    non_rebuildable.sort(key=lambda row: (int(row["start"]), int(row["end"])))
+    return [*merged, *non_rebuildable]
 
 
 def _canonical_manifest_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         segment
         for segment in segments
-        if isinstance(segment, dict) and not str(segment.get("kind") or "").strip()
+        if isinstance(segment, dict) and segment.get("rebuildable") is not False
     ]
 
 
@@ -1201,7 +1200,7 @@ async def memorize_endpoint(
                 manifest_segments = _merge_manifest_segments(
                     manifest_segments_existing,
                     memorize_segments,
-                    kind="cross" if is_cross else None,
+                    rebuildable=not is_cross,
                 )
                 manifest_out = {
                     "v": 1,
