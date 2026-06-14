@@ -3000,6 +3000,9 @@ def _format_all_chat_history_for_ai(
     conversation_id: str,
     soul_id: str,
     chat_label: str | None = None,
+    current_user_text: str | None = None,
+    self_turn_directive: str | None = None,
+    use_current_message_locator: bool = False,
 ) -> str:
     cross_text = _message_log.format_merged_history(cross_tail or []) if cross_tail else ""
     history_rows = current_history or []
@@ -3012,6 +3015,9 @@ def _format_all_chat_history_for_ai(
         chat_label=chat_label or _chat_label_from_history(history_rows, conversation_id),
         soul_name=soul_id,
         include_empty_current=False,
+        current_user_text=current_user_text,
+        self_turn_directive=self_turn_directive,
+        use_current_message_locator=use_current_message_locator,
     )
 
 
@@ -4054,6 +4060,16 @@ async def conversation_retrieve(
                 message = _pick_str(safe, "message", "query") or ""
                 self_turn_directive = _pick_str(safe, "self_turn_directive") or ""
                 self_turn_label = _pick_str(safe, "self_turn_label") or ""
+                response_chat_history_for_ai = _format_all_chat_history_for_ai(
+                    current_history=turn_history,
+                    cross_tail=cross_tail,
+                    conversation_id=cid,
+                    soul_id=soul_id,
+                    chat_label=chat_label_for_prompt,
+                    current_user_text=message,
+                    self_turn_directive=self_turn_directive,
+                    use_current_message_locator=True,
+                )
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
 
@@ -4072,10 +4088,7 @@ async def conversation_retrieve(
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
                     apimw_message_to_self=_state_row.get("apimw_message_to_self"),
-                    cross_conversation_history=safe.get("_cross_conversation_history"),
-                    chat_label=chat_label_for_prompt,
-                    conversation_id=cid,
-                    soul_name=soul_id,
+                    conversations_block=response_chat_history_for_ai,
                     self_turn_directive=self_turn_directive or None,
                     self_turn_label=self_turn_label or None,
                 )

@@ -2656,7 +2656,10 @@ async def test_conversation_retrieve_turn_prompt_reuses_first_floored_history(
     monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
     monkeypatch.setattr(main, "_load_cross_tail_from_sources", lambda *_a, **_k: [])
 
+    captured: dict[str, object] = {}
+
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        captured["safe"] = safe
         return {
             "ok": True,
             "result": {},
@@ -2666,6 +2669,13 @@ async def test_conversation_retrieve_turn_prompt_reuses_first_floored_history(
         }
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+    original_build_turn_prompt = main._build_turn_prompt
+
+    def _capture_build_turn_prompt(**kwargs: object) -> str:
+        captured["turn_prompt_kwargs"] = kwargs
+        return original_build_turn_prompt(**kwargs)
+
+    monkeypatch.setattr(main, "_build_turn_prompt", _capture_build_turn_prompt)
 
     payload = {
         "user": {"user_id": "Marcos", "soul_id": "Siri"},
@@ -2707,6 +2717,25 @@ async def test_conversation_retrieve_turn_prompt_reuses_first_floored_history(
     assert "[Eduardo] Hola nosotros bien y vos como andas" in prompt
     assert "[Marcos] Bien. Encontre algo que hacer ..." in prompt
     assert "[user] Bien. Encontre algo que hacer ..." not in prompt
+
+    prompt_kwargs = captured["turn_prompt_kwargs"]
+    assert isinstance(prompt_kwargs, dict)
+    assert str(prompt_kwargs.get("conversations_block") or "").strip()
+    assert prompt_kwargs.get("cross_conversation_history") is None
+    safe = captured["safe"]
+    assert isinstance(safe, dict)
+    query_text = "\n".join(
+        str((query.get("content") or {}).get("text") or "")
+        for query in safe.get("queries") or []
+        if isinstance(query, dict)
+    )
+    for shared_line in (
+        "[dm][Eduardo Scarone] \u2190 current chat",
+        "[Marcos] Como estan?",
+        "[Eduardo] Hola nosotros bien y vos como andas",
+    ):
+        assert shared_line in query_text
+        assert shared_line in prompt
 
 
 @pytest.mark.asyncio

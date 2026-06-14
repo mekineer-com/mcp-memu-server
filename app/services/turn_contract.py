@@ -661,6 +661,7 @@ def build_turn_prompt(
     intentions_active: Any,
     apimw_message_to_self: str | None = None,
     cross_conversation_history: str | None = None,
+    conversations_block: str | None = None,
     chat_label: str | None = None,
     conversation_id: str | None = None,
     soul_name: str | None = None,
@@ -706,20 +707,22 @@ def build_turn_prompt(
     # history → current turn → working thoughts/intentions → full new message.
     current_user_text = _text(user_message)
     directive_text = _text(self_turn_directive)
-    conversations_block = build_conversations_block(
-        history=history or [],
-        cross_conversation_history=cross_conversation_history,
-        conversation_id=conversation_id,
-        chat_label=chat_label,
-        soul_name=soul_name,
-        current_user_text=current_user_text,
-        self_turn_directive=directive_text,
-        use_current_message_locator=True,
-    )
+    rendered_conversations_block = _text(conversations_block)
+    if not rendered_conversations_block:
+        rendered_conversations_block = build_conversations_block(
+            history=history or [],
+            cross_conversation_history=cross_conversation_history,
+            conversation_id=conversation_id,
+            chat_label=chat_label,
+            soul_name=soul_name,
+            current_user_text=current_user_text,
+            self_turn_directive=directive_text,
+            use_current_message_locator=True,
+        )
 
     parts = [
         *context_blocks,
-        conversations_block,
+        rendered_conversations_block,
         "",
         "My Working Thoughts:",
         "\n".join(cache_lines) if cache_lines else "(none yet)",
