@@ -146,9 +146,9 @@ async def test_memu_turn_requests_source_history_for_whatsapp() -> None:
     assert retrieve_payload["load_source_history"] is True
     assert retrieve_payload["is_live_turn"] is True
     assert retrieve_payload["external_message_id"] == "CURRENT"
-    assert "load_source_history" not in turn_payload
+    assert turn_payload["load_source_history"] is True
     assert turn_payload["is_live_turn"] is True
-    assert turn_payload["history"] == [{"role": "user", "content": "from retrieve history"}]
+    assert turn_payload["history"] == []
     assert turn_payload["external_message_id"] == "CURRENT"
 
 
@@ -270,5 +270,4 @@ async def test_mcp_memu_memorize_returns_before_background_finishes(monkeypatch:
     assert not finished.is_set()
 
     await asyncio.wait_for(finished.wait(), timeout=1.0)
-
 

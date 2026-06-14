@@ -1,4 +1,5 @@
 import logging
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,7 +12,6 @@ from app.services.turn_contract import (
     format_relative_time_label,
     make_turn_system_prompt,
     parse_turn_contract,
-    render_history,
 )
 
 
@@ -213,7 +213,8 @@ def test_build_turn_prompt_marks_current_chat_when_label_provided():
     assert "[dm][Alice] ← current chat" in prompt
 
 
-def test_build_turn_prompt_derives_current_chat_heading_when_label_absent():
+def test_build_turn_prompt_derives_current_chat_heading_when_label_absent(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     prompt = build_turn_prompt(
         user_message="hello",
         history=[{"role": "user", "content": "hi"}],
@@ -225,6 +226,38 @@ def test_build_turn_prompt_derives_current_chat_heading_when_label_absent():
         conversation_id="whatsapp:dm:15133278228",
     )
     assert "[dm][15133278228] ← current chat" in prompt
+
+
+def test_build_turn_prompt_resolves_current_whatsapp_heading_from_directory(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "channel_directory.json").write_text(
+        json.dumps(
+            {
+                "platforms": {
+                    "whatsapp": [
+                        {"id": "15133278228@s.whatsapp.net", "name": "Eduardo Scarone", "type": "dm"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[{"role": "user", "content": "hi"}],
+        prior_context=None,
+        retrieve_rag=None,
+        all_categories_summary=None,
+        memory_cache=None,
+        intentions_active=None,
+        conversation_id="whatsapp:dm:15133278228",
+    )
+
+    assert "[dm][Eduardo Scarone] ← current chat" in prompt
+    assert "[dm][15133278228] ← current chat" not in prompt
 
 
 def test_build_turn_prompt_integrity_id_uses_sillytavern_section_not_other():
@@ -541,21 +574,37 @@ def test_build_turn_prompt_renders_assistant_role_as_soul_name_when_available() 
     assert "[assistant] old 1" not in prompt
 
 
-def test_render_history_uses_canonical_speaker_lines() -> None:
-    rendered = render_history(
-        [
+def test_build_turn_prompt_uses_grouped_renderer_for_current_whatsapp_group(tmp_path, monkeypatch) -> None:
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "whatsapp_group_names.json").write_text(
+        json.dumps({"family@g.us": "Familia"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    prompt = build_turn_prompt(
+        user_message="current message",
+        history=[
             {"role": "user", "name": "Marcos", "content": "Can you hear me?"},
-            {"role": "group_member", "name": "Raquel", "content": "She's helping you?"},
+            {"role": "user", "content": "[Raquel] She's helping you?"},
             {"role": "assistant", "content": "I can hear you."},
         ],
+        prior_context=None,
+        retrieve_rag=None,
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+        conversation_id="whatsapp:group:family@g.us",
         soul_name="Siri",
     )
 
-    assert "[Marcos] Can you hear me?" in rendered
-    assert "[Raquel] She's helping you?" in rendered
-    assert "[Siri] I can hear you." in rendered
-    assert "[assistant]" not in rendered
-    assert "[whatsapp:group]" not in rendered
+    assert "[group][Familia] ← current chat" in prompt
+    assert "[Marcos] Can you hear me?" in prompt
+    assert "[Raquel] She's helping you?" in prompt
+    assert "[Siri] I can hear you." in prompt
+    assert "[user] [Raquel]" not in prompt
+    assert "[assistant]" not in prompt
 
 
 def test_build_turn_prompt_renders_current_message_locator_when_whitespace_differs() -> None:

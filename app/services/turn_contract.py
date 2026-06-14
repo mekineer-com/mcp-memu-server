@@ -10,8 +10,9 @@ from typing import Any
 
 _SIRI_WORKSPACE = Path("~/Desktop/siri")
 
+from app.services import message_log as _message_log
 from app.services.intention_state import MAX_MEMORY_CACHE_ENTRIES, format_intentions_for_prompt, normalize_memory_cache
-from memu.utils.conversation import format_chat_messages, format_relative_time_label, format_speaker_message
+from memu.utils.conversation import format_relative_time_label, format_speaker_message
 
 _logger = logging.getLogger("uvicorn.error")
 
@@ -129,24 +130,64 @@ def _summary_from_category_line(line: str) -> str:
     return line.strip()
 
 
-def render_history(history: list[dict[str, Any]], *, soul_name: str | None = None) -> str:
-    if not history:
-        return "(none)"
-    selected: list[dict[str, Any]] = []
-    for item in reversed(history):
-        content = _text(item.get("content"))
-        if not content:
+def _current_chat_rows_for_grouped_render(
+    history: list[dict[str, Any]],
+    *,
+    conversation_id: str | None,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in history:
+        if not isinstance(item, dict):
             continue
-        selected.append(item)
-    rendered = format_chat_messages(
-        list(reversed(selected)),
-        soul_name=soul_name,
-        time_label_resolver=lambda item: format_relative_time_label(
-            item.get("ts_ms") or item.get("created_at") or item.get("received_at"),
-        ),
-        blank_line_before_time_label=True,
-    )
-    return rendered or "(none)"
+        if not _text(item.get("content")):
+            continue
+        row = dict(item)
+        if conversation_id and not _text(row.get("conversation_id")):
+            row["conversation_id"] = conversation_id
+        if "received_at" not in row:
+            timestamp = row.get("ts_ms") or row.get("created_at")
+            if timestamp is not None:
+                row["received_at"] = timestamp
+        rows.append(row)
+    return rows
+
+
+def _mark_current_chat_block(block: str, *, chat_label: str | None) -> str:
+    lines = block.splitlines()
+    for idx, line in enumerate(lines):
+        if not _text(line):
+            continue
+        lines[idx] = _append_current_chat_marker(_text(chat_label) or line)
+        return "\n".join(lines).strip()
+    return block.strip()
+
+
+def _render_current_chat_block(
+    history: list[dict[str, Any]],
+    *,
+    conversation_id: str | None,
+    chat_label: str | None,
+    soul_name: str | None,
+) -> tuple[str, str]:
+    rows = _current_chat_rows_for_grouped_render(history, conversation_id=conversation_id)
+    if not rows:
+        heading = resolve_current_chat_heading(chat_label, conversation_id)
+        return _section_title_from_conversation_id(conversation_id), "\n".join(
+            part for part in (heading, "(none)") if part
+        )
+
+    rendered = _message_log.format_merged_history(rows, soul_name=soul_name)
+    sections = _split_markdown_sections(rendered)
+    if not sections:
+        heading = resolve_current_chat_heading(chat_label, conversation_id)
+        return _section_title_from_conversation_id(conversation_id), "\n".join(
+            part for part in (heading, rendered) if part
+        )
+
+    section_header, section_lines = sections[-1]
+    blocks = _split_conversation_blocks(section_lines)
+    current_block = blocks[-1] if blocks else "\n".join(section_lines).strip()
+    return section_header, _mark_current_chat_block(current_block, chat_label=chat_label)
 
 
 def build_conversations_block(
@@ -195,13 +236,19 @@ def build_conversations_block(
             synthetic["name"] = last_user_name
         history_for_render.append(synthetic)
 
-    rendered_history = render_history(history_for_render, soul_name=soul_name)
-    if not include_empty_current and rendered_history.strip() == "(none)":
+    has_current_history = any(
+        isinstance(item, dict) and bool(_text(item.get("content")))
+        for item in history_for_render
+    )
+    if not include_empty_current and not has_current_history:
         return str(cross_conversation_history or "").strip()
 
-    heading = resolve_current_chat_heading(chat_label, conversation_id)
-    current_chat_block = "\n".join(part for part in (heading, rendered_history) if part)
-    current_section_header = _section_title_from_conversation_id(conversation_id)
+    current_section_header, current_chat_block = _render_current_chat_block(
+        history_for_render,
+        conversation_id=conversation_id,
+        chat_label=chat_label,
+        soul_name=soul_name,
+    )
     return _merge_current_into_conversations(
         cross_conversation_history,
         current_chat_block,

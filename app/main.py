@@ -112,7 +112,6 @@ from app.services.turn_contract import (
     format_shaped_by_line as _format_shaped_by_line,
     make_turn_system_prompt as _make_turn_system_prompt,
     parse_turn_contract as _parse_turn_contract,
-    render_history as _render_history,
 )
 
 
@@ -2337,7 +2336,6 @@ async def _run_apimw(
         apimw_random_count = _apimw_random_count_from_cfg(_CONFIG)
 
         recent_history = history[-30:] if history else []
-        current_recent_text = _render_history(recent_history, soul_name=soul_id)
         cross_tail = _load_cross_tail_for_ai(
             user_id=user_id,
             soul_id=soul_id,
@@ -2351,7 +2349,7 @@ async def _run_apimw(
             chat_label=_chat_label_for_prompt(payload),
         )
         identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
-        focus_text = current_recent_text.strip()
+        focus_text = segment_text.strip()
         if not focus_text:
             logger.info("apimw skipped for %s: no recent conversation text", conversation_id)
             return

@@ -149,7 +149,7 @@ async def memu_turn_endpoint(
 
     prompt_override_payload = build_prompt_override_payload(retrieve_out)
     turn_history = retrieve_out.get("turn_history")
-    turn_has_retrieve_history = isinstance(turn_history, list)
+    turn_has_retrieve_history = (not load_source_history) and isinstance(turn_history, list)
 
     turn_payload: dict[str, Any] = {
         "user": scope,
@@ -159,9 +159,8 @@ async def memu_turn_endpoint(
         "debug": bool(req.debug),
         "trace_id": trace_id,
     }
-    if load_source_history and not turn_has_retrieve_history:
-        turn_payload["load_source_history"] = True
     if load_source_history:
+        turn_payload["load_source_history"] = True
         turn_payload["is_live_turn"] = True
     if user_name:
         turn_payload["user_name"] = user_name
@@ -252,5 +251,4 @@ async def memu_consolidate_endpoint(
         raise HTTPException(status_code=400, detail="conversation_id is required")
     scope = _scope(user_id=req.user_id, soul_id=req.soul_id, conversation_id=conversation_id)
     return await force_consolidation(conversation_id, {"user": scope, "conversation_id": conversation_id})
-
 
