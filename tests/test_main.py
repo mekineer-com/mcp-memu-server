@@ -2566,6 +2566,99 @@ async def test_conversation_retrieve_uses_payload_history_for_primary_chat_queri
 
 
 @pytest.mark.asyncio
+async def test_conversation_retrieve_turn_prompt_reuses_first_floored_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Siri.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+
+    state_reads = iter(
+        [
+            {
+                "prior_context": "",
+                "memory_cache": [],
+                "intentions_active": {"items": []},
+                "digest_cursor": 0,
+                "last_memorize_at": "2026-06-14T00:00:00+00:00",
+            },
+            {
+                "prior_context": "",
+                "memory_cache": [],
+                "intentions_active": {"items": []},
+                "digest_cursor": 3,
+                "last_memorize_at": "2026-06-14T00:00:00+00:00",
+            },
+        ]
+    )
+
+    def _load_state(*_args: object, **_kwargs: object) -> tuple[dict[str, object], None, Path]:
+        return next(state_reads), None, db_path
+
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", _load_state)
+    monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
+    monkeypatch.setattr(main, "_load_cross_tail_from_sources", lambda *_a, **_k: [])
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        return {
+            "ok": True,
+            "result": {},
+            "conversation_id": conversation_id,
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+        }
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "Marcos", "soul_id": "Siri"},
+        "message": "Bien. Encontre algo que hacer con el IA.",
+        "query": "Bien. Encontre algo que hacer con el IA.",
+        "build_turn_prompt": True,
+        "history": [
+            {
+                "role": "user",
+                "name": "Marcos",
+                "content": "Como estan?",
+                "source_conversation_index": 1,
+                "ts_ms": 1_770_000_000_000,
+            },
+            {
+                "role": "user",
+                "name": "Eduardo",
+                "content": "Hola nosotros bien y vos como andas",
+                "source_conversation_index": 2,
+                "ts_ms": 1_770_010_000_000,
+            },
+            {
+                "role": "user",
+                "name": "Marcos",
+                "content": "Bien. Encontre algo que hacer con el IA.",
+                "source_conversation_index": 3,
+                "ts_ms": 1_770_020_000_000,
+            },
+        ],
+        "chat_name": "Eduardo Scarone",
+        "chat_type": "dm",
+    }
+
+    out = await main.conversation_retrieve("whatsapp:dm:eduardo", payload)
+
+    prompt = str(out.get("turn_user_prompt") or "")
+    assert "[dm][Eduardo Scarone] \u2190 current chat" in prompt
+    assert "[Marcos] Como estan?" in prompt
+    assert "[Eduardo] Hola nosotros bien y vos como andas" in prompt
+    assert "[Marcos] Bien. Encontre algo que hacer ..." in prompt
+    assert "[user] Bien. Encontre algo que hacer ..." not in prompt
+
+
+@pytest.mark.asyncio
 async def test_conversation_retrieve_filters_whatsapp_history_before_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

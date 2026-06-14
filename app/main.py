@@ -4057,7 +4057,6 @@ async def conversation_retrieve(
                 message = _pick_str(safe, "message", "query") or ""
                 self_turn_directive = _pick_str(safe, "self_turn_directive") or ""
                 self_turn_label = _pick_str(safe, "self_turn_label") or ""
-                turn_history = _turn_history_with_floor(history, _state_row)
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
 
