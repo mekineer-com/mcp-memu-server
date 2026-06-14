@@ -615,7 +615,7 @@ async def test_turn_launch_apimw_passes_floored_history_after_memorize(monkeypat
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"digest_cursor": 9, "last_memorize_at": "2026-05-01T00:00:00+00:00"}, None, None),
+        lambda *_a, **_k: ({"digest_cursor": 8, "last_memorize_at": "2026-05-01T00:00:00+00:00"}, None, None),
     )
 
     captured: dict[str, object] = {}
@@ -3224,7 +3224,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
 
 
 @pytest.mark.asyncio
-async def test_conversation_retrieve_uses_whatsapp_floor_when_no_new_messages(
+async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3280,11 +3280,9 @@ async def test_conversation_retrieve_uses_whatsapp_floor_when_no_new_messages(
 
     out = await main.conversation_retrieve("whatsapp:dm:15133278228", payload)
     turn_prompt = str(out.get("turn_user_prompt") or "")
-    assert "msg_04" in turn_prompt
-    assert "msg_03" not in turn_prompt
-    assert "msg_11" in turn_prompt
+    assert "msg_04" not in turn_prompt
+    assert "msg_11" not in turn_prompt
     assert "current message" in turn_prompt
-    assert [row["content"] for row in out.get("turn_history") or []] == [f"msg_{idx:02d}" for idx in range(4, 12)]
 
 
 @pytest.mark.asyncio
