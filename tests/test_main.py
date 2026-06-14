@@ -445,6 +445,7 @@ async def test_apimw_retrieve_items_sets_force_retrieve_and_item_count(monkeypat
     await main._apimw_retrieve_items(
         payload={"user": {"user_id": "u1", "soul_id": "Echo"}, "trace_id": "turn-trace"},
         focus_text="recent conversation",
+        conversations_block="My WhatsApp Conversations:\n\n[dm][Marcos]\n[Marcos] hello",
         soul_id="Echo",
         history=[{"role": "user", "name": "Marcos", "content": "hello"}],
         state_row={},
@@ -454,6 +455,13 @@ async def test_apimw_retrieve_items_sets_force_retrieve_and_item_count(monkeypat
 
     assert captured_payload["force_retrieve"] is True
     assert captured_payload["query"] == "recent conversation"
+    history_text = "\n".join(
+        str((query.get("content") or {}).get("text") or "")
+        for query in captured_payload["queries"]
+        if isinstance(query, dict) and query.get("role") == "history"
+    )
+    assert "My WhatsApp Conversations:" in history_text
+    assert "[dm][Marcos]" in history_text
     assert captured_payload["retrieve_config"]["item"]["top_k"] == 12
     assert isinstance(captured_payload["trace_id"], str)
     assert len(captured_payload["trace_id"]) == 32
@@ -480,6 +488,7 @@ async def test_apimw_random_items_request_active_only(monkeypatch: pytest.Monkey
         svc,
         payload={"user": {"user_id": "u1", "soul_id": "Echo"}},
         focus_text="recent conversation",
+        conversations_block="My WhatsApp Conversations:\n\n[dm][Marcos]\n[Marcos] hello",
         history=[],
         state_row={},
         conversation_id="cid",

@@ -2036,6 +2036,7 @@ async def _apimw_retrieve_items(
     payload: dict[str, Any],
     *,
     focus_text: str,
+    conversations_block: str,
     soul_id: str,
     history: list[dict[str, Any]],
     state_row: dict[str, Any],
@@ -2049,6 +2050,7 @@ async def _apimw_retrieve_items(
         state_row=state_row,
         identity_mode="apimw",
         conversation_id=conversation_id,
+        conversations_block=conversations_block,
     )
     retrieve_config = dict(payload.get("retrieve_config")) if isinstance(payload.get("retrieve_config"), dict) else {}
     item_config = dict(retrieve_config.get("item")) if isinstance(retrieve_config.get("item"), dict) else {}
@@ -2076,6 +2078,7 @@ async def _apimw_collect_memory_items(
     payload: dict[str, Any],
     *,
     focus_text: str,
+    conversations_block: str,
     history: list[dict[str, Any]],
     state_row: dict[str, Any],
     conversation_id: str,
@@ -2087,6 +2090,7 @@ async def _apimw_collect_memory_items(
     _retrieve_result, retrieved_items = await _apimw_retrieve_items(
         payload,
         focus_text=focus_text,
+        conversations_block=conversations_block,
         soul_id=soul_id,
         history=history,
         state_row=state_row,
@@ -2359,6 +2363,7 @@ async def _run_apimw(
             svc,
             payload,
             focus_text=focus_text,
+            conversations_block=segment_text,
             history=history,
             state_row=state_row,
             conversation_id=conversation_id,
