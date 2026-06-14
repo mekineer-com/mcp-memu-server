@@ -105,6 +105,7 @@ from app.services.state import (
 )
 from app.services.turn_contract import (
     LIFE_GOALS_FREE_WILL_HEADER as _LIFE_GOALS_FREE_WILL_HEADER,
+    build_conversations_block as _build_conversations_block,
     build_turn_prompt as _build_turn_prompt,
     format_memory_line as _format_memory_line,
     format_memory_legend as _format_memory_legend,
@@ -3005,18 +3006,13 @@ def _format_all_chat_history_for_ai(
     history_rows = current_history or []
     if not history_rows:
         return cross_text
-    current_text = _render_history(history_rows, soul_name=soul_id).strip()
-    if not current_text or current_text == "(none)":
-        return cross_text
-    heading = _resolve_current_chat_heading(
-        chat_label or _chat_label_from_history(history_rows, conversation_id),
-        conversation_id,
-    )
-    current_block = "\n".join(part for part in (heading, current_text) if part)
-    return _merge_current_into_conversations(
-        cross_text,
-        current_block,
-        _section_title_from_conversation_id(conversation_id),
+    return _build_conversations_block(
+        history=history_rows,
+        cross_conversation_history=cross_text,
+        conversation_id=conversation_id,
+        chat_label=chat_label or _chat_label_from_history(history_rows, conversation_id),
+        soul_name=soul_id,
+        include_empty_current=False,
     )
 
 
@@ -4002,6 +3998,16 @@ async def conversation_retrieve(
 
         chat_label_for_prompt = _chat_label_for_prompt(safe)
         history_for_ai = _turn_history_with_floor(history, state_row or {})
+        cross_text = _message_log.format_merged_history(cross_tail) if cross_tail else ""
+        if cross_text:
+            safe["_cross_conversation_history"] = cross_text
+        all_chat_history_for_ai = _format_all_chat_history_for_ai(
+            current_history=history_for_ai,
+            cross_tail=cross_tail,
+            conversation_id=cid,
+            soul_id=soul_id,
+            chat_label=chat_label_for_prompt,
+        )
 
         should_build_default_queries = (
             safe.get("queries") is None
@@ -4015,6 +4021,7 @@ async def conversation_retrieve(
             and soul_id
             and retrieve_focus.strip()
         )
+        built_queries = False
         if should_build_default_queries or should_rebuild_queries_for_cutoff:
             safe["queries"] = _build_retrieve_soul_context_queries(
                 soul_id=soul_id,
@@ -4023,13 +4030,13 @@ async def conversation_retrieve(
                 state_row=state_row or {},
                 conversation_id=cid,
                 chat_label=chat_label_for_prompt,
+                conversations_block=all_chat_history_for_ai,
                 self_turn_directive=self_turn_directive or None,
                 self_turn_label=self_turn_label or None,
             )
+            built_queries = True
 
-        if cross_tail:
-            cross_text = _message_log.format_merged_history(cross_tail)
-            safe["_cross_conversation_history"] = cross_text
+        if cross_text and not built_queries:
             queries = safe.get("queries")
             if isinstance(queries, list):
                 for i, query in enumerate(queries):

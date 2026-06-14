@@ -15,11 +15,9 @@ from app.services.intention_state import (
 from app.services.payload import _canonicalize_scope_where, _extract_scope
 from app.services.turn_contract import (
     _norm_text,
+    build_conversations_block,
     format_time_anchor as _format_time_anchor,
     format_working_thoughts_lines as _format_working_thoughts_lines,
-    render_history as _render_history,
-    resolve_current_chat_heading,
-    _section_title_from_conversation_id,
 )
 
 
@@ -109,6 +107,7 @@ def _build_retrieve_soul_context_queries(
     identity_mode: str = "retrieve",
     conversation_id: str | None = None,
     chat_label: str | None = None,
+    conversations_block: str | None = None,
     self_turn_directive: str | None = None,
     self_turn_label: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -154,15 +153,21 @@ def _build_retrieve_soul_context_queries(
     if all_cats_summary:
         soul_context_for_retrieve.append({"role": "all_categories_summary", "content": {"text": all_cats_summary}})
 
-    history_text = _render_history(history_for_render, soul_name=soul_id)
+    if conversations_block is not None:
+        history_text = str(conversations_block or "").strip()
+    else:
+        history_text = build_conversations_block(
+            history=history_for_render,
+            conversation_id=conversation_id,
+            chat_label=chat_label,
+            soul_name=soul_id,
+            include_empty_current=False,
+        )
     if history_text:
-        section_header = _section_title_from_conversation_id(conversation_id)
-        heading = resolve_current_chat_heading(chat_label, conversation_id)
-        heading_block = f"{heading}\n" if heading else ""
         soul_context_for_retrieve.append(
             {
                 "role": "history",
-                "content": {"text": f"{section_header}\n\n{heading_block}{history_text}"},
+                "content": {"text": history_text},
             }
         )
     cache_text = "\n".join(_format_working_thoughts_lines(memory_cache))

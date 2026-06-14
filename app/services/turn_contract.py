@@ -149,6 +149,66 @@ def render_history(history: list[dict[str, Any]], *, soul_name: str | None = Non
     return rendered or "(none)"
 
 
+def build_conversations_block(
+    *,
+    history: list[dict[str, Any]],
+    cross_conversation_history: str | None = None,
+    conversation_id: str | None = None,
+    chat_label: str | None = None,
+    soul_name: str | None = None,
+    current_user_text: str | None = None,
+    self_turn_directive: str | None = None,
+    use_current_message_locator: bool = False,
+    include_empty_current: bool = True,
+) -> str:
+    history_for_render = [dict(item) if isinstance(item, dict) else item for item in (history or [])]
+    current_text = _text(current_user_text)
+    directive_text = _text(self_turn_directive)
+    last_history_item: dict[str, Any] | None = None
+    for item in reversed(history_for_render):
+        if not isinstance(item, dict):
+            continue
+        if _text(item.get("content")):
+            last_history_item = item
+            break
+    already_has_current_user_message = bool(
+        current_text
+        and not directive_text
+        and isinstance(last_history_item, dict)
+        and _text(last_history_item.get("role")).lower() == "user"
+        and _norm_text(_text(last_history_item.get("content"))) == _norm_text(current_text)
+    )
+    current_content = _current_message_locator(current_text) if use_current_message_locator else current_text
+    if current_content and not directive_text and already_has_current_user_message:
+        last_history_item["content"] = current_content
+    elif current_content and not directive_text:
+        last_user_name = ""
+        for item in history_for_render:
+            if not isinstance(item, dict):
+                continue
+            if _text(item.get("role")).lower() == "user":
+                name = _text(item.get("name"))
+                if name:
+                    last_user_name = name
+        synthetic: dict[str, Any] = {"role": "user", "content": current_content}
+        if last_user_name:
+            synthetic["name"] = last_user_name
+        history_for_render.append(synthetic)
+
+    rendered_history = render_history(history_for_render, soul_name=soul_name)
+    if not include_empty_current and rendered_history.strip() == "(none)":
+        return str(cross_conversation_history or "").strip()
+
+    heading = resolve_current_chat_heading(chat_label, conversation_id)
+    current_chat_block = "\n".join(part for part in (heading, rendered_history) if part)
+    current_section_header = _section_title_from_conversation_id(conversation_id)
+    return _merge_current_into_conversations(
+        cross_conversation_history,
+        current_chat_block,
+        current_section_header,
+    )
+
+
 _MEMORY_TYPE_LEGEND = {
     "profile": "what's said or declared",
     "behavior": "what someone does",
@@ -597,47 +657,17 @@ def build_turn_prompt(
 
     # Put a short current-message locator in the chat block so the soul reads
     # history → current turn → working thoughts/intentions → full new message.
-    history_for_render = [dict(item) if isinstance(item, dict) else item for item in (history or [])]
     current_user_text = _text(user_message)
     directive_text = _text(self_turn_directive)
-    last_history_item: dict[str, Any] | None = None
-    for item in reversed(history_for_render):
-        if not isinstance(item, dict):
-            continue
-        if _text(item.get("content")):
-            last_history_item = item
-            break
-    already_has_current_user_message = bool(
-        current_user_text
-        and not directive_text
-        and isinstance(last_history_item, dict)
-        and _text(last_history_item.get("role")).lower() == "user"
-        and _norm_text(_text(last_history_item.get("content"))) == _norm_text(current_user_text)
-    )
-    current_locator = _current_message_locator(current_user_text)
-    if current_locator and not directive_text and already_has_current_user_message:
-        last_history_item["content"] = current_locator
-    elif current_locator and not directive_text:
-        last_user_name = ""
-        for item in history_for_render:
-            if not isinstance(item, dict):
-                continue
-            if _text(item.get("role")).lower() == "user":
-                name = _text(item.get("name"))
-                if name:
-                    last_user_name = name
-        synthetic: dict[str, Any] = {"role": "user", "content": current_locator}
-        if last_user_name:
-            synthetic["name"] = last_user_name
-        history_for_render.append(synthetic)
-
-    heading = resolve_current_chat_heading(chat_label, conversation_id)
-    current_chat_block = "\n".join([heading, render_history(history_for_render, soul_name=soul_name)])
-    current_section_header = _section_title_from_conversation_id(conversation_id)
-    conversations_block = _merge_current_into_conversations(
-        cross_conversation_history,
-        current_chat_block,
-        current_section_header,
+    conversations_block = build_conversations_block(
+        history=history or [],
+        cross_conversation_history=cross_conversation_history,
+        conversation_id=conversation_id,
+        chat_label=chat_label,
+        soul_name=soul_name,
+        current_user_text=current_user_text,
+        self_turn_directive=directive_text,
+        use_current_message_locator=True,
     )
 
     parts = [
