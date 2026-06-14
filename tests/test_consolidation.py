@@ -6,7 +6,6 @@ from app.services.consolidation import _parse_consolidation_xml
 from app.services.consolidation import run_consolidation_llm
 from app.services.consolidation import gather_consolidation_inputs
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
-from app.services.segment import format_segment_excerpt
 from app.services.graph_edges import invalidate_memory_edges, write_memory_edges
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
 from app.services.state import conversation_state_from_row, conversation_state_row, write_conversation_state
@@ -255,23 +254,6 @@ def test_format_segment_block_for_prompt_shows_memory_ids() -> None:
     assert "- [1] [memory] one" in out
     assert "- [2] [memory] two" in out
     assert id_map == {"1": "mem_1", "2": "mem_2"}
-
-
-def test_format_segment_excerpt_uses_chat_block_heading() -> None:
-    out = format_segment_excerpt(
-        [
-            {"role": "user", "name": "Marcos", "content": "hello"},
-            {"role": "assistant", "name": "Siri", "content": "hi"},
-        ],
-        segment_id="sillytavern:siri:0-1",
-        start_idx=0,
-        end_idx=1,
-    )
-
-    assert "My SillyTavern Conversations:" in out
-    assert "[dm][siri]" in out
-    assert "[Marcos] hello" in out
-    assert "[Siri] hi" in out
 
 
 def test_remap_edges_with_memory_ids_accepts_numbered_and_bracketed_refs() -> None:

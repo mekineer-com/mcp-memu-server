@@ -12,7 +12,7 @@ from typing import Any
 _SIRI_WORKSPACE = Path("~/Desktop/siri")
 
 from app.services.intention_state import MAX_MEMORY_CACHE_ENTRIES, format_intentions_for_prompt, normalize_memory_cache
-from memu.utils.conversation import render_chat_messages
+from memu.utils.conversation import format_speaker_message
 
 _logger = logging.getLogger("uvicorn.error")
 
@@ -139,15 +139,20 @@ def render_history(history: list[dict[str, Any]], *, soul_name: str | None = Non
         if not content:
             continue
         selected.append(item)
-    rendered = render_chat_messages(
-        list(reversed(selected)),
-        soul_name=soul_name,
-        time_label_resolver=lambda item: format_relative_time_label(
+    lines: list[str] = []
+    last_time_label: str | None = None
+    for item in reversed(selected):
+        content = _text(item.get("content"))
+        time_label = format_relative_time_label(
             item.get("ts_ms") or item.get("created_at") or item.get("received_at"),
-        ),
-        blank_line_before_time_label=True,
-    )
-    return rendered or "(none)"
+        )
+        if time_label and time_label != last_time_label:
+            if lines:
+                lines.append("")
+            lines.append(f"--- {time_label} ---")
+            last_time_label = time_label
+        lines.append(format_speaker_message(item, soul_name=soul_name))
+    return "\n".join(lines) or "(none)"
 
 
 def _elapsed_calendar_months(older: datetime, newer: datetime) -> int:

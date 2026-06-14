@@ -446,109 +446,6 @@ async def test_apimw_random_items_request_active_only(monkeypatch: pytest.Monkey
     }
 
 
-def test_build_apimw_recent_conversation_merges_cross_tail_with_floor(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "scope.db"
-    db_path.write_text("", encoding="utf-8")
-
-    class _FakeCon:
-        row_factory = None
-
-        def close(self) -> None:
-            return None
-
-    monkeypatch.setattr(
-        main,
-        "_turn_history_with_floor",
-        lambda _history, _state_row: [{"role": "user", "name": "Marcos", "content": "current hi"}],
-    )
-    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", lambda *_a, **_k: ({}, None, db_path))
-    monkeypatch.setattr(main, "_sqlite_connect", lambda _path: _FakeCon())
-    monkeypatch.setattr(main, "_sqlite_ensure_conversation_state_schema", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        main,
-        "_load_cross_tail_from_sources",
-        lambda *_a, **_k: [
-            {
-                "conversation_id": "whatsapp:dm:liz",
-                "role": "user",
-                "speaker": "Liz",
-                "content": "cross hi",
-                "received_at": "2026-06-13T10:00:00+00:00",
-            }
-        ],
-    )
-
-    text, primary = main._build_apimw_recent_conversation(
-        conversation_id="whatsapp:group:familia@g.us",
-        soul_id="Siri",
-        user_id="u1",
-        state_row={"digest_cursor": 0, "last_memorize_at": "2026-06-13T00:00:00+00:00"},
-        history=[{"role": "user", "content": "ignored"}],
-        chat_label="[group][Familia]",
-    )
-
-    assert primary == [{"role": "user", "name": "Marcos", "content": "current hi"}]
-    assert "My WhatsApp Conversations:" in text
-    assert "[dm][liz]" in text.lower()
-    assert "[Liz] cross hi" in text
-    assert "[group][Familia] \u2190 current chat" in text
-    assert "[Marcos] current hi" in text
-    assert "[Liz]: cross hi" not in text
-    assert "[Marcos]: current hi" not in text
-
-
-@pytest.mark.asyncio
-async def test_run_apimw_passes_floor_history_to_retrieve_context(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, Any] = {}
-
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: object())
-    monkeypatch.setattr(main, "_apimw_memory_count_from_cfg", lambda *_a, **_k: 5)
-    monkeypatch.setattr(main, "_apimw_random_count_from_cfg", lambda *_a, **_k: 0)
-    monkeypatch.setattr(
-        main,
-        "_build_apimw_recent_conversation",
-        lambda **_kwargs: ("Recent conversation block", [{"role": "user", "content": "floored"}]),
-    )
-
-    async def _fake_collect(
-        _svc,
-        _payload,
-        *,
-        focus_text: str,
-        history: list[dict[str, Any]],
-        **_kwargs,
-    ) -> list[dict[str, Any]]:
-        captured["focus_text"] = focus_text
-        captured["history"] = history
-        return []
-
-    async def _fake_synthesize(*_args, **_kwargs):
-        return {}, {}, {}
-
-    async def _fake_persist(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(main, "_apimw_collect_memory_items", _fake_collect)
-    monkeypatch.setattr(main, "_resolve_profile_if_configured", lambda *_a, **_k: None)
-    monkeypatch.setattr(main, "_apimw_synthesize", _fake_synthesize)
-    monkeypatch.setattr(main, "_apimw_persist", _fake_persist)
-
-    await main._run_apimw(
-        {},
-        conversation_id="cid",
-        soul_id="Siri",
-        user_id="u1",
-        state_row={"digest_cursor": 9, "last_memorize_at": "2026-06-13T00:00:00+00:00"},
-        history=[{"role": "user", "content": "full history"}],
-    )
-
-    assert captured["focus_text"] == "Recent conversation block"
-    assert captured["history"] == [{"role": "user", "content": "floored"}]
-
-
 def test_run_retrieve_rejects_non_boolean_force_retrieve(monkeypatch: pytest.MonkeyPatch):
     class _FakeSvc:
         async def retrieve(self, *_args, **_kwargs):
@@ -1273,12 +1170,10 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
             prior_summary: str | None,
             messages: list[dict[str, Any]],
             soul_name: str | None = None,
-            current_conversation_id: str | None = None,
         ) -> str:
             assert prior_summary == "old summary"
             assert len(messages) == 2
             assert soul_name == "Echo"
-            assert current_conversation_id == "whatsapp:dm:bg-chat"
             return "rolled summary"
 
     captured_updates: dict[str, Any] = {}

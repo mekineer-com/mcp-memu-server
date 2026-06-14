@@ -3,8 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from memu.utils.conversation import render_grouped_chat_messages
-
 if TYPE_CHECKING:
     from memu.app import MemoryService
 
@@ -62,31 +60,20 @@ def format_segment_excerpt(
         return ""
 
     time_range = _format_time_range(messages[start], messages[end])
-    conversation_id = str(segment_id or "").rsplit(":", 1)[0]
-    excerpt_messages: list[dict[str, Any]] = []
+    lines: list[str] = []
+    if time_range:
+        lines.append(time_range)
     for idx in range(start, end + 1):
         msg = messages[idx]
         if not isinstance(msg, dict):
             continue
+        speaker = str(msg.get("name") or msg.get("role") or "unknown").strip() or "unknown"
         content = " ".join(str(msg.get("content") or "").splitlines()).strip()
         if not content:
             continue
-        excerpt_messages.append(
-            {
-                **msg,
-                "content": content,
-                "conversation_id": msg.get("conversation_id") or conversation_id,
-            }
-        )
+        lines.append(f"[{speaker}] {content}")
 
-    chat_block = render_grouped_chat_messages(
-        excerpt_messages,
-        default_conversation_id=conversation_id,
-        current_conversation_id=conversation_id,
-        current_marker="",
-        default_role="unknown",
-    )
-    return "\n".join(part for part in (time_range, chat_block) if part).strip()
+    return "\n".join(lines).strip()
 
 
 def build_segment_inputs(
