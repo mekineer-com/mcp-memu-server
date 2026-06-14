@@ -68,6 +68,26 @@ def test_format_all_chat_history_for_ai_merges_current_and_cross_chats() -> None
     assert "[Marcos] current hello" in rendered
 
 
+def test_format_all_chat_history_for_ai_uses_current_chat_name_without_label() -> None:
+    rendered = main._format_all_chat_history_for_ai(
+        current_history=[
+            {
+                "role": "assistant",
+                "speaker": "Siri",
+                "chat_name": "Siri",
+                "content": "current hello",
+                "ts_ms": 1_770_000_000_000,
+            }
+        ],
+        cross_tail=[],
+        conversation_id="integrity:32bfed88-ee89-4053-81f8-3dba8b973857",
+        soul_id="Siri",
+    )
+
+    assert "[dm][Siri] \u2190 current chat" in rendered
+    assert "integrity:32bfed88-ee89-4053-81f8-3dba8b973857" not in rendered
+
+
 def test_conversation_state_schema_migrates_pending_segment_ids_from_old_name(
     tmp_path: Path,
 ) -> None:

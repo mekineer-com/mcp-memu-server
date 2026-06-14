@@ -2977,6 +2977,23 @@ def _chat_label_for_prompt(safe: Mapping[str, Any] | None) -> str | None:
     return None
 
 
+def _chat_label_from_history(
+    history_rows: list[dict[str, Any]],
+    conversation_id: str,
+) -> str | None:
+    for msg in reversed(history_rows):
+        if not isinstance(msg, dict):
+            continue
+        chat_name = str(msg.get("chat_name") or "").strip()
+        if not chat_name:
+            continue
+        chat_type = str(msg.get("chat_type") or "").strip()
+        if not chat_type:
+            chat_type = "group" if str(conversation_id or "").startswith("whatsapp:group:") else "dm"
+        return f"[{chat_type}][{chat_name}]"
+    return None
+
+
 def _format_all_chat_history_for_ai(
     *,
     current_history: list[dict[str, Any]] | None,
@@ -2992,7 +3009,10 @@ def _format_all_chat_history_for_ai(
     current_text = _render_history(history_rows, soul_name=soul_id).strip()
     if not current_text or current_text == "(none)":
         return cross_text
-    heading = _resolve_current_chat_heading(chat_label, conversation_id)
+    heading = _resolve_current_chat_heading(
+        chat_label or _chat_label_from_history(history_rows, conversation_id),
+        conversation_id,
+    )
     current_block = "\n".join(part for part in (heading, current_text) if part)
     return _merge_current_into_conversations(
         cross_text,

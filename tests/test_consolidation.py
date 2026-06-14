@@ -6,6 +6,7 @@ from app.services.consolidation import _parse_consolidation_xml
 from app.services.consolidation import run_consolidation_llm
 from app.services.consolidation import gather_consolidation_inputs
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
+from app.services.segment import format_segment_excerpt
 from app.services.graph_edges import invalidate_memory_edges, write_memory_edges
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
 from app.services.state import conversation_state_from_row, conversation_state_row, write_conversation_state
@@ -303,6 +304,37 @@ def test_format_segment_block_for_prompt_shows_memory_ids() -> None:
     assert "- [1] [memory] one" in out
     assert "- [2] [memory] two" in out
     assert id_map == {"1": "mem_1", "2": "mem_2"}
+
+
+def test_format_segment_excerpt_uses_grouped_chat_display() -> None:
+    out = format_segment_excerpt(
+        [
+            {
+                "role": "user",
+                "speaker": "Marcos",
+                "chat_name": "Familia",
+                "conversation_id": "whatsapp:group:familia",
+                "content": "hello",
+                "ts_ms": 1_770_000_000_000,
+            },
+            {
+                "role": "assistant",
+                "chat_name": "Familia",
+                "conversation_id": "whatsapp:group:familia",
+                "content": "hi",
+                "ts_ms": 1_770_000_060_000,
+            },
+        ],
+        segment_id="whatsapp:group:familia:0-1",
+        start_idx=0,
+        end_idx=1,
+        soul_name="Siri",
+    )
+
+    assert "My WhatsApp Conversations:" in out
+    assert "[group][Familia]" in out
+    assert "[Marcos]: hello" in out
+    assert "[Siri]: hi" in out
 
 
 def test_remap_edges_with_memory_ids_accepts_numbered_and_bracketed_refs() -> None:

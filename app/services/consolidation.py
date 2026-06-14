@@ -487,7 +487,7 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
                         continue
                     if isinstance(parsed, list):
                         messages.extend(m for m in parsed if isinstance(m, dict))
-            segment_inputs = build_segment_inputs(messages, pending_segment_ids)
+            segment_inputs = build_segment_inputs(messages, pending_segment_ids, soul_name=soul_id)
             if len(segment_inputs) != len(pending_segment_ids):
                 raise HTTPException(status_code=400, detail="queued segments are not present in conversation history")
 

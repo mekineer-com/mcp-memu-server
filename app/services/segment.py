@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from memu.utils.conversation import format_chat_messages
+from memu.utils.conversation import format_grouped_chat_history, format_relative_time_label
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
@@ -34,17 +34,9 @@ def _message_happened_at(msg: dict[str, Any]) -> datetime | None:
     return datetime.fromtimestamp(float(ts_ms) / 1000.0, UTC)
 
 
-def _format_time_range(start_msg: dict[str, Any], end_msg: dict[str, Any]) -> str | None:
-    start_dt = _message_happened_at(start_msg) if isinstance(start_msg, dict) else None
-    end_dt = _message_happened_at(end_msg) if isinstance(end_msg, dict) else None
-    if not start_dt:
-        return None
-    start_str = start_dt.strftime("%b %d, %H:%M")
-    if end_dt and end_dt != start_dt:
-        if start_dt.date() == end_dt.date():
-            return f"{start_str}\u2013{end_dt.strftime('%H:%M')}"
-        return f"{start_str} \u2013 {end_dt.strftime('%b %d, %H:%M')}"
-    return start_str
+def _segment_conversation_id(segment_id: str) -> str:
+    text = str(segment_id or "").strip()
+    return text.rsplit(":", 1)[0] if ":" in text else text
 
 
 def format_segment_excerpt(
@@ -53,6 +45,7 @@ def format_segment_excerpt(
     segment_id: str,
     start_idx: int,
     end_idx: int,
+    soul_name: str | None = None,
 ) -> str:
     if not messages:
         return ""
@@ -61,11 +54,8 @@ def format_segment_excerpt(
     if start > end:
         return ""
 
-    time_range = _format_time_range(messages[start], messages[end])
-    lines: list[str] = []
-    if time_range:
-        lines.append(time_range)
     excerpt_messages: list[dict[str, Any]] = []
+    fallback_conversation_id = _segment_conversation_id(segment_id)
     for idx in range(start, end + 1):
         msg = messages[idx]
         if not isinstance(msg, dict):
@@ -73,17 +63,26 @@ def format_segment_excerpt(
         content = " ".join(str(msg.get("content") or "").splitlines()).strip()
         if not content:
             continue
-        excerpt_messages.append({**msg, "content": content})
-    rendered = format_chat_messages(excerpt_messages, default_role="unknown")
-    if rendered:
-        lines.append(rendered)
-
-    return "\n".join(lines).strip()
+        row = {**msg, "content": content}
+        conversation_id = str(row.get("source_conversation_id") or row.get("conversation_id") or fallback_conversation_id).strip()
+        if conversation_id:
+            row["conversation_id"] = conversation_id
+        timestamp = row.get("received_at") or row.get("ts_ms") or row.get("created_at")
+        if timestamp and "received_at" not in row:
+            row["received_at"] = timestamp
+        excerpt_messages.append(row)
+    return format_grouped_chat_history(
+        excerpt_messages,
+        time_label_resolver=format_relative_time_label,
+        soul_name=soul_name,
+    )
 
 
 def build_segment_inputs(
     messages: list[dict[str, Any]],
     segment_ids: list[str],
+    *,
+    soul_name: str | None = None,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for segment_id in segment_ids:
@@ -99,6 +98,7 @@ def build_segment_inputs(
             segment_id=segment_id,
             start_idx=start,
             end_idx=end,
+            soul_name=soul_name,
         )
         if not excerpt:
             continue
