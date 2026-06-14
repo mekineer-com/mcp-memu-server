@@ -114,6 +114,7 @@ from app.services.turn_contract import (
     parse_turn_contract as _parse_turn_contract,
     render_history as _render_history,
     _merge_current_into_conversations,
+    resolve_current_chat_heading as _resolve_current_chat_heading,
     _section_title_from_conversation_id,
 )
 
@@ -2335,9 +2336,21 @@ async def _run_apimw(
         apimw_random_count = _apimw_random_count_from_cfg(_CONFIG)
 
         recent_history = history[-30:] if history else []
-        segment_text = _render_history(recent_history)
+        current_recent_text = _render_history(recent_history, soul_name=soul_id)
+        cross_tail = _load_cross_tail_for_ai(
+            user_id=user_id,
+            soul_id=soul_id,
+            conversation_id=conversation_id,
+        )
+        segment_text = _format_all_chat_history_for_ai(
+            current_history=recent_history,
+            cross_tail=cross_tail,
+            conversation_id=conversation_id,
+            soul_id=soul_id,
+            chat_label=_chat_label_for_prompt(payload),
+        )
         identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
-        focus_text = segment_text.strip()
+        focus_text = current_recent_text.strip()
         if not focus_text:
             logger.info("apimw skipped for %s: no recent conversation text", conversation_id)
             return
@@ -2953,6 +2966,64 @@ def _load_cross_tail_from_sources(
     return all_messages
 
 
+def _chat_label_for_prompt(safe: Mapping[str, Any] | None) -> str | None:
+    payload = safe or {}
+    chat_name = str(payload.get("chat_name") or "").strip()
+    chat_type = str(payload.get("chat_type") or "").strip()
+    if chat_name and chat_type:
+        return f"[{chat_type}][{chat_name}]"
+    if chat_name:
+        return f"[{chat_name}]"
+    return None
+
+
+def _format_all_chat_history_for_ai(
+    *,
+    current_history: list[dict[str, Any]] | None,
+    cross_tail: list[dict[str, Any]] | None,
+    conversation_id: str,
+    soul_id: str,
+    chat_label: str | None = None,
+) -> str:
+    cross_text = _message_log.format_merged_history(cross_tail or []) if cross_tail else ""
+    history_rows = current_history or []
+    if not history_rows:
+        return cross_text
+    current_text = _render_history(history_rows, soul_name=soul_id).strip()
+    if not current_text or current_text == "(none)":
+        return cross_text
+    heading = _resolve_current_chat_heading(chat_label, conversation_id)
+    current_block = "\n".join(part for part in (heading, current_text) if part)
+    return _merge_current_into_conversations(
+        cross_text,
+        current_block,
+        _section_title_from_conversation_id(conversation_id),
+    )
+
+
+def _load_cross_tail_for_ai(
+    *,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+) -> list[dict[str, Any]]:
+    db_path = _sqlite_current_path(user_id, soul_id)
+    if db_path is None or not db_path.exists():
+        return []
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
+        return _load_cross_tail_from_sources(
+            con,
+            user_id=user_id,
+            soul_id=soul_id,
+            exclude_conversation_id=conversation_id,
+        )
+    finally:
+        con.close()
+
+
 def _load_cross_memorize_tails_from_sources(
     con: sqlite3.Connection,
     *,
@@ -3170,6 +3241,20 @@ async def _run_consolidation_pipeline_once(
         )
     if prep.get("status") == "skip":
         return {"status": "skipped", "reason": prep.get("reason")}
+    current_chat_messages = [
+        row for row in (prep.get("current_chat_messages") or [])
+        if isinstance(row, dict)
+    ]
+    prep["all_chat_history"] = _format_all_chat_history_for_ai(
+        current_history=current_chat_messages,
+        cross_tail=_load_cross_tail_for_ai(
+            user_id=user_id,
+            soul_id=soul_id,
+            conversation_id=conversation_id,
+        ),
+        conversation_id=conversation_id,
+        soul_id=soul_id,
+    )
 
     consolidation_llm = await _run_consolidation_llm(
         svc,
@@ -3896,14 +3981,7 @@ async def conversation_retrieve(
                 finally:
                     _con.close()
 
-        chat_name_for_prompt = str(safe.get("chat_name") or "").strip()
-        chat_type_for_prompt = str(safe.get("chat_type") or "").strip()
-        if chat_name_for_prompt and chat_type_for_prompt:
-            chat_label_for_prompt = f"[{chat_type_for_prompt}][{chat_name_for_prompt}]"
-        elif chat_name_for_prompt:
-            chat_label_for_prompt = f"[{chat_name_for_prompt}]"
-        else:
-            chat_label_for_prompt = None
+        chat_label_for_prompt = _chat_label_for_prompt(safe)
 
         should_build_default_queries = (
             safe.get("queries") is None

@@ -609,6 +609,7 @@ LIMIT 24
             "removed_life_goals": removed_goals,
             "intention_activity": intention_activity,
             "segment_inputs": segment_inputs,
+            "current_chat_messages": messages,
             "narrative_self": narrative_self,
             "last_consolidation_at": state.get("last_consolidation_at"),
             "started_at": now.isoformat(),
@@ -678,6 +679,7 @@ async def run_consolidation_llm(
         retrieved_text = "(none surfaced)"
     current_intentions_raw = inputs.get("state", {}).get("intentions_active")
     current_intentions_text = format_intentions_for_prompt(current_intentions_raw, include_internals=True) if current_intentions_raw else "(none yet)"
+    conversation_history = str(inputs.get("all_chat_history") or "").strip() or "(none)"
 
     user_prompt = consolidation_prompt.USER_PROMPT.format(
         categories=svc._escape_prompt_value(categories_text),
@@ -685,6 +687,7 @@ async def run_consolidation_llm(
         current_intentions=svc._escape_prompt_value(current_intentions_text),
         intention_activity=svc._escape_prompt_value(intention_text),
         retrieved_memories=svc._escape_prompt_value(retrieved_text),
+        conversation_history=svc._escape_prompt_value(conversation_history),
         segments=svc._escape_prompt_value(segments_text),
     )
 

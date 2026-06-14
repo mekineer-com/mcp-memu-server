@@ -183,6 +183,55 @@ async def test_run_consolidation_llm_retries_once_on_missing_root() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_consolidation_llm_includes_all_chat_history() -> None:
+    class _Svc:
+        def __init__(self) -> None:
+            self.prompt = ""
+
+        def _escape_prompt_value(self, value):
+            return str(value)
+
+        async def chat(self, prompt, *_args, **_kwargs):
+            self.prompt = str(prompt)
+            return """
+<consolidation>
+  <narrative_self>steady</narrative_self>
+  <life_goals></life_goals>
+  <intentions>
+    <create id="new-thread" text="Follow this emerging thread" />
+  </intentions>
+  <edges></edges>
+  <companion_memory>noted</companion_memory>
+</consolidation>
+"""
+
+        async def embed(self, *_args, **_kwargs):
+            return []
+
+    svc = _Svc()
+    await run_consolidation_llm(
+        svc,
+        inputs={
+            "categories": [],
+            "active_life_goals": [],
+            "removed_life_goals": [],
+            "intention_activity": [],
+            "segment_inputs": [],
+            "all_chat_history": "My WhatsApp Conversations:\n\n[dm][Raquel]\n[Raquel]: cross hello",
+            "narrative_self": None,
+            "state": {"intentions_active": {"items": [{"id": "relax", "text": "Relax", "kind": "relax"}]}},
+            "retrieved_memories": [],
+        },
+        soul_id="Echo",
+        llm_profile=None,
+    )
+
+    assert "# My conversations" in svc.prompt
+    assert "[dm][Raquel]" in svc.prompt
+    assert "[Raquel]: cross hello" in svc.prompt
+
+
+@pytest.mark.asyncio
 async def test_run_consolidation_llm_retries_once_on_malformed_xml() -> None:
     class _Svc:
         def __init__(self) -> None:

@@ -39,6 +39,39 @@ def test_placeholder():
     assert True
 
 
+def test_format_all_chat_history_for_ai_merges_current_and_cross_chats() -> None:
+    rendered = main._format_all_chat_history_for_ai(
+        current_history=[
+            {
+                "role": "user",
+                "name": "Marcos",
+                "content": "current hello",
+                "ts_ms": 1_770_000_000_000,
+            }
+        ],
+        cross_tail=[
+            {
+                "conversation_id": "sillytavern:Siri",
+                "role": "assistant",
+                "speaker": "Siri",
+                "chat_name": "Siri",
+                "content": "cross hello",
+                "received_at": "2026-05-08T11:00:00+00:00",
+            }
+        ],
+        conversation_id="whatsapp:group:family@g.us",
+        soul_id="Siri",
+        chat_label="[group][Familia]",
+    )
+
+    assert "My SillyTavern Conversations:" in rendered
+    assert "[dm][Siri]" in rendered
+    assert "[Siri]: cross hello" in rendered
+    assert "My WhatsApp Conversations:" in rendered
+    assert "[group][Familia] \u2190 current chat" in rendered
+    assert "[Marcos] current hello" in rendered
+
+
 def test_conversation_state_schema_migrates_pending_segment_ids_from_old_name(
     tmp_path: Path,
 ) -> None:
