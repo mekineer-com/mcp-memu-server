@@ -441,6 +441,6 @@ def test_format_merged_history_whatsapp_dm_keeps_self_speaker_for_self_chat(tmp_
 
 
 def test_normalize_whatsapp_identifier_rejects_path_like_values() -> None:
-    assert message_log._normalize_whatsapp_identifier("../etc/passwd") == ""
-    assert message_log._normalize_whatsapp_identifier("..\\evil") == ""
-    assert message_log._normalize_whatsapp_identifier("15133278228:13@s.whatsapp.net") == "15133278228"
+    assert message_log.normalize_whatsapp_identifier("../etc/passwd") == ""
+    assert message_log.normalize_whatsapp_identifier("..\\evil") == ""
+    assert message_log.normalize_whatsapp_identifier("15133278228:13@s.whatsapp.net") == "15133278228"

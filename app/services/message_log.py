@@ -26,7 +26,6 @@ def derive_source_label(conversation_id: str) -> str:
 
 
 DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES = 8
-_normalize_whatsapp_identifier = normalize_whatsapp_identifier
 
 
 def _load_whatsapp_directory_names() -> dict[str, str]:

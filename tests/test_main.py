@@ -35,10 +35,6 @@ def _messages_table_exists(con: sqlite3.Connection) -> bool:
     return row is not None
 
 
-def test_placeholder():
-    assert True
-
-
 def test_format_all_chat_history_for_ai_merges_current_and_cross_chats() -> None:
     rendered = main._format_all_chat_history_for_ai(
         current_history=[
