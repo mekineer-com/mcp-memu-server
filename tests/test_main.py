@@ -2542,6 +2542,48 @@ async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
+async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.MonkeyPatch):
+    async def _chat(*_args: object, **_kwargs: object) -> str:
+        return (
+            "*looks up softly*\n\n"
+            '{"prior_context":["1"],"message_to_self":"remember the quiet signal"}'
+        )
+
+    monkeypatch.setattr(main, "_load_active_life_goals_for_prompt", lambda **_kwargs: [])
+    svc = SimpleNamespace(
+        chat=_chat,
+        database=SimpleNamespace(
+            memory_category_repo=SimpleNamespace(list_categories=lambda _scope: {}),
+        ),
+    )
+
+    result_json, items_by_id, id_map = await main._apimw_synthesize(
+        svc,
+        combined_items=[
+            {
+                "id": "mem_one",
+                "memory_type": "profile",
+                "summary": "Marcos likes continuity.",
+            }
+        ],
+        identity_context="identity",
+        state_row={},
+        segment_text="New Message:\nhello",
+        user_id="u",
+        soul_id="s",
+        conversation_id="c",
+        scope={"user_id": "u", "soul_id": "s"},
+    )
+
+    assert result_json == {
+        "prior_context": ["1"],
+        "message_to_self": "remember the quiet signal",
+    }
+    assert items_by_id["mem_one"]["summary"] == "Marcos likes continuity."
+    assert id_map == {"1": "mem_one"}
+
+
+@pytest.mark.asyncio
 async def test_apimw_persist_message_to_self_not_truncated(monkeypatch: pytest.MonkeyPatch):
     long_text = "x" * 500
     captured_updates: dict[str, object] = {}

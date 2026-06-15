@@ -213,6 +213,28 @@ def test_build_turn_prompt_marks_current_chat_when_label_provided():
     assert "[dm][Alice] ← current chat" in prompt
 
 
+def test_build_turn_prompt_does_not_double_prefix_markdown_category_summary():
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[],
+        prior_context=None,
+        retrieve_rag={
+            "categories": [
+                {
+                    "name": "Experiences",
+                    "summary": "# Experiences\n\n## Shared Activities\n- We debugged together.",
+                }
+            ]
+        },
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+    )
+
+    assert "[Experiences] # Experiences" not in prompt
+    assert "# Experiences\n\n## Shared Activities" in prompt
+
+
 def test_build_turn_prompt_derives_current_chat_heading_when_label_absent(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     prompt = build_turn_prompt(

@@ -2039,6 +2039,23 @@ def _clear_background_error_if_apimw_owned(
     )
 
 
+def _parse_apimw_json_response(text: str) -> dict[str, Any] | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        if start < 0:
+            return None
+        try:
+            parsed, _end = json.JSONDecoder().raw_decode(raw[start:])
+        except json.JSONDecodeError:
+            return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 async def _apimw_retrieve_items(
     payload: dict[str, Any],
     *,
@@ -2240,13 +2257,9 @@ async def _apimw_synthesize(
     )
 
     apimw_response_text = str(llm_raw or "").strip()
-    try:
-        result_json = json.loads(apimw_response_text)
-    except json.JSONDecodeError:
+    result_json = _parse_apimw_json_response(apimw_response_text)
+    if result_json is None:
         logger.error("apimw synthesis: JSON parse failed, raw=%s", apimw_response_text[:200])
-        return None, items_by_id, id_map
-    if not isinstance(result_json, dict):
-        logger.error("apimw synthesis: expected dict, got %s", type(result_json).__name__)
         return None, items_by_id, id_map
 
     logger.info("apimw synthesis: parsed JSON with keys %s for %s", list(result_json.keys()), conversation_id)
