@@ -3369,7 +3369,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
             {
                 "role": "user",
                 "speaker": "Marcos",
-                "chat_name": "Eduardo Scarone",
+                "chat_name": "Marcos",
                 "content": f"msg_{idx:02d}",
                 "source_conversation_index": idx,
             }
@@ -3394,7 +3394,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
         "build_turn_prompt": True,
         "load_source_history": True,
         "is_live_turn": True,
-        "chat_name": "Eduardo Scarone",
+        "chat_name": "Marcos",
         "chat_type": "dm",
     }
 
@@ -3404,7 +3404,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
     assert out["conversation_id"] == "whatsapp:dm:15133278228"
     assert "My WhatsApp Conversations:" in turn_prompt
     assert "My SillyTavern Conversations:" not in turn_prompt
-    assert "[dm][Eduardo Scarone] \u2190 current chat" in turn_prompt
+    assert "[dm][Marcos] \u2190 current chat" in turn_prompt
     assert "[Marcos] msg_11" in turn_prompt
     assert "msg_04" in turn_prompt
     assert "msg_03" not in turn_prompt
@@ -3420,7 +3420,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
     )
     assert "My WhatsApp Conversations:" in query_text
     assert "My SillyTavern Conversations:" not in query_text
-    assert "[dm][Eduardo Scarone] \u2190 current chat" in query_text
+    assert "[dm][Marcos] \u2190 current chat" in query_text
     assert "msg_04" in query_text
     assert "msg_03" not in query_text
 
