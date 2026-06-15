@@ -1787,7 +1787,20 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: object())
     monkeypatch.setattr(main, "_apimw_memory_count_from_cfg", lambda *_a, **_k: 5)
     monkeypatch.setattr(main, "_apimw_random_count_from_cfg", lambda *_a, **_k: 0)
-    monkeypatch.setattr(main, "_load_cross_tail_for_ai", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        main,
+        "_load_cross_tail_for_ai",
+        lambda **_kwargs: [
+            {
+                "conversation_id": "whatsapp:dm:cross",
+                "role": "user",
+                "speaker": "Liz",
+                "chat_name": "Liz",
+                "content": "cross hello",
+                "received_at": "2026-05-01T00:00:00+00:00",
+            }
+        ],
+    )
 
     async def _fake_collect(
         _svc,
@@ -1801,7 +1814,8 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
         captured["conversations_block"] = conversations_block
         return []
 
-    async def _fake_synthesize(*_args, **_kwargs):
+    async def _fake_synthesize(*_args, **kwargs):
+        captured["synthesis_segment_text"] = kwargs["segment_text"]
         return {}, {}, {}
 
     async def _fake_persist(*_args, **_kwargs):
@@ -1818,7 +1832,11 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
     ]
 
     await main._run_apimw(
-        {},
+        {
+            "message": "current hello",
+            "chat_name": "Marcos",
+            "chat_type": "dm",
+        },
         conversation_id="whatsapp:dm:15133278228",
         soul_id="Siri",
         user_id="u1",
@@ -1826,9 +1844,15 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
         current_history=history,
     )
 
-    assert "msg 1" in captured["focus_text"]
-    assert "msg 35" in captured["focus_text"]
-    assert captured["focus_text"] == captured["conversations_block"]
+    assert captured["focus_text"] == "current hello"
+    assert "msg 1" in captured["conversations_block"]
+    assert "msg 35" in captured["conversations_block"]
+    assert "cross hello" in captured["conversations_block"]
+    assert "[dm][Marcos] \u2190 current chat" in captured["conversations_block"]
+    assert "[Marcos] current hello ..." in captured["conversations_block"]
+    assert "New Message:" not in captured["conversations_block"]
+    assert captured["synthesis_segment_text"].startswith(captured["conversations_block"])
+    assert "New Message:\ncurrent hello" in captured["synthesis_segment_text"]
 
 
 def test_build_retrieve_soul_context_queries_orders_chats_before_working_and_intentions() -> None:

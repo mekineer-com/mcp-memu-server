@@ -2351,16 +2351,23 @@ async def _run_apimw(
             soul_id=soul_id,
             conversation_id=conversation_id,
         )
+        current_message_text = _pick_str(payload, "message", "query") or ""
         segment_text = _format_all_chat_history_for_ai(
             current_history=current_history,
             cross_tail=cross_tail,
             conversation_id=conversation_id,
             soul_id=soul_id,
             chat_label=_chat_label_for_prompt(payload),
+            current_user_text=current_message_text,
+            use_current_message_locator=bool(current_message_text),
         )
         identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
-        focus_text = segment_text.strip()
-        if not focus_text:
+        new_message_block = f"New Message:\n{current_message_text}" if current_message_text else ""
+        synthesis_conversation_text = "\n\n".join(
+            part for part in (segment_text.strip(), new_message_block) if part
+        )
+        focus_text = current_message_text or segment_text.strip()
+        if not focus_text and not synthesis_conversation_text:
             logger.info("apimw skipped for %s: no recent conversation text", conversation_id)
             return
 
@@ -2384,7 +2391,7 @@ async def _run_apimw(
             combined_items=combined_items,
             identity_context=identity_context,
             state_row=state_row,
-            segment_text=segment_text,
+            segment_text=synthesis_conversation_text,
             user_id=user_id,
             soul_id=soul_id,
             conversation_id=conversation_id,
