@@ -7,6 +7,8 @@ import uuid
 from fastapi import HTTPException
 from pydantic import BaseModel, model_validator
 
+from app.services import message_log as _message_log
+
 
 class MemuTurnRequest(BaseModel):
     conversation_id: str
@@ -103,6 +105,13 @@ async def memu_turn_endpoint(
     conversation_id = str(req.conversation_id or "").strip()
     if not conversation_id:
         raise HTTPException(status_code=400, detail="conversation_id is required")
+    if conversation_id.startswith("whatsapp:") and not conversation_id.startswith(
+        ("whatsapp:dm:", "whatsapp:group:")
+    ):
+        whatsapp_tail = conversation_id.split(":", 1)[1].strip()
+        whatsapp_label = _message_log.derive_source_label(conversation_id)
+        if whatsapp_tail and whatsapp_label in {"whatsapp:dm", "whatsapp:group"}:
+            conversation_id = f"{whatsapp_label}:{whatsapp_tail}"
     message = str(req.message or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
@@ -251,4 +260,3 @@ async def memu_consolidate_endpoint(
         raise HTTPException(status_code=400, detail="conversation_id is required")
     scope = _scope(user_id=req.user_id, soul_id=req.soul_id, conversation_id=conversation_id)
     return await force_consolidation(conversation_id, {"user": scope, "conversation_id": conversation_id})
-

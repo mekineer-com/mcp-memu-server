@@ -3357,18 +3357,26 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
             db_path,
         ),
     )
-    monkeypatch.setattr(
-        main,
-        "_load_current_whatsapp_history_from_source",
-        lambda *_a, **_k: [
+    loaded_source_ids: list[str] = []
+
+    def _fake_load_current_whatsapp_history_from_source(
+        conversation_id: str,
+        *_a: object,
+        **_k: object,
+    ) -> list[dict[str, object]]:
+        loaded_source_ids.append(conversation_id)
+        return [
             {
                 "role": "user",
+                "speaker": "Marcos",
+                "chat_name": "Eduardo Scarone",
                 "content": f"msg_{idx:02d}",
                 "source_conversation_index": idx,
             }
             for idx in range(12)
-        ],
-    )
+        ]
+
+    monkeypatch.setattr(main, "_load_current_whatsapp_history_from_source", _fake_load_current_whatsapp_history_from_source)
 
     captured: dict[str, object] = {}
 
@@ -3386,21 +3394,33 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
         "build_turn_prompt": True,
         "load_source_history": True,
         "is_live_turn": True,
+        "chat_name": "Eduardo Scarone",
+        "chat_type": "dm",
     }
 
-    out = await main.conversation_retrieve("whatsapp:dm:15133278228", payload)
+    out = await main.conversation_retrieve("whatsapp:15133278228", payload)
     turn_prompt = str(out.get("turn_user_prompt") or "")
+    assert loaded_source_ids == ["whatsapp:dm:15133278228"]
+    assert out["conversation_id"] == "whatsapp:dm:15133278228"
+    assert "My WhatsApp Conversations:" in turn_prompt
+    assert "My SillyTavern Conversations:" not in turn_prompt
+    assert "[dm][Eduardo Scarone] \u2190 current chat" in turn_prompt
+    assert "[Marcos] msg_11" in turn_prompt
     assert "msg_04" in turn_prompt
     assert "msg_03" not in turn_prompt
     assert "msg_11" in turn_prompt
     assert [row["content"] for row in out.get("turn_history") or []] == [f"msg_{idx:02d}" for idx in range(4, 12)]
     safe = captured["safe"]
     assert isinstance(safe, dict)
+    assert safe["user"]["conversation_id"] == "whatsapp:dm:15133278228"
     query_text = "\n".join(
         str((query.get("content") or {}).get("text") or "")
         for query in safe.get("queries") or []
         if isinstance(query, dict)
     )
+    assert "My WhatsApp Conversations:" in query_text
+    assert "My SillyTavern Conversations:" not in query_text
+    assert "[dm][Eduardo Scarone] \u2190 current chat" in query_text
     assert "msg_04" in query_text
     assert "msg_03" not in query_text
 
