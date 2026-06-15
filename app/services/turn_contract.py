@@ -162,6 +162,34 @@ def _mark_current_chat_block(block: str, *, chat_label: str | None) -> str:
     return block.strip()
 
 
+def _resolve_current_chat_heading_from_grouped_renderer(
+    *,
+    chat_label: str | None,
+    conversation_id: str | None,
+    soul_name: str | None,
+) -> str:
+    explicit = _text(chat_label)
+    if explicit:
+        return _append_current_chat_marker(explicit)
+    cid = _text(conversation_id)
+    if not cid:
+        return resolve_current_chat_heading(chat_label, conversation_id)
+    rendered = _message_log.format_merged_history(
+        [{"conversation_id": cid, "role": "system", "content": "__memu_heading_probe__"}],
+        soul_name=soul_name,
+    )
+    sections = _split_markdown_sections(rendered)
+    if sections:
+        _section_header, section_lines = sections[-1]
+        blocks = _split_conversation_blocks(section_lines)
+        current_block = blocks[-1] if blocks else "\n".join(section_lines).strip()
+        for line in current_block.splitlines():
+            heading = _text(line)
+            if heading and "__memu_heading_probe__" not in heading:
+                return _append_current_chat_marker(heading)
+    return resolve_current_chat_heading(chat_label, conversation_id)
+
+
 def _render_current_chat_block(
     history: list[dict[str, Any]],
     *,
@@ -171,7 +199,11 @@ def _render_current_chat_block(
 ) -> tuple[str, str]:
     rows = _current_chat_rows_for_grouped_render(history, conversation_id=conversation_id)
     if not rows:
-        heading = resolve_current_chat_heading(chat_label, conversation_id)
+        heading = _resolve_current_chat_heading_from_grouped_renderer(
+            chat_label=chat_label,
+            conversation_id=conversation_id,
+            soul_name=soul_name,
+        )
         return _section_title_from_conversation_id(conversation_id), "\n".join(
             part for part in (heading, "(none)") if part
         )
@@ -179,7 +211,11 @@ def _render_current_chat_block(
     rendered = _message_log.format_merged_history(rows, soul_name=soul_name)
     sections = _split_markdown_sections(rendered)
     if not sections:
-        heading = resolve_current_chat_heading(chat_label, conversation_id)
+        heading = _resolve_current_chat_heading_from_grouped_renderer(
+            chat_label=chat_label,
+            conversation_id=conversation_id,
+            soul_name=soul_name,
+        )
         return _section_title_from_conversation_id(conversation_id), "\n".join(
             part for part in (heading, rendered) if part
         )

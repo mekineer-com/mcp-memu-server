@@ -260,6 +260,40 @@ def test_build_turn_prompt_resolves_current_whatsapp_heading_from_directory(tmp_
     assert "[dm][15133278228] ← current chat" not in prompt
 
 
+def test_build_turn_prompt_resolves_empty_current_whatsapp_heading_from_directory(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "channel_directory.json").write_text(
+        json.dumps(
+            {
+                "platforms": {
+                    "whatsapp": [
+                        {"id": "15133278228@s.whatsapp.net", "name": "Eduardo Scarone", "type": "dm"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    prompt = build_turn_prompt(
+        user_message="",
+        history=[],
+        prior_context=None,
+        retrieve_rag=None,
+        all_categories_summary=None,
+        memory_cache=None,
+        intentions_active=None,
+        conversation_id="whatsapp:dm:15133278228",
+        self_turn_directive="Scheduled wake.",
+    )
+
+    assert "[dm][Eduardo Scarone] ← current chat" in prompt
+    assert "[dm][15133278228] ← current chat" not in prompt
+    assert "__memu_heading_probe__" not in prompt
+
+
 def test_build_turn_prompt_integrity_id_uses_sillytavern_section_not_other():
     prompt = build_turn_prompt(
         user_message="hello",
