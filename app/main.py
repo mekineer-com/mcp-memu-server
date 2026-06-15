@@ -4177,6 +4177,7 @@ async def conversation_retrieve(
             and soul_id
             and retrieve_focus.strip()
             and state_row is not None
+            and safe.get("queries") is None
         )
         should_rebuild_queries_for_cutoff = (
             current_whatsapp_active_since is not None

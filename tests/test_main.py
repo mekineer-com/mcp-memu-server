@@ -2160,6 +2160,119 @@ async def test_run_memorize_segments_keeps_results_when_summary_fails(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_run_memorize_segments_merges_cross_display_ranges_across_segments(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+
+    class _FakeService:
+        async def memorize_segments_batch(self, **kwargs):
+            return [
+                {"pending_segment_ids": [f"trigger:{idx}-{idx}"]}
+                for idx, _segment in enumerate(kwargs["segments"])
+            ]
+
+    state_rows: dict[str, dict[str, Any]] = {
+        "trigger": {"digest_cursor": -1, "pending_segment_ids": []},
+        "chat-a": {"digest_cursor": -1, "pending_segment_ids": []},
+        "chat-b": {"digest_cursor": -1, "pending_segment_ids": []},
+    }
+    writes: list[tuple[str, dict[str, Any]]] = []
+    cleared_participants: set[str] = set()
+
+    def fake_load_turn_state_and_soul_card(cid: str, **_kwargs):
+        return dict(state_rows.get(cid, {})), None, tmp_path / "Echo.db"
+
+    def fake_write_conversation_state(cid: str, *, updates: dict[str, Any], **_kwargs):
+        writes.append((cid, dict(updates)))
+        state_rows.setdefault(cid, {}).update(updates)
+        return dict(state_rows[cid]), tmp_path / "Echo.db"
+
+    async def fake_summary(**_kwargs):
+        return "summary"
+
+    def fake_clear_last_display_segments_for_nonparticipants(**kwargs):
+        cleared_participants.update(kwargs["participant_conversation_ids"])
+
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
+    monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
+    monkeypatch.setattr(main, "_compute_holistic_categories_summary", fake_summary)
+    monkeypatch.setattr(
+        main,
+        "_clear_last_display_segments_for_nonparticipants",
+        fake_clear_last_display_segments_for_nonparticipants,
+    )
+
+    await main._run_memorize_segments(
+        memorize_segments=[
+            (
+                "/tmp/day.json",
+                [
+                    {
+                        "role": "user",
+                        "content": "a1",
+                        "memorize_chat": True,
+                        "source_conversation_id": "chat-a",
+                        "source_conversation_index": 10,
+                    },
+                    {
+                        "role": "user",
+                        "content": "a2",
+                        "memorize_chat": True,
+                        "source_conversation_id": "chat-a",
+                        "source_conversation_index": 11,
+                    },
+                ],
+                0,
+                1,
+            ),
+            (
+                "/tmp/day.json",
+                [
+                    {
+                        "role": "user",
+                        "content": "b1",
+                        "memorize_chat": True,
+                        "source_conversation_id": "chat-b",
+                        "source_conversation_index": 20,
+                    }
+                ],
+                2,
+                2,
+            ),
+        ],
+        svc=_FakeService(),
+        scope={"user_id": "u", "soul_id": "s"},
+        conversation_id="trigger",
+        soul_id="s",
+        uid="u",
+        processed_cursor=-1,
+        safe={},
+        resource_url="/tmp/day.json",
+        chat_key=None,
+        merged_len=3,
+        force=False,
+        sleep_stats=None,
+        segments_dir=segments_dir,
+        cross_memorize=True,
+        final_cursors={"chat-a": 11, "chat-b": 20},
+    )
+
+    assert cleared_participants == {"chat-a", "chat-b"}
+    range_writes = {
+        cid: updates
+        for cid, updates in writes
+        if "last_display_segment_start_index" in updates
+    }
+    assert range_writes["chat-a"]["last_display_segment_start_index"] == 10
+    assert range_writes["chat-a"]["last_display_segment_end_index"] == 11
+    assert range_writes["chat-b"]["last_display_segment_start_index"] == 20
+    assert range_writes["chat-b"]["last_display_segment_end_index"] == 20
+
+
+@pytest.mark.asyncio
 async def test_run_memorize_segments_clears_consumed_background_summaries(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2685,7 +2798,7 @@ def test_turn_state_write_clears_one_shot_message_to_self(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_conversation_retrieve_rebuilds_prebuilt_queries_with_unified_chat_display(
+async def test_conversation_retrieve_preserves_prebuilt_queries_without_cutoff(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2748,14 +2861,7 @@ async def test_conversation_retrieve_rebuilds_prebuilt_queries_with_unified_chat
     cross_text = str(safe.get("_cross_conversation_history") or "")
     assert "wa-2" in cross_text
     queries = safe.get("queries")
-    assert isinstance(queries, list)
-    cross_roles = [
-        str(q.get("role") or "").strip()
-        for q in queries
-        if isinstance(q, dict)
-    ]
-    assert cross_roles.count("history") == 1
-    assert cross_roles.count("cross_conversation") == 0
+    assert queries == payload["queries"]
 
 
 @pytest.mark.asyncio
@@ -4100,7 +4206,7 @@ async def test_conversation_retrieve_includes_sillytavern_cross_tail_from_snapsh
 
 
 @pytest.mark.asyncio
-async def test_conversation_retrieve_replaces_preexisting_cross_query_with_unified_chat_display(
+async def test_conversation_retrieve_preserves_caller_queries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4164,20 +4270,7 @@ async def test_conversation_retrieve_replaces_preexisting_cross_query_with_unifi
     safe = captured["safe"]
     assert isinstance(safe, dict)
     queries = safe.get("queries")
-    assert isinstance(queries, list)
-    history_text = "\n".join(
-        str((q.get("content") or {}).get("text") or "")
-        for q in queries
-        if isinstance(q, dict) and str(q.get("role") or "").strip() == "history"
-    )
-    cross_roles = [
-        str(q.get("role") or "").strip()
-        for q in queries
-        if isinstance(q, dict)
-    ]
-    assert cross_roles.count("cross_conversation") == 0
-    assert "My WhatsApp Conversations:" in history_text
-    assert "wa-2" in history_text
+    assert queries == payload["queries"]
 
 
 @pytest.mark.asyncio

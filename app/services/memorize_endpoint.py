@@ -134,6 +134,21 @@ def _segment_display_ranges(
     return ranges
 
 
+def _merge_display_ranges(
+    target: dict[str, tuple[int, int]],
+    incoming: dict[str, tuple[int, int]],
+) -> None:
+    for cid, display_range in incoming.items():
+        current = target.get(cid)
+        if current is None:
+            target[cid] = display_range
+        else:
+            target[cid] = (
+                min(current[0], display_range[0]),
+                max(current[1], display_range[1]),
+            )
+
+
 def _set_memorize_progress(
     memorize_progress: dict[str, dict[str, Any]],
     key: str,
@@ -435,7 +450,10 @@ async def run_memorize_segments(
                         has_results = True
                         pending_segment_ids.extend(run_ctx.normalize_text_list(ep_result.get("pending_segment_ids")))
                         if cross_memorize:
-                            latest_display_ranges = _segment_display_ranges(segment_job["segment_messages"])
+                            _merge_display_ranges(
+                                latest_display_ranges,
+                                _segment_display_ranges(segment_job["segment_messages"]),
+                            )
                     segment_end_index = segment_job["segment_end_index"]
                     if conversation_id and not cross_memorize:
                         # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
