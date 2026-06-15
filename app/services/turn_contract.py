@@ -457,7 +457,7 @@ def _render_retrieve(
             if category_summary:
                 item_terms.add(_norm_text(category_summary))
             if category_summary:
-                if category_summary.startswith("#"):
+                if re.match(r"^#{1,6}\s", category_summary):
                     category_lines.append(category_summary)
                 else:
                     category_lines.append(f"[{category_name}] {category_summary}")
