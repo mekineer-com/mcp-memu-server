@@ -57,14 +57,14 @@ def test_format_all_chat_history_for_ai_merges_current_and_cross_chats() -> None
         ],
         conversation_id="whatsapp:group:family@g.us",
         soul_id="Siri",
-        chat_label="[group][Familia]",
+        chat_label="[group][Household Group]",
     )
 
     assert "My SillyTavern Conversations:" in rendered
     assert "[dm][Siri]" in rendered
     assert "[Siri] cross hello" in rendered
     assert "My WhatsApp Conversations:" in rendered
-    assert "[group][Familia] \u2190 current chat" in rendered
+    assert "[group][Household Group] \u2190 current chat" in rendered
     assert "[Marcos] current hello" in rendered
 
 
@@ -205,7 +205,7 @@ def test_normalize_turn_history_preserves_source_speaker_and_received_at() -> No
     rows = main._normalize_turn_history([
         {
             "role": "user",
-            "speaker": "Raquel",
+            "speaker": "Contact A",
             "content": "hi",
             "received_at": "2026-05-30T17:00:00+00:00",
         }
@@ -216,7 +216,7 @@ def test_normalize_turn_history_preserves_source_speaker_and_received_at() -> No
             "role": "user",
             "content": "hi",
             "source_message_id": "0",
-            "name": "Raquel",
+            "name": "Contact A",
             "ts_ms": 1780160400000,
         }
     ]
@@ -707,7 +707,7 @@ def test_stamp_current_conversation_metadata_adds_render_labels():
             "name": "Liz",
             "content": "cross",
             "source_conversation_id": "whatsapp:dm:447879696252",
-            "chat_name": "Liz Kalverda",
+            "chat_name": "Contact B",
         },
     ]
     main._memorize_endpoint.stamp_current_conversation_metadata(
@@ -718,7 +718,7 @@ def test_stamp_current_conversation_metadata_adds_render_labels():
     assert rows[0]["source_conversation_id"] == "integrity:32bfed88-ee89-4053-81f8-3dba8b973857"
     assert rows[0]["chat_name"] == "Siri"
     assert rows[1]["source_conversation_id"] == "whatsapp:dm:447879696252"
-    assert rows[1]["chat_name"] == "Liz Kalverda"
+    assert rows[1]["chat_name"] == "Contact B"
 
 
 def test_build_cross_conversation_payload_uses_state_default_memorize_flag(
@@ -766,7 +766,7 @@ def test_build_cross_conversation_payload_request_flag_overrides_state_default(
         "whatsapp:dm:123",
         "u1",
         "Echo",
-        {"memorize_chat": True, "chat_name": "Liz Kalverda"},
+        {"memorize_chat": True, "chat_name": "Contact B"},
         [{"role": "user", "content": "hello"}],
         -1,
         False,
@@ -775,7 +775,7 @@ def test_build_cross_conversation_payload_request_flag_overrides_state_default(
     conversation = out.get("conversation")
     assert isinstance(conversation, list) and conversation
     assert conversation[0].get("memorize_chat") is True
-    assert conversation[0].get("chat_name") == "Liz Kalverda"
+    assert conversation[0].get("chat_name") == "Contact B"
 
 
 def test_build_cross_conversation_payload_includes_background_rolling_summaries(
@@ -3860,7 +3860,7 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
                 "conversation_id": "whatsapp:group:familia",
                 "role": "user",
                 "speaker": "Family Member",
-                "chat_name": "Familia",
+                "chat_name": "Household Group",
                 "content": "cross chat message",
                 "source_label": "whatsapp:group",
                 "received_at": "2026-05-08T11:00:01+00:00",
@@ -3898,7 +3898,7 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
     assert "[dm][Marcos] \u2190 current chat" in turn_prompt
     assert "[user] current message" not in turn_prompt
     assert "[Marcos] current message" in turn_prompt
-    assert "[group][Familia]" in turn_prompt
+    assert "[group][Household Group]" in turn_prompt
     assert "[Family Member] cross chat message" in turn_prompt
     assert "current message" in turn_prompt
     safe = captured["safe"]
@@ -3912,7 +3912,7 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
     assert "My SillyTavern Conversations:" not in query_text
     assert "[dm][Marcos] \u2190 current chat" in query_text
     assert "[Marcos] current message ..." in query_text
-    assert "[group][Familia]" in query_text
+    assert "[group][Household Group]" in query_text
     assert "[Family Member] cross chat message" in query_text
 
 
@@ -4356,10 +4356,10 @@ async def test_conversation_turn_private_response_not_persisted_in_origin_chat(
     monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
 
     payload = {
-        "user": {"user_id": "u1", "soul_id": "Siri", "conversation_id": "whatsapp:dm:Raquel"},
+        "user": {"user_id": "u1", "soul_id": "Siri", "conversation_id": "whatsapp:dm:Contact A"},
         "message": "Hello Siri.",
-        "user_name": "Raquel",
-        "chat_name": "Raquel",
+        "user_name": "Contact A",
+        "chat_name": "Contact A",
         "chat_type": "dm",
         "history": [],
         "prompt_override_payload": {
@@ -4371,7 +4371,7 @@ async def test_conversation_turn_private_response_not_persisted_in_origin_chat(
         },
     }
 
-    out = await main.conversation_turn("whatsapp:dm:Raquel", payload)
+    out = await main.conversation_turn("whatsapp:dm:Contact A", payload)
     assert out["ok"] is True
     assert out["response_target"] == "private"
     assert out["response"] == "private note to Marcos"
@@ -4436,7 +4436,7 @@ async def test_conversation_turn_observe_mode_forbids_public_response(
     payload = {
         "user": {"user_id": "u1", "soul_id": "Siri", "conversation_id": "whatsapp:group:familia"},
         "message": "Siri is listening.",
-        "chat_name": "Familia",
+        "chat_name": "Household Group",
         "chat_type": "group",
         "history": [],
         "allow_public_response": False,

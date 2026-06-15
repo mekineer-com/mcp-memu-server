@@ -5,7 +5,7 @@ def test_normalize_conversation_preserves_speaker_as_name_for_memorize() -> None
     out = _normalize_conversation([
         {
             "role": "user",
-            "speaker": "Raquel",
+            "speaker": "Contact A",
             "content": "hi Siri",
             "source_label": "whatsapp:dm",
         }
@@ -14,9 +14,9 @@ def test_normalize_conversation_preserves_speaker_as_name_for_memorize() -> None
     assert out == [
         {
             "role": "user",
-            "name": "Raquel",
+            "name": "Contact A",
             "content": "hi Siri",
-            "speaker": "Raquel",
+            "speaker": "Contact A",
             "source_label": "whatsapp:dm",
         }
     ]

@@ -135,14 +135,14 @@ def test_format_merged_history_parses_legacy_group_prefix_at_render_time() -> No
                 "source_label": "whatsapp:group",
                 "role": "user",
                 "speaker": "Marcos",
-                "content": "[Raquel] Going to the gym now.",
+                "content": "[Contact A] Going to the gym now.",
                 "received_at": "2026-05-09T12:08:26+00:00",
             }
         ]
     )
 
-    assert "[Marcos] [Raquel] Going to the gym now." not in rendered
-    assert "[Raquel] Going to the gym now." in rendered
+    assert "[Marcos] [Contact A] Going to the gym now." not in rendered
+    assert "[Contact A] Going to the gym now." in rendered
 
 
 def test_format_merged_history_preserves_same_day_duplicate_lines() -> None:
@@ -153,7 +153,7 @@ def test_format_merged_history_preserves_same_day_duplicate_lines() -> None:
                 "source_label": "whatsapp:group",
                 "role": "user",
                 "speaker": "Marcos",
-                "content": "[Raquel] Going to the gym now.",
+                "content": "[Contact A] Going to the gym now.",
                 "received_at": "2026-05-09T12:08:26+00:00",
             },
             {
@@ -161,13 +161,13 @@ def test_format_merged_history_preserves_same_day_duplicate_lines() -> None:
                 "source_label": "whatsapp:group",
                 "role": "user",
                 "speaker": "",
-                "content": "[Raquel] Going to the gym now.",
+                "content": "[Contact A] Going to the gym now.",
                 "received_at": "2026-05-09T12:09:26+00:00",
             },
         ]
     )
 
-    assert rendered.count("[Raquel] Going to the gym now.") == 2
+    assert rendered.count("[Contact A] Going to the gym now.") == 2
 
 
 def test_format_merged_history_uses_channel_directory_names(tmp_path, monkeypatch) -> None:
@@ -233,7 +233,7 @@ def test_format_merged_history_group_heading_uses_group_name_cache(tmp_path, mon
         encoding="utf-8",
     )
     (hermes_home / "whatsapp_group_names.json").write_text(
-        json.dumps({"18322935409-1579788049@g.us": "Familia"}),
+        json.dumps({"18322935409-1579788049@g.us": "Household Group"}),
         encoding="utf-8",
     )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -251,7 +251,7 @@ def test_format_merged_history_group_heading_uses_group_name_cache(tmp_path, mon
         ]
     )
 
-    assert "[group][Familia]" in rendered
+    assert "[group][Household Group]" in rendered
     assert "[group][18322935409-1579788049]" not in rendered
 
 

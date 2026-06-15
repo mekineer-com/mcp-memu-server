@@ -379,7 +379,7 @@ def test_build_turn_prompt_omits_wrapper_when_cross_history_already_has_markdown
         history=[],
         prior_context=None,
         retrieve_rag=None,
-        cross_conversation_history="My WhatsApp Conversations:\n[group][Friends]\n[Raquel]: hi",
+        cross_conversation_history="My WhatsApp Conversations:\n[group][Friends]\n[Contact A]: hi",
         all_categories_summary=None,
         memory_cache=[],
         intentions_active={},
@@ -655,7 +655,7 @@ def test_build_turn_prompt_uses_grouped_renderer_for_current_whatsapp_group(tmp_
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "whatsapp_group_names.json").write_text(
-        json.dumps({"family@g.us": "Familia"}),
+        json.dumps({"family@g.us": "Household Group"}),
         encoding="utf-8",
     )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -664,7 +664,7 @@ def test_build_turn_prompt_uses_grouped_renderer_for_current_whatsapp_group(tmp_
         user_message="current message",
         history=[
             {"role": "user", "name": "Marcos", "content": "Can you hear me?"},
-            {"role": "user", "content": "[Raquel] She's helping you?"},
+            {"role": "user", "content": "[Contact A] She's helping you?"},
             {"role": "assistant", "content": "I can hear you."},
         ],
         prior_context=None,
@@ -676,11 +676,11 @@ def test_build_turn_prompt_uses_grouped_renderer_for_current_whatsapp_group(tmp_
         soul_name="Siri",
     )
 
-    assert "[group][Familia] ← current chat" in prompt
+    assert "[group][Household Group] ← current chat" in prompt
     assert "[Marcos] Can you hear me?" in prompt
-    assert "[Raquel] She's helping you?" in prompt
+    assert "[Contact A] She's helping you?" in prompt
     assert "[Siri] I can hear you." in prompt
-    assert "[user] [Raquel]" not in prompt
+    assert "[user] [Contact A]" not in prompt
     assert "[assistant]" not in prompt
 
 

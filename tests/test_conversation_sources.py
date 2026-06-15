@@ -159,8 +159,8 @@ def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) ->
                         "platform": "whatsapp",
                         "chat_type": "dm",
                         "chat_id": "140063262396533@lid",
-                        "chat_name": "Raquel",
-                        "user_name": "Raquel",
+                        "chat_name": "Contact A",
+                        "user_name": "Contact A",
                     },
                 }
             }
@@ -172,7 +172,7 @@ def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) ->
         [
             ("s1", "user", "from me", 100.0, "15133278228@s.whatsapp.net", "Marcos"),
             ("s1", "assistant", "reply", 101.0, None, None),
-            ("s1", "user", "from her", 102.0, "140063262396533@lid", "Raquel"),
+            ("s1", "user", "from her", 102.0, "140063262396533@lid", "Contact A"),
         ],
     )
 
@@ -183,7 +183,7 @@ def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) ->
         sessions_index_path=sessions_path,
         state_db_path=state_db_path,
     )
-    assert [row["speaker"] for row in rows] == ["Marcos", "", "Raquel"]
+    assert [row["speaker"] for row in rows] == ["Marcos", "", "Contact A"]
 
 
 def test_load_whatsapp_tail_preserves_state_db_source_message_id(tmp_path: Path) -> None:
@@ -199,8 +199,8 @@ def test_load_whatsapp_tail_preserves_state_db_source_message_id(tmp_path: Path)
                         "platform": "whatsapp",
                         "chat_type": "dm",
                         "chat_id": "140063262396533@lid",
-                        "chat_name": "Raquel",
-                        "user_name": "Raquel",
+                        "chat_name": "Contact A",
+                        "user_name": "Contact A",
                     },
                 }
             }
@@ -218,7 +218,7 @@ def test_load_whatsapp_tail_preserves_state_db_source_message_id(tmp_path: Path)
         con.execute(
             "INSERT INTO messages "
             "(session_id, role, content, timestamp, sender_id, sender_name, source_message_id) "
-            "VALUES ('s1', 'user', 'hello', 100.0, NULL, 'Raquel', 'BAILEYS-1')"
+            "VALUES ('s1', 'user', 'hello', 100.0, NULL, 'Contact A', 'BAILEYS-1')"
         )
         con.commit()
     finally:
@@ -247,8 +247,8 @@ def test_load_whatsapp_tail_max_messages_returns_newest_in_order(tmp_path: Path)
                     "platform": "whatsapp",
                     "chat_type": "dm",
                     "chat_id": "140063262396533@lid",
-                    "chat_name": "Raquel",
-                    "user_name": "Raquel",
+                    "chat_name": "Contact A",
+                    "user_name": "Contact A",
                 },
             }
         }),
@@ -305,14 +305,14 @@ def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_
             {
                 "contact_id": "15133278228@c.us",
                 "contact_local_id": "15133278228",
-                "name": "Raquel Chat",
-                "short_name": "Raquel Chat",
+                "name": "Contact A Chat",
+                "short_name": "Contact A Chat",
             },
             {
                 "contact_id": "140063262396533@lid",
                 "contact_local_id": "140063262396533",
                 "name": "Trusted Contact",
-                "short_name": "Raquel",
+                "short_name": "Contact A",
             }
         ],
         messages=[
@@ -351,10 +351,10 @@ def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_
     )
 
     assert [(row["role"], row["speaker"], row["content"]) for row in rows] == [
-        ("user", "Raquel", "hi Siri"),
+        ("user", "Contact A", "hi Siri"),
         ("assistant", "Siri", "hi back"),
     ]
-    assert {row["chat_name"] for row in rows} == {"Raquel Chat"}
+    assert {row["chat_name"] for row in rows} == {"Contact A Chat"}
     assert [row["source_conversation_index"] for row in rows] == [2, 3]
 
 
@@ -743,8 +743,8 @@ def test_load_whatsapp_tail_preserves_assistant_sender_name_when_present(tmp_pat
                         "platform": "whatsapp",
                         "chat_type": "dm",
                         "chat_id": "140063262396533@lid",
-                        "chat_name": "Raquel",
-                        "user_name": "Raquel",
+                        "chat_name": "Contact A",
+                        "user_name": "Contact A",
                     },
                 }
             }
@@ -806,8 +806,8 @@ def test_load_whatsapp_tail_group_collapses_multiple_sessions(tmp_path: Path) ->
                         "platform": "whatsapp",
                         "chat_type": "group",
                         "chat_id": "18322935409-1579788049@g.us",
-                        "chat_name": "Familia",
-                        "user_name": "Raquel",
+                        "chat_name": "Household Group",
+                        "user_name": "Contact A",
                     },
                 },
                 "agent:main:whatsapp:group:18322935409-1579788049@g.us": {
@@ -817,7 +817,7 @@ def test_load_whatsapp_tail_group_collapses_multiple_sessions(tmp_path: Path) ->
                         "platform": "whatsapp",
                         "chat_type": "group",
                         "chat_id": "18322935409-1579788049@g.us",
-                        "chat_name": "Familia",
+                        "chat_name": "Household Group",
                         "user_name": "",
                     },
                 },
@@ -840,7 +840,7 @@ def test_load_whatsapp_tail_group_collapses_multiple_sessions(tmp_path: Path) ->
         state_db_path,
         [
             ("s1", "user", "[Marcos] one", 100.0),
-            ("s2", "user", "[Raquel] two", 101.0),
+            ("s2", "user", "[Contact A] two", 101.0),
             ("s3", "assistant", "three", 102.0),
             ("s4", "user", "[Nico] four", 103.0),
         ],
@@ -853,8 +853,8 @@ def test_load_whatsapp_tail_group_collapses_multiple_sessions(tmp_path: Path) ->
         sessions_index_path=sessions_path,
         state_db_path=state_db_path,
     )
-    assert [row["content"] for row in rows] == ["[Marcos] one", "[Raquel] two", "three", "[Nico] four"]
-    assert all(row["chat_name"] == "Familia" for row in rows)
+    assert [row["content"] for row in rows] == ["[Marcos] one", "[Contact A] two", "three", "[Nico] four"]
+    assert all(row["chat_name"] == "Household Group" for row in rows)
     assert all(row["source_label"] == "whatsapp:group" for row in rows)
 
 
@@ -1272,8 +1272,8 @@ def test_load_whatsapp_tail_dm_phone_resolves_lid_only_session(tmp_path: Path) -
                         "platform": "whatsapp",
                         "chat_type": "dm",
                         "chat_id": "247789598601266@lid",
-                        "chat_name": "Liz Kalverda",
-                        "user_name": "Liz Kalverda",
+                        "chat_name": "Contact B",
+                        "user_name": "Contact B",
                     },
                 },
             }
