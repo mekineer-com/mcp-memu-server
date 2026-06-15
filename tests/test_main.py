@@ -2692,7 +2692,7 @@ async def test_conversation_retrieve_turn_prompt_reuses_first_floored_history(
             },
             {
                 "role": "user",
-                "name": "Eduardo",
+                "name": "Family Contact",
                 "content": "Hola nosotros bien y vos como andas",
                 "source_conversation_index": 2,
                 "ts_ms": 1_770_010_000_000,
@@ -2705,16 +2705,16 @@ async def test_conversation_retrieve_turn_prompt_reuses_first_floored_history(
                 "ts_ms": 1_770_020_000_000,
             },
         ],
-        "chat_name": "Eduardo Scarone",
+        "chat_name": "Family Contact",
         "chat_type": "dm",
     }
 
-    out = await main.conversation_retrieve("whatsapp:dm:eduardo", payload)
+    out = await main.conversation_retrieve("whatsapp:dm:family-contact", payload)
 
     prompt = str(out.get("turn_user_prompt") or "")
-    assert "[dm][Eduardo Scarone] \u2190 current chat" in prompt
+    assert "[dm][Family Contact] \u2190 current chat" in prompt
     assert "[Marcos] Como estan?" in prompt
-    assert "[Eduardo] Hola nosotros bien y vos como andas" in prompt
+    assert "[Family Contact] Hola nosotros bien y vos como andas" in prompt
     assert "[Marcos] Bien. Encontre algo que hacer ..." in prompt
     assert "[user] Bien. Encontre algo que hacer ..." not in prompt
 
@@ -2730,9 +2730,9 @@ async def test_conversation_retrieve_turn_prompt_reuses_first_floored_history(
         if isinstance(query, dict)
     )
     for shared_line in (
-        "[dm][Eduardo Scarone] \u2190 current chat",
+        "[dm][Family Contact] \u2190 current chat",
         "[Marcos] Como estan?",
-        "[Eduardo] Hola nosotros bien y vos como andas",
+        "[Family Contact] Hola nosotros bien y vos como andas",
     ):
         assert shared_line in query_text
         assert shared_line in prompt

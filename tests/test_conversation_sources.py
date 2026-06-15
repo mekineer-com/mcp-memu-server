@@ -278,22 +278,22 @@ def test_load_whatsapp_tail_max_messages_returns_newest_in_order(tmp_path: Path)
 def test_pick_chat_name_dm_prefers_chat_name_over_shorter_user_name() -> None:
     assert (
         conversation_sources._pick_chat_name(
-            [{"chat_name": "Raquel Scarone", "user_name": "Marcos"}],
+            [{"chat_name": "Trusted Contact", "user_name": "Marcos"}],
             "fallback",
             chat_type="dm",
         )
-        == "Raquel Scarone"
+        == "Trusted Contact"
     )
 
 
 def test_pick_chat_name_dm_uses_user_name_when_chat_name_is_numeric() -> None:
     assert (
         conversation_sources._pick_chat_name(
-            [{"chat_name": "140063262396533", "user_name": "Raquel Scarone"}],
+            [{"chat_name": "140063262396533", "user_name": "Trusted Contact"}],
             "fallback",
             chat_type="dm",
         )
-        == "Raquel Scarone"
+        == "Trusted Contact"
     )
 
 
@@ -311,7 +311,7 @@ def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_
             {
                 "contact_id": "140063262396533@lid",
                 "contact_local_id": "140063262396533",
-                "name": "Raquel Scarone",
+                "name": "Trusted Contact",
                 "short_name": "Raquel",
             }
         ],

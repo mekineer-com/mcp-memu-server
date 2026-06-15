@@ -236,7 +236,7 @@ def test_build_turn_prompt_resolves_current_whatsapp_heading_from_directory(tmp_
             {
                 "platforms": {
                     "whatsapp": [
-                        {"id": "15133278228@s.whatsapp.net", "name": "Eduardo Scarone", "type": "dm"},
+                        {"id": "15133278228@s.whatsapp.net", "name": "Family Contact", "type": "dm"},
                     ]
                 }
             }
@@ -256,7 +256,7 @@ def test_build_turn_prompt_resolves_current_whatsapp_heading_from_directory(tmp_
         conversation_id="whatsapp:dm:15133278228",
     )
 
-    assert "[dm][Eduardo Scarone] ← current chat" in prompt
+    assert "[dm][Family Contact] ← current chat" in prompt
     assert "[dm][15133278228] ← current chat" not in prompt
 
 
@@ -268,7 +268,7 @@ def test_build_turn_prompt_resolves_empty_current_whatsapp_heading_from_director
             {
                 "platforms": {
                     "whatsapp": [
-                        {"id": "15133278228@s.whatsapp.net", "name": "Eduardo Scarone", "type": "dm"},
+                        {"id": "15133278228@s.whatsapp.net", "name": "Family Contact", "type": "dm"},
                     ]
                 }
             }
@@ -289,7 +289,7 @@ def test_build_turn_prompt_resolves_empty_current_whatsapp_heading_from_director
         self_turn_directive="Scheduled wake.",
     )
 
-    assert "[dm][Eduardo Scarone] ← current chat" in prompt
+    assert "[dm][Family Contact] ← current chat" in prompt
     assert "[dm][15133278228] ← current chat" not in prompt
     assert "__memu_heading_probe__" not in prompt
 
