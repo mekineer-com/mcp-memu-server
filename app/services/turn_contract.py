@@ -267,6 +267,14 @@ def build_conversations_block(
                 name = _text(item.get("name"))
                 if name:
                     last_user_name = name
+        if not last_user_name and _text(conversation_id).startswith("whatsapp:dm:"):
+            heading = _resolve_current_chat_heading_from_grouped_renderer(
+                chat_label=chat_label,
+                conversation_id=conversation_id,
+                soul_name=soul_name,
+            )
+            if heading.startswith("[dm]["):
+                last_user_name = heading[len("[dm]["):].split("]", 1)[0].strip()
         synthetic: dict[str, Any] = {"role": "user", "content": current_content}
         if last_user_name:
             synthetic["name"] = last_user_name

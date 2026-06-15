@@ -3018,6 +3018,17 @@ def _format_all_chat_history_for_ai(
     cross_text = _message_log.format_merged_history(cross_tail or []) if cross_tail else ""
     history_rows = current_history or []
     if not history_rows:
+        if current_user_text or self_turn_directive:
+            return _build_conversations_block(
+                history=[],
+                cross_conversation_history=cross_text,
+                conversation_id=conversation_id,
+                chat_label=chat_label,
+                soul_name=soul_id,
+                current_user_text=current_user_text,
+                self_turn_directive=self_turn_directive,
+                use_current_message_locator=use_current_message_locator,
+            )
         return cross_text
     return _build_conversations_block(
         history=history_rows,
@@ -4031,6 +4042,8 @@ async def conversation_retrieve(
             conversation_id=cid,
             soul_id=soul_id,
             chat_label=chat_label_for_prompt,
+            current_user_text=retrieve_focus,
+            self_turn_directive=self_turn_directive or None,
         )
 
         should_build_default_queries = (
@@ -4052,7 +4065,7 @@ async def conversation_retrieve(
                 state_row=state_row or {},
                 conversation_id=cid,
                 chat_label=chat_label_for_prompt,
-                conversations_block=all_chat_history_for_ai,
+                conversations_block=all_chat_history_for_ai or None,
                 self_turn_directive=self_turn_directive or None,
                 self_turn_label=self_turn_label or None,
             )
@@ -4107,7 +4120,9 @@ async def conversation_retrieve(
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
                     apimw_message_to_self=_state_row.get("apimw_message_to_self"),
-                    conversations_block=response_chat_history_for_ai,
+                    conversations_block=response_chat_history_for_ai or None,
+                    chat_label=chat_label_for_prompt,
+                    conversation_id=cid,
                     self_turn_directive=self_turn_directive or None,
                     self_turn_label=self_turn_label or None,
                 )

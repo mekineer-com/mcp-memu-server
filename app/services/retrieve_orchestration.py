@@ -14,7 +14,6 @@ from app.services.intention_state import (
 )
 from app.services.payload import _canonicalize_scope_where, _extract_scope
 from app.services.turn_contract import (
-    _norm_text,
     build_conversations_block,
     format_time_anchor as _format_time_anchor,
     format_working_thoughts_lines as _format_working_thoughts_lines,
@@ -115,35 +114,6 @@ def _build_retrieve_soul_context_queries(
     intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
     current_user_text = str(message or "").strip()
     directive_text = str(self_turn_directive or "").strip()
-    history_for_render = list(history or [])
-    last_user_name = ""
-    for item in history_for_render:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("role") or "").strip().lower() != "user":
-            continue
-        name = str(item.get("name") or "").strip()
-        if name:
-            last_user_name = name
-    last_history_item: dict[str, Any] | None = None
-    for item in reversed(history_for_render):
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("content") or "").strip():
-            last_history_item = item
-            break
-    already_has_current_user_message = bool(
-        current_user_text
-        and not directive_text
-        and isinstance(last_history_item, dict)
-        and _norm_text(str(last_history_item.get("role") or "")) == "user"
-        and _norm_text(str(last_history_item.get("content") or "")) == _norm_text(current_user_text)
-    )
-    if current_user_text and not directive_text and not already_has_current_user_message:
-        synthetic: dict[str, str] = {"role": "user", "content": current_user_text}
-        if last_user_name:
-            synthetic["name"] = last_user_name
-        history_for_render.append(synthetic)
 
     soul_context_for_retrieve: list[dict[str, Any]] = []
     identity_context = _build_retrieve_identity_context(soul_id, apimw=(identity_mode == "apimw"))
@@ -157,11 +127,13 @@ def _build_retrieve_soul_context_queries(
         history_text = str(conversations_block or "").strip()
     else:
         history_text = build_conversations_block(
-            history=history_for_render,
+            history=history or [],
             conversation_id=conversation_id,
             chat_label=chat_label,
             soul_name=soul_id,
             include_empty_current=False,
+            current_user_text=current_user_text,
+            self_turn_directive=directive_text,
         )
     if history_text:
         soul_context_for_retrieve.append(

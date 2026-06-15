@@ -3464,8 +3464,27 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
             for idx in range(12)
         ],
     )
+    monkeypatch.setattr(
+        main,
+        "_load_cross_tail_from_sources",
+        lambda *_a, **_k: [
+            {
+                "conversation_id": "whatsapp:group:familia",
+                "role": "user",
+                "speaker": "Family Member",
+                "chat_name": "Familia",
+                "content": "cross chat message",
+                "source_label": "whatsapp:group",
+                "received_at": "2026-05-08T11:00:01+00:00",
+                "source_conversation_index": 1,
+            }
+        ],
+    )
+
+    captured: dict[str, object] = {}
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -3478,13 +3497,35 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
         "build_turn_prompt": True,
         "load_source_history": True,
         "is_live_turn": True,
+        "chat_name": "Marcos",
+        "chat_type": "dm",
     }
 
     out = await main.conversation_retrieve("whatsapp:dm:15133278228", payload)
     turn_prompt = str(out.get("turn_user_prompt") or "")
     assert "msg_04" not in turn_prompt
     assert "msg_11" not in turn_prompt
+    assert "My WhatsApp Conversations:" in turn_prompt
+    assert "My SillyTavern Conversations:" not in turn_prompt
+    assert "[dm][Marcos] \u2190 current chat" in turn_prompt
+    assert "[user] current message" not in turn_prompt
+    assert "[Marcos] current message" in turn_prompt
+    assert "[group][Familia]" in turn_prompt
+    assert "[Family Member] cross chat message" in turn_prompt
     assert "current message" in turn_prompt
+    safe = captured["safe"]
+    assert isinstance(safe, dict)
+    query_text = "\n".join(
+        str((query.get("content") or {}).get("text") or "")
+        for query in safe.get("queries") or []
+        if isinstance(query, dict)
+    )
+    assert "My WhatsApp Conversations:" in query_text
+    assert "My SillyTavern Conversations:" not in query_text
+    assert "[dm][Marcos] \u2190 current chat" in query_text
+    assert "[Marcos] current message" in query_text
+    assert "[group][Familia]" in query_text
+    assert "[Family Member] cross chat message" in query_text
 
 
 @pytest.mark.asyncio
