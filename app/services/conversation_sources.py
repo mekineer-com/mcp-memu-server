@@ -403,6 +403,13 @@ def _to_iso_utc(value: Any) -> str:
     return datetime.fromtimestamp(ts, tz=UTC).isoformat()
 
 
+def _to_epoch_ms(value: Any) -> int | None:
+    try:
+        return int(float(value) * 1000)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _resolve_whatsapp_row_speaker(
     *,
     sender_name: Any,
@@ -540,6 +547,7 @@ def _web_source_row_to_tail(
         "chat_name": resolved_chat_name,
         "content": content,
         "source_label": f"whatsapp:{chat_type}",
+        "ts_ms": _to_epoch_ms(row["timestamp"]),
         "received_at": _to_iso_utc(row["timestamp"]),
         "conversation_id": conversation_id,
         "source_conversation_id": conversation_id,
@@ -983,6 +991,7 @@ def load_whatsapp_tail(
                 "content": content,
                 "source_message_id": str(row["source_message_id"] or ""),
                 "source_label": source_label,
+                "ts_ms": _to_epoch_ms(row["timestamp"]),
                 "received_at": _to_iso_utc(row["timestamp"]),
                 "conversation_id": conversation_id,
                 "source_conversation_id": conversation_id,
@@ -1083,6 +1092,7 @@ def load_whatsapp_tail_after_message_id(
                 "content": content,
                 "source_message_id": str(row["source_message_id"] or ""),
                 "source_label": source_label,
+                "ts_ms": _to_epoch_ms(row["timestamp"]),
                 "received_at": _to_iso_utc(row["timestamp"]),
                 "conversation_id": conversation_id,
                 "source_conversation_id": conversation_id,

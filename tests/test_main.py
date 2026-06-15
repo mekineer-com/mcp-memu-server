@@ -215,7 +215,7 @@ def test_normalize_turn_history_preserves_source_speaker_and_received_at() -> No
         {
             "role": "user",
             "content": "hi",
-            "message_id": "0",
+            "source_message_id": "0",
             "name": "Raquel",
             "ts_ms": 1780160400000,
         }
@@ -1381,6 +1381,142 @@ def test_load_cross_tail_from_sources_reads_whatsapp_conversations(
     assert rows[0]["content"] == "hi"
 
 
+def test_load_cross_tail_from_sources_keeps_previous_segment_participants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at, "
+            "last_display_segment_start_index, last_display_segment_end_index) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("whatsapp:dm:current", 3, "2026-05-01T00:00:00+00:00", 0, 3),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at, "
+            "last_display_segment_start_index, last_display_segment_end_index) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("whatsapp:dm:previous-participant", 12, "2026-05-01T00:00:00+00:00", 10, 12),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:dm:not-participant", 12, "2026-05-01T00:00:00+00:00"),
+        )
+        con.commit()
+
+        calls: dict[str, int] = {}
+
+        def _fake_load_tail_for_source_conversation(**kwargs: object) -> list[dict[str, object]]:
+            cid = str(kwargs["conversation_id"])
+            calls[cid] = int(kwargs["since_cursor"])
+            if cid == "whatsapp:dm:previous-participant":
+                return [
+                    {
+                        "conversation_id": cid,
+                        "source_conversation_index": 10,
+                        "received_at": "2026-05-01T00:00:00+00:00",
+                        "content": "previous segment floor",
+                    }
+                ]
+            return []
+
+        monkeypatch.setattr(main, "_load_tail_for_source_conversation", _fake_load_tail_for_source_conversation)
+        rows = main._load_cross_tail_from_sources(
+            con,
+            user_id="u1",
+            soul_id="Echo",
+            exclude_conversation_id="whatsapp:dm:current",
+        )
+    finally:
+        con.close()
+
+    assert [row["content"] for row in rows] == ["previous segment floor"]
+    assert calls["whatsapp:dm:previous-participant"] == 9
+    assert calls["whatsapp:dm:not-participant"] == 12
+
+
+def test_load_cross_tail_from_sources_recovers_previous_segment_ranges_from_saved_segment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage_dir = tmp_path / "resources"
+    segment_dir = storage_dir / "st_chats" / "Echo_saved" / "segments"
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "2026-05-01.json").write_text(
+        json.dumps(
+            [
+                {
+                    "source_conversation_id": "whatsapp:dm:previous-participant",
+                    "source_conversation_index": 20,
+                    "memorize_chat": True,
+                    "content": "start",
+                },
+                {
+                    "source_conversation_id": "whatsapp:dm:previous-participant",
+                    "source_conversation_index": 23,
+                    "memorize_chat": True,
+                    "content": "end",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(main, "_get_storage_dir", lambda *_a, **_k: storage_dir)
+
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:dm:current", 3, "2026-05-01T00:00:00+00:00"),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:dm:previous-participant", 23, "2026-05-01T00:00:00+00:00"),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:dm:not-participant", 23, "2026-05-01T00:00:00+00:00"),
+        )
+        con.commit()
+
+        calls: dict[str, int] = {}
+
+        def _fake_load_tail_for_source_conversation(**kwargs: object) -> list[dict[str, object]]:
+            cid = str(kwargs["conversation_id"])
+            calls[cid] = int(kwargs["since_cursor"])
+            if cid == "whatsapp:dm:previous-participant":
+                return [
+                    {
+                        "conversation_id": cid,
+                        "source_conversation_index": 20,
+                        "received_at": "2026-05-01T00:00:00+00:00",
+                        "content": "recovered previous segment floor",
+                    }
+                ]
+            return []
+
+        monkeypatch.setattr(main, "_load_tail_for_source_conversation", _fake_load_tail_for_source_conversation)
+        rows = main._load_cross_tail_from_sources(
+            con,
+            user_id="u1",
+            soul_id="Echo",
+            exclude_conversation_id="whatsapp:dm:current",
+        )
+    finally:
+        con.close()
+
+    assert [row["content"] for row in rows] == ["recovered previous segment floor"]
+    assert calls["whatsapp:dm:previous-participant"] == 19
+    assert calls["whatsapp:dm:not-participant"] == 23
+
+
 def test_load_cross_tail_from_sources_fails_loud_for_broken_web_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1607,7 +1743,7 @@ def test_build_retrieve_identity_context_uses_shared_time_anchor(monkeypatch: py
 
 def test_build_retrieve_soul_context_queries_includes_full_history() -> None:
     history = [
-        {"message_id": f"m{i}", "role": "user", "content": f"msg {i}"}
+        {"source_message_id": f"m{i}", "role": "user", "content": f"msg {i}"}
         for i in range(1, 16)
     ]
     queries = main._build_retrieve_soul_context_queries(
@@ -1626,7 +1762,7 @@ def test_build_retrieve_soul_context_queries_includes_full_history() -> None:
 
 def test_build_retrieve_soul_context_queries_uses_full_history_for_apimw_rewrite() -> None:
     history = [
-        {"message_id": f"m{i}", "role": "user", "content": f"msg {i}"}
+        {"source_message_id": f"m{i}", "role": "user", "content": f"msg {i}"}
         for i in range(1, 16)
     ]
     queries = main._build_retrieve_soul_context_queries(
@@ -1697,8 +1833,8 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
 
 def test_build_retrieve_soul_context_queries_orders_chats_before_working_and_intentions() -> None:
     history = [
-        {"message_id": "m1", "role": "user", "content": "msg 1"},
-        {"message_id": "m2", "role": "user", "content": "msg 2"},
+        {"source_message_id": "m1", "role": "user", "content": "msg 1"},
+        {"source_message_id": "m2", "role": "user", "content": "msg 2"},
     ]
     queries = main._build_retrieve_soul_context_queries(
         soul_id="Echo",
@@ -1721,7 +1857,7 @@ def test_build_retrieve_soul_context_queries_orders_chats_before_working_and_int
 
 def test_build_retrieve_soul_context_queries_includes_current_chat_heading_for_whatsapp_dm() -> None:
     history = [
-        {"message_id": "m1", "role": "user", "name": "Marcos", "content": "hello"},
+        {"source_message_id": "m1", "role": "user", "name": "Marcos", "content": "hello"},
     ]
     queries = main._build_retrieve_soul_context_queries(
         soul_id="Echo",
@@ -1742,8 +1878,8 @@ def test_build_retrieve_soul_context_queries_keeps_self_turn_out_of_user_history
         soul_id="Siri",
         message="Scheduled follow-up due now. Reason you gave: Check on Marcos.",
         history=[
-            {"message_id": "m1", "role": "user", "name": "Marcos", "content": "Going to nap."},
-            {"message_id": "m2", "role": "assistant", "name": "Siri", "content": "Rest close."},
+            {"source_message_id": "m1", "role": "user", "name": "Marcos", "content": "Going to nap."},
+            {"source_message_id": "m2", "role": "assistant", "name": "Siri", "content": "Rest close."},
         ],
         state_row={"memory_cache": [], "intentions_active": {"items": []}},
         conversation_id="whatsapp:dm:Marcos",
@@ -1768,7 +1904,7 @@ def test_build_retrieve_soul_context_queries_no_duplicate_when_whitespace_differ
     # Last history item content matches message except for internal whitespace;
     # guard must normalise both sides so no synthetic user turn is appended.
     history = [
-        {"message_id": "m1", "role": "user", "content": "hello   world"},
+        {"source_message_id": "m1", "role": "user", "content": "hello   world"},
     ]
     queries = main._build_retrieve_soul_context_queries(
         soul_id="Echo",
@@ -3423,6 +3559,112 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
     assert "[dm][Marcos] \u2190 current chat" in query_text
     assert "msg_04" in query_text
     assert "msg_03" not in query_text
+
+
+def test_filter_current_whatsapp_history_accepts_received_at_for_active_since() -> None:
+    rows = [
+        {
+            "content": "old",
+            "received_at": "2026-04-30T23:59:59+00:00",
+        },
+        {
+            "content": "kept",
+            "received_at": "2026-05-01T00:00:00+00:00",
+        },
+    ]
+
+    filtered = main._filter_current_whatsapp_history_for_soul(
+        "whatsapp:dm:15133278228",
+        "Echo",
+        rows,
+        active_since=datetime(2026, 5, 1, tzinfo=UTC).timestamp(),
+    )
+
+    assert [row["content"] for row in filtered] == ["kept"]
+
+
+@pytest.mark.asyncio
+async def test_conversation_retrieve_uses_live_message_to_trigger_floor_without_duplication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:dm:15133278228", 11, "2026-05-01T00:00:00+00:00"),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"digest_cursor": 11, "last_memorize_at": "2026-05-01T00:00:00+00:00", "all_categories_summary": ""},
+            None,
+            db_path,
+        ),
+    )
+
+    def _fake_load_current_whatsapp_history_from_source(
+        conversation_id: str,
+        *_a: object,
+        **_k: object,
+    ) -> list[dict[str, object]]:
+        assert conversation_id == "whatsapp:dm:15133278228"
+        return [
+            {
+                "role": "user",
+                "speaker": "Marcos",
+                "chat_name": "Marcos",
+                "content": f"msg_{idx:02d}",
+                "source_conversation_index": idx,
+            }
+            for idx in range(12)
+        ] + [
+            {
+                "role": "user",
+                "speaker": "Marcos",
+                "chat_name": "Marcos",
+                "content": "live text",
+                "source_conversation_index": 12,
+                "source_message_id": "live-id",
+            }
+        ]
+
+    monkeypatch.setattr(main, "_load_current_whatsapp_history_from_source", _fake_load_current_whatsapp_history_from_source)
+    monkeypatch.setattr(main, "_load_cross_tail_from_sources", lambda *_a, **_k: [])
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo"},
+        "message": "live text",
+        "query": "live text",
+        "history": [],
+        "build_turn_prompt": True,
+        "load_source_history": True,
+        "is_live_turn": True,
+        "external_message_id": "live-id",
+        "chat_name": "Marcos",
+        "chat_type": "dm",
+    }
+
+    out = await main.conversation_retrieve("whatsapp:dm:15133278228", payload)
+    turn_prompt = str(out.get("turn_user_prompt") or "")
+    assert "msg_05" in turn_prompt
+    assert "msg_04" not in turn_prompt
+    assert "msg_11" in turn_prompt
+    assert [row["content"] for row in out.get("turn_history") or []] == [f"msg_{idx:02d}" for idx in range(5, 12)]
+    assert "New Message:\nlive text" in turn_prompt
 
 
 @pytest.mark.asyncio

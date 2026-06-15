@@ -59,6 +59,7 @@ def stamp_current_conversation_metadata(
 
 class SegmentMemorizeJob(TypedDict):
     segment_payload: dict[str, Any]
+    segment_messages: list[dict[str, Any]]
     segment_resource_url: str
     segment_raw_text: str
     segment_start_index: int
@@ -86,6 +87,7 @@ class MemorizeRunContext:
     normalize_text_list: Callable[[Any], list[str]]
     compute_holistic_categories_summary: Callable[..., Awaitable[str | None]]
     run_consolidation_task: Callable[..., Awaitable[dict[str, Any]]]
+    clear_last_display_segments_for_nonparticipants: Callable[..., None]
     background_tasks_set: set[asyncio.Task]
 
 
@@ -105,6 +107,31 @@ class MemorizeEndpointContext:
     run_consolidation_task: Callable[..., Awaitable[dict[str, Any]]]
     get_config: Callable[[], dict[str, Any]]
     sanitize_db_filename: Callable[[str], str]
+
+
+def _segment_display_ranges(
+    segment_messages: list[dict[str, Any]],
+) -> dict[str, tuple[int, int]]:
+    ranges: dict[str, tuple[int, int]] = {}
+    for fallback_idx, msg in enumerate(segment_messages):
+        if not isinstance(msg, dict):
+            continue
+        if not bool(msg.get("memorize_chat", True)):
+            continue
+        cid = str(msg.get("source_conversation_id") or msg.get("conversation_id") or "").strip()
+        if not cid:
+            continue
+        raw_index = msg.get("source_conversation_index")
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError, OverflowError):
+            index = fallback_idx
+        current = ranges.get(cid)
+        if current is None:
+            ranges[cid] = (index, index)
+        else:
+            ranges[cid] = (min(current[0], index), max(current[1], index))
+    return ranges
 
 
 def _set_memorize_progress(
@@ -212,6 +239,7 @@ async def run_memorize_segments(
     cached_prior_context_ids: list[str] = []
     conversation_rolling_summary: str | None = None
     consumed_background_summary_ids: set[str] = set()
+    latest_display_ranges: dict[str, tuple[int, int]] = {}
     created_segment_paths: list[Path] = []
     total_segments = 0
     had_existing_pending = False
@@ -316,6 +344,7 @@ async def run_memorize_segments(
                         "segment_id": segment_id,
                         "background_summaries": segment_background_rows,
                     },
+                    "segment_messages": segment_messages,
                     "segment_resource_url": str(segment_path),
                     "segment_raw_text": segment_raw_text,
                     "segment_start_index": segment_start_index,
@@ -405,6 +434,8 @@ async def run_memorize_segments(
                     if isinstance(ep_result, dict):
                         has_results = True
                         pending_segment_ids.extend(run_ctx.normalize_text_list(ep_result.get("pending_segment_ids")))
+                        if cross_memorize:
+                            latest_display_ranges = _segment_display_ranges(segment_job["segment_messages"])
                     segment_end_index = segment_job["segment_end_index"]
                     if conversation_id and not cross_memorize:
                         # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
@@ -454,11 +485,26 @@ async def run_memorize_segments(
         async with mem_lock:
             if has_results and final_cursors:
                 now_iso = datetime.now(UTC).isoformat()
+                if cross_memorize:
+                    run_ctx.clear_last_display_segments_for_nonparticipants(
+                        user_id=uid,
+                        soul_id=soul_id,
+                        participant_conversation_ids=set(latest_display_ranges),
+                    )
                 for fc_cid, fc_cursor in final_cursors.items():
                     updates: dict[str, Any] = {
                         "digest_cursor": max(0, fc_cursor),
                         "last_memorize_at": now_iso,
                     }
+                    display_range = latest_display_ranges.get(fc_cid)
+                    if cross_memorize and display_range is not None:
+                        updates["last_display_segment_start_index"] = display_range[0]
+                        updates["last_display_segment_end_index"] = display_range[1]
+                        updates["last_display_segment_at"] = now_iso
+                    elif cross_memorize:
+                        updates["last_display_segment_start_index"] = None
+                        updates["last_display_segment_end_index"] = None
+                        updates["last_display_segment_at"] = None
                     if fc_cid == conversation_id:
                         updates["append_pending_segment_ids"] = pending_segment_ids
                         updates["all_categories_summary"] = current_all_categories_summary

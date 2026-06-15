@@ -220,10 +220,10 @@ def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
         role = _pick_str(item, "role") or "unknown"
         content = _pick_str(item, "content")
         name = _pick_str(item, "name", "speaker", "sender_name")
-        message_id = _pick_str(item, "source_message_id", "message_id", "id", "mid") or str(idx)
+        source_message_id = _pick_str(item, "source_message_id", "id", "mid") or str(idx)
         if not content:
             continue
-        item_out = {"role": role, "content": content, "message_id": message_id}
+        item_out = {"role": role, "content": content, "source_message_id": source_message_id}
         if name:
             item_out["name"] = name
         ts_ms = _parse_turn_ts_ms(item.get("ts_ms"))

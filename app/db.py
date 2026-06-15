@@ -101,6 +101,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     apimw_message_to_self TEXT,
     pending_segment_ids JSON DEFAULT '[]',
     last_memorize_at DATETIME,
+    last_display_segment_start_index INTEGER,
+    last_display_segment_end_index INTEGER,
+    last_display_segment_at DATETIME,
     updated_at DATETIME,
     undo_snapshot JSON,
     last_background_error TEXT,
@@ -137,6 +140,12 @@ CREATE TABLE IF NOT EXISTS conversations (
         con.execute("ALTER TABLE conversations ADD COLUMN last_consolidation_error TEXT")
     if "last_consolidation_error_at" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN last_consolidation_error_at DATETIME")
+    if "last_display_segment_start_index" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN last_display_segment_start_index INTEGER")
+    if "last_display_segment_end_index" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN last_display_segment_end_index INTEGER")
+    if "last_display_segment_at" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN last_display_segment_at DATETIME")
     sqlite_ensure_soul_tables(con)
     con.commit()
 

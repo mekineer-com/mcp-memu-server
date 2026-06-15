@@ -2686,13 +2686,15 @@ def _filter_current_whatsapp_history_for_soul(
     threshold_ms = active_since * 1000.0
     out: list[dict[str, Any]] = []
     for i, msg in enumerate(history):
-        ts_ms = msg.get("ts_ms")
-        if isinstance(ts_ms, bool) or not isinstance(ts_ms, (int, float)):
+        ts_ms = _parse_turn_ts_ms(msg.get("ts_ms"))
+        if ts_ms is None:
+            ts_ms = _parse_turn_ts_ms(msg.get("received_at"))
+        if ts_ms is None:
             raise HTTPException(
                 status_code=400,
                 detail=f"WhatsApp history row {i} is missing ts_ms for soul active_since cutoff",
             )
-        if float(ts_ms) >= threshold_ms:
+        if ts_ms >= threshold_ms:
             out.append(msg)
     return out
 
@@ -2720,11 +2722,13 @@ def _degrade_live_whatsapp_history_after_filter_error(
     out: list[dict[str, Any]] = []
     dropped = 0
     for msg in history:
-        ts_ms = msg.get("ts_ms")
-        if isinstance(ts_ms, bool) or not isinstance(ts_ms, (int, float)):
+        ts_ms = _parse_turn_ts_ms(msg.get("ts_ms"))
+        if ts_ms is None:
+            ts_ms = _parse_turn_ts_ms(msg.get("received_at"))
+        if ts_ms is None:
             dropped += 1
             continue
-        if float(ts_ms) >= threshold_ms:
+        if ts_ms >= threshold_ms:
             out.append(msg)
     if dropped:
         logger.warning(
@@ -2743,12 +2747,25 @@ def _source_id_matches_external(source_id: Any, external_message_id: Any) -> boo
     return bool(source and external and (source == external or external in source))
 
 
+def _filter_external_message_from_history(
+    history: list[dict[str, Any]],
+    external_message_id: Any,
+) -> list[dict[str, Any]]:
+    if not external_message_id:
+        return history
+    return [
+        row for row in history
+        if not _source_id_matches_external(row.get("source_message_id"), external_message_id)
+    ]
+
+
 def _load_current_whatsapp_history_from_source(
     conversation_id: str,
     soul_id: str,
     *,
     active_since: float | None,
     external_message_id: Any = None,
+    exclude_external_message: bool = True,
 ) -> list[dict[str, Any]] | None:
     if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
         return None
@@ -2785,12 +2802,9 @@ def _load_current_whatsapp_history_from_source(
             min_timestamp=active_since,
             max_messages=history_limit,
         )
-    if not external_message_id:
+    if not external_message_id or not exclude_external_message:
         return rows
-    return [
-        row for row in rows
-        if not _source_id_matches_external(row.get("source_message_id"), external_message_id)
-    ]
+    return _filter_external_message_from_history(rows, external_message_id)
 
 
 def _prepare_current_whatsapp_history(
@@ -2803,6 +2817,7 @@ def _prepare_current_whatsapp_history(
     external_message_id: Any,
     is_live_turn: bool,
     op: str,
+    exclude_external_message: bool = True,
 ) -> list[dict[str, Any]]:
     history = _normalize_turn_history(raw_history)
     if load_source_history:
@@ -2812,6 +2827,7 @@ def _prepare_current_whatsapp_history(
                 soul_id,
                 active_since=active_since,
                 external_message_id=external_message_id,
+                exclude_external_message=exclude_external_message,
             )
         except Exception as exc:
             if not is_live_turn:
@@ -2923,6 +2939,32 @@ def _load_tail_for_source_conversation(
     return []
 
 
+def _latest_saved_segment_display_ranges(
+    *,
+    soul_id: str,
+) -> dict[str, tuple[int, int]]:
+    chats_dir = (_get_storage_dir(_CONFIG) / "st_chats").resolve()
+    agent_slug = _sanitize_db_filename(soul_id)
+    if not chats_dir.exists() or not agent_slug:
+        return {}
+    segment_paths = sorted(
+        chats_dir.glob(f"{agent_slug}_*/segments/*.json"),
+        key=lambda path: path.stat().st_mtime if path.exists() else 0.0,
+        reverse=True,
+    )
+    for segment_path in segment_paths:
+        try:
+            raw = json.loads(segment_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(raw, list):
+            continue
+        ranges = _memorize_endpoint._segment_display_ranges(raw)
+        if ranges:
+            return ranges
+    return {}
+
+
 def _load_cross_tail_from_sources(
     con: sqlite3.Connection,
     *,
@@ -2933,15 +2975,36 @@ def _load_cross_tail_from_sources(
     storage_dir, hermes_home_path, sessions_index_path, state_db_path = _resolve_cross_source_paths()
     excluded_id = str(exclude_conversation_id or "").strip()
     cursor_rows = con.execute(
-        "SELECT conversation_id, digest_cursor, last_memorize_at FROM conversations"
+        "SELECT conversation_id, memorize_chat, digest_cursor, last_memorize_at, "
+        "last_display_segment_start_index, last_display_segment_end_index "
+        "FROM conversations"
     ).fetchall()
     all_messages: list[dict[str, Any]] = []
+    resource_display_ranges: dict[str, tuple[int, int]] | None = None
     for row in cursor_rows:
         cid = str(row["conversation_id"] or "").strip()
         if not cid or cid == excluded_id:
             continue
         source_label = _message_log.derive_source_label(cid)
         cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
+        display_start = row["last_display_segment_start_index"]
+        display_end = row["last_display_segment_end_index"]
+        if row["last_memorize_at"] and (display_start is None or display_end is None):
+            if resource_display_ranges is None:
+                resource_display_ranges = _latest_saved_segment_display_ranges(
+                    soul_id=soul_id,
+                )
+            fallback_range = resource_display_ranges.get(cid)
+            if fallback_range is not None:
+                display_start, display_end = fallback_range
+        if row["last_memorize_at"] and display_start is not None and display_end is not None:
+            try:
+                segment_start = max(0, int(display_start))
+                segment_end = max(segment_start, int(display_end))
+            except (TypeError, ValueError, OverflowError):
+                segment_start = segment_end = -1
+            if segment_end >= 0:
+                cursor = max(-1, max(segment_start, segment_end - (_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES - 1)) - 1)
         try:
             tail = _load_tail_for_source_conversation(
                 conversation_id=cid,
@@ -2974,6 +3037,39 @@ def _load_cross_tail_from_sources(
         )
     )
     return all_messages
+
+
+def _clear_last_display_segments_for_nonparticipants(
+    *,
+    user_id: str,
+    soul_id: str,
+    participant_conversation_ids: set[str],
+) -> None:
+    db_path = _sqlite_current_path(user_id or None, soul_id or None)
+    if db_path is None or not db_path.exists():
+        return
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
+        participants = {str(cid or "").strip() for cid in participant_conversation_ids if str(cid or "").strip()}
+        where = ["memorize_chat = 1"]
+        params: list[Any] = []
+        if participants:
+            placeholders = ",".join("?" for _ in participants)
+            where.append(f"conversation_id NOT IN ({placeholders})")
+            params.extend(sorted(participants))
+        con.execute(
+            "UPDATE conversations "
+            "SET last_display_segment_start_index = NULL, "
+            "last_display_segment_end_index = NULL, "
+            "last_display_segment_at = NULL "
+            f"WHERE {' AND '.join(where)}",
+            tuple(params),
+        )
+        con.commit()
+    finally:
+        con.close()
 
 
 def _chat_label_for_prompt(safe: Mapping[str, Any] | None) -> str | None:
@@ -3442,6 +3538,7 @@ def _make_memorize_run_context() -> _memorize_endpoint.MemorizeRunContext:
         normalize_text_list=_normalize_text_list,
         compute_holistic_categories_summary=_compute_holistic_categories_summary,
         run_consolidation_task=_run_consolidation_task,
+        clear_last_display_segments_for_nonparticipants=_clear_last_display_segments_for_nonparticipants,
         background_tasks_set=_BACKGROUND_TASKS,
     )
 
@@ -3997,8 +4094,13 @@ async def conversation_retrieve(
             external_message_id=safe.get("external_message_id"),
             is_live_turn=is_live_turn,
             op="conversation.retrieve",
+            exclude_external_message=False,
         )
-        safe["history"] = history
+        history_without_external = _filter_external_message_from_history(
+            history,
+            safe.get("external_message_id"),
+        )
+        safe["history"] = history_without_external
         _stamp_assistant_display_name(history, soul_id)
         state_row: dict[str, Any] | None = None
         cross_tail: list[dict[str, Any]] = []
@@ -4032,7 +4134,10 @@ async def conversation_retrieve(
                     _con.close()
 
         chat_label_for_prompt = _chat_label_for_prompt(safe)
-        history_for_ai = _turn_history_with_floor(history, state_row or {})
+        history_for_ai = _filter_external_message_from_history(
+            _turn_history_with_floor(history, state_row or {}),
+            safe.get("external_message_id"),
+        )
         cross_text = _message_log.format_merged_history(cross_tail) if cross_tail else ""
         if cross_text:
             safe["_cross_conversation_history"] = cross_text

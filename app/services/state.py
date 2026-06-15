@@ -49,6 +49,17 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         ),
         "pending_segment_ids": normalize_text_list(row["pending_segment_ids"]),
         "last_memorize_at": row["last_memorize_at"],
+        "last_display_segment_start_index": (
+            int(row["last_display_segment_start_index"])
+            if "last_display_segment_start_index" in row.keys() and row["last_display_segment_start_index"] is not None
+            else None
+        ),
+        "last_display_segment_end_index": (
+            int(row["last_display_segment_end_index"])
+            if "last_display_segment_end_index" in row.keys() and row["last_display_segment_end_index"] is not None
+            else None
+        ),
+        "last_display_segment_at": row["last_display_segment_at"] if "last_display_segment_at" in row.keys() else None,
         "updated_at": row["updated_at"],
         "undo_snapshot": json_from_db(row["undo_snapshot"]),
         "last_background_error": row["last_background_error"] if "last_background_error" in row.keys() else None,
@@ -63,6 +74,7 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
         "SELECT conversation_id, soul_id, user_id, memorize_chat, digest_cursor, "
         "rolling_summary, rolling_summary_cursor_id, rolling_summary_updated_at, prior_context, "
         "apimw_message_to_self, pending_segment_ids, last_memorize_at, "
+        "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at, "
         "updated_at, undo_snapshot, "
         "last_background_error, last_background_error_at, "
         "last_consolidation_error, last_consolidation_error_at "
@@ -89,6 +101,9 @@ def conversation_state_empty(
         "apimw_message_to_self": None,
         "pending_segment_ids": [],
         "last_memorize_at": None,
+        "last_display_segment_start_index": None,
+        "last_display_segment_end_index": None,
+        "last_display_segment_at": None,
         "updated_at": None,
         "undo_snapshot": None,
         "last_background_error": None,
@@ -187,6 +202,9 @@ INSERT OR IGNORE INTO conversations (
                 "apimw_message_to_self",
                 "pending_segment_ids",
                 "last_memorize_at",
+                "last_display_segment_start_index",
+                "last_display_segment_end_index",
+                "last_display_segment_at",
                 "undo_snapshot",
                 "last_background_error",
                 "last_background_error_at",
@@ -229,6 +247,20 @@ INSERT OR IGNORE INTO conversations (
         if "last_memorize_at" in field_updates:
             raw_last = field_updates.get("last_memorize_at")
             field_updates["last_memorize_at"] = None if raw_last is None else (str(raw_last).strip() or None)
+        for key in ("last_display_segment_start_index", "last_display_segment_end_index"):
+            if key not in field_updates:
+                continue
+            raw_index = field_updates.get(key)
+            if raw_index is None:
+                field_updates[key] = None
+                continue
+            try:
+                field_updates[key] = max(0, int(raw_index))
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise HTTPException(status_code=400, detail=f"{key} must be an integer") from exc
+        if "last_display_segment_at" in field_updates:
+            raw_display_at = field_updates.get("last_display_segment_at")
+            field_updates["last_display_segment_at"] = None if raw_display_at is None else (str(raw_display_at).strip() or None)
         if "prior_context" in field_updates:
             raw_prior_context = field_updates.get("prior_context")
             field_updates["prior_context"] = None if raw_prior_context is None else str(raw_prior_context)
@@ -257,6 +289,8 @@ INSERT OR IGNORE INTO conversations (
                     params.append(1 if bool(value) else 0)
                 elif key == "digest_cursor":
                     params.append(int(value or 0))
+                elif key in {"last_display_segment_start_index", "last_display_segment_end_index"}:
+                    params.append(None if value is None else int(value or 0))
                 else:
                     params.append(value)
             params.append(cid)
