@@ -42,6 +42,10 @@ def test_error_handler_wired_to_root_logger(tmp_path: Path) -> None:
     assert "RotatingFileHandler" in err_handler_cfg.get("class", ""), "must be RotatingFileHandler"
     assert err_handler_cfg.get("level") == "ERROR", "handler level must be ERROR"
     assert err_handler_cfg.get("filename") == str(server_run.ROOT / "errors.log")
+    assert err_handler_cfg.get("formatter") == "memu_error"
+
+    err_formatter_cfg = log_cfg.get("formatters", {}).get("memu_error", {})
+    assert "%(asctime)s" in err_formatter_cfg.get("format", "")
 
     root_cfg = log_cfg.get("loggers", {}).get("", {})
     assert "memu_errors" in (root_cfg.get("handlers") or []), "memu_errors must be on root logger"

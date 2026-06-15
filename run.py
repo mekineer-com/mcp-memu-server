@@ -236,6 +236,11 @@ def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
     errors_log_path = _resolve_errors_log_path()
 
     handlers = log_cfg.setdefault("handlers", {})
+    formatters = log_cfg.setdefault("formatters", {})
+    formatters["memu_error"] = {
+        "format": "%(asctime)s %(levelname)s %(name)s: %(message)s",
+        "datefmt": "%Y-%m-%d %H:%M:%S",
+    }
     handlers["memu_file"] = {
         "class": "logging.handlers.WatchedFileHandler",
         "formatter": "default",
@@ -244,7 +249,7 @@ def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
     }
     handlers["memu_errors"] = {
         "class": "logging.handlers.RotatingFileHandler",
-        "formatter": "default",
+        "formatter": "memu_error",
         "filename": str(errors_log_path),
         "encoding": "utf-8",
         "maxBytes": 512_000,
