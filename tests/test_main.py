@@ -3583,6 +3583,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
     assert "[dm][Marcos] \u2190 current chat" in query_text
     assert "msg_04" in query_text
     assert "msg_03" not in query_text
+    assert "[Marcos] current message ..." in query_text
 
 
 def test_filter_current_whatsapp_history_accepts_received_at_for_active_since() -> None:
@@ -3875,7 +3876,7 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
     assert "My WhatsApp Conversations:" in query_text
     assert "My SillyTavern Conversations:" not in query_text
     assert "[dm][Marcos] \u2190 current chat" in query_text
-    assert "[Marcos] current message" in query_text
+    assert "[Marcos] current message ..." in query_text
     assert "[group][Familia]" in query_text
     assert "[Family Member] cross chat message" in query_text
 

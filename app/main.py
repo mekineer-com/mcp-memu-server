@@ -4156,6 +4156,7 @@ async def conversation_retrieve(
             chat_label=chat_label_for_prompt,
             current_user_text=retrieve_focus,
             self_turn_directive=self_turn_directive or None,
+            use_current_message_locator=bool(retrieve_focus and not self_turn_directive),
         )
 
         should_build_default_queries = (
