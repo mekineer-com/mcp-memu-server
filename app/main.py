@@ -1670,14 +1670,18 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
         prompt_override_payload = _mcp_tools.build_prompt_override_payload(retrieve_out)
         if not str(prompt_override_payload.get("user_prompt") or "").strip():
             raise RuntimeError("conversation_retrieve returned empty turn_user_prompt")
+        load_source_history = conversation_id.startswith("whatsapp:")
+        turn_history = [] if load_source_history else (
+            retrieve_out.get("turn_history") if isinstance(retrieve_out.get("turn_history"), list) else []
+        )
         turn_payload = {
             **payload,
             "user": user_scope,
             "self_turn_directive": message,
             "self_turn_label": "Scheduled wake",
-            "history": retrieve_out.get("turn_history") if isinstance(retrieve_out.get("turn_history"), list) else [],
+            "history": turn_history,
             "prompt_override_payload": prompt_override_payload,
-            "load_source_history": conversation_id.startswith("whatsapp:"),
+            "load_source_history": load_source_history,
             "is_live_turn": False,
             "trace_id": trace_id,
         }

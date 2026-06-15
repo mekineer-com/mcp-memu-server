@@ -4590,6 +4590,8 @@ async def test_due_free_turn_follow_up_runs_fresh_turn_and_queues_outbound(
     assert calls["retrieve"]["payload"]["self_turn_label"] == "Scheduled wake"
     assert "Check whether Marcos got home safely." in calls["retrieve"]["payload"]["self_turn_directive"]
     assert "message" not in calls["turn"]["payload"]
+    assert calls["turn"]["payload"]["load_source_history"] is True
+    assert calls["turn"]["payload"]["history"] == []
     assert calls["turn"]["payload"]["self_turn_label"] == "Scheduled wake"
     assert "Check whether Marcos got home safely." in calls["turn"]["payload"]["self_turn_directive"]
     assert calls["turn"]["payload"]["prompt_override_payload"]["user_prompt"] == "fresh prompt"
