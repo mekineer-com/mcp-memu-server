@@ -3692,6 +3692,92 @@ async def test_conversation_retrieve_uses_live_message_to_trigger_floor_without_
 
 
 @pytest.mark.asyncio
+async def test_conversation_retrieve_preserves_source_indexes_for_primary_floor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:dm:15133278228", 243, "2026-05-01T00:00:00+00:00"),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"digest_cursor": 243, "last_memorize_at": "2026-05-01T00:00:00+00:00", "all_categories_summary": ""},
+            None,
+            db_path,
+        ),
+    )
+
+    source_indexes = [207, 208, 209, 219, 220, 239, 240, 242, 243, 266, 287]
+
+    def _fake_load_current_whatsapp_history_from_source(
+        conversation_id: str,
+        *_a: object,
+        **_k: object,
+    ) -> list[dict[str, object]]:
+        assert conversation_id == "whatsapp:dm:15133278228"
+        return [
+            {
+                "role": "user",
+                "speaker": "Marcos",
+                "chat_name": "Marcos",
+                "content": f"msg_{idx}",
+                "source_conversation_index": idx,
+                "source_message_id": f"id-{idx}",
+            }
+            for idx in source_indexes
+        ]
+
+    monkeypatch.setattr(main, "_load_current_whatsapp_history_from_source", _fake_load_current_whatsapp_history_from_source)
+    monkeypatch.setattr(main, "_load_cross_tail_from_sources", lambda *_a, **_k: [])
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo"},
+        "message": "msg_287",
+        "query": "msg_287",
+        "history": [],
+        "build_turn_prompt": True,
+        "load_source_history": True,
+        "is_live_turn": True,
+        "external_message_id": "id-287",
+        "chat_name": "Marcos",
+        "chat_type": "dm",
+    }
+
+    out = await main.conversation_retrieve("whatsapp:dm:15133278228", payload)
+
+    assert [row["content"] for row in out.get("turn_history") or []] == [
+        "msg_219",
+        "msg_220",
+        "msg_239",
+        "msg_240",
+        "msg_242",
+        "msg_243",
+        "msg_266",
+    ]
+    turn_prompt = str(out.get("turn_user_prompt") or "")
+    assert "msg_219" in turn_prompt
+    assert "msg_266" in turn_prompt
+    assert "New Message:\nmsg_287" in turn_prompt
+
+
+@pytest.mark.asyncio
 async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

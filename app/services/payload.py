@@ -233,5 +233,15 @@ def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
             ts_ms = _parse_turn_ts_ms(item.get("received_at"))
         if ts_ms is not None:
             item_out["ts_ms"] = ts_ms
+        for key in ("conversation_id", "source_conversation_id", "source_label", "chat_name"):
+            value = _pick_str(item, key)
+            if value:
+                item_out[key] = value
+        raw_source_index = item.get("source_conversation_index")
+        if raw_source_index is not None:
+            try:
+                item_out["source_conversation_index"] = int(raw_source_index)
+            except (TypeError, ValueError, OverflowError):
+                pass
         out.append(item_out)
     return out
