@@ -239,6 +239,7 @@ def _get_service_from_payload(
     extract_scope: Any,
     payload_signature: Any,
     episode_items_per_segment: int,
+    min_chunk_tokens: int,
     log_prompts: bool,
     prompt_log_before: Any,
     prompt_log_after: Any,
@@ -303,6 +304,7 @@ def _get_service_from_payload(
         memorize_config["dynamic_category_cluster_size"] = int(cats_cfg.get("dynamic_category_cluster_size", 3) or 3)
         memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
         memorize_config["episode_items_per_segment"] = episode_items_per_segment
+        memorize_config["min_chunk_tokens"] = min_chunk_tokens
         mem_cfg = config.get("memorize") if isinstance(config.get("memorize"), dict) else {}
         for passthrough_key in (
             "enable_confidence_normalization",

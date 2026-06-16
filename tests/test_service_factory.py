@@ -93,6 +93,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         extract_scope=lambda payload: payload.get("user"),
         payload_signature=lambda _payload: "sig",
         episode_items_per_segment=1,
+        min_chunk_tokens=4000,
         log_prompts=False,
         prompt_log_before=lambda *a, **k: None,
         prompt_log_after=lambda *a, **k: None,
@@ -109,3 +110,4 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert captured["claude_code_settings"] == "/home/marcos/.config/memu/siri-claude-settings.json"
     assert captured["claude_code_workspace"] == "/home/marcos/Desktop/siri"
     assert captured["claude_code_timeout_seconds"] == 3600
+    assert captured["memorize_config"]["min_chunk_tokens"] == 4000

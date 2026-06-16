@@ -1020,6 +1020,7 @@ def _get_service_from_payload(payload: dict[str, Any]):
         extract_scope=_extract_scope,
         payload_signature=_payload_signature,
         episode_items_per_segment=_EPISODE_ITEMS_PER_SEGMENT,
+        min_chunk_tokens=_MIN_CHUNK_TOKENS,
         log_prompts=_LOG_PROMPTS,
         prompt_log_before=_prompt_log_before,
         prompt_log_after=_prompt_log_after,
