@@ -68,6 +68,45 @@ def test_format_all_chat_history_for_ai_merges_current_and_cross_chats() -> None
     assert "[Marcos] current hello" in rendered
 
 
+def test_format_all_chat_history_for_ai_places_activities_before_chats() -> None:
+    rendered = main._format_all_chat_history_for_ai(
+        current_history=[
+            {
+                "role": "user",
+                "name": "User A",
+                "content": "current hello",
+                "ts_ms": 1_770_000_000_000,
+            }
+        ],
+        cross_tail=[
+            {
+                "conversation_id": "activity:dm:SoulA",
+                "role": "assistant",
+                "speaker": "SoulA",
+                "chat_name": "SoulA",
+                "content": "I wrote a note to myself.",
+                "received_at": "2026-05-08T10:00:00+00:00",
+            },
+            {
+                "conversation_id": "sillytavern:SoulA",
+                "role": "assistant",
+                "speaker": "SoulA",
+                "chat_name": "SoulA",
+                "content": "cross hello",
+                "received_at": "2026-05-08T11:00:00+00:00",
+            },
+        ],
+        conversation_id="whatsapp:dm:contact-a",
+        soul_id="SoulA",
+        chat_label="[dm][Contact A]",
+    )
+
+    assert rendered.index("My Activities:") < rendered.index("My SillyTavern Conversations:")
+    assert rendered.index("My Activities:") < rendered.index("My WhatsApp Conversations:")
+    assert "[dm][SoulA]" in rendered
+    assert "[SoulA] I wrote a note to myself." in rendered
+
+
 def test_format_all_chat_history_for_ai_uses_current_chat_name_without_label() -> None:
     rendered = main._format_all_chat_history_for_ai(
         current_history=[
@@ -4647,7 +4686,13 @@ async def test_conversation_turn_uses_fresh_session_id_for_retry(
 
 
 @pytest.mark.asyncio
-async def test_free_turn_chain_caps_at_three_without_direct_memorize() -> None:
+async def test_free_turn_chain_caps_at_three_without_direct_memorize(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "SoulTest.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
+
     class _FakeSvc:
         def __init__(self) -> None:
             self.chat_calls: list[dict[str, object]] = []
@@ -4657,6 +4702,7 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize() -> None:
             return (
                 '{"cache":null,"annulments":[],"rehearsal":"continued",'
                 '"response_target":"listen","response":"",'
+                '"activity_recap":"I continued the task.",'
                 '"continue_reason":"task"}'
             )
 
@@ -4688,6 +4734,19 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize() -> None:
 
     assert len(svc.chat_calls) == 3
     assert all(call["resume_session_id"] == "session-123" for call in svc.chat_calls)
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute("SELECT * FROM activity_messages ORDER BY source_conversation_index").fetchall()
+    finally:
+        con.close()
+
+    assert [row["content"] for row in rows] == [
+        "I continued the task.",
+        "I continued the task.",
+        "I continued the task.",
+    ]
 
 
 def test_free_turn_prompt_uses_observe_for_listen_only_policy() -> None:
@@ -4894,7 +4953,18 @@ async def test_free_turn_chain_ignores_non_whatsapp_outbound(
     finally:
         main._FREE_TURN_INFLIGHT.clear()
 
-    assert not db_path.exists()
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        outbound_table = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'whatsapp_pending_outbounds'"
+        ).fetchone()
+        activity_rows = con.execute("SELECT content FROM activity_messages").fetchall()
+    finally:
+        con.close()
+
+    assert outbound_table is None
+    assert [row["content"] for row in activity_rows] == ["continued"]
 
 
 def test_free_turn_follow_up_payload_excludes_caller_timezone() -> None:

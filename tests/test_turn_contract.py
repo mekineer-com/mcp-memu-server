@@ -174,6 +174,14 @@ def test_parse_turn_contract_private_target():
     assert parsed["response"] == "context for you"
 
 
+def test_parse_turn_contract_accepts_activity_recap():
+    parsed = parse_turn_contract(
+        '{"response":"","response_target":"listen","cache":null,"annulments":[],"rehearsal":"done",'
+        '"activity_recap":"I wrote a note to myself."}'
+    )
+    assert parsed["activity_recap"] == "I wrote a note to myself."
+
+
 def test_parse_turn_contract_private_target_requires_response():
     with pytest.raises(ValueError, match="response is required"):
         parse_turn_contract(

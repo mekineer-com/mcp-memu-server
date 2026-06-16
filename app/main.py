@@ -506,6 +506,11 @@ async def _run_free_turn_chain(
                 resume_session_id=session_id,
             )
             contract = _parse_free_turn_contract(raw, allow_public_response=allow_public_response)
+            _record_activity_message(
+                user_id=user_id,
+                soul_id=soul_id,
+                recap=_activity_recap_from_contract(contract),
+            )
             response_target = str(contract.get("response_target") or "").strip().lower()
             response = str(contract.get("response") or "").strip()
             media_path = str(contract.get("attachment") or "").strip() or None
@@ -1219,6 +1224,150 @@ INSERT INTO whatsapp_pending_outbounds (
     finally:
         con.close()
     return out_id
+
+
+def _activity_conversation_id(soul_id: str) -> str:
+    return f"activity:dm:{str(soul_id or '').strip() or 'soul'}"
+
+
+def _ensure_activity_messages_schema(con: sqlite3.Connection) -> None:
+    con.execute(
+        """
+CREATE TABLE IF NOT EXISTS activity_messages (
+    source_conversation_index INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    soul_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    speaker TEXT NOT NULL,
+    content TEXT NOT NULL,
+    received_at TEXT NOT NULL
+)
+"""
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_activity_messages_scope "
+        "ON activity_messages(user_id, soul_id, source_conversation_index)"
+    )
+    con.commit()
+
+
+def _activity_message_rows(
+    con: sqlite3.Connection,
+    *,
+    user_id: str,
+    soul_id: str,
+    since_cursor: int,
+    recent_fallback_messages: int,
+) -> list[dict[str, Any]]:
+    _ensure_activity_messages_schema(con)
+    rows = con.execute(
+        """
+SELECT source_conversation_index, conversation_id, speaker, content, received_at
+FROM activity_messages
+WHERE user_id = ? AND soul_id = ?
+ORDER BY source_conversation_index ASC
+""",
+        (user_id, soul_id),
+    ).fetchall()
+    messages = [
+        {
+            "conversation_id": row["conversation_id"],
+            "source_conversation_id": row["conversation_id"],
+            "source_conversation_index": int(row["source_conversation_index"]),
+            "source_label": "activity",
+            "role": "assistant",
+            "speaker": row["speaker"],
+            "name": row["speaker"],
+            "chat_name": row["speaker"],
+            "content": row["content"],
+            "received_at": row["received_at"],
+            "memorize_chat": True,
+        }
+        for row in rows
+    ]
+    return _conversation_sources.slice_tail_with_floor(
+        messages,
+        since_cursor=since_cursor,
+        recent_fallback_messages=recent_fallback_messages,
+    )
+
+
+def _load_activity_tail_for_ai(
+    con: sqlite3.Connection,
+    *,
+    user_id: str,
+    soul_id: str,
+) -> list[dict[str, Any]]:
+    _sqlite_ensure_conversation_state_schema(con)
+    activity_cid = _activity_conversation_id(soul_id)
+    row = con.execute(
+        "SELECT digest_cursor, last_memorize_at FROM conversations WHERE conversation_id = ?",
+        (activity_cid,),
+    ).fetchone()
+    cursor = int(row["digest_cursor"] or 0) if row is not None and row["last_memorize_at"] else -1
+    return _activity_message_rows(
+        con,
+        user_id=user_id,
+        soul_id=soul_id,
+        since_cursor=cursor,
+        recent_fallback_messages=TURN_HISTORY_WINDOW_MESSAGES,
+    )
+
+
+def _record_activity_message(
+    *,
+    user_id: str,
+    soul_id: str,
+    recap: str,
+    happened_at: datetime | None = None,
+) -> bool:
+    text = str(recap or "").strip()
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid or not text:
+        return False
+    db_path = _sqlite_current_path(uid, sid)
+    if db_path is None:
+        logger.warning("activity recap skipped: sqlite path unavailable")
+        return False
+    _sqlite_ensure_nonempty(db_path)
+    activity_cid = _activity_conversation_id(sid)
+    now_iso = (happened_at or datetime.now(UTC)).astimezone(UTC).isoformat()
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
+        _ensure_activity_messages_schema(con)
+        con.execute(
+            """
+INSERT OR IGNORE INTO conversations (
+    conversation_id, soul_id, user_id, memorize_chat, digest_cursor, updated_at
+) VALUES (?, ?, ?, 1, 0, ?)
+""",
+            (activity_cid, sid, uid, now_iso),
+        )
+        con.execute(
+            """
+INSERT INTO activity_messages (
+    user_id, soul_id, conversation_id, speaker, content, received_at
+) VALUES (?, ?, ?, ?, ?, ?)
+""",
+            (uid, sid, activity_cid, sid, text, now_iso),
+        )
+        con.commit()
+        return True
+    finally:
+        con.close()
+
+
+def _activity_recap_from_contract(contract: dict[str, Any]) -> str:
+    recap = str(contract.get("activity_recap") or "").strip()
+    if recap:
+        return recap
+    cache_entry = str(contract.get("cache_entry") or "").strip()
+    if cache_entry:
+        return cache_entry
+    return str(contract.get("rehearsal") or "").strip()
 
 
 def _claim_whatsapp_outbounds(
@@ -3071,6 +3220,20 @@ def _chat_label_from_history(
     return None
 
 
+def _format_cross_tail_for_ai(cross_tail: list[dict[str, Any]], *, soul_id: str) -> str:
+    activity_tail = [
+        msg for msg in cross_tail
+        if str(msg.get("conversation_id") or "").startswith("activity:")
+    ]
+    chat_tail = [
+        msg for msg in cross_tail
+        if not str(msg.get("conversation_id") or "").startswith("activity:")
+    ]
+    activity_text = _message_log.format_merged_history(activity_tail, soul_name=soul_id) if activity_tail else ""
+    chat_text = _message_log.format_merged_history(chat_tail, soul_name=soul_id) if chat_tail else ""
+    return "\n\n".join(part for part in (activity_text, chat_text) if part).strip()
+
+
 def _format_all_chat_history_for_ai(
     *,
     current_history: list[dict[str, Any]] | None,
@@ -3082,7 +3245,7 @@ def _format_all_chat_history_for_ai(
     self_turn_directive: str | None = None,
     use_current_message_locator: bool = False,
 ) -> str:
-    cross_text = _message_log.format_merged_history(cross_tail or []) if cross_tail else ""
+    cross_text = _format_cross_tail_for_ai(cross_tail or [], soul_id=soul_id) if cross_tail else ""
     history_rows = current_history or []
     if not history_rows:
         if current_user_text or self_turn_directive:
@@ -3123,14 +3286,35 @@ def _load_cross_tail_for_ai(
     try:
         con.row_factory = sqlite3.Row
         _sqlite_ensure_conversation_state_schema(con)
-        return _load_cross_tail_from_sources(
+        return [
+            *_load_activity_tail_for_ai(con, user_id=user_id, soul_id=soul_id),
+            *_load_cross_tail_from_sources(
+                con,
+                user_id=user_id,
+                soul_id=soul_id,
+                exclude_conversation_id=conversation_id,
+            ),
+        ]
+    finally:
+        con.close()
+
+
+def _load_cross_tail_with_activities_from_sources(
+    con: sqlite3.Connection,
+    *,
+    user_id: str,
+    soul_id: str,
+    exclude_conversation_id: str | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        *_load_activity_tail_for_ai(con, user_id=user_id, soul_id=soul_id),
+        *_load_cross_tail_from_sources(
             con,
             user_id=user_id,
             soul_id=soul_id,
-            exclude_conversation_id=conversation_id,
-        )
-    finally:
-        con.close()
+            exclude_conversation_id=exclude_conversation_id,
+        ),
+    ]
 
 
 def _load_cross_memorize_tails_from_sources(
@@ -3152,6 +3336,18 @@ def _load_cross_memorize_tails_from_sources(
         if not cid or cid == excluded_id:
             continue
         try:
+            if cid.startswith("activity:"):
+                cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
+                tail = _activity_message_rows(
+                    con,
+                    user_id=user_id,
+                    soul_id=soul_id,
+                    since_cursor=cursor,
+                    recent_fallback_messages=0,
+                )
+                if tail:
+                    tails[cid] = tail
+                continue
             memorize_chat = True if row["memorize_chat"] is None else bool(int(row["memorize_chat"]))
             if memorize_chat:
                 cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
@@ -4095,7 +4291,7 @@ async def conversation_retrieve(
                 try:
                     _con.row_factory = sqlite3.Row
                     _sqlite_ensure_conversation_state_schema(_con)
-                    cross_tail = _load_cross_tail_from_sources(
+                    cross_tail = _load_cross_tail_with_activities_from_sources(
                         _con,
                         user_id=uid,
                         soul_id=soul_id,
@@ -4109,7 +4305,7 @@ async def conversation_retrieve(
             _turn_history_with_floor(history, state_row or {}),
             safe.get("external_message_id"),
         )
-        cross_text = _message_log.format_merged_history(cross_tail) if cross_tail else ""
+        cross_text = _format_cross_tail_for_ai(cross_tail, soul_id=soul_id) if cross_tail else ""
         if cross_text:
             safe["_cross_conversation_history"] = cross_text
         all_chat_history_for_ai = _format_all_chat_history_for_ai(
@@ -4756,6 +4952,13 @@ async def conversation_turn(
         if turn_contract is None:
             raise HTTPException(status_code=502, detail="turn contract parse failure: unknown")
         turn_ms = int((time.monotonic() - turn_started_at) * 1000)
+
+        if self_turn_directive and not dry_run:
+            _record_activity_message(
+                user_id=uid,
+                soul_id=soul_id,
+                recap=_activity_recap_from_contract(turn_contract),
+            )
 
         turn_cache_entry = str(turn_contract.get("cache_entry") or "").strip()
         turn_annulments = turn_contract.get("annulments") if isinstance(turn_contract.get("annulments"), list) else []

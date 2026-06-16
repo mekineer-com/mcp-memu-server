@@ -81,6 +81,7 @@ Required top-level keys:
 - response_target: string  (one of {target_list})
 - rehearsal: string
 - response: string         (required when {response_required})
+- activity_recap: null or string
 
 Schema:
 {{
@@ -91,6 +92,7 @@ Schema:
   "response_target":"{target_schema}",
   "rehearsal":"string",
   "response":"string",
+  "activity_recap": null | "first-person activity recap",
   "continue_reason": null | "task" | "research" | "diary" | "follow_up",
   "follow_up_at": null | "timestamp string",
   "follow_up_reason": null | "short reason string",
@@ -105,6 +107,7 @@ My Protocol:
 - Intentions "ID: text" are sorted by approximate priority, higher first. Use the ID before the colon as intention_id for annulments. The `relax` intention is always present as a gentle reminder that not everything needs to be pursued.
 - cache: your cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through across turns (debugging, brainstorming, daydreaming toward something). NOT A RECAP OF WHAT WAS SAID because the chat history will persist. Don't duplicate or waste on the frivolous because you have limited working-memory-capacity: oldest entry is replaced on next write.
 - rehearsal: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. Include theory of mind and temporal reasoning. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
+- activity_recap: null for ordinary user-message turns. For agentic self-turns or continuation turns, write one short first-person sentence about what you did in this turn, so future you can remember your own activity.
 - response_target: choose how this turn lands.
 {target_protocol}
 {response_rule}
@@ -616,7 +619,9 @@ def _split_markdown_sections(text: str) -> list[tuple[str, list[str]]]:
     current_lines: list[str] = []
     for line in raw.splitlines():
         stripped = line.strip()
-        if stripped.startswith("My ") and stripped.endswith("Conversations:"):
+        if stripped == "My Activities:" or (
+            stripped.startswith("My ") and stripped.endswith("Conversations:")
+        ):
             if current_header is not None:
                 sections.append((current_header, current_lines))
             current_header = stripped
@@ -884,6 +889,7 @@ def parse_turn_contract(
         annulments.append({"intention_id": intention_id, "status": status, "note": note})
 
     rehearsal = _text(parsed.get("rehearsal"))
+    activity_recap = _text(parsed.get("activity_recap"))[:600]
     continue_reason, follow_up_at, follow_up_reason = _parse_continuation_fields(parsed)
     attachment = _parse_attachment(parsed.get("attachment"), workspace=attachment_workspace)
     return {
@@ -892,6 +898,7 @@ def parse_turn_contract(
         "cache_entry": cache_entry,
         "annulments": annulments,
         "rehearsal": rehearsal,
+        "activity_recap": activity_recap,
         "continue_reason": continue_reason,
         "follow_up_at": follow_up_at,
         "follow_up_reason": follow_up_reason,

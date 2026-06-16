@@ -17,6 +17,8 @@ def derive_source_label(conversation_id: str) -> str:
         if "@g.us" in suffix:
             return "whatsapp:group"
         return "whatsapp:dm"
+    if cid.startswith("activity:"):
+        return "activity"
     if cid.startswith(("sillytavern", "integrity:", "chat:")):
         return "sillytavern"
     if cid.startswith("cron:"):

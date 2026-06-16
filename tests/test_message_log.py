@@ -73,6 +73,27 @@ def test_format_merged_history_groups_sections_and_conversations(tmp_path, monke
     assert "[Marcos] wa dm message" in rendered
 
 
+def test_format_merged_history_renders_activity_section() -> None:
+    rendered = message_log.format_merged_history(
+        [
+            {
+                "conversation_id": "activity:dm:SoulA",
+                "source_label": "activity",
+                "role": "assistant",
+                "speaker": "SoulA",
+                "chat_name": "SoulA",
+                "content": "I wrote a note to myself.",
+                "received_at": "2026-05-08T11:00:00+00:00",
+            }
+        ],
+        soul_name="SoulA",
+    )
+
+    assert "My Activities:" in rendered
+    assert "[dm][SoulA]" in rendered
+    assert "[SoulA] I wrote a note to myself." in rendered
+
+
 def test_format_merged_history_integrity_id_uses_persisted_chat_name() -> None:
     rendered = message_log.format_merged_history(
         [
