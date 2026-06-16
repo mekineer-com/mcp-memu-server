@@ -81,6 +81,7 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
     assert retrieve_payload.get("chat_type") == "dm"
     assert retrieve_payload.get("memorize_chat") is False
     assert retrieve_payload.get("allow_public_response") is False
+    assert retrieve_payload.get("mental_health_addon") is True
     assert "time_zone" not in retrieve_payload
     assert "time_zone_offset_min" not in retrieve_payload
     assert "load_source_history" not in retrieve_payload
@@ -223,9 +224,51 @@ async def test_memu_turn_omits_blank_chat_fields() -> None:
     assert "chat_name" not in retrieve_payload
     assert "chat_type" not in retrieve_payload
     assert "memorize_chat" not in retrieve_payload
+    assert retrieve_payload.get("mental_health_addon") is True
     assert "chat_name" not in turn_payload
     assert "chat_type" not in turn_payload
     assert "memorize_chat" not in turn_payload
+
+
+@pytest.mark.asyncio
+async def test_memu_turn_allows_mental_health_addon_off() -> None:
+    captured: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def fake_retrieve(conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        captured.append(("retrieve", conversation_id, payload))
+        return {
+            "turn_system_prompt": "system",
+            "turn_user_prompt": "user",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "result": {"categories": [], "items": [], "resources": []},
+        }
+
+    async def fake_turn(conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        captured.append(("turn", conversation_id, payload))
+        return {
+            "ok": True,
+            "conversation_id": conversation_id,
+            "response": "done",
+            "response_target": "listen",
+            "apimw": "not_started",
+            "retrieve_ms": 1,
+            "turn_ms": 1,
+        }
+
+    await mcp_tools.memu_turn_endpoint(
+        mcp_tools.MemuTurnRequest(
+            conversation_id="c1",
+            user_id="u1",
+            soul_id="s1",
+            message="hello",
+            mental_health_addon=False,
+        ),
+        conversation_retrieve=fake_retrieve,
+        conversation_turn=fake_turn,
+    )
+
+    assert "mental_health_addon" not in captured[0][2]
 
 
 def test_memu_retrieve_request_requires_query_or_queries() -> None:
