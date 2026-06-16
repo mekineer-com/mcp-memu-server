@@ -471,46 +471,6 @@ def _parse_free_turn_contract(raw: Any, *, allow_public_response: bool) -> dict[
         )
 
 
-async def _persist_free_turn_summary(
-    *,
-    service: MemoryService,
-    user_id: str,
-    soul_id: str,
-    conversation_id: str,
-    reason: str,
-    continuation_index: int,
-    contract: dict[str, Any],
-    soul_card: str | None,
-) -> None:
-    response_target = str(contract.get("response_target") or "").strip().lower()
-    response = str(contract.get("response") or "").strip()
-    rehearsal = str(contract.get("rehearsal") or "").strip()
-    cache_entry = str(contract.get("cache_entry") or "").strip()
-    summary_lines = [
-        f"{soul_id} took an agentic continuation turn.",
-        f"Purpose: {reason}.",
-        f"Origin conversation: {conversation_id}.",
-        f"Continuation index: {continuation_index}.",
-    ]
-    if rehearsal:
-        summary_lines.append(f"What {soul_id} worked through: {rehearsal}")
-    if cache_entry:
-        summary_lines.append(f"Working note: {cache_entry}")
-    if response:
-        summary_lines.append(f"Message intent ({response_target}): {response}")
-    await service.memorize(
-        resource_url=f"agentic-continuation:{uuid.uuid4()}",
-        modality="conversation",
-        raw_text="\n".join(summary_lines),
-        user={
-            "user_id": user_id,
-            "soul_id": soul_id,
-            "conversation_id": f"agentic:{conversation_id}",
-        },
-        soul_card=soul_card,
-    )
-
-
 async def _run_free_turn_chain(
     *,
     marker: str,
@@ -546,16 +506,6 @@ async def _run_free_turn_chain(
                 resume_session_id=session_id,
             )
             contract = _parse_free_turn_contract(raw, allow_public_response=allow_public_response)
-            await _persist_free_turn_summary(
-                service=service,
-                user_id=user_id,
-                soul_id=soul_id,
-                conversation_id=conversation_id,
-                reason=reason,
-                continuation_index=continuation_index,
-                contract=contract,
-                soul_card=soul_card,
-            )
             response_target = str(contract.get("response_target") or "").strip().lower()
             response = str(contract.get("response") or "").strip()
             media_path = str(contract.get("attachment") or "").strip() or None

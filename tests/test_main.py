@@ -4647,11 +4647,10 @@ async def test_conversation_turn_uses_fresh_session_id_for_retry(
 
 
 @pytest.mark.asyncio
-async def test_free_turn_chain_caps_at_three_and_persists_summaries() -> None:
+async def test_free_turn_chain_caps_at_three_without_direct_memorize() -> None:
     class _FakeSvc:
         def __init__(self) -> None:
             self.chat_calls: list[dict[str, object]] = []
-            self.memorize_calls: list[dict[str, object]] = []
 
         async def chat(self, *_args, **kwargs) -> str:
             self.chat_calls.append(dict(kwargs))
@@ -4661,9 +4660,8 @@ async def test_free_turn_chain_caps_at_three_and_persists_summaries() -> None:
                 '"continue_reason":"task"}'
             )
 
-        async def memorize(self, **kwargs) -> dict[str, object]:
-            self.memorize_calls.append(dict(kwargs))
-            return {"ok": True}
+        async def memorize(self, **_kwargs) -> dict[str, object]:
+            raise AssertionError("free-turn continuation must not bypass the normal memorize trigger")
 
     svc = _FakeSvc()
     try:
@@ -4689,7 +4687,6 @@ async def test_free_turn_chain_caps_at_three_and_persists_summaries() -> None:
         main._FREE_TURN_INFLIGHT.clear()
 
     assert len(svc.chat_calls) == 3
-    assert len(svc.memorize_calls) == 3
     assert all(call["resume_session_id"] == "session-123" for call in svc.chat_calls)
 
 
