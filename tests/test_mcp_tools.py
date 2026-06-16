@@ -81,7 +81,7 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
     assert retrieve_payload.get("chat_type") == "dm"
     assert retrieve_payload.get("memorize_chat") is False
     assert retrieve_payload.get("allow_public_response") is False
-    assert retrieve_payload.get("mental_health_addon") is True
+    assert "mental_health_addon" not in retrieve_payload
     assert "time_zone" not in retrieve_payload
     assert "time_zone_offset_min" not in retrieve_payload
     assert "load_source_history" not in retrieve_payload
@@ -224,14 +224,14 @@ async def test_memu_turn_omits_blank_chat_fields() -> None:
     assert "chat_name" not in retrieve_payload
     assert "chat_type" not in retrieve_payload
     assert "memorize_chat" not in retrieve_payload
-    assert retrieve_payload.get("mental_health_addon") is True
+    assert "mental_health_addon" not in retrieve_payload
     assert "chat_name" not in turn_payload
     assert "chat_type" not in turn_payload
     assert "memorize_chat" not in turn_payload
 
 
 @pytest.mark.asyncio
-async def test_memu_turn_allows_mental_health_addon_off() -> None:
+async def test_memu_turn_forwards_mental_health_addon_override() -> None:
     captured: list[tuple[str, str, dict[str, Any]]] = []
 
     async def fake_retrieve(conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -268,7 +268,7 @@ async def test_memu_turn_allows_mental_health_addon_off() -> None:
         conversation_turn=fake_turn,
     )
 
-    assert "mental_health_addon" not in captured[0][2]
+    assert captured[0][2].get("mental_health_addon") is False
 
 
 def test_memu_retrieve_request_requires_query_or_queries() -> None:

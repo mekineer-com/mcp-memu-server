@@ -101,6 +101,7 @@ def default_config() -> dict[str, Any]:
             "apimw_cadence": 5,
             "apimw_memory_count": 20,
             "apimw_random_count": 5,
+            "mental_health_query": True,
         },
         "consolidation_interval_days": 7,
         "procedural": {

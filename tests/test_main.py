@@ -404,6 +404,39 @@ def test_run_retrieve_forwards_mental_health_toggle(
     assert captured["mental_health_enabled"] is expected
 
 
+@pytest.mark.parametrize(
+    ("config_enabled", "expected"),
+    [
+        (True, True),
+        (False, False),
+    ],
+)
+def test_run_retrieve_uses_config_mental_health_default(
+    monkeypatch: pytest.MonkeyPatch,
+    config_enabled: bool,
+    expected: bool,
+):
+    captured: dict[str, Any] = {}
+
+    class _FakeSvc:
+        async def retrieve(self, *_args, **kwargs):
+            captured.update(kwargs)
+            return {"items": []}
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+    monkeypatch.setitem(main._CONFIG, "retrieve", {"mental_health_query": config_enabled})
+    out = asyncio.run(
+        main._run_retrieve(
+            {
+                "query": "hello",
+                "user": {"user_id": "u", "soul_id": "s"},
+            }
+        )
+    )
+    assert out["method"] == "rag"
+    assert captured["mental_health_enabled"] is expected
+
+
 def test_run_retrieve_forwards_force_retrieve(
     monkeypatch: pytest.MonkeyPatch,
 ):

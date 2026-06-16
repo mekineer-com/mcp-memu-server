@@ -39,6 +39,16 @@ def _extract_trace_id(payload: dict[str, Any]) -> str | None:
     return trace_id or None
 
 
+def _mental_health_query_enabled(payload: dict[str, Any], config: dict[str, Any]) -> bool:
+    if "mental_health_addon" in payload:
+        value = payload.get("mental_health_addon")
+        if not isinstance(value, bool):
+            raise HTTPException(status_code=400, detail="'mental_health_addon' must be a boolean")
+        return value
+    retrieve_cfg = config.get("retrieve") if isinstance(config.get("retrieve"), dict) else {}
+    return bool(retrieve_cfg.get("mental_health_query", False))
+
+
 def _extract_retrieve_where(payload: dict[str, Any]) -> dict[str, Any] | None:
     scope = payload.get("scope") or payload.get("where")
     if scope is not None and not isinstance(scope, dict):
@@ -191,6 +201,7 @@ async def _run_retrieve(
     force_retrieve = _extract_force_retrieve(safe)
     trace_id = _extract_trace_id(safe)
     as_of = parse_as_of_datetime(safe.get("as_of"))
+    mental_health_enabled = _mental_health_query_enabled(safe, config)
 
     soul_id = str((scope or {}).get("soul_id") or "").strip()
     user_id = str((scope or {}).get("user_id") or "user").strip() or "user"
@@ -215,7 +226,7 @@ async def _run_retrieve(
         where=scope,
         as_of=as_of,
         rewrite_angle=retrieve_rewrite_angle,
-        mental_health_enabled=bool(safe.get("mental_health_addon")),
+        mental_health_enabled=mental_health_enabled,
         force_retrieve=force_retrieve,
         trace_id=trace_id,
     )
@@ -226,7 +237,7 @@ async def _run_retrieve(
         "retrieve_ms": retrieve_ms,
     }
 
-    if safe.get("mental_health_addon"):
+    if mental_health_enabled:
         mh_query = str(retrieve_result.get("mental_health_query") or "").strip()
         if mh_query:
             yaml_dir = procedural_yaml_dir(config)
