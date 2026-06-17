@@ -1920,6 +1920,7 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
 
     async def _fake_synthesize(*_args, **kwargs):
         captured["synthesis_segment_text"] = kwargs["segment_text"]
+        captured["synthesis_current_message_text"] = kwargs["current_message_text"]
         return {}, {}, {}
 
     async def _fake_persist(*_args, **_kwargs):
@@ -1955,8 +1956,8 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
     assert "[dm][Marcos] \u2190 current chat" in captured["conversations_block"]
     assert "[Marcos] current hello ..." in captured["conversations_block"]
     assert "New Message:" not in captured["conversations_block"]
-    assert captured["synthesis_segment_text"].startswith(captured["conversations_block"])
-    assert "New Message:\ncurrent hello" in captured["synthesis_segment_text"]
+    assert captured["synthesis_segment_text"] == captured["conversations_block"]
+    assert captured["synthesis_current_message_text"] == "current hello"
 
 
 def test_build_retrieve_soul_context_queries_orders_chats_before_working_and_intentions() -> None:
@@ -2684,7 +2685,8 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
         ],
         identity_context="identity",
         state_row={},
-        segment_text="New Message:\nhello",
+        segment_text="My WhatsApp Conversations:\n\n[dm][Marcos]\n[Marcos] earlier hello",
+        current_message_text="hello",
         user_id="u",
         soul_id="s",
         conversation_id="c",
@@ -2697,14 +2699,23 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
     }
     assert items_by_id["mem_one"]["summary"] == "Marcos likes continuity."
     assert id_map == {"1": "mem_one"}
-    assert captured["user_prompt"].startswith("# Identity\n\n- SoulA is herself.")
+    assert captured["user_prompt"].startswith("# Identity\n- SoulA is herself.")
     assert "Identity: # Identity" not in captured["user_prompt"]
     assert "Summaries:" not in captured["user_prompt"]
     assert "Individual memories:" not in captured["user_prompt"]
     assert "Your working thoughts:" not in captured["user_prompt"]
     assert "My Memories:" in captured["user_prompt"]
+    assert "Recent conversation:" not in captured["user_prompt"]
+    assert "My WhatsApp Conversations:" in captured["user_prompt"]
+    assert "[Marcos] earlier hello" in captured["user_prompt"]
     assert "My Working Thoughts:" in captured["user_prompt"]
     assert "My Intentions:" in captured["user_prompt"]
+    assert "New Message:\nhello" in captured["user_prompt"]
+    assert "Reminder: do not answer the message here." in captured["user_prompt"]
+    assert captured["user_prompt"].index("My Memories:") < captured["user_prompt"].index("My WhatsApp Conversations:")
+    assert captured["user_prompt"].index("My WhatsApp Conversations:") < captured["user_prompt"].index("My Working Thoughts:")
+    assert captured["user_prompt"].index("My Working Thoughts:") < captured["user_prompt"].index("My Intentions:")
+    assert captured["user_prompt"].index("My Intentions:") < captured["user_prompt"].index("New Message:")
     assert "Seeking Happiness for Myself and Others" not in captured["user_prompt"]
     assert "life goals" not in captured["system_prompt"].lower()
 

@@ -709,9 +709,8 @@ def _merge_current_into_conversations(
     return "\n".join(out_lines).strip()
 
 
-def build_turn_prompt(
+def build_turn_context_block(
     *,
-    user_message: str,
     history: list[dict[str, Any]] | None,
     prior_context: str | None,
     retrieve_rag: Any,
@@ -724,17 +723,24 @@ def build_turn_prompt(
     chat_label: str | None = None,
     conversation_id: str | None = None,
     soul_name: str | None = None,
+    current_user_text: str | None = None,
     self_turn_directive: str | None = None,
-    self_turn_label: str | None = None,
     now: datetime | None = None,
+    memories_block: str | None = None,
+    memory_item_terms: set[str] | None = None,
 ) -> str:
     cache_lines = format_working_thoughts_lines(memory_cache)
 
     message_to_self = _text(apimw_message_to_self)
-    category_paragraph, memories_block, item_terms = _render_retrieve(
-        retrieve_rag,
-        now=now,
-    )
+    if memories_block is None:
+        category_paragraph, rendered_memories_block, item_terms = _render_retrieve(
+            retrieve_rag,
+            now=now,
+        )
+    else:
+        category_paragraph = ""
+        rendered_memories_block = _text(memories_block)
+        item_terms = set(memory_item_terms or set())
     rendered_all_categories, all_categories_terms = _render_all_categories_summary(
         all_categories_summary,
         item_terms,
@@ -757,14 +763,14 @@ def build_turn_prompt(
         context_blocks.extend([all_categories_text, ""])
     if category_paragraph:
         context_blocks.extend([category_paragraph, ""])
-    if memories_block:
-        context_blocks.extend(["My Memories:", memories_block, ""])
+    if rendered_memories_block:
+        context_blocks.extend(["My Memories:", rendered_memories_block, ""])
     if has_prior:
         context_blocks.extend(["Prior Context:", prior_text, ""])
 
     # Put a short current-message locator in the chat block so the soul reads
     # history → current turn → working thoughts/intentions → full new message.
-    current_user_text = _text(user_message)
+    current_text = _text(current_user_text)
     directive_text = _text(self_turn_directive)
     rendered_conversations_block = _text(conversations_block)
     if not rendered_conversations_block:
@@ -774,12 +780,12 @@ def build_turn_prompt(
             conversation_id=conversation_id,
             chat_label=chat_label,
             soul_name=soul_name,
-            current_user_text=current_user_text,
+            current_user_text=current_text,
             self_turn_directive=directive_text,
             use_current_message_locator=True,
         )
 
-    parts = [
+    return "\n".join([
         *context_blocks,
         rendered_conversations_block,
         "",
@@ -789,6 +795,50 @@ def build_turn_prompt(
         "",
         "My Intentions:",
         format_intentions_for_prompt(intentions_active),
+    ])
+
+
+def build_turn_prompt(
+    *,
+    user_message: str,
+    history: list[dict[str, Any]] | None,
+    prior_context: str | None,
+    retrieve_rag: Any,
+    all_categories_summary: str | None,
+    memory_cache: Any,
+    intentions_active: Any,
+    apimw_message_to_self: str | None = None,
+    cross_conversation_history: str | None = None,
+    conversations_block: str | None = None,
+    chat_label: str | None = None,
+    conversation_id: str | None = None,
+    soul_name: str | None = None,
+    self_turn_directive: str | None = None,
+    self_turn_label: str | None = None,
+    now: datetime | None = None,
+) -> str:
+    current_user_text = _text(user_message)
+    directive_text = _text(self_turn_directive)
+    context_block = build_turn_context_block(
+        history=history,
+        prior_context=prior_context,
+        retrieve_rag=retrieve_rag,
+        all_categories_summary=all_categories_summary,
+        memory_cache=memory_cache,
+        intentions_active=intentions_active,
+        apimw_message_to_self=apimw_message_to_self,
+        cross_conversation_history=cross_conversation_history,
+        conversations_block=conversations_block,
+        chat_label=chat_label,
+        conversation_id=conversation_id,
+        soul_name=soul_name,
+        current_user_text=current_user_text,
+        self_turn_directive=directive_text,
+        now=now,
+    )
+
+    parts = [
+        context_block,
         "",
         f"{_text(self_turn_label) or 'Self-turn directive'}:\n{directive_text}"
         if directive_text

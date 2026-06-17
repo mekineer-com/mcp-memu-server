@@ -68,7 +68,6 @@ from app.services.consolidation import (
 from app.services.intention_state import (
     append_memory_cache_entry as _append_memory_cache_entry,
     apply_intention_turn_maintenance as _apply_intention_turn_maintenance_impl,
-    format_intentions_for_prompt as _format_intentions_for_prompt,
     normalize_intentions_stack as _normalize_intentions_stack_impl,
     normalize_memory_cache as _normalize_memory_cache_impl,
     remove_intentions as _remove_intentions,
@@ -105,6 +104,7 @@ from app.services.state import (
 )
 from app.services.turn_contract import (
     build_conversations_block as _build_conversations_block,
+    build_turn_context_block as _build_turn_context_block,
     build_turn_prompt as _build_turn_prompt,
     format_category_summary_line as _format_category_summary_line,
     format_memory_line as _format_memory_line,
@@ -2271,6 +2271,7 @@ async def _apimw_synthesize(
     identity_context: str,
     state_row: dict[str, Any],
     segment_text: str,
+    current_message_text: str,
     user_id: str,
     soul_id: str,
     conversation_id: str,
@@ -2301,6 +2302,11 @@ async def _apimw_synthesize(
     if legend and formatted_memory_lines:
         formatted_memory_lines.insert(0, legend)
     formatted_memories = "\n".join(formatted_memory_lines) if formatted_memory_lines else "(none)"
+    memory_terms = {
+        str(item.get("summary") or "").strip().lower()
+        for item in combined_items
+        if isinstance(item, dict) and str(item.get("summary") or "").strip()
+    }
 
     categories = svc.database.memory_category_repo.list_categories(scope)
     cat_lines: list[str] = []
@@ -2313,9 +2319,25 @@ async def _apimw_synthesize(
 
     memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
     intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
-    intentions_text = _format_intentions_for_prompt(intentions_active) if intentions_active else ""
-    formatted_cache = "\n".join(str(e) for e in (memory_cache or [])) if memory_cache else "(none)"
-    formatted_intentions = intentions_text if (intentions_text and intentions_text.strip() != "(none)") else "(none)"
+    context_block = _build_turn_context_block(
+        history=[],
+        prior_context=None,
+        retrieve_rag=None,
+        all_categories_summary=formatted_categories,
+        memory_cache=memory_cache,
+        intentions_active=intentions_active,
+        conversations_block=segment_text,
+        current_user_text=current_message_text,
+        memories_block=formatted_memories,
+        memory_item_terms=memory_terms,
+    )
+    new_message_block = (
+        "New Message:\n"
+        f"{current_message_text}\n\n"
+        "Reminder: do not answer the message here. This step only updates background context. Return strict JSON only."
+        if current_message_text
+        else ""
+    )
 
     apimw_system_prompt = (
         f"{identity_context}\n\n"
@@ -2335,13 +2357,7 @@ async def _apimw_synthesize(
     )
 
     apimw_user_prompt = "\n\n".join(
-        part for part in (
-            formatted_categories,
-            f"My Memories:\n{formatted_memories}",
-            f"My Working Thoughts:\n{formatted_cache}",
-            f"My Intentions:\n{formatted_intentions}",
-            segment_text,
-        )
+        part for part in (context_block, new_message_block)
         if str(part or "").strip()
     )
 
@@ -2473,12 +2489,8 @@ async def _run_apimw(
             use_current_message_locator=bool(current_message_text),
         )
         identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
-        new_message_block = f"New Message:\n{current_message_text}" if current_message_text else ""
-        synthesis_conversation_text = "\n\n".join(
-            part for part in (segment_text.strip(), new_message_block) if part
-        )
         focus_text = current_message_text or segment_text.strip()
-        if not focus_text and not synthesis_conversation_text:
+        if not focus_text and not segment_text.strip():
             logger.info("apimw skipped for %s: no recent conversation text", conversation_id)
             return
 
@@ -2502,7 +2514,8 @@ async def _run_apimw(
             combined_items=combined_items,
             identity_context=identity_context,
             state_row=state_row,
-            segment_text=synthesis_conversation_text,
+            segment_text=segment_text,
+            current_message_text=current_message_text,
             user_id=user_id,
             soul_id=soul_id,
             conversation_id=conversation_id,
