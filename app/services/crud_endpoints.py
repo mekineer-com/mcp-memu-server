@@ -260,6 +260,7 @@ async def list_intentions_endpoint(
             """
 SELECT * FROM intentions
 WHERE soul_id = ? AND user_id = ? AND status = ?
+  AND (source IS NULL OR source != 'life_goal')
 """,
             (sid, uid, scoped_status),
         ).fetchall()

@@ -419,8 +419,8 @@ ORDER BY name ASC
         life_goal_rows = con.execute(
             """
 SELECT id, description, status
-FROM intentions
-WHERE soul_id = ? AND user_id = ? AND source = 'life_goal' AND status IN ('active', 'removed')
+FROM life_goals
+WHERE soul_id = ? AND user_id = ? AND status IN ('active', 'removed')
 ORDER BY updated_at ASC, id ASC
 """,
             (soul_id, user_id),
@@ -817,8 +817,8 @@ def write_consolidation_outputs(
         life_goal_rows = con.execute(
             """
 SELECT id, description, status
-FROM intentions
-WHERE soul_id = ? AND user_id = ? AND source = 'life_goal' AND status IN ('active', 'removed')
+FROM life_goals
+WHERE soul_id = ? AND user_id = ? AND status IN ('active', 'removed')
 ORDER BY updated_at ASC, id ASC
 """,
             (soul_id, user_id),
@@ -862,17 +862,17 @@ ORDER BY updated_at ASC, id ASC
 
         for goal_id in goals_to_mark_removed:
             con.execute(
-                "UPDATE intentions SET status = 'removed', updated_at = ? WHERE id = ?",
+                "UPDATE life_goals SET status = 'removed', updated_at = ? WHERE id = ?",
                 (now_iso, goal_id),
             )
         for goal_id in goals_to_delete:
-            con.execute("DELETE FROM intentions WHERE id = ?", (goal_id,))
+            con.execute("DELETE FROM life_goals WHERE id = ?", (goal_id,))
         for goal_id, text in goals_to_add:
             con.execute(
                 """
-INSERT INTO intentions (
-    id, soul_id, user_id, description, status, source, updated_at
-) VALUES (?, ?, ?, ?, 'active', 'life_goal', ?)
+INSERT INTO life_goals (
+    id, soul_id, user_id, description, status, updated_at
+) VALUES (?, ?, ?, ?, 'active', ?)
 """,
                 (goal_id, soul_id, user_id, text, now_iso),
             )
@@ -882,16 +882,21 @@ INSERT INTO intentions (
 
     from app.services.intention_state import (
         apply_intention_action,
+        drop_unpromoted_ephemeral_intentions,
         remove_intentions,
         upsert_intentions_stack_entries,
     )
     _con = deps.sqlite_connect(db_path)
     _con.row_factory = sqlite3.Row
-    current_state = deps.conversation_state_from_row(
-        deps.conversation_state_row(_con, conversation_id), con=_con
-    ) or {}
+    current_state = _soul_state.read(_con)
     _con.close()
     current_intentions = current_state.get("intentions_active")
+    promoted_ids = {
+        str(action.get("target_id") or "").strip()
+        for action in (llm_results.get("intention_actions") or [])
+        if str(action.get("type") or "").strip() == "promote"
+    }
+    current_intentions = drop_unpromoted_ephemeral_intentions(current_intentions, promoted_ids)
 
     if inputs.get("last_consolidation_at") is None:
         current_intentions = upsert_intentions_stack_entries(

@@ -77,11 +77,27 @@ CREATE TABLE IF NOT EXISTS intentions (
 )
 """
     )
+    con.execute(
+        """
+CREATE TABLE IF NOT EXISTS life_goals (
+    id TEXT PRIMARY KEY,
+    soul_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    description TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+"""
+    )
     intention_cols = set(sqlite_table_columns(con, "intentions"))
     if "resolution_note" not in intention_cols:
         con.execute("ALTER TABLE intentions ADD COLUMN resolution_note TEXT")
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_intentions_soul_user ON intentions(soul_id, user_id, status)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_life_goals_soul_user ON life_goals(soul_id, user_id, status)"
     )
 
 

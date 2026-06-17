@@ -3,6 +3,7 @@ import pytest
 from app.services.intention_state import (
     apply_intention_action,
     apply_intention_turn_maintenance,
+    drop_unpromoted_ephemeral_intentions,
     format_intentions_for_prompt,
     normalize_intentions_stack,
     normalize_memory_cache,
@@ -26,13 +27,13 @@ def test_normalize_intentions_stack_from_legacy_id_list():
     assert items["i-2"]["ephemeral"] is False
 
 
-def test_apply_maintenance_keeps_priority_and_ephemeral_expires_next_turn():
+def test_apply_maintenance_keeps_priority_and_ephemeral_until_consolidation():
     stack = normalize_intentions_stack(
         {
             "turn_index": 0,
             "items": [
                 {"id": "task-a", "text": "Task A", "priority": 8.0, "ephemeral": False},
-                {"id": "temp-b", "text": "Temp B", "priority": 9.0, "ephemeral": True, "expires_at_turn": 1},
+                {"id": "temp-b", "text": "Temp B", "priority": 9.0, "ephemeral": True},
             ],
         }
     )
@@ -47,7 +48,7 @@ def test_apply_maintenance_keeps_priority_and_ephemeral_expires_next_turn():
     maintained_turn_2 = apply_intention_turn_maintenance(maintained_turn_1)
     items_turn_2 = _items_by_id(maintained_turn_2)
     assert maintained_turn_2["turn_index"] == 2
-    assert "temp-b" not in items_turn_2
+    assert "temp-b" in items_turn_2
 
 
 def test_upsert_intention_entries_keeps_highest_priority():
@@ -89,13 +90,29 @@ def test_apply_intention_action_create_then_promote():
     )
     created_items = _items_by_id(created)
     assert created_items["ep-1"]["ephemeral"] is True
-    assert created_items["ep-1"]["expires_at_turn"] == 4
 
     promoted = apply_intention_action(created, {"type": "promote", "target_id": "ep-1"})
     promoted_items = _items_by_id(promoted)
     assert promoted_items["ep-1"]["ephemeral"] is False
     assert promoted_items["ep-1"]["priority"] >= 10.0
     assert "expires_at_turn" not in promoted_items["ep-1"]
+
+
+def test_drop_unpromoted_ephemeral_intentions_keeps_promoted_targets_only():
+    stack = normalize_intentions_stack(
+        {
+            "items": [
+                {"id": "stable", "text": "Stable", "priority": 8.0, "ephemeral": False},
+                {"id": "keep-me", "text": "Keep me", "ephemeral": True},
+                {"id": "drop-me", "text": "Drop me", "ephemeral": True},
+            ]
+        }
+    )
+    updated = drop_unpromoted_ephemeral_intentions(stack, {"keep-me"})
+    items = _items_by_id(updated)
+    assert "stable" in items
+    assert "keep-me" in items
+    assert "drop-me" not in items
 
 
 def test_remove_intentions():

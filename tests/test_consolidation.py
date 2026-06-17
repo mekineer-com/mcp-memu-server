@@ -661,6 +661,161 @@ def test_write_consolidation_outputs_clears_accumulators() -> None:
         assert ss_after["prior_context_ids_since_consolidation"] == []
 
 
+def test_write_consolidation_outputs_uses_life_goals_table() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        db_path = tmp_dir / "soul.db"
+        con = sqlite3.connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            sqlite_ensure_conversation_state_schema(con)
+            _soul_state.ensure_schema(con)
+            con.execute(
+                "INSERT INTO life_goals (id, soul_id, user_id, description, status) VALUES (?, ?, ?, ?, 'active')",
+                ("goal-old", "SoulLG", "UserLG", "old goal",),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        write_conversation_state(
+            "conv-life-goals",
+            sqlite_current_path=lambda _u, _s: db_path,
+            soul_id="SoulLG",
+            user_id="UserLG",
+            updates={"pending_segment_ids": ["ep:1"], "intentions_active": []},
+        )
+
+        write_consolidation_outputs(
+            _make_consolidation_deps(db_path, tmp_dir),
+            _make_svc_stub(),
+            inputs={"db_path": db_path},
+            llm_results=_base_llm_results(
+                life_goal_remove=["old goal"],
+                life_goal_add=["new goal"],
+            ),
+            conversation_id="conv-life-goals",
+            soul_id="SoulLG",
+            user_id="UserLG",
+        )
+
+        check_con = sqlite_connect(db_path)
+        try:
+            rows = check_con.execute(
+                "SELECT description, status FROM life_goals WHERE soul_id = ? AND user_id = ? ORDER BY description",
+                ("SoulLG", "UserLG"),
+            ).fetchall()
+            old_rows = check_con.execute(
+                "SELECT description FROM intentions WHERE source = 'life_goal'"
+            ).fetchall()
+        finally:
+            check_con.close()
+
+        assert [(row[0], row[1]) for row in rows] == [("new goal", "active"), ("old goal", "removed")]
+        assert old_rows == []
+
+
+def test_write_consolidation_outputs_created_ephemeral_survives_turns_until_next_consolidation() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        db_path = tmp_dir / "soul.db"
+        con = sqlite3.connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            sqlite_ensure_conversation_state_schema(con)
+            _soul_state.ensure_schema(con)
+            con.commit()
+        finally:
+            con.close()
+
+        write_conversation_state(
+            "conv-intentions",
+            sqlite_current_path=lambda _u, _s: db_path,
+            soul_id="SoulI",
+            user_id="UserI",
+            updates={"pending_segment_ids": ["ep:1"], "intentions_active": []},
+        )
+
+        write_consolidation_outputs(
+            _make_consolidation_deps(db_path, tmp_dir),
+            _make_svc_stub(),
+            inputs={"db_path": db_path},
+            llm_results=_base_llm_results(
+                intention_actions=[{"type": "create", "id": "new-thread", "text": "Follow the thread."}],
+            ),
+            conversation_id="conv-intentions",
+            soul_id="SoulI",
+            user_id="UserI",
+        )
+
+        check_con = sqlite_connect(db_path)
+        try:
+            check_con.row_factory = sqlite3.Row
+            before_turn = _soul_state.read(check_con)["intentions_active"]
+        finally:
+            check_con.close()
+        assert "new-thread" in {item["id"] for item in before_turn["items"]}
+
+        from app.services.intention_state import apply_intention_turn_maintenance
+
+        after_turn = apply_intention_turn_maintenance(before_turn)
+        after_turn_items = {item["id"]: item for item in after_turn["items"]}
+        assert after_turn_items["new-thread"]["ephemeral"] is True
+
+
+def test_write_consolidation_outputs_drops_unpromoted_old_ephemeral() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        db_path = tmp_dir / "soul.db"
+        con = sqlite3.connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            sqlite_ensure_conversation_state_schema(con)
+            _soul_state.ensure_schema(con)
+            con.commit()
+        finally:
+            con.close()
+
+        write_conversation_state(
+            "conv-drop-eph",
+            sqlite_current_path=lambda _u, _s: db_path,
+            soul_id="SoulE",
+            user_id="UserE",
+            updates={
+                "pending_segment_ids": ["ep:1"],
+                "intentions_active": {
+                    "items": [
+                        {"id": "old-eph", "text": "Old ephemeral", "ephemeral": True},
+                        {"id": "stable", "text": "Stable", "priority": 8.0, "ephemeral": False},
+                    ]
+                },
+            },
+        )
+
+        write_consolidation_outputs(
+            _make_consolidation_deps(db_path, tmp_dir),
+            _make_svc_stub(),
+            inputs={"db_path": db_path, "last_consolidation_at": "2026-06-01T00:00:00+00:00"},
+            llm_results=_base_llm_results(),
+            conversation_id="conv-drop-eph",
+            soul_id="SoulE",
+            user_id="UserE",
+        )
+
+        check_con = sqlite_connect(db_path)
+        try:
+            check_con.row_factory = sqlite3.Row
+            items = {
+                item["id"]: item
+                for item in _soul_state.read(check_con)["intentions_active"]["items"]
+            }
+        finally:
+            check_con.close()
+
+        assert "old-eph" not in items
+        assert "stable" in items
+
+
 def test_write_consolidation_outputs_db_failure_produces_no_companion_memory() -> None:
     """If the DB transaction fails, companion memory must NOT be created (it runs after the state write)."""
     with tempfile.TemporaryDirectory() as td:

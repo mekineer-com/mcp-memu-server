@@ -15,7 +15,6 @@ DEFAULT_RELAX_PRIORITY = 5.0
 DEFAULT_DECAY_PER_TURN = 0.1
 INTENTION_DECAY_ENABLED = False  # Temporarily disabled; keep decay code for future re-enable.
 DEFAULT_INTENTION_PRIORITY = 10.0
-DEFAULT_EPHEMERAL_TTL_TURNS = 1
 MAX_MEMORY_CACHE_ENTRIES = 5
 MAX_MEMORY_CACHE_ENTRY_CHARS = 300
 
@@ -96,7 +95,6 @@ def _normalize_stack_item(
     *,
     default_priority: float,
     now_iso: str,
-    current_turn: int,
 ) -> dict[str, Any] | None:
     if isinstance(raw, str):
         text = _text(raw)
@@ -150,9 +148,6 @@ def _normalize_stack_item(
     item["created_at"] = created_at or now_iso
     item["updated_at"] = updated_at or now_iso
 
-    if item.get("ephemeral") is True:
-        item["expires_at_turn"] = _int(raw.get("expires_at_turn"), current_turn)
-
     return item
 
 
@@ -181,7 +176,7 @@ def normalize_intentions_stack(
 
     by_id: dict[str, dict[str, Any]] = {}
     for raw in raw_items:
-        item = _normalize_stack_item(raw, default_priority=default_priority, now_iso=now, current_turn=turn_index)
+        item = _normalize_stack_item(raw, default_priority=default_priority, now_iso=now)
         if item is None:
             continue
         by_id[item["id"]] = item
@@ -246,10 +241,6 @@ def apply_intention_turn_maintenance(
 
         next_item = dict(item)
         if next_item.get("ephemeral") is True:
-            expires_at_turn = _int(next_item.get("expires_at_turn"), current_turn)
-            if expires_at_turn < next_turn:
-                continue
-            next_item["expires_at_turn"] = expires_at_turn
             next_item["updated_at"] = now
             kept.append(next_item)
             continue
@@ -321,10 +312,6 @@ def upsert_intentions_stack_entries(
                 current.pop("priority", None)
 
         if ephemeral:
-            current["expires_at_turn"] = _int(
-                entry.get("expires_at_turn"),
-                current_turn + DEFAULT_EPHEMERAL_TTL_TURNS,
-            )
             current.pop("priority", None)
         else:
             current.pop("expires_at_turn", None)
@@ -351,6 +338,24 @@ def remove_intentions(stack_value: Any, intention_ids: list[str]) -> dict[str, A
         item
         for item in (stack.get("items") or [])
         if _text(item.get("id")) not in remove_ids
+    ]
+    return normalize_intentions_stack(
+        {
+            "turn_index": stack.get("turn_index"),
+            "decay_per_turn": stack.get("decay_per_turn"),
+            "relax_priority": stack.get("relax_priority"),
+            "items": kept,
+        }
+    )
+
+
+def drop_unpromoted_ephemeral_intentions(stack_value: Any, promoted_ids: set[str]) -> dict[str, Any]:
+    stack = normalize_intentions_stack(stack_value)
+    keep_promoted = {_text(item_id) for item_id in promoted_ids if _text(item_id)}
+    kept = [
+        item
+        for item in (stack.get("items") or [])
+        if item.get("ephemeral") is not True or _text(item.get("id")) in keep_promoted
     ]
     return normalize_intentions_stack(
         {
@@ -448,7 +453,6 @@ def apply_intention_action(stack_value: Any, action: Any) -> dict[str, Any]:
             current["ephemeral"] = True
             current.pop("priority", None)
             current["updated_at"] = now
-            current["expires_at_turn"] = current_turn + DEFAULT_EPHEMERAL_TTL_TURNS
             by_id[item_id] = current
 
     return normalize_intentions_stack(

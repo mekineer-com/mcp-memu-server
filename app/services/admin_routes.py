@@ -226,6 +226,7 @@ def register_admin_routes(
             "conversations",
             "narrative_history",
             "intentions",
+            "life_goals",
         ]
         con = sqlite_connect(p)
         try:
