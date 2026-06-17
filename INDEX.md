@@ -69,7 +69,7 @@ mcp-memu-server/
 | `app/config.py` | Config/runtime helpers: `load_config()`, `save_config()`, `mask_config()`, storage path normalization, sqlite DSN scoping, default llm profile assembly, soul generation config I/O |
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
 | `app/services/consolidation.py` | Consolidation pipeline: gather queue/context, run one consolidation LLM call, write narrative_self + life-goal edits + companion memory + per-episode diary rows, and clear queue/flags. |
-| `app/services/diary.py` | Diary helpers for consolidation: episode parsing/excerpts, diary XML parsing, and diary/companion memory write helpers. |
+| `app/services/diary.py` | Legacy diary helpers for consolidation history. Avoid reintroducing diary/episode chat slices into current consolidation prompts. |
 | `app/services/graph_edges.py` | Shared edge normalization + write/invalidate helpers used by APImw and consolidation (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`). |
 | `app/services/memorize_endpoint.py` | `/memorize` endpoint core, forced-memorize background runner (`run_memorize_segments`), segment-file persistence (`chat_dir/segments/*.json`), rolling-summary row injection into segment payloads, progress/cancel handlers, and chat sleep-gap/token chunking helpers. |
 | `app/services/conversation_sources.py` | Source adapters for cross-conversation reads: WhatsApp from Hermes (`sessions.json` + `state.db`) and SillyTavern from per-conversation snapshots under `resources/st_chats/*/latest_history.json`, with digest-cursor slicing, floor backfill, and row-id based WhatsApp reads for listen-only summarize boundaries |

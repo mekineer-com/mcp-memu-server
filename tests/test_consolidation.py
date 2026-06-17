@@ -299,7 +299,7 @@ def test_format_segment_block_for_prompt_shows_memory_ids() -> None:
     )
     assert "Key:" in out
     assert "Segment 1" not in out
-    assert "Conversation excerpt:" not in out
+    assert "Conversation " not in out
     assert "Related memories:" not in out
     assert "- [1] [behavior] one" in out
     assert "- [2] [knowledge] two" in out
