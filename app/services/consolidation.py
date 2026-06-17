@@ -275,13 +275,8 @@ def _format_segment_block_for_prompt(
     if legend:
         lines.append(legend)
     for row in segments:
-        excerpt = str(row.get("excerpt") or "").strip()
         summaries = row.get("memory_summaries") or []
-        if excerpt:
-            lines.append("Conversation excerpt:")
-            lines.append(excerpt)
         if summaries:
-            lines.append("Related memories:")
             for s in summaries:
                 if isinstance(s, dict):
                     mid = s["id"]
@@ -291,8 +286,8 @@ def _format_segment_block_for_prompt(
                     lines.append(f"- {format_memory_line(s, show_id=True, item_id=str(n))}")
                 elif str(s).strip():
                     lines.append(f"- {s}")
-        lines.append("")
-    return "\n".join(lines).strip()
+            lines.append("")
+    return "\n".join(lines).strip() or "(none)"
 
 
 def _looks_like_memory_id(value: str) -> bool:
@@ -487,7 +482,7 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
                         continue
                     if isinstance(parsed, list):
                         messages.extend(m for m in parsed if isinstance(m, dict))
-            segment_inputs = build_segment_inputs(messages, pending_segment_ids, soul_name=soul_id)
+            segment_inputs = build_segment_inputs(messages, pending_segment_ids)
             if len(segment_inputs) != len(pending_segment_ids):
                 raise HTTPException(status_code=400, detail="queued segments are not present in conversation history")
 

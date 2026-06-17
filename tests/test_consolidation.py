@@ -7,7 +7,6 @@ from app.services.consolidation import run_consolidation_llm
 from app.services.consolidation import gather_consolidation_inputs
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
 from app.services import segment
-from app.services.segment import format_segment_excerpt
 from app.services.graph_edges import invalidate_memory_edges, write_memory_edges
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
 from app.services.state import conversation_state_from_row, conversation_state_row, write_conversation_state
@@ -289,54 +288,22 @@ def test_format_segment_block_for_prompt_shows_memory_ids() -> None:
         [
             {
                 "segment_id": "ep:1-2",
-                "excerpt": "hello",
                 "memory_summaries": [
-                    {"id": "mem_1", "summary": "one"},
-                    {"id": "mem_2", "summary": "two"},
+                    {"id": "mem_1", "summary": "one", "memory_type": "behavior"},
+                    {"id": "mem_2", "summary": "two", "memory_type": "knowledge"},
                 ],
             }
         ],
         id_map,
         counter,
     )
-    assert "memories:" in out
+    assert "Key:" in out
     assert "Segment 1" not in out
-    assert "Conversation excerpt:" in out
-    assert "Related memories:" in out
-    assert "- [1] [memory] one" in out
-    assert "- [2] [memory] two" in out
+    assert "Conversation excerpt:" not in out
+    assert "Related memories:" not in out
+    assert "- [1] [behavior] one" in out
+    assert "- [2] [knowledge] two" in out
     assert id_map == {"1": "mem_1", "2": "mem_2"}
-
-
-def test_format_segment_excerpt_uses_grouped_chat_display() -> None:
-    out = format_segment_excerpt(
-        [
-            {
-                "role": "user",
-                "speaker": "Marcos",
-                "chat_name": "Household Group",
-                "conversation_id": "whatsapp:group:familia",
-                "content": "hello",
-                "ts_ms": 1_770_000_000_000,
-            },
-            {
-                "role": "assistant",
-                "chat_name": "Household Group",
-                "conversation_id": "whatsapp:group:familia",
-                "content": "hi",
-                "ts_ms": 1_770_000_060_000,
-            },
-        ],
-        segment_id="whatsapp:group:familia:0-1",
-        start_idx=0,
-        end_idx=1,
-        soul_name="Siri",
-    )
-
-    assert "My WhatsApp Conversations:" in out
-    assert "[group][Household Group]" in out
-    assert "[Marcos] hello" in out
-    assert "[Siri] hi" in out
 
 
 def test_build_segment_inputs_dates_received_at_only_rows() -> None:
