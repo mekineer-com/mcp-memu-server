@@ -2302,11 +2302,6 @@ async def _apimw_synthesize(
     if legend and formatted_memory_lines:
         formatted_memory_lines.insert(0, legend)
     formatted_memories = "\n".join(formatted_memory_lines) if formatted_memory_lines else "(none)"
-    memory_terms = {
-        str(item.get("summary") or "").strip().lower()
-        for item in combined_items
-        if isinstance(item, dict) and str(item.get("summary") or "").strip()
-    }
 
     categories = svc.database.memory_category_repo.list_categories(scope)
     cat_lines: list[str] = []
@@ -2329,7 +2324,6 @@ async def _apimw_synthesize(
         conversations_block=segment_text,
         current_user_text=current_message_text,
         memories_block=formatted_memories,
-        memory_item_terms=memory_terms,
     )
     new_message_block = (
         "New Message:\n"

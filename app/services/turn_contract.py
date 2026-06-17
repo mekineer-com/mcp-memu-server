@@ -727,7 +727,6 @@ def build_turn_context_block(
     self_turn_directive: str | None = None,
     now: datetime | None = None,
     memories_block: str | None = None,
-    memory_item_terms: set[str] | None = None,
 ) -> str:
     cache_lines = format_working_thoughts_lines(memory_cache)
 
@@ -740,7 +739,7 @@ def build_turn_context_block(
     else:
         category_paragraph = ""
         rendered_memories_block = _text(memories_block)
-        item_terms = set(memory_item_terms or set())
+        item_terms = set()
     rendered_all_categories, all_categories_terms = _render_all_categories_summary(
         all_categories_summary,
         item_terms,
