@@ -26,7 +26,7 @@ def test_normalize_intentions_stack_from_legacy_id_list():
     assert items["i-2"]["ephemeral"] is False
 
 
-def test_apply_maintenance_decays_and_ephemeral_expires_next_turn():
+def test_apply_maintenance_keeps_priority_and_ephemeral_expires_next_turn():
     stack = normalize_intentions_stack(
         {
             "turn_index": 0,
@@ -42,7 +42,7 @@ def test_apply_maintenance_decays_and_ephemeral_expires_next_turn():
 
     assert maintained_turn_1["turn_index"] == 1
     assert "temp-b" in items_turn_1
-    assert items_turn_1["task-a"]["priority"] == 7.9
+    assert items_turn_1["task-a"]["priority"] == 8.0
 
     maintained_turn_2 = apply_intention_turn_maintenance(maintained_turn_1)
     items_turn_2 = _items_by_id(maintained_turn_2)
@@ -113,8 +113,7 @@ def test_remove_intentions():
     assert "a" in items
 
 
-def test_maintenance_drops_item_decayed_to_zero():
-    # decay_per_turn defaults to 0.1; set priority = 0.05 so one tick drops it to <= 0
+def test_maintenance_keeps_low_priority_while_decay_is_disabled():
     stack = normalize_intentions_stack(
         {
             "turn_index": 0,
@@ -127,9 +126,10 @@ def test_maintenance_drops_item_decayed_to_zero():
     )
     result = apply_intention_turn_maintenance(stack)
     items = _items_by_id(result)
-    assert "low" not in items
+    assert "low" in items
     assert "high" in items
-    assert items["high"]["priority"] == pytest.approx(4.9)
+    assert items["low"]["priority"] == pytest.approx(0.05)
+    assert items["high"]["priority"] == pytest.approx(5.0)
 
 
 def test_format_intentions_for_prompt_default_max_is_7():

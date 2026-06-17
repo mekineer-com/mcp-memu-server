@@ -13,6 +13,7 @@ RELAX_INTENTION_ID = "relax"
 RELAX_INTENTION_TEXT = "Relax"
 DEFAULT_RELAX_PRIORITY = 5.0
 DEFAULT_DECAY_PER_TURN = 0.1
+INTENTION_DECAY_ENABLED = False  # Temporarily disabled; keep decay code for future re-enable.
 DEFAULT_INTENTION_PRIORITY = 10.0
 DEFAULT_EPHEMERAL_TTL_TURNS = 1
 MAX_MEMORY_CACHE_ENTRIES = 5
@@ -233,6 +234,7 @@ def apply_intention_turn_maintenance(
     stack = normalize_intentions_stack(value)
     relax_priority = _float(stack.get("relax_priority"), DEFAULT_RELAX_PRIORITY)
     decay = _float(decay_per_turn, _float(stack.get("decay_per_turn"), DEFAULT_DECAY_PER_TURN))
+    effective_decay = decay if INTENTION_DECAY_ENABLED else 0.0
     now = _now_iso()
     current_turn = max(0, _int(stack.get("turn_index"), 0))
     next_turn = current_turn + 1
@@ -252,7 +254,7 @@ def apply_intention_turn_maintenance(
             kept.append(next_item)
             continue
 
-        next_priority = _float(item.get("priority"), 0.0) - decay
+        next_priority = _float(item.get("priority"), 0.0) - effective_decay
         if next_priority <= 0.0:
             continue
         next_item["priority"] = next_priority
