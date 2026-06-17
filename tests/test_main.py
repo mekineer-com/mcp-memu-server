@@ -2647,17 +2647,29 @@ async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest
 
 @pytest.mark.asyncio
 async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.MonkeyPatch):
-    async def _chat(*_args: object, **_kwargs: object) -> str:
+    captured: dict[str, str] = {}
+
+    async def _chat(prompt: str, **kwargs: object) -> str:
+        captured["user_prompt"] = prompt
+        captured["system_prompt"] = str(kwargs.get("system_prompt") or "")
         return (
             "*looks up softly*\n\n"
             '{"prior_context":["1"],"message_to_self":"remember the quiet signal"}'
         )
 
-    monkeypatch.setattr(main, "_load_active_life_goals_for_prompt", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        main,
+        "_load_active_life_goals_for_prompt",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("APImw should not render life goals")),
+    )
     svc = SimpleNamespace(
         chat=_chat,
         database=SimpleNamespace(
-            memory_category_repo=SimpleNamespace(list_categories=lambda _scope: {}),
+            memory_category_repo=SimpleNamespace(
+                list_categories=lambda _scope: {
+                    "identity": SimpleNamespace(name="Identity", summary="# Identity\n\n- SoulA is herself.")
+                }
+            ),
         ),
     )
 
@@ -2685,6 +2697,16 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
     }
     assert items_by_id["mem_one"]["summary"] == "Marcos likes continuity."
     assert id_map == {"1": "mem_one"}
+    assert captured["user_prompt"].startswith("# Identity\n\n- SoulA is herself.")
+    assert "Identity: # Identity" not in captured["user_prompt"]
+    assert "Summaries:" not in captured["user_prompt"]
+    assert "Individual memories:" not in captured["user_prompt"]
+    assert "Your working thoughts:" not in captured["user_prompt"]
+    assert "My Memories:" in captured["user_prompt"]
+    assert "My Working Thoughts:" in captured["user_prompt"]
+    assert "My Intentions:" in captured["user_prompt"]
+    assert "Seeking Happiness for Myself and Others" not in captured["user_prompt"]
+    assert "life goals" not in captured["system_prompt"].lower()
 
 
 @pytest.mark.asyncio

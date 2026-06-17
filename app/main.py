@@ -104,9 +104,9 @@ from app.services.state import (
     write_conversation_state as _write_conversation_state_impl,
 )
 from app.services.turn_contract import (
-    LIFE_GOALS_FREE_WILL_HEADER as _LIFE_GOALS_FREE_WILL_HEADER,
     build_conversations_block as _build_conversations_block,
     build_turn_prompt as _build_turn_prompt,
+    format_category_summary_line as _format_category_summary_line,
     format_memory_line as _format_memory_line,
     format_memory_legend as _format_memory_legend,
     format_shaped_by_line as _format_shaped_by_line,
@@ -2308,25 +2308,21 @@ async def _apimw_synthesize(
         cat_summary = str(cat.summary or "").strip()
         cat_name = cat.name
         if cat_name and cat_summary:
-            cat_lines.append(f"{cat_name}: {cat_summary}")
-    formatted_categories = "\n".join(cat_lines) if cat_lines else "(none)"
+            cat_lines.append(_format_category_summary_line(str(cat_name), cat_summary))
+    formatted_categories = "\n".join(cat_lines)
 
     memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
     intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
     intentions_text = _format_intentions_for_prompt(intentions_active) if intentions_active else ""
     formatted_cache = "\n".join(str(e) for e in (memory_cache or [])) if memory_cache else "(none)"
     formatted_intentions = intentions_text if (intentions_text and intentions_text.strip() != "(none)") else "(none)"
-    life_goals_active = _load_active_life_goals_for_prompt(user_id=user_id, soul_id=soul_id)
-    formatted_life_goals = (
-        "\n".join(f"- {goal}" for goal in life_goals_active if str(goal).strip()) if life_goals_active else "(none yet)"
-    )
 
     apimw_system_prompt = (
         f"{identity_context}\n\n"
         "This is your subconscious — a background process that runs between your turns. "
         "You have just searched your long-term memory. Below are your summaries, your individual memories, "
-        "your working thoughts, your intentions, and your life goals. "
-        "Your working thoughts, intentions, and life goals are READ-ONLY here — you cannot change them from the subconscious. "
+        "your working thoughts, and your intentions. "
+        "Your working thoughts and intentions are READ-ONLY here — you cannot change them from the subconscious. "
         "You can only observe them and let them inform your choices. "
         "The soul also has the full conversation history as context — you are adding depth, not providing it.\n\n"
         "Review everything. Then return STRICT JSON (first character { , last character } , "
@@ -2338,13 +2334,15 @@ async def _apimw_synthesize(
         "Use this when something you noticed in the background feels important enough to bring to your own attention next time you speak. One sentence."
     )
 
-    apimw_user_prompt = (
-        f"Summaries:\n{formatted_categories}\n\n"
-        f"Individual memories:\n{formatted_memories}\n\n"
-        f"Your working thoughts:\n{formatted_cache}\n\n"
-        f"Intentions:\n{formatted_intentions}\n\n"
-        f"{_LIFE_GOALS_FREE_WILL_HEADER}\n{formatted_life_goals}\n\n"
-        f"{segment_text}"
+    apimw_user_prompt = "\n\n".join(
+        part for part in (
+            formatted_categories,
+            f"My Memories:\n{formatted_memories}",
+            f"My Working Thoughts:\n{formatted_cache}",
+            f"My Intentions:\n{formatted_intentions}",
+            segment_text,
+        )
+        if str(part or "").strip()
     )
 
     llm_raw = await svc.chat(

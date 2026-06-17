@@ -460,10 +460,7 @@ def _render_retrieve(
             if category_summary:
                 item_terms.add(_norm_text(category_summary))
             if category_summary:
-                if re.match(r"^#{1,6}\s", category_summary):
-                    category_lines.append(category_summary)
-                else:
-                    category_lines.append(f"[{category_name}] {category_summary}")
+                category_lines.append(format_category_summary_line(category_name, category_summary))
             else:
                 category_lines.append(f"[{category_name}]")
 
@@ -513,6 +510,16 @@ def _render_retrieve(
         "\n".join(memory_lines),
         item_terms,
     )
+
+
+def format_category_summary_line(category_name: str, category_summary: str) -> str:
+    name = _text(category_name) or "category"
+    summary = _text(category_summary)
+    if not summary:
+        return f"[{name}]"
+    if re.match(r"^#{1,6}\s", summary):
+        return summary
+    return f"[{name}] {summary}"
 
 
 
