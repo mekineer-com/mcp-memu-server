@@ -3105,6 +3105,8 @@ def _load_cross_tail_from_sources(
         cid = str(row["conversation_id"] or "").strip()
         if not cid or cid == excluded_id:
             continue
+        if cid.startswith("activity:"):
+            continue
         source_label = _message_log.derive_source_label(cid)
         cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
         display_start = row["last_display_segment_start_index"]

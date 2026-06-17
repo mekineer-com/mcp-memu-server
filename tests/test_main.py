@@ -1453,6 +1453,38 @@ def test_load_cross_tail_from_sources_reads_whatsapp_conversations(
     assert rows[0]["content"] == "hi"
 
 
+def test_load_cross_tail_from_sources_skips_activity_conversation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("activity:dm:Echo", 0, "2026-05-01T00:00:00+00:00"),
+        )
+        con.commit()
+        monkeypatch.setattr(
+            main,
+            "_load_tail_for_source_conversation",
+            lambda **_kwargs: (_ for _ in ()).throw(AssertionError("activity is loaded separately")),
+        )
+
+        rows = main._load_cross_tail_from_sources(
+            con,
+            user_id="u1",
+            soul_id="Echo",
+            exclude_conversation_id="",
+        )
+    finally:
+        con.close()
+
+    assert rows == []
+
+
 def test_load_cross_tail_from_sources_keeps_previous_segment_participants(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
