@@ -1310,7 +1310,7 @@ def _load_activity_tail_for_ai(
         user_id=user_id,
         soul_id=soul_id,
         since_cursor=cursor,
-        recent_fallback_messages=0,
+        recent_fallback_messages=TURN_HISTORY_WINDOW_MESSAGES,
     )
 
 

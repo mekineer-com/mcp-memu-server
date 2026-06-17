@@ -1485,35 +1485,6 @@ def test_load_cross_tail_from_sources_skips_activity_conversation(
     assert rows == []
 
 
-def test_load_activity_tail_for_ai_does_not_floor_after_memorize(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "Echo.db"
-    con = main._sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        main._sqlite_ensure_conversation_state_schema(con)
-        main._ensure_activity_messages_schema(con)
-        con.execute(
-            "INSERT INTO conversations (conversation_id, soul_id, user_id, digest_cursor, last_memorize_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("activity:dm:Echo", "Echo", "u1", 2, "2026-05-01T00:00:00+00:00"),
-        )
-        for content in ("old activity 1", "old activity 2", "new activity 3"):
-            con.execute(
-                "INSERT INTO activity_messages (user_id, soul_id, conversation_id, speaker, content, received_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                ("u1", "Echo", "activity:dm:Echo", "Echo", content, "2026-05-01T00:00:00+00:00"),
-            )
-        con.commit()
-
-        rows = main._load_activity_tail_for_ai(con, user_id="u1", soul_id="Echo")
-    finally:
-        con.close()
-
-    assert [row["content"] for row in rows] == ["new activity 3"]
-
-
 def test_load_cross_tail_from_sources_keeps_previous_segment_participants(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
