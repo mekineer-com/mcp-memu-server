@@ -2480,7 +2480,6 @@ async def _run_apimw(
             soul_id=soul_id,
             chat_label=_chat_label_for_prompt(payload),
             current_user_text=current_message_text,
-            use_current_message_locator=bool(current_message_text),
         )
         identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
         focus_text = current_message_text or segment_text.strip()
@@ -3250,7 +3249,6 @@ def _format_all_chat_history_for_ai(
     chat_label: str | None = None,
     current_user_text: str | None = None,
     self_turn_directive: str | None = None,
-    use_current_message_locator: bool = False,
 ) -> str:
     cross_text = _format_cross_tail_for_ai(cross_tail or [], soul_id=soul_id) if cross_tail else ""
     history_rows = current_history or []
@@ -3264,7 +3262,6 @@ def _format_all_chat_history_for_ai(
                 soul_name=soul_id,
                 current_user_text=current_user_text,
                 self_turn_directive=self_turn_directive,
-                use_current_message_locator=use_current_message_locator,
             )
         return cross_text
     return _build_conversations_block(
@@ -3273,10 +3270,8 @@ def _format_all_chat_history_for_ai(
         conversation_id=conversation_id,
         chat_label=chat_label or _chat_label_from_history(history_rows, conversation_id),
         soul_name=soul_id,
-        include_empty_current=False,
         current_user_text=current_user_text,
         self_turn_directive=self_turn_directive,
-        use_current_message_locator=use_current_message_locator,
     )
 
 
@@ -4323,7 +4318,6 @@ async def conversation_retrieve(
             chat_label=chat_label_for_prompt,
             current_user_text=retrieve_focus,
             self_turn_directive=self_turn_directive or None,
-            use_current_message_locator=bool(retrieve_focus and not self_turn_directive),
         )
 
         should_build_default_queries = (
@@ -4381,7 +4375,6 @@ async def conversation_retrieve(
                     chat_label=chat_label_for_prompt,
                     current_user_text=message,
                     self_turn_directive=self_turn_directive,
-                    use_current_message_locator=True,
                 )
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))

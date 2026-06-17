@@ -141,7 +141,6 @@ def _build_retrieve_soul_context_queries(
             conversation_id=conversation_id,
             chat_label=chat_label,
             soul_name=soul_id,
-            include_empty_current=False,
             current_user_text=current_user_text,
             self_turn_directive=directive_text,
         )

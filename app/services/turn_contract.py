@@ -238,8 +238,6 @@ def build_conversations_block(
     soul_name: str | None = None,
     current_user_text: str | None = None,
     self_turn_directive: str | None = None,
-    use_current_message_locator: bool = False,
-    include_empty_current: bool = True,
 ) -> str:
     history_for_render = [dict(item) if isinstance(item, dict) else item for item in (history or [])]
     current_text = _text(current_user_text)
@@ -258,7 +256,7 @@ def build_conversations_block(
         and _text(last_history_item.get("role")).lower() == "user"
         and _norm_text(_text(last_history_item.get("content"))) == _norm_text(current_text)
     )
-    current_content = _current_message_locator(current_text) if use_current_message_locator else current_text
+    current_content = _current_message_locator(current_text) if current_text and not directive_text else current_text
     if current_content and not directive_text and already_has_current_user_message:
         last_history_item["content"] = current_content
     elif current_content and not directive_text:
@@ -287,7 +285,7 @@ def build_conversations_block(
         isinstance(item, dict) and bool(_text(item.get("content")))
         for item in history_for_render
     )
-    if not include_empty_current and not has_current_history:
+    if not has_current_history and not directive_text:
         return str(cross_conversation_history or "").strip()
 
     current_section_header, current_chat_block = _render_current_chat_block(
@@ -781,7 +779,6 @@ def build_turn_context_block(
             soul_name=soul_name,
             current_user_text=current_text,
             self_turn_directive=directive_text,
-            use_current_message_locator=True,
         )
 
     return "\n".join([
