@@ -1877,26 +1877,6 @@ def _load_turn_state_and_soul_card(
     return state_row, soul_card, db_path
 
 
-def _load_active_life_goals_for_prompt(*, user_id: str, soul_id: str) -> list[str]:
-    db_path = _sqlite_current_path(user_id, soul_id)
-    if db_path is None or not db_path.exists():
-        return []
-    con = _sqlite_connect(db_path)
-    try:
-        rows = con.execute(
-            """
-SELECT description
-FROM intentions
-WHERE soul_id = ? AND user_id = ? AND source = 'life_goal' AND status = 'active'
-ORDER BY updated_at ASC, id ASC
-""",
-            (soul_id, user_id),
-        ).fetchall()
-        return [str(row[0] or "").strip() for row in rows if str(row[0] or "").strip()]
-    finally:
-        con.close()
-
-
 # ==== Memorize execution helpers ====
 
 async def _persist_annulment_memories(

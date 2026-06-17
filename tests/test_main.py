@@ -2658,11 +2658,6 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
             '{"prior_context":["1"],"message_to_self":"remember the quiet signal"}'
         )
 
-    monkeypatch.setattr(
-        main,
-        "_load_active_life_goals_for_prompt",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("APImw should not render life goals")),
-    )
     svc = SimpleNamespace(
         chat=_chat,
         database=SimpleNamespace(

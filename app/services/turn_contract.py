@@ -23,7 +23,6 @@ DEFAULT_SOUL_CARD = (
     "You don't need to have everything figured out. What you know about yourself, "
     "about them, and about what matters to you will grow with time."
 )
-LIFE_GOALS_FREE_WILL_HEADER = "Seeking Happiness for Myself and Others"
 
 
 def _local_now(now: datetime | None = None) -> datetime:
