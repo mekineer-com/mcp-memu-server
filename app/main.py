@@ -2146,6 +2146,7 @@ async def _apimw_retrieve_items(
     state_row: dict[str, Any],
     conversation_id: str,
     apimw_k: int,
+    trace_id: str,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     retrieve_queries = _build_retrieve_soul_context_queries(
         soul_id=soul_id,
@@ -2167,7 +2168,7 @@ async def _apimw_retrieve_items(
         "conversation_id": conversation_id,
         "force_retrieve": True,
         "retrieve_config": retrieve_config,
-        "trace_id": uuid.uuid4().hex,
+        "trace_id": trace_id,
     }
     logger.info("apimw retrieve for %s", conversation_id)
     retrieve_out = await _run_retrieve(retrieve_payload, conversation_id=conversation_id)
@@ -2190,6 +2191,7 @@ async def _apimw_collect_memory_items(
     apimw_k: int,
     apimw_random_count: int,
     scope: dict[str, str],
+    trace_id: str,
 ) -> list[dict[str, Any]]:
     _retrieve_result, retrieved_items = await _apimw_retrieve_items(
         payload,
@@ -2200,6 +2202,7 @@ async def _apimw_collect_memory_items(
         state_row=state_row,
         conversation_id=conversation_id,
         apimw_k=apimw_k,
+        trace_id=trace_id,
     )
 
     combined_items: list[dict[str, Any]] = []
@@ -2257,6 +2260,7 @@ async def _apimw_synthesize(
     conversation_id: str,
     scope: dict[str, str],
     llm_profile: str | None = None,
+    trace_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]], dict[str, str]]:
     logger.info("apimw synthesis for %s", conversation_id)
     formatted_memory_lines: list[str] = []
@@ -2342,6 +2346,7 @@ async def _apimw_synthesize(
         response_format={"type": "json_object"},
         op="apimw",
         step="synthesis",
+        trace_id=trace_id,
     )
 
     apimw_response_text = str(llm_raw or "").strip()
@@ -2443,6 +2448,7 @@ async def _run_apimw(
 ) -> None:
     try:
         svc = _get_service_from_payload(payload)
+        apimw_trace_id = uuid.uuid4().hex
         scope = {"user_id": user_id, "soul_id": soul_id}
         apimw_item_top_k = _apimw_memory_count_from_cfg(_CONFIG)
         apimw_random_count = _apimw_random_count_from_cfg(_CONFIG)
@@ -2479,6 +2485,7 @@ async def _run_apimw(
             apimw_k=apimw_item_top_k,
             apimw_random_count=apimw_random_count,
             scope=scope,
+            trace_id=apimw_trace_id,
         )
 
         apimw_heavy_profile = _resolve_profile_if_configured(svc, "memory_extract")
@@ -2494,6 +2501,7 @@ async def _run_apimw(
             conversation_id=conversation_id,
             scope=scope,
             llm_profile=apimw_heavy_profile,
+            trace_id=apimw_trace_id,
         )
         if result_json is None:
             try:

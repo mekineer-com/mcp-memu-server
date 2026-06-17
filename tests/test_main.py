@@ -523,6 +523,7 @@ async def test_apimw_retrieve_items_sets_force_retrieve_and_item_count(monkeypat
         state_row={},
         conversation_id="cid",
         apimw_k=12,
+        trace_id="apimw-trace",
     )
 
     assert captured_payload["force_retrieve"] is True
@@ -535,9 +536,7 @@ async def test_apimw_retrieve_items_sets_force_retrieve_and_item_count(monkeypat
     assert "My WhatsApp Conversations:" in history_text
     assert "[dm][Marcos]" in history_text
     assert captured_payload["retrieve_config"]["item"]["top_k"] == 12
-    assert isinstance(captured_payload["trace_id"], str)
-    assert len(captured_payload["trace_id"]) == 32
-    assert captured_payload["trace_id"] != "turn-trace"
+    assert captured_payload["trace_id"] == "apimw-trace"
 
 
 @pytest.mark.asyncio
@@ -568,6 +567,7 @@ async def test_apimw_random_items_request_active_only(monkeypatch: pytest.Monkey
         apimw_k=20,
         apimw_random_count=5,
         scope={"user_id": "u1", "soul_id": "Echo"},
+        trace_id="apimw-trace",
     )
 
     assert captured == {
@@ -2653,6 +2653,7 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
     async def _chat(prompt: str, **kwargs: object) -> str:
         captured["user_prompt"] = prompt
         captured["system_prompt"] = str(kwargs.get("system_prompt") or "")
+        captured["trace_id"] = str(kwargs.get("trace_id") or "")
         return (
             "*looks up softly*\n\n"
             '{"prior_context":["1"],"message_to_self":"remember the quiet signal"}'
@@ -2686,6 +2687,7 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
         soul_id="s",
         conversation_id="c",
         scope={"user_id": "u", "soul_id": "s"},
+        trace_id="apimw-trace",
     )
 
     assert result_json == {
@@ -2703,6 +2705,7 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
     assert "Recent conversation:" not in captured["user_prompt"]
     assert "My WhatsApp Conversations:" in captured["user_prompt"]
     assert "[Marcos] earlier hello" in captured["user_prompt"]
+    assert captured["trace_id"] == "apimw-trace"
     assert "My Working Thoughts:" in captured["user_prompt"]
     assert "My Intentions:" in captured["user_prompt"]
     assert "New Message:\nhello" in captured["user_prompt"]
