@@ -4391,10 +4391,6 @@ async def conversation_retrieve(
                 out["turn_prompt_source"] = "conversation_retrieve"
             if current_whatsapp_active_since is not None:
                 out["turn_prompt_active_since"] = current_whatsapp_active_since
-            out["turn_prompt_conversation_id"] = cid
-            out["turn_prompt_message"] = message
-            if safe.get("external_message_id") is not None:
-                out["turn_prompt_external_message_id"] = str(safe.get("external_message_id") or "")
             if safe.get("_cross_conversation_history"):
                 out["cross_conversation_history"] = safe.get("_cross_conversation_history")
             if is_live_turn:
@@ -4828,28 +4824,6 @@ async def conversation_turn(
                         "prompt_override_payload.active_since must match current "
                         "WhatsApp active_since cutoff"
                     ),
-                )
-        prompt_conversation_id = str(prompt_override_payload.get("conversation_id") or "").strip()
-        if prompt_conversation_id and prompt_conversation_id != cid:
-            raise HTTPException(
-                status_code=400,
-                detail="prompt_override_payload.conversation_id must match current conversation",
-            )
-        if "message" in prompt_override_payload:
-            prompt_message = str(prompt_override_payload.get("message") or "").strip()
-            current_message = _pick_str(safe, "message", "query") or ""
-            if prompt_message != current_message.strip():
-                raise HTTPException(
-                    status_code=400,
-                    detail="prompt_override_payload.message must match current message",
-                )
-        if "external_message_id" in prompt_override_payload:
-            prompt_external_id = str(prompt_override_payload.get("external_message_id") or "").strip()
-            current_external_id = str(safe.get("external_message_id") or "").strip()
-            if prompt_external_id != current_external_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail="prompt_override_payload.external_message_id must match current message",
                 )
         override_user_prompt = str(prompt_override_payload.get("user_prompt", "")).strip()
         if not override_user_prompt:

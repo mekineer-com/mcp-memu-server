@@ -3508,35 +3508,6 @@ async def test_conversation_turn_accepts_generated_prompt_with_matching_cutoff(
 
 
 @pytest.mark.asyncio
-async def test_conversation_turn_rejects_prompt_for_different_message(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
-    monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: 100.0)
-
-    payload = {
-        "user": {"user_id": "u1", "soul_id": "Siri", "conversation_id": "whatsapp:group:familia"},
-        "message": "new message from Alex",
-        "history": [{"role": "user", "content": "new message from Alex", "ts_ms": 101_000}],
-        "prompt_override_payload": {
-            "user_prompt": "prompt for Michael",
-            "system_prompt": "system",
-            "memory_cache": [],
-            "intentions_active": {"items": []},
-            "retrieve_rag": {"items": [], "categories": [], "resources": []},
-            "generated_by": "conversation_retrieve",
-            "active_since": 100.0,
-            "conversation_id": "whatsapp:group:familia",
-            "message": "old message from Michael",
-        },
-    }
-
-    with pytest.raises(main.HTTPException, match="message must match"):
-        await main.conversation_turn("whatsapp:group:familia", payload)
-
-
-@pytest.mark.asyncio
 async def test_conversation_retrieve_uses_same_payload_history_for_turn_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

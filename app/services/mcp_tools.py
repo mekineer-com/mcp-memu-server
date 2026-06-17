@@ -95,12 +95,6 @@ def build_prompt_override_payload(retrieve_out: dict[str, Any]) -> dict[str, Any
         prompt_override_payload["active_since"] = retrieve_out.get("turn_prompt_active_since")
     if retrieve_out.get("cross_conversation_history"):
         prompt_override_payload["cross_conversation_history"] = retrieve_out.get("cross_conversation_history")
-    if retrieve_out.get("turn_prompt_conversation_id"):
-        prompt_override_payload["conversation_id"] = retrieve_out.get("turn_prompt_conversation_id")
-    if retrieve_out.get("turn_prompt_message") is not None:
-        prompt_override_payload["message"] = retrieve_out.get("turn_prompt_message")
-    if retrieve_out.get("turn_prompt_external_message_id") is not None:
-        prompt_override_payload["external_message_id"] = retrieve_out.get("turn_prompt_external_message_id")
     return prompt_override_payload
 
 
