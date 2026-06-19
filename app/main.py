@@ -3007,6 +3007,62 @@ def _stamp_assistant_display_name(messages: list[dict[str, Any]], soul_name: str
         msg["speaker"] = display
 
 
+def _persist_completed_sillytavern_turn_snapshot(
+    *,
+    safe: dict[str, Any],
+    history: list[dict[str, Any]],
+    conversation_id: str,
+    user_id: str,
+    soul_id: str,
+    message: str,
+    response_text: str,
+    response_target: str,
+) -> None:
+    if _message_log.derive_source_label(conversation_id) != "sillytavern":
+        return
+    completed = _normalize_conversation(history)
+    user_text = str(message or "").strip()
+    user_ts_ms = _parse_turn_ts_ms(safe.get("message_ts_ms"))
+    if user_ts_ms is None:
+        user_ts_ms = _parse_turn_ts_ms(safe.get("messageTsMs"))
+    if user_text:
+        user_row: dict[str, Any] = {
+            "role": "user",
+            "content": user_text,
+            "name": _pick_str(safe, "user_name") or "",
+            "source_message_id": _pick_str(safe, "message_source_id", "messageSourceId") or str(len(completed)),
+        }
+        if user_ts_ms is not None:
+            user_row["ts_ms"] = user_ts_ms
+        completed.append(user_row)
+
+    soul_text = str(response_text or "").strip()
+    if response_target == "respond" and soul_text:
+        soul_ts_ms = int(time.time() * 1000)
+        if user_ts_ms is not None and soul_ts_ms <= user_ts_ms:
+            soul_ts_ms = user_ts_ms + 1
+        completed.append(
+            {
+                "role": "soul",
+                "content": soul_text,
+                "name": _pick_str(safe, "chat_name") or soul_id,
+                "source_message_id": str(len(completed)),
+                "ts_ms": soul_ts_ms,
+            }
+        )
+
+    if not completed:
+        return
+    _conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=_get_storage_dir(_CONFIG),
+        user_id=user_id,
+        soul_id=soul_id,
+        conversation_id=conversation_id,
+        history=completed,
+        chat_name=_pick_str(safe, "chat_name") or None,
+    )
+
+
 def _load_tail_for_source_conversation(
     *,
     conversation_id: str,
@@ -5077,6 +5133,18 @@ async def conversation_turn(
                 logger.warning(
                     "conversation_turn: missing chat_name for respond; continuing without chat label"
                 )
+
+        if not dry_run:
+            _persist_completed_sillytavern_turn_snapshot(
+                safe=safe,
+                history=history_full,
+                conversation_id=cid,
+                user_id=uid,
+                soul_id=soul_id,
+                message=message,
+                response_text=response_text,
+                response_target=response_target,
+            )
 
         if attachment and not dry_run:
             if response_target in {"respond", "private"} and cid.startswith("whatsapp:"):

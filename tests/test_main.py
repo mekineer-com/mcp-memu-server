@@ -4433,6 +4433,91 @@ async def test_conversation_turn_does_not_persist_messages_to_table(
 
 
 @pytest.mark.asyncio
+async def test_conversation_turn_persists_completed_sillytavern_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Siri.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+
+    class _FakeSvc:
+        async def chat(self, *_args, **_kwargs) -> str:
+            return (
+                '{"cache":null,"annulments":[],"rehearsal":"ok",'
+                '"response_target":"respond","response":"current soul"}'
+            )
+
+    async def _fake_persist_annulment_memories(**_kwargs):
+        return []
+
+    captured: dict[str, object] = {}
+
+    def _fake_persist_snapshot(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        main,
+        "_turn_state_read",
+        lambda *_a, **_k: (
+            {"digest_cursor": 0},
+            None,
+            db_path,
+            [],
+            {"items": []},
+            0,
+            None,
+        ),
+    )
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
+    monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
+    monkeypatch.setattr(main, "_retrieve_apimw_enabled_from_cfg", lambda *_a, **_k: False)
+    monkeypatch.setattr(main._conversation_sources, "persist_sillytavern_history_snapshot", _fake_persist_snapshot)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Siri", "conversation_id": "integrity:chat"},
+        "message": "current user",
+        "message_ts_ms": 1_797_680_000_000,
+        "message_source_id": "16",
+        "user_name": "Marcos",
+        "chat_name": "Siri",
+        "chat_type": "dm",
+        "history": [{"role": "soul", "content": "prior soul", "name": "Siri", "source_message_id": "15"}],
+        "prompt_override_payload": {
+            "user_prompt": "prompt",
+            "system_prompt": "system",
+            "memory_cache": [],
+            "intentions_active": {"items": []},
+            "retrieve_rag": {"items": [], "categories": [], "resources": []},
+        },
+    }
+
+    out = await main.conversation_turn("integrity:chat", payload)
+
+    assert out["ok"] is True
+    assert captured["conversation_id"] == "integrity:chat"
+    assert captured["chat_name"] == "Siri"
+    history = captured["history"]
+    assert isinstance(history, list)
+    assert [(row["role"], row["content"]) for row in history] == [
+        ("soul", "prior soul"),
+        ("user", "current user"),
+        ("soul", "current soul"),
+    ]
+    assert history[1]["source_message_id"] == "16"
+    assert history[1]["ts_ms"] == 1_797_680_000_000
+    assert history[2]["ts_ms"] > history[1]["ts_ms"]
+
+
+@pytest.mark.asyncio
 async def test_conversation_turn_keeps_response_when_chat_name_differs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
