@@ -236,16 +236,23 @@ def _get_service_from_payload(
     service_key_raw = _derive_service_key(payload, extract_scope=extract_scope)
 
     client_profiles = payload.get("llm_profiles") if isinstance(payload.get("llm_profiles"), dict) else {}
+    server_profiles = default_llm_profiles_from_server_config(config)
+    if client_profiles:
+        for step_name in _VALID_STEP_MODEL_KEYS:
+            if step_name not in client_profiles:
+                server_profiles.pop(step_name, None)
     llm_profiles = _merge_llm_profiles(
-        default_llm_profiles_from_server_config(config),
+        server_profiles,
         client_profiles,
     )
     step_models_cfg = (config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}).get("step_models", {})
-    _validated_step_models(
-        step_models_cfg,
-        llm_profiles=llm_profiles,
-        logger=logger,
-    )
+    use_server_step_models = not client_profiles
+    if use_server_step_models:
+        _validated_step_models(
+            step_models_cfg,
+            llm_profiles=llm_profiles,
+            logger=logger,
+        )
     step_temps = (config.get("llm") or {}).get("step_temperatures")
     if isinstance(step_temps, dict):
         merged_default = llm_profiles.get("default", {})
@@ -299,7 +306,7 @@ def _get_service_from_payload(
         ):
             if passthrough_key in mem_cfg and passthrough_key not in memorize_config:
                 memorize_config[passthrough_key] = mem_cfg[passthrough_key]
-        if isinstance(step_models_cfg, dict):
+        if use_server_step_models and isinstance(step_models_cfg, dict):
             for cfg_key, profile_field in _STEP_MODEL_TO_MEMORIZE_PROFILE_FIELD.items():
                 if profile_field not in memorize_config and str(step_models_cfg.get(cfg_key) or "").strip():
                     memorize_config[profile_field] = cfg_key
@@ -307,7 +314,7 @@ def _get_service_from_payload(
     if not isinstance(retrieve_config, dict):
         retrieve_config = {}
         payload["retrieve_config"] = retrieve_config
-    if isinstance(step_models_cfg, dict):
+    if use_server_step_models and isinstance(step_models_cfg, dict):
         for cfg_key, profile_field in _STEP_MODEL_TO_RETRIEVE_PROFILE_FIELD.items():
             if profile_field not in retrieve_config and str(step_models_cfg.get(cfg_key) or "").strip():
                 retrieve_config[profile_field] = cfg_key
