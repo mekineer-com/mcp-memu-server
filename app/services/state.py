@@ -42,11 +42,6 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         ),
         "rolling_summary_updated_at": row["rolling_summary_updated_at"] if "rolling_summary_updated_at" in row.keys() else None,
         "prior_context": None if prior_context is None else str(prior_context),
-        "apimw_message_to_self": (
-            (str(row["apimw_message_to_self"] or "").strip() or None)
-            if "apimw_message_to_self" in row.keys()
-            else None
-        ),
         "pending_segment_ids": normalize_text_list(row["pending_segment_ids"]),
         "last_memorize_at": row["last_memorize_at"],
         "last_display_segment_start_index": (
@@ -73,7 +68,7 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
     return con.execute(
         "SELECT conversation_id, soul_id, user_id, memorize_chat, digest_cursor, "
         "rolling_summary, rolling_summary_cursor_id, rolling_summary_updated_at, prior_context, "
-        "apimw_message_to_self, pending_segment_ids, last_memorize_at, "
+        "pending_segment_ids, last_memorize_at, "
         "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at, "
         "updated_at, undo_snapshot, "
         "last_background_error, last_background_error_at, "
@@ -98,7 +93,6 @@ def conversation_state_empty(
         "rolling_summary_cursor_id": None,
         "rolling_summary_updated_at": None,
         "prior_context": None,
-        "apimw_message_to_self": None,
         "pending_segment_ids": [],
         "last_memorize_at": None,
         "last_display_segment_start_index": None,
@@ -152,10 +146,10 @@ def write_conversation_state(
 INSERT OR IGNORE INTO conversations (
     conversation_id, soul_id, user_id, memorize_chat,
     digest_cursor, rolling_summary, rolling_summary_cursor_id, rolling_summary_updated_at,
-    prior_context, apimw_message_to_self, pending_segment_ids,
+    prior_context, pending_segment_ids,
     last_memorize_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """,
                 (
                     seed["conversation_id"],
@@ -167,7 +161,6 @@ INSERT OR IGNORE INTO conversations (
                     seed.get("rolling_summary_cursor_id"),
                     seed.get("rolling_summary_updated_at"),
                     seed.get("prior_context"),
-                    seed.get("apimw_message_to_self"),
                     json_to_db(seed.get("pending_segment_ids") or []),
                     seed.get("last_memorize_at"),
                     seed.get("updated_at"),
@@ -199,7 +192,6 @@ INSERT OR IGNORE INTO conversations (
                 "rolling_summary_cursor_id",
                 "rolling_summary_updated_at",
                 "prior_context",
-                "apimw_message_to_self",
                 "pending_segment_ids",
                 "last_memorize_at",
                 "last_display_segment_start_index",
@@ -264,11 +256,6 @@ INSERT OR IGNORE INTO conversations (
         if "prior_context" in field_updates:
             raw_prior_context = field_updates.get("prior_context")
             field_updates["prior_context"] = None if raw_prior_context is None else str(raw_prior_context)
-        if "apimw_message_to_self" in field_updates:
-            raw_message_to_self = field_updates.get("apimw_message_to_self")
-            field_updates["apimw_message_to_self"] = (
-                None if raw_message_to_self is None else (str(raw_message_to_self).strip() or None)
-            )
         if "pending_segment_ids" in field_updates:
             field_updates["pending_segment_ids"] = normalize_text_list(field_updates["pending_segment_ids"])
 

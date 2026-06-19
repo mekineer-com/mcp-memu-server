@@ -19,6 +19,7 @@ import pytest
 
 from app.db import sqlite_ensure_conversation_state_schema
 from app.services import memorize_endpoint
+from app.services import soul_state as _soul_state
 from app.services.state import (
     conversation_state_from_row,
     conversation_state_row,
@@ -93,7 +94,7 @@ def test_empty_background_error_state_defaults_to_none() -> None:
         assert state["apimw_message_to_self"] is None
 
 
-def test_apimw_message_to_self_round_trip_through_state() -> None:
+def test_apimw_message_to_self_is_soul_scoped() -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp_dir = Path(td)
         db_path, sqlite_dir = _tmp_sqlite_setup(tmp_dir, soul_id="SoulC")
@@ -111,14 +112,29 @@ def test_apimw_message_to_self_round_trip_through_state() -> None:
         con = sqlite3.connect(db_path)
         try:
             con.row_factory = sqlite3.Row
-            row = conversation_state_row(con, "conv-apimw")
-            assert row is not None
-            loaded = conversation_state_from_row(row)
+            soul = _soul_state.read(con)
         finally:
             con.close()
 
-        assert loaded is not None
-        assert loaded["apimw_message_to_self"] == "notice the quiet signal"
+        assert soul["apimw_message_to_self"] == "notice the quiet signal"
+
+        other_state, _ = write_conversation_state(
+            "conv-other",
+            sqlite_current_path=lambda _user, _soul: db_path,
+            soul_id="SoulC",
+            user_id="UserC",
+            updates={},
+        )
+        assert other_state["apimw_message_to_self"] == "notice the quiet signal"
+
+        cleared_state, _ = write_conversation_state(
+            "conv-other",
+            sqlite_current_path=lambda _user, _soul: db_path,
+            soul_id="SoulC",
+            user_id="UserC",
+            updates={"apimw_message_to_self": None},
+        )
+        assert cleared_state["apimw_message_to_self"] is None
 
 
 def test_consolidation_error_fields_round_trip_through_state() -> None:

@@ -146,7 +146,6 @@ def test_conversation_state_schema_migrates_pending_segment_ids_from_old_name(
                 rolling_summary_cursor_id INTEGER,
                 rolling_summary_updated_at DATETIME,
                 prior_context TEXT,
-                apimw_message_to_self TEXT,
                 last_memorize_at DATETIME,
                 updated_at DATETIME,
                 undo_snapshot JSON,

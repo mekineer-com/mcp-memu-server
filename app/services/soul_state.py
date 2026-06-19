@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS soul_state (
     consolidation_started_at DATETIME,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )""")
+    cols = {row[1] for row in con.execute("PRAGMA table_info(soul_state)").fetchall()}
+    if "apimw_message_to_self" not in cols:
+        con.execute("ALTER TABLE soul_state ADD COLUMN apimw_message_to_self TEXT")
     if con.execute("SELECT COUNT(*) FROM soul_state").fetchone()[0] == 0:
         con.execute("INSERT INTO soul_state (id, updated_at) VALUES (1, ?)", (datetime.now(UTC).isoformat(),))
 
@@ -43,6 +46,7 @@ def read(con: sqlite3.Connection) -> dict[str, Any]:
         "retrieve_rewrite_angle": int(row["retrieve_rewrite_angle"] or 0),
         "retrieval_ids_since_consolidation": normalize_text_list(row["retrieval_ids_since_consolidation"]),
         "prior_context_ids_since_consolidation": normalize_text_list(row["prior_context_ids_since_consolidation"]),
+        "apimw_message_to_self": (str(row["apimw_message_to_self"] or "").strip() or None),
         "last_consolidation_at": row["last_consolidation_at"],
         "consolidation_in_progress": bool(row["consolidation_in_progress"]),
         "consolidation_started_at": row["consolidation_started_at"],
@@ -59,6 +63,7 @@ def defaults() -> dict[str, Any]:
         "retrieve_rewrite_angle": 0,
         "retrieval_ids_since_consolidation": [],
         "prior_context_ids_since_consolidation": [],
+        "apimw_message_to_self": None,
         "last_consolidation_at": None,
         "consolidation_in_progress": False,
         "consolidation_started_at": None,
@@ -74,7 +79,7 @@ _JSON_FIELDS = {
 _VALID_FIELDS = {
     "narrative_self", "all_categories_summary", "memory_cache", "intentions_active",
     "retrieve_rewrite_angle", "retrieval_ids_since_consolidation",
-    "prior_context_ids_since_consolidation",
+    "prior_context_ids_since_consolidation", "apimw_message_to_self",
     "last_consolidation_at", "consolidation_in_progress", "consolidation_started_at",
 }
 
@@ -95,6 +100,9 @@ def write(con: sqlite3.Connection, updates: dict[str, Any]) -> None:
         fields["prior_context_ids_since_consolidation"] = normalize_text_list(fields["prior_context_ids_since_consolidation"])
     if "consolidation_in_progress" in fields:
         fields["consolidation_in_progress"] = bool(fields["consolidation_in_progress"])
+    if "apimw_message_to_self" in fields:
+        raw_message = fields["apimw_message_to_self"]
+        fields["apimw_message_to_self"] = None if raw_message is None else (str(raw_message).strip() or None)
 
     fields["updated_at"] = datetime.now(UTC).isoformat()
     assignments = []
