@@ -660,39 +660,33 @@ def test_split_indices_by_sleep_keeps_all_qualifying_boundaries():
     assert stats["nights_qual"] == 3
 
 
-def test_turn_launch_apimw_uses_periodic_cadence(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_turn_launch_apimw_uses_global_turn_cadence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
     monkeypatch.setattr(main, "_apimw_cadence_from_cfg", lambda *_a, **_k: 3)
     monkeypatch.setattr(main, "_mark_apimw_inflight", lambda *_a, **_k: False)
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
 
-    history_three = [
-        {"role": "assistant", "content": "a"},
-        {"role": "assistant", "content": "b"},
-        {"role": "assistant", "content": "c"},
-    ]
+    for cid in ("cid-1", "cid-2"):
+        assert main._turn_launch_apimw(cid, "u1", "Echo", {}, []) == "skipped_cadence"
+
     status_three = main._turn_launch_apimw(
-        "cid",
+        "cid-3",
         "u1",
         "Echo",
         {},
-        history_three,
+        [],
     )
     assert status_three == "skipped_inflight"
 
-    history_four = history_three + [{"role": "assistant", "content": "d"}]
-    status_four = main._turn_launch_apimw(
-        "cid",
-        "u1",
-        "Echo",
-        {},
-        history_four,
-    )
-    assert status_four == "skipped_cadence"
-
 
 @pytest.mark.asyncio
-async def test_turn_launch_apimw_passes_floored_history_after_memorize(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_turn_launch_apimw_passes_floored_history_after_memorize(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     monkeypatch.setattr(main, "_apimw_cadence_from_cfg", lambda *_a, **_k: 1)
     monkeypatch.setattr(main, "_mark_apimw_inflight", lambda *_a, **_k: True)
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: tmp_path / "state.db")
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",

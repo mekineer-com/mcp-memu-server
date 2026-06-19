@@ -956,7 +956,6 @@ _apimw_cadence_from_cfg = _service_factory._apimw_cadence_from_cfg
 _apimw_memory_count_from_cfg = _service_factory._apimw_memory_count_from_cfg
 _apimw_random_count_from_cfg = _service_factory._apimw_random_count_from_cfg
 _consolidation_interval_days_from_cfg = _service_factory._consolidation_interval_days_from_cfg
-_count_soul_messages = _service_factory._count_soul_messages
 _merge_llm_profiles = _service_factory._merge_llm_profiles
 _clear_cached_services = _service_factory._clear_cached_services
 
@@ -4698,6 +4697,26 @@ def _turn_state_write(
     return state_out, state_path
 
 
+def _apimw_cadence_due(user_id: str, soul_id: str, cadence_threshold: int) -> bool:
+    db_path = _sqlite_current_path(user_id, soul_id)
+    if db_path is None:
+        return False
+    _sqlite_ensure_nonempty(db_path)
+    con = _sqlite_connect(db_path)
+    try:
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS apimw_cadence "
+            "(id INTEGER PRIMARY KEY CHECK (id = 1), turn_count INTEGER NOT NULL DEFAULT 0)"
+        )
+        con.execute("INSERT OR IGNORE INTO apimw_cadence (id, turn_count) VALUES (1, 0)")
+        con.execute("UPDATE apimw_cadence SET turn_count = turn_count + 1 WHERE id = 1")
+        turn_count = int(con.execute("SELECT turn_count FROM apimw_cadence WHERE id = 1").fetchone()[0] or 0)
+        con.commit()
+    finally:
+        con.close()
+    return (turn_count % cadence_threshold) == 0
+
+
 def _turn_launch_apimw(
     cid: str,
     uid: str,
@@ -4706,10 +4725,7 @@ def _turn_launch_apimw(
     history_full: list[dict[str, Any]],
 ) -> str:
     cadence_threshold = _apimw_cadence_from_cfg(_CONFIG)
-    cadence_soul_messages = _count_soul_messages(history_full, soul_id)
-    if cadence_soul_messages < cadence_threshold:
-        return "skipped_cadence"
-    if cadence_threshold > 1 and (cadence_soul_messages % cadence_threshold) != 0:
+    if not _apimw_cadence_due(uid, soul_id, cadence_threshold):
         return "skipped_cadence"
     if not _mark_apimw_inflight(cid):
         return "skipped_inflight"

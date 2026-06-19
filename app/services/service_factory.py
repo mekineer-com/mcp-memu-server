@@ -143,19 +143,6 @@ def _consolidation_interval_days_from_cfg(cfg: Mapping[str, Any] | None) -> int:
     return _cfg_int(cfg, "consolidation_interval_days", 7, minimum=1)
 
 
-def _count_soul_messages(history: list[dict[str, Any]], soul_id: str) -> int:
-    soul_name = str(soul_id or "").strip().lower()
-    total = 0
-    for row in history:
-        if not isinstance(row, dict):
-            continue
-        role = str(row.get("role") or "").strip().lower()
-        name = str(row.get("name") or "").strip().lower()
-        if role in {"soul", "assistant"} or (soul_name and name == soul_name):
-            total += 1
-    return total
-
-
 def _merge_llm_profiles(
     default_profiles: Mapping[str, Any],
     client_profiles: Mapping[str, Any],
