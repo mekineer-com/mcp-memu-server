@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
