@@ -285,18 +285,39 @@ async def list_relationships_endpoint(
     if not uid:
         raise HTTPException(status_code=400, detail="user_id required")
 
-    svc, _db_path = _assert_relationship_write_path(
-        uid,
-        sid,
-        get_service_from_payload=get_service_from_payload,
-        sqlite_current_path=sqlite_current_path,
-        sqlite_ensure_nonempty=sqlite_ensure_nonempty,
-    )
-    scope = {"user_id": uid, "soul_id": sid}
-    entities = svc.database.entity_repo.list_all(where=scope)
+    db_path = sqlite_current_path(uid, sid)
+    if db_path is None or not db_path.exists():
+        return {"relationships": []}
+
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    try:
+        table = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entities'"
+        ).fetchone()
+        if table is None:
+            return {"relationships": []}
+        rows_raw = con.execute(
+            """
+SELECT id, name, entity_type, normalized, properties
+FROM entities
+WHERE user_id = ? AND soul_id = ?
+""",
+            (uid, sid),
+        ).fetchall()
+    finally:
+        con.close()
     rows = [
         item
-        for item in (_relationship_item_from_entity(entity, json_from_db=json_from_db) for entity in entities)
+        for item in (
+            _relationship_item_from_values(
+                normalized=str(row["normalized"] or ""),
+                name=str(row["name"] or ""),
+                entity_type=str(row["entity_type"] or ""),
+                properties=_relationship_properties(row["properties"], json_from_db=json_from_db),
+            )
+            for row in rows_raw
+        )
         if item is not None
     ]
     rows.sort(key=lambda item: str(item.get("name") or "").lower())

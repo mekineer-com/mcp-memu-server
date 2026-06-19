@@ -2588,6 +2588,47 @@ def test_assert_user_declared_relationship_is_strict():
 
 
 @pytest.mark.asyncio
+async def test_list_relationships_does_not_create_missing_scoped_db(tmp_path: Path):
+    db_path = tmp_path / "s.db"
+
+    def fail_service(_payload: dict[str, Any]):
+        raise AssertionError("list relationships must not initialize a scoped service")
+
+    out = await crud_endpoints.list_relationships_endpoint(
+        soul_id="s",
+        user_id="Marcos",
+        get_service_from_payload=fail_service,
+        sqlite_current_path=lambda _uid, _sid: db_path,
+        sqlite_ensure_nonempty=lambda _path: (_ for _ in ()).throw(AssertionError("read path created schema")),
+        json_from_db=main._json_from_db,
+    )
+
+    assert out == {"relationships": []}
+    assert not db_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_list_relationships_tolerates_scoped_db_without_entities(tmp_path: Path):
+    db_path = tmp_path / "s.db"
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute("CREATE TABLE conversations (conversation_id TEXT)")
+    finally:
+        con.close()
+
+    out = await crud_endpoints.list_relationships_endpoint(
+        soul_id="s",
+        user_id="Marcos",
+        get_service_from_payload=lambda _payload: (_ for _ in ()).throw(AssertionError("service should not be used")),
+        sqlite_current_path=lambda _uid, _sid: db_path,
+        sqlite_ensure_nonempty=lambda _path: (_ for _ in ()).throw(AssertionError("read path created schema")),
+        json_from_db=main._json_from_db,
+    )
+
+    assert out == {"relationships": []}
+
+
+@pytest.mark.asyncio
 async def test_apimw_persist_remaps_numbered_prior_context_ids(monkeypatch: pytest.MonkeyPatch):
     captured_updates: dict[str, object] = {}
 
