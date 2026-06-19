@@ -12,7 +12,7 @@ _SIRI_WORKSPACE = Path("~/Desktop/siri")
 
 from app.services import message_log as _message_log
 from app.services.intention_state import MAX_MEMORY_CACHE_ENTRIES, format_intentions_for_prompt, normalize_memory_cache
-from memu.utils.conversation import format_relative_time_label, format_speaker_message
+from memu.utils.conversation import format_relative_time_label
 
 _logger = logging.getLogger("uvicorn.error")
 

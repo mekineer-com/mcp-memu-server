@@ -154,7 +154,6 @@ _BACKGROUND_SUMMARY_MIN_TOKENS: int = _DEFAULT_BACKGROUND_SUMMARY_MIN_TOKENS
 # Uniform runaway-protection caps for LLM calls. Not business logic —
 _BACKGROUND_TASKS: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
 _LOG_PROMPTS: bool = False
-_VALID_INTENTION_STATUSES: set[str] = {"active", "resolved", "adapted", "deferred", "dissolved", "removed"}
 
 
 # ==== Token estimation & segment planning ====
@@ -273,7 +272,7 @@ async def _run_background_rollup_for_conversation(
 
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, sid))
     async with state_lock:
-        state_row, _soul_card, db_path = _load_turn_state_and_soul_card(
+        state_row, _, db_path = _load_turn_state_and_soul_card(
             cid,
             user_id=uid,
             soul_id=sid,
@@ -2114,7 +2113,7 @@ def _clear_background_error_if_apimw_owned(
     soul_id: str,
     user_id: str,
 ) -> None:
-    state_row, _soul_card, _db_path = _load_turn_state_and_soul_card(
+    state_row, _, _db_path = _load_turn_state_and_soul_card(
         conversation_id,
         user_id=user_id,
         soul_id=soul_id,
@@ -4287,7 +4286,7 @@ async def conversation_retrieve(
                     history=history,
                     chat_name=_pick_str(safe, "chat_name") or None,
                 )
-            state_row, _soul_card, _db_path = _load_turn_state_and_soul_card(
+            state_row, _, _db_path = _load_turn_state_and_soul_card(
                 cid,
                 user_id=uid,
                 soul_id=soul_id,
@@ -4746,7 +4745,7 @@ def _turn_launch_apimw(
         return "skipped_cadence"
     if not _mark_apimw_inflight(cid):
         return "skipped_inflight"
-    apimw_state_row, _apimw_soul_card, _apimw_db_path = _load_turn_state_and_soul_card(
+    apimw_state_row, _, _apimw_db_path = _load_turn_state_and_soul_card(
         cid,
         user_id=uid,
         soul_id=soul_id,
