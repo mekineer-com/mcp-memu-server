@@ -14,7 +14,6 @@ def test_validated_step_models_warns_on_unknown_key(caplog: pytest.LogCaptureFix
         "memory_extract": {},
         "category_update": {},
         "reflection": {},
-        "ranking": {},
         "consolidation": {},
     }
     with caplog.at_level(logging.WARNING):

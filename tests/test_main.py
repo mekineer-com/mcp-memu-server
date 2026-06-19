@@ -309,10 +309,10 @@ def test_merge_llm_profiles_rejects_null_profile_object():
         },
     }
     client = {
-        "ranking": None,
+        "custom": None,
     }
 
-    with pytest.raises(main.HTTPException, match="llm_profiles.ranking cannot be null"):
+    with pytest.raises(main.HTTPException, match="llm_profiles.custom cannot be null"):
         main._merge_llm_profiles(defaults, client)
 
 

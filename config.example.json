@@ -22,7 +22,6 @@
       "memory_extract": "",
       "category_update": "",
       "reflection": "",
-      "ranking": "",
       "consolidation": ""
     },
     "step_temperatures": {
@@ -30,7 +29,6 @@
       "memory_extract": "",
       "category_update": "",
       "reflection": "",
-      "ranking": "",
       "consolidation": "",
       "holistic_summary": 0.3
     }
