@@ -316,6 +316,33 @@ def test_merge_llm_profiles_rejects_null_profile_object():
         main._merge_llm_profiles(defaults, client)
 
 
+def test_turn_generation_metadata_uses_default_profile(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setitem(main._CONFIG, "claude_code", False)
+    payload = {
+        "llm_profiles": {
+            "default": {
+                "provider": "nanogpt",
+                "chat_model": "mistralai/mistral-small-4-119b-2603",
+            }
+        }
+    }
+
+    assert main._turn_generation_metadata(payload) == {
+        "api": "nanogpt",
+        "model": "mistralai/mistral-small-4-119b-2603",
+    }
+
+
+def test_turn_generation_metadata_prefers_claude_code(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setitem(main._CONFIG, "claude_code", True)
+    monkeypatch.setitem(main._CONFIG, "claude_code_model", "claude-sonnet-4-6")
+
+    assert main._turn_generation_metadata({"llm_profiles": {"default": {"provider": "nanogpt", "chat_model": "mistral"}}}) == {
+        "api": "claude_code",
+        "model": "claude-sonnet-4-6",
+    }
+
+
 def test_retrieve_apimw_enabled_from_cfg_defaults_and_override():
     assert main._retrieve_apimw_enabled_from_cfg(None) is True
     assert main._retrieve_apimw_enabled_from_cfg({"retrieve": {}}) is True

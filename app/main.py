@@ -471,6 +471,23 @@ def _parse_free_turn_contract(raw: Any, *, allow_public_response: bool) -> dict[
         )
 
 
+def _turn_generation_metadata(payload: dict[str, Any]) -> dict[str, str]:
+    if bool(_CONFIG.get("claude_code", False)):
+        model = str(_CONFIG.get("claude_code_model") or "").strip()
+        return {"api": "claude_code", "model": model} if model else {"api": "claude_code"}
+
+    profiles = payload.get("llm_profiles") if isinstance(payload.get("llm_profiles"), dict) else {}
+    default_profile = profiles.get("default") if isinstance(profiles.get("default"), dict) else {}
+    api = str(default_profile.get("provider") or "").strip()
+    model = str(default_profile.get("chat_model") or "").strip()
+    out: dict[str, str] = {}
+    if api:
+        out["api"] = api
+    if model:
+        out["model"] = model
+    return out
+
+
 async def _run_free_turn_chain(
     *,
     marker: str,
@@ -4915,6 +4932,7 @@ async def conversation_turn(
         turn_user_prompt = override_user_prompt
 
         memory_service = _get_service_from_payload(safe)
+        generation_metadata = _turn_generation_metadata(safe)
         turn_started_at = time.monotonic()
         turn_contract: dict[str, Any] | None = None
         use_claude_session = bool(_CONFIG.get("claude_code", False))
@@ -5107,6 +5125,8 @@ async def conversation_turn(
             "turn_system_chars": len(turn_system_prompt),
             "continuation_queued": continuation_queued,
         }
+        if generation_metadata:
+            response_payload["generation_metadata"] = generation_metadata
         if trace_id:
             response_payload["trace_id"] = trace_id
         background_error = str((conversation_state_after or {}).get("last_background_error") or "").strip()
