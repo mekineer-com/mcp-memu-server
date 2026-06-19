@@ -154,12 +154,18 @@ def _current_chat_rows_for_grouped_render(
     return rows
 
 
-def _mark_current_chat_block(block: str, *, chat_label: str | None) -> str:
+def _label_current_chat_block(
+    block: str,
+    *,
+    chat_label: str | None,
+    mark_current_chat: bool,
+) -> str:
     lines = block.splitlines()
     for idx, line in enumerate(lines):
         if not _text(line):
             continue
-        lines[idx] = _append_current_chat_marker(_text(chat_label) or line)
+        heading = _text(chat_label) or line
+        lines[idx] = _append_current_chat_marker(heading) if mark_current_chat else heading
         return "\n".join(lines).strip()
     return block.strip()
 
@@ -169,10 +175,11 @@ def _resolve_current_chat_heading_from_grouped_renderer(
     chat_label: str | None,
     conversation_id: str | None,
     soul_name: str | None,
+    mark_current_chat: bool = True,
 ) -> str:
     explicit = _text(chat_label)
     if explicit:
-        return _append_current_chat_marker(explicit)
+        return _append_current_chat_marker(explicit) if mark_current_chat else explicit
     cid = _text(conversation_id)
     if not cid:
         return resolve_current_chat_heading(chat_label, conversation_id)
@@ -188,7 +195,7 @@ def _resolve_current_chat_heading_from_grouped_renderer(
         for line in current_block.splitlines():
             heading = _text(line)
             if heading and "__memu_heading_probe__" not in heading:
-                return _append_current_chat_marker(heading)
+                return _append_current_chat_marker(heading) if mark_current_chat else heading
     return resolve_current_chat_heading(chat_label, conversation_id)
 
 
@@ -198,6 +205,7 @@ def _render_current_chat_block(
     conversation_id: str | None,
     chat_label: str | None,
     soul_name: str | None,
+    mark_current_chat: bool = True,
 ) -> tuple[str, str]:
     rows = _current_chat_rows_for_grouped_render(history, conversation_id=conversation_id)
     if not rows:
@@ -205,6 +213,7 @@ def _render_current_chat_block(
             chat_label=chat_label,
             conversation_id=conversation_id,
             soul_name=soul_name,
+            mark_current_chat=mark_current_chat,
         )
         return _section_title_from_conversation_id(conversation_id), "\n".join(
             part for part in (heading, "(none)") if part
@@ -217,6 +226,7 @@ def _render_current_chat_block(
             chat_label=chat_label,
             conversation_id=conversation_id,
             soul_name=soul_name,
+            mark_current_chat=mark_current_chat,
         )
         return _section_title_from_conversation_id(conversation_id), "\n".join(
             part for part in (heading, rendered) if part
@@ -225,7 +235,11 @@ def _render_current_chat_block(
     section_header, section_lines = sections[-1]
     blocks = _split_conversation_blocks(section_lines)
     current_block = blocks[-1] if blocks else "\n".join(section_lines).strip()
-    return section_header, _mark_current_chat_block(current_block, chat_label=chat_label)
+    return section_header, _label_current_chat_block(
+        current_block,
+        chat_label=chat_label,
+        mark_current_chat=mark_current_chat,
+    )
 
 
 def build_conversations_block(
@@ -237,6 +251,7 @@ def build_conversations_block(
     soul_name: str | None = None,
     current_user_text: str | None = None,
     self_turn_directive: str | None = None,
+    mark_current_chat: bool = True,
 ) -> str:
     history_for_render = [dict(item) if isinstance(item, dict) else item for item in (history or [])]
     current_text = _text(current_user_text)
@@ -292,6 +307,7 @@ def build_conversations_block(
         conversation_id=conversation_id,
         chat_label=chat_label,
         soul_name=soul_name,
+        mark_current_chat=mark_current_chat,
     )
     return _merge_current_into_conversations(
         cross_conversation_history,

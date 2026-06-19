@@ -68,6 +68,39 @@ def test_format_all_chat_history_for_ai_merges_current_and_cross_chats() -> None
     assert "[Marcos] current hello" in rendered
 
 
+def test_format_all_chat_history_for_ai_can_render_without_current_chat_marker() -> None:
+    rendered = main._format_all_chat_history_for_ai(
+        current_history=[
+            {
+                "role": "user",
+                "name": "Marcos",
+                "content": "window hello",
+                "ts_ms": 1_770_000_000_000,
+            }
+        ],
+        cross_tail=[
+            {
+                "conversation_id": "sillytavern:Siri",
+                "role": "assistant",
+                "speaker": "Siri",
+                "chat_name": "Siri",
+                "content": "cross hello",
+                "received_at": "2026-05-08T11:00:00+00:00",
+            }
+        ],
+        conversation_id="whatsapp:group:family@g.us",
+        soul_id="Siri",
+        chat_label="[group][Household Group]",
+        mark_current_chat=False,
+    )
+
+    assert "current chat" not in rendered
+    assert "[group][Household Group]" in rendered
+    assert "[Marcos] window hello" in rendered
+    assert "[dm][Siri]" in rendered
+    assert "[Siri] cross hello" in rendered
+
+
 def test_format_all_chat_history_for_ai_places_activities_before_chats() -> None:
     rendered = main._format_all_chat_history_for_ai(
         current_history=[

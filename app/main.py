@@ -3308,6 +3308,7 @@ def _format_all_chat_history_for_ai(
     chat_label: str | None = None,
     current_user_text: str | None = None,
     self_turn_directive: str | None = None,
+    mark_current_chat: bool = True,
 ) -> str:
     cross_text = _format_cross_tail_for_ai(cross_tail or [], soul_id=soul_id) if cross_tail else ""
     history_rows = current_history or []
@@ -3321,6 +3322,7 @@ def _format_all_chat_history_for_ai(
                 soul_name=soul_id,
                 current_user_text=current_user_text,
                 self_turn_directive=self_turn_directive,
+                mark_current_chat=mark_current_chat,
             )
         return cross_text
     return _build_conversations_block(
@@ -3331,6 +3333,7 @@ def _format_all_chat_history_for_ai(
         soul_name=soul_id,
         current_user_text=current_user_text,
         self_turn_directive=self_turn_directive,
+        mark_current_chat=mark_current_chat,
     )
 
 
@@ -3620,6 +3623,7 @@ async def _run_consolidation_pipeline_once(
         ),
         conversation_id=conversation_id,
         soul_id=soul_id,
+        mark_current_chat=False,
     )
 
     consolidation_llm = await _run_consolidation_llm(
