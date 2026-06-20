@@ -235,6 +235,73 @@ async def test_run_consolidation_llm_includes_all_chat_history() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_consolidation_llm_dedupes_segment_memory_items_against_prior_context() -> None:
+    class _Svc:
+        def __init__(self) -> None:
+            self.prompt = ""
+
+        def _escape_prompt_value(self, value):
+            return str(value)
+
+        async def chat(self, prompt, *_args, **_kwargs):
+            self.prompt = str(prompt)
+            return """
+<consolidation>
+  <narrative_self>steady</narrative_self>
+  <life_goals></life_goals>
+  <intentions></intentions>
+  <edges>
+    <edge>
+      <subject_id>1</subject_id>
+      <predicate>parallels</predicate>
+      <object_id>3</object_id>
+    </edge>
+  </edges>
+  <companion_memory>noted</companion_memory>
+</consolidation>
+"""
+
+        async def embed(self, *_args, **_kwargs):
+            return []
+
+    svc = _Svc()
+    out = await run_consolidation_llm(
+        svc,
+        inputs={
+            "categories": [],
+            "active_life_goals": [],
+            "removed_life_goals": [],
+            "intention_activity": [],
+            "segment_inputs": [
+                {
+                    "segment_id": "cid:0-2",
+                    "memory_summaries": [
+                        {"id": "mem_dup", "summary": "duplicate memory", "memory_type": "behavior"},
+                        {"id": "mem_segment", "summary": "segment only memory", "memory_type": "knowledge"},
+                    ],
+                }
+            ],
+            "all_chat_history": "(none)",
+            "narrative_self": "steady",
+            "state": {"intentions_active": None},
+            "prior_context_memory_items": [
+                {"id": "mem_dup", "summary": "duplicate memory", "memory_type": "behavior"},
+                {"id": "mem_prior", "summary": "prior only memory", "memory_type": "preference"},
+            ],
+        },
+        soul_id="Echo",
+        llm_profile=None,
+    )
+
+    assert svc.prompt.count("duplicate memory") == 1
+    assert "[1] [behavior] duplicate memory" in svc.prompt
+    assert "- [3] [knowledge] segment only memory" in svc.prompt
+    assert out["edges"] == [
+        {"subject_id": "mem_dup", "predicate": "parallels", "object_id": "mem_segment"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_consolidation_llm_retries_once_on_malformed_xml() -> None:
     class _Svc:
         def __init__(self) -> None:

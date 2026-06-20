@@ -355,6 +355,33 @@ def _format_segment_memory_items_for_prompt(
     return "\n".join(lines).strip() or "(none)"
 
 
+def _dedupe_segment_memory_items_against_prior_context(
+    segment_memory_groups: list[dict[str, Any]],
+    prior_context_memory_items: list[Any],
+) -> list[dict[str, Any]]:
+    prior_ids = {
+        str(item.get("id") or "").strip()
+        for item in prior_context_memory_items
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    if not prior_ids:
+        return segment_memory_groups
+
+    deduped: list[dict[str, Any]] = []
+    for group in segment_memory_groups:
+        next_group = dict(group)
+        next_group["memory_summaries"] = [
+            item
+            for item in group.get("memory_summaries") or []
+            if not (
+                isinstance(item, dict)
+                and str(item.get("id") or "").strip() in prior_ids
+            )
+        ]
+        deduped.append(next_group)
+    return deduped
+
+
 def _looks_like_memory_id(value: str) -> bool:
     text = str(value or "").strip()
     if not text:
@@ -706,7 +733,6 @@ async def run_consolidation_llm(
     intention_text = _format_intention_activity_for_prompt(inputs["intention_activity"])
     id_map: dict[str, str] = {}
     counter: list[int] = [1]
-    segment_memory_items_text = _format_segment_memory_items_for_prompt(inputs["segment_inputs"], id_map, counter)
 
     narrative = str(inputs.get("narrative_self") or "").strip()
     soul_card = narrative or DEFAULT_SOUL_CARD.format(soul_name=soul_id)
@@ -749,6 +775,14 @@ async def run_consolidation_llm(
         prior_context_text = "\n".join(prior_context_lines)
     else:
         prior_context_text = "(none surfaced)"
+    segment_memory_items_text = _format_segment_memory_items_for_prompt(
+        _dedupe_segment_memory_items_against_prior_context(
+            inputs["segment_inputs"],
+            prior_context_memory_items,
+        ),
+        id_map,
+        counter,
+    )
     current_intentions_raw = inputs.get("state", {}).get("intentions_active")
     current_intentions_text = format_intentions_for_prompt(current_intentions_raw, include_internals=True) if current_intentions_raw else "(none yet)"
     conversation_history = str(inputs.get("all_chat_history") or "").strip() or "(none)"
