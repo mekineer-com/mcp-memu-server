@@ -109,6 +109,7 @@ from app.services.turn_contract import (
     format_memory_line as _format_memory_line,
     format_memory_legend as _format_memory_legend,
     format_shaped_by_line as _format_shaped_by_line,
+    format_time_anchor as _format_time_anchor,
     make_turn_system_prompt as _make_turn_system_prompt,
     parse_turn_contract as _parse_turn_contract,
 )
@@ -2265,7 +2266,6 @@ async def _apimw_synthesize(
     svc: Any,
     *,
     combined_items: list[dict[str, Any]],
-    identity_context: str,
     state_row: dict[str, Any],
     segment_text: str,
     current_message_text: str,
@@ -2313,22 +2313,20 @@ async def _apimw_synthesize(
         conversations_block=segment_text,
         current_user_text=current_message_text,
     )
-    new_message_block = (
-        "New Message:\n"
-        f"{current_message_text}\n\n"
-        "Reminder: do not answer the message here. This step only updates background context. Return strict JSON only."
-        if current_message_text
-        else ""
-    )
 
     apimw_system_prompt = (
-        f"{identity_context}\n\n"
-        "You are the soul's subconscious: a background process that runs between turns. "
-        "You have just searched long-term memory, and now you will guide the next response by surfacing the memories most relevant to the conversation. "
-        "When the soul responds, the soul will have the same summaries, activities, conversations, working thoughts, and intentions. "
-        "The soul will not have the memories from the Memories List unless you surface them.\n\n"
-        "In addition, you can send an optional message_to_self with a valuable higher-order insight like conceptual understanding, strategic foresight, or penetrating discernment. "
-        "The message_to_self should not restate the conversation, repeat an obvious conclusion from the conversation, or duplicate anything from a memory you surface.\n\n"
+        f"Today is {_format_time_anchor()}.\n\n"
+        "You are your soul's subconscious: a background process that runs between your turns. "
+        "You have just searched your long-term memory, and now you'll want to guide yourself by surfacing the memories most relevant to the conversation. "
+        "When you respond, you'll have the same context: your summary, activities, conversations, working thoughts and intentions. "
+        "You won't have the memories from the \"Memories List\", so surface what matters.\n\n"
+        "In addition, you can send an optional message_to_self with a valuable higher-order insight like:\n"
+        "- conceptual understanding\n"
+        "- strategic foresight\n"
+        "- penetrating discernment\n\n"
+        "The message_to_self should NOT have anything obvious:\n"
+        "- Do not restate anything from the conversation, or anything that's an easy conclusion from the conversation.\n"
+        "- Do not duplicate anything from a memory you will surface to yourself.\n\n"
         "Return STRICT JSON (first character { , last character } , no markdown fences, no text outside JSON).\n\n"
         "Required top-level keys:\n"
         "- prior_context: array of memory IDs (strings) you want surfaced as background context "
@@ -2338,7 +2336,7 @@ async def _apimw_synthesize(
     )
 
     apimw_user_prompt = "\n\n".join(
-        part for part in (context_block, new_message_block, f"Memories List:\n{formatted_memories}")
+        part for part in (context_block, f"Memories List:\n{formatted_memories}")
         if str(part or "").strip()
     )
 
@@ -2470,7 +2468,6 @@ async def _run_apimw(
             chat_label=_chat_label_for_prompt(payload),
             current_user_text=current_message_text,
         )
-        identity_context = _build_retrieve_identity_context(soul_id, apimw=True)
         focus_text = current_message_text or segment_text.strip()
         if not focus_text and not segment_text.strip():
             logger.info("apimw skipped for %s: no recent conversation text", conversation_id)
@@ -2495,7 +2492,6 @@ async def _run_apimw(
         result_json, items_by_id, apimw_id_map = await _apimw_synthesize(
             svc,
             combined_items=combined_items,
-            identity_context=identity_context,
             state_row=state_row,
             segment_text=segment_text,
             current_message_text=current_message_text,

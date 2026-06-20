@@ -2802,7 +2802,6 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
                 "summary": "Marcos likes continuity.",
             }
         ],
-        identity_context="identity",
         state_row={
             "all_categories_summary": "# Holistic Self Summary\n- SoulA carries one integrated self-summary.",
         },
@@ -2835,13 +2834,15 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
     assert captured["trace_id"] == "apimw-trace"
     assert "My Working Thoughts:" in captured["user_prompt"]
     assert "My Intentions:" in captured["user_prompt"]
-    assert "New Message:\nhello" in captured["user_prompt"]
-    assert "Reminder: do not answer the message here." in captured["user_prompt"]
     assert captured["user_prompt"].index("My WhatsApp Conversations:") < captured["user_prompt"].index("My Working Thoughts:")
     assert captured["user_prompt"].index("My Working Thoughts:") < captured["user_prompt"].index("My Intentions:")
-    assert captured["user_prompt"].index("My Intentions:") < captured["user_prompt"].index("New Message:")
-    assert captured["user_prompt"].index("New Message:") < captured["user_prompt"].index("Memories List:")
-    assert captured["system_prompt"].startswith("identity\n\nYou are the soul's subconscious")
+    assert captured["user_prompt"].index("My Intentions:") < captured["user_prompt"].index("Memories List:")
+    assert "New Message:" not in captured["user_prompt"]
+    assert "Reminder: do not answer the message here." not in captured["user_prompt"]
+    assert captured["system_prompt"].startswith("Today is ")
+    assert "You are your soul's subconscious: a background process that runs between your turns." in captured["system_prompt"]
+    assert "- conceptual understanding" in captured["system_prompt"]
+    assert "The message_to_self should NOT have anything obvious:" in captured["system_prompt"]
     assert "first My Memories item" not in captured["system_prompt"]
     assert "conscious self" in captured["system_prompt"]
     assert "Seeking Happiness for Myself and Others" not in captured["user_prompt"]
