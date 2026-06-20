@@ -49,7 +49,7 @@ mcp-memu-server/
 | `/integration/memu/memorize` | POST | MCP-facing memorize trigger wrapper (`force` supported) |
 | `/integration/memu/consolidate` | POST | MCP-facing force consolidation wrapper |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
-| `/conversation/{id}/consolidation/force` | POST | Force consolidation now (bypasses interval gate, still lock-safe) |
+| `/conversation/{id}/consolidation/force` | POST | Force consolidation now (consumes all pending segments, still lock-safe) |
 | `/souls/{soul_id}/intentions` | GET | List intentions from `intentions_life_goals` table (long-term, consolidation-managed) |
 | `/souls/{soul_id}/relationships` | GET/POST | List or create user-declared relationship entities (`memu_entities` rows with `properties.origin=user_declared`) |
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or soft-delete one relationship entity (`entity:*` only; reserved prefixes rejected) |
@@ -68,7 +68,7 @@ mcp-memu-server/
 |--------|---------|
 | `app/config.py` | Config/runtime helpers: `load_config()`, `save_config()`, `mask_config()`, storage path normalization, sqlite DSN scoping, default llm profile assembly, soul generation config I/O |
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
-| `app/services/consolidation.py` | Consolidation pipeline: gather queue/context, run one consolidation LLM call, write narrative_self + life-goal edits + companion memory + per-episode diary rows, and clear queue/flags. |
+| `app/services/consolidation.py` | Consolidation pipeline: gather pending segment queue/context, select an interval-sized chronological window, run one consolidation LLM call, write narrative_self + life-goal edits + companion memory + graph edges, and advance queue/flags. |
 | `app/services/diary.py` | Legacy diary helpers for consolidation history. Avoid reintroducing diary/episode chat slices into current consolidation prompts. |
 | `app/services/graph_edges.py` | Shared edge normalization + write/invalidate helpers used by APImw and consolidation (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`). |
 | `app/services/memorize_endpoint.py` | `/memorize` endpoint core, forced-memorize background runner (`run_memorize_segments`), segment-file persistence (`chat_dir/segments/*.json`), rolling-summary row injection into segment payloads, progress/cancel handlers, and chat sleep-gap/token chunking helpers. |
@@ -124,7 +124,7 @@ categories: defaults[], dynamic-category thresholds
 retrieve:   apimw_enabled (bool; toggles APImw pipeline), apimw_cadence (int, default 5; APImw runs every N successful soul turns across chats), apimw_memory_count (int, default 20; APImw item.top_k), apimw_random_count (int, default 5; APImw random sample size), mental_health_query (bool, default true; enables MH procedural retrieve step; per-request `mental_health_addon` overrides when explicitly boolean)
 claude_code: claude_code_workspace (str; persistent workspace dir for soul session/resume calls), claude_code_permission_mode (str; e.g. bypassPermissions), claude_code_timeout_seconds (int, default 3600; per-call timeout)
 memorize:   min_chunk_tokens (default 8000; floor for sleep-gap-triggered memorize), background_summary_tokens (default 1000; token threshold that triggers rolling-summary for memorize_chat=false chats), background_summary_min_tokens (default 100; minimum token threshold when rollup is queued from cross-memorize assembly), background_extra_messages_tokens (memu preprocessor floor for background message rendering)
-consolidation_interval_days: cadence gate for consolidation after successful memorize runs (default 7)
+consolidation_interval_days: pending segment window size for consolidation after successful memorize runs (default 7)
 debug:      log_prompts (bool) — dumps exact LLM prompt + response for memorize/consolidation steps to console
 ```
 

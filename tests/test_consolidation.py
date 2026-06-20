@@ -3,6 +3,7 @@ import pytest
 from app.services.consolidation import _format_segment_block_for_prompt
 from app.services.consolidation import _remap_edges_with_memory_ids
 from app.services.consolidation import _parse_consolidation_xml
+from app.services.consolidation import _select_interval_segment_window
 from app.services.consolidation import run_consolidation_llm
 from app.services.consolidation import gather_consolidation_inputs
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
@@ -314,6 +315,47 @@ def test_build_segment_inputs_dates_received_at_only_rows() -> None:
     assert rows[0]["happened_at"] == datetime(2026, 4, 16, 12, 0, tzinfo=UTC)
 
 
+def test_select_interval_segment_window_uses_oldest_pending_baseline() -> None:
+    rows = [
+        {"segment_id": "cid:0-3", "start_idx": 0, "end_idx": 3, "happened_at": datetime(2026, 1, 1, tzinfo=UTC)},
+        {"segment_id": "cid:4-7", "start_idx": 4, "end_idx": 7, "happened_at": datetime(2026, 1, 4, tzinfo=UTC)},
+        {"segment_id": "cid:8-9", "start_idx": 8, "end_idx": 9, "happened_at": datetime(2026, 1, 8, tzinfo=UTC)},
+        {"segment_id": "cid:10-11", "start_idx": 10, "end_idx": 11, "happened_at": datetime(2026, 1, 12, tzinfo=UTC)},
+    ]
+
+    out = _select_interval_segment_window(rows, interval_days=7, force=False)
+
+    assert out["selected_segment_ids"] == ["cid:0-3", "cid:4-7", "cid:8-9"]
+    assert out["remaining_segment_ids"] == ["cid:10-11"]
+    assert out["reason"] is None
+
+
+def test_select_interval_segment_window_leaves_short_tail_pending() -> None:
+    rows = [
+        {"segment_id": "cid:0-3", "start_idx": 0, "end_idx": 3, "happened_at": datetime(2026, 1, 1, tzinfo=UTC)},
+        {"segment_id": "cid:4-7", "start_idx": 4, "end_idx": 7, "happened_at": datetime(2026, 1, 4, tzinfo=UTC)},
+    ]
+
+    out = _select_interval_segment_window(rows, interval_days=7, force=False)
+
+    assert out["selected_segment_ids"] == []
+    assert out["remaining_segment_ids"] == ["cid:0-3", "cid:4-7"]
+    assert out["reason"] == "pending_span_too_short"
+
+
+def test_select_interval_segment_window_force_consumes_all_pending() -> None:
+    rows = [
+        {"segment_id": "cid:0-3", "start_idx": 0, "end_idx": 3, "happened_at": datetime(2026, 1, 1, tzinfo=UTC)},
+        {"segment_id": "cid:4-7", "start_idx": 4, "end_idx": 7, "happened_at": datetime(2026, 1, 4, tzinfo=UTC)},
+    ]
+
+    out = _select_interval_segment_window(rows, interval_days=7, force=True)
+
+    assert out["selected_segment_ids"] == ["cid:0-3", "cid:4-7"]
+    assert out["remaining_segment_ids"] == []
+    assert out["reason"] is None
+
+
 def test_remap_edges_with_memory_ids_accepts_numbered_and_bracketed_refs() -> None:
     payload = [
         {"subject_id": "1", "predicate": "parallels", "object_id": "2", "confidence": 0.9},
@@ -336,7 +378,7 @@ def test_remap_edges_with_memory_ids_drops_unresolved_ids() -> None:
     assert mapped == []
 
 
-def test_write_consolidation_outputs_clears_pending_segment_ids() -> None:
+def test_write_consolidation_outputs_preserves_remaining_pending_segment_ids() -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp_dir = Path(td)
         db_path = tmp_dir / "soul.db"
@@ -356,7 +398,7 @@ def test_write_consolidation_outputs_clears_pending_segment_ids() -> None:
             sqlite_current_path=lambda _user, _soul: db_path,
             soul_id=soul_id,
             user_id=user_id,
-            updates={"pending_segment_ids": ["ep:1-2"], "intentions_active": []},
+            updates={"pending_segment_ids": ["ep:1-2", "ep:3-4"], "intentions_active": []},
         )
 
         deps = ConsolidationDeps(
@@ -395,7 +437,11 @@ def test_write_consolidation_outputs_clears_pending_segment_ids() -> None:
         result = write_consolidation_outputs(
             deps,
             _SvcStub(),
-            inputs={"db_path": db_path},
+            inputs={
+                "db_path": db_path,
+                "selected_segment_ids": ["ep:1-2"],
+                "remaining_segment_ids": ["ep:3-4"],
+            },
             llm_results={
                 "narrative_self": None,
                 "old_narrative_text": None,
@@ -413,7 +459,9 @@ def test_write_consolidation_outputs_clears_pending_segment_ids() -> None:
             user_id=user_id,
         )
 
-        assert result["state"]["pending_segment_ids"] == []
+        assert result["consumed_segment_ids"] == ["ep:1-2"]
+        assert result["remaining_segment_ids"] == ["ep:3-4"]
+        assert result["state"]["pending_segment_ids"] == ["ep:3-4"]
 
 
 def test_gather_consolidation_inputs_skips_when_no_pending_segments() -> None:

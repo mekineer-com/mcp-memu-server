@@ -202,6 +202,41 @@ def test_conversation_state_schema_migrates_pending_segment_ids_from_old_name(
     assert state["pending_segment_ids"] == ["cid-old:0-1"]
 
 
+@pytest.mark.asyncio
+async def test_run_consolidation_task_repeats_until_pending_span_is_short(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+    state_writes: list[dict[str, Any]] = []
+
+    async def fake_pipeline_once(**_kwargs):
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            return {"status": "ok", "result": {"remaining_segment_ids": ["seg-2", "seg-3"]}}
+        if len(calls) == 2:
+            return {"status": "ok", "result": {"remaining_segment_ids": ["seg-3"]}}
+        return {"status": "skipped", "reason": "pending_span_too_short"}
+
+    def fake_write_state(_cid, *, soul_id, user_id, updates):
+        state_writes.append({"soul_id": soul_id, "user_id": user_id, "updates": updates})
+        return ({}, Path("/tmp/unused.db"))
+
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", fake_pipeline_once)
+    monkeypatch.setattr(main, "_write_conversation_state", fake_write_state)
+
+    out = await main._run_consolidation_task(
+        object(),
+        conversation_id="cid-loop",
+        soul_id="SoulLoop",
+        uid="UserLoop",
+    )
+
+    assert out == {"ok": True, "status": "ok"}
+    assert len(calls) == 3
+    assert state_writes[-1]["updates"] == {
+        "last_consolidation_error": None,
+        "last_consolidation_error_at": None,
+    }
+
+
 def test_current_whatsapp_history_uses_configured_web_source_and_filters_current(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

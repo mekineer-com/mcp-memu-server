@@ -3681,25 +3681,33 @@ async def _run_consolidation_task(
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
     pipeline_started = False
     try:
-        pipeline_started = True
-        out = await _run_consolidation_pipeline_once(
-            svc=svc,
-            deps=deps,
-            state_lock=state_lock,
-            conversation_id=conversation_id,
-            soul_id=soul_id,
-            user_id=uid,
-            force=False,
-        )
-        if out.get("status") == "skipped":
-            if progress_key and memorize_progress is not None:
-                _memorize_endpoint._set_memorize_progress(
-                    memorize_progress,
-                    progress_key,
-                    active=False,
-                    last_result="success",
-                )
-            return {"ok": True, "status": "skipped"}
+        completed = 0
+        while True:
+            pipeline_started = True
+            out = await _run_consolidation_pipeline_once(
+                svc=svc,
+                deps=deps,
+                state_lock=state_lock,
+                conversation_id=conversation_id,
+                soul_id=soul_id,
+                user_id=uid,
+                force=False,
+            )
+            if out.get("status") == "skipped":
+                if completed:
+                    break
+                if progress_key and memorize_progress is not None:
+                    _memorize_endpoint._set_memorize_progress(
+                        memorize_progress,
+                        progress_key,
+                        active=False,
+                        last_result="success",
+                    )
+                return {"ok": True, "status": "skipped"}
+            completed += 1
+            result = out.get("result") or {}
+            if not result.get("remaining_segment_ids"):
+                break
         _write_conversation_state(
             conversation_id,
             soul_id=soul_id,

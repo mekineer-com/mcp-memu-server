@@ -257,6 +257,71 @@ def _format_intention_activity_for_prompt(rows: list[dict[str, str]]) -> str:
     return "\n".join(lines) if lines else "Your intentions have been steady."
 
 
+def _select_interval_segment_window(
+    segment_inputs: list[dict[str, Any]],
+    *,
+    interval_days: int,
+    force: bool,
+) -> dict[str, Any]:
+    if not segment_inputs:
+        return {"selected_segment_ids": [], "remaining_segment_ids": [], "reason": "no_pending_segments"}
+
+    ordered = sorted(
+        segment_inputs,
+        key=lambda row: (
+            row.get("happened_at") or datetime.max.replace(tzinfo=UTC),
+            int(row.get("start_idx") or 0),
+            int(row.get("end_idx") or 0),
+            str(row.get("segment_id") or ""),
+        ),
+    )
+    all_ids = [str(row.get("segment_id") or "").strip() for row in ordered if str(row.get("segment_id") or "").strip()]
+    if force:
+        return {"selected_segment_ids": all_ids, "remaining_segment_ids": [], "reason": None}
+
+    missing = [str(row.get("segment_id") or "") for row in ordered if not isinstance(row.get("happened_at"), datetime)]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"pending consolidation segment has no timestamp: {missing[0]}",
+        )
+
+    baseline = ordered[0]["happened_at"]
+    due_at = baseline + timedelta(days=max(1, int(interval_days)))
+    selected: list[str] = []
+    for idx, row in enumerate(ordered):
+        segment_id = str(row.get("segment_id") or "").strip()
+        if not segment_id:
+            continue
+        selected.append(segment_id)
+        if row["happened_at"] >= due_at:
+            return {
+                "selected_segment_ids": selected,
+                "remaining_segment_ids": all_ids[idx + 1 :],
+                "reason": None,
+            }
+
+    return {
+        "selected_segment_ids": [],
+        "remaining_segment_ids": all_ids,
+        "reason": "pending_span_too_short",
+    }
+
+
+def _messages_for_segment_inputs(
+    messages: list[dict[str, Any]],
+    segment_inputs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in segment_inputs:
+        start = int(row.get("start_idx") or 0)
+        end = int(row.get("end_idx") or 0)
+        if start < 0 or end < start:
+            continue
+        out.extend(msg for msg in messages[start : end + 1] if isinstance(msg, dict))
+    return out
+
+
 
 def _format_segment_block_for_prompt(
     segments: list[dict[str, Any]],
@@ -390,12 +455,6 @@ def gather_consolidation_inputs(
             if reread is None:
                 raise HTTPException(404, "conversation state not found after stale-lock reset")
             state = reread
-        else:
-            last_consolidation_at = _parse_iso_datetime(state.get("last_consolidation_at"))
-            if not force and last_consolidation_at is not None:
-                due_at = last_consolidation_at + timedelta(days=max(1, int(interval_days)))
-                if now < due_at:
-                    return {"status": "skip", "reason": "interval_gate"}
 
         pending_segment_ids = deps.normalize_text_list(state.get("pending_segment_ids"))
         if not pending_segment_ids:
@@ -456,6 +515,9 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
         narrative_self = str(state.get("narrative_self") or "").strip() or None
 
         segment_inputs: list[dict[str, Any]] = []
+        selected_segment_ids: list[str] = []
+        remaining_segment_ids: list[str] = []
+        messages: list[dict[str, Any]] = []
         if pending_segment_ids:
             storage_dir = deps.get_storage_dir(deps.config)
             chats_dir = (storage_dir / "st_chats").resolve()
@@ -473,7 +535,6 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
             if not isinstance(raw_segments, list) or not raw_segments:
                 raise HTTPException(status_code=400, detail="conversation manifest has no segments")
             segments_dir = (chat_dir / "segments").resolve()
-            messages: list[dict[str, Any]] = []
             if segments_dir.is_dir():
                 for ep_file in sorted(segments_dir.glob("*.json"), key=_segment_file_sort_key):
                     try:
@@ -485,6 +546,20 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
             segment_inputs = build_segment_inputs(messages, pending_segment_ids)
             if len(segment_inputs) != len(pending_segment_ids):
                 raise HTTPException(status_code=400, detail="queued segments are not present in conversation history")
+            window = _select_interval_segment_window(
+                segment_inputs,
+                interval_days=interval_days,
+                force=force,
+            )
+            selected_segment_ids = list(window["selected_segment_ids"])
+            remaining_segment_ids = list(window["remaining_segment_ids"])
+            if not selected_segment_ids:
+                return {"status": "skip", "reason": window.get("reason") or "pending_span_too_short"}
+            selected_segment_id_set = set(selected_segment_ids)
+            segment_inputs = [
+                row for row in segment_inputs
+                if str(row.get("segment_id") or "").strip() in selected_segment_id_set
+            ]
 
             for entry in segment_inputs:
                 segment_id = str(entry["segment_id"])
@@ -604,11 +679,13 @@ LIMIT 24
             "removed_life_goals": removed_goals,
             "intention_activity": intention_activity,
             "segment_inputs": segment_inputs,
-            "current_chat_messages": messages,
+            "current_chat_messages": _messages_for_segment_inputs(messages, segment_inputs),
             "narrative_self": narrative_self,
             "last_consolidation_at": state.get("last_consolidation_at"),
             "started_at": now.isoformat(),
             "retrieved_memories": retrieved_memory_summaries,
+            "selected_segment_ids": selected_segment_ids,
+            "remaining_segment_ids": remaining_segment_ids,
         }
     finally:
         con.close()
@@ -944,9 +1021,14 @@ INSERT INTO life_goals (
     scope = {"user_id": user_id, "soul_id": soul_id}
     wrote = write_memory_edges(svc.database.triple_repo, llm_results["edges"], scope=scope)
     invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results["edge_invalidations"], scope=scope)
+    remaining_segment_ids = [
+        str(segment_id).strip()
+        for segment_id in (inputs.get("remaining_segment_ids") or [])
+        if str(segment_id).strip()
+    ]
 
     state_updates: dict[str, Any] = {
-        "pending_segment_ids": [],
+        "pending_segment_ids": remaining_segment_ids,
         "last_consolidation_at": now_iso,
         "consolidation_in_progress": False,
         "consolidation_started_at": None,
@@ -967,5 +1049,7 @@ INSERT INTO life_goals (
         "companion_memory_id": companion_memory_id,
         "edges_written": wrote,
         "edges_invalidated": invalidated,
+        "consumed_segment_ids": inputs.get("selected_segment_ids") or [],
+        "remaining_segment_ids": remaining_segment_ids,
         "state": state_after,
     }
