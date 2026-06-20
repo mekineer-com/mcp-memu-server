@@ -323,15 +323,15 @@ def _messages_for_segment_inputs(
 
 
 
-def _format_segment_block_for_prompt(
-    segments: list[dict[str, Any]],
+def _format_segment_memory_items_for_prompt(
+    segment_memory_groups: list[dict[str, Any]],
     id_map: dict[str, str],
     counter: list[int],
 ) -> str:
-    if not segments:
+    if not segment_memory_groups:
         return "(none queued)"
     all_types: set[str] = set()
-    for row in segments:
+    for row in segment_memory_groups:
         for s in row.get("memory_summaries") or []:
             if isinstance(s, dict):
                 all_types.add(str(s.get("memory_type") or ""))
@@ -339,7 +339,7 @@ def _format_segment_block_for_prompt(
     legend = format_memory_legend(all_types)
     if legend:
         lines.append(legend)
-    for row in segments:
+    for row in segment_memory_groups:
         summaries = row.get("memory_summaries") or []
         if summaries:
             for s in summaries:
@@ -591,7 +591,7 @@ LIMIT 24
                     if str(row["id"] or "").strip() and str(row["summary"] or "").strip()
                 ]
 
-        retrieved_memory_summaries: list[str] = []
+        prior_context_memory_items: list[dict[str, Any]] = []
         all_prior_context_ids: list[str] = []
         last_consol = state.get("last_consolidation_at")
         try:
@@ -622,7 +622,7 @@ LIMIT 24
                 tuple(clean_ids),
             ).fetchall()
             items_by_id: dict[str, dict[str, Any]] = {}
-            retrieved_memory_summaries = []
+            prior_context_memory_items = []
             for row in ret_rows:
                 mid = str(row["id"] or "").strip()
                 summary = str(row["summary"] or "").strip()
@@ -635,7 +635,7 @@ LIMIT 24
                     "happened_at": row["happened_at"] or row["created_at"],
                 }
                 items_by_id[mid] = entry
-                retrieved_memory_summaries.append(entry)
+                prior_context_memory_items.append(entry)
 
             edge_predicates = ("caused_by", "evokes", "conflicts_with", "parallels", "shaped_by")
             edge_placeholders = ",".join("?" for _ in clean_ids)
@@ -683,7 +683,7 @@ LIMIT 24
             "narrative_self": narrative_self,
             "last_consolidation_at": state.get("last_consolidation_at"),
             "started_at": now.isoformat(),
-            "retrieved_memories": retrieved_memory_summaries,
+            "prior_context_memory_items": prior_context_memory_items,
             "selected_segment_ids": selected_segment_ids,
             "remaining_segment_ids": remaining_segment_ids,
         }
@@ -706,7 +706,7 @@ async def run_consolidation_llm(
     intention_text = _format_intention_activity_for_prompt(inputs["intention_activity"])
     id_map: dict[str, str] = {}
     counter: list[int] = [1]
-    segments_text = _format_segment_block_for_prompt(inputs["segment_inputs"], id_map, counter)
+    segment_memory_items_text = _format_segment_memory_items_for_prompt(inputs["segment_inputs"], id_map, counter)
 
     narrative = str(inputs.get("narrative_self") or "").strip()
     soul_card = narrative or DEFAULT_SOUL_CARD.format(soul_name=soul_id)
@@ -727,28 +727,28 @@ async def run_consolidation_llm(
         f"{first_run_note}"
     )
 
-    retrieved_memories = inputs.get("retrieved_memories") or []
-    if retrieved_memories:
-        ret_types = {str(s.get("memory_type") or "") for s in retrieved_memories if isinstance(s, dict)}
-        ret_legend = format_memory_legend(ret_types)
-        ret_lines: list[str] = []
-        if ret_legend:
-            ret_lines.append(ret_legend)
-        for s in retrieved_memories:
+    prior_context_memory_items = inputs.get("prior_context_memory_items") or []
+    if prior_context_memory_items:
+        prior_context_types = {str(s.get("memory_type") or "") for s in prior_context_memory_items if isinstance(s, dict)}
+        prior_context_legend = format_memory_legend(prior_context_types)
+        prior_context_lines: list[str] = []
+        if prior_context_legend:
+            prior_context_lines.append(prior_context_legend)
+        for s in prior_context_memory_items:
             if isinstance(s, dict):
                 mid = s["id"]
                 n = counter[0]
                 counter[0] += 1
                 id_map[str(n)] = mid
-                ret_lines.append(format_memory_line(s, show_id=True, item_id=str(n)))
+                prior_context_lines.append(format_memory_line(s, show_id=True, item_id=str(n)))
                 shaped_by = s.get("shaped_by")
                 if isinstance(shaped_by, dict):
-                    ret_lines.append(format_shaped_by_line(shaped_by))
+                    prior_context_lines.append(format_shaped_by_line(shaped_by))
             elif str(s).strip():
-                ret_lines.append(str(s))
-        retrieved_text = "\n".join(ret_lines)
+                prior_context_lines.append(str(s))
+        prior_context_text = "\n".join(prior_context_lines)
     else:
-        retrieved_text = "(none surfaced)"
+        prior_context_text = "(none surfaced)"
     current_intentions_raw = inputs.get("state", {}).get("intentions_active")
     current_intentions_text = format_intentions_for_prompt(current_intentions_raw, include_internals=True) if current_intentions_raw else "(none yet)"
     conversation_history = str(inputs.get("all_chat_history") or "").strip() or "(none)"
@@ -758,9 +758,9 @@ async def run_consolidation_llm(
         life_goals=svc._escape_prompt_value(life_goals_text),
         current_intentions=svc._escape_prompt_value(current_intentions_text),
         intention_activity=svc._escape_prompt_value(intention_text),
-        retrieved_memories=svc._escape_prompt_value(retrieved_text),
+        prior_context_memory_items=svc._escape_prompt_value(prior_context_text),
         conversation_history=svc._escape_prompt_value(conversation_history),
-        segments=svc._escape_prompt_value(segments_text),
+        segment_memory_items=svc._escape_prompt_value(segment_memory_items_text),
     )
 
     parsed: dict[str, Any] | None = None

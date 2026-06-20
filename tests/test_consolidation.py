@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.consolidation import _format_segment_block_for_prompt
+from app.services.consolidation import _format_segment_memory_items_for_prompt
 from app.services.consolidation import _remap_edges_with_memory_ids
 from app.services.consolidation import _parse_consolidation_xml
 from app.services.consolidation import _select_interval_segment_window
@@ -173,7 +173,7 @@ async def test_run_consolidation_llm_retries_once_on_missing_root() -> None:
             "segment_inputs": [],
             "narrative_self": None,
             "state": {"intentions_active": {"items": [{"id": "relax", "text": "Relax", "kind": "relax"}]}},
-            "retrieved_memories": [],
+            "prior_context_memory_items": [],
         },
         soul_id="Echo",
         llm_profile=None,
@@ -222,7 +222,7 @@ async def test_run_consolidation_llm_includes_all_chat_history() -> None:
             "all_chat_history": "My WhatsApp Conversations:\n\n[dm][Contact A]\n[Contact A] cross hello",
             "narrative_self": None,
             "state": {"intentions_active": {"items": [{"id": "relax", "text": "Relax", "kind": "relax"}]}},
-            "retrieved_memories": [],
+            "prior_context_memory_items": [],
         },
         soul_id="Echo",
         llm_profile=None,
@@ -273,7 +273,7 @@ async def test_run_consolidation_llm_retries_once_on_malformed_xml() -> None:
             "segment_inputs": [],
             "narrative_self": None,
             "state": {"intentions_active": {"items": [{"id": "relax", "text": "Relax", "kind": "relax"}]}},
-            "retrieved_memories": [],
+            "prior_context_memory_items": [],
         },
         soul_id="Echo",
         llm_profile=None,
@@ -282,10 +282,10 @@ async def test_run_consolidation_llm_retries_once_on_malformed_xml() -> None:
     assert out["narrative_self"] == "steady"
 
 
-def test_format_segment_block_for_prompt_shows_memory_ids() -> None:
+def test_format_segment_memory_items_for_prompt_shows_memory_ids() -> None:
     id_map: dict[str, str] = {}
     counter: list[int] = [1]
-    out = _format_segment_block_for_prompt(
+    out = _format_segment_memory_items_for_prompt(
         [
             {
                 "segment_id": "ep:1-2",
@@ -556,7 +556,7 @@ async def test_run_consolidation_llm_strips_relax_boost_from_intention_actions()
         inputs={
             "categories": [], "active_life_goals": [], "removed_life_goals": [],
             "intention_activity": [], "segment_inputs": [], "narrative_self": None,
-            "state": {"intentions_active": None}, "retrieved_memories": [],
+            "state": {"intentions_active": None}, "prior_context_memory_items": [],
         },
         soul_id="Echo",
         llm_profile=None,
