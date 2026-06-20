@@ -78,6 +78,9 @@ def _relationship_item_from_values(
     entity_type: str,
     properties: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
+    normalized = str(normalized or "").strip()
+    if not normalized:
+        return None
     props = dict(properties or {})
     if str(props.get("origin") or "").strip() != _RELATIONSHIP_ORIGIN_USER_DECLARED:
         return None

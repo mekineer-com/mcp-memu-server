@@ -2644,6 +2644,12 @@ def test_relationship_item_from_values_filters_non_declared_or_inactive():
         entity_type="person",
         properties={"origin": "user_declared", "active": False},
     ) is None
+    assert crud_endpoints._relationship_item_from_values(
+        normalized="",
+        name="Broken",
+        entity_type="person",
+        properties={"origin": "user_declared", "active": True},
+    ) is None
 
 
 def test_assert_user_declared_relationship_is_strict():
