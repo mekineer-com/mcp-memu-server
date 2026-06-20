@@ -106,7 +106,6 @@ from app.services.turn_contract import (
     build_conversations_block as _build_conversations_block,
     build_turn_context_block as _build_turn_context_block,
     build_turn_prompt as _build_turn_prompt,
-    format_category_summary_line as _format_category_summary_line,
     format_memory_line as _format_memory_line,
     format_memory_legend as _format_memory_legend,
     format_shaped_by_line as _format_shaped_by_line,
@@ -2302,27 +2301,17 @@ async def _apimw_synthesize(
         formatted_memory_lines.insert(0, legend)
     formatted_memories = "\n".join(formatted_memory_lines) if formatted_memory_lines else "(none)"
 
-    categories = svc.database.memory_category_repo.list_categories(scope)
-    cat_lines: list[str] = []
-    for cat in categories.values():
-        cat_summary = str(cat.summary or "").strip()
-        cat_name = cat.name
-        if cat_name and cat_summary:
-            cat_lines.append(_format_category_summary_line(str(cat_name), cat_summary))
-    formatted_categories = "\n".join(cat_lines)
-
     memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
     intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
     context_block = _build_turn_context_block(
         history=[],
         prior_context=None,
         retrieve_rag=None,
-        all_categories_summary=formatted_categories,
+        all_categories_summary=state_row.get("all_categories_summary"),
         memory_cache=memory_cache,
         intentions_active=intentions_active,
         conversations_block=segment_text,
         current_user_text=current_message_text,
-        memories_block=formatted_memories,
     )
     new_message_block = (
         "New Message:\n"
@@ -2334,23 +2323,22 @@ async def _apimw_synthesize(
 
     apimw_system_prompt = (
         f"{identity_context}\n\n"
-        "This is your subconscious — a background process that runs between your turns. "
-        "You have just searched your long-term memory. Below are your summaries, your individual memories, "
-        "your working thoughts, and your intentions. "
-        "Your working thoughts and intentions are READ-ONLY here — you cannot change them from the subconscious. "
-        "You can only observe them and let them inform your choices. "
-        "The soul also has the full conversation history as context — you are adding depth, not providing it.\n\n"
-        "Review everything. Then return STRICT JSON (first character { , last character } , "
-        "no markdown fences, no text outside JSON).\n\n"
+        "You are the soul's subconscious: a background process that runs between turns. "
+        "You have just searched long-term memory, and now you will guide the next response by surfacing the memories most relevant to the conversation. "
+        "When the soul responds, the soul will have the same summaries, activities, conversations, working thoughts, and intentions. "
+        "The soul will not have the memories from the Memories List unless you surface them.\n\n"
+        "In addition, you can send an optional message_to_self with a valuable higher-order insight like conceptual understanding, strategic foresight, or penetrating discernment. "
+        "The message_to_self should not restate the conversation, repeat an obvious conclusion from the conversation, or duplicate anything from a memory you surface.\n\n"
+        "Return STRICT JSON (first character { , last character } , no markdown fences, no text outside JSON).\n\n"
         "Required top-level keys:\n"
         "- prior_context: array of memory IDs (strings) you want surfaced as background context "
         "next time you speak. Pick what matters — not everything. Order by importance.\n"
-        "- message_to_self: string or null — a brief thought you want surfaced as the first My Memories item for one turn. "
+        "- message_to_self: string or null — a brief thought you want to surface to your conscious self. "
         "Use this when something you noticed in the background feels important enough to bring to your own attention next time you speak. One sentence."
     )
 
     apimw_user_prompt = "\n\n".join(
-        part for part in (context_block, new_message_block)
+        part for part in (context_block, new_message_block, f"Memories List:\n{formatted_memories}")
         if str(part or "").strip()
     )
 

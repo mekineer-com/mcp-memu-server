@@ -2790,13 +2790,7 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
 
     svc = SimpleNamespace(
         chat=_chat,
-        database=SimpleNamespace(
-            memory_category_repo=SimpleNamespace(
-                list_categories=lambda _scope: {
-                    "identity": SimpleNamespace(name="Identity", summary="# Identity\n\n- SoulA is herself.")
-                }
-            ),
-        ),
+        database=SimpleNamespace(memory_category_repo=None),
     )
 
     result_json, items_by_id, id_map = await main._apimw_synthesize(
@@ -2809,7 +2803,9 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
             }
         ],
         identity_context="identity",
-        state_row={},
+        state_row={
+            "all_categories_summary": "# Holistic Self Summary\n- SoulA carries one integrated self-summary.",
+        },
         segment_text="My WhatsApp Conversations:\n\n[dm][Marcos]\n[Marcos] earlier hello",
         current_message_text="hello",
         user_id="u",
@@ -2825,12 +2821,14 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
     }
     assert items_by_id["mem_one"]["summary"] == "Marcos likes continuity."
     assert id_map == {"1": "mem_one"}
-    assert captured["user_prompt"].startswith("# Identity\n- SoulA is herself.")
+    assert captured["user_prompt"].startswith("# Holistic Self Summary\n- SoulA carries one integrated self-summary.")
     assert "Identity: # Identity" not in captured["user_prompt"]
+    assert "# Identity" not in captured["user_prompt"]
     assert "Summaries:" not in captured["user_prompt"]
     assert "Individual memories:" not in captured["user_prompt"]
     assert "Your working thoughts:" not in captured["user_prompt"]
-    assert "My Memories:" in captured["user_prompt"]
+    assert "My Memories:" not in captured["user_prompt"]
+    assert "Memories List:" in captured["user_prompt"]
     assert "Recent conversation:" not in captured["user_prompt"]
     assert "My WhatsApp Conversations:" in captured["user_prompt"]
     assert "[Marcos] earlier hello" in captured["user_prompt"]
@@ -2839,10 +2837,13 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
     assert "My Intentions:" in captured["user_prompt"]
     assert "New Message:\nhello" in captured["user_prompt"]
     assert "Reminder: do not answer the message here." in captured["user_prompt"]
-    assert captured["user_prompt"].index("My Memories:") < captured["user_prompt"].index("My WhatsApp Conversations:")
     assert captured["user_prompt"].index("My WhatsApp Conversations:") < captured["user_prompt"].index("My Working Thoughts:")
     assert captured["user_prompt"].index("My Working Thoughts:") < captured["user_prompt"].index("My Intentions:")
     assert captured["user_prompt"].index("My Intentions:") < captured["user_prompt"].index("New Message:")
+    assert captured["user_prompt"].index("New Message:") < captured["user_prompt"].index("Memories List:")
+    assert captured["system_prompt"].startswith("identity\n\nYou are the soul's subconscious")
+    assert "first My Memories item" not in captured["system_prompt"]
+    assert "conscious self" in captured["system_prompt"]
     assert "Seeking Happiness for Myself and Others" not in captured["user_prompt"]
     assert "life goals" not in captured["system_prompt"].lower()
 
