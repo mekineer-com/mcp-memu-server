@@ -5146,6 +5146,32 @@ async def test_whatsapp_outbound_claim_and_mark(
 
 
 @pytest.mark.asyncio
+async def test_whatsapp_outbound_empty_claim_does_not_create_wal_sidecars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "SiriTest.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
+
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+        main._ensure_whatsapp_outbounds_schema(con)
+    finally:
+        con.close()
+    for suffix in ("-wal", "-shm"):
+        (tmp_path / f"SiriTest.db{suffix}").unlink(missing_ok=True)
+
+    claimed = await main.whatsapp_outbounds_claim(
+        {"user_id": "u1", "soul_id": "Siri", "claimed_by": "hermes-test", "limit": 10}
+    )
+
+    assert claimed["outbounds"] == []
+    assert not (tmp_path / "SiriTest.db-wal").exists()
+    assert not (tmp_path / "SiriTest.db-shm").exists()
+
+
+@pytest.mark.asyncio
 async def test_free_turn_chain_queues_whatsapp_outbound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5412,6 +5438,24 @@ def test_free_turn_follow_up_schedule_persists_pending_row(
     assert row["conversation_id"] == "whatsapp:dm:Marcos"
     payload = json.loads(row["payload_json"])
     assert payload["follow_up_reason"] == "Check whether Marcos got home safely."
+
+
+def test_free_turn_empty_claim_does_not_create_wal_sidecars(tmp_path: Path) -> None:
+    db_path = tmp_path / "SiriTest.db"
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+        main._ensure_free_turn_followups_schema(con)
+    finally:
+        con.close()
+    for suffix in ("-wal", "-shm"):
+        (tmp_path / f"SiriTest.db{suffix}").unlink(missing_ok=True)
+
+    claimed = main._claim_due_free_turn_followups(db_path, now=datetime.now(UTC))
+
+    assert claimed == []
+    assert not (tmp_path / "SiriTest.db-wal").exists()
+    assert not (tmp_path / "SiriTest.db-shm").exists()
 
 
 @pytest.mark.asyncio

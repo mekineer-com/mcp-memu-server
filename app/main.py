@@ -1186,6 +1186,29 @@ def _whatsapp_outbound_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _sqlite_has_rows_quietly(
+    db_path: Path,
+    *,
+    table: str,
+    where_sql: str,
+    params: tuple[Any, ...],
+) -> bool:
+    con = sqlite3.connect(str(db_path), timeout=5.0)
+    try:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA busy_timeout=3000")
+        table_row = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        if table_row is None:
+            return False
+        row = con.execute(f"SELECT 1 FROM {table} WHERE {where_sql} LIMIT 1", params).fetchone()
+        return row is not None
+    finally:
+        con.close()
+
+
 def _insert_whatsapp_outbound(
     *,
     user_id: str,
@@ -1412,6 +1435,13 @@ def _claim_whatsapp_outbounds(
     now_iso = now.isoformat()
     stale_before = (now - timedelta(seconds=max(1, int(claim_timeout_seconds)))).isoformat()
     claim_limit = max(1, min(50, int(limit)))
+    if not _sqlite_has_rows_quietly(
+        db_path,
+        table="whatsapp_pending_outbounds",
+        where_sql="user_id = ? AND soul_id = ? AND (status = 'pending' OR (status = 'claimed' AND claimed_at < ?))",
+        params=(uid, sid, stale_before),
+    ):
+        return []
     claimed: list[dict[str, Any]] = []
     con = _sqlite_connect(db_path)
     try:
@@ -1677,6 +1707,15 @@ def _claim_due_free_turn_followups(
     claim_timeout_seconds: int = 7200,
 ) -> list[dict[str, Any]]:
     claimed: list[dict[str, Any]] = []
+    now_iso = now.astimezone(UTC).isoformat()
+    stale_before = (now.astimezone(UTC) - timedelta(seconds=max(1, int(claim_timeout_seconds)))).isoformat()
+    if not _sqlite_has_rows_quietly(
+        db_path,
+        table="free_turn_followups",
+        where_sql="(status = 'pending' AND due_at <= ?) OR (status = 'running' AND claimed_at < ?)",
+        params=(now_iso, stale_before),
+    ):
+        return []
     con = _sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
@@ -1685,8 +1724,6 @@ def _claim_due_free_turn_followups(
         ).fetchone()
         if table is None:
             return []
-        now_iso = now.astimezone(UTC).isoformat()
-        stale_before = (now.astimezone(UTC) - timedelta(seconds=max(1, int(claim_timeout_seconds)))).isoformat()
         rows = con.execute(
             """
 SELECT id
