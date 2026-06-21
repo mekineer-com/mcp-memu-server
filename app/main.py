@@ -706,7 +706,12 @@ def _shutdown_snapshot() -> dict[str, Any]:
             "timedOut": bool(_SHUTDOWN_STATE.get("timedOut")),
             "activeHttpRequests": int(_ACTIVE_HTTP_REQUESTS),
             "activeWorkRequests": int(_ACTIVE_WORK_REQUESTS),
+            "activeBackgroundTasks": _active_background_task_count(),
         }
+
+
+def _active_background_task_count() -> int:
+    return sum(1 for task in _BACKGROUND_TASKS if not task.done())
 
 
 def _memorize_lock_key(user_id: str, soul_id: str) -> str:
@@ -754,7 +759,8 @@ async def _shutdown_when_idle(max_wait_sec: int) -> None:
     while True:
         with _STATE_LOCK:
             active_work = int(_ACTIVE_WORK_REQUESTS)
-        if active_work <= 0:
+        active_background = _active_background_task_count()
+        if active_work <= 0 and active_background <= 0:
             break
         if deadline is not None and time.time() >= deadline:
             timed_out = True
@@ -4818,6 +4824,7 @@ def _turn_launch_apimw(
         _clear_apimw_inflight(cid)
         logger.exception("APImw background pipeline failed to start for %s", cid)
         return "failed_to_start"
+    _BACKGROUND_TASKS.add(apimw_task)
 
     def _on_apimw_done(task: asyncio.Task) -> None:
         try:
@@ -4825,6 +4832,7 @@ def _turn_launch_apimw(
         except Exception:
             logger.exception("APImw background pipeline failed for %s", cid)
         finally:
+            _BACKGROUND_TASKS.discard(task)
             _clear_apimw_inflight(cid)
 
     apimw_task.add_done_callback(_on_apimw_done)

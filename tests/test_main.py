@@ -237,6 +237,60 @@ async def test_run_consolidation_task_repeats_until_pending_span_is_short(monkey
     }
 
 
+@pytest.mark.asyncio
+async def test_turn_launch_apimw_tracks_background_task(monkeypatch: pytest.MonkeyPatch) -> None:
+    release = asyncio.Event()
+
+    async def fake_run_apimw(*_args: object, **_kwargs: object) -> None:
+        await release.wait()
+
+    monkeypatch.setattr(main, "_apimw_cadence_from_cfg", lambda *_a, **_k: 1)
+    monkeypatch.setattr(main, "_apimw_cadence_due", lambda *_a, **_k: True)
+    monkeypatch.setattr(main, "_mark_apimw_inflight", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"digest_cursor": -1}, None, None),
+    )
+    monkeypatch.setattr(main, "_run_apimw", fake_run_apimw)
+
+    before = set(main._BACKGROUND_TASKS)
+    status = main._turn_launch_apimw("cid-apimw-track", "u1", "Echo", {}, [])
+
+    created = set(main._BACKGROUND_TASKS) - before
+    assert status == "started"
+    assert len(created) == 1
+    assert main._active_background_task_count() >= 1
+
+    release.set()
+    await asyncio.wait_for(asyncio.gather(*created), timeout=1)
+    await asyncio.sleep(0)
+    assert all(task not in main._BACKGROUND_TASKS for task in created)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_tracked_background_tasks(monkeypatch: pytest.MonkeyPatch) -> None:
+    release = asyncio.Event()
+    kill_calls: list[tuple[int, int]] = []
+
+    async def slow_background() -> None:
+        await release.wait()
+
+    task = asyncio.create_task(slow_background())
+    main._BACKGROUND_TASKS.add(task)
+    monkeypatch.setattr(main.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    shutdown_task = asyncio.create_task(main._shutdown_when_idle(max_wait_sec=1))
+    await asyncio.sleep(0.05)
+    assert kill_calls == []
+
+    release.set()
+    await asyncio.wait_for(shutdown_task, timeout=2)
+    await asyncio.sleep(0)
+    assert kill_calls
+    main._BACKGROUND_TASKS.discard(task)
+
+
 def test_current_whatsapp_history_uses_configured_web_source_and_filters_current(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
