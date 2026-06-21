@@ -1209,6 +1209,33 @@ def _sqlite_has_rows_quietly(
         con.close()
 
 
+def _poll_marker_path(db_path: Path, name: str) -> Path:
+    return db_path.parent / ".poll-markers" / f"{db_path.name}.{name}"
+
+
+def _touch_poll_marker(db_path: Path, name: str, value: str = "") -> None:
+    marker = _poll_marker_path(db_path, name)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(value, encoding="utf-8")
+
+
+def _remove_poll_marker(db_path: Path, name: str) -> None:
+    _poll_marker_path(db_path, name).unlink(missing_ok=True)
+
+
+def _poll_marker_due(db_path: Path, name: str, *, now: datetime) -> bool:
+    marker = _poll_marker_path(db_path, name)
+    if not marker.exists():
+        return False
+    raw = marker.read_text(encoding="utf-8").strip()
+    if not raw:
+        return True
+    try:
+        return float(raw) <= now.timestamp()
+    except ValueError:
+        return True
+
+
 def _insert_whatsapp_outbound(
     *,
     user_id: str,
@@ -1267,6 +1294,7 @@ INSERT INTO whatsapp_pending_outbounds (
         con.commit()
     finally:
         con.close()
+    _touch_poll_marker(db_path, "whatsapp-outbounds")
     return out_id
 
 
@@ -1430,6 +1458,8 @@ def _claim_whatsapp_outbounds(
     db_path = _sqlite_current_path(uid, sid)
     if db_path is None:
         raise HTTPException(status_code=400, detail="sqlite path unavailable for outbound scope")
+    if not _poll_marker_path(db_path, "whatsapp-outbounds").exists():
+        return []
     _sqlite_ensure_nonempty(db_path)
     now = datetime.now(UTC)
     now_iso = now.isoformat()
@@ -1441,6 +1471,7 @@ def _claim_whatsapp_outbounds(
         where_sql="user_id = ? AND soul_id = ? AND (status = 'pending' OR (status = 'claimed' AND claimed_at < ?))",
         params=(uid, sid, stale_before),
     ):
+        _remove_poll_marker(db_path, "whatsapp-outbounds")
         return []
     claimed: list[dict[str, Any]] = []
     con = _sqlite_connect(db_path)
@@ -1480,6 +1511,8 @@ WHERE id = ? AND user_id = ? AND soul_id = ?
         con.commit()
     finally:
         con.close()
+    if not claimed:
+        _remove_poll_marker(db_path, "whatsapp-outbounds")
     return claimed
 
 
@@ -1685,6 +1718,7 @@ INSERT INTO free_turn_followups (
         con.commit()
     finally:
         con.close()
+    _touch_poll_marker(db_path, "free-turn-followups", str(due_at.timestamp()))
     logger.info("free_turn: scheduled follow_up %s due_at=%s", followup_id, due_at.isoformat())
     return followup_id
 
@@ -1709,12 +1743,15 @@ def _claim_due_free_turn_followups(
     claimed: list[dict[str, Any]] = []
     now_iso = now.astimezone(UTC).isoformat()
     stale_before = (now.astimezone(UTC) - timedelta(seconds=max(1, int(claim_timeout_seconds)))).isoformat()
+    if not _poll_marker_due(db_path, "free-turn-followups", now=now):
+        return []
     if not _sqlite_has_rows_quietly(
         db_path,
         table="free_turn_followups",
         where_sql="(status = 'pending' AND due_at <= ?) OR (status = 'running' AND claimed_at < ?)",
         params=(now_iso, stale_before),
     ):
+        _remove_poll_marker(db_path, "free-turn-followups")
         return []
     con = _sqlite_connect(db_path)
     try:
@@ -1757,6 +1794,8 @@ WHERE id = ?
         con.commit()
     finally:
         con.close()
+    if not claimed:
+        _remove_poll_marker(db_path, "free-turn-followups")
     return claimed
 
 
