@@ -3474,7 +3474,7 @@ def _load_cross_memorize_tails_from_sources(
                 msg["source_conversation_id"] = cid
                 if msg.get("source_conversation_index") is None:
                     raise RuntimeError(
-                        f"cross-memorize listen-only tail missing source_conversation_index for {cid}"
+                        f"cross-memorize background/non-memorize tail missing source_conversation_index for {cid}"
                     )
                 msg["source_conversation_index"] = int(msg["source_conversation_index"])
                 msg["memorize_chat"] = False

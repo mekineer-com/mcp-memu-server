@@ -970,7 +970,7 @@ def test_build_cross_conversation_payload_includes_background_rolling_summaries(
     assert rs.get("bg-chat", {}).get("summary") == "rolled summary"
 
 
-def test_build_cross_conversation_payload_preserves_listen_only_cursor_semantics(
+def test_build_cross_conversation_payload_preserves_background_cursor_semantics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
