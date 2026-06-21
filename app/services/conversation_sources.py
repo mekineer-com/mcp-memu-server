@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sqlite3
+import tempfile
 from collections import deque
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -822,7 +823,25 @@ def persist_sillytavern_history_snapshot(
         soul_id=soul_id,
         conversation_id=conversation_id,
     )
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_name = tmp.name
+            tmp.write(json.dumps(payload, ensure_ascii=False))
+        os.replace(tmp_name, path)
+    finally:
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
 
 
 def load_sillytavern_tail(

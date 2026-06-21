@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -1320,6 +1321,34 @@ def test_sillytavern_snapshot_round_trip_with_floor(tmp_path: Path) -> None:
     assert [row["content"] for row in rows] == [f"msg-{i}" for i in range(2, 10)]
     assert all(row["source_label"] == "sillytavern" for row in rows)
     assert all(row["chat_name"] == "Echo" for row in rows)
+
+
+def test_sillytavern_snapshot_write_is_atomic_replace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    storage_dir = tmp_path / "resources"
+    replacements: list[tuple[Path, Path]] = []
+    real_replace = os.replace
+
+    def _record_replace(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        replacements.append((Path(src), Path(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(conversation_sources.os, "replace", _record_replace)
+
+    conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=storage_dir,
+        user_id="u1",
+        soul_id="Echo",
+        conversation_id="integrity:chat-a",
+        history=[{"role": "user", "name": "Marcos", "content": "hello"}],
+        chat_name="Echo",
+    )
+
+    assert len(replacements) == 1
+    src, dst = replacements[0]
+    assert src.parent == dst.parent
+    assert src.name.startswith(".latest_history.json.")
+    assert dst.name == "latest_history.json"
+    assert not src.exists()
 
 
 def test_load_sillytavern_tail_since_cursor_handles_sparse_indices(tmp_path: Path) -> None:
