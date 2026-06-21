@@ -359,6 +359,77 @@ def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_
     assert [row["source_conversation_index"] for row in rows] == [2, 3]
 
 
+def test_load_whatsapp_web_source_tail_resolves_group_display_name(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(
+        web_db,
+        contacts=[
+            {
+                "contact_id": "18322935409-1579788049@g.us",
+                "contact_local_id": "18322935409-1579788049",
+                "name": "Familia",
+            },
+        ],
+        messages=[
+            {
+                "msg_key": "family-1",
+                "chat_id": "18322935409-1579788049@g.us",
+                "timestamp": 100,
+                "body": "family message",
+            },
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:group:familia",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id="Siri",
+        reply_prefix="✦ *Siri*: ",
+        web_source_db_path=web_db,
+    )
+
+    assert [row["content"] for row in rows] == ["family message"]
+    assert rows[0]["source_label"] == "whatsapp:group"
+    assert rows[0]["chat_name"] == "Familia"
+
+
+def test_load_whatsapp_web_source_tail_resolves_dm_display_name(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(
+        web_db,
+        contacts=[
+            {
+                "contact_id": "140063262396533@lid",
+                "contact_local_id": "140063262396533",
+                "short_name": "Contact A",
+            },
+        ],
+        messages=[
+            {
+                "msg_key": "dm-1",
+                "chat_id": "140063262396533@lid",
+                "timestamp": 100,
+                "body": "vet message",
+                "from_id": "140063262396533@lid",
+            },
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:dm:Contact A",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id="Siri",
+        reply_prefix="✦ *Siri*: ",
+        web_source_db_path=web_db,
+    )
+
+    assert [row["content"] for row in rows] == ["vet message"]
+    assert rows[0]["source_label"] == "whatsapp:dm"
+    assert rows[0]["chat_name"] == "Contact A"
+
+
 def test_load_whatsapp_web_source_tail_after_rowid_uses_monotonic_cursor(tmp_path: Path) -> None:
     web_db = tmp_path / "web_source.db"
     _write_web_source_db(

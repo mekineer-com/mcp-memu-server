@@ -12,6 +12,10 @@ from memu.utils.conversation import format_grouped_chat_history, format_relative
 
 def derive_source_label(conversation_id: str) -> str:
     cid = str(conversation_id or "").strip()
+    if cid.startswith("whatsapp:group:"):
+        return "whatsapp:group"
+    if cid.startswith("whatsapp:dm:"):
+        return "whatsapp:dm"
     if cid.startswith("whatsapp:"):
         suffix = cid.split(":", 1)[1] if ":" in cid else ""
         if "@g.us" in suffix:

@@ -466,7 +466,7 @@ def _web_source_chat_match(
     conversation_id: str,
     *,
     hermes_home: Path | None,
-) -> tuple[str, set[str], str]:
+) -> tuple[set[str], set[str], str]:
     cid = str(conversation_id or "").strip()
     if cid.startswith("whatsapp:group:"):
         chat_type = "group"
@@ -475,7 +475,7 @@ def _web_source_chat_match(
         chat_type = "dm"
         target = cid[len("whatsapp:dm:") :]
     else:
-        return "", set(), ""
+        return set(), set(), ""
     target_local = _normalize_whatsapp_identifier(target)
     if chat_type == "dm":
         base = (hermes_home or Path(os.getenv("HERMES_HOME") or "~/.hermes")).expanduser().resolve()
@@ -483,7 +483,44 @@ def _web_source_chat_match(
         locals_ = _expand_whatsapp_aliases(target_local, alias_graph=alias_graph) or {target_local}
     else:
         locals_ = {target_local}
-    return target, {value for value in locals_ if value}, chat_type
+    targets = {target} if target else set()
+    return targets, {value for value in locals_ if value}, chat_type
+
+
+def _web_source_resolve_display_aliases(
+    con: sqlite3.Connection,
+    *,
+    target_ids: set[str],
+    local_ids: set[str],
+    conversation_id: str,
+) -> tuple[set[str], set[str]]:
+    label = str(conversation_id or "").rsplit(":", 1)[-1].strip()
+    if not label:
+        return target_ids, local_ids
+    wanted = label.casefold()
+    aliases_target = set(target_ids)
+    aliases_local = set(local_ids)
+
+    contact_rows = con.execute(
+        """
+        SELECT contact_id, contact_local_id
+        FROM whatsapp_contacts
+        WHERE lower(trim(coalesce(name, ''))) = ?
+           OR lower(trim(coalesce(short_name, ''))) = ?
+           OR lower(trim(coalesce(push_name, ''))) = ?
+           OR lower(trim(coalesce(verified_name, ''))) = ?
+        """,
+        (wanted, wanted, wanted, wanted),
+    ).fetchall()
+    for row in contact_rows:
+        contact_id = str(row["contact_id"] or "").strip()
+        local_id = str(row["contact_local_id"] or "").strip()
+        if contact_id:
+            aliases_target.add(contact_id)
+        if local_id:
+            aliases_local.add(local_id)
+
+    return aliases_target, aliases_local
 
 
 def _render_reactions(reactions_json: str | None, contact_map: dict[str, str]) -> str:
@@ -627,58 +664,15 @@ def _load_whatsapp_web_source_tail(
     db_path = _web_source_db_path(hermes_home=hermes_home, web_source_db_path=web_source_db_path)
     if not db_path.exists():
         raise FileNotFoundError(f"WhatsApp web_source db missing: {db_path}")
-    target, local_ids, chat_type = _web_source_chat_match(conversation_id, hermes_home=hermes_home)
+    target_ids, local_ids, chat_type = _web_source_chat_match(conversation_id, hermes_home=hermes_home)
     if not chat_type or not local_ids:
         return []
-
-    where = [
-        "m.revoked = 0",
-        "m.body IS NOT NULL",
-        "trim(m.body) != ''",
-        f"(m.chat_id = ? OR m.chat_local_id IN ({','.join('?' for _ in local_ids)}))",
-    ]
-    params: list[Any] = [target, *sorted(local_ids)]
-    if cursor_is_rowid:
-        where.append("m.rowid > ?")
-        params.append(int(cursor))
-    if min_timestamp is not None:
-        where.append("m.timestamp >= ?")
-        params.append(float(min_timestamp))
 
     limit_tail = (
         max(1, int(max_messages))
         if max_messages is not None and not cursor_is_rowid and cursor < 0 and recent_fallback_messages <= 0
         else None
     )
-    select_sql = f"""
-        SELECT
-          m.rowid, m.msg_key, m.chat_id, m.from_me, m.timestamp, m.body,
-          m.author_id, m.from_id, m.reactions,
-          cc.name AS chat_name, cc.short_name AS chat_short_name,
-          cc.push_name AS chat_push_name, cc.verified_name AS chat_verified_name,
-          ca.name AS author_name, ca.short_name AS author_short_name,
-          ca.push_name AS author_push_name, ca.verified_name AS author_verified_name,
-          cf.name AS from_name, cf.short_name AS from_short_name,
-          cf.push_name AS from_push_name, cf.verified_name AS from_verified_name
-        FROM whatsapp_messages m
-        LEFT JOIN whatsapp_contacts cc ON cc.contact_id = m.chat_id
-        LEFT JOIN whatsapp_contacts ca ON ca.contact_id = m.author_id
-        LEFT JOIN whatsapp_contacts cf ON cf.contact_id = m.from_id
-        WHERE {" AND ".join(where)}
-    """
-    if limit_tail is not None:
-        sql = f"""
-            SELECT *
-            FROM (
-              {select_sql}
-              ORDER BY m.timestamp DESC, m.rowid DESC
-              LIMIT ?
-            )
-            ORDER BY timestamp ASC, rowid ASC
-        """
-        params.append(limit_tail)
-    else:
-        sql = f"{select_sql} ORDER BY m.timestamp ASC, m.rowid ASC"
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
     try:
@@ -691,12 +685,78 @@ def _load_whatsapp_web_source_tail(
                 f"web_source.db schema is outdated — reactions column missing: {db_path}. "
                 "Restart the web-source daemon to apply the migration."
             )
+        target_ids, local_ids = _web_source_resolve_display_aliases(
+            con,
+            target_ids=target_ids,
+            local_ids=local_ids,
+            conversation_id=conversation_id,
+        )
+        target_values = sorted(value for value in target_ids if value)
+        local_values = sorted(value for value in local_ids if value)
+        if not target_values and not local_values:
+            return []
+        chat_terms: list[str] = []
+        params: list[Any] = []
+        if target_values:
+            chat_terms.append(f"m.chat_id IN ({','.join('?' for _ in target_values)})")
+            params.extend(target_values)
+        if local_values:
+            chat_terms.append(f"m.chat_local_id IN ({','.join('?' for _ in local_values)})")
+            params.extend(local_values)
+        where = [
+            "m.revoked = 0",
+            "m.body IS NOT NULL",
+            "trim(m.body) != ''",
+            f"({' OR '.join(chat_terms)})",
+        ]
+        if cursor_is_rowid:
+            where.append("m.rowid > ?")
+            params.append(int(cursor))
+        if min_timestamp is not None:
+            where.append("m.timestamp >= ?")
+            params.append(float(min_timestamp))
+
+        select_sql = f"""
+            SELECT
+              m.rowid, m.msg_key, m.chat_id, m.from_me, m.timestamp, m.body,
+              m.author_id, m.from_id, m.reactions,
+              cc.name AS chat_name, cc.short_name AS chat_short_name,
+              cc.push_name AS chat_push_name, cc.verified_name AS chat_verified_name,
+              ca.name AS author_name, ca.short_name AS author_short_name,
+              ca.push_name AS author_push_name, ca.verified_name AS author_verified_name,
+              cf.name AS from_name, cf.short_name AS from_short_name,
+              cf.push_name AS from_push_name, cf.verified_name AS from_verified_name
+            FROM whatsapp_messages m
+            LEFT JOIN whatsapp_contacts cc ON cc.contact_id = m.chat_id
+            LEFT JOIN whatsapp_contacts ca ON ca.contact_id = m.author_id
+            LEFT JOIN whatsapp_contacts cf ON cf.contact_id = m.from_id
+            WHERE {" AND ".join(where)}
+        """
+        if limit_tail is not None:
+            sql = f"""
+                SELECT *
+                FROM (
+                  {select_sql}
+                  ORDER BY m.timestamp DESC, m.rowid DESC
+                  LIMIT ?
+                )
+                ORDER BY timestamp ASC, rowid ASC
+            """
+            params.append(limit_tail)
+        else:
+            sql = f"{select_sql} ORDER BY m.timestamp ASC, m.rowid ASC"
         rows = con.execute(sql, params).fetchall()
         if not rows and not cursor_is_rowid and cursor < 0:
+            any_row_params = [*target_values, *local_values]
+            any_row_terms: list[str] = []
+            if target_values:
+                any_row_terms.append(f"chat_id IN ({','.join('?' for _ in target_values)})")
+            if local_values:
+                any_row_terms.append(f"chat_local_id IN ({','.join('?' for _ in local_values)})")
             any_rows = con.execute(
                 f"SELECT 1 FROM whatsapp_messages WHERE "
-                f"(chat_id = ? OR chat_local_id IN ({','.join('?' for _ in local_ids)})) LIMIT 1",
-                [target, *sorted(local_ids)],
+                f"({' OR '.join(any_row_terms)}) LIMIT 1",
+                any_row_params,
             ).fetchone()
             if not any_rows:
                 raise RuntimeError(

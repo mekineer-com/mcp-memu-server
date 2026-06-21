@@ -3,6 +3,11 @@ import json
 from app.services import message_log
 
 
+def test_derive_source_label_honors_explicit_whatsapp_prefixes() -> None:
+    assert message_log.derive_source_label("whatsapp:group:familia") == "whatsapp:group"
+    assert message_log.derive_source_label("whatsapp:dm:Contact A") == "whatsapp:dm"
+
+
 def test_format_merged_history_does_not_relabel_blank_speaker_rows() -> None:
     rendered = message_log.format_merged_history(
         [
