@@ -2371,6 +2371,7 @@ async def test_run_memorize_segments_clears_consumed_background_summaries(
             "all_categories_summary": "",
         },
         "whatsapp:dm:bg-chat": {
+            "memorize_chat": False,
             "digest_cursor": -1,
             "rolling_summary": "old rolled summary",
             "rolling_summary_cursor_id": 11,
@@ -2450,7 +2451,8 @@ async def test_run_memorize_segments_clears_consumed_background_summaries(
     ]
     assert clear_writes == [{"rolling_summary": None, "rolling_summary_updated_at": None}]
     assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary"] is None
-    assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary_cursor_id"] == 11
+    assert state_rows["whatsapp:dm:bg-chat"]["digest_cursor"] == -1
+    assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary_cursor_id"] == 12
 
 
 @pytest.mark.asyncio

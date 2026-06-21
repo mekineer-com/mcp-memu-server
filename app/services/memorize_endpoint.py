@@ -492,6 +492,23 @@ async def run_memorize_segments(
                         participant_conversation_ids=set(latest_display_ranges),
                     )
                 for fc_cid, fc_cursor in final_cursors.items():
+                    fresh_row, _, _ = run_ctx.load_turn_state_and_soul_card(
+                        fc_cid,
+                        user_id=uid,
+                        soul_id=soul_id,
+                    )
+                    memorize_raw = fresh_row.get("memorize_chat")
+                    memorize_chat = True if memorize_raw is None else bool(int(memorize_raw))
+                    if not memorize_chat:
+                        ctx.write_conversation_state(
+                            fc_cid,
+                            soul_id=soul_id,
+                            user_id=uid,
+                            updates={
+                                "rolling_summary_cursor_id": max(0, fc_cursor),
+                            },
+                        )
+                        continue
                     updates: dict[str, Any] = {
                         "digest_cursor": max(0, fc_cursor),
                         "last_memorize_at": now_iso,
