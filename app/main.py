@@ -146,11 +146,9 @@ _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 8000
 _DEFAULT_EPISODE_ITEMS_PER_SEGMENT: int = 3
 _DEFAULT_BACKGROUND_SUMMARY_TOKENS: int = 1000
-_DEFAULT_BACKGROUND_SUMMARY_MIN_TOKENS: int = 100
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
 _EPISODE_ITEMS_PER_SEGMENT: int = _DEFAULT_EPISODE_ITEMS_PER_SEGMENT
 _BACKGROUND_SUMMARY_TOKENS: int = _DEFAULT_BACKGROUND_SUMMARY_TOKENS
-_BACKGROUND_SUMMARY_MIN_TOKENS: int = _DEFAULT_BACKGROUND_SUMMARY_MIN_TOKENS
 # Uniform runaway-protection caps for LLM calls. Not business logic —
 _BACKGROUND_TASKS: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
 _LOG_PROMPTS: bool = False
@@ -261,7 +259,6 @@ async def _run_background_rollup_for_conversation(
     user_id: str,
     soul_id: str,
     safe_payload: dict[str, Any],
-    trigger_min_tokens: int,
     service: MemoryService | None = None,
 ) -> str:
     cid = str(conversation_id or "").strip()
@@ -311,12 +308,12 @@ async def _run_background_rollup_for_conversation(
             return "skipped_short_tail"
 
         token_estimate = _estimate_tokens(tokenize_messages)
-        if token_estimate < int(trigger_min_tokens):
+        if token_estimate < int(_BACKGROUND_SUMMARY_TOKENS):
             return "skipped_tokens"
         if not _background_sleep_gap_detected(
             history=sleep_history,
             safe=safe_payload,
-            min_chunk_tokens=int(trigger_min_tokens),
+            min_chunk_tokens=int(_BACKGROUND_SUMMARY_TOKENS),
         ):
             return "skipped_lull"
 
@@ -371,7 +368,6 @@ def _queue_background_rollup_task(
     user_id: str,
     soul_id: str,
     safe_payload: dict[str, Any],
-    trigger_min_tokens: int,
     service: MemoryService | None = None,
 ) -> None:
     marker = f"{user_id}::{soul_id}::{conversation_id}"
@@ -383,7 +379,6 @@ def _queue_background_rollup_task(
             user_id=user_id,
             soul_id=soul_id,
             safe_payload=safe_payload,
-            trigger_min_tokens=trigger_min_tokens,
             service=service,
         )
     )
@@ -847,7 +842,7 @@ class STUserModel(BaseModel):
 _CONFIG: dict[str, Any] = _load_config()
 
 def _refresh_runtime_limits() -> None:
-    global _MIN_CHUNK_TOKENS, _EPISODE_ITEMS_PER_SEGMENT, _BACKGROUND_SUMMARY_TOKENS, _BACKGROUND_SUMMARY_MIN_TOKENS
+    global _MIN_CHUNK_TOKENS, _EPISODE_ITEMS_PER_SEGMENT, _BACKGROUND_SUMMARY_TOKENS
     global _LOG_PROMPTS
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
     try:
@@ -865,13 +860,6 @@ def _refresh_runtime_limits() -> None:
         )
     except (TypeError, ValueError, OverflowError):
         _BACKGROUND_SUMMARY_TOKENS = _DEFAULT_BACKGROUND_SUMMARY_TOKENS
-    try:
-        _BACKGROUND_SUMMARY_MIN_TOKENS = max(
-            0,
-            int(memorize_cfg.get("background_summary_min_tokens", _DEFAULT_BACKGROUND_SUMMARY_MIN_TOKENS)),
-        )
-    except (TypeError, ValueError, OverflowError):
-        _BACKGROUND_SUMMARY_MIN_TOKENS = _DEFAULT_BACKGROUND_SUMMARY_MIN_TOKENS
     debug_cfg = _CONFIG.get("debug") if isinstance(_CONFIG.get("debug"), dict) else {}
     _LOG_PROMPTS = bool(debug_cfg.get("log_prompts", False))
 
@@ -4636,18 +4624,6 @@ def _build_cross_conversation_payload(
         if final_cursor is not None:
             final_cursors[other_cid] = final_cursor
         all_messages.extend(tail_msgs)
-        if not bool(tail_msgs[0].get("memorize_chat", True)):
-            token_estimate = _estimate_tokens(
-                [{"content": str(msg.get("content") or "")} for msg in tail_msgs]
-            )
-            if token_estimate >= _BACKGROUND_SUMMARY_MIN_TOKENS:
-                _queue_background_rollup_task(
-                    conversation_id=other_cid,
-                    user_id=uid,
-                    soul_id=soul_id,
-                    safe_payload=safe,
-                    trigger_min_tokens=_BACKGROUND_SUMMARY_MIN_TOKENS,
-                )
 
     all_messages.sort(
         key=lambda m: (
@@ -5145,7 +5121,6 @@ async def conversation_turn(
                     user_id=uid,
                     soul_id=soul_id,
                     safe_payload=safe,
-                    trigger_min_tokens=_BACKGROUND_SUMMARY_TOKENS,
                     service=memory_service,
                 )
 

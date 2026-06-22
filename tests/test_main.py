@@ -1385,7 +1385,7 @@ def test_build_cross_conversation_payload_does_not_advance_cursor_for_parent_onl
 
 
 @pytest.mark.asyncio
-async def test_build_cross_conversation_payload_queues_background_rollup_for_listen_only_tail(
+async def test_build_cross_conversation_payload_keeps_background_tail_without_rollup_queue(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1411,7 +1411,6 @@ async def test_build_cross_conversation_payload_queues_background_rollup_for_lis
         con.close()
 
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
-    monkeypatch.setattr(main, "_estimate_tokens", lambda *_a, **_k: 120)
     monkeypatch.setattr(
         main._conversation_sources,
         "load_whatsapp_tail_after_message_id",
@@ -1459,9 +1458,15 @@ async def test_build_cross_conversation_payload_queues_background_rollup_for_lis
         True,
     )
     assert isinstance(out, dict)
-    assert len(queued) == 1
-    assert queued[0]["conversation_id"] == "whatsapp:dm:bg-chat"
-    assert queued[0]["trigger_min_tokens"] == main._BACKGROUND_SUMMARY_MIN_TOKENS
+    assert queued == []
+    conversation = out.get("conversation")
+    assert isinstance(conversation, list)
+    background_rows = [
+        msg for msg in conversation
+        if isinstance(msg, dict) and msg.get("source_conversation_id") == "whatsapp:dm:bg-chat"
+    ]
+    assert len(background_rows) == 2
+    assert all(row.get("memorize_chat") is False for row in background_rows)
 
 
 @pytest.mark.asyncio
@@ -1541,7 +1546,6 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
         user_id="u1",
         soul_id="Echo",
         safe_payload={},
-        trigger_min_tokens=1000,
         service=_FakeSvc(),
     )
     assert status == "rolled_up"
