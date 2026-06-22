@@ -640,6 +640,7 @@ _ACTIVE_WORK_REQUESTS: int = 0
 _SHUTDOWN_TASK: asyncio.Task | None = None
 _APIMW_INFLIGHT: set[str] = set()
 _BACKGROUND_ROLLUP_INFLIGHT: set[str] = set()
+_FORCED_MEMORIZE_INFLIGHT: set[str] = set()
 _FREE_TURN_INFLIGHT: set[str] = set()
 _FREE_TURN_FOLLOW_UP_INFLIGHT: set[str] = set()
 _FREE_TURN_FOLLOW_UP_TASK: asyncio.Task | None = None
@@ -5253,6 +5254,20 @@ async def conversation_turn(
                     response_target,
                 )
 
+        forced_memorize_scheduled = False
+        if queued_memorize_payload is not None:
+            marker = _memorize_lock_key(uid, soul_id)
+            if _mark_inflight(_FORCED_MEMORIZE_INFLIGHT, marker):
+                _t = asyncio.create_task(_run_forced_memorize_from_turn(queued_memorize_payload))
+                _BACKGROUND_TASKS.add(_t)
+                forced_memorize_scheduled = True
+
+                def _on_forced_memorize_done(done_task: asyncio.Task) -> None:
+                    _BACKGROUND_TASKS.discard(done_task)
+                    _clear_inflight(_FORCED_MEMORIZE_INFLIGHT, marker)
+
+                _t.add_done_callback(_on_forced_memorize_done)
+
         response_payload: dict[str, Any] = {
             "ok": True,
             "conversation_id": cid,
@@ -5286,15 +5301,10 @@ async def conversation_turn(
             response_payload["turn_contract"] = turn_contract
             response_payload["dry_run"] = dry_run
             response_payload["forced_memorize"] = {
-                "queued": bool(queued_memorize_payload),
+                "queued": forced_memorize_scheduled,
                 "unmemorized_tokens": unmemorized_tokens,
                 "min_chunk_tokens": _MIN_CHUNK_TOKENS,
             }
-
-        if queued_memorize_payload is not None:
-            _t = asyncio.create_task(_run_forced_memorize_from_turn(queued_memorize_payload))
-            _BACKGROUND_TASKS.add(_t)
-            _t.add_done_callback(_BACKGROUND_TASKS.discard)
 
         _record_call(
             "conversation.turn",
@@ -5304,7 +5314,7 @@ async def conversation_turn(
                 "conversationId": cid,
                 "dryRun": dry_run,
                 "apimw": apimw_status,
-                "forcedMemorizeQueued": bool(queued_memorize_payload),
+                "forcedMemorizeQueued": forced_memorize_scheduled,
                 "unmemorizedTokens": unmemorized_tokens,
                 "minChunkTokens": _MIN_CHUNK_TOKENS,
                 "responseLen": len(str(response_payload.get("response") or "")),
