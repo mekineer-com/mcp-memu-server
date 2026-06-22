@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 import sys
+from copy import deepcopy
 from pathlib import Path
+
+import pytest
 
 _ROOT = Path(__file__).resolve().parent
 
@@ -32,3 +35,56 @@ def _add_memu_to_syspath() -> None:
 
 
 _add_memu_to_syspath()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_memu_sqlite_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Keep tests from ever resolving the operator's live sqlite directory.
+
+    Several server helpers resolve the active DB through app.main._CONFIG and
+    app.main._STORAGE_STATUS at runtime. If an individual test forgets to patch
+    one background path, it must still land in this test-local directory, never
+    in memu/sqlite/Siri.db.
+    """
+    from app import main
+
+    sqlite_dir = tmp_path / "sqlite"
+    resources_dir = tmp_path / "resources"
+    sqlite_dir.mkdir()
+    resources_dir.mkdir()
+    dsn = f"sqlite:///{(sqlite_dir / 'memu.db').as_posix()}"
+
+    cfg = deepcopy(main._CONFIG)
+    storage = cfg.setdefault("storage", {})
+    storage["sqlite_dir"] = str(sqlite_dir)
+    storage["resources_dir"] = str(resources_dir)
+    metadata_store = storage.setdefault("metadata_store", {})
+    metadata_store["provider"] = "sqlite"
+    metadata_store["dsn"] = dsn
+
+    status = deepcopy(main._STORAGE_STATUS)
+    status["dsn"] = dsn
+    status["sqlite_dir"] = str(sqlite_dir)
+    status["sqlite_path"] = str(sqlite_dir / "memu.db")
+    status["sqlite_parent"] = str(sqlite_dir)
+
+    live_sqlite_dir = (_ROOT.parent / "memu" / "sqlite").resolve()
+    original_connect = main._sqlite_connect
+    original_ensure_nonempty = main._sqlite_ensure_nonempty
+
+    def _reject_live_path(path: object) -> Path:
+        resolved = Path(path).expanduser().resolve()
+        if resolved == live_sqlite_dir or live_sqlite_dir in resolved.parents:
+            raise AssertionError(f"test attempted to touch live sqlite path: {resolved}")
+        return resolved
+
+    def _guarded_connect(path: object, *args, **kwargs):
+        return original_connect(_reject_live_path(path), *args, **kwargs)
+
+    def _guarded_ensure_nonempty(path: object, *args, **kwargs):
+        return original_ensure_nonempty(_reject_live_path(path), *args, **kwargs)
+
+    monkeypatch.setattr(main, "_CONFIG", cfg)
+    monkeypatch.setattr(main, "_STORAGE_STATUS", status)
+    monkeypatch.setattr(main, "_sqlite_connect", _guarded_connect)
+    monkeypatch.setattr(main, "_sqlite_ensure_nonempty", _guarded_ensure_nonempty)
