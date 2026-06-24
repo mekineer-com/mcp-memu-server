@@ -1554,6 +1554,40 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
     assert isinstance(captured_updates["rolling_summary_updated_at"], str)
 
 
+@pytest.mark.asyncio
+async def test_run_background_rollup_for_conversation_skips_primary_chat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    db_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"memorize_chat": True}, None, db_path),
+    )
+
+    class _UnexpectedSvc:
+        async def summarize_background_chat_rollup(self, **_kwargs):
+            raise AssertionError("primary chats must not roll up")
+
+    monkeypatch.setattr(
+        main,
+        "_write_conversation_state",
+        lambda *_a, **_k: pytest.fail("primary chats must not write rolling summary state"),
+    )
+
+    status = await main._run_background_rollup_for_conversation(
+        conversation_id="whatsapp:dm:primary",
+        user_id="u1",
+        soul_id="Echo",
+        safe_payload={},
+        service=_UnexpectedSvc(),
+    )
+
+    assert status == "skipped_primary_chat"
+
+
 def test_load_cross_tail_from_sources_reads_whatsapp_conversations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2411,7 +2445,7 @@ async def test_run_memorize_segments_keeps_results_when_summary_fails(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_segments_clears_consumed_background_summaries(
+async def test_run_memorize_segments_clears_consumed_segment_background_context_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -2514,7 +2548,7 @@ async def test_run_memorize_segments_clears_consumed_background_summaries(
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_segments_clears_consumed_background_summaries_without_final_cursors(
+async def test_run_memorize_segments_clears_consumed_segment_background_context_rows_without_final_cursors(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -2608,6 +2642,101 @@ async def test_run_memorize_segments_clears_consumed_background_summaries_withou
     assert clear_writes == [{"rolling_summary": None, "rolling_summary_updated_at": None}]
     assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary"] is None
     assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary_cursor_id"] == 11
+
+
+@pytest.mark.asyncio
+async def test_run_memorize_segments_fresh_background_context_does_not_write_rolling_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    captured_segments: list[dict[str, Any]] = []
+
+    class _FakeService:
+        async def memorize_segments_batch(self, *, segments: list[dict[str, Any]], **_kwargs):
+            captured_segments.extend(segments)
+            return [{"pending_segment_ids": ["trigger:0-1"]}]
+
+    state_rows: dict[str, dict[str, Any]] = {
+        "trigger": {
+            "digest_cursor": -1,
+            "pending_segment_ids": [],
+            "all_categories_summary": "",
+        },
+        "whatsapp:dm:bg-chat": {
+            "memorize_chat": False,
+            "digest_cursor": -1,
+            "rolling_summary": None,
+            "rolling_summary_cursor_id": None,
+            "rolling_summary_updated_at": None,
+        },
+    }
+    writes: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_load_turn_state_and_soul_card(cid: str, **_kwargs):
+        return dict(state_rows.get(cid, {})), None, tmp_path / "Echo.db"
+
+    def fake_write_conversation_state(cid: str, *, updates: dict[str, Any], **_kwargs):
+        writes.append((cid, dict(updates)))
+        state_rows.setdefault(cid, {}).update(updates)
+        return dict(state_rows[cid]), tmp_path / "Echo.db"
+
+    async def fake_summary(**_kwargs):
+        return "summary"
+
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
+    monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
+    monkeypatch.setattr(main, "_compute_holistic_categories_summary", fake_summary)
+
+    await main._run_memorize_segments(
+        memorize_segments=[
+            (
+                "/tmp/day.json",
+                [
+                    {
+                        "role": "user",
+                        "content": "new primary",
+                        "memorize_chat": True,
+                        "source_conversation_id": "trigger",
+                        "source_conversation_index": 0,
+                    },
+                    {
+                        "role": "user",
+                        "content": "fresh background",
+                        "memorize_chat": False,
+                        "source_conversation_id": "whatsapp:dm:bg-chat",
+                        "source_conversation_index": 12,
+                    },
+                ],
+                0,
+                1,
+            )
+        ],
+        svc=_FakeService(),
+        scope={"user_id": "u", "soul_id": "s"},
+        conversation_id="trigger",
+        soul_id="s",
+        uid="u",
+        processed_cursor=-1,
+        safe={},
+        resource_url="/tmp/day.json",
+        chat_key=None,
+        merged_len=2,
+        force=False,
+        sleep_stats=None,
+        segments_dir=segments_dir,
+        cross_memorize=True,
+    )
+
+    assert captured_segments
+    assert captured_segments[0]["segment"]["segment_background_context_rows"] == []
+    rolling_summary_writes = [
+        (cid, updates)
+        for cid, updates in writes
+        if "rolling_summary" in updates or "rolling_summary_updated_at" in updates
+    ]
+    assert rolling_summary_writes == []
 
 
 def test_timeline_endpoint_returns_entity_edges(monkeypatch: pytest.MonkeyPatch):

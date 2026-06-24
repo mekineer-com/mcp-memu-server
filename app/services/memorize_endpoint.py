@@ -342,7 +342,7 @@ async def run_memorize_segments(
                     "segment_payload": {
                         "message_indices": list(range(len(segment_messages))),
                         "segment_id": segment_id,
-                        "background_summaries": segment_background_rows,
+                        "segment_background_context_rows": segment_background_rows,
                     },
                     "segment_messages": segment_messages,
                     "segment_resource_url": str(segment_path),
