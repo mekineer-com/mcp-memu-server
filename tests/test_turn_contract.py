@@ -599,6 +599,31 @@ def test_build_turn_prompt_renders_memories_without_speaker_tags() -> None:
     assert "[behavior] I stayed gentle when things felt tense" in prompt
 
 
+def test_build_turn_prompt_memory_key_includes_episode_when_present() -> None:
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[],
+        prior_context=None,
+        retrieve_rag={
+            "items": [
+                {
+                    "memory_type": "profile",
+                    "summary": "Marcos likes continuity.",
+                },
+                {
+                    "memory_type": "episode",
+                    "summary": "Marcos and Siri repaired a replay bug together.",
+                },
+            ]
+        },
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+    )
+
+    assert "Key: [profile] what's said or declared · [episode] episodic memory" in prompt
+
+
 def test_build_turn_prompt_renders_apimw_message_to_self_under_working_thoughts() -> None:
     prompt = build_turn_prompt(
         user_message="hello",

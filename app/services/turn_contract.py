@@ -321,13 +321,14 @@ _MEMORY_TYPE_LEGEND = {
     "behavior": "what someone does",
     "social": "dynamics between people",
     "knowledge": "what you've learned",
+    "episode": "episodic memory",
 }
 _CONTINUATION_REASONS = {"task", "research", "diary", "follow_up"}
 
 
 def format_memory_legend(memory_types: set[str]) -> str:
     entries = []
-    for mt in ("profile", "behavior", "social", "knowledge"):
+    for mt in ("profile", "behavior", "social", "knowledge", "episode"):
         if mt in memory_types and mt in _MEMORY_TYPE_LEGEND:
             entries.append(f"[{mt}] {_MEMORY_TYPE_LEGEND[mt]}")
     if not entries:
