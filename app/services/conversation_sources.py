@@ -32,6 +32,18 @@ def _normalize_whatsapp_identifier(value: str) -> str:
     )
 
 
+def _normalize_whatsapp_match_token(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if "@" not in raw:
+        return raw.replace("+", "", 1).split(":", 1)[0]
+    local, _, domain = raw.partition("@")
+    local = local.replace("+", "", 1).split(":", 1)[0].strip()
+    domain = domain.strip()
+    return f"{local}@{domain}" if local and domain else raw
+
+
 def _resolve_hermes_paths(
     *,
     hermes_home: Path | None = None,
@@ -129,7 +141,7 @@ def _collect_whatsapp_session_entries(
     else:
         return [], ""
 
-    target_norm = _normalize_whatsapp_identifier(target)
+    target_norm = _normalize_whatsapp_match_token(target)
     out: list[dict[str, Any]] = []
     for session_key, entry in sessions_index.items():
         if not isinstance(entry, dict):
@@ -146,8 +158,8 @@ def _collect_whatsapp_session_entries(
             continue
 
         token_candidates = [
-            _normalize_whatsapp_identifier(str(origin.get("chat_id") or "")),
-            _normalize_whatsapp_identifier(_parse_session_key_chat_token(str(session_key), chat_type=chat_type)),
+            _normalize_whatsapp_match_token(str(origin.get("chat_id") or "")),
+            _normalize_whatsapp_match_token(_parse_session_key_chat_token(str(session_key), chat_type=chat_type)),
         ]
         if target_norm:
             if target_norm not in token_candidates:

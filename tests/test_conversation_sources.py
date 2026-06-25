@@ -178,7 +178,7 @@ def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) ->
     )
 
     rows = conversation_sources.load_whatsapp_tail(
-        conversation_id="whatsapp:dm:140063262396533",
+        conversation_id="whatsapp:dm:140063262396533@lid",
         since_cursor=-1,
         recent_fallback_messages=0,
         sessions_index_path=sessions_path,
@@ -226,7 +226,7 @@ def test_load_whatsapp_tail_preserves_state_db_source_message_id(tmp_path: Path)
         con.close()
 
     rows = conversation_sources.load_whatsapp_tail(
-        conversation_id="whatsapp:dm:140063262396533",
+        conversation_id="whatsapp:dm:140063262396533@lid",
         since_cursor=-1,
         recent_fallback_messages=0,
         sessions_index_path=sessions_path,
@@ -265,7 +265,7 @@ def test_load_whatsapp_tail_max_messages_returns_newest_in_order(tmp_path: Path)
     )
 
     rows = conversation_sources.load_whatsapp_tail(
-        conversation_id="whatsapp:dm:140063262396533",
+        conversation_id="whatsapp:dm:140063262396533@lid",
         since_cursor=-1,
         recent_fallback_messages=0,
         sessions_index_path=sessions_path,
@@ -761,7 +761,7 @@ def test_load_whatsapp_tail_preserves_assistant_sender_name_when_present(tmp_pat
     )
 
     rows = conversation_sources.load_whatsapp_tail(
-        conversation_id="whatsapp:dm:140063262396533",
+        conversation_id="whatsapp:dm:140063262396533@lid",
         since_cursor=-1,
         recent_fallback_messages=0,
         sessions_index_path=sessions_path,
@@ -1291,6 +1291,39 @@ def test_load_whatsapp_tail_dm_requires_canonical_lid_id(tmp_path: Path) -> None
         state_db_path=state_db_path,
     )
     assert [row["content"] for row in rows] == ["lid-only message", "reply from soul"]
+
+
+def test_load_whatsapp_tail_dm_does_not_match_same_local_different_domain(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:dm:12345@lid": {
+                    "session_id": "s_lid",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "dm",
+                        "chat_id": "12345@lid",
+                        "chat_name": "LID Contact",
+                        "user_name": "LID Contact",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(state_db_path, [("s_lid", "user", "lid message", 100.0)])
+
+    with pytest.raises(RuntimeError, match="no WhatsApp session mapping"):
+        conversation_sources.load_whatsapp_tail(
+            conversation_id="whatsapp:dm:12345@s.whatsapp.net",
+            since_cursor=-1,
+            recent_fallback_messages=0,
+            sessions_index_path=sessions_path,
+            state_db_path=state_db_path,
+        )
 
 
 def test_sillytavern_snapshot_round_trip_with_floor(tmp_path: Path) -> None:
