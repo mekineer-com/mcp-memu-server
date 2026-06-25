@@ -132,7 +132,7 @@ async def test_memu_turn_requests_source_history_for_whatsapp() -> None:
 
     await mcp_tools.memu_turn_endpoint(
         mcp_tools.MemuTurnRequest(
-            conversation_id="whatsapp:15133278228",
+            conversation_id="whatsapp:dm:15133278228@s.whatsapp.net",
             user_id="u1",
             soul_id="Siri",
             message="hello",
@@ -144,10 +144,10 @@ async def test_memu_turn_requests_source_history_for_whatsapp() -> None:
 
     retrieve_payload = captured[0][2]
     turn_payload = captured[1][2]
-    assert captured[0][1] == "whatsapp:dm:15133278228"
-    assert captured[1][1] == "whatsapp:dm:15133278228"
-    assert retrieve_payload["user"]["conversation_id"] == "whatsapp:dm:15133278228"
-    assert turn_payload["user"]["conversation_id"] == "whatsapp:dm:15133278228"
+    assert captured[0][1] == "whatsapp:dm:15133278228@s.whatsapp.net"
+    assert captured[1][1] == "whatsapp:dm:15133278228@s.whatsapp.net"
+    assert retrieve_payload["user"]["conversation_id"] == "whatsapp:dm:15133278228@s.whatsapp.net"
+    assert turn_payload["user"]["conversation_id"] == "whatsapp:dm:15133278228@s.whatsapp.net"
     assert retrieve_payload["load_source_history"] is True
     assert retrieve_payload["is_live_turn"] is True
     assert retrieve_payload["external_message_id"] == "CURRENT"

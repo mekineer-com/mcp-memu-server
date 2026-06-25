@@ -1833,13 +1833,6 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
         user_id = str(row.get("user_id") or "").strip()
         soul_id = str(row.get("soul_id") or "").strip()
         conversation_id = str(row.get("conversation_id") or "").strip()
-        if conversation_id.startswith("whatsapp:") and not conversation_id.startswith(
-            ("whatsapp:dm:", "whatsapp:group:")
-        ):
-            whatsapp_tail = conversation_id.split(":", 1)[1].strip()
-            whatsapp_label = _message_log.derive_source_label(conversation_id)
-            if whatsapp_tail and whatsapp_label in {"whatsapp:dm", "whatsapp:group"}:
-                conversation_id = f"{whatsapp_label}:{whatsapp_tail}"
         user_scope = {"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id}
         follow_up_reason = str(payload.get("follow_up_reason") or "").strip()
         trace_id = uuid.uuid4().hex
@@ -4361,11 +4354,6 @@ async def conversation_retrieve(
     cid = str(conversation_id or "").strip()
     if not cid:
         raise HTTPException(status_code=400, detail="conversation_id is required")
-    if cid.startswith("whatsapp:") and not cid.startswith(("whatsapp:dm:", "whatsapp:group:")):
-        whatsapp_tail = cid.split(":", 1)[1].strip()
-        whatsapp_label = _message_log.derive_source_label(cid)
-        if whatsapp_tail and whatsapp_label in {"whatsapp:dm", "whatsapp:group"}:
-            cid = f"{whatsapp_label}:{whatsapp_tail}"
     try:
         safe = _safe_payload(payload)
         scope = _extract_scope(safe)
@@ -4898,11 +4886,6 @@ async def conversation_turn(
     payload: dict[str, Any] = Body(...),
 ):
     cid = str(conversation_id or "").strip()
-    if cid.startswith("whatsapp:") and not cid.startswith(("whatsapp:dm:", "whatsapp:group:")):
-        whatsapp_tail = cid.split(":", 1)[1].strip()
-        whatsapp_label = _message_log.derive_source_label(cid)
-        if whatsapp_tail and whatsapp_label in {"whatsapp:dm", "whatsapp:group"}:
-            cid = f"{whatsapp_label}:{whatsapp_tail}"
     try:
         if not cid:
             raise HTTPException(status_code=400, detail="conversation_id is required")

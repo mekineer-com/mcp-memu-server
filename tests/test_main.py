@@ -4054,10 +4054,10 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
         "chat_type": "dm",
     }
 
-    out = await main.conversation_retrieve("whatsapp:15133278228", payload)
+    out = await main.conversation_retrieve("whatsapp:dm:15133278228@s.whatsapp.net", payload)
     turn_prompt = str(out.get("turn_user_prompt") or "")
-    assert loaded_source_ids == ["whatsapp:dm:15133278228"]
-    assert out["conversation_id"] == "whatsapp:dm:15133278228"
+    assert loaded_source_ids == ["whatsapp:dm:15133278228@s.whatsapp.net"]
+    assert out["conversation_id"] == "whatsapp:dm:15133278228@s.whatsapp.net"
     assert "My WhatsApp Conversations:" in turn_prompt
     assert "My SillyTavern Conversations:" not in turn_prompt
     assert "[dm][Marcos] \u2190 current chat" in turn_prompt
@@ -4068,7 +4068,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
     assert [row["content"] for row in out.get("turn_history") or []] == [f"msg_{idx:02d}" for idx in range(4, 12)]
     safe = captured["safe"]
     assert isinstance(safe, dict)
-    assert safe["user"]["conversation_id"] == "whatsapp:dm:15133278228"
+    assert safe["user"]["conversation_id"] == "whatsapp:dm:15133278228@s.whatsapp.net"
     query_text = "\n".join(
         str((query.get("content") or {}).get("text") or "")
         for query in safe.get("queries") or []

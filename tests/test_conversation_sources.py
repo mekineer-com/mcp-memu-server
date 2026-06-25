@@ -770,19 +770,6 @@ def test_load_whatsapp_tail_preserves_assistant_sender_name_when_present(tmp_pat
     assert [row["speaker"] for row in rows] == ["Echo", ""]
 
 
-def _write_lid_mapping_files(base_dir: Path, *, phone_local: str, lid_local: str) -> None:
-    session_dir = base_dir / "whatsapp" / "session"
-    session_dir.mkdir(parents=True, exist_ok=True)
-    (session_dir / f"lid-mapping-{phone_local}.json").write_text(
-        json.dumps(lid_local),
-        encoding="utf-8",
-    )
-    (session_dir / f"lid-mapping-{lid_local}_reverse.json").write_text(
-        json.dumps(phone_local),
-        encoding="utf-8",
-    )
-
-
 def test_load_whatsapp_tail_group_collapses_multiple_sessions(tmp_path: Path) -> None:
     sessions_path = tmp_path / "sessions.json"
     state_db_path = tmp_path / "state.db"
@@ -1204,27 +1191,26 @@ def test_load_soul_active_since_rejects_invalid_existing_value(tmp_path: Path) -
         )
 
 
-def test_load_whatsapp_tail_dm_unions_phone_and_lid_sessions(tmp_path: Path) -> None:
+def test_load_whatsapp_tail_dm_keeps_canonical_legacy_sessions_reachable(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     sessions_path = sessions_dir / "sessions.json"
     state_db_path = tmp_path / "state.db"
-    _write_lid_mapping_files(tmp_path, phone_local="15133278228", lid_local="114628432556258")
     sessions_path.write_text(
         json.dumps(
             {
-                "agent:main:whatsapp:dm:15133278228": {
+                "agent:main:whatsapp:dm:114628432556258@lid": {
                     "session_id": "s1",
                     "platform": "whatsapp",
                     "origin": {
                         "platform": "whatsapp",
                         "chat_type": "dm",
-                        "chat_id": "15133278228@s.whatsapp.net",
+                        "chat_id": "114628432556258@lid",
                         "chat_name": "Marcos",
                         "user_name": "Marcos",
                     },
                 },
-                "agent:main:whatsapp:dm:114628432556258": {
+                "agent:main:whatsapp:dm:114628432556258@lid:legacy:s2": {
                     "session_id": "s2",
                     "platform": "whatsapp",
                     "origin": {
@@ -1248,7 +1234,7 @@ def test_load_whatsapp_tail_dm_unions_phone_and_lid_sessions(tmp_path: Path) -> 
     )
 
     rows = conversation_sources.load_whatsapp_tail(
-        conversation_id="whatsapp:dm:15133278228",
+        conversation_id="whatsapp:dm:114628432556258@lid",
         since_cursor=-1,
         recent_fallback_messages=0,
         sessions_index_path=sessions_path,
@@ -1257,16 +1243,15 @@ def test_load_whatsapp_tail_dm_unions_phone_and_lid_sessions(tmp_path: Path) -> 
     assert [row["content"] for row in rows] == ["phone-side", "lid-side"]
 
 
-def test_load_whatsapp_tail_dm_phone_resolves_lid_only_session(tmp_path: Path) -> None:
+def test_load_whatsapp_tail_dm_requires_canonical_lid_id(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     sessions_path = sessions_dir / "sessions.json"
     state_db_path = tmp_path / "state.db"
-    _write_lid_mapping_files(tmp_path, phone_local="447879696252", lid_local="247789598601266")
     sessions_path.write_text(
         json.dumps(
             {
-                "agent:main:whatsapp:dm:247789598601266": {
+                "agent:main:whatsapp:dm:247789598601266@lid": {
                     "session_id": "s_lid_only",
                     "platform": "whatsapp",
                     "origin": {
@@ -1289,8 +1274,17 @@ def test_load_whatsapp_tail_dm_phone_resolves_lid_only_session(tmp_path: Path) -
         ],
     )
 
+    with pytest.raises(RuntimeError, match="no WhatsApp session mapping"):
+        conversation_sources.load_whatsapp_tail(
+            conversation_id="whatsapp:dm:447879696252@s.whatsapp.net",
+            since_cursor=-1,
+            recent_fallback_messages=0,
+            sessions_index_path=sessions_path,
+            state_db_path=state_db_path,
+        )
+
     rows = conversation_sources.load_whatsapp_tail(
-        conversation_id="whatsapp:dm:447879696252",
+        conversation_id="whatsapp:dm:247789598601266@lid",
         since_cursor=-1,
         recent_fallback_messages=0,
         sessions_index_path=sessions_path,
@@ -1419,7 +1413,7 @@ def test_load_whatsapp_web_source_tail_raises_on_initial_read_with_no_matching_r
     web_db = tmp_path / "web_source.db"
     _write_web_source_db(web_db, messages=[])
 
-    with pytest.raises(RuntimeError, match="LID.*phone mapping gap"):
+    with pytest.raises(RuntimeError, match="canonical WhatsApp ID mismatch"):
         conversation_sources.load_whatsapp_web_source_tail(
             conversation_id="whatsapp:dm:99999999999",
             since_cursor=-1,
