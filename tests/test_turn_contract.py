@@ -637,13 +637,13 @@ def test_build_turn_prompt_renders_apimw_message_to_self_under_working_thoughts(
             ]
         },
         all_categories_summary=None,
-        memory_cache=[],
+        memory_cache=["previous thought"],
         intentions_active={},
         apimw_message_to_self="[subconscious] notice this before answering.",
     )
 
     assert "- [subconscious] notice this before answering." not in prompt
-    assert "My Working Thoughts:\n(none yet)\n  [subconscious] notice this before answering." in prompt
+    assert "My Working Thoughts:\n1. previous thought\n2. [subconscious] notice this before answering." in prompt
     assert prompt.index("- [profile] Marcos likes continuity.") < prompt.index("My Working Thoughts:")
 
 

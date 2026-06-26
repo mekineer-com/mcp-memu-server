@@ -743,8 +743,11 @@ def build_turn_context_block(
     memories_block: str | None = None,
 ) -> str:
     cache_lines = format_working_thoughts_lines(memory_cache)
+    working_thought_lines = list(cache_lines)
 
     message_to_self = _text(apimw_message_to_self)
+    if message_to_self:
+        working_thought_lines.append(f"{len(working_thought_lines) + 1}. {message_to_self}")
     if memories_block is None:
         category_paragraph, rendered_memories_block, item_terms = _render_retrieve(
             retrieve_rag,
@@ -802,8 +805,7 @@ def build_turn_context_block(
         rendered_conversations_block,
         "",
         "My Working Thoughts:",
-        "\n".join(cache_lines) if cache_lines else "(none yet)",
-        *([f"  {message_to_self}"] if message_to_self else []),
+        "\n".join(working_thought_lines) if working_thought_lines else "(none yet)",
         "",
         "My Intentions:",
         format_intentions_for_prompt(intentions_active),
