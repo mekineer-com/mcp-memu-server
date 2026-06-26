@@ -821,8 +821,7 @@ def _load_whatsapp_live_rows(
     sessions_index_path: Path | None,
     state_db_path: Path | None,
     min_timestamp: float | None,
-    extra_where: str = "",
-    extra_params: Sequence[Any] = (),
+    after_message_id: int | None = None,
     limit_tail: int | None = None,
 ) -> tuple[list[sqlite3.Row], str, str, dict[str, str], set[str]]:
     sessions_path, db_path = _resolve_hermes_paths(
@@ -857,9 +856,9 @@ def _load_whatsapp_live_rows(
         "AND content IS NOT NULL AND TRIM(content) != ''"
     )
     params: list[Any] = list(session_ids)
-    if extra_where:
-        where += f" {extra_where}"
-        params.extend(extra_params)
+    if after_message_id is not None:
+        where += " AND id > ?"
+        params.append(int(after_message_id))
     if min_timestamp is not None:
         where += " AND timestamp >= ?"
         params.append(float(min_timestamp))
@@ -998,8 +997,7 @@ def load_whatsapp_tail_after_message_id(
         sessions_index_path=sessions_index_path,
         state_db_path=state_db_path,
         min_timestamp=min_timestamp,
-        extra_where="AND id > ?",
-        extra_params=(cursor_id,),
+        after_message_id=cursor_id,
     )
 
     out: list[dict[str, Any]] = []
