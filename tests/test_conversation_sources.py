@@ -1104,6 +1104,7 @@ def test_load_whatsapp_tail_after_message_id_filters_by_row_id(tmp_path: Path) -
         state_db_path=state_db_path,
     )
     assert [row["content"] for row in rows] == ["three"]
+    assert rows[0]["id"] == rows[0]["source_conversation_index"]
     assert rows[0]["source_conversation_index"] > second_id
 
 
