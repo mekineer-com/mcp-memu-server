@@ -20,23 +20,36 @@ from app.db import (
 from app.services import soul_state as _soul_state
 
 
-def _row_value(row: Any, key: str, default: Any = None) -> Any:
-    if row is None:
-        return default
+_MISSING = object()
+
+
+def _row_value(row: Any, key: str) -> Any:
     try:
         return row[key]
     except (KeyError, IndexError, TypeError):
-        return default
+        return _MISSING
 
 
 def effective_digest_cursor_from_row(row: Any) -> int:
-    if row is None or not _row_value(row, "last_memorize_at"):
+    if row is None:
         return -1
-    return int(_row_value(row, "digest_cursor", 0) or 0)
+    last_memorize_at = _row_value(row, "last_memorize_at")
+    if last_memorize_at is _MISSING:
+        raise KeyError("last_memorize_at")
+    if not last_memorize_at:
+        return -1
+    digest_cursor = _row_value(row, "digest_cursor")
+    if digest_cursor is _MISSING:
+        raise KeyError("digest_cursor")
+    return int(digest_cursor or 0)
 
 
 def memorize_chat_from_row(row: Any) -> bool:
+    if row is None:
+        return True
     raw = _row_value(row, "memorize_chat")
+    if raw is _MISSING:
+        raise KeyError("memorize_chat")
     return True if raw is None else bool(int(raw))
 
 

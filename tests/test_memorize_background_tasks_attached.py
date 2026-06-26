@@ -27,6 +27,10 @@ from app import main as main_module
 from app.main import app
 
 
+def _state_response() -> dict:
+    return {"digest_cursor": 0, "last_memorize_at": None, "pending_segment_ids": []}
+
+
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(app)
@@ -289,7 +293,7 @@ def test_force_without_rebuild_does_not_archive_db(
         return db_file
 
     def fake_write_conversation_state(*_a, **_k):
-        return ({}, tmp_path / "fake_state.db")
+        return (_state_response(), tmp_path / "fake_state.db")
 
     async def fake_run(**kwargs) -> None:
         recorded.append({"segment_count": len(kwargs.get("memorize_segments") or [])})
@@ -338,7 +342,7 @@ def test_rebuild_archives_db_and_service_reacquired_after_archive(
         return object()
 
     def fake_write_conversation_state(*_a, **_k):
-        return ({}, tmp_path / "fake_state.db")
+        return (_state_response(), tmp_path / "fake_state.db")
 
     monkeypatch.setattr(main_module, "_get_service_from_payload", fake_get_service)
     monkeypatch.setattr(main_module, "_run_memorize_segments", _noop_run)

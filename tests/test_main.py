@@ -2458,6 +2458,7 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
 
     state_rows: dict[str, dict[str, Any]] = {
         "trigger": {
+            "memorize_chat": True,
             "digest_cursor": -1,
             "pending_segment_ids": [],
             "all_categories_summary": "",
@@ -2561,6 +2562,7 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
 
     state_rows: dict[str, dict[str, Any]] = {
         "trigger": {
+            "memorize_chat": True,
             "digest_cursor": -1,
             "pending_segment_ids": [],
             "all_categories_summary": "",
@@ -2660,6 +2662,7 @@ async def test_run_memorize_segments_fresh_background_context_does_not_write_rol
 
     state_rows: dict[str, dict[str, Any]] = {
         "trigger": {
+            "memorize_chat": True,
             "digest_cursor": -1,
             "pending_segment_ids": [],
             "all_categories_summary": "",

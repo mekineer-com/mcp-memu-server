@@ -23,6 +23,8 @@ from app.services import soul_state as _soul_state
 from app.services.state import (
     conversation_state_from_row,
     conversation_state_row,
+    effective_digest_cursor_from_row,
+    memorize_chat_from_row,
     write_conversation_state,
 )
 
@@ -72,6 +74,17 @@ def test_background_error_fields_round_trip_through_state() -> None:
         assert loaded is not None
         assert loaded["last_background_error"] == state["last_background_error"]
         assert loaded["last_background_error_at"] == now_iso
+
+
+def test_cursor_helpers_fail_on_missing_required_fields() -> None:
+    assert effective_digest_cursor_from_row(None) == -1
+    assert memorize_chat_from_row(None) is True
+    with pytest.raises(KeyError):
+        effective_digest_cursor_from_row({"digest_cursor": 3})
+    with pytest.raises(KeyError):
+        effective_digest_cursor_from_row({"last_memorize_at": "2026-01-01T00:00:00+00:00"})
+    with pytest.raises(KeyError):
+        memorize_chat_from_row({})
 
 
 def test_empty_background_error_state_defaults_to_none() -> None:
