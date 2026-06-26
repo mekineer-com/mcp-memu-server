@@ -3593,7 +3593,7 @@ TURN_HISTORY_WINDOW_MESSAGES = 8
 
 def _turn_history_with_floor(
     history: list[dict[str, Any]],
-    state_row: dict[str, Any],
+    state_row: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     if not history:
         return []
@@ -4420,7 +4420,7 @@ async def conversation_retrieve(
 
         chat_label_for_prompt = _chat_label_for_prompt(safe)
         history_for_ai = _filter_external_message_from_history(
-            _turn_history_with_floor(history, state_row or {}),
+            _turn_history_with_floor(history, state_row),
             safe.get("external_message_id"),
         )
         cross_text = _format_cross_tail_for_ai(cross_tail, soul_id=soul_id) if cross_tail else ""

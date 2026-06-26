@@ -35,6 +35,17 @@ def _messages_table_exists(con: sqlite3.Connection) -> bool:
     return row is not None
 
 
+def _retrieve_state_row() -> dict[str, Any]:
+    return {
+        "memorize_chat": True,
+        "digest_cursor": 0,
+        "last_memorize_at": None,
+        "prior_context": "",
+        "memory_cache": [],
+        "intentions_active": {"items": []},
+    }
+
+
 def test_format_all_chat_history_for_ai_merges_current_and_cross_chats() -> None:
     rendered = main._format_all_chat_history_for_ai(
         current_history=[
@@ -3187,7 +3198,7 @@ async def test_conversation_retrieve_preserves_prebuilt_queries_without_cutoff(
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+        lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
     monkeypatch.setattr(
         main,
@@ -3254,7 +3265,7 @@ async def test_conversation_retrieve_uses_payload_history_for_primary_chat_queri
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+        lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
 
     captured: dict[str, object] = {}
@@ -3436,7 +3447,7 @@ async def test_conversation_retrieve_filters_whatsapp_history_before_prompt(
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+        lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
     monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
     monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: 100.0)
@@ -3501,7 +3512,7 @@ async def test_conversation_retrieve_rebuilds_prebuilt_queries_when_cutoff_activ
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+        lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
     monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
     monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: 100.0)
@@ -3569,7 +3580,7 @@ async def test_live_conversation_retrieve_degrades_source_history_load_failure(
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+        lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
     monkeypatch.setattr(
         main,
@@ -3635,7 +3646,7 @@ async def test_live_conversation_retrieve_degrades_active_since_filter_failure(
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+        lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
     captured: dict[str, Any] = {}
 
@@ -3875,7 +3886,7 @@ async def test_conversation_retrieve_uses_same_payload_history_for_turn_prompt(
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+        lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
@@ -4420,7 +4431,7 @@ async def test_conversation_retrieve_does_not_persist_current_user_message(
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+        lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
@@ -4468,7 +4479,7 @@ async def test_conversation_retrieve_writes_sillytavern_snapshot_not_messages_ta
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+        lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
     monkeypatch.setattr(main, "_get_storage_dir", lambda *_a, **_k: storage_dir)
 
@@ -4546,7 +4557,7 @@ async def test_conversation_retrieve_includes_sillytavern_cross_tail_from_snapsh
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+        lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
     monkeypatch.setattr(main, "_get_storage_dir", lambda *_a, **_k: storage_dir)
 
@@ -4595,7 +4606,7 @@ async def test_conversation_retrieve_preserves_caller_queries(
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"prior_context": "", "memory_cache": [], "intentions_active": {"items": []}}, None, db_path),
+        lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
     monkeypatch.setattr(
         main,
