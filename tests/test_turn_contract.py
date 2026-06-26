@@ -465,6 +465,17 @@ def test_make_turn_system_prompt_includes_time_anchor() -> None:
     assert "2026" in prompt
 
 
+def test_make_turn_system_prompt_hides_activity_recap_by_default() -> None:
+    prompt = make_turn_system_prompt("Siri")
+    assert "activity_recap" not in prompt
+
+
+def test_make_turn_system_prompt_can_include_activity_recap_for_self_turns() -> None:
+    prompt = make_turn_system_prompt("Siri", include_activity_recap=True)
+    assert "- activity_recap: null or string" in prompt
+    assert '"activity_recap": null | "first-person activity recap"' in prompt
+
+
 def test_make_turn_system_prompt_forbids_public_response_when_requested() -> None:
     prompt = make_turn_system_prompt("Siri", allow_public_response=False)
     assert '"response_target":"observe|private"' in prompt

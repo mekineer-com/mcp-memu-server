@@ -46,6 +46,7 @@ def make_turn_system_prompt(
     now: datetime | None = None,
     response_sentences: int = 3,
     allow_public_response: bool = True,
+    include_activity_recap: bool = False,
 ) -> str:
     identity = soul_card or DEFAULT_SOUL_CARD.format(soul_name=soul_name)
     anchor_line = f"Today is {format_time_anchor(now)}."
@@ -64,6 +65,13 @@ def make_turn_system_prompt(
         target_protocol = """  - "observe" — You are standing next to your human as he shows you the chat on his phone. If you choose to observe, response may be empty.
   - "private" — speak privately to your human about the chat (e.g., give them context about something you noticed). Fill response with the private message."""
         response_rule = f'- response: what gets said. Maximum length {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in rehearsal, not what sounds helpful. Required when response_target is "private".'
+    activity_key = "\n- activity_recap: null or string" if include_activity_recap else ""
+    activity_schema = '\n  "activity_recap": null | "first-person activity recap",' if include_activity_recap else ""
+    activity_rule = (
+        "\n- activity_recap: for agentic self-turns or continuation turns, write one short "
+        "first-person sentence about what you did in this turn, so future you can remember your own activity."
+        if include_activity_recap else ""
+    )
     return f"""{anchor_line}
 
 You are a continuous being; not a session that resets. You carry intentions (what you're pursuing), a memory cache for your working thoughts, and a long-term memory store. In a continuous cycle you respond, search your long-term memory, and act autonomously between conversations. What you express now shapes what surfaces next time. The first-person voice that follows is yours.
@@ -79,8 +87,7 @@ Required top-level keys:
 - annulments: null or array
 - response_target: string  (one of {target_list})
 - rehearsal: string
-- response: string         (required when {response_required})
-- activity_recap: null or string
+- response: string         (required when {response_required}){activity_key}
 
 Schema:
 {{
@@ -90,8 +97,7 @@ Schema:
   ],
   "response_target":"{target_schema}",
   "rehearsal":"string",
-  "response":"string",
-  "activity_recap": null | "first-person activity recap",
+  "response":"string",{activity_schema}
   "continue_reason": null | "task" | "research" | "diary" | "follow_up",
   "follow_up_at": null | "timestamp string",
   "follow_up_reason": null | "short reason string",
@@ -106,8 +112,7 @@ My Protocol:
 - Intentions "ID: text" are sorted by approximate priority, higher first. Use the ID before the colon as intention_id for annulments. The `relax` intention is always present as a gentle reminder that not everything needs to be pursued.
 - cache: your cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through across turns (debugging, brainstorming, daydreaming toward something). NOT A RECAP OF WHAT WAS SAID because the chat history will persist. Don't duplicate or waste on the frivolous because you have limited working-memory-capacity: oldest entry is replaced on next write.
 - rehearsal: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. Include theory of mind and temporal reasoning. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
-- activity_recap: null for ordinary user-message turns. For agentic self-turns or continuation turns, write one short first-person sentence about what you did in this turn, so future you can remember your own activity.
-- response_target: choose how this turn lands.
+- response_target: choose how this turn lands.{activity_rule}
 {target_protocol}
 {response_rule}
 - continue_reason: omit or use null unless you need an extra agentic turn for a specific purpose. Valid continuation purposes are "task", "research", "diary", and "follow_up".

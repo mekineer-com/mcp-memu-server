@@ -3908,6 +3908,7 @@ async def test_conversation_retrieve_uses_same_payload_history_for_turn_prompt(
 
     out = await main.conversation_retrieve("whatsapp:dm:Marcos", payload)
     assert out["ok"] is True
+    assert "activity_recap" not in str(out.get("turn_system_prompt") or "")
     turn_prompt = str(out.get("turn_user_prompt") or "")
     assert "payload prior" in turn_prompt
     assert "payload current" in turn_prompt
@@ -5033,6 +5034,7 @@ async def test_conversation_turn_observe_mode_forbids_public_response(
     assert out["response"] == ""
     assert '"response_target":"observe|private"' in captured["system_prompt"]
     assert '"respond"' not in captured["system_prompt"]
+    assert "activity_recap" not in captured["system_prompt"]
 
 
 @pytest.mark.asyncio
@@ -5240,6 +5242,7 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize(
 
     assert len(svc.chat_calls) == 3
     assert all(call["resume_session_id"] == "session-123" for call in svc.chat_calls)
+    assert all("activity_recap" in str(call["system_prompt"]) for call in svc.chat_calls)
 
     con = main._sqlite_connect(db_path)
     try:

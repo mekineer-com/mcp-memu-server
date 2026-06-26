@@ -501,6 +501,15 @@ async def _run_free_turn_chain(
 ) -> None:
     reason = initial_reason
     previous_contract = initial_contract
+    free_turn_system_prompt = system_prompt
+    if "activity_recap" not in free_turn_system_prompt:
+        free_turn_system_prompt = _make_turn_system_prompt(
+            soul_id,
+            soul_card=soul_card,
+            response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
+            allow_public_response=allow_public_response,
+            include_activity_recap=True,
+        )
     try:
         for continuation_index in range(1, 4):
             prompt = _build_free_turn_prompt(
@@ -512,7 +521,7 @@ async def _run_free_turn_chain(
             )
             raw = await service.chat(
                 prompt,
-                system_prompt=system_prompt,
+                system_prompt=free_turn_system_prompt,
                 response_format={"type": "json_object"},
                 op="free_turn",
                 step=f"continue_{continuation_index}",
@@ -4500,6 +4509,7 @@ async def conversation_retrieve(
                     soul_card=soul_card,
                     response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
                     allow_public_response=bool(safe.get("allow_public_response", True)),
+                    include_activity_recap=bool(self_turn_directive),
                 )
                 out["turn_user_prompt"] = _build_turn_prompt(
                     user_message=message,
@@ -5023,6 +5033,7 @@ async def conversation_turn(
             soul_card=soul_card,
             response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
             allow_public_response=allow_public_response,
+            include_activity_recap=bool(self_turn_directive),
         )
         turn_user_prompt = override_user_prompt
 
