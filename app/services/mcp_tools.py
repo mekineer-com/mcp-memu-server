@@ -7,9 +7,6 @@ import uuid
 from fastapi import HTTPException
 from pydantic import BaseModel, model_validator
 
-from app.services import message_log as _message_log
-
-
 class MemuTurnRequest(BaseModel):
     conversation_id: str
     user_id: str

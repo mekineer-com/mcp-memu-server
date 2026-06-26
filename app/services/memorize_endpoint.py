@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import json
-import math
 import time as _time
 import traceback
 from collections.abc import Awaitable, Callable
@@ -274,7 +273,7 @@ async def run_memorize_segments(
         segment_jobs: list[SegmentMemorizeJob] = []
         cancelled = False
         for _seg_idx, (
-            segment_resource_url,
+            _segment_resource_url,
             segment_messages,
             segment_start_index,
             segment_end_index,

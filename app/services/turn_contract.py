@@ -504,7 +504,7 @@ def _render_retrieve(
         legend = format_memory_legend({mt for _, mt, _, _ in item_rows})
         if legend:
             memory_lines.append(legend)
-        for item, memory_type, suffix, summary in item_rows:
+        for item, memory_type, _suffix, summary in item_rows:
             if memory_type == "procedural":
                 domain = _text(item.get("domain")).replace("_", "-") or "procedural"
                 speaker_label = _text(item.get("speaker_label"))

@@ -16,7 +16,6 @@ import sqlite3
 import tempfile
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch, MagicMock
 
 
 def test_parse_consolidation_xml_edges_and_write_helpers() -> None:

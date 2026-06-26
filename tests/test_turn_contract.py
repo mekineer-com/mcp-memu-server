@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from app.services.turn_contract import (
-    _SIRI_WORKSPACE,
     _parse_attachment,
     build_turn_prompt,
     format_relative_time_label,
