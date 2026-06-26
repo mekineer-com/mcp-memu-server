@@ -268,6 +268,24 @@ async def test_turn_launch_apimw_tracks_background_task(monkeypatch: pytest.Monk
     assert all(task not in main._BACKGROUND_TASKS for task in created)
 
 
+def test_turn_launch_apimw_clears_inflight_when_state_load_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    cid = "cid-apimw-load-fails"
+    main._APIMW_INFLIGHT.discard(cid)
+
+    def fail_load(*_args: object, **_kwargs: object):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(main, "_apimw_cadence_from_cfg", lambda *_a, **_k: 1)
+    monkeypatch.setattr(main, "_apimw_cadence_due", lambda *_a, **_k: True)
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fail_load)
+
+    try:
+        assert main._turn_launch_apimw(cid, "u1", "Echo", {}, []) == "failed_to_start"
+        assert cid not in main._APIMW_INFLIGHT
+    finally:
+        main._APIMW_INFLIGHT.discard(cid)
+
+
 @pytest.mark.asyncio
 async def test_shutdown_waits_for_tracked_background_tasks(monkeypatch: pytest.MonkeyPatch) -> None:
     release = asyncio.Event()

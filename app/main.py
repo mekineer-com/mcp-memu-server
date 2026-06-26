@@ -4842,13 +4842,14 @@ def _turn_launch_apimw(
         return "skipped_cadence"
     if not _mark_apimw_inflight(cid):
         return "skipped_inflight"
-    apimw_state_row, _, _apimw_db_path = _load_turn_state_and_soul_card(
-        cid,
-        user_id=uid,
-        soul_id=soul_id,
-    )
-    history_for_ai = _turn_history_with_floor(history_full, apimw_state_row)
+    apimw_task: asyncio.Task | None = None
     try:
+        apimw_state_row, _, _apimw_db_path = _load_turn_state_and_soul_card(
+            cid,
+            user_id=uid,
+            soul_id=soul_id,
+        )
+        history_for_ai = _turn_history_with_floor(history_full, apimw_state_row)
         apimw_task = asyncio.create_task(
             _run_apimw(
                 safe,
@@ -4859,22 +4860,23 @@ def _turn_launch_apimw(
                 current_history=history_for_ai,
             )
         )
+        _BACKGROUND_TASKS.add(apimw_task)
+
+        def _on_apimw_done(task: asyncio.Task) -> None:
+            try:
+                task.result()
+            except Exception:
+                logger.exception("APImw background pipeline failed for %s", cid)
+            finally:
+                _BACKGROUND_TASKS.discard(task)
+                _clear_apimw_inflight(cid)
+
+        apimw_task.add_done_callback(_on_apimw_done)
     except Exception:
-        _clear_apimw_inflight(cid)
+        if apimw_task is None:
+            _clear_apimw_inflight(cid)
         logger.exception("APImw background pipeline failed to start for %s", cid)
         return "failed_to_start"
-    _BACKGROUND_TASKS.add(apimw_task)
-
-    def _on_apimw_done(task: asyncio.Task) -> None:
-        try:
-            task.result()
-        except Exception:
-            logger.exception("APImw background pipeline failed for %s", cid)
-        finally:
-            _BACKGROUND_TASKS.discard(task)
-            _clear_apimw_inflight(cid)
-
-    apimw_task.add_done_callback(_on_apimw_done)
     return "started"
 
 
