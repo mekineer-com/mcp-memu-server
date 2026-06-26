@@ -19,6 +19,27 @@ from app.db import (
 )
 from app.services import soul_state as _soul_state
 
+
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    if row is None:
+        return default
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+def effective_digest_cursor_from_row(row: Any) -> int:
+    if row is None or not _row_value(row, "last_memorize_at"):
+        return -1
+    return int(_row_value(row, "digest_cursor", 0) or 0)
+
+
+def memorize_chat_from_row(row: Any) -> bool:
+    raw = _row_value(row, "memorize_chat")
+    return True if raw is None else bool(int(raw))
+
+
 def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
@@ -28,7 +49,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "conversation_id": row["conversation_id"],
         "soul_id": row["soul_id"],
         "user_id": row["user_id"],
-        "memorize_chat": bool(int(row["memorize_chat"])) if "memorize_chat" in row.keys() and row["memorize_chat"] is not None else True,
+        "memorize_chat": memorize_chat_from_row(row),
         "digest_cursor": max(0, digest_cursor),
         "rolling_summary": (
             (str(row["rolling_summary"] or "").strip() or None)

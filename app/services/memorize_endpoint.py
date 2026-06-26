@@ -14,6 +14,7 @@ from fastapi import BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 
 from app.services.payload import _parse_turn_ts_ms
+from app.services.state import effective_digest_cursor_from_row, memorize_chat_from_row
 
 
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
@@ -497,8 +498,7 @@ async def run_memorize_segments(
                         user_id=uid,
                         soul_id=soul_id,
                     )
-                    memorize_raw = fresh_row.get("memorize_chat")
-                    memorize_chat = True if memorize_raw is None else bool(int(memorize_raw))
+                    memorize_chat = memorize_chat_from_row(fresh_row)
                     if not memorize_chat:
                         ctx.write_conversation_state(
                             fc_cid,
@@ -1094,8 +1094,7 @@ async def memorize_endpoint(
                     user_id=uid,
                     updates={},
                 )
-                if state_out.get("last_memorize_at"):
-                    processed_cursor = int(state_out.get("digest_cursor") or 0)
+                processed_cursor = effective_digest_cursor_from_row(state_out)
                 raw_pending_ids = state_out.get("pending_segment_ids")
                 has_pending_segments = isinstance(raw_pending_ids, list) and any(
                     str(item).strip() for item in raw_pending_ids

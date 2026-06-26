@@ -100,6 +100,8 @@ from app.services.state import (
     conversation_state_empty as _conversation_state_empty,
     conversation_state_from_row as _conversation_state_from_row_impl,
     conversation_state_row as _conversation_state_row,
+    effective_digest_cursor_from_row as _effective_digest_cursor_from_row,
+    memorize_chat_from_row as _memorize_chat_from_row,
     write_conversation_state as _write_conversation_state_impl,
 )
 from app.services.turn_contract import (
@@ -1365,7 +1367,7 @@ def _load_activity_tail_for_ai(
         "SELECT digest_cursor, last_memorize_at FROM conversations WHERE conversation_id = ?",
         (activity_cid,),
     ).fetchone()
-    cursor = int(row["digest_cursor"] or 0) if row is not None and row["last_memorize_at"] else -1
+    cursor = _effective_digest_cursor_from_row(row)
     return _activity_message_rows(
         con,
         user_id=user_id,
@@ -3219,7 +3221,7 @@ def _load_cross_tail_from_sources(
         if cid.startswith("activity:"):
             continue
         source_label = _message_log.derive_source_label(cid)
-        cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
+        cursor = _effective_digest_cursor_from_row(row)
         display_start = row["last_display_segment_start_index"]
         display_end = row["last_display_segment_end_index"]
         if row["last_memorize_at"] and (display_start is None or display_end is None):
@@ -3449,7 +3451,7 @@ def _load_cross_memorize_tails_from_sources(
             continue
         try:
             if cid.startswith("activity:"):
-                cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
+                cursor = _effective_digest_cursor_from_row(row)
                 tail = _activity_message_rows(
                     con,
                     user_id=user_id,
@@ -3460,9 +3462,9 @@ def _load_cross_memorize_tails_from_sources(
                 if tail:
                     tails[cid] = tail
                 continue
-            memorize_chat = True if row["memorize_chat"] is None else bool(int(row["memorize_chat"]))
+            memorize_chat = _memorize_chat_from_row(row)
             if memorize_chat:
-                cursor = int(row["digest_cursor"] or 0) if row["last_memorize_at"] else -1
+                cursor = _effective_digest_cursor_from_row(row)
                 tail = _load_tail_for_source_conversation(
                     conversation_id=cid,
                     user_id=user_id,
@@ -3571,7 +3573,7 @@ def _read_background_rolling_summaries_from_conversations(
         cid = str(row["conversation_id"] or "").strip()
         if not cid or cid == excluded_id:
             continue
-        memorize_chat = True if row["memorize_chat"] is None else bool(int(row["memorize_chat"]))
+        memorize_chat = _memorize_chat_from_row(row)
         if memorize_chat:
             continue
         summary = str(row["rolling_summary"] or "").strip()
@@ -3595,7 +3597,7 @@ def _turn_history_with_floor(
 ) -> list[dict[str, Any]]:
     if not history:
         return []
-    digest_cursor = int(state_row.get("digest_cursor") or 0) if state_row.get("last_memorize_at") else -1
+    digest_cursor = _effective_digest_cursor_from_row(state_row)
     return _conversation_sources.slice_tail_with_floor(
         history,
         since_cursor=digest_cursor,
@@ -4714,11 +4716,7 @@ def _turn_state_read(
     soul_card = request_soul_card or soul_card
     memory_cache_before = list(state_override_cache)
     intentions_before = _normalize_intentions_stack_impl(state_override_intentions)
-    unmemorized_digest_cursor = (
-        conversation_state.get("digest_cursor")
-        if conversation_state.get("last_memorize_at")
-        else -1
-    )
+    unmemorized_digest_cursor = _effective_digest_cursor_from_row(conversation_state)
     chat_is_primary = bool(conversation_state.get("memorize_chat", True))
     primary_history = history_full if chat_is_primary else []
     unmemorized_tokens = _estimate_unmemorized_tokens(primary_history, unmemorized_digest_cursor)
