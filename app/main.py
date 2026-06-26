@@ -5216,7 +5216,11 @@ async def conversation_turn(
         if queued_memorize_payload is not None:
             marker = _memorize_lock_key(uid, soul_id)
             if _mark_inflight(_FORCED_MEMORIZE_INFLIGHT, marker):
-                _t = asyncio.create_task(_run_forced_memorize_from_turn(queued_memorize_payload))
+                try:
+                    _t = asyncio.create_task(_run_forced_memorize_from_turn(queued_memorize_payload))
+                except Exception:
+                    _clear_inflight(_FORCED_MEMORIZE_INFLIGHT, marker)
+                    raise
                 _BACKGROUND_TASKS.add(_t)
                 forced_memorize_scheduled = True
 
