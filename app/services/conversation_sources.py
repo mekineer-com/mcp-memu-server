@@ -44,13 +44,17 @@ def _normalize_whatsapp_match_token(value: str) -> str:
     return f"{local}@{domain}" if local and domain else raw
 
 
+def _hermes_base(hermes_home: Path | None = None) -> Path:
+    return (hermes_home or Path(os.getenv("HERMES_HOME") or "~/.hermes")).expanduser().resolve()
+
+
 def _resolve_hermes_paths(
     *,
     hermes_home: Path | None = None,
     sessions_index_path: Path | None = None,
     state_db_path: Path | None = None,
 ) -> tuple[Path, Path]:
-    base = (hermes_home or Path(os.getenv("HERMES_HOME") or "~/.hermes")).expanduser().resolve()
+    base = _hermes_base(hermes_home)
     sessions_path = sessions_index_path or (base / "sessions" / "sessions.json")
     db_path = state_db_path or (base / "state.db")
     return sessions_path, db_path
@@ -388,8 +392,7 @@ def _contact_name(row: sqlite3.Row, prefix: str) -> str:
 def _web_source_db_path(*, hermes_home: Path | None, web_source_db_path: Path | None) -> Path:
     if web_source_db_path is not None:
         return web_source_db_path.expanduser().resolve()
-    base = (hermes_home or Path(os.getenv("HERMES_HOME") or "~/.hermes")).expanduser().resolve()
-    return base / "whatsapp" / "web_source.db"
+    return _hermes_base(hermes_home) / "whatsapp" / "web_source.db"
 
 
 def _web_source_chat_match(
