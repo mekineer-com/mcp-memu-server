@@ -498,11 +498,12 @@ async def _run_free_turn_chain(
     allow_public_response: bool,
     safe_payload: dict[str, Any],
     soul_card: str | None,
+    system_prompt_has_activity_recap: bool = False,
 ) -> None:
     reason = initial_reason
     previous_contract = initial_contract
     free_turn_system_prompt = system_prompt
-    if "activity_recap" not in free_turn_system_prompt:
+    if not system_prompt_has_activity_recap:
         free_turn_system_prompt = _make_turn_system_prompt(
             soul_id,
             soul_card=soul_card,
@@ -591,6 +592,7 @@ def _queue_free_turn_chain(
     allow_public_response: bool,
     safe_payload: dict[str, Any],
     soul_card: str | None,
+    system_prompt_has_activity_recap: bool = False,
 ) -> bool:
     marker = f"{user_id}::{soul_id}"
     if not _mark_inflight(_FREE_TURN_INFLIGHT, marker):
@@ -610,6 +612,7 @@ def _queue_free_turn_chain(
             allow_public_response=allow_public_response,
             safe_payload=safe_payload,
             soul_card=soul_card,
+            system_prompt_has_activity_recap=system_prompt_has_activity_recap,
         )
     )
     _BACKGROUND_TASKS.add(task)
@@ -5155,6 +5158,7 @@ async def conversation_turn(
                         allow_public_response=allow_public_response,
                         safe_payload=safe,
                         soul_card=soul_card,
+                        system_prompt_has_activity_recap=bool(self_turn_directive),
                     )
                 else:
                     logger.warning("free_turn: continuation requested but claude_code is disabled")

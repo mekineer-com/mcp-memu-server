@@ -5232,7 +5232,7 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize(
                 "response": "",
                 "rehearsal": "starting",
             },
-            system_prompt="system",
+            system_prompt="system mentioning activity_recap by accident",
             allow_public_response=True,
             safe_payload={},
             soul_card=None,
@@ -5242,7 +5242,7 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize(
 
     assert len(svc.chat_calls) == 3
     assert all(call["resume_session_id"] == "session-123" for call in svc.chat_calls)
-    assert all("activity_recap" in str(call["system_prompt"]) for call in svc.chat_calls)
+    assert all("first-person activity recap" in str(call["system_prompt"]) for call in svc.chat_calls)
 
     con = main._sqlite_connect(db_path)
     try:
