@@ -59,6 +59,7 @@ from app.db import (
     sqlite_table_columns as _sqlite_table_columns,
 )
 from app.services import admin_routes as _admin_routes
+from app.services import activity_messages as _activity_messages
 from app.services.consolidation import (
     ConsolidationDeps,
     gather_consolidation_inputs as _gather_consolidation_inputs,
@@ -1302,28 +1303,11 @@ INSERT INTO whatsapp_pending_outbounds (
 
 
 def _activity_conversation_id(soul_id: str) -> str:
-    return f"activity:dm:{str(soul_id or '').strip() or 'soul'}"
+    return _activity_messages.activity_conversation_id(soul_id)
 
 
 def _ensure_activity_messages_schema(con: sqlite3.Connection) -> None:
-    con.execute(
-        """
-CREATE TABLE IF NOT EXISTS activity_messages (
-    source_conversation_index INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    soul_id TEXT NOT NULL,
-    conversation_id TEXT NOT NULL,
-    speaker TEXT NOT NULL,
-    content TEXT NOT NULL,
-    received_at TEXT NOT NULL
-)
-"""
-    )
-    con.execute(
-        "CREATE INDEX IF NOT EXISTS idx_activity_messages_scope "
-        "ON activity_messages(user_id, soul_id, source_conversation_index)"
-    )
-    con.commit()
+    _activity_messages.ensure_activity_messages_schema(con)
 
 
 def _activity_message_rows(
@@ -1334,34 +1318,10 @@ def _activity_message_rows(
     since_cursor: int,
     recent_fallback_messages: int,
 ) -> list[dict[str, Any]]:
-    _ensure_activity_messages_schema(con)
-    rows = con.execute(
-        """
-SELECT source_conversation_index, conversation_id, speaker, content, received_at
-FROM activity_messages
-WHERE user_id = ? AND soul_id = ?
-ORDER BY source_conversation_index ASC
-""",
-        (user_id, soul_id),
-    ).fetchall()
-    messages = [
-        {
-            "conversation_id": row["conversation_id"],
-            "source_conversation_id": row["conversation_id"],
-            "source_conversation_index": int(row["source_conversation_index"]),
-            "source_label": "activity",
-            "role": "assistant",
-            "speaker": row["speaker"],
-            "name": row["speaker"],
-            "chat_name": row["speaker"],
-            "content": row["content"],
-            "received_at": row["received_at"],
-            "memorize_chat": True,
-        }
-        for row in rows
-    ]
-    return _conversation_sources.slice_tail_with_floor(
-        messages,
+    return _activity_messages.activity_message_rows(
+        con,
+        user_id=user_id,
+        soul_id=soul_id,
         since_cursor=since_cursor,
         recent_fallback_messages=recent_fallback_messages,
     )
@@ -1373,18 +1333,10 @@ def _load_activity_tail_for_ai(
     user_id: str,
     soul_id: str,
 ) -> list[dict[str, Any]]:
-    _sqlite_ensure_conversation_state_schema(con)
-    activity_cid = _activity_conversation_id(soul_id)
-    row = con.execute(
-        "SELECT digest_cursor, last_memorize_at FROM conversations WHERE conversation_id = ?",
-        (activity_cid,),
-    ).fetchone()
-    cursor = _effective_digest_cursor_from_row(row)
-    return _activity_message_rows(
+    return _activity_messages.load_activity_tail_for_ai(
         con,
         user_id=user_id,
         soul_id=soul_id,
-        since_cursor=cursor,
         recent_fallback_messages=TURN_HISTORY_WINDOW_MESSAGES,
     )
 
@@ -1396,53 +1348,18 @@ def _record_activity_message(
     recap: str,
     happened_at: datetime | None = None,
 ) -> bool:
-    text = str(recap or "").strip()
-    uid = str(user_id or "").strip()
-    sid = str(soul_id or "").strip()
-    if not uid or not sid or not text:
-        return False
-    db_path = _sqlite_current_path(uid, sid)
-    if db_path is None:
-        logger.warning("activity recap skipped: sqlite path unavailable")
-        return False
-    _sqlite_ensure_nonempty(db_path)
-    activity_cid = _activity_conversation_id(sid)
-    now_iso = (happened_at or datetime.now(UTC)).astimezone(UTC).isoformat()
-    con = _sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        _sqlite_ensure_conversation_state_schema(con)
-        _ensure_activity_messages_schema(con)
-        con.execute(
-            """
-INSERT OR IGNORE INTO conversations (
-    conversation_id, soul_id, user_id, memorize_chat, digest_cursor, updated_at
-) VALUES (?, ?, ?, 1, 0, ?)
-""",
-            (activity_cid, sid, uid, now_iso),
-        )
-        con.execute(
-            """
-INSERT INTO activity_messages (
-    user_id, soul_id, conversation_id, speaker, content, received_at
-) VALUES (?, ?, ?, ?, ?, ?)
-""",
-            (uid, sid, activity_cid, sid, text, now_iso),
-        )
-        con.commit()
-        return True
-    finally:
-        con.close()
+    return _activity_messages.record_activity_message(
+        user_id=user_id,
+        soul_id=soul_id,
+        recap=recap,
+        happened_at=happened_at,
+        sqlite_current_path=_sqlite_current_path,
+        logger=logger,
+    )
 
 
 def _activity_recap_from_contract(contract: dict[str, Any]) -> str:
-    recap = str(contract.get("activity_recap") or "").strip()
-    if recap:
-        return recap
-    cache_entry = str(contract.get("cache_entry") or "").strip()
-    if cache_entry:
-        return cache_entry
-    return str(contract.get("rehearsal") or "").strip()
+    return _activity_messages.activity_recap_from_contract(contract)
 
 
 def _claim_whatsapp_outbounds(
