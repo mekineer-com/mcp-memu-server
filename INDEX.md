@@ -7,7 +7,7 @@
 
 ```
 mcp-memu-server/
-├── app/main.py              # Core orchestration + remaining endpoints (~3,000 lines)
+├── app/main.py              # Core orchestration + remaining endpoints, including graph `/graph`, `/memory/{id}`, `/category/{id}` wrappers
 ├── app/config.py            # Runtime config load/save/mask + path + sqlite DSN helpers
 ├── app/db.py                # SQLite helpers, schema ensures, JSON marshalling
 ├── app/database.py          # SQLAlchemy async engine + session factory

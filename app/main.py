@@ -4425,6 +4425,38 @@ async def memory_graph_item_update(
     return item
 
 
+@app.patch("/category/{category_id}", operation_id="memory_graph_category_update")
+async def memory_graph_category_update(
+    category_id: str,
+    user_id: str,
+    soul_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    summary = payload.get("summary")
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    if not isinstance(summary, str) or not summary.strip():
+        raise HTTPException(status_code=400, detail="summary is required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    try:
+        item = await svc.graph_update_category_summary(
+            category_id,
+            summary=summary,
+            where=scope,
+            edited_by=payload.get("edited_by") if isinstance(payload.get("edited_by"), str) else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KeyError:
+        item = None
+    if item is None:
+        raise HTTPException(status_code=404, detail="category not found")
+    return item
+
+
 @app.post("/conversation/{conversation_id}/retrieve", operation_id="conversation_retrieve")
 async def conversation_retrieve(
     conversation_id: str,

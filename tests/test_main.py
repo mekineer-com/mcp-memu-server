@@ -2910,6 +2910,38 @@ def test_memory_graph_item_update_endpoint_uses_scoped_service(monkeypatch: pyte
     assert calls["edited_by"] == "surfer"
 
 
+def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPatch):
+    calls: dict[str, object] = {}
+
+    class _Svc:
+        async def graph_update_category_summary(self, item_id, *, summary, where, edited_by):
+            calls["item_id"] = item_id
+            calls["summary"] = summary
+            calls["where"] = where
+            calls["edited_by"] = edited_by
+            return {"id": f"category:{item_id}", "summary": summary}
+
+    def _fake_service(payload):
+        calls["payload"] = payload
+        return _Svc()
+
+    monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
+
+    out = asyncio.run(
+        main.memory_graph_category_update(
+            category_id="c1",
+            user_id="u",
+            soul_id="s",
+            payload={"summary": "new", "edited_by": "surfer"},
+        )
+    )
+
+    assert out == {"id": "category:c1", "summary": "new"}
+    assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}
+    assert calls["where"] == {"user_id": "u", "soul_id": "s"}
+    assert calls["edited_by"] == "surfer"
+
+
 def test_validate_relationship_speaker_id_rejects_reserved_prefixes():
     assert crud_endpoints._validate_relationship_speaker_id("entity:brother") == "brother"
     with pytest.raises(main.HTTPException):
