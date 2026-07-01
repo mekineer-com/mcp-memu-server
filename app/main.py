@@ -4360,6 +4360,39 @@ async def timeline(
     }
 
 
+@app.get("/graph", operation_id="memory_graph")
+async def memory_graph(
+    user_id: str,
+    soul_id: str,
+    limit: int = 200,
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    return svc.graph_recent(where=scope, limit=limit)
+
+
+@app.get("/memory/{item_id}", operation_id="memory_graph_item")
+async def memory_graph_item(
+    item_id: str,
+    user_id: str,
+    soul_id: str,
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    item = svc.graph_memory(item_id, where=scope)
+    if item is None:
+        raise HTTPException(status_code=404, detail="memory not found")
+    return item
+
+
 @app.post("/conversation/{conversation_id}/retrieve", operation_id="conversation_retrieve")
 async def conversation_retrieve(
     conversation_id: str,

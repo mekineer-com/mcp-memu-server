@@ -2834,6 +2834,50 @@ def test_timeline_endpoint_returns_entity_edges(monkeypatch: pytest.MonkeyPatch)
     assert triple_repo.captured_as_of is not None
 
 
+def test_memory_graph_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPatch):
+    calls: dict[str, object] = {}
+
+    class _Svc:
+        def graph_recent(self, *, where, limit):
+            calls["where"] = where
+            calls["limit"] = limit
+            return {"nodes": [], "edges": [], "limit": limit, "count": 0}
+
+    def _fake_service(payload):
+        calls["payload"] = payload
+        return _Svc()
+
+    monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
+
+    out = asyncio.run(main.memory_graph(user_id="u", soul_id="s", limit=25))
+
+    assert out["limit"] == 25
+    assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}
+    assert calls["where"] == {"user_id": "u", "soul_id": "s"}
+
+
+def test_memory_graph_item_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPatch):
+    calls: dict[str, object] = {}
+
+    class _Svc:
+        def graph_memory(self, item_id, *, where):
+            calls["item_id"] = item_id
+            calls["where"] = where
+            return {"id": item_id}
+
+    def _fake_service(payload):
+        calls["payload"] = payload
+        return _Svc()
+
+    monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
+
+    out = asyncio.run(main.memory_graph_item(item_id="memory:m1", user_id="u", soul_id="s"))
+
+    assert out == {"id": "memory:m1"}
+    assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}
+    assert calls["where"] == {"user_id": "u", "soul_id": "s"}
+
+
 def test_validate_relationship_speaker_id_rejects_reserved_prefixes():
     assert crud_endpoints._validate_relationship_speaker_id("entity:brother") == "brother"
     with pytest.raises(main.HTTPException):
