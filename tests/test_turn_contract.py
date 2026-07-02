@@ -375,6 +375,7 @@ def test_build_turn_prompt_includes_core_sections():
     )
     assert "My SillyTavern Conversations:" in prompt
     assert "Prior Context:" in prompt
+    assert prompt.count("Prior Context:") == 1
     assert "[Goals] wants progress" in prompt
     assert "My Working Thoughts:" in prompt
     assert "My Intentions:" in prompt

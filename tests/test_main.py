@@ -46,6 +46,35 @@ def _retrieve_state_row() -> dict[str, Any]:
     }
 
 
+def test_turn_state_write_consumes_prior_context_after_successful_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {
+                "prior_context": "APImw memory line",
+                "memory_cache": [],
+                "intentions_active": {"items": []},
+            },
+            None,
+            None,
+        ),
+    )
+
+    def _write_state(*_args: Any, **kwargs: Any) -> tuple[dict[str, Any], None]:
+        captured.update(kwargs["updates"])
+        return dict(captured), None
+
+    monkeypatch.setattr(main, "_write_conversation_state", _write_state)
+
+    state, _ = main._turn_state_write("conv", "user", "soul", "", [], [])
+
+    assert captured["prior_context"] is None
+    assert state["prior_context"] is None
+
+
 def test_format_all_chat_history_for_ai_merges_current_and_cross_chats() -> None:
     rendered = main._format_all_chat_history_for_ai(
         current_history=[
@@ -4075,6 +4104,45 @@ async def test_conversation_retrieve_uses_sillytavern_floor_after_memorize(
     assert "msg_12" in turn_prompt
     assert "msg_05" in turn_prompt
     assert "msg_04" not in turn_prompt
+
+
+@pytest.mark.asyncio
+async def test_conversation_retrieve_does_not_consume_prior_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"digest_cursor": 0, "last_memorize_at": None, "all_categories_summary": ""},
+            None,
+            db_path,
+        ),
+    )
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "prior_context": "APImw memory line"}
+
+    def _write_state(*_args: Any, **_kwargs: Any) -> tuple[dict[str, Any], Path]:
+        raise AssertionError("conversation_retrieve must not consume prior_context")
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+    monkeypatch.setattr(main, "_write_conversation_state", _write_state)
+
+    out = await main.conversation_retrieve(
+        "integrity:chat-1",
+        {
+            "user": {"user_id": "u1", "soul_id": "Echo"},
+            "message": "hello",
+            "query": "hello",
+            "history": [{"role": "user", "content": "hello"}],
+            "build_turn_prompt": True,
+        },
+    )
+
+    assert "APImw memory line" in str(out.get("turn_user_prompt") or "")
 
 
 @pytest.mark.asyncio

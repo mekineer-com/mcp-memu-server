@@ -3143,6 +3143,7 @@ def _turn_state_write(
         updates["append_retrieval_ids_since_consolidation"] = retrieval_ids_since_consolidation
     if isinstance(memorize_chat, bool):
         updates["memorize_chat"] = memorize_chat
+    updates["prior_context"] = None
     updates["apimw_message_to_self"] = None
     state_out, state_path = _write_conversation_state(
         cid,
