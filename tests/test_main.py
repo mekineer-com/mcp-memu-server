@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from app import main
-from app.services import conversation_sources, crud_endpoints
+from app.services import conversation_sources, crud_endpoints, retrieve_orchestration
 
 
 def _use_hermes_state_whatsapp(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -73,6 +73,141 @@ def test_turn_state_write_consumes_prior_context_after_successful_turn(monkeypat
 
     assert captured["prior_context"] is None
     assert state["prior_context"] is None
+
+
+@pytest.mark.asyncio
+async def test_atomic_session_start_returns_context_without_turn_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    state_row = {
+        "prior_context": "APImw memory line",
+        "memory_cache": ["working thought"],
+        "intentions_active": {"items": []},
+        "all_categories_summary": "Category summary",
+        "apimw_message_to_self": "[subconscious] quiet note",
+    }
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (state_row, "Siri card", None),
+    )
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        assert safe.get("_read_only_retrieve") is True
+        assert safe.get("mental_health_addon") is False
+        return {
+            "ok": True,
+            "result": {"items": [], "categories": [], "resources": []},
+            "conversation_id": conversation_id,
+            "prior_context": "APImw memory line",
+            "memory_cache": ["working thought"],
+            "intentions_active": {"items": []},
+            "retrieve_ms": 1,
+        }
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    out = await main.atomic_session_start(
+        main.AtomicSessionStartRequest(user_id="Marcos", soul_id="Siri", conversation_id="atomic-uuid")
+    )
+
+    assert out["conversation_id"] == "chat:atomic-atomic-uuid"
+    snapshot = str(out["snapshot_text"])
+    assert "Siri card" in snapshot
+    assert "Prior Context:" in snapshot
+    assert "APImw memory line" in snapshot
+    assert "My Working Thoughts:" in snapshot
+    assert "Return STRICT JSON only" not in snapshot
+    assert "response_target" not in snapshot
+    assert "**remember maximum lengths and response schema**" not in snapshot
+
+
+@pytest.mark.asyncio
+async def test_conversation_retrieve_read_only_skips_sillytavern_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
+    )
+    monkeypatch.setattr(
+        main._conversation_sources,
+        "persist_sillytavern_history_snapshot",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("snapshot write must be suppressed")),
+    )
+
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    out = await main.conversation_retrieve(
+        "chat:atomic-1",
+        {
+            "user": {"user_id": "u1", "soul_id": "Echo"},
+            "message": "latest",
+            "query": "latest",
+            "history": [{"role": "user", "content": "latest"}],
+            "queries": [{"role": "message", "content": {"text": "latest"}}],
+            "_read_only_retrieve": True,
+        },
+    )
+
+    assert out["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_retrieve_read_only_skips_state_write_and_procedural_ingest(tmp_path: Path) -> None:
+    class FakeService:
+        async def retrieve(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {"needs_retrieval": True, "mental_health_query": "grounding"}
+
+        async def embed(self, *_args: Any, **_kwargs: Any) -> list[list[float]]:
+            return [[0.0]]
+
+    class FakeProcedural:
+        async def ingest(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("procedural ingest must be suppressed")
+
+        def lookup(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+            return []
+
+    out = await retrieve_orchestration._run_retrieve(
+        {
+            "user": {"user_id": "u", "soul_id": "s"},
+            "query": "hello",
+            "_read_only_retrieve": True,
+        },
+        conversation_id="chat:atomic-1",
+        safe_payload=lambda p: dict(p),
+        extract_conversation_id=lambda _p: None,
+        get_service_from_payload=lambda _p: FakeService(),
+        parse_as_of_datetime=lambda _v: None,
+        sqlite_current_path=lambda *_a, **_k: None,
+        sqlite_connect=lambda *_a, **_k: None,
+        sqlite_ensure_conversation_state_schema=lambda *_a, **_k: None,
+        conversation_state_from_row=lambda *_a, **_k: None,
+        conversation_state_row=lambda *_a, **_k: None,
+        write_conversation_state=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("state write must be suppressed")),
+        procedural_module=FakeProcedural(),
+        procedural_yaml_dir=lambda _cfg: tmp_path,
+        procedural_db_path=lambda _cfg: tmp_path / "procedural.db",
+        procedural_should_ingest=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("ingest check must be suppressed")),
+        config={"retrieve": {"mental_health_query": True}},
+        logger=SimpleNamespace(exception=lambda *_a, **_k: None),
+    )
+
+    assert out["ok"] is True
 
 
 def test_format_all_chat_history_for_ai_merges_current_and_cross_chats() -> None:

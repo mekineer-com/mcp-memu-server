@@ -201,6 +201,7 @@ async def _run_retrieve(
     trace_id = _extract_trace_id(safe)
     as_of = parse_as_of_datetime(safe.get("as_of"))
     mental_health_enabled = _mental_health_query_enabled(safe, config)
+    read_only_retrieve = bool(safe.get("_read_only_retrieve", False))
 
     soul_id = str((scope or {}).get("soul_id") or "").strip()
     user_id = str((scope or {}).get("user_id") or "user").strip() or "user"
@@ -241,7 +242,7 @@ async def _run_retrieve(
         if mh_query:
             yaml_dir = procedural_yaml_dir(config)
             procedural_db = procedural_db_path(config)
-            if procedural_should_ingest(procedural_db, yaml_dir):
+            if not read_only_retrieve and procedural_should_ingest(procedural_db, yaml_dir):
                 try:
                     await procedural_module.ingest(svc, procedural_db, yaml_dir)
                 except Exception:
@@ -267,7 +268,12 @@ async def _run_retrieve(
             except Exception:
                 logger.exception("procedural lookup failed")
 
-    if scoped_conversation_id and soul_id and retrieve_result.get("needs_retrieval"):
+    if (
+        scoped_conversation_id
+        and soul_id
+        and retrieve_result.get("needs_retrieval")
+        and not read_only_retrieve
+    ):
         write_conversation_state(
             scoped_conversation_id,
             soul_id=soul_id,

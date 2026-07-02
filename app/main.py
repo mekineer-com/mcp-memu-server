@@ -150,6 +150,15 @@ async def _app_lifespan(_app: FastAPI):
 
 app = FastAPI(title="mcp-memu-server", version="0.4.0", lifespan=_app_lifespan)
 
+
+class AtomicSessionStartRequest(BaseModel):
+    user_id: str
+    soul_id: str
+    conversation_id: str | None = None
+    message: str | None = None
+    soul_card: str | None = None
+    debug: bool = False
+
 _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 8000
@@ -2695,6 +2704,7 @@ async def conversation_retrieve(
         scope = _extract_scope(safe)
         uid = str(scope.get("user_id") or "").strip()
         soul_id = str(scope.get("soul_id") or "").strip()
+        build_atomic_snapshot = bool(safe.get("build_atomic_snapshot", False))
         if uid and soul_id:
             safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
             safe["conversation_id"] = cid
@@ -2702,6 +2712,10 @@ async def conversation_retrieve(
         self_turn_directive = _pick_str(safe, "self_turn_directive") or ""
         self_turn_label = _pick_str(safe, "self_turn_label") or ""
         retrieve_focus = self_turn_directive or message
+        if build_atomic_snapshot and not retrieve_focus:
+            retrieve_focus = "Atomic memory workspace"
+            if safe.get("queries") is None:
+                safe["query"] = retrieve_focus
         current_whatsapp_active_since = _current_whatsapp_active_since_for_soul(cid, soul_id)
         is_live_turn = bool(safe.get("is_live_turn")) and _message_log.derive_source_label(cid).startswith("whatsapp:")
         history = _prepare_current_whatsapp_history(
@@ -2724,7 +2738,12 @@ async def conversation_retrieve(
         state_row: dict[str, Any] | None = None
         cross_tail: list[dict[str, Any]] = []
         if uid and soul_id and retrieve_focus.strip():
-            if _message_log.derive_source_label(cid) == "sillytavern" and history and message.strip():
+            if (
+                _message_log.derive_source_label(cid) == "sillytavern"
+                and history
+                and message.strip()
+                and not bool(safe.get("_read_only_retrieve", False))
+            ):
                 _conversation_sources.persist_sillytavern_history_snapshot(
                     storage_dir=_get_storage_dir(_CONFIG),
                     user_id=uid,
@@ -2796,6 +2815,54 @@ async def conversation_retrieve(
             )
 
         out = await _run_retrieve(safe, conversation_id=cid)
+
+        if build_atomic_snapshot:
+            scope = _extract_scope(safe)
+            uid = str(scope.get("user_id") or "").strip()
+            soul_id = str(scope.get("soul_id") or "").strip()
+            if uid and soul_id:
+                _state_row, soul_card, _db_path = _load_turn_state_and_soul_card(
+                    cid,
+                    user_id=uid,
+                    soul_id=soul_id,
+                )
+                payload_soul_card = str(safe.get("soul_card") or "").strip() or None
+                soul_card = payload_soul_card or soul_card
+                response_chat_history_for_ai = _format_all_chat_history_for_ai(
+                    current_history=history_for_ai,
+                    cross_tail=cross_tail,
+                    conversation_id=cid,
+                    soul_id=soul_id,
+                    chat_label=chat_label_for_prompt,
+                    current_user_text=message,
+                    self_turn_directive=self_turn_directive,
+                )
+                memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
+                intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
+                system_base = _make_turn_system_prompt(
+                    soul_id,
+                    soul_card=soul_card,
+                    response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
+                    allow_public_response=True,
+                    include_activity_recap=False,
+                ).split("\n\nReturn STRICT JSON only.", 1)[0].strip()
+                context_block = _build_turn_context_block(
+                    history=history_for_ai,
+                    prior_context=out.get("prior_context"),
+                    retrieve_rag=out.get("result"),
+                    all_categories_summary=_state_row.get("all_categories_summary"),
+                    memory_cache=memory_cache,
+                    intentions_active=intentions_active,
+                    apimw_message_to_self=_state_row.get("apimw_message_to_self"),
+                    conversations_block=response_chat_history_for_ai or None,
+                    chat_label=chat_label_for_prompt,
+                    conversation_id=cid,
+                    soul_name=soul_id,
+                    current_user_text=message,
+                    self_turn_directive=self_turn_directive or None,
+                )
+                out["atomic_snapshot_text"] = f"{system_base}\n\n{context_block}".strip()
+                out["turn_prompt_source"] = "conversation_retrieve"
 
         want_turn_prompt = bool(safe.get("build_turn_prompt", False))
 
@@ -3617,6 +3684,44 @@ async def mcp_memu_turn(req: _mcp_tools.MemuTurnRequest):
         conversation_retrieve=conversation_retrieve,
         conversation_turn=conversation_turn,
     )
+
+
+@app.post("/integration/atomic/session_start", operation_id="atomic_session_start", tags=["integration"])
+async def atomic_session_start(req: AtomicSessionStartRequest):
+    uid = str(req.user_id or "").strip()
+    soul_id = str(req.soul_id or "").strip()
+    if not uid or not soul_id:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+
+    raw_cid = str(req.conversation_id or "").strip()
+    conversation_id = raw_cid or "chat:memory-surfer"
+    if raw_cid and not raw_cid.startswith("chat:"):
+        conversation_id = f"chat:atomic-{raw_cid}"
+
+    message = str(req.message or "").strip()
+    retrieve_payload: dict[str, Any] = {
+        "user": {"user_id": uid, "soul_id": soul_id, "conversation_id": conversation_id},
+        "build_atomic_snapshot": True,
+        "_read_only_retrieve": True,
+        "mental_health_addon": False,
+        "debug": bool(req.debug),
+    }
+    if message:
+        retrieve_payload["message"] = message
+        retrieve_payload["query"] = message
+    if req.soul_card:
+        retrieve_payload["soul_card"] = str(req.soul_card)
+
+    retrieve_out = await conversation_retrieve(conversation_id, retrieve_payload)
+    snapshot_text = str(retrieve_out.get("atomic_snapshot_text") or "").strip()
+    if not snapshot_text:
+        raise HTTPException(status_code=502, detail="conversation_retrieve returned empty atomic_snapshot_text")
+    return {
+        "ok": True,
+        "conversation_id": conversation_id,
+        "snapshot_text": snapshot_text,
+        "retrieve_ms": retrieve_out.get("retrieve_ms"),
+    }
 
 
 @app.post("/integration/memu/retrieve", operation_id="memu_retrieve", tags=["mcp_tools"])
