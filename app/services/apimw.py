@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import random
-import sqlite3
 import uuid
 from typing import Any
 
