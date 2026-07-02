@@ -5,6 +5,7 @@ import os
 import random
 import re
 import signal
+import sys
 import sqlite3
 import threading
 import time
@@ -60,6 +61,7 @@ from app.db import (
 )
 from app.services import admin_routes as _admin_routes
 from app.services import activity_messages as _activity_messages
+from app.services import cross_history as _cross_history
 from app.services import free_turn as _free_turn
 from app.services import whatsapp_outbounds as _whatsapp_outbounds
 from app.services.consolidation import (
@@ -123,6 +125,7 @@ from app.services.turn_contract import (
 # ==== Module state & constants ====
 
 logger = logging.getLogger(__name__)
+_cross_history._main = sys.modules[__name__]
 _PROMPT_LOGGER = logging.getLogger("uvicorn.error")
 
 
@@ -2171,840 +2174,89 @@ def _make_consolidation_deps() -> ConsolidationDeps:
     )
 
 
-def _resolve_cross_source_paths() -> tuple[Path, Path | None, Path | None, Path | None]:
-    hermes_cfg = _CONFIG.get("hermes") if isinstance(_CONFIG.get("hermes"), dict) else {}
-    hermes_home_raw = str(hermes_cfg.get("home") or "").strip()
-    sessions_index_raw = str(hermes_cfg.get("sessions_index_path") or "").strip()
-    state_db_raw = str(hermes_cfg.get("state_db_path") or "").strip()
-    hermes_home_path = Path(hermes_home_raw).expanduser().resolve() if hermes_home_raw else None
-    sessions_index_path = Path(sessions_index_raw).expanduser().resolve() if sessions_index_raw else None
-    state_db_path = Path(state_db_raw).expanduser().resolve() if state_db_raw else None
-    return _get_storage_dir(_CONFIG), hermes_home_path, sessions_index_path, state_db_path
+_ACTIVE_SINCE_UNSET = _cross_history._ACTIVE_SINCE_UNSET
+TURN_HISTORY_WINDOW_MESSAGES = _cross_history.TURN_HISTORY_WINDOW_MESSAGES
 
+def _resolve_cross_source_paths(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._resolve_cross_source_paths(*args, **kwargs)
 
-def _resolve_whatsapp_source_config() -> tuple[str, Path | None, str]:
-    hermes_cfg = _CONFIG.get("hermes") if isinstance(_CONFIG.get("hermes"), dict) else {}
-    source = str(hermes_cfg.get("whatsapp_history_source") or "hermes_state").strip().lower()
-    if source in {"state_db", "hermes_state"}:
-        source = "hermes_state"
-    elif source != "web_source":
-        raise RuntimeError(f"unsupported hermes.whatsapp_history_source: {source!r}")
-    db_raw = str(hermes_cfg.get("whatsapp_web_source_db") or "").strip()
-    db_path = Path(db_raw).expanduser().resolve() if db_raw else None
-    reply_prefix = str(hermes_cfg.get("whatsapp_reply_prefix") or "")
-    return source, db_path, reply_prefix
+def _resolve_whatsapp_source_config(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._resolve_whatsapp_source_config(*args, **kwargs)
 
+def _resolve_whatsapp_history_limit(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._resolve_whatsapp_history_limit(*args, **kwargs)
 
-def _resolve_whatsapp_history_limit() -> int:
-    hermes_cfg = _CONFIG.get("hermes") if isinstance(_CONFIG.get("hermes"), dict) else {}
-    raw = hermes_cfg.get("whatsapp_history_limit", 250)
-    try:
-        return max(1, min(int(raw), 5000))
-    except (TypeError, ValueError):
-        return 250
+def _load_soul_active_since(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._load_soul_active_since(*args, **kwargs)
 
+def _current_whatsapp_active_since_for_soul(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._current_whatsapp_active_since_for_soul(*args, **kwargs)
 
-def _load_soul_active_since(
-    soul_id: str,
-    *,
-    hermes_home_path: Path | None,
-    state_db_path: Path | None,
-) -> float | None:
-    return _conversation_sources.load_soul_active_since(
-        soul_id=soul_id,
-        hermes_home=hermes_home_path,
-        state_db_path=state_db_path,
-    )
+def _filter_current_whatsapp_history_for_soul(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._filter_current_whatsapp_history_for_soul(*args, **kwargs)
 
+def _degrade_live_whatsapp_history_after_filter_error(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._degrade_live_whatsapp_history_after_filter_error(*args, **kwargs)
 
-_ACTIVE_SINCE_UNSET = object()
+def _source_id_matches_external(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._source_id_matches_external(*args, **kwargs)
 
+def _filter_external_message_from_history(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._filter_external_message_from_history(*args, **kwargs)
 
-def _current_whatsapp_active_since_for_soul(
-    conversation_id: str,
-    soul_id: str,
-) -> float | None:
-    if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
-        return None
-    _storage_dir, hermes_home_path, _sessions_index_path, state_db_path = _resolve_cross_source_paths()
-    return _load_soul_active_since(
-        soul_id,
-        hermes_home_path=hermes_home_path,
-        state_db_path=state_db_path,
-    )
+def _load_current_whatsapp_history_from_source(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._load_current_whatsapp_history_from_source(*args, **kwargs)
 
+def _prepare_current_whatsapp_history(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._prepare_current_whatsapp_history(*args, **kwargs)
 
-def _filter_current_whatsapp_history_for_soul(
-    conversation_id: str,
-    soul_id: str,
-    history: list[dict[str, Any]],
-    *,
-    active_since: Any = _ACTIVE_SINCE_UNSET,
-) -> list[dict[str, Any]]:
-    if not history or not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
-        return history
-    if active_since is _ACTIVE_SINCE_UNSET:
-        active_since = _current_whatsapp_active_since_for_soul(conversation_id, soul_id)
-    if active_since is None:
-        return history
+def _stamp_assistant_display_name(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._stamp_assistant_display_name(*args, **kwargs)
 
-    threshold_ms = active_since * 1000.0
-    out: list[dict[str, Any]] = []
-    for i, msg in enumerate(history):
-        ts_ms = _parse_turn_ts_ms(msg.get("ts_ms"))
-        if ts_ms is None:
-            ts_ms = _parse_turn_ts_ms(msg.get("received_at"))
-        if ts_ms is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"WhatsApp history row {i} is missing ts_ms for soul active_since cutoff",
-            )
-        if ts_ms >= threshold_ms:
-            out.append(msg)
-    return out
+def _persist_completed_sillytavern_turn_snapshot(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._persist_completed_sillytavern_turn_snapshot(*args, **kwargs)
 
+def _load_tail_for_source_conversation(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._load_tail_for_source_conversation(*args, **kwargs)
 
-def _degrade_live_whatsapp_history_after_filter_error(
-    *,
-    conversation_id: str,
-    soul_id: str,
-    history: list[dict[str, Any]],
-    active_since: Any,
-    exc: HTTPException,
-    op: str,
-) -> list[dict[str, Any]]:
-    logger.warning(
-        "%s: live WhatsApp history cutoff failed; continuing with valid in-scope rows only "
-        "conversation_id=%s soul_id=%s detail=%s",
-        op,
-        conversation_id,
-        soul_id,
-        exc.detail,
-    )
-    if active_since is None:
-        return history
-    threshold_ms = active_since * 1000.0
-    out: list[dict[str, Any]] = []
-    dropped = 0
-    for msg in history:
-        ts_ms = _parse_turn_ts_ms(msg.get("ts_ms"))
-        if ts_ms is None:
-            ts_ms = _parse_turn_ts_ms(msg.get("received_at"))
-        if ts_ms is None:
-            dropped += 1
-            continue
-        if ts_ms >= threshold_ms:
-            out.append(msg)
-    if dropped:
-        logger.warning(
-            "%s: dropped %d live WhatsApp history row(s) without ts_ms conversation_id=%s soul_id=%s",
-            op,
-            dropped,
-            conversation_id,
-            soul_id,
-        )
-    return out
+def _latest_saved_segment_display_ranges(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._latest_saved_segment_display_ranges(*args, **kwargs)
 
+def _load_cross_tail_from_sources(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._load_cross_tail_from_sources(*args, **kwargs)
 
-def _source_id_matches_external(source_id: Any, external_message_id: Any) -> bool:
-    source = str(source_id or "").strip()
-    external = str(external_message_id or "").strip()
-    return bool(source and external and (source == external or external in source))
+def _clear_last_display_segments_for_nonparticipants(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._clear_last_display_segments_for_nonparticipants(*args, **kwargs)
 
+def _chat_label_for_prompt(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._chat_label_for_prompt(*args, **kwargs)
 
-def _filter_external_message_from_history(
-    history: list[dict[str, Any]],
-    external_message_id: Any,
-) -> list[dict[str, Any]]:
-    if not external_message_id:
-        return history
-    return [
-        row for row in history
-        if not _source_id_matches_external(row.get("source_message_id"), external_message_id)
-    ]
+def _chat_label_from_history(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._chat_label_from_history(*args, **kwargs)
 
+def _format_cross_tail_for_ai(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._format_cross_tail_for_ai(*args, **kwargs)
 
-def _load_current_whatsapp_history_from_source(
-    conversation_id: str,
-    soul_id: str,
-    *,
-    active_since: float | None,
-    external_message_id: Any = None,
-    exclude_external_message: bool = True,
-) -> list[dict[str, Any]] | None:
-    if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
-        return None
-    _storage_dir, hermes_home_path, sessions_index_path, state_db_path = _resolve_cross_source_paths()
-    whatsapp_source, web_source_db_path, reply_prefix = _resolve_whatsapp_source_config()
-    history_limit = _resolve_whatsapp_history_limit()
-    if whatsapp_source == "web_source":
-        assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
-            conversation_id=conversation_id,
-            hermes_home=hermes_home_path,
-            sessions_index_path=sessions_index_path,
-            state_db_path=state_db_path,
-        )
-        rows = _conversation_sources.load_whatsapp_web_source_tail(
-            conversation_id=conversation_id,
-            since_cursor=-1,
-            recent_fallback_messages=0,
-            soul_id=soul_id,
-            reply_prefix=reply_prefix,
-            hermes_home=hermes_home_path,
-            web_source_db_path=web_source_db_path,
-            min_timestamp=active_since,
-            max_messages=history_limit,
-            assistant_source_message_ids=assistant_ids,
-        )
-    else:
-        rows = _conversation_sources.load_whatsapp_tail(
-            conversation_id=conversation_id,
-            since_cursor=-1,
-            recent_fallback_messages=0,
-            hermes_home=hermes_home_path,
-            sessions_index_path=sessions_index_path,
-            state_db_path=state_db_path,
-            min_timestamp=active_since,
-            max_messages=history_limit,
-        )
-    if not external_message_id or not exclude_external_message:
-        return rows
-    return _filter_external_message_from_history(rows, external_message_id)
+def _format_all_chat_history_for_ai(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._format_all_chat_history_for_ai(*args, **kwargs)
 
+def _load_cross_tail_for_ai(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._load_cross_tail_for_ai(*args, **kwargs)
 
-def _prepare_current_whatsapp_history(
-    *,
-    conversation_id: str,
-    soul_id: str,
-    raw_history: Any,
-    active_since: float | None,
-    load_source_history: bool,
-    external_message_id: Any,
-    is_live_turn: bool,
-    op: str,
-    exclude_external_message: bool = True,
-) -> list[dict[str, Any]]:
-    history = _normalize_turn_history(raw_history)
-    if load_source_history:
-        try:
-            source_history = _load_current_whatsapp_history_from_source(
-                conversation_id,
-                soul_id,
-                active_since=active_since,
-                external_message_id=external_message_id,
-                exclude_external_message=exclude_external_message,
-            )
-        except Exception as exc:
-            if not is_live_turn:
-                raise
-            logger.warning(
-                "%s: live WhatsApp source history load failed; continuing with payload history "
-                "conversation_id=%s soul_id=%s: %s",
-                op,
-                conversation_id,
-                soul_id,
-                exc,
-            )
-            source_history = None
-        if source_history is not None:
-            history = _normalize_turn_history(source_history)
-    try:
-        return _filter_current_whatsapp_history_for_soul(
-            conversation_id,
-            soul_id,
-            history,
-            active_since=active_since,
-        )
-    except HTTPException as exc:
-        if not is_live_turn:
-            raise
-        return _degrade_live_whatsapp_history_after_filter_error(
-            conversation_id=conversation_id,
-            soul_id=soul_id,
-            history=history,
-            active_since=active_since,
-            exc=exc,
-            op=op,
-        )
+def _load_cross_tail_with_activities_from_sources(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._load_cross_tail_with_activities_from_sources(*args, **kwargs)
 
+def _load_cross_memorize_tails_from_sources(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._load_cross_memorize_tails_from_sources(*args, **kwargs)
 
-def _stamp_assistant_display_name(messages: list[dict[str, Any]], soul_name: str) -> None:
-    display = str(soul_name or "").strip()
-    if not display:
-        return
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        role = str(msg.get("role") or "").strip().lower()
-        if role != "assistant":
-            continue
-        existing = str(msg.get("name") or msg.get("speaker") or "").strip()
-        if existing:
-            continue
-        msg["name"] = display
-        msg["speaker"] = display
+def _read_background_rolling_summaries_from_conversations(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._read_background_rolling_summaries_from_conversations(*args, **kwargs)
 
+def _turn_history_with_floor(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._turn_history_with_floor(*args, **kwargs)
 
-def _persist_completed_sillytavern_turn_snapshot(
-    *,
-    safe: dict[str, Any],
-    history: list[dict[str, Any]],
-    conversation_id: str,
-    user_id: str,
-    soul_id: str,
-    message: str,
-    response_text: str,
-    response_target: str,
-) -> None:
-    if _message_log.derive_source_label(conversation_id) != "sillytavern":
-        return
-    completed = _normalize_conversation(history)
-    user_text = str(message or "").strip()
-    user_ts_ms = _parse_turn_ts_ms(safe.get("message_ts_ms"))
-    if user_ts_ms is None:
-        user_ts_ms = _parse_turn_ts_ms(safe.get("messageTsMs"))
-    if user_text:
-        user_row: dict[str, Any] = {
-            "role": "user",
-            "content": user_text,
-            "name": _pick_str(safe, "user_name") or "",
-            "source_message_id": _pick_str(safe, "message_source_id", "messageSourceId") or str(len(completed)),
-        }
-        if user_ts_ms is not None:
-            user_row["ts_ms"] = user_ts_ms
-        completed.append(user_row)
-
-    soul_text = str(response_text or "").strip()
-    if response_target == "respond" and soul_text:
-        soul_ts_ms = int(time.time() * 1000)
-        if user_ts_ms is not None and soul_ts_ms <= user_ts_ms:
-            soul_ts_ms = user_ts_ms + 1
-        completed.append(
-            {
-                "role": "soul",
-                "content": soul_text,
-                "name": _pick_str(safe, "chat_name") or soul_id,
-                "source_message_id": str(len(completed)),
-                "ts_ms": soul_ts_ms,
-            }
-        )
-
-    if not completed:
-        return
-    _conversation_sources.persist_sillytavern_history_snapshot(
-        storage_dir=_get_storage_dir(_CONFIG),
-        user_id=user_id,
-        soul_id=soul_id,
-        conversation_id=conversation_id,
-        history=completed,
-        chat_name=_pick_str(safe, "chat_name") or None,
-    )
-
-
-def _load_tail_for_source_conversation(
-    *,
-    conversation_id: str,
-    user_id: str,
-    soul_id: str,
-    since_cursor: int,
-    recent_fallback_messages: int,
-    storage_dir: Path,
-    hermes_home_path: Path | None,
-    sessions_index_path: Path | None,
-    state_db_path: Path | None,
-) -> list[dict[str, Any]]:
-    source_label = _message_log.derive_source_label(conversation_id)
-    if source_label.startswith("whatsapp:"):
-        active_since = _load_soul_active_since(
-            soul_id,
-            hermes_home_path=hermes_home_path,
-            state_db_path=state_db_path,
-        )
-        whatsapp_source, web_source_db_path, reply_prefix = _resolve_whatsapp_source_config()
-        if whatsapp_source == "web_source":
-            assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
-                conversation_id=conversation_id,
-                hermes_home=hermes_home_path,
-                sessions_index_path=sessions_index_path,
-                state_db_path=state_db_path,
-            )
-            return _conversation_sources.load_whatsapp_web_source_tail(
-                conversation_id=conversation_id,
-                since_cursor=since_cursor,
-                recent_fallback_messages=recent_fallback_messages,
-                soul_id=soul_id,
-                reply_prefix=reply_prefix,
-                hermes_home=hermes_home_path,
-                web_source_db_path=web_source_db_path,
-                min_timestamp=active_since,
-                assistant_source_message_ids=assistant_ids,
-            )
-        return _conversation_sources.load_whatsapp_tail(
-            conversation_id=conversation_id,
-            since_cursor=since_cursor,
-            recent_fallback_messages=recent_fallback_messages,
-            hermes_home=hermes_home_path,
-            sessions_index_path=sessions_index_path,
-            state_db_path=state_db_path,
-            min_timestamp=active_since,
-        )
-    if source_label == "sillytavern":
-        return _conversation_sources.load_sillytavern_tail(
-            storage_dir=storage_dir,
-            user_id=user_id,
-            soul_id=soul_id,
-            conversation_id=conversation_id,
-            since_cursor=since_cursor,
-            recent_fallback_messages=recent_fallback_messages,
-        )
-    return []
-
-
-def _latest_saved_segment_display_ranges(
-    *,
-    soul_id: str,
-) -> dict[str, tuple[int, int]]:
-    chats_dir = (_get_storage_dir(_CONFIG) / "st_chats").resolve()
-    agent_slug = _sanitize_db_filename(soul_id)
-    if not chats_dir.exists() or not agent_slug:
-        return {}
-    segment_paths = sorted(
-        chats_dir.glob(f"{agent_slug}_*/segments/*.json"),
-        key=lambda path: path.stat().st_mtime if path.exists() else 0.0,
-        reverse=True,
-    )
-    for segment_path in segment_paths:
-        try:
-            raw = json.loads(segment_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(raw, list):
-            continue
-        ranges = _memorize_endpoint._segment_display_ranges(raw)
-        if ranges:
-            return ranges
-    return {}
-
-
-def _load_cross_tail_from_sources(
-    con: sqlite3.Connection,
-    *,
-    user_id: str,
-    soul_id: str,
-    exclude_conversation_id: str | None = None,
-) -> list[dict[str, Any]]:
-    storage_dir, hermes_home_path, sessions_index_path, state_db_path = _resolve_cross_source_paths()
-    excluded_id = str(exclude_conversation_id or "").strip()
-    cursor_rows = con.execute(
-        "SELECT conversation_id, memorize_chat, digest_cursor, last_memorize_at, "
-        "last_display_segment_start_index, last_display_segment_end_index "
-        "FROM conversations"
-    ).fetchall()
-    all_messages: list[dict[str, Any]] = []
-    resource_display_ranges: dict[str, tuple[int, int]] | None = None
-    for row in cursor_rows:
-        cid = str(row["conversation_id"] or "").strip()
-        if not cid or cid == excluded_id:
-            continue
-        if cid.startswith("activity:"):
-            continue
-        source_label = _message_log.derive_source_label(cid)
-        cursor = _effective_digest_cursor_from_row(row)
-        display_start = row["last_display_segment_start_index"]
-        display_end = row["last_display_segment_end_index"]
-        if row["last_memorize_at"] and (display_start is None or display_end is None):
-            if resource_display_ranges is None:
-                resource_display_ranges = _latest_saved_segment_display_ranges(
-                    soul_id=soul_id,
-                )
-            fallback_range = resource_display_ranges.get(cid)
-            if fallback_range is not None:
-                display_start, display_end = fallback_range
-        if row["last_memorize_at"] and display_start is not None and display_end is not None:
-            try:
-                segment_start = max(0, int(display_start))
-                segment_end = max(segment_start, int(display_end))
-            except (TypeError, ValueError, OverflowError):
-                segment_start = segment_end = -1
-            if segment_end >= 0:
-                cursor = max(-1, max(segment_start, segment_end - (_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES - 1)) - 1)
-        try:
-            tail = _load_tail_for_source_conversation(
-                conversation_id=cid,
-                user_id=user_id,
-                soul_id=soul_id,
-                since_cursor=cursor,
-                recent_fallback_messages=_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
-                storage_dir=storage_dir,
-                hermes_home_path=hermes_home_path,
-                sessions_index_path=sessions_index_path,
-                state_db_path=state_db_path,
-            )
-        except Exception as exc:
-            logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)
-            is_lid_gap = "LID↔phone mapping gap" in str(exc)
-            is_web_source_whatsapp = (
-                source_label.startswith("whatsapp:")
-                and _resolve_whatsapp_source_config()[0] == "web_source"
-            )
-            if is_web_source_whatsapp and not is_lid_gap:
-                raise RuntimeError(f"WhatsApp web_source read failed for {cid}: {exc}") from exc
-            continue
-        _stamp_assistant_display_name(tail, soul_id)
-        all_messages.extend(tail)
-    all_messages.sort(
-        key=lambda msg: (
-            str(msg.get("received_at") or ""),
-            str(msg.get("conversation_id") or ""),
-            int(msg.get("source_conversation_index") or 0),
-        )
-    )
-    return all_messages
-
-
-def _clear_last_display_segments_for_nonparticipants(
-    *,
-    user_id: str,
-    soul_id: str,
-    participant_conversation_ids: set[str],
-) -> None:
-    db_path = _sqlite_current_path(user_id or None, soul_id or None)
-    if db_path is None or not db_path.exists():
-        return
-    con = _sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        _sqlite_ensure_conversation_state_schema(con)
-        participants = {str(cid or "").strip() for cid in participant_conversation_ids if str(cid or "").strip()}
-        where = ["memorize_chat = 1"]
-        params: list[Any] = []
-        if participants:
-            placeholders = ",".join("?" for _ in participants)
-            where.append(f"conversation_id NOT IN ({placeholders})")
-            params.extend(sorted(participants))
-        con.execute(
-            "UPDATE conversations "
-            "SET last_display_segment_start_index = NULL, "
-            "last_display_segment_end_index = NULL, "
-            "last_display_segment_at = NULL "
-            f"WHERE {' AND '.join(where)}",
-            tuple(params),
-        )
-        con.commit()
-    finally:
-        con.close()
-
-
-def _chat_label_for_prompt(safe: Mapping[str, Any] | None) -> str | None:
-    payload = safe or {}
-    chat_name = str(payload.get("chat_name") or "").strip()
-    chat_type = str(payload.get("chat_type") or "").strip()
-    if chat_name and chat_type:
-        return f"[{chat_type}][{chat_name}]"
-    if chat_name:
-        return f"[{chat_name}]"
-    return None
-
-
-def _chat_label_from_history(
-    history_rows: list[dict[str, Any]],
-    conversation_id: str,
-) -> str | None:
-    for msg in reversed(history_rows):
-        if not isinstance(msg, dict):
-            continue
-        chat_name = str(msg.get("chat_name") or "").strip()
-        if not chat_name:
-            continue
-        chat_type = str(msg.get("chat_type") or "").strip()
-        if not chat_type:
-            chat_type = "group" if str(conversation_id or "").startswith("whatsapp:group:") else "dm"
-        return f"[{chat_type}][{chat_name}]"
-    return None
-
-
-def _format_cross_tail_for_ai(cross_tail: list[dict[str, Any]], *, soul_id: str) -> str:
-    activity_tail = [
-        msg for msg in cross_tail
-        if str(msg.get("conversation_id") or "").startswith("activity:")
-    ]
-    chat_tail = [
-        msg for msg in cross_tail
-        if not str(msg.get("conversation_id") or "").startswith("activity:")
-    ]
-    activity_text = _message_log.format_merged_history(activity_tail, soul_name=soul_id) if activity_tail else ""
-    chat_text = _message_log.format_merged_history(chat_tail, soul_name=soul_id) if chat_tail else ""
-    return "\n\n".join(part for part in (activity_text, chat_text) if part).strip()
-
-
-def _format_all_chat_history_for_ai(
-    *,
-    current_history: list[dict[str, Any]] | None,
-    cross_tail: list[dict[str, Any]] | None,
-    conversation_id: str,
-    soul_id: str,
-    chat_label: str | None = None,
-    current_user_text: str | None = None,
-    self_turn_directive: str | None = None,
-    mark_current_chat: bool = True,
-) -> str:
-    cross_text = _format_cross_tail_for_ai(cross_tail or [], soul_id=soul_id) if cross_tail else ""
-    history_rows = current_history or []
-    if not history_rows:
-        if current_user_text or self_turn_directive:
-            return _build_conversations_block(
-                history=[],
-                cross_conversation_history=cross_text,
-                conversation_id=conversation_id,
-                chat_label=chat_label,
-                soul_name=soul_id,
-                current_user_text=current_user_text,
-                self_turn_directive=self_turn_directive,
-                mark_current_chat=mark_current_chat,
-            )
-        return cross_text
-    return _build_conversations_block(
-        history=history_rows,
-        cross_conversation_history=cross_text,
-        conversation_id=conversation_id,
-        chat_label=chat_label or _chat_label_from_history(history_rows, conversation_id),
-        soul_name=soul_id,
-        current_user_text=current_user_text,
-        self_turn_directive=self_turn_directive,
-        mark_current_chat=mark_current_chat,
-    )
-
-
-def _load_cross_tail_for_ai(
-    *,
-    user_id: str,
-    soul_id: str,
-    conversation_id: str,
-) -> list[dict[str, Any]]:
-    db_path = _sqlite_current_path(user_id, soul_id)
-    if db_path is None or not db_path.exists():
-        return []
-    con = _sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        _sqlite_ensure_conversation_state_schema(con)
-        return [
-            *_load_activity_tail_for_ai(con, user_id=user_id, soul_id=soul_id),
-            *_load_cross_tail_from_sources(
-                con,
-                user_id=user_id,
-                soul_id=soul_id,
-                exclude_conversation_id=conversation_id,
-            ),
-        ]
-    finally:
-        con.close()
-
-
-def _load_cross_tail_with_activities_from_sources(
-    con: sqlite3.Connection,
-    *,
-    user_id: str,
-    soul_id: str,
-    exclude_conversation_id: str | None = None,
-) -> list[dict[str, Any]]:
-    return [
-        *_load_activity_tail_for_ai(con, user_id=user_id, soul_id=soul_id),
-        *_load_cross_tail_from_sources(
-            con,
-            user_id=user_id,
-            soul_id=soul_id,
-            exclude_conversation_id=exclude_conversation_id,
-        ),
-    ]
-
-
-def _load_cross_memorize_tails_from_sources(
-    con: sqlite3.Connection,
-    *,
-    user_id: str,
-    soul_id: str,
-    exclude_conversation_id: str | None = None,
-) -> dict[str, list[dict[str, Any]]]:
-    storage_dir, hermes_home_path, sessions_index_path, state_db_path = _resolve_cross_source_paths()
-    excluded_id = str(exclude_conversation_id or "").strip()
-    rows = con.execute(
-        "SELECT conversation_id, digest_cursor, last_memorize_at, memorize_chat, rolling_summary_cursor_id "
-        "FROM conversations"
-    ).fetchall()
-    tails: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        cid = str(row["conversation_id"] or "").strip()
-        if not cid or cid == excluded_id:
-            continue
-        try:
-            if cid.startswith("activity:"):
-                cursor = _effective_digest_cursor_from_row(row)
-                tail = _activity_message_rows(
-                    con,
-                    user_id=user_id,
-                    soul_id=soul_id,
-                    since_cursor=cursor,
-                    recent_fallback_messages=0,
-                )
-                if tail:
-                    tails[cid] = tail
-                continue
-            memorize_chat = _memorize_chat_from_row(row)
-            if memorize_chat:
-                cursor = _effective_digest_cursor_from_row(row)
-                tail = _load_tail_for_source_conversation(
-                    conversation_id=cid,
-                    user_id=user_id,
-                    soul_id=soul_id,
-                    since_cursor=cursor,
-                    recent_fallback_messages=0,
-                    storage_dir=storage_dir,
-                    hermes_home_path=hermes_home_path,
-                    sessions_index_path=sessions_index_path,
-                    state_db_path=state_db_path,
-                )
-                _stamp_assistant_display_name(tail, soul_id)
-                if not tail:
-                    continue
-                for i, msg in enumerate(tail):
-                    msg["source_conversation_id"] = cid
-                    if msg.get("source_conversation_index") is None:
-                        msg["source_conversation_index"] = cursor + 1 + i
-                    msg["memorize_chat"] = True
-                tails[cid] = tail
-                continue
-
-            rolling_cursor_id = row["rolling_summary_cursor_id"]
-            source_label = _message_log.derive_source_label(cid)
-            if source_label.startswith("whatsapp:"):
-                active_since = _load_soul_active_since(
-                    soul_id,
-                    hermes_home_path=hermes_home_path,
-                    state_db_path=state_db_path,
-                )
-                whatsapp_source, web_source_db_path, reply_prefix = _resolve_whatsapp_source_config()
-                if whatsapp_source == "web_source":
-                    assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
-                        conversation_id=cid,
-                        hermes_home=hermes_home_path,
-                        sessions_index_path=sessions_index_path,
-                        state_db_path=state_db_path,
-                    )
-                    tail = _conversation_sources.load_whatsapp_web_source_tail_after_rowid(
-                        conversation_id=cid,
-                        after_rowid=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
-                        soul_id=soul_id,
-                        reply_prefix=reply_prefix,
-                        hermes_home=hermes_home_path,
-                        web_source_db_path=web_source_db_path,
-                        min_timestamp=active_since,
-                        assistant_source_message_ids=assistant_ids,
-                    )
-                else:
-                    tail = _conversation_sources.load_whatsapp_tail_after_message_id(
-                        conversation_id=cid,
-                        after_message_id=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
-                        hermes_home=hermes_home_path,
-                        sessions_index_path=sessions_index_path,
-                        state_db_path=state_db_path,
-                        min_timestamp=active_since,
-                    )
-            elif source_label == "sillytavern":
-                tail = _conversation_sources.load_sillytavern_tail(
-                    storage_dir=storage_dir,
-                    user_id=user_id,
-                    soul_id=soul_id,
-                    conversation_id=cid,
-                    since_cursor=int(rolling_cursor_id) if rolling_cursor_id is not None else -1,
-                    recent_fallback_messages=0,
-                )
-            else:
-                continue
-            _stamp_assistant_display_name(tail, soul_id)
-            if not tail:
-                continue
-            for msg in tail:
-                msg["source_conversation_id"] = cid
-                if msg.get("source_conversation_index") is None:
-                    raise RuntimeError(
-                        f"cross-memorize background/non-memorize tail missing source_conversation_index for {cid}"
-                    )
-                msg["source_conversation_index"] = int(msg["source_conversation_index"])
-                msg["memorize_chat"] = False
-            tails[cid] = tail
-        except Exception as exc:
-            logger.error("cross-memorize source read failed for conversation_id=%s: %s", cid, exc)
-            is_lid_gap = "LID↔phone mapping gap" in str(exc)
-            is_web_source_whatsapp = (
-                _message_log.derive_source_label(cid).startswith("whatsapp:")
-                and _resolve_whatsapp_source_config()[0] == "web_source"
-            )
-            if is_web_source_whatsapp and not is_lid_gap:
-                raise RuntimeError(f"WhatsApp web_source read failed for {cid}: {exc}") from exc
-            continue
-    return tails
-
-
-def _read_background_rolling_summaries_from_conversations(
-    con: sqlite3.Connection,
-    *,
-    exclude_conversation_id: str | None = None,
-) -> dict[str, dict[str, Any]]:
-    rows = con.execute(
-        "SELECT conversation_id, memorize_chat, rolling_summary, rolling_summary_updated_at "
-        "FROM conversations"
-    ).fetchall()
-    excluded_id = str(exclude_conversation_id or "").strip()
-    out: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        cid = str(row["conversation_id"] or "").strip()
-        if not cid or cid == excluded_id:
-            continue
-        memorize_chat = _memorize_chat_from_row(row)
-        if memorize_chat:
-            continue
-        summary = str(row["rolling_summary"] or "").strip()
-        if not summary:
-            continue
-        out[cid] = {
-            "source_conversation_id": cid,
-            "source_label": _message_log.derive_source_label(cid),
-            "summary": summary,
-            "updated_at": row["rolling_summary_updated_at"],
-        }
-    return out
-
-
-TURN_HISTORY_WINDOW_MESSAGES = 8
-
-
-def _turn_history_with_floor(
-    history: list[dict[str, Any]],
-    state_row: dict[str, Any] | None,
-) -> list[dict[str, Any]]:
-    if not history:
-        return []
-    digest_cursor = _effective_digest_cursor_from_row(state_row)
-    return _conversation_sources.slice_tail_with_floor(
-        history,
-        since_cursor=digest_cursor,
-        recent_fallback_messages=TURN_HISTORY_WINDOW_MESSAGES,
-    )
-
-
-def _max_nonnegative_source_conversation_index(messages: list[dict[str, Any]]) -> int | None:
-    max_index: int | None = None
-    for msg in messages:
-        try:
-            idx = int(msg.get("source_conversation_index"))
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if idx < 0:
-            continue
-        if max_index is None or idx > max_index:
-            max_index = idx
-    return max_index
+def _max_nonnegative_source_conversation_index(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._max_nonnegative_source_conversation_index(*args, **kwargs)
 
 
 async def _clear_consolidation_in_progress(
