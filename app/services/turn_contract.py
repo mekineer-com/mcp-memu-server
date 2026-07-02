@@ -863,7 +863,7 @@ def build_turn_prompt(
         if directive_text
         else f"New Message:\n{current_user_text}",
         "",
-        "**remember maximum lengths**",
+        "**remember maximum lengths and response schema**",
     ]
     return "\n".join(parts)
 
