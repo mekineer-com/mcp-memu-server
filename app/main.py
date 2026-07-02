@@ -1118,14 +1118,6 @@ def _insert_whatsapp_outbound(
     )
 
 
-def _activity_conversation_id(soul_id: str) -> str:
-    return _activity_messages.activity_conversation_id(soul_id)
-
-
-def _ensure_activity_messages_schema(con: sqlite3.Connection) -> None:
-    _activity_messages.ensure_activity_messages_schema(con)
-
-
 def _activity_message_rows(
     con: sqlite3.Connection,
     *,
