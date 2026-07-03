@@ -1,5 +1,6 @@
 import json
 
+from app import main
 from app.services import message_log
 
 
@@ -38,7 +39,7 @@ def test_format_merged_history_does_not_relabel_blank_speaker_rows() -> None:
 
 
 def test_format_merged_history_groups_sections_and_conversations(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setitem(main._CONFIG, "hermes", {"home": str(tmp_path / ".hermes")})
     rendered = message_log.format_merged_history(
         [
             {
@@ -212,7 +213,7 @@ def test_format_merged_history_uses_channel_directory_names(tmp_path, monkeypatc
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setitem(main._CONFIG, "hermes", {"home": str(hermes_home)})
 
     rendered = message_log.format_merged_history(
         [
@@ -262,7 +263,7 @@ def test_format_merged_history_group_heading_uses_group_name_cache(tmp_path, mon
         json.dumps({"18322935409-1579788049@g.us": "Household Group"}),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setitem(main._CONFIG, "hermes", {"home": str(hermes_home)})
 
     rendered = message_log.format_merged_history(
         [
@@ -310,7 +311,7 @@ def test_format_merged_history_whatsapp_dm_heading_prefers_named_alias_over_nume
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setitem(main._CONFIG, "hermes", {"home": str(hermes_home)})
 
     rendered = message_log.format_merged_history(
         [
@@ -345,7 +346,7 @@ def test_format_merged_history_dm_preserves_explicit_speaker_per_row(tmp_path, m
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setitem(main._CONFIG, "hermes", {"home": str(hermes_home)})
 
     # In a DM with Liz, both Marcos's outbound and Liz's inbound may appear
     # as role=user (in self-chat mode bridging). The speaker stamped at
@@ -391,7 +392,7 @@ def test_format_merged_history_dm_does_not_infer_blank_speaker_from_other_rows(t
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setitem(main._CONFIG, "hermes", {"home": str(hermes_home)})
 
     rendered = message_log.format_merged_history(
         [
@@ -447,7 +448,7 @@ def test_format_merged_history_whatsapp_dm_keeps_self_speaker_for_self_chat(tmp_
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setitem(main._CONFIG, "hermes", {"home": str(hermes_home)})
 
     rendered = message_log.format_merged_history(
         [

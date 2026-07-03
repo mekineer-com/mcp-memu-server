@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 from memu.utils.conversation import format_grouped_chat_history, format_relative_time_label, normalize_whatsapp_identifier
+
+_main: Any = None
+
+
+def _m() -> Any:
+    if _main is None:
+        raise RuntimeError("message_log is not bound to app.main")
+    return _main
 
 
 def derive_source_label(conversation_id: str) -> str:
@@ -29,9 +36,13 @@ DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES = 8
 
 
 def _load_whatsapp_directory_names() -> dict[str, str]:
-    hermes_home = Path(os.getenv("HERMES_HOME") or "~/.hermes").expanduser().resolve()
-    directory_path = hermes_home / "channel_directory.json"
+    hermes_cfg = _m()._CONFIG.get("hermes") if isinstance(_m()._CONFIG.get("hermes"), dict) else {}
+    hermes_home_raw = str(hermes_cfg.get("home") or "").strip()
     out: dict[str, str] = {}
+    if not hermes_home_raw:
+        return out
+    hermes_home = Path(hermes_home_raw).expanduser().resolve()
+    directory_path = hermes_home / "channel_directory.json"
     if directory_path.exists():
         try:
             raw = json.loads(directory_path.read_text(encoding="utf-8"))

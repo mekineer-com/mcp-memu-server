@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from app import main
 from app.services.turn_contract import (
     _parse_attachment,
     build_turn_prompt,
@@ -264,7 +265,7 @@ def test_build_turn_prompt_keeps_category_prefix_for_hashtag_summary():
 
 
 def test_build_turn_prompt_derives_current_chat_heading_when_label_absent(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setitem(main._CONFIG, "hermes", {"home": str(tmp_path / ".hermes")})
     prompt = build_turn_prompt(
         user_message="hello",
         history=[{"role": "user", "content": "hi"}],
@@ -293,7 +294,7 @@ def test_build_turn_prompt_resolves_current_whatsapp_heading_from_directory(tmp_
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setitem(main._CONFIG, "hermes", {"home": str(hermes_home)})
 
     prompt = build_turn_prompt(
         user_message="hello",
@@ -325,7 +326,7 @@ def test_build_turn_prompt_resolves_empty_current_whatsapp_heading_from_director
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setitem(main._CONFIG, "hermes", {"home": str(hermes_home)})
 
     prompt = build_turn_prompt(
         user_message="",
@@ -702,7 +703,7 @@ def test_build_turn_prompt_uses_grouped_renderer_for_current_whatsapp_group(tmp_
         json.dumps({"family@g.us": "Household Group"}),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setitem(main._CONFIG, "hermes", {"home": str(hermes_home)})
 
     prompt = build_turn_prompt(
         user_message="current message",

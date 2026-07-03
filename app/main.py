@@ -127,6 +127,7 @@ from app.services.turn_contract import (
 logger = logging.getLogger(__name__)
 _apimw._main = sys.modules[__name__]
 _cross_history._main = sys.modules[__name__]
+_message_log._main = sys.modules[__name__]
 _PROMPT_LOGGER = logging.getLogger("uvicorn.error")
 
 
