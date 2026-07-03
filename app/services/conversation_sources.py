@@ -701,14 +701,15 @@ def slice_tail_with_floor(
     return tail
 
 
-def _sillytavern_snapshot_path(
+def _chat_snapshot_path(
     *,
     storage_dir: Path,
     user_id: str,
     soul_id: str,
     conversation_id: str,
+    source_label: str,
 ) -> Path:
-    chats_dir = (storage_dir / "st_chats").resolve()
+    chats_dir = (storage_dir / ("atomic_chats" if source_label == "atomic" else "st_chats")).resolve()
     chat_dir, _chat_key, _source = memorize_endpoint.resolve_chat_storage_dir(
         chats_dir,
         user_id,
@@ -720,7 +721,7 @@ def _sillytavern_snapshot_path(
     return (chat_dir / _ST_SNAPSHOT_FILE).resolve()
 
 
-def persist_sillytavern_history_snapshot(
+def persist_chat_history_snapshot(
     *,
     storage_dir: Path,
     user_id: str,
@@ -728,18 +729,21 @@ def persist_sillytavern_history_snapshot(
     conversation_id: str,
     history: list[dict[str, Any]],
     chat_name: str | None = None,
+    source_label: str,
 ) -> None:
     payload = {
         "conversation_id": str(conversation_id or "").strip(),
         "chat_name": str(chat_name or "").strip(),
+        "source_label": source_label,
         "updated_at": datetime.now(UTC).isoformat(),
         "history": list(history or []),
     }
-    path = _sillytavern_snapshot_path(
+    path = _chat_snapshot_path(
         storage_dir=storage_dir,
         user_id=user_id,
         soul_id=soul_id,
         conversation_id=conversation_id,
+        source_label=source_label,
     )
     tmp_name: str | None = None
     try:
@@ -762,7 +766,47 @@ def persist_sillytavern_history_snapshot(
                 pass
 
 
-def load_sillytavern_tail(
+def persist_sillytavern_history_snapshot(
+    *,
+    storage_dir: Path,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    history: list[dict[str, Any]],
+    chat_name: str | None = None,
+) -> None:
+    persist_chat_history_snapshot(
+        storage_dir=storage_dir,
+        user_id=user_id,
+        soul_id=soul_id,
+        conversation_id=conversation_id,
+        history=history,
+        chat_name=chat_name,
+        source_label="sillytavern",
+    )
+
+
+def persist_atomic_history_snapshot(
+    *,
+    storage_dir: Path,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    history: list[dict[str, Any]],
+    chat_name: str | None = None,
+) -> None:
+    persist_chat_history_snapshot(
+        storage_dir=storage_dir,
+        user_id=user_id,
+        soul_id=soul_id,
+        conversation_id=conversation_id,
+        history=history,
+        chat_name=chat_name,
+        source_label="atomic",
+    )
+
+
+def load_chat_snapshot_tail(
     *,
     storage_dir: Path,
     user_id: str,
@@ -770,21 +814,23 @@ def load_sillytavern_tail(
     conversation_id: str,
     since_cursor: int,
     recent_fallback_messages: int,
+    source_label: str,
 ) -> list[dict[str, Any]]:
-    path = _sillytavern_snapshot_path(
+    path = _chat_snapshot_path(
         storage_dir=storage_dir,
         user_id=user_id,
         soul_id=soul_id,
         conversation_id=conversation_id,
+        source_label=source_label,
     )
     if not path.exists():
-        raise FileNotFoundError(f"sillytavern snapshot missing: {path}")
+        raise FileNotFoundError(f"{source_label} snapshot missing: {path}")
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
-        raise RuntimeError(f"sillytavern snapshot must be an object: {path}")
+        raise RuntimeError(f"{source_label} snapshot must be an object: {path}")
     history = raw.get("history")
     if not isinstance(history, list):
-        raise RuntimeError(f"sillytavern snapshot history must be a list: {path}")
+        raise RuntimeError(f"{source_label} snapshot history must be a list: {path}")
     chat_name = str(raw.get("chat_name") or "").strip()
     all_rows: list[dict[str, Any]] = []
     for idx, item in enumerate(history):
@@ -797,13 +843,15 @@ def load_sillytavern_tail(
         speaker = str(item.get("name") or "").strip()
         ts_ms = item.get("ts_ms")
         received_at = _to_iso_utc((float(ts_ms) / 1000.0) if isinstance(ts_ms, (int, float)) else "")
+        if not received_at:
+            received_at = str(item.get("received_at") or item.get("created_at") or "").strip()
         all_rows.append(
             {
                 "role": role,
                 "speaker": speaker,
                 "chat_name": chat_name,
                 "content": content,
-                "source_label": "sillytavern",
+                "source_label": source_label,
                 "received_at": received_at,
                 "conversation_id": conversation_id,
                 "source_conversation_id": conversation_id,
@@ -814,6 +862,46 @@ def load_sillytavern_tail(
         all_rows,
         since_cursor=since_cursor,
         recent_fallback_messages=recent_fallback_messages,
+    )
+
+
+def load_sillytavern_tail(
+    *,
+    storage_dir: Path,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    since_cursor: int,
+    recent_fallback_messages: int,
+) -> list[dict[str, Any]]:
+    return load_chat_snapshot_tail(
+        storage_dir=storage_dir,
+        user_id=user_id,
+        soul_id=soul_id,
+        conversation_id=conversation_id,
+        since_cursor=since_cursor,
+        recent_fallback_messages=recent_fallback_messages,
+        source_label="sillytavern",
+    )
+
+
+def load_atomic_tail(
+    *,
+    storage_dir: Path,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    since_cursor: int,
+    recent_fallback_messages: int,
+) -> list[dict[str, Any]]:
+    return load_chat_snapshot_tail(
+        storage_dir=storage_dir,
+        user_id=user_id,
+        soul_id=soul_id,
+        conversation_id=conversation_id,
+        since_cursor=since_cursor,
+        recent_fallback_messages=recent_fallback_messages,
+        source_label="atomic",
     )
 
 

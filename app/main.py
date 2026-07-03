@@ -21,7 +21,7 @@ from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from memu.app import MemoryService
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app import procedural as _procedural
 from app.config import (
@@ -159,6 +159,14 @@ class AtomicSessionStartRequest(BaseModel):
     message: str | None = None
     soul_card: str | None = None
     debug: bool = False
+
+
+class AtomicSessionEndRequest(BaseModel):
+    user_id: str
+    soul_id: str
+    conversation_id: str
+    activity_recap: str | None = None
+    transcript: list[dict[str, Any]] = Field(default_factory=list)
 
 _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
@@ -3800,6 +3808,26 @@ async def atomic_session_start(req: AtomicSessionStartRequest):
     conversation_id = raw_cid or "chat:memory-surfer"
     if raw_cid and not raw_cid.startswith("chat:"):
         conversation_id = f"chat:atomic-{raw_cid}"
+    if conversation_id.startswith("chat:atomic-"):
+        now_iso = datetime.now(UTC).isoformat()
+        _write_conversation_state(
+            conversation_id,
+            soul_id=soul_id,
+            user_id=uid,
+            updates={
+                "memorize_chat": True,
+                "atomic_session_started_at": now_iso,
+                "atomic_session_ended_at": None,
+            },
+        )
+        _conversation_sources.persist_atomic_history_snapshot(
+            storage_dir=_get_storage_dir(_CONFIG),
+            user_id=uid,
+            soul_id=soul_id,
+            conversation_id=conversation_id,
+            history=[],
+            chat_name="Atomic",
+        )
 
     message = str(req.message or "").strip()
     retrieve_payload: dict[str, Any] = {
@@ -3824,6 +3852,83 @@ async def atomic_session_start(req: AtomicSessionStartRequest):
         "conversation_id": conversation_id,
         "snapshot_text": snapshot_text,
         "retrieve_ms": retrieve_out.get("retrieve_ms"),
+    }
+
+
+def _atomic_transcript_rows(transcript: list[dict[str, Any]], *, soul_id: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in transcript or []:
+        if not isinstance(row, dict):
+            continue
+        role = str(row.get("role") or "").strip().lower()
+        if role == "system":
+            continue
+        content = str(row.get("content") or row.get("message") or "").strip()
+        if not role or not content:
+            continue
+        out = {
+            "role": "assistant" if role == "soul" else role,
+            "content": content,
+            "name": str(row.get("name") or row.get("speaker") or "").strip(),
+            "created_at": str(row.get("created_at") or row.get("received_at") or "").strip(),
+        }
+        if out["role"] == "assistant" and not out["name"]:
+            out["name"] = soul_id
+        rows.append(out)
+    return rows
+
+
+def _atomic_has_interchange(rows: list[dict[str, Any]]) -> bool:
+    roles = {str(row.get("role") or "").strip().lower() for row in rows}
+    return "user" in roles and "assistant" in roles
+
+
+@app.post("/integration/atomic/session_end", operation_id="atomic_session_end", tags=["integration"])
+async def atomic_session_end(req: AtomicSessionEndRequest):
+    uid = str(req.user_id or "").strip()
+    soul_id = str(req.soul_id or "").strip()
+    conversation_id = str(req.conversation_id or "").strip()
+    if not uid or not soul_id or not conversation_id:
+        raise HTTPException(status_code=400, detail="user_id, soul_id, and conversation_id are required")
+    if not conversation_id.startswith("chat:atomic-"):
+        raise HTTPException(status_code=400, detail="conversation_id must start with chat:atomic-")
+
+    state_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=uid, soul_id=soul_id)
+    if state_row.get("atomic_session_ended_at"):
+        return {"ok": True, "status": "already_ended", "conversation_id": conversation_id}
+
+    rows = _atomic_transcript_rows(req.transcript, soul_id=soul_id)
+    recap = str(req.activity_recap or "").strip()
+    if _atomic_has_interchange(rows) and not recap:
+        raise HTTPException(status_code=400, detail="activity_recap is required when session has user/soul interchange")
+
+    _conversation_sources.persist_atomic_history_snapshot(
+        storage_dir=_get_storage_dir(_CONFIG),
+        user_id=uid,
+        soul_id=soul_id,
+        conversation_id=conversation_id,
+        history=rows,
+        chat_name="Atomic",
+    )
+    if recap:
+        _record_activity_message(user_id=uid, soul_id=soul_id, recap=recap)
+
+    ended_at = datetime.now(UTC).isoformat()
+    _write_conversation_state(
+        conversation_id,
+        soul_id=soul_id,
+        user_id=uid,
+        updates={
+            "memorize_chat": True,
+            "atomic_session_ended_at": ended_at,
+        },
+    )
+    return {
+        "ok": True,
+        "status": "ended",
+        "conversation_id": conversation_id,
+        "activity_recorded": bool(recap),
+        "message_count": len(rows),
     }
 
 

@@ -113,6 +113,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     rolling_summary TEXT,
     rolling_summary_cursor_id INTEGER,
     rolling_summary_updated_at DATETIME,
+    atomic_session_started_at DATETIME,
+    atomic_session_ended_at DATETIME,
     prior_context TEXT,
     pending_segment_ids JSON DEFAULT '[]',
     last_memorize_at DATETIME,
@@ -159,6 +161,10 @@ CREATE TABLE IF NOT EXISTS conversations (
         con.execute("ALTER TABLE conversations ADD COLUMN last_display_segment_end_index INTEGER")
     if "last_display_segment_at" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN last_display_segment_at DATETIME")
+    if "atomic_session_started_at" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN atomic_session_started_at DATETIME")
+    if "atomic_session_ended_at" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN atomic_session_ended_at DATETIME")
     sqlite_ensure_soul_tables(con)
     con.commit()
 

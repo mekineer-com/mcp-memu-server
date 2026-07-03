@@ -90,6 +90,17 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (state_row, "Siri card", None),
     )
+    state_writes: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        main,
+        "_write_conversation_state",
+        lambda *_a, **kwargs: (state_writes.append(dict(kwargs.get("updates") or {})) or ({}, None)),
+    )
+    monkeypatch.setattr(
+        main._conversation_sources,
+        "persist_atomic_history_snapshot",
+        lambda **_kwargs: None,
+    )
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
         assert safe.get("_read_only_retrieve") is True
@@ -111,6 +122,10 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
     )
 
     assert out["conversation_id"] == "chat:atomic-atomic-uuid"
+    assert len(state_writes) == 1
+    assert state_writes[0]["memorize_chat"] is True
+    assert state_writes[0]["atomic_session_started_at"]
+    assert state_writes[0]["atomic_session_ended_at"] is None
     snapshot = str(out["snapshot_text"])
     assert "Siri card" in snapshot
     assert "Prior Context:" in snapshot
@@ -176,6 +191,107 @@ async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: py
         "limit": 3,
         "since_days": 7,
     }
+
+
+def test_atomic_source_label_and_heading() -> None:
+    from app.services import turn_contract
+
+    assert main._message_log.derive_source_label("chat:atomic-abc") == "atomic"
+    assert turn_contract._section_title_from_conversation_id("chat:atomic-abc") == "My Atomic Conversations:"
+    assert main._message_log.derive_source_label("chat:plain") == "sillytavern"
+
+
+@pytest.mark.asyncio
+async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    storage_dir = tmp_path / "resources"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+    monkeypatch.setattr(main, "_get_storage_dir", lambda *_a, **_k: storage_dir)
+
+    req = main.AtomicSessionEndRequest(
+        user_id="u",
+        soul_id="Echo",
+        conversation_id="chat:atomic-c1",
+        activity_recap="We reviewed memory summaries.",
+        transcript=[
+            {"role": "system", "content": "hidden"},
+            {"role": "user", "content": "hello", "created_at": "2026-07-03T00:00:00+00:00"},
+            {"role": "assistant", "content": "hi", "created_at": "2026-07-03T00:00:01+00:00"},
+        ],
+    )
+
+    out = await main.atomic_session_end(req)
+    again = await main.atomic_session_end(req)
+
+    assert out["status"] == "ended"
+    assert out["activity_recorded"] is True
+    assert again["status"] == "already_ended"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        row = main._conversation_state_row(con, "chat:atomic-c1")
+        state = main._conversation_state_from_row(row)
+        activity_rows = con.execute("SELECT content FROM activity_messages").fetchall()
+    finally:
+        con.close()
+    assert state is not None
+    assert state["memorize_chat"] is True
+    assert state["atomic_session_ended_at"]
+    assert [row["content"] for row in activity_rows] == ["We reviewed memory summaries."]
+
+    tail = main._conversation_sources.load_atomic_tail(
+        storage_dir=storage_dir,
+        user_id="u",
+        soul_id="Echo",
+        conversation_id="chat:atomic-c1",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+    )
+    assert [row["content"] for row in tail] == ["hello", "hi"]
+    assert {row["source_label"] for row in tail} == {"atomic"}
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        tails = main._cross_history._load_cross_memorize_tails_from_sources(
+            con=con,
+            user_id="u",
+            soul_id="Echo",
+        )
+    finally:
+        con.close()
+    assert all(row["memorize_chat"] is True for row in tails["chat:atomic-c1"])
+
+
+@pytest.mark.asyncio
+async def test_atomic_session_end_skips_recap_for_empty_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+    monkeypatch.setattr(main, "_get_storage_dir", lambda *_a, **_k: tmp_path / "resources")
+
+    out = await main.atomic_session_end(
+        main.AtomicSessionEndRequest(
+            user_id="u",
+            soul_id="Echo",
+            conversation_id="chat:atomic-empty",
+            transcript=[],
+        )
+    )
+
+    assert out["status"] == "ended"
+    assert out["activity_recorded"] is False
+    con = main._sqlite_connect(db_path)
+    try:
+        main._activity_messages.ensure_activity_messages_schema(con)
+        rows = con.execute("SELECT * FROM activity_messages").fetchall()
+    finally:
+        con.close()
+    assert rows == []
 
 
 @pytest.mark.asyncio

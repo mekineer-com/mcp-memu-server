@@ -595,6 +595,8 @@ def _dedupe_prior_context(prior_context: str | None, blocked_terms: set[str]) ->
 
 def _section_title_from_conversation_id(conversation_id: str | None) -> str:
     cid = _text(conversation_id)
+    if cid.startswith("chat:atomic-"):
+        return "My Atomic Conversations:"
     if cid.startswith(("sillytavern", "integrity:", "chat:")):
         return "My SillyTavern Conversations:"
     if cid.startswith("whatsapp:"):

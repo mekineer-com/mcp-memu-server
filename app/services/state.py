@@ -95,6 +95,8 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "last_background_error_at": row["last_background_error_at"] if "last_background_error_at" in row.keys() else None,
         "last_consolidation_error": row["last_consolidation_error"] if "last_consolidation_error" in row.keys() else None,
         "last_consolidation_error_at": row["last_consolidation_error_at"] if "last_consolidation_error_at" in row.keys() else None,
+        "atomic_session_started_at": row["atomic_session_started_at"] if "atomic_session_started_at" in row.keys() else None,
+        "atomic_session_ended_at": row["atomic_session_ended_at"] if "atomic_session_ended_at" in row.keys() else None,
     }
 
 
@@ -106,7 +108,8 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
         "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at, "
         "updated_at, undo_snapshot, "
         "last_background_error, last_background_error_at, "
-        "last_consolidation_error, last_consolidation_error_at "
+        "last_consolidation_error, last_consolidation_error_at, "
+        "atomic_session_started_at, atomic_session_ended_at "
         "FROM conversations WHERE conversation_id = ? LIMIT 1",
         (conversation_id,),
     ).fetchone()
@@ -138,6 +141,8 @@ def conversation_state_empty(
         "last_background_error_at": None,
         "last_consolidation_error": None,
         "last_consolidation_error_at": None,
+        "atomic_session_started_at": None,
+        "atomic_session_ended_at": None,
     }
 
 
@@ -236,6 +241,8 @@ INSERT OR IGNORE INTO conversations (
                 "last_background_error_at",
                 "last_consolidation_error",
                 "last_consolidation_error_at",
+                "atomic_session_started_at",
+                "atomic_session_ended_at",
             }:
                 field_updates[key] = value
 

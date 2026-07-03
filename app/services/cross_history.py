@@ -420,6 +420,15 @@ def _load_tail_for_source_conversation(
             since_cursor=since_cursor,
             recent_fallback_messages=recent_fallback_messages,
         )
+    if source_label == "atomic":
+        return _conversation_sources.load_atomic_tail(
+            storage_dir=storage_dir,
+            user_id=user_id,
+            soul_id=soul_id,
+            conversation_id=conversation_id,
+            since_cursor=since_cursor,
+            recent_fallback_messages=recent_fallback_messages,
+        )
     return []
 
 
