@@ -51,6 +51,7 @@ mcp-memu-server/
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn maintenance using `undo_snapshot` (single-step depth) |
 | `/integration/memu/turn` | POST | MCP-facing single-call turn wrapper: internally runs conversation-retrieve (`build_turn_prompt=true`) then conversation-turn with prompt override payload |
 | `/integration/atomic/chat_profile` | GET | Atomic-facing chat provider profile derived from `config.json` (`llm`), returned in Atomic settings shape for per-message use; includes API key, so callers must not log it |
+| `/integration/atomic/search` | GET | Atomic-facing read-only memory search (`q`, `user_id`, `soul_id`, optional `limit`, `since_days`) backed by `GraphMixin.graph_search`; no turn/retrieve state machinery |
 | `/integration/memu/retrieve` | POST | MCP-facing retrieve wrapper |
 | `/integration/memu/memorize` | POST | MCP-facing memorize trigger wrapper (`force` supported) |
 | `/integration/memu/consolidate` | POST | MCP-facing force consolidation wrapper |

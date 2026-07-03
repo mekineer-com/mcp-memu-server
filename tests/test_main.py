@@ -150,6 +150,35 @@ async def test_atomic_chat_profile_maps_openai_config(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
+async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakeSvc:
+        async def graph_search(self, query: str, **kwargs: Any) -> dict[str, Any]:
+            captured["query"] = query
+            captured.update(kwargs)
+            return {"nodes": [{"id": "memory:m1", "summary": "sushi"}], "count": 1}
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+
+    out = await main.atomic_memory_search(
+        q="sushi",
+        user_id="Marcos",
+        soul_id="Siri",
+        limit=3,
+        since_days=7,
+    )
+
+    assert out["nodes"][0]["id"] == "memory:m1"
+    assert captured == {
+        "query": "sushi",
+        "where": {"user_id": "Marcos", "soul_id": "Siri"},
+        "limit": 3,
+        "since_days": 7,
+    }
+
+
+@pytest.mark.asyncio
 async def test_conversation_retrieve_read_only_skips_sillytavern_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -2609,6 +2609,29 @@ async def memory_graph(
     return svc.graph_recent(where=scope, limit=limit)
 
 
+@app.get("/integration/atomic/search", operation_id="atomic_memory_search", tags=["integration"])
+async def atomic_memory_search(
+    q: str,
+    user_id: str,
+    soul_id: str,
+    limit: int = 5,
+    since_days: int | None = None,
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    query = str(q or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    if not query:
+        raise HTTPException(status_code=400, detail="q is required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    try:
+        return await svc.graph_search(query, where=scope, limit=limit, since_days=since_days)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/memory/{item_id}", operation_id="memory_graph_item")
 async def memory_graph_item(
     item_id: str,
