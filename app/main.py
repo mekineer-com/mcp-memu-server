@@ -2827,6 +2827,7 @@ async def conversation_retrieve(
             retrieve_focus = "Atomic memory workspace"
             if safe.get("queries") is None:
                 safe["query"] = retrieve_focus
+        display_current_user_text = message if build_atomic_snapshot else retrieve_focus
         current_whatsapp_active_since = _current_whatsapp_active_since_for_soul(cid, soul_id)
         is_live_turn = bool(safe.get("is_live_turn")) and _message_log.derive_source_label(cid).startswith("whatsapp:")
         history = _prepare_current_whatsapp_history(
@@ -2896,7 +2897,7 @@ async def conversation_retrieve(
             conversation_id=cid,
             soul_id=soul_id,
             chat_label=chat_label_for_prompt,
-            current_user_text=retrieve_focus,
+            current_user_text=display_current_user_text,
             self_turn_directive=self_turn_directive or None,
         )
 
@@ -3836,6 +3837,8 @@ async def atomic_session_start(req: AtomicSessionStartRequest):
         "_read_only_retrieve": True,
         "mental_health_addon": False,
         "debug": bool(req.debug),
+        "chat_name": uid,
+        "chat_type": "dm",
     }
     if message:
         retrieve_payload["message"] = message

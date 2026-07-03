@@ -296,6 +296,8 @@ def build_conversations_block(
             if heading.startswith("[dm]["):
                 last_user_name = heading[len("[dm]["):].split("]", 1)[0].strip()
         synthetic: dict[str, Any] = {"role": "user", "content": current_content}
+        if _text(conversation_id):
+            synthetic["conversation_id"] = _text(conversation_id)
         if last_user_name:
             synthetic["name"] = last_user_name
         history_for_render.append(synthetic)

@@ -102,9 +102,12 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
         lambda **_kwargs: None,
     )
 
+    captured: dict[str, Any] = {}
+
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
         assert safe.get("_read_only_retrieve") is True
         assert safe.get("mental_health_addon") is False
+        captured["safe"] = safe
         return {
             "ok": True,
             "result": {"items": [], "categories": [], "resources": []},
@@ -134,6 +137,9 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
     assert "Return STRICT JSON only" not in snapshot
     assert "response_target" not in snapshot
     assert "**remember maximum lengths and response schema**" not in snapshot
+    assert "[user] Atomic memory workspace" not in snapshot
+    assert captured["safe"]["chat_name"] == "Marcos"
+    assert captured["safe"]["chat_type"] == "dm"
 
 
 @pytest.mark.asyncio

@@ -221,6 +221,24 @@ def test_build_turn_prompt_marks_current_chat_when_label_provided():
     assert "[dm][Alice] ← current chat" in prompt
 
 
+def test_build_turn_prompt_keeps_synthetic_atomic_message_in_atomic_section():
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[],
+        prior_context=None,
+        retrieve_rag=None,
+        all_categories_summary=None,
+        memory_cache=None,
+        intentions_active=None,
+        chat_label="[dm][Marcos]",
+        conversation_id="chat:atomic-abc",
+    )
+
+    assert "My Atomic Conversations:" in prompt
+    assert "My SillyTavern Conversations:" not in prompt
+    assert "[dm][Marcos] ← current chat" in prompt
+
+
 def test_build_turn_prompt_does_not_double_prefix_markdown_category_summary():
     prompt = build_turn_prompt(
         user_message="hello",
