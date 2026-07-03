@@ -2650,6 +2650,20 @@ async def memory_graph_item(
     return item
 
 
+@app.get("/pending", operation_id="memory_graph_pending")
+async def memory_graph_pending(
+    user_id: str,
+    soul_id: str,
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    return svc.graph_list_pending(where=scope)
+
+
 @app.patch("/memory/{item_id}", operation_id="memory_graph_item_update")
 async def memory_graph_item_update(
     item_id: str,
@@ -2672,11 +2686,54 @@ async def memory_graph_item_update(
             summary=summary,
             where=scope,
             edited_by=payload.get("edited_by") if isinstance(payload.get("edited_by"), str) else None,
+            approved=payload.get("approved") is True,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError:
         item = None
+    if item is None:
+        raise HTTPException(status_code=404, detail="memory not found")
+    return item
+
+
+@app.post("/memory/{item_id}/approve", operation_id="memory_graph_item_approve")
+async def memory_graph_item_approve(
+    item_id: str,
+    user_id: str,
+    soul_id: str,
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    try:
+        item = svc.graph_approve_memory(item_id, where=scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="memory not found")
+    return item
+
+
+@app.delete("/memory/{item_id}", operation_id="memory_graph_item_delete")
+async def memory_graph_item_delete(
+    item_id: str,
+    user_id: str,
+    soul_id: str,
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    try:
+        item = svc.graph_delete_memory(item_id, where=scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if item is None:
         raise HTTPException(status_code=404, detail="memory not found")
     return item
@@ -2704,11 +2761,33 @@ async def memory_graph_category_update(
             summary=summary,
             where=scope,
             edited_by=payload.get("edited_by") if isinstance(payload.get("edited_by"), str) else None,
+            approved=payload.get("approved") is True,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError:
         item = None
+    if item is None:
+        raise HTTPException(status_code=404, detail="category not found")
+    return item
+
+
+@app.post("/category/{category_id}/approve", operation_id="memory_graph_category_approve")
+async def memory_graph_category_approve(
+    category_id: str,
+    user_id: str,
+    soul_id: str,
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    try:
+        item = svc.graph_approve_category(category_id, where=scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if item is None:
         raise HTTPException(status_code=404, detail="category not found")
     return item
