@@ -168,6 +168,13 @@ class AtomicSessionEndRequest(BaseModel):
     activity_recap: str | None = None
     transcript: list[dict[str, Any]] = Field(default_factory=list)
 
+
+class AtomicPromptLogRequest(BaseModel):
+    conversation_id: str | None = None
+    model: str | None = None
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+
+
 _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 8000
@@ -3966,22 +3973,31 @@ def _atomic_chat_settings_from_config(cfg: dict[str, Any]) -> dict[str, str]:
     base_url = str(profile.get("base_url") or "").strip()
     api_key = str(profile.get("api_key") or "")
     chat_model = str(profile.get("chat_model") or "").strip()
+    try:
+        response_sentences = max(1, int(cfg.get("turn_response_sentences", 3)))
+    except (TypeError, ValueError):
+        response_sentences = 3
+    debug_cfg = cfg.get("debug") if isinstance(cfg.get("debug"), dict) else {}
+    common = {
+        "memu_response_sentences": str(response_sentences),
+        "memu_log_prompts": "1" if bool(debug_cfg.get("log_prompts", False)) else "0",
+    }
 
     if provider in {"openai", "openai_compat", "nanogpt"}:
-        return {
+        return common | {
             "provider": "openai_compat",
             "openai_compat_base_url": base_url,
             "openai_compat_api_key": api_key,
             "openai_compat_llm_model": chat_model,
         }
     if provider == "ollama":
-        return {
+        return common | {
             "provider": "ollama",
             "ollama_host": base_url,
             "ollama_llm_model": chat_model,
         }
     if provider == "openrouter":
-        return {
+        return common | {
             "provider": "openrouter",
             "openrouter_api_key": api_key,
             "chat_model": chat_model,
@@ -3992,6 +4008,40 @@ def _atomic_chat_settings_from_config(cfg: dict[str, Any]) -> dict[str, str]:
 @app.get("/integration/atomic/chat_profile", operation_id="atomic_chat_profile", tags=["integration"])
 async def atomic_chat_profile():
     return {"ok": True, "settings": _atomic_chat_settings_from_config(_CONFIG)}
+
+
+@app.post("/integration/atomic/prompt_log", operation_id="atomic_prompt_log", tags=["integration"])
+async def atomic_prompt_log(req: AtomicPromptLogRequest):
+    if not _LOG_PROMPTS:
+        return {"ok": True, "logged": False}
+    cid = str(req.conversation_id or "").strip() or "-"
+    model = str(req.model or "").strip() or "-"
+    banner = "===== ATOMIC CHAT · prompt ".ljust(70, "=")
+    lines = [
+        "",
+        "",
+        "",
+        banner,
+        "",
+        f"[PROMPT] op=atomic_chat conversation_id={cid} model={model}",
+    ]
+    for idx, message in enumerate(req.messages, start=1):
+        role = str(message.get("role") or "-")
+        content = message.get("content")
+        lines.extend([
+            "",
+            f"--- message {idx} role={role} ---",
+            "" if content is None else str(content),
+        ])
+        if message.get("tool_calls") is not None:
+            lines.extend([
+                "tool_calls:",
+                json.dumps(message["tool_calls"], ensure_ascii=False, indent=2),
+            ])
+        if message.get("tool_call_id") is not None:
+            lines.append(f"tool_call_id: {message['tool_call_id']}")
+    _PROMPT_LOGGER.info("\n".join(lines))
+    return {"ok": True, "logged": True}
 
 
 @app.post("/integration/memu/retrieve", operation_id="memu_retrieve", tags=["mcp_tools"])

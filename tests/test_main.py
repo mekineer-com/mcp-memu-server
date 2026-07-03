@@ -148,6 +148,8 @@ async def test_atomic_chat_profile_maps_openai_config(monkeypatch: pytest.Monkey
         main,
         "_CONFIG",
         {
+            "turn_response_sentences": 4,
+            "debug": {"log_prompts": True},
             "llm": {
                 "provider": "openai",
                 "base_url": "https://nano-gpt.example/v1",
@@ -162,12 +164,36 @@ async def test_atomic_chat_profile_maps_openai_config(monkeypatch: pytest.Monkey
     assert out == {
         "ok": True,
         "settings": {
+            "memu_response_sentences": "4",
+            "memu_log_prompts": "1",
             "provider": "openai_compat",
             "openai_compat_base_url": "https://nano-gpt.example/v1",
             "openai_compat_api_key": "secret-key",
             "openai_compat_llm_model": "zai-org/glm-5.2",
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_atomic_prompt_log_pretty_logs_unescaped_content(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "_LOG_PROMPTS", True)
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+
+    out = await main.atomic_prompt_log(
+        main.AtomicPromptLogRequest(
+            conversation_id="chat:atomic-1",
+            model="glm",
+            messages=[{"role": "user", "content": 'Say "hi".'}],
+        )
+    )
+
+    assert out == {"ok": True, "logged": True}
+    text = "\n".join(record.getMessage() for record in caplog.records)
+    assert 'Say "hi".' in text
+    assert '\\"hi\\"' not in text
 
 
 @pytest.mark.asyncio
