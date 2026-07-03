@@ -122,6 +122,34 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
 
 
 @pytest.mark.asyncio
+async def test_atomic_chat_profile_maps_openai_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        main,
+        "_CONFIG",
+        {
+            "llm": {
+                "provider": "openai",
+                "base_url": "https://nano-gpt.example/v1",
+                "api_key": "secret-key",
+                "chat_model": "zai-org/glm-5.2",
+            }
+        },
+    )
+
+    out = await main.atomic_chat_profile()
+
+    assert out == {
+        "ok": True,
+        "settings": {
+            "provider": "openai_compat",
+            "openai_compat_base_url": "https://nano-gpt.example/v1",
+            "openai_compat_api_key": "secret-key",
+            "openai_compat_llm_model": "zai-org/glm-5.2",
+        },
+    }
+
+
+@pytest.mark.asyncio
 async def test_conversation_retrieve_read_only_skips_sillytavern_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -3724,6 +3724,40 @@ async def atomic_session_start(req: AtomicSessionStartRequest):
     }
 
 
+def _atomic_chat_settings_from_config(cfg: dict[str, Any]) -> dict[str, str]:
+    profile = _default_llm_profiles_from_server_config(cfg).get("default", {})
+    provider = str(profile.get("provider") or "").strip().lower()
+    base_url = str(profile.get("base_url") or "").strip()
+    api_key = str(profile.get("api_key") or "")
+    chat_model = str(profile.get("chat_model") or "").strip()
+
+    if provider in {"openai", "openai_compat", "nanogpt"}:
+        return {
+            "provider": "openai_compat",
+            "openai_compat_base_url": base_url,
+            "openai_compat_api_key": api_key,
+            "openai_compat_llm_model": chat_model,
+        }
+    if provider == "ollama":
+        return {
+            "provider": "ollama",
+            "ollama_host": base_url,
+            "ollama_llm_model": chat_model,
+        }
+    if provider == "openrouter":
+        return {
+            "provider": "openrouter",
+            "openrouter_api_key": api_key,
+            "chat_model": chat_model,
+        }
+    raise HTTPException(status_code=500, detail=f"Unsupported Atomic chat provider: {provider or '<empty>'}")
+
+
+@app.get("/integration/atomic/chat_profile", operation_id="atomic_chat_profile", tags=["integration"])
+async def atomic_chat_profile():
+    return {"ok": True, "settings": _atomic_chat_settings_from_config(_CONFIG)}
+
+
 @app.post("/integration/memu/retrieve", operation_id="memu_retrieve", tags=["mcp_tools"])
 async def mcp_memu_retrieve(req: _mcp_tools.MemuRetrieveRequest):
     return await _mcp_tools.memu_retrieve_endpoint(
