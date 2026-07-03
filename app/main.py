@@ -3883,6 +3883,26 @@ def _atomic_has_interchange(rows: list[dict[str, Any]]) -> bool:
     return "user" in roles and "assistant" in roles
 
 
+def _atomic_parse_dt(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _atomic_latest_created_at(rows: list[dict[str, Any]]) -> datetime | None:
+    latest: datetime | None = None
+    for row in rows:
+        created_at = _atomic_parse_dt(row.get("created_at") or row.get("received_at"))
+        if created_at and (latest is None or created_at > latest):
+            latest = created_at
+    return latest
+
+
 @app.post("/integration/atomic/session_end", operation_id="atomic_session_end", tags=["integration"])
 async def atomic_session_end(req: AtomicSessionEndRequest):
     uid = str(req.user_id or "").strip()
@@ -3893,11 +3913,13 @@ async def atomic_session_end(req: AtomicSessionEndRequest):
     if not conversation_id.startswith("chat:atomic-"):
         raise HTTPException(status_code=400, detail="conversation_id must start with chat:atomic-")
 
+    rows = _atomic_transcript_rows(req.transcript, soul_id=soul_id)
     state_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=uid, soul_id=soul_id)
-    if state_row.get("atomic_session_ended_at"):
+    ended_at = _atomic_parse_dt(state_row.get("atomic_session_ended_at"))
+    latest_created_at = _atomic_latest_created_at(rows)
+    if ended_at and (latest_created_at is None or latest_created_at <= ended_at):
         return {"ok": True, "status": "already_ended", "conversation_id": conversation_id}
 
-    rows = _atomic_transcript_rows(req.transcript, soul_id=soul_id)
     recap = str(req.activity_recap or "").strip()
     if _atomic_has_interchange(rows) and not recap:
         raise HTTPException(status_code=400, detail="activity_recap is required when session has user/soul interchange")
@@ -3913,7 +3935,10 @@ async def atomic_session_end(req: AtomicSessionEndRequest):
     if recap:
         _record_activity_message(user_id=uid, soul_id=soul_id, recap=recap)
 
-    ended_at = datetime.now(UTC).isoformat()
+    ended_dt = datetime.now(UTC)
+    if latest_created_at and latest_created_at > ended_dt:
+        ended_dt = latest_created_at
+    ended_at = ended_dt.isoformat()
     _write_conversation_state(
         conversation_id,
         soul_id=soul_id,

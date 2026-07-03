@@ -242,6 +242,35 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
     assert state["atomic_session_ended_at"]
     assert [row["content"] for row in activity_rows] == ["We reviewed memory summaries."]
 
+    later_at = (datetime.fromisoformat(state["atomic_session_ended_at"]) + timedelta(seconds=1)).isoformat()
+    later = await main.atomic_session_end(
+        main.AtomicSessionEndRequest(
+            user_id="u",
+            soul_id="Echo",
+            conversation_id="chat:atomic-c1",
+            activity_recap="We reviewed one more memory.",
+            transcript=[
+                {"role": "user", "content": "hello", "created_at": "2026-07-03T00:00:00+00:00"},
+                {"role": "assistant", "content": "hi", "created_at": "2026-07-03T00:00:01+00:00"},
+                {"role": "user", "content": "one more", "created_at": later_at},
+                {"role": "assistant", "content": "done", "created_at": later_at},
+            ],
+        )
+    )
+    assert later["status"] == "ended"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        activity_rows = con.execute(
+            "SELECT content FROM activity_messages ORDER BY source_conversation_index"
+        ).fetchall()
+    finally:
+        con.close()
+    assert [row["content"] for row in activity_rows] == [
+        "We reviewed memory summaries.",
+        "We reviewed one more memory.",
+    ]
+
     tail = main._conversation_sources.load_atomic_tail(
         storage_dir=storage_dir,
         user_id="u",
@@ -250,7 +279,7 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
         since_cursor=-1,
         recent_fallback_messages=0,
     )
-    assert [row["content"] for row in tail] == ["hello", "hi"]
+    assert [row["content"] for row in tail] == ["hello", "hi", "one more", "done"]
     assert {row["source_label"] for row in tail} == {"atomic"}
     con = main._sqlite_connect(db_path)
     try:
