@@ -137,7 +137,6 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
     assert "Return STRICT JSON only" not in snapshot
     assert "response_target" not in snapshot
     assert "**remember maximum lengths and response schema**" not in snapshot
-    assert "**remember maximum lengths**" in snapshot
     assert "[user] Atomic memory workspace" not in snapshot
     assert captured["safe"]["chat_name"] == "Marcos"
     assert captured["safe"]["chat_type"] == "dm"

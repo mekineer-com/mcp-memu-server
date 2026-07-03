@@ -2973,7 +2973,7 @@ async def conversation_retrieve(
                     current_user_text=message,
                     self_turn_directive=self_turn_directive or None,
                 )
-                out["atomic_snapshot_text"] = f"{system_base}\n\n{context_block}\n\n**remember maximum lengths**".strip()
+                out["atomic_snapshot_text"] = f"{system_base}\n\n{context_block}".strip()
                 out["turn_prompt_source"] = "conversation_retrieve"
 
         want_turn_prompt = bool(safe.get("build_turn_prompt", False))
