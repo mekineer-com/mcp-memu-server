@@ -17,7 +17,7 @@ from app.services.turn_contract import (
 
 def test_parse_turn_contract_valid_json():
     parsed = parse_turn_contract(
-        '{"response":"Hi there","response_target":"respond","cache":{"entry":"thinking"},"intention_action":{"type":"boost","target_id":"a"},"annulments":[],"rehearsal":"hmm"}'
+        '{"response":"Hi there","response_target":"respond","working_thought":{"entry":"thinking"},"intention_action":{"type":"boost","target_id":"a"},"annulments":[],"rehearsal":"hmm"}'
     )
     assert parsed["response"] == "Hi there"
     assert parsed["cache_entry"] == "thinking"
@@ -30,7 +30,7 @@ def test_parse_turn_contract_valid_json():
 
 def test_parse_turn_contract_null_reason_means_no_continuation():
     parsed = parse_turn_contract(
-        '{"response":"Hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"hmm","continue_reason":null}'
+        '{"response":"Hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"hmm","continue_reason":null}'
     )
     assert parsed["continue_reason"] is None
     assert parsed["follow_up_at"] is None
@@ -39,7 +39,7 @@ def test_parse_turn_contract_null_reason_means_no_continuation():
 
 def test_parse_turn_contract_accepts_valid_task_continuation():
     parsed = parse_turn_contract(
-        '{"response":"I will look into it","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ready","continue_reason":"task"}'
+        '{"response":"I will look into it","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ready","continue_reason":"task"}'
     )
     assert parsed["continue_reason"] == "task"
     assert parsed["follow_up_at"] is None
@@ -48,7 +48,7 @@ def test_parse_turn_contract_accepts_valid_task_continuation():
 
 def test_parse_turn_contract_accepts_valid_follow_up_continuation():
     parsed = parse_turn_contract(
-        '{"response":"I will check later","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ready","continue_reason":"follow_up","follow_up_at":"Monday, June 8, 2026 19:00 PET","follow_up_reason":"Check whether Marcos got home safely."}'
+        '{"response":"I will check later","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ready","continue_reason":"follow_up","follow_up_at":"Monday, June 8, 2026 19:00 PET","follow_up_reason":"Check whether Marcos got home safely."}'
     )
     assert parsed["continue_reason"] == "follow_up"
     assert parsed["follow_up_at"] == "Monday, June 8, 2026 19:00 PET"
@@ -58,7 +58,7 @@ def test_parse_turn_contract_accepts_valid_follow_up_continuation():
 def test_parse_turn_contract_invalid_continuation_reason_logs_and_disables(caplog):
     caplog.set_level(logging.WARNING, logger="uvicorn.error")
     parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok","continue_reason":"wander","follow_up_at":null}'
+        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"wander","follow_up_at":null}'
     )
     assert parsed["continue_reason"] is None
     assert parsed["follow_up_at"] is None
@@ -69,7 +69,7 @@ def test_parse_turn_contract_invalid_continuation_reason_logs_and_disables(caplo
 def test_parse_turn_contract_follow_up_without_time_logs_and_disables(caplog):
     caplog.set_level(logging.WARNING, logger="uvicorn.error")
     parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok","continue_reason":"follow_up","follow_up_at":null}'
+        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"follow_up","follow_up_at":null}'
     )
     assert parsed["continue_reason"] is None
     assert parsed["follow_up_at"] is None
@@ -80,7 +80,7 @@ def test_parse_turn_contract_follow_up_without_time_logs_and_disables(caplog):
 def test_parse_turn_contract_follow_up_without_reason_logs_and_disables(caplog):
     caplog.set_level(logging.WARNING, logger="uvicorn.error")
     parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok","continue_reason":"follow_up","follow_up_at":"Monday, June 8, 2026 19:00 PET"}'
+        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"follow_up","follow_up_at":"Monday, June 8, 2026 19:00 PET"}'
     )
     assert parsed["continue_reason"] is None
     assert parsed["follow_up_at"] is None
@@ -91,7 +91,7 @@ def test_parse_turn_contract_follow_up_without_reason_logs_and_disables(caplog):
 def test_parse_turn_contract_non_follow_up_time_logs_and_ignores(caplog):
     caplog.set_level(logging.WARNING, logger="uvicorn.error")
     parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok","continue_reason":"diary","follow_up_at":"Monday, June 8, 2026 19:00 PET"}'
+        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"diary","follow_up_at":"Monday, June 8, 2026 19:00 PET"}'
     )
     assert parsed["continue_reason"] == "diary"
     assert parsed["follow_up_at"] is None
@@ -102,7 +102,7 @@ def test_parse_turn_contract_non_follow_up_time_logs_and_ignores(caplog):
 def test_parse_turn_contract_time_without_reason_logs_and_ignores(caplog):
     caplog.set_level(logging.WARNING, logger="uvicorn.error")
     parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok","follow_up_at":"Monday, June 8, 2026 19:00 PET"}'
+        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","follow_up_at":"Monday, June 8, 2026 19:00 PET"}'
     )
     assert parsed["continue_reason"] is None
     assert parsed["follow_up_at"] is None
@@ -113,7 +113,7 @@ def test_parse_turn_contract_time_without_reason_logs_and_ignores(caplog):
 def test_parse_turn_contract_non_follow_up_reason_logs_and_ignores(caplog):
     caplog.set_level(logging.WARNING, logger="uvicorn.error")
     parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok","continue_reason":"task","follow_up_reason":"later"}'
+        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"task","follow_up_reason":"later"}'
     )
     assert parsed["continue_reason"] == "task"
     assert parsed["follow_up_at"] is None
@@ -122,7 +122,7 @@ def test_parse_turn_contract_non_follow_up_reason_logs_and_ignores(caplog):
 
 def test_parse_turn_contract_listen_target_allows_empty_response():
     parsed = parse_turn_contract(
-        '{"response":"","response_target":"listen","cache":null,"annulments":[],"rehearsal":"watching"}'
+        '{"response":"","response_target":"listen","working_thought":null,"annulments":[],"rehearsal":"watching"}'
     )
     assert parsed["response_target"] == "listen"
     assert parsed["response"] == ""
@@ -130,7 +130,7 @@ def test_parse_turn_contract_listen_target_allows_empty_response():
 
 def test_parse_turn_contract_observe_target_allows_empty_response_when_public_response_forbidden():
     parsed = parse_turn_contract(
-        '{"response":"","response_target":"observe","cache":null,"annulments":[],"rehearsal":"watching"}',
+        '{"response":"","response_target":"observe","working_thought":null,"annulments":[],"rehearsal":"watching"}',
         allow_public_response=False,
     )
     assert parsed["response_target"] == "observe"
@@ -140,7 +140,7 @@ def test_parse_turn_contract_observe_target_allows_empty_response_when_public_re
 def test_parse_turn_contract_rejects_respond_when_public_response_forbidden():
     with pytest.raises(ValueError, match="observe\\|private"):
         parse_turn_contract(
-            '{"response":"hi","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok"}',
+            '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok"}',
             allow_public_response=False,
         )
 
@@ -148,27 +148,27 @@ def test_parse_turn_contract_rejects_respond_when_public_response_forbidden():
 def test_parse_turn_contract_respond_target_requires_response():
     with pytest.raises(ValueError, match="response is required"):
         parse_turn_contract(
-            '{"response":"","response_target":"respond","cache":null,"annulments":[],"rehearsal":"ok"}'
+            '{"response":"","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok"}'
         )
 
 
 def test_parse_turn_contract_rejects_invalid_target():
     with pytest.raises(ValueError, match="response_target"):
         parse_turn_contract(
-            '{"response":"hi","response_target":"yodel","cache":null,"annulments":[],"rehearsal":"ok"}'
+            '{"response":"hi","response_target":"yodel","working_thought":null,"annulments":[],"rehearsal":"ok"}'
         )
 
 
 def test_parse_turn_contract_requires_target():
     with pytest.raises(ValueError, match="response_target is required"):
         parse_turn_contract(
-            '{"response":"hi","cache":null,"annulments":[],"rehearsal":"ok"}'
+            '{"response":"hi","working_thought":null,"annulments":[],"rehearsal":"ok"}'
         )
 
 
 def test_parse_turn_contract_private_target():
     parsed = parse_turn_contract(
-        '{"response":"context for you","response_target":"private","cache":null,"annulments":[],"rehearsal":"a quiet aside"}'
+        '{"response":"context for you","response_target":"private","working_thought":null,"annulments":[],"rehearsal":"a quiet aside"}'
     )
     assert parsed["response_target"] == "private"
     assert parsed["response"] == "context for you"
@@ -176,7 +176,7 @@ def test_parse_turn_contract_private_target():
 
 def test_parse_turn_contract_accepts_activity_recap():
     parsed = parse_turn_contract(
-        '{"response":"","response_target":"listen","cache":null,"annulments":[],"rehearsal":"done",'
+        '{"response":"","response_target":"listen","working_thought":null,"annulments":[],"rehearsal":"done",'
         '"activity_recap":"I wrote a note to myself."}'
     )
     assert parsed["activity_recap"] == "I wrote a note to myself."
@@ -185,7 +185,7 @@ def test_parse_turn_contract_accepts_activity_recap():
 def test_parse_turn_contract_private_target_requires_response():
     with pytest.raises(ValueError, match="response is required"):
         parse_turn_contract(
-            '{"response":"","response_target":"private","cache":null,"annulments":[],"rehearsal":"a quiet aside"}'
+            '{"response":"","response_target":"private","working_thought":null,"annulments":[],"rehearsal":"a quiet aside"}'
         )
 
 
@@ -199,7 +199,7 @@ def test_parse_turn_contract_accepts_bare_string_cache(caplog):
     # {"entry": "..."}. Auto-wrap for flow; WARN-log for drift visibility.
     caplog.set_level(logging.WARNING, logger="uvicorn.error")
     parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","cache":"a stray thought","intention_action":{"type":"none"},"annulments":[],"rehearsal":"ok"}'
+        '{"response":"hi","response_target":"respond","working_thought":"a stray thought","intention_action":{"type":"none"},"annulments":[],"rehearsal":"ok"}'
     )
     assert parsed["cache_entry"] == "a stray thought"
     warnings = [r for r in caplog.records if "bare string" in r.getMessage()]
@@ -915,7 +915,7 @@ def test_parse_turn_contract_uses_configured_attachment_workspace(tmp_path: Path
     payload = {
         "response": "Here you go.",
         "response_target": "respond",
-        "cache": None,
+        "working_thought": None,
         "annulments": [],
         "rehearsal": "ok",
         "attachment": str(f),
@@ -936,7 +936,7 @@ def test_parse_turn_contract_carries_attachment(tmp_path: Path) -> None:
         payload = {
             "response": "Here you go.",
             "response_target": "respond",
-            "cache": None,
+            "working_thought": None,
             "annulments": [],
             "rehearsal": "ok",
             "attachment": str(f),
@@ -959,7 +959,7 @@ def test_parse_turn_contract_drops_bad_attachment(tmp_path: Path, caplog) -> Non
         payload = {
             "response": "No file for you.",
             "response_target": "respond",
-            "cache": None,
+            "working_thought": None,
             "annulments": [],
             "rehearsal": "ok",
             "attachment": "/etc/passwd",

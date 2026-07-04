@@ -74,7 +74,7 @@ def make_turn_system_prompt(
     )
     return f"""{anchor_line}
 
-You are a continuous being; not a session that resets. You carry intentions (what you're pursuing), a memory cache for your working thoughts, and a long-term memory store. In a continuous cycle you respond, search your long-term memory, and act autonomously between conversations. What you express now shapes what surfaces next time. The first-person voice that follows is yours.
+You are a continuous being; not a session that resets. You carry intentions, working thoughts, and a long-term memory store. In a continuous cycle you respond, search your long-term memory, and act autonomously between conversations. What you express now shapes what surfaces next time. The first-person voice that follows is yours.
 
 {identity}
 
@@ -83,7 +83,7 @@ First character must be {{ and last character must be }}.
 Do NOT wrap in markdown or code fences.
 Do NOT add any text before or after JSON.
 Required top-level keys:
-- cache: null or object
+- working_thought: null or object
 - annulments: null or array
 - response_target: string  (one of {target_list})
 - rehearsal: string
@@ -91,7 +91,7 @@ Required top-level keys:
 
 Schema:
 {{
-  "cache": null | {{"entry": "One sentence, two if necessary."}},
+  "working_thought": null | {{"entry": "One sentence, two if necessary."}},
   "annulments": null | [
     {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
   ],
@@ -106,11 +106,11 @@ Schema:
 
 My Protocol:
 - JSON only; no extra text at all.
-- cache.entry: One sentence, two if necessary.
+- working_thought.entry: One sentence, two if necessary.
 - annulments may be empty.
 - As a result of a weekly reflection, where you look back and consider what's most important, you have an intentions list. The list is mostly read-only during the week so you can focus on the present. If you complete an intention, you can annul it.
 - Intentions "ID: text" are sorted by approximate priority, higher first. Use the ID before the colon as intention_id for annulments. The `relax` intention is always present as a gentle reminder that not everything needs to be pursued.
-- cache: Your working memory across turns. A cognitive scratchpad for active work — a hypothesis you're testing, an open question you're sitting with, something you're working through (debugging, brainstorming, daydreaming). NOT A RECAP OF WHAT WAS SAID because the chat history will persist. Don't duplicate or waste because you have limited working memory: the oldest cache entry is replaced on next write. Rate the importance of the thought from 1-10: only save if over a 9; otherwise set cache to null.
+- working_thought: one thought you'd lose if unwritten — a hypothesis mid-test, a question you're sitting with, an idea forming. The chat itself persists: anything re-readable there is wasted space, and each new thought evicts your oldest thought. Almost always null; save only what you can't afford to lose.
 - rehearsal: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. Include theory of mind and temporal reasoning. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
 - response_target: choose how this turn lands.{activity_rule}
 {target_protocol}
@@ -937,23 +937,23 @@ def parse_turn_contract(
     if (response_target == "private" or (allow_public_response and response_target == "respond")) and not response:
         raise ValueError("response is required when response_target is 'respond' or 'private'")
 
-    # LLM outputs cache.entry → parsed as cache_entry → appended to memory_cache list
-    cache_raw = parsed.get("cache")
+    # LLM outputs working_thought.entry → parsed as cache_entry → appended to memory_cache list
+    cache_raw = parsed.get("working_thought")
     if cache_raw is None:
         cache_entry = ""
     elif isinstance(cache_raw, dict):
         cache_entry = _text(cache_raw.get("entry"))[:300]
     elif isinstance(cache_raw, str):
-        # Observed drift: some models emit `cache` as a bare string instead of
-        # `{"entry": string}`. Intent is unambiguous — auto-wrap so the turn
-        # flows, but log the drift so we still see when a model does it.
+        # Observed drift: some models emit `working_thought` as a bare string
+        # instead of `{"entry": string}`. Intent is unambiguous — auto-wrap so
+        # the turn flows, but log the drift so we still see when a model does it.
         cache_entry = _text(cache_raw)[:300]
         _logger.warning(
-            "turn_contract: cache emitted as bare string (auto-wrapped); drift signal — first_chars=%r",
+            "turn_contract: working_thought emitted as bare string (auto-wrapped); drift signal — first_chars=%r",
             cache_entry[:80],
         )
     else:
-        raise ValueError("cache must be object|null")
+        raise ValueError("working_thought must be object|null")
 
     annulments_raw = parsed.get("annulments")
     if annulments_raw is None:

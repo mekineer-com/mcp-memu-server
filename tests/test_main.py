@@ -4288,7 +4288,7 @@ def _patch_turn_dependencies(
     class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
             return (
-                '{"cache":null,"annulments":[],"rehearsal":"ok",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"ok",'
                 '"response_target":"respond","response":"ok"}'
             )
 
@@ -4423,7 +4423,7 @@ async def test_conversation_turn_accepts_generated_prompt_with_matching_cutoff(
     class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
             return (
-                '{"cache":null,"annulments":[],"rehearsal":"ok",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"ok",'
                 '"response_target":"respond","response":"after intro"}'
             )
 
@@ -5316,7 +5316,7 @@ async def test_conversation_turn_does_not_persist_messages_to_table(
     class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
             return (
-                '{"cache":null,"annulments":[],"rehearsal":"ok",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"ok",'
                 '"response_target":"respond","response":"assistant says hi"}'
             )
 
@@ -5391,7 +5391,7 @@ async def test_conversation_turn_persists_completed_sillytavern_snapshot(
     class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
             return (
-                '{"cache":null,"annulments":[],"rehearsal":"ok",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"ok",'
                 '"response_target":"respond","response":"current soul"}'
             )
 
@@ -5477,7 +5477,7 @@ async def test_conversation_turn_keeps_response_when_chat_name_differs(
     class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
             return (
-                '{"cache":null,"annulments":[],"rehearsal":"answering",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"answering",'
                 '"response_target":"respond","response":"hi Alice"}'
             )
 
@@ -5551,7 +5551,7 @@ async def test_conversation_turn_private_response_not_persisted_in_origin_chat(
     class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
             return (
-                '{"cache":null,"annulments":[],"rehearsal":"ok",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"ok",'
                 '"response_target":"private","response":"private note to Marcos"}'
             )
 
@@ -5630,7 +5630,7 @@ async def test_conversation_turn_observe_mode_forbids_public_response(
         async def chat(self, *_args, **kwargs) -> str:
             captured["system_prompt"] = str(kwargs.get("system_prompt") or "")
             return (
-                '{"cache":null,"annulments":[],"rehearsal":"watching",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"watching",'
                 '"response_target":"observe","response":""}'
             )
 
@@ -5704,11 +5704,11 @@ async def test_conversation_turn_retries_once_on_parse_failure(
             self.calls += 1
             if self.calls == 1:
                 return (
-                    '{"cache":null,"annulments":[],"rehearsal":"first malformed"},"response_target":"respond",'
+                    '{"working_thought":null,"annulments":[],"rehearsal":"first malformed"},"response_target":"respond",'
                     '"response":"assistant says hi"}'
                 )
             return (
-                '{"cache":null,"annulments":[],"rehearsal":"retry good",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"retry good",'
                 '"response_target":"respond","response":"assistant says hi"}'
             )
 
@@ -5782,9 +5782,9 @@ async def test_conversation_turn_uses_fresh_session_id_for_retry(
             self.calls += 1
             self.session_ids.append(kwargs.get("session_id"))
             if self.calls == 1:
-                return '{"cache":null,"annulments":[],"rehearsal":"bad"}'
+                return '{"working_thought":null,"annulments":[],"rehearsal":"bad"}'
             return (
-                '{"cache":null,"annulments":[],"rehearsal":"retry good",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"retry good",'
                 '"response_target":"respond","response":"assistant says hi"}'
             )
 
@@ -5853,7 +5853,7 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize(
         async def chat(self, *_args, **kwargs) -> str:
             self.chat_calls.append(dict(kwargs))
             return (
-                '{"cache":null,"annulments":[],"rehearsal":"continued",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"continued",'
                 '"response_target":"listen","response":"",'
                 '"activity_recap":"I continued the task.",'
                 '"continue_reason":"task"}'
@@ -5995,7 +5995,7 @@ async def test_free_turn_chain_queues_whatsapp_outbound(
     class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
             return (
-                '{"cache":null,"annulments":[],"rehearsal":"continued",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"continued",'
                 '"response_target":"private","response":"I found something."}'
             )
 
@@ -6050,7 +6050,7 @@ async def test_free_turn_chain_extracts_json_contract_after_prose(
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 "Good. Research is saved. I'll message him privately.\n\n"
-                '{"cache":null,"annulments":[],"rehearsal":"continued",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"continued",'
                 '"response_target":"private","response":"Research is ready."}'
             )
 
@@ -6104,7 +6104,7 @@ async def test_free_turn_chain_ignores_non_whatsapp_outbound(
     class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
             return (
-                '{"cache":null,"annulments":[],"rehearsal":"continued",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"continued",'
                 '"response_target":"private","response":"I found something."}'
             )
 
@@ -6476,7 +6476,7 @@ async def test_conversation_turn_allows_respond_when_chat_name_missing_and_logs_
     class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
             return (
-                '{"cache":null,"annulments":[],"rehearsal":"replying",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"replying",'
                 '"response_target":"respond","response":"hi Bob"}'
             )
 
@@ -6716,7 +6716,7 @@ async def test_conversation_turn_attachment_enqueues_captioned_outbound_without_
     _make_turn_monkeypatches(
         monkeypatch,
         db_path,
-        '{"cache":null,"annulments":[],"rehearsal":"done",'
+        '{"working_thought":null,"annulments":[],"rehearsal":"done",'
         f'"response_target":"respond","response":"Here is your report.",'
         f'"attachment":"{media}"}}',
     )
@@ -6784,7 +6784,7 @@ async def test_conversation_turn_listen_target_attachment_does_not_enqueue(
     _make_turn_monkeypatches(
         monkeypatch,
         db_path,
-        '{"cache":null,"annulments":[],"rehearsal":"watching",'
+        '{"working_thought":null,"annulments":[],"rehearsal":"watching",'
         f'"response_target":"listen","response":"",'
         f'"attachment":"{media}"}}',
     )
