@@ -4031,14 +4031,16 @@ async def atomic_prompt_log(req: AtomicPromptLogRequest):
         "",
         f"[PROMPT] op=atomic_chat conversation_id={cid} model={model}",
     ]
-    for idx, message in enumerate(req.messages, start=1):
+    for message in req.messages:
         role = str(message.get("role") or "-")
         content = message.get("content")
         lines.extend([
             "",
-            f"--- message {idx} role={role} ---",
-            "" if content is None else str(content),
+            f"role: {role}",
         ])
+        if message.get("name") is not None:
+            lines.append(f"name: {message['name']}")
+        lines.extend(["content:", "" if content is None else str(content)])
         if message.get("tool_calls") is not None:
             lines.extend([
                 "tool_calls:",
