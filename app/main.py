@@ -2958,6 +2958,9 @@ async def conversation_retrieve(
                 )
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
+                atomic_retrieve_rag = out.get("result")
+                if isinstance(atomic_retrieve_rag, dict):
+                    atomic_retrieve_rag = {**atomic_retrieve_rag, "items": []}
                 system_base = _make_turn_system_prompt(
                     soul_id,
                     soul_card=soul_card,
@@ -2968,7 +2971,7 @@ async def conversation_retrieve(
                 context_block = _build_turn_context_block(
                     history=history_for_ai,
                     prior_context=out.get("prior_context"),
-                    retrieve_rag=out.get("result"),
+                    retrieve_rag=atomic_retrieve_rag,
                     all_categories_summary=_state_row.get("all_categories_summary"),
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,

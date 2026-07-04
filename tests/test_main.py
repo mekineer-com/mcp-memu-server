@@ -110,7 +110,11 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
         captured["safe"] = safe
         return {
             "ok": True,
-            "result": {"items": [], "categories": [], "resources": []},
+            "result": {
+                "items": [{"id": "memory:1", "memory_type": "profile", "summary": "stale retrieved item"}],
+                "categories": [{"name": "Profile", "summary": "retrieved category summary"}],
+                "resources": [],
+            },
             "conversation_id": conversation_id,
             "prior_context": "APImw memory line",
             "memory_cache": ["working thought"],
@@ -131,6 +135,9 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
     assert state_writes[0]["atomic_session_ended_at"] is None
     snapshot = str(out["snapshot_text"])
     assert "Siri card" in snapshot
+    assert "retrieved category summary" in snapshot
+    assert "My Memories:" not in snapshot
+    assert "stale retrieved item" not in snapshot
     assert "Prior Context:" in snapshot
     assert "APImw memory line" in snapshot
     assert "My Working Thoughts:" in snapshot
