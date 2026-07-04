@@ -2956,6 +2956,8 @@ async def conversation_retrieve(
                     current_user_text=message,
                     self_turn_directive=self_turn_directive,
                 )
+                if not response_chat_history_for_ai.strip() and cid.startswith("chat:atomic-"):
+                    response_chat_history_for_ai = "My Atomic Conversations:"
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
                 atomic_retrieve_rag = out.get("result")
@@ -2982,6 +2984,7 @@ async def conversation_retrieve(
                     soul_name=soul_id,
                     current_user_text=message,
                     self_turn_directive=self_turn_directive or None,
+                    include_working_state=False,
                 )
                 out["atomic_snapshot_text"] = f"{system_base}\n\n{context_block}".strip()
                 out["turn_prompt_source"] = "conversation_retrieve"

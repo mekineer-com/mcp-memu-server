@@ -750,6 +750,7 @@ def build_turn_context_block(
     self_turn_directive: str | None = None,
     now: datetime | None = None,
     memories_block: str | None = None,
+    include_working_state: bool = True,
 ) -> str:
     cache_lines = format_working_thoughts_lines(memory_cache)
     working_thought_lines = list(cache_lines)
@@ -809,9 +810,15 @@ def build_turn_context_block(
             self_turn_directive=directive_text,
         )
 
-    return "\n".join([
+    blocks = [
         *context_blocks,
         rendered_conversations_block,
+    ]
+    if not include_working_state:
+        return "\n".join(blocks)
+
+    return "\n".join([
+        *blocks,
         "",
         "My Working Thoughts:",
         "\n".join(working_thought_lines) if working_thought_lines else "(none yet)",

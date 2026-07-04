@@ -140,7 +140,9 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
     assert "stale retrieved item" not in snapshot
     assert "Prior Context:" in snapshot
     assert "APImw memory line" in snapshot
-    assert "My Working Thoughts:" in snapshot
+    assert "My Atomic Conversations:" in snapshot
+    assert "My Working Thoughts:" not in snapshot
+    assert "My Intentions:" not in snapshot
     assert "Return STRICT JSON only" not in snapshot
     assert "response_target" not in snapshot
     assert "**remember maximum lengths and response schema**" not in snapshot
