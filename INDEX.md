@@ -7,7 +7,7 @@
 
 ```
 mcp-memu-server/
-├── app/main.py              # Core orchestration + remaining endpoints, including graph `/graph`, `/pending`, `/memory/{id}`, `/category/{id}` wrappers
+├── app/main.py              # Core orchestration + remaining endpoints, including graph `/graph`, `/pending`, `/memory/{id}` (PATCH/approve/DELETE), `/category/{id}` (PATCH/approve), and `/integration/atomic/*` wrappers
 ├── app/config.py            # Runtime config load/save/mask + path + sqlite DSN helpers
 ├── app/db.py                # SQLite helpers, schema ensures, JSON marshalling
 ├── app/database.py          # SQLAlchemy async engine + session factory
@@ -50,10 +50,14 @@ mcp-memu-server/
 | `/conversation/{id}/turn` | POST | Soul turn loop: requires extension-provided `prompt_override_payload` (prepared by `/conversation/{id}/retrieve`), runs LLM with turn contract, persists intentions + cache, and never re-runs retrieve inside turn; system identity uses ST `soul_card` when provided, otherwise self-model-derived card (`narrative_self`); optional free-turn metadata starts immediate Claude Code continuations or stores durable `follow_up` wakes in scoped SQLite; optional `attachment` field in turn contract names a workspace file to deliver as a WhatsApp document (validated inside workspace boundary); APImw fires background `_run_apimw()` pipeline when cadence is met; cadence is now global per soul (scoped `apimw_cadence.turn_count` table, shared across WhatsApp + ST), configured by `retrieve.apimw_cadence`; skips when a prior APImw job is still in flight; runs step A topic statement + step B retrieve + step C second-pass rewrite retrieve when query changes + combined D+E+F selection/edges/intention+cache update, then writes `prior_context`, `retrieval_ids_since_consolidation`, `prior_context_ids_since_consolidation`, `memory_cache`, `intentions_active` and edge invalidations/additions; `message_to_self` is soul-scoped (`soul_state.apimw_message_to_self`) so subconscious notes surface on any next turn regardless of platform; on APImw failure clears `prior_context` to avoid stale context persisting; queues forced memorize only from primary-chat tails (background-chat tails excluded from segment trigger). APImw tracked in `_BACKGROUND_TASKS`; shutdown drains in-flight APImw/consolidation/free-turn work before exit. Background (`memorize_chat=false`) chats trigger adapter-sourced rolling-summary updates on turn lulls. Cross-memorize feed reads `memorize_chat=true` tails from source adapters (WhatsApp Hermes + ST snapshots) and `memorize_chat=false` tails from Hermes row-id cursors via `rolling_summary_cursor_id`; no turn-time raw-message append path remains in server |
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn maintenance using `undo_snapshot` (single-step depth) |
 | `/integration/memu/turn` | POST | MCP-facing single-call turn wrapper: internally runs conversation-retrieve (`build_turn_prompt=true`) then conversation-turn with prompt override payload |
+| `/integration/atomic/session_start` | POST | Atomic session bootstrap: runs read-only retrieve, builds stripped identity/context snapshot (no `My Memories:` items, no working state), seeds `chat:atomic-<uuid>` conversation with snapshot as leading `system` message, sets `memorize_chat=true` and `atomic_session_started_at` on that conversation |
+| `/integration/atomic/session_end` | POST | Atomic session close: accepts Atomic transcript rows + optional `activity_recap`; deduplicates via `atomic_session_ended_at` state; POSTs transcript as `chat:atomic-*` primary chat source to memU memorize; requires `activity_recap` when session has user/soul interchange |
 | `/integration/atomic/chat_profile` | GET | Atomic-facing chat provider profile derived from `config.json` (`llm`), returned in Atomic settings shape for per-message use; includes API key, memU response sentence limit, and prompt-log flag, so callers must not log it |
 | `/integration/atomic/prompt_log` | POST | Atomic-facing prompt-log sink; when `debug.log_prompts` is enabled, writes Atomic's exact outgoing chat messages into `mcp-memu-server.log` with unescaped message content |
-| `/integration/atomic/atoms` | GET | Atomic-facing paginated read surface for memU memory/category atoms (`user_id`, `soul_id`, `limit`, `offset`, optional category/tag filter); returns Atomic-shaped atom rows with real `total_count` |
+| `/integration/atomic/atoms` | GET | Atomic-facing paginated read surface for memU memory/category atoms (`user_id`, `soul_id`, `limit`, `offset`, optional `category_id`/`tag_id` filter, `cursor`/`cursor_id` for pagination); returns Atomic-shaped atom rows with `total_count` |
 | `/integration/atomic/tags` | GET | Atomic-facing category/tag list (`user_id`, `soul_id`, optional `min_count`); returns stable `category:<id>` tags with counts and no child expansion |
+| `/integration/atomic/canvas-source` | GET | Atomic-facing canvas source: all memories + categories (`user_id`, `soul_id`, optional `limit`); returns Atomic-shaped nodes for the canvas graph view |
+| `/integration/atomic/neighborhood/{item_id}` | GET | Atomic-facing memory neighborhood (`user_id`, `soul_id`, optional `depth`, `min_similarity`); returns the item plus cosine-similar neighbors; 404 if not found |
 | `/integration/atomic/search` | GET | Atomic-facing read-only memory search (`q`, `user_id`, `soul_id`, optional `limit`, `since_days`) backed by `GraphMixin.graph_search`; no turn/retrieve state machinery |
 | `/integration/memu/retrieve` | POST | MCP-facing retrieve wrapper |
 | `/integration/memu/memorize` | POST | MCP-facing memorize trigger wrapper (`force` supported) |
@@ -64,6 +68,10 @@ mcp-memu-server/
 | `/souls/{soul_id}/relationships` | GET/POST | List or create user-declared relationship entities (`memu_entities` rows with `properties.origin=user_declared`) |
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or soft-delete one relationship entity (`entity:*` only; reserved prefixes rejected) |
 | `/souls/{soul_id}/narrative_suggestion` | POST | Snapshot previous `narrative_self` with `evolved_into` chain before overwrite; extension surfaces this via the Memorize Now menu |
+| `/pending` | GET | Pending review queue (`user_id`, `soul_id`): memories with `approved_at IS NULL` + categories where `approved_summary` is NULL or doesn't match live `summary`; never filters retrieval/memorize |
+| `/memory/{item_id}/approve` | POST | Bless current live memory value — sets `approved_at = now`; scoped, 404 if not found or superseded |
+| `/memory/{item_id}` | DELETE | Hard-delete memory with dependent cleanup in one transaction: fts, edit_history, category_items, triples (subject+object+source); returns 404 if out of scope |
+| `/category/{category_id}/approve` | POST | Bless current live category summary — sets `approved_summary = summary`; scoped, 404 if not found |
 | `/categories` | GET | List all categories |
 | `/categories/search` | POST | Search categories |
 | `/clear` | POST | Delete memories in scope |
