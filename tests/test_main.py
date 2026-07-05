@@ -236,6 +236,70 @@ async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: py
     }
 
 
+@pytest.mark.asyncio
+async def test_atomic_canvas_source_threads_scope_and_edges(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakeSvc:
+        def graph_atomic_canvas_source(self, **kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {
+                "atoms": [{"id": "memory:m1"}],
+                "edges": [{"source": "memory:m1", "target": "memory:m2", "weight": 0.8}],
+                "count": 1,
+                "total_count": 1,
+            }
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+
+    out = await main.atomic_memory_canvas_source(user_id="Marcos", soul_id="Siri", limit=7)
+
+    assert out["edges"][0]["weight"] == 0.8
+    assert captured == {"where": {"user_id": "Marcos", "soul_id": "Siri"}, "limit": 7}
+
+
+@pytest.mark.asyncio
+async def test_atomic_canvas_source_requires_scope() -> None:
+    with pytest.raises(main.HTTPException) as exc:
+        await main.atomic_memory_canvas_source(user_id="", soul_id="Siri")
+
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_atomic_neighborhood_threads_scope_and_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakeSvc:
+        def graph_atomic_neighborhood(self, item_id: str, **kwargs: Any) -> dict[str, Any] | None:
+            captured["item_id"] = item_id
+            captured.update(kwargs)
+            if item_id == "memory:missing":
+                return None
+            return {"center_atom_id": item_id, "nodes": [{"id": item_id, "depth": 0}], "edges": []}
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+
+    out = await main.atomic_memory_neighborhood(
+        item_id="memory:m1",
+        user_id="Marcos",
+        soul_id="Siri",
+        depth=2,
+        min_similarity=0.7,
+    )
+
+    assert out["nodes"][0]["depth"] == 0
+    assert captured == {
+        "item_id": "memory:m1",
+        "where": {"user_id": "Marcos", "soul_id": "Siri"},
+        "depth": 2,
+        "min_similarity": 0.7,
+    }
+    with pytest.raises(main.HTTPException) as exc:
+        await main.atomic_memory_neighborhood(item_id="memory:missing", user_id="Marcos", soul_id="Siri")
+    assert exc.value.status_code == 404
+
+
 def test_atomic_source_label_and_heading() -> None:
     from app.services import turn_contract
 
