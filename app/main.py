@@ -2625,6 +2625,44 @@ async def memory_graph(
     return svc.graph_recent(where=scope, limit=limit)
 
 
+@app.get("/integration/atomic/atoms", operation_id="atomic_memory_atoms", tags=["integration"])
+async def atomic_memory_atoms(
+    user_id: str,
+    soul_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    category_id: str | None = None,
+    tag_id: str | None = None,
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    return svc.graph_atomic_atoms(
+        where=scope,
+        limit=limit,
+        offset=offset,
+        category_id=category_id or tag_id,
+    )
+
+
+@app.get("/integration/atomic/tags", operation_id="atomic_memory_tags", tags=["integration"])
+async def atomic_memory_tags(
+    user_id: str,
+    soul_id: str,
+    min_count: int = 0,
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    return svc.graph_atomic_tags(where=scope, min_count=min_count)
+
+
 @app.get("/integration/atomic/search", operation_id="atomic_memory_search", tags=["integration"])
 async def atomic_memory_search(
     q: str,
