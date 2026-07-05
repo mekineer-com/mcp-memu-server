@@ -2633,6 +2633,8 @@ async def atomic_memory_atoms(
     offset: int = 0,
     category_id: str | None = None,
     tag_id: str | None = None,
+    cursor: str | None = None,
+    cursor_id: str | None = None,
 ):
     uid = str(user_id or "").strip()
     sid = str(soul_id or "").strip()
@@ -2645,6 +2647,8 @@ async def atomic_memory_atoms(
         limit=limit,
         offset=offset,
         category_id=category_id or tag_id,
+        cursor=cursor,
+        cursor_id=cursor_id,
     )
 
 
