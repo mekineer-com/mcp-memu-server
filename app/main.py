@@ -2708,6 +2708,7 @@ async def atomic_memory_search(
     user_id: str,
     soul_id: str,
     limit: int = 5,
+    mode: str = "hybrid",
     since_days: int | None = None,
 ):
     uid = str(user_id or "").strip()
@@ -2720,7 +2721,7 @@ async def atomic_memory_search(
     scope = {"user_id": uid, "soul_id": sid}
     svc = _get_service_from_payload({"user": scope})
     try:
-        return await svc.graph_search(query, where=scope, limit=limit, since_days=since_days)
+        return await svc.graph_search(query, where=scope, limit=limit, mode=mode, since_days=since_days)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

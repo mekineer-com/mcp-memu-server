@@ -222,6 +222,7 @@ async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: py
         user_id="Marcos",
         soul_id="Siri",
         limit=3,
+        mode="keyword",
         since_days=7,
     )
 
@@ -230,6 +231,7 @@ async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: py
         "query": "sushi",
         "where": {"user_id": "Marcos", "soul_id": "Siri"},
         "limit": 3,
+        "mode": "keyword",
         "since_days": 7,
     }
 
