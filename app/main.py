@@ -2667,6 +2667,21 @@ async def atomic_memory_tags(
     return svc.graph_atomic_tags(where=scope, min_count=min_count)
 
 
+@app.get("/integration/atomic/canvas-source", operation_id="atomic_memory_canvas_source", tags=["integration"])
+async def atomic_memory_canvas_source(
+    user_id: str,
+    soul_id: str,
+    limit: int = 500,
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    return svc.graph_atomic_canvas_source(where=scope, limit=limit)
+
+
 @app.get("/integration/atomic/search", operation_id="atomic_memory_search", tags=["integration"])
 async def atomic_memory_search(
     q: str,
