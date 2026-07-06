@@ -836,6 +836,31 @@ def _prompt_log_before(ctx: Any, request_view: Any) -> None:
     return None
 
 
+def _format_prompt_payload_for_log(payload: dict[str, Any]) -> str:
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return json.dumps(payload, ensure_ascii=False, indent=2).replace("\\n", "\n")
+
+    rest = {key: value for key, value in payload.items() if key != "messages"}
+    lines: list[str] = []
+    if rest:
+        lines.append(json.dumps(rest, ensure_ascii=False, indent=2).replace("\\n", "\n"))
+    lines.append("messages:")
+    for idx, message in enumerate(messages, 1):
+        if not isinstance(message, Mapping):
+            lines.extend(["", f"[{idx}]", str(message)])
+            continue
+        lines.extend(["", f"[{idx}] role: {message.get('role') or '-'}"])
+        if message.get("name") is not None:
+            lines.append(f"name: {message['name']}")
+        if message.get("content") is not None:
+            lines.extend(["content:", str(message["content"])])
+        extras = {key: value for key, value in message.items() if key not in {"role", "name", "content"}}
+        if extras:
+            lines.extend(["metadata:", json.dumps(extras, ensure_ascii=False, indent=2).replace("\\n", "\n")])
+    return "\n".join(lines)
+
+
 def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: Any) -> None:
     import time as _time
     elapsed = _time.monotonic() - getattr(ctx, "_llm_start", _time.monotonic())
@@ -861,7 +886,7 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
         f"[PROMPT] trace={trace_id} req={req_id} op={op} step={step} model={model}",
     ]
     if isinstance(payload, dict):
-        payload_log_text = json.dumps(payload, ensure_ascii=False, indent=2).replace("\\n", "\n")
+        payload_log_text = _format_prompt_payload_for_log(payload)
         lines.append(f"[PAYLOAD] trace={trace_id} req={req_id} op={op} step={step} kind={kind or '-'} model={model}")
         lines.append(payload_log_text)
     finish_reason = getattr(usage, "finish_reason", None)
@@ -905,7 +930,7 @@ def _prompt_log_on_error(ctx: Any, request_view: Any, error: Any, usage: Any) ->
         f"[PROMPT] trace={trace_id} req={req_id} op={op} step={step} model={model}",
     ]
     if isinstance(payload, dict):
-        payload_log_text = json.dumps(payload, ensure_ascii=False, indent=2).replace("\\n", "\n")
+        payload_log_text = _format_prompt_payload_for_log(payload)
         kind = getattr(request_view, "kind", None)
         lines.append(f"[PAYLOAD] trace={trace_id} req={req_id} op={op} step={step} kind={kind or '-'} model={model}")
         lines.append(payload_log_text)
