@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from app.config import default_config
+
 _ROOT = Path(__file__).resolve().parent.parent
 _RUNTIME_CONFIG = _ROOT / "config.json"
 _EXAMPLE_CONFIG = _ROOT / "config.example.json"
@@ -70,3 +72,12 @@ def test_example_is_valid_json_and_non_empty() -> None:
     # Spot-check: a few top-level sections must exist
     for required in ("llm", "storage", "memu", "listen"):
         assert required in example, f"config.example.json missing top-level '{required}'"
+
+
+def test_default_whatsapp_paths_point_at_channels_data() -> None:
+    hermes = default_config()["hermes"]
+
+    assert hermes["home"].endswith("/channels/data")
+    assert hermes["state_db_path"].endswith("/channels/data/state.db")
+    assert hermes["sessions_index_path"].endswith("/channels/data/sessions/sessions.json")
+    assert hermes["whatsapp_web_source_db"].endswith("/channels/data/whatsapp/web_source.db")

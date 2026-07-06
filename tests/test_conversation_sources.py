@@ -8,6 +8,13 @@ import pytest
 from app.services import conversation_sources
 
 
+def test_hermes_base_defaults_to_channels_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("CHANNELS_HOME", str(tmp_path))
+
+    assert conversation_sources._hermes_base() == tmp_path.resolve()
+
+
 def _write_state_db(path: Path, rows: list[tuple]) -> None:
     con = sqlite3.connect(path)
     try:
