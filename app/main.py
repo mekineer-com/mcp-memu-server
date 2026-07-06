@@ -3120,6 +3120,9 @@ async def conversation_retrieve(
                     conversation_id=cid,
                     self_turn_directive=self_turn_directive or None,
                     self_turn_label=self_turn_label or None,
+                    response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
+                    allow_public_response=bool(safe.get("allow_public_response", True)),
+                    include_activity_recap=bool(self_turn_directive),
                 )
                 out["turn_prompt_source"] = "conversation_retrieve"
             if current_whatsapp_active_since is not None:

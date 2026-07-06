@@ -846,6 +846,9 @@ def build_turn_prompt(
     self_turn_directive: str | None = None,
     self_turn_label: str | None = None,
     now: datetime | None = None,
+    response_sentences: int = 3,
+    allow_public_response: bool = True,
+    include_activity_recap: bool = False,
 ) -> str:
     current_user_text = _text(user_message)
     directive_text = _text(self_turn_directive)
@@ -874,9 +877,39 @@ def build_turn_prompt(
         if directive_text
         else f"New Message:\n{current_user_text}",
         "",
-        "**remember maximum lengths and response schema**",
+        _build_schema_reminder(
+            response_sentences=response_sentences,
+            allow_public_response=allow_public_response,
+            include_activity_recap=include_activity_recap,
+        ),
     ]
     return "\n".join(parts)
+
+
+def _build_schema_reminder(
+    *,
+    response_sentences: int,
+    allow_public_response: bool,
+    include_activity_recap: bool,
+) -> str:
+    target_schema = "respond|listen|private" if allow_public_response else "observe|private"
+    activity_line = (
+        '\n  "activity_recap": null | "first-person activity recap",' if include_activity_recap else ""
+    )
+    return f"""**schema reminder**
+{{
+  "working_thought": null | {{"entry": "One sentence, two if necessary."}},
+  "annulments": null | [
+    {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
+  ],
+  "response_target":"{target_schema}",
+  "rehearsal":"3 sentences or fewer",
+  "response":"{response_sentences} sentences or fewer",{activity_line}
+  "continue_reason": null | "task" | "research" | "diary" | "follow_up",
+  "follow_up_at": null | "timestamp string",
+  "follow_up_reason": null | "short reason string",
+  "attachment": null | "absolute path string"
+}}"""
 
 
 def _parse_attachment(raw: Any, *, workspace: str | Path | None = None) -> str | None:
