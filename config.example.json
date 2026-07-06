@@ -43,9 +43,9 @@
     "sqlite_dir": "./sqlite"
   },
   "hermes": {
-    "home": "~/.hermes",
+    "home": "../channels/data",
     "whatsapp_history_source": "web_source",
-    "whatsapp_web_source_db": "~/.hermes/whatsapp/web_source.db",
+    "whatsapp_web_source_db": "../channels/data/whatsapp/web_source.db",
     "whatsapp_reply_prefix": "",
     "whatsapp_history_limit": 250
   },

@@ -56,6 +56,7 @@ def default_config() -> dict[str, Any]:
 
     sqlite_path = Path(":memory:")  # placeholder; per-soul dbs resolved per-request
     resources_dir = home / "apps" / "memu" / "resources"
+    channels_data = Path(__file__).resolve().parents[2] / "channels" / "data"
 
     return {
         "memu": {
@@ -85,11 +86,11 @@ def default_config() -> dict[str, Any]:
             "sqlite_dir": str(sqlite_path.parent),
         },
         "hermes": {
-            "home": str(home / ".hermes"),
-            "state_db_path": str(home / ".hermes" / "state.db"),
-            "sessions_index_path": str(home / ".hermes" / "sessions" / "sessions.json"),
+            "home": str(channels_data),
+            "state_db_path": str(channels_data / "state.db"),
+            "sessions_index_path": str(channels_data / "sessions" / "sessions.json"),
             "whatsapp_history_source": "web_source",
-            "whatsapp_web_source_db": str(home / ".hermes" / "whatsapp" / "web_source.db"),
+            "whatsapp_web_source_db": str(channels_data / "whatsapp" / "web_source.db"),
             "whatsapp_history_limit": 250,
             "whatsapp_reply_prefix": "",
         },

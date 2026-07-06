@@ -45,7 +45,9 @@ def _normalize_whatsapp_match_token(value: str) -> str:
 
 
 def _hermes_base(hermes_home: Path | None = None) -> Path:
-    return (hermes_home or Path(os.getenv("HERMES_HOME") or "~/.hermes")).expanduser().resolve()
+    fallback = Path(__file__).resolve().parents[3] / "channels" / "data"
+    raw = hermes_home or Path(os.getenv("HERMES_HOME") or os.getenv("CHANNELS_HOME") or fallback)
+    return raw.expanduser().resolve()
 
 
 def _resolve_hermes_paths(
