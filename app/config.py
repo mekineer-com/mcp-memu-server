@@ -56,7 +56,7 @@ def default_config() -> dict[str, Any]:
 
     sqlite_path = Path(":memory:")  # placeholder; per-soul dbs resolved per-request
     resources_dir = home / "apps" / "memu" / "resources"
-    channels_data = Path(__file__).resolve().parents[2] / "channels" / "data"
+    channels_data = Path(__file__).resolve().parents[2] / "hermes-channels" / "data"
 
     return {
         "memu": {

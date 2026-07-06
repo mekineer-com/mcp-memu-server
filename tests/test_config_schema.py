@@ -77,7 +77,7 @@ def test_example_is_valid_json_and_non_empty() -> None:
 def test_default_whatsapp_paths_point_at_channels_data() -> None:
     hermes = default_config()["hermes"]
 
-    assert hermes["home"].endswith("/channels/data")
-    assert hermes["state_db_path"].endswith("/channels/data/state.db")
-    assert hermes["sessions_index_path"].endswith("/channels/data/sessions/sessions.json")
-    assert hermes["whatsapp_web_source_db"].endswith("/channels/data/whatsapp/web_source.db")
+    assert hermes["home"].endswith("/hermes-channels/data")
+    assert hermes["state_db_path"].endswith("/hermes-channels/data/state.db")
+    assert hermes["sessions_index_path"].endswith("/hermes-channels/data/sessions/sessions.json")
+    assert hermes["whatsapp_web_source_db"].endswith("/hermes-channels/data/whatsapp/web_source.db")
