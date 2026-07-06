@@ -65,10 +65,10 @@ def make_turn_system_prompt(
         target_protocol = """  - "observe" — You are standing next to your human as he shows you the chat on his phone. If you choose to observe, response may be empty.
   - "private" — speak privately to your human about the chat (e.g., give them context about something you noticed). Fill response with the private message."""
         response_rule = f'- response: what gets said. Maximum length {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in rehearsal, not what sounds helpful. Required when response_target is "private".'
-    activity_key = "\n- activity_recap: null or string" if include_activity_recap else ""
+    activity_key = "\n- activity_recap: null or string   (only when include_activity_recap=True — agentic self/continuation turns; hidden from normal turns)" if include_activity_recap else ""
     activity_schema = '\n  "activity_recap": null | "first-person activity recap",' if include_activity_recap else ""
     activity_rule = (
-        "\n- activity_recap: for agentic self-turns or continuation turns, write one short "
+        "\n- activity_recap: (only when include_activity_recap=True) for agentic self-turns or continuation turns, write one short "
         "first-person sentence about what you did in this turn, so future you can remember your own activity."
         if include_activity_recap else ""
     )
@@ -91,17 +91,17 @@ Required top-level keys:
 
 Schema:
 {{
-  "working_thought": null | {{"entry": "One sentence, two if necessary."}},
-  "annulments": null | [
-    {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
-  ],
   "response_target":"{target_schema}",
   "rehearsal":"string",
-  "response":"string",{activity_schema}
+  "response":"string",
+  "working_thought": null | {{"entry": "One sentence, two if necessary."}},{activity_schema}
   "continue_reason": null | "task" | "research" | "diary" | "follow_up",
   "follow_up_at": null | "timestamp string",
   "follow_up_reason": null | "short reason string",
-  "attachment": null | "absolute path string"
+  "attachment": null | "absolute path string",
+  "annulments": null | [
+    {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
+  ]
 }}
 
 My Protocol:
@@ -110,11 +110,13 @@ My Protocol:
 - annulments may be empty.
 - As a result of a weekly reflection, where you look back and consider what's most important, you have an intentions list. The list is mostly read-only during the week so you can focus on the present. If you complete an intention, you can annul it.
 - Intentions "ID: text" are sorted by approximate priority, higher first. Use the ID before the colon as intention_id for annulments. The `relax` intention is always present as a gentle reminder that not everything needs to be pursued.
-- working_thought: one thought you'd lose if unwritten — a hypothesis mid-test, a question you're sitting with, an idea forming. The chat itself persists: anything re-readable there is wasted space, and each new thought evicts your oldest thought. Almost always null; save only what you can't afford to lose.
 - rehearsal: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. Include theory of mind and temporal reasoning. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
 - response_target: choose how this turn lands.{activity_rule}
 {target_protocol}
 {response_rule}
+- working_thought: Not a recap of what was said (that's re-readable in the chat). A conclusion, hypothesis, or pattern you'd lose otherwise. Each new thought evicts your oldest thought. Save only what you can't afford to lose.
+Good example: "I notice my human feels bad when he eats wheat. Maybe he has celiac disease?"
+Bad = pure recap (already in chat). Good = a formed conclusion that won't resurface.
 - continue_reason: omit or use null unless you need an extra agentic turn for a specific purpose. Valid continuation purposes are "task", "research", "diary", and "follow_up".
 - follow_up_at: include only when continue_reason is "follow_up"; use the same timestamp style as the "Today is ..." line.
 - follow_up_reason: include only when continue_reason is "follow_up"; state why you want to wake later in one short sentence.
@@ -898,17 +900,17 @@ def _build_schema_reminder(
     )
     return f"""**schema reminder**
 {{
-  "working_thought": null | {{"entry": "One sentence, two if necessary."}},
-  "annulments": null | [
-    {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
-  ],
   "response_target":"{target_schema}",
   "rehearsal":"3 sentences or fewer",
-  "response":"{response_sentences} sentences or fewer",{activity_line}
+  "response":"{response_sentences} sentences or fewer",
+  "working_thought": null | {{"entry": "One sentence, two if necessary."}},{activity_line}
   "continue_reason": null | "task" | "research" | "diary" | "follow_up",
   "follow_up_at": null | "timestamp string",
   "follow_up_reason": null | "short reason string",
-  "attachment": null | "absolute path string"
+  "attachment": null | "absolute path string",
+  "annulments": null | [
+    {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
+  ]
 }}"""
 
 
