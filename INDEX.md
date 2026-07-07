@@ -57,6 +57,7 @@ mcp-memu-server/
 | `/integration/atomic/tags` | GET | Atomic-facing category/tag list (`user_id`, `soul_id`, optional `min_count`); returns stable `category:<id>` tags with counts and no child expansion |
 | `/integration/atomic/canvas-source` | GET/POST | Atomic-facing canvas source: all memories + categories (`user_id`, `soul_id`, optional `limit`; POST accepts `atom_ids[]` for subset rebuilds); returns Atomic-shaped nodes for the canvas graph view |
 | `/integration/atomic/neighborhood/{item_id}` | GET | Atomic-facing memory neighborhood (`user_id`, `soul_id`, optional `depth`, `min_similarity`); returns the item plus cosine-similar neighbors; 404 if not found |
+| `/integration/atomic/similar/{item_id}` | GET | Atomic-facing pure cosine-similarity graph for one memory (`user_id`, `soul_id`, optional `limit`, `min_similarity`); returns the item + similar neighbors as Atomic-shaped nodes with similarity edges only; 404 if not found |
 | `/integration/atomic/search` | GET | Atomic-facing read-only memory search (`q`, `user_id`, `soul_id`, optional `limit`, `since_days`) backed by `GraphMixin.graph_search`; no turn/retrieve state machinery |
 | `/integration/memu/retrieve` | POST | MCP-facing retrieve wrapper |
 | `/integration/memu/memorize` | POST | MCP-facing memorize trigger wrapper (`force` supported) |
