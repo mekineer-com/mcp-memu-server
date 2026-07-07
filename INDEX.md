@@ -23,7 +23,6 @@ mcp-memu-server/
 ├── app/services/sqlite_scope.py # SQLite scoped-path/status helpers shared by endpoints
 ├── app/services/crud_endpoints.py # Categories/intentions/relationships/state/clear endpoint logic
 ├── app/services/state.py    # Conversation state read/write/search
-├── app/api/v1/              # Empty — routes not yet split from main.py
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
 ├── config.json              # Runtime config (llm, storage, listen, categories, memu path)
 ├── config.example.json      # Template
@@ -139,7 +138,7 @@ from memu.prompts.memory_type import ...  # type prompts
 | Modify life goals (long-term) | `app/services/consolidation.py` — `intentions_life_goals` DB table updates during consolidation |
 | Modify DB schema/helpers | `app/db.py` |
 | Change config shape | `config.json` + `app/config.py` |
-| Add route group | Create `app/api/v1/{group}.py` with APIRouter, include in main.py |
+| Add route group | Add routes in `app/main.py`, logic in an `app/services/` module |
 
 ## Config (`config.json`)
 

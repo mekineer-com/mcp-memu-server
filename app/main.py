@@ -952,7 +952,6 @@ if _DIAG_PREFIX == "":
 
 _resolve_profile_if_configured = _service_factory._resolve_profile_if_configured
 _retrieve_apimw_enabled_from_cfg = _service_factory._retrieve_apimw_enabled_from_cfg
-_cfg_int = _service_factory._cfg_int
 _apimw_cadence_from_cfg = _service_factory._apimw_cadence_from_cfg
 _apimw_memory_count_from_cfg = _service_factory._apimw_memory_count_from_cfg
 _apimw_random_count_from_cfg = _service_factory._apimw_random_count_from_cfg
@@ -1475,69 +1474,6 @@ async def _persist_annulment_memories(
     return created_ids
 
 
-def _merge_memorize_segment_results(
-    segment_results: list[dict[str, Any]],
-    pending_segment_ids: list[str] | None = None,
-) -> dict[str, Any]:
-    def _merge_record_list(values: list[Any], *, id_keys: tuple[str, ...] = ("id",)) -> list[Any]:
-        out: list[Any] = []
-        seen: set[str] = set()
-        for value in values:
-            if not isinstance(value, dict):
-                out.append(value)
-                continue
-            dedupe_key = ""
-            for key in id_keys:
-                raw = str(value.get(key) or "").strip()
-                if raw:
-                    dedupe_key = f"{key}:{raw}"
-                    break
-            if not dedupe_key:
-                try:
-                    dedupe_key = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
-                except (TypeError, ValueError):
-                    dedupe_key = repr(value)
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            out.append(value)
-        return out
-
-    flat_items: list[Any] = []
-    flat_categories: list[Any] = []
-    flat_relations: list[Any] = []
-    flat_resources: list[Any] = []
-    skipped_reasons: list[str] = []
-
-    for batch_result in segment_results:
-        flat_items.extend(batch_result.get("items") or [])
-        flat_categories.extend(batch_result.get("categories") or [])
-        flat_relations.extend(batch_result.get("relations") or [])
-        if isinstance(batch_result.get("resource"), dict):
-            flat_resources.append(batch_result["resource"])
-        resources = batch_result.get("resources")
-        if isinstance(resources, list):
-            flat_resources.extend(resources)
-        skipped_reasons.extend(_normalize_text_list(batch_result.get("skipped_reasons")))
-
-    result: dict[str, Any] = {
-        "results": segment_results,
-        "segment_count": len(segment_results),
-        "items": _merge_record_list(flat_items),
-        "categories": _merge_record_list(flat_categories, id_keys=("id", "name")),
-        "relations": _merge_record_list(flat_relations, id_keys=("item_id", "category_id")),
-        "pending_segment_ids": _normalize_text_list(pending_segment_ids),
-    }
-    merged_resources = _merge_record_list(flat_resources, id_keys=("id", "url", "local_path"))
-    if len(merged_resources) == 1:
-        result["resource"] = merged_resources[0]
-    elif merged_resources:
-        result["resources"] = merged_resources
-    if skipped_reasons:
-        result["skipped_reasons"] = list(dict.fromkeys(skipped_reasons))
-    return result
-
-
 async def _compute_holistic_categories_summary(
     *,
     svc: Any,
@@ -1755,21 +1691,6 @@ def _read_list(p: Path) -> list[dict[str, Any]]:
     raw = p.read_text(encoding="utf-8")
     obj = json.loads(raw) if raw.strip() else []
     return [m for m in obj if isinstance(m, dict)] if isinstance(obj, list) else []
-
-
-def _resolve_chat_storage_dir(
-    chats_dir: Path,
-    uid: str,
-    aid: str,
-    conversation_id: str | None,
-) -> tuple[Path, str, str]:
-    return _memorize_endpoint.resolve_chat_storage_dir(
-        chats_dir,
-        uid,
-        aid,
-        conversation_id,
-        _sanitize_db_filename,
-    )
 
 
 _date_label = _memorize_endpoint.date_label

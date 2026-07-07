@@ -362,10 +362,6 @@ def load_soul_gen_config(cfg: dict[str, Any], user_id: str, soul_id: str, logger
     return parsed
 
 
-def save_soul_gen_config(cfg: dict[str, Any], user_id: str, soul_id: str, data: dict[str, Any]) -> None:
-    soul_gen_config_path(cfg, user_id, soul_id).write_text(json.dumps(data, indent=2))
-
-
 def sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, Any] | None) -> str:
     if not isinstance(scope, dict):
         scope = {}
