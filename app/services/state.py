@@ -254,6 +254,17 @@ INSERT OR IGNORE INTO conversations (
                 base_pending,
                 append_pending_segment_ids,
             )
+        remove_pending_segment_ids = raw_updates.pop("remove_pending_segment_ids", None)
+        if remove_pending_segment_ids is not None:
+            base_pending = field_updates.get(
+                "pending_segment_ids", existing_state.get("pending_segment_ids")
+            )
+            removed = set(normalize_text_list(remove_pending_segment_ids))
+            field_updates["pending_segment_ids"] = [
+                segment_id
+                for segment_id in normalize_text_list(base_pending)
+                if segment_id not in removed
+            ]
 
         if "digest_cursor" in field_updates:
             try:

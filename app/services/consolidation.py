@@ -1061,8 +1061,16 @@ INSERT INTO life_goals (
         if str(segment_id).strip()
     ]
 
+    consumed_segment_ids = [
+        str(segment_id).strip()
+        for segment_id in (inputs.get("selected_segment_ids") or [])
+        if str(segment_id).strip()
+    ]
     state_updates: dict[str, Any] = {
-        "pending_segment_ids": remaining_segment_ids,
+        # Subtract only what this run consumed: a memorize that finished during
+        # the LLM phase may have appended new pending ids, and an absolute
+        # overwrite with the launch-time snapshot would silently drop them.
+        "remove_pending_segment_ids": consumed_segment_ids,
         "last_consolidation_at": now_iso,
         "consolidation_in_progress": False,
         "consolidation_started_at": None,
