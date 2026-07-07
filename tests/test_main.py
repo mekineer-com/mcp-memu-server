@@ -279,6 +279,26 @@ async def test_atomic_canvas_source_threads_atom_ids(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_atomic_canvas_source_post_threads_atom_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakeSvc:
+        def graph_atomic_canvas_source(self, **kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {"atoms": [], "edges": [], "count": 0, "total_count": 0}
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+
+    await main.atomic_memory_canvas_source_post({
+        "user_id": "Marcos",
+        "soul_id": "Siri",
+        "atom_ids": ["memory:a", "category:b"],
+    })
+
+    assert captured["atom_ids"] == {"memory:a", "category:b"}
+
+
+@pytest.mark.asyncio
 async def test_atomic_canvas_source_requires_scope() -> None:
     with pytest.raises(main.HTTPException) as exc:
         await main.atomic_memory_canvas_source(user_id="", soul_id="Siri")

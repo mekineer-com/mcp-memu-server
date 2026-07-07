@@ -2711,6 +2711,21 @@ async def atomic_memory_canvas_source(
     return svc.graph_atomic_canvas_source(where=scope, limit=limit)
 
 
+@app.post("/integration/atomic/canvas-source", operation_id="atomic_memory_canvas_source_post", tags=["integration"])
+async def atomic_memory_canvas_source_post(
+    payload: dict[str, Any],
+):
+    uid = str(payload.get("user_id") or "").strip()
+    sid = str(payload.get("soul_id") or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    limit = int(payload.get("limit") or 500)
+    atom_ids = {str(atom_id).strip() for atom_id in payload.get("atom_ids") or [] if str(atom_id).strip()}
+    svc = _get_service_from_payload({"user": scope})
+    return svc.graph_atomic_canvas_source(where=scope, limit=limit, atom_ids=atom_ids or None)
+
+
 @app.get("/integration/atomic/neighborhood/{item_id}", operation_id="atomic_memory_neighborhood", tags=["integration"])
 async def atomic_memory_neighborhood(
     item_id: str,
