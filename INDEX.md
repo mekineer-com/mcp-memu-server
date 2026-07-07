@@ -56,7 +56,7 @@ mcp-memu-server/
 | `/integration/atomic/prompt_log` | POST | Atomic-facing prompt-log sink; when `debug.log_prompts` is enabled, writes Atomic's exact outgoing chat messages into `mcp-memu-server.log` with unescaped message content |
 | `/integration/atomic/atoms` | GET | Atomic-facing paginated read surface for memU memory/category atoms (`user_id`, `soul_id`, `limit`, `offset`, optional `category_id`/`tag_id` filter, `cursor`/`cursor_id` for pagination); returns Atomic-shaped atom rows with `total_count` |
 | `/integration/atomic/tags` | GET | Atomic-facing category/tag list (`user_id`, `soul_id`, optional `min_count`); returns stable `category:<id>` tags with counts and no child expansion |
-| `/integration/atomic/canvas-source` | GET | Atomic-facing canvas source: all memories + categories (`user_id`, `soul_id`, optional `limit`); returns Atomic-shaped nodes for the canvas graph view |
+| `/integration/atomic/canvas-source` | GET | Atomic-facing canvas source: all memories + categories (`user_id`, `soul_id`, optional `limit`, optional comma-separated `atom_ids`); returns Atomic-shaped nodes for the canvas graph view |
 | `/integration/atomic/neighborhood/{item_id}` | GET | Atomic-facing memory neighborhood (`user_id`, `soul_id`, optional `depth`, `min_similarity`); returns the item plus cosine-similar neighbors; 404 if not found |
 | `/integration/atomic/search` | GET | Atomic-facing read-only memory search (`q`, `user_id`, `soul_id`, optional `limit`, `since_days`) backed by `GraphMixin.graph_search`; no turn/retrieve state machinery |
 | `/integration/memu/retrieve` | POST | MCP-facing retrieve wrapper |

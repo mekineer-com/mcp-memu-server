@@ -2706,7 +2706,9 @@ async def atomic_memory_canvas_source(
     scope = {"user_id": uid, "soul_id": sid}
     svc = _get_service_from_payload({"user": scope})
     requested = {part.strip() for part in (atom_ids or "").split(",") if part.strip()} or None
-    return svc.graph_atomic_canvas_source(where=scope, limit=limit, atom_ids=requested)
+    if requested is not None:
+        return svc.graph_atomic_canvas_source(where=scope, limit=limit, atom_ids=requested)
+    return svc.graph_atomic_canvas_source(where=scope, limit=limit)
 
 
 @app.get("/integration/atomic/neighborhood/{item_id}", operation_id="atomic_memory_neighborhood", tags=["integration"])
