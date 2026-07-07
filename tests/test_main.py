@@ -6937,3 +6937,19 @@ async def test_conversation_turn_listen_target_attachment_does_not_enqueue(
     assert out["ok"] is True
     assert out["response"] == ""
     assert any("attachment dropped" in r.getMessage() for r in caplog.records)
+
+
+def test_chunk_index_ranges_by_token_budget_splits_force_tail():
+    # 75 words ≈ 100 tokens per message under estimate_tokens
+    messages = [{"content": " ".join(["word"] * 75)} for _ in range(5)]
+    ranges = main._memorize_endpoint._chunk_index_ranges_by_token_budget(
+        messages, start_idx=0, end_idx=4, max_chunk_tokens=250
+    )
+    assert ranges == [(0, 1), (2, 3), (4, 4)]
+    # no budget → single range; empty span → no ranges
+    assert main._memorize_endpoint._chunk_index_ranges_by_token_budget(
+        messages, start_idx=1, end_idx=4, max_chunk_tokens=0
+    ) == [(1, 4)]
+    assert main._memorize_endpoint._chunk_index_ranges_by_token_budget(
+        messages, start_idx=3, end_idx=2, max_chunk_tokens=100
+    ) == []

@@ -21,6 +21,34 @@ def estimate_tokens(messages: list[dict[str, Any]]) -> int:
     return int(words / 0.75)
 
 
+_FORCE_MEMORIZE_MAX_CHUNK_TOKENS: int = 6000
+
+
+def _chunk_index_ranges_by_token_budget(
+    messages: list[dict[str, Any]],
+    *,
+    start_idx: int,
+    end_idx: int,
+    max_chunk_tokens: int,
+) -> list[tuple[int, int]]:
+    if start_idx > end_idx:
+        return []
+    if max_chunk_tokens <= 0:
+        return [(start_idx, end_idx)]
+    ranges: list[tuple[int, int]] = []
+    chunk_start = start_idx
+    chunk_tokens = 0
+    for idx in range(start_idx, end_idx + 1):
+        msg_tokens = estimate_tokens([messages[idx]])
+        if chunk_tokens > 0 and (chunk_tokens + msg_tokens) > max_chunk_tokens:
+            ranges.append((chunk_start, idx - 1))
+            chunk_start = idx
+            chunk_tokens = 0
+        chunk_tokens += msg_tokens
+    ranges.append((chunk_start, end_idx))
+    return ranges
+
+
 def estimate_unmemorized_tokens(messages: list[dict[str, Any]], digest_cursor: Any) -> int:
     if not messages:
         return 0
@@ -1246,7 +1274,15 @@ async def memorize_endpoint(
                 if isinstance(merged, list) and merged:
                     force_start = max(0, processed_cursor + 1)
                     if force_start < len(merged):
-                        memorize_segments = [(resource_url, merged[force_start:], force_start, len(merged) - 1)]
+                        memorize_segments = [
+                            (resource_url, merged[chunk_start : chunk_end + 1], chunk_start, chunk_end)
+                            for chunk_start, chunk_end in _chunk_index_ranges_by_token_budget(
+                                merged,
+                                start_idx=force_start,
+                                end_idx=len(merged) - 1,
+                                max_chunk_tokens=_FORCE_MEMORIZE_MAX_CHUNK_TOKENS,
+                            )
+                        ]
                 if not memorize_segments:
                     _set_memorize_progress(
                         ctx.memorize_progress,
