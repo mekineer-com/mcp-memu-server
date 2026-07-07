@@ -3996,7 +3996,7 @@ async def atomic_session_start(req: AtomicSessionStartRequest):
     }
 
 
-def _atomic_transcript_rows(transcript: list[dict[str, Any]], *, soul_id: str) -> list[dict[str, Any]]:
+def _atomic_transcript_rows(transcript: list[dict[str, Any]], *, user_id: str, soul_id: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for row in transcript or []:
         if not isinstance(row, dict):
@@ -4015,6 +4015,10 @@ def _atomic_transcript_rows(transcript: list[dict[str, Any]], *, soul_id: str) -
         }
         if out["role"] == "assistant" and not out["name"]:
             out["name"] = soul_id
+        elif out["role"] == "user" and not out["name"]:
+            out["name"] = user_id
+        elif out["role"] == "tool" and not out["name"]:
+            out["name"] = "tool"
         rows.append(out)
     return rows
 
@@ -4054,7 +4058,7 @@ async def atomic_session_end(req: AtomicSessionEndRequest):
     if not conversation_id.startswith("chat:atomic-"):
         raise HTTPException(status_code=400, detail="conversation_id must start with chat:atomic-")
 
-    rows = _atomic_transcript_rows(req.transcript, soul_id=soul_id)
+    rows = _atomic_transcript_rows(req.transcript, user_id=uid, soul_id=soul_id)
     state_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=uid, soul_id=soul_id)
     ended_at = _atomic_parse_dt(state_row.get("atomic_session_ended_at"))
     latest_created_at = _atomic_latest_created_at(rows)

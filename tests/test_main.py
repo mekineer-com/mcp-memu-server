@@ -366,6 +366,7 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
         transcript=[
             {"role": "system", "content": "hidden"},
             {"role": "user", "content": "hello", "created_at": "2026-07-03T00:00:00+00:00"},
+            {"role": "tool", "content": "search_atoms complete", "created_at": "2026-07-03T00:00:00.500000+00:00"},
             {"role": "assistant", "content": "hi", "created_at": "2026-07-03T00:00:01+00:00"},
         ],
     )
@@ -398,6 +399,7 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
             activity_recap="We reviewed one more memory.",
             transcript=[
                 {"role": "user", "content": "hello", "created_at": "2026-07-03T00:00:00+00:00"},
+                {"role": "tool", "content": "search_atoms complete", "created_at": "2026-07-03T00:00:00.500000+00:00"},
                 {"role": "assistant", "content": "hi", "created_at": "2026-07-03T00:00:01+00:00"},
                 {"role": "user", "content": "one more", "created_at": later_at},
                 {"role": "assistant", "content": "done", "created_at": later_at},
@@ -426,7 +428,8 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
         since_cursor=-1,
         recent_fallback_messages=0,
     )
-    assert [row["content"] for row in tail] == ["hello", "hi", "one more", "done"]
+    assert [row["content"] for row in tail] == ["hello", "search_atoms complete", "hi", "one more", "done"]
+    assert [row["speaker"] for row in tail[:3]] == ["u", "tool", "Echo"]
     assert {row["source_label"] for row in tail} == {"atomic"}
     con = main._sqlite_connect(db_path)
     try:
