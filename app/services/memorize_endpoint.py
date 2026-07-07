@@ -542,6 +542,10 @@ async def run_memorize_segments(
                         "all_categories_summary": current_all_categories_summary,
                     },
                 )
+            if conversation_id and has_results:
+                # Pending ids now reference these files; the failure path must not unlink them
+                # or consolidation would reject the whole pending list as missing history.
+                created_segment_paths.clear()
             if has_results:
                 for bg_cid in consumed_background_summary_ids:
                     ctx.write_conversation_state(
@@ -634,14 +638,9 @@ async def run_memorize_segments(
             last_result="failure",
             error=f"{type(exc).__name__}: {exc}",
         )
-        if conversation_id:
-            async with mem_lock:
-                ctx.write_conversation_state(
-                    conversation_id,
-                    soul_id=soul_id,
-                    user_id=uid,
-                    updates={"pending_segment_ids": []},
-                )
+        # pending_segment_ids stays untouched: any stored ids are from committed runs
+        # (files intact) and clearing them would silently orphan those segments
+        # from consolidation forever.
         raise
     finally:
         ctx.memorize_cancel.discard(progress_key)

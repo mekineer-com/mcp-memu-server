@@ -2884,7 +2884,7 @@ async def test_run_memorize_segments_batches_one_job_per_persisted_segment(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_segments_clears_pending_ids_on_extraction_failure(monkeypatch: pytest.MonkeyPatch, tmp_path):
+async def test_run_memorize_segments_preserves_pending_ids_on_extraction_failure(monkeypatch: pytest.MonkeyPatch, tmp_path):
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
 
@@ -2936,7 +2936,9 @@ async def test_run_memorize_segments_clears_pending_ids_on_extraction_failure(mo
         )
 
     assert list(segments_dir.glob("*.json")) == []
-    assert state_row["pending_segment_ids"] == []
+    # Prior runs' pending ids must survive a failed extraction; wiping them
+    # permanently orphans already-extracted segments from consolidation.
+    assert state_row["pending_segment_ids"] == ["cid-1:0-1"]
     row = main._MEMORIZE_PROGRESS.get(key) or {}
     assert row.get("active") is False
     assert row.get("last_result") == "failure"
