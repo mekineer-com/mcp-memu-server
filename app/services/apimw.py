@@ -402,12 +402,9 @@ async def _run_apimw(
                     code="apimw_synthesis_parse_failed",
                     detail="synthesis response was not valid JSON object",
                 )
-                _m()._write_conversation_state(
-                    conversation_id,
-                    soul_id=soul_id,
-                    user_id=user_id,
-                    updates={"prior_context": None},
-                )
+                # prior_context stays: it is durable until a successful turn
+                # consumes it, so a transient synthesis failure must not erase
+                # the context the next turn should still see.
             except Exception:
                 _m().logger.exception("failed to record APImw synthesis-parse failure for %s", conversation_id)
             return
@@ -437,12 +434,7 @@ async def _run_apimw(
                 code="apimw_failed",
                 detail=f"{type(exc).__name__}: {str(exc)[:220]}",
             )
-            _m()._write_conversation_state(
-                conversation_id,
-                soul_id=soul_id,
-                user_id=user_id,
-                updates={"prior_context": None},
-            )
+            # prior_context stays on failure too (see parse-failure branch).
         except Exception:
             _m().logger.exception("failed to record APImw failure state for %s", conversation_id)
         _m().logger.exception("APImw background pipeline failed for %s", conversation_id)
