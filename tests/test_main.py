@@ -428,8 +428,8 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
         since_cursor=-1,
         recent_fallback_messages=0,
     )
-    assert [row["content"] for row in tail] == ["hello", "search_atoms complete", "hi", "one more", "done"]
-    assert [row["speaker"] for row in tail[:3]] == ["u", "tool", "Echo"]
+    assert [row["content"] for row in tail] == ["hello", "hi", "one more", "done"]
+    assert [row["speaker"] for row in tail[:2]] == ["u", "Echo"]
     assert {row["source_label"] for row in tail} == {"atomic"}
     con = main._sqlite_connect(db_path)
     try:

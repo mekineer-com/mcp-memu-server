@@ -4004,6 +4004,8 @@ def _atomic_transcript_rows(transcript: list[dict[str, Any]], *, user_id: str, s
         role = str(row.get("role") or "").strip().lower()
         if role == "system":
             continue
+        if role == "tool":
+            continue
         content = str(row.get("content") or row.get("message") or "").strip()
         if not role or not content:
             continue
@@ -4017,8 +4019,6 @@ def _atomic_transcript_rows(transcript: list[dict[str, Any]], *, user_id: str, s
             out["name"] = soul_id
         elif out["role"] == "user" and not out["name"]:
             out["name"] = user_id
-        elif out["role"] == "tool" and not out["name"]:
-            out["name"] = "tool"
         rows.append(out)
     return rows
 
