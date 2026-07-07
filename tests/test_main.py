@@ -341,6 +341,40 @@ async def test_atomic_neighborhood_threads_scope_and_404(monkeypatch: pytest.Mon
     assert exc.value.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_atomic_similar_threads_scope_and_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakeSvc:
+        def graph_atomic_similar(self, item_id: str, **kwargs: Any) -> list[dict[str, Any]] | None:
+            captured["item_id"] = item_id
+            captured.update(kwargs)
+            if item_id == "memory:missing":
+                return None
+            return [{"id": "memory:m2", "similarity_score": 0.9}]
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+
+    out = await main.atomic_memory_similar(
+        item_id="memory:m1",
+        user_id="Marcos",
+        soul_id="Siri",
+        limit=3,
+        min_similarity=0.8,
+    )
+
+    assert out == [{"id": "memory:m2", "similarity_score": 0.9}]
+    assert captured == {
+        "item_id": "memory:m1",
+        "where": {"user_id": "Marcos", "soul_id": "Siri"},
+        "limit": 3,
+        "min_similarity": 0.8,
+    }
+    with pytest.raises(main.HTTPException) as exc:
+        await main.atomic_memory_similar(item_id="memory:missing", user_id="Marcos", soul_id="Siri")
+    assert exc.value.status_code == 404
+
+
 def test_atomic_source_label_and_heading() -> None:
     from app.services import turn_contract
 

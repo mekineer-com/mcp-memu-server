@@ -2752,6 +2752,31 @@ async def atomic_memory_neighborhood(
     return graph
 
 
+@app.get("/integration/atomic/similar/{item_id}", operation_id="atomic_memory_similar", tags=["integration"])
+async def atomic_memory_similar(
+    item_id: str,
+    user_id: str,
+    soul_id: str,
+    limit: int = 5,
+    min_similarity: float = 0.7,
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    similar = svc.graph_atomic_similar(
+        item_id,
+        where=scope,
+        limit=limit,
+        min_similarity=min_similarity,
+    )
+    if similar is None:
+        raise HTTPException(status_code=404, detail="memory not found")
+    return similar
+
+
 @app.get("/integration/atomic/search", operation_id="atomic_memory_search", tags=["integration"])
 async def atomic_memory_search(
     q: str,
