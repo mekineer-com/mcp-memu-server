@@ -375,6 +375,14 @@ async def test_atomic_similar_threads_scope_and_404(monkeypatch: pytest.MonkeyPa
     assert exc.value.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_atomic_similar_requires_scope() -> None:
+    with pytest.raises(main.HTTPException) as exc:
+        await main.atomic_memory_similar(item_id="memory:m1", user_id="", soul_id="Siri")
+
+    assert exc.value.status_code == 400
+
+
 def test_atomic_source_label_and_heading() -> None:
     from app.services import turn_contract
 
