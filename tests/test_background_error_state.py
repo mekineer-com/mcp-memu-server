@@ -185,8 +185,8 @@ def test_consolidation_error_fields_round_trip_through_state() -> None:
         assert loaded["last_consolidation_error_at"] == now_iso
 
 
-def test_apimw_failure_clears_prior_context() -> None:
-    """APImw failure path must clear prior_context so a stale value doesn't linger."""
+def test_apimw_failure_preserves_prior_context() -> None:
+    """APImw failure keeps prior_context for the next turn to render once."""
     with tempfile.TemporaryDirectory() as td:
         tmp_dir = Path(td)
         db_path, _ = _tmp_sqlite_setup(tmp_dir, soul_id="SoulE")
@@ -201,8 +201,8 @@ def test_apimw_failure_clears_prior_context() -> None:
             updates={"prior_context": "some stale context"},
         )
 
-        # Simulate APImw failure: write error + clear prior_context (same as main.py does).
-        write_conversation_state(
+        # Simulate APImw failure: write error only.
+        state, _ = write_conversation_state(
             cid,
             sqlite_current_path=lambda _user, _soul: db_path,
             soul_id="SoulE",
@@ -212,15 +212,8 @@ def test_apimw_failure_clears_prior_context() -> None:
                 "last_background_error_at": datetime.now(UTC).isoformat(),
             },
         )
-        state, _ = write_conversation_state(
-            cid,
-            sqlite_current_path=lambda _user, _soul: db_path,
-            soul_id="SoulE",
-            user_id="UserE",
-            updates={"prior_context": None},
-        )
 
-        assert state["prior_context"] is None
+        assert state["prior_context"] == "some stale context"
         assert state["last_background_error"].startswith("apimw_failed:")
 
         # Verify via fresh read.
@@ -232,17 +225,17 @@ def test_apimw_failure_clears_prior_context() -> None:
         finally:
             con.close()
 
-        assert loaded["prior_context"] is None
+        assert loaded["prior_context"] == "some stale context"
 
 
 def test_apimw_success_writes_prior_context() -> None:
-    """APImw success path writes prior_context; absence after failure is not permanent."""
+    """APImw success path writes fresh prior_context."""
     with tempfile.TemporaryDirectory() as td:
         tmp_dir = Path(td)
         db_path, _ = _tmp_sqlite_setup(tmp_dir, soul_id="SoulF")
 
         cid = "conv-apimw-ok"
-        # Simulate a failure that cleared prior_context.
+        # Simulate no currently pending prior_context.
         write_conversation_state(
             cid,
             sqlite_current_path=lambda _user, _soul: db_path,
