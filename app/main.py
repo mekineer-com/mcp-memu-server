@@ -844,20 +844,19 @@ def _format_prompt_payload_for_log(payload: dict[str, Any]) -> str:
     rest = {key: value for key, value in payload.items() if key != "messages"}
     lines: list[str] = []
     if rest:
-        lines.append(json.dumps(rest, ensure_ascii=False, indent=2).replace("\\n", "\n"))
-    lines.append("messages:")
-    for idx, message in enumerate(messages, 1):
+        lines.append(json.dumps(rest, ensure_ascii=False, separators=(",", ":")))
+    for message in messages:
         if not isinstance(message, Mapping):
-            lines.extend(["", f"[{idx}]", str(message)])
+            lines.append(str(message).replace("\n", "\\n"))
             continue
-        lines.extend(["", f"[{idx}] role: {message.get('role') or '-'}"])
-        if message.get("name") is not None:
-            lines.append(f"name: {message['name']}")
-        if message.get("content") is not None:
-            lines.extend(["content:", str(message["content"])])
+        role = str(message.get("role") or "-")
+        name = f" {message['name']}" if message.get("name") is not None else ""
+        content = str(message.get("content") or "").replace("\n", "\\n")
+        line = f"[{role}{name}] {content}"
         extras = {key: value for key, value in message.items() if key not in {"role", "name", "content"}}
         if extras:
-            lines.extend(["metadata:", json.dumps(extras, ensure_ascii=False, indent=2).replace("\\n", "\n")])
+            line += f" metadata={json.dumps(extras, ensure_ascii=False, separators=(',', ':'))}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -2733,6 +2732,7 @@ async def atomic_memory_neighborhood(
     soul_id: str,
     depth: int = 1,
     min_similarity: float = 0.5,
+    limit: int = 5,
 ):
     uid = str(user_id or "").strip()
     sid = str(soul_id or "").strip()
@@ -2740,7 +2740,13 @@ async def atomic_memory_neighborhood(
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
     scope = {"user_id": uid, "soul_id": sid}
     svc = _get_service_from_payload({"user": scope})
-    graph = svc.graph_atomic_neighborhood(item_id, where=scope, depth=depth, min_similarity=min_similarity)
+    graph = svc.graph_atomic_neighborhood(
+        item_id,
+        where=scope,
+        depth=depth,
+        min_similarity=min_similarity,
+        similarity_limit=limit,
+    )
     if graph is None:
         raise HTTPException(status_code=404, detail="memory not found")
     return graph

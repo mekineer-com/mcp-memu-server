@@ -334,6 +334,7 @@ async def test_atomic_neighborhood_threads_scope_and_404(monkeypatch: pytest.Mon
         "where": {"user_id": "Marcos", "soul_id": "Siri"},
         "depth": 2,
         "min_similarity": 0.7,
+        "similarity_limit": 5,
     }
     with pytest.raises(main.HTTPException) as exc:
         await main.atomic_memory_neighborhood(item_id="memory:missing", user_id="Marcos", soul_id="Siri")
@@ -1076,7 +1077,7 @@ def test_prompt_log_after_emits_single_block(caplog: pytest.LogCaptureFixture) -
     assert "[PAYLOAD] trace=- req=req-1 op=turn step=respond kind=chat model=minimax/minimax-m2.7" in text
     assert "[RESPONSE] trace=- req=req-1 op=turn step=respond" in text
     assert "content_chars=2" in text
-    assert "content:\nhello" in text
+    assert "[system] hello" in text
     assert '\\"content\\": \\"hello\\"' not in text
     assert "\nok\n" in text
 
