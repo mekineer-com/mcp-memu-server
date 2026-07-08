@@ -8,6 +8,34 @@ import pytest
 from app.services import conversation_sources
 
 
+def test_atomic_snapshot_blank_speakers_fall_back_to_scope_names(tmp_path: Path) -> None:
+    conversation_sources.persist_atomic_history_snapshot(
+        storage_dir=tmp_path,
+        user_id="Marcos",
+        soul_id="Siri",
+        conversation_id="chat:atomic-one",
+        chat_name="Atomic",
+        history=[
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ],
+    )
+
+    rows = conversation_sources.load_atomic_tail(
+        storage_dir=tmp_path,
+        user_id="Marcos",
+        soul_id="Siri",
+        conversation_id="chat:atomic-one",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+    )
+
+    assert [(row["role"], row["speaker"]) for row in rows] == [
+        ("user", "Marcos"),
+        ("assistant", "Siri"),
+    ]
+
+
 def test_hermes_base_defaults_to_channels_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("HERMES_HOME", raising=False)
     monkeypatch.setenv("CHANNELS_HOME", str(tmp_path))

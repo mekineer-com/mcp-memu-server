@@ -843,6 +843,11 @@ def load_chat_snapshot_tail(
             continue
         role = str(item.get("role") or "").strip() or "unknown"
         speaker = str(item.get("name") or "").strip()
+        if source_label == "atomic" and not speaker:
+            if role == "user":
+                speaker = user_id
+            elif role in {"assistant", "soul"}:
+                speaker = soul_id
         ts_ms = item.get("ts_ms")
         received_at = _to_iso_utc((float(ts_ms) / 1000.0) if isinstance(ts_ms, (int, float)) else "")
         if not received_at:
