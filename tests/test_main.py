@@ -671,6 +671,22 @@ def test_format_all_chat_history_for_ai_can_render_without_current_chat_marker()
     assert "[Siri] cross hello" in rendered
 
 
+def test_format_all_chat_history_for_ai_uses_current_user_name_before_dm_heading() -> None:
+    rendered = main._format_all_chat_history_for_ai(
+        current_history=[],
+        cross_tail=[],
+        conversation_id="whatsapp:dm:18322935409@s.whatsapp.net",
+        soul_id="Siri",
+        chat_label="[dm][Raquel]",
+        current_user_text="Haven't slept in a couple days",
+        current_user_name="Marcos",
+    )
+
+    assert "[dm][Raquel] \u2190 current chat" in rendered
+    assert "[Marcos] Haven't slept in a couple ..." in rendered
+    assert "[Raquel] Haven't slept" not in rendered
+
+
 def test_format_all_chat_history_for_ai_places_activities_before_chats() -> None:
     rendered = main._format_all_chat_history_for_ai(
         current_history=[

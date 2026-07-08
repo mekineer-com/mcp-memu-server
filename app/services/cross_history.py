@@ -617,6 +617,7 @@ def _format_all_chat_history_for_ai(
     soul_id: str,
     chat_label: str | None = None,
     current_user_text: str | None = None,
+    current_user_name: str | None = None,
     self_turn_directive: str | None = None,
     mark_current_chat: bool = True,
 ) -> str:
@@ -631,6 +632,7 @@ def _format_all_chat_history_for_ai(
                 chat_label=chat_label,
                 soul_name=soul_id,
                 current_user_text=current_user_text,
+                current_user_name=current_user_name,
                 self_turn_directive=self_turn_directive,
                 mark_current_chat=mark_current_chat,
             )
@@ -642,6 +644,7 @@ def _format_all_chat_history_for_ai(
         chat_label=chat_label or _m()._chat_label_from_history(history_rows, conversation_id),
         soul_name=soul_id,
         current_user_text=current_user_text,
+        current_user_name=current_user_name,
         self_turn_directive=self_turn_directive,
         mark_current_chat=mark_current_chat,
     )

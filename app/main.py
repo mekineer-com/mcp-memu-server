@@ -2980,6 +2980,7 @@ async def conversation_retrieve(
             soul_id=soul_id,
             chat_label=chat_label_for_prompt,
             current_user_text=display_current_user_text,
+            current_user_name=_pick_str(safe, "user_name") or None,
             self_turn_directive=self_turn_directive or None,
         )
 
@@ -3029,6 +3030,7 @@ async def conversation_retrieve(
                     soul_id=soul_id,
                     chat_label=chat_label_for_prompt,
                     current_user_text=message,
+                    current_user_name=_pick_str(safe, "user_name") or None,
                     self_turn_directive=self_turn_directive,
                 )
                 if not response_chat_history_for_ai.strip() and cid.startswith("chat:atomic-"):
@@ -3091,6 +3093,7 @@ async def conversation_retrieve(
                     soul_id=soul_id,
                     chat_label=chat_label_for_prompt,
                     current_user_text=message,
+                    current_user_name=_pick_str(safe, "user_name") or None,
                     self_turn_directive=self_turn_directive,
                 )
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))

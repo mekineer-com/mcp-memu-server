@@ -257,11 +257,13 @@ def build_conversations_block(
     chat_label: str | None = None,
     soul_name: str | None = None,
     current_user_text: str | None = None,
+    current_user_name: str | None = None,
     self_turn_directive: str | None = None,
     mark_current_chat: bool = True,
 ) -> str:
     history_for_render = [dict(item) if isinstance(item, dict) else item for item in (history or [])]
     current_text = _text(current_user_text)
+    current_name = _text(current_user_name)
     directive_text = _text(self_turn_directive)
     last_history_item: dict[str, Any] | None = None
     for item in reversed(history_for_render):
@@ -280,8 +282,10 @@ def build_conversations_block(
     current_content = _current_message_locator(current_text) if current_text and not directive_text else current_text
     if current_content and not directive_text and already_has_current_user_message:
         last_history_item["content"] = current_content
+        if current_name and not _text(last_history_item.get("name")):
+            last_history_item["name"] = current_name
     elif current_content and not directive_text:
-        last_user_name = ""
+        last_user_name = current_name
         for item in history_for_render:
             if not isinstance(item, dict):
                 continue

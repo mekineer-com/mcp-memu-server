@@ -358,6 +358,7 @@ async def _run_apimw(
             soul_id=soul_id,
             chat_label=_m()._chat_label_for_prompt(payload),
             current_user_text=current_message_text,
+            current_user_name=_m()._pick_str(payload, "user_name") or None,
         )
         focus_text = current_message_text or segment_text.strip()
         if not focus_text and not segment_text.strip():
