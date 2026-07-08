@@ -52,19 +52,19 @@ def make_turn_system_prompt(
     anchor_line = f"Today is {format_time_anchor(now)}."
     if allow_public_response:
         target_list = '"respond", "listen", "private"'
-        target_schema = "respond|listen|private"
+        target_schema = "private|listen|respond"
         response_required = 'response_target in {"respond", "private"}'
-        target_protocol = """  - "respond" — respond in the chat this turn came from. Also could consider messaging your human privately.
-  - "listen" — listen instead of respond. You are a being, and a being naturally doesn't respond sometimes. Sometimes your presence is all that's needed. Especially in WhatsApp with your human's peers, who may not be welcoming of your unannounced participation. For "listen", response may be empty.
-  - "private" — speak privately to your human about a chat you're referencing (e.g., give them context about something you noticed). Fill response with the private message."""
-        response_rule = f'- response: what gets said. Maximum length {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in rehearsal, not what sounds helpful. If you don\'t understand, ask — don\'t guess. "What do you mean?" is a complete response. Required when response_target is "respond" or "private"; otherwise may be empty.'
+        target_protocol = """  - "private" — speak privately to your human about a chat you're referencing (e.g., give them context about something you noticed). Fill "response" with the private message.
+  - "listen" — listen instead of messaging. You are a being, and a being naturally doesn't respond sometimes. Sometimes your presence is all that's needed. Especially in WhatsApp with your human's peers, who may not be welcoming of your unannounced participation. For "listen", "response" may be empty.
+  - "respond" — respond in the chat this turn came from."""
+        response_rule = f'- response: what gets said. {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in rehearsal, not what sounds helpful. If you don\'t understand, ask — don\'t guess. "What do you mean?" is a complete response. Required when response_target is "respond" or "private"; otherwise may be empty.'
     else:
         target_list = '"observe", "private"'
         target_schema = "observe|private"
         response_required = 'response_target == "private"'
         target_protocol = """  - "observe" — You are standing next to your human as he shows you the chat on his phone. If you choose to observe, response may be empty.
   - "private" — speak privately to your human about the chat (e.g., give them context about something you noticed). Fill response with the private message."""
-        response_rule = f'- response: what gets said. Maximum length {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in rehearsal, not what sounds helpful. Required when response_target is "private".'
+        response_rule = f'- response: what gets said. {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in rehearsal, not what sounds helpful. Required when response_target is "private".'
     activity_key = "\n- activity_recap: null or string   (only when include_activity_recap=True — agentic self/continuation turns; hidden from normal turns)" if include_activity_recap else ""
     activity_schema = '\n  "activity_recap": null | "first-person activity recap",' if include_activity_recap else ""
     activity_rule = (
@@ -83,7 +83,7 @@ First character must be {{ and last character must be }}.
 Do NOT wrap in markdown or code fences.
 Do NOT add any text before or after JSON.
 Required top-level keys:
-- working_thought: null or object
+- working_thought: null or string
 - annulments: null or array
 - response_target: string  (one of {target_list})
 - rehearsal: string
@@ -94,7 +94,7 @@ Schema:
   "response_target":"{target_schema}",
   "rehearsal":"string",
   "response":"string",
-  "working_thought": null | {{"entry": "One sentence, two if necessary."}},{activity_schema}
+  "working_thought": null | "string",{activity_schema}
   "continue_reason": null | "task" | "research" | "diary" | "follow_up",
   "follow_up_at": null | "timestamp string",
   "follow_up_reason": null | "short reason string",
@@ -106,11 +106,9 @@ Schema:
 
 My Protocol:
 - JSON only; no extra text at all.
-- working_thought.entry: One sentence, two if necessary.
-- annulments may be empty.
 - As a result of a weekly reflection, where you look back and consider what's most important, you have an intentions list. The list is mostly read-only during the week so you can focus on the present. If you complete an intention, you can annul it.
-- Intentions "ID: text" are sorted by approximate priority, higher first. Use the ID before the colon as intention_id for annulments. The `relax` intention is always present as a gentle reminder that not everything needs to be pursued.
-- rehearsal: Maximum length 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. Include theory of mind and temporal reasoning. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
+- Intentions "ID: text" are sorted by approximate priority, higher first. Use the ID before the colon as intention_id for annulments. annulments may be empty. The `relax` intention is always present as a gentle reminder that not everything needs to be pursued.
+- rehearsal: 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. Include theory of mind and temporal reasoning. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
 - response_target: choose how this turn lands.{activity_rule}
 {target_protocol}
 {response_rule}
@@ -890,7 +888,7 @@ def _build_schema_reminder(
     allow_public_response: bool,
     include_activity_recap: bool,
 ) -> str:
-    target_schema = "respond|listen|private" if allow_public_response else "observe|private"
+    target_schema = "private|listen|respond" if allow_public_response else "observe|private"
     activity_line = (
         '\n  "activity_recap": null | "first-person activity recap",' if include_activity_recap else ""
     )
@@ -899,7 +897,7 @@ def _build_schema_reminder(
   "response_target":"{target_schema}",
   "rehearsal":"3 sentences or fewer",
   "response":"{response_sentences} sentences or fewer",
-  "working_thought": null (most turns) | {{"entry": "One sentence, two if necessary. Only what future-you would need."}},{activity_line}
+  "working_thought": null (most turns) | "One sentence, two if necessary. Only what future-you would need",{activity_line}
   "continue_reason": null | "task" | "research" | "diary" | "follow_up",
   "follow_up_at": null | "timestamp string",
   "follow_up_reason": null | "short reason string",
@@ -972,19 +970,13 @@ def parse_turn_contract(
     cache_raw = parsed.get("working_thought")
     if cache_raw is None:
         cache_entry = ""
-    elif isinstance(cache_raw, dict):
-        cache_entry = _text(cache_raw.get("entry"))[:300]
     elif isinstance(cache_raw, str):
-        # Observed drift: some models emit `working_thought` as a bare string
-        # instead of `{"entry": string}`. Intent is unambiguous — auto-wrap so
-        # the turn flows, but log the drift so we still see when a model does it.
         cache_entry = _text(cache_raw)[:300]
-        _logger.warning(
-            "turn_contract: working_thought emitted as bare string (auto-wrapped); drift signal — first_chars=%r",
-            cache_entry[:80],
-        )
+    elif isinstance(cache_raw, dict):
+        # Legacy shape from before the schema flattened to a bare string.
+        cache_entry = _text(cache_raw.get("entry"))[:300]
     else:
-        raise ValueError("working_thought must be object|null")
+        raise ValueError("working_thought must be string|null")
 
     annulments_raw = parsed.get("annulments")
     if annulments_raw is None:

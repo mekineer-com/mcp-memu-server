@@ -194,16 +194,19 @@ def test_parse_turn_contract_rejects_non_json_text():
         parse_turn_contract("```json\\n{}\\n```")
 
 
-def test_parse_turn_contract_accepts_bare_string_working_thought(caplog):
-    # Observed drift: some models emit working_thought as a bare string instead of
-    # {"entry": "..."}. Auto-wrap for flow; WARN-log for drift visibility.
-    caplog.set_level(logging.WARNING, logger="uvicorn.error")
+def test_parse_turn_contract_accepts_bare_string_working_thought():
+    # Bare string is the canonical shape since the schema flattened.
     parsed = parse_turn_contract(
         '{"response":"hi","response_target":"respond","working_thought":"a stray thought","intention_action":{"type":"none"},"annulments":[],"rehearsal":"ok"}'
     )
     assert parsed["cache_entry"] == "a stray thought"
-    warnings = [r for r in caplog.records if "bare string" in r.getMessage()]
-    assert warnings, "expected a WARN log when working_thought is auto-wrapped"
+
+
+def test_parse_turn_contract_accepts_legacy_entry_object_working_thought():
+    parsed = parse_turn_contract(
+        '{"response":"hi","response_target":"respond","working_thought":{"entry":"legacy thought"},"annulments":[],"rehearsal":"ok"}'
+    )
+    assert parsed["cache_entry"] == "legacy thought"
 
 
 def test_build_turn_prompt_marks_current_chat_when_label_provided():
