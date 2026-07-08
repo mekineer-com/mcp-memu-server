@@ -117,6 +117,7 @@ from app.services.turn_contract import (
     format_memory_legend as _format_memory_legend,
     format_shaped_by_line as _format_shaped_by_line,
     format_time_anchor as _format_time_anchor,
+    make_turn_identity_prompt as _make_turn_identity_prompt,
     make_turn_system_prompt as _make_turn_system_prompt,
     parse_turn_contract as _parse_turn_contract,
 )
@@ -3040,13 +3041,10 @@ async def conversation_retrieve(
                 atomic_retrieve_rag = out.get("result")
                 if isinstance(atomic_retrieve_rag, dict):
                     atomic_retrieve_rag = {**atomic_retrieve_rag, "items": []}
-                system_base = _make_turn_system_prompt(
+                system_base = _make_turn_identity_prompt(
                     soul_id,
                     soul_card=soul_card,
-                    response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
-                    allow_public_response=True,
-                    include_activity_recap=False,
-                ).split("\n\nReturn STRICT JSON only.", 1)[0].strip()
+                )
                 context_block = _build_turn_context_block(
                     history=history_for_ai,
                     prior_context=out.get("prior_context"),

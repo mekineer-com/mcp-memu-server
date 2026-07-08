@@ -10,6 +10,7 @@ from app.services.turn_contract import (
     _parse_attachment,
     build_turn_prompt,
     format_relative_time_label,
+    make_turn_identity_prompt,
     make_turn_system_prompt,
     parse_turn_contract,
 )
@@ -486,6 +487,13 @@ def test_make_turn_system_prompt_includes_time_anchor() -> None:
     )
     assert "Today is " in prompt
     assert "2026" in prompt
+
+
+def test_turn_identity_prompt_excludes_protocol() -> None:
+    identity = make_turn_identity_prompt("Siri", soul_card="SOUL CARD")
+
+    assert identity in make_turn_system_prompt("Siri", soul_card="SOUL CARD")
+    assert "My Protocol:" not in identity
 
 
 def test_make_turn_system_prompt_hides_activity_recap_by_default() -> None:

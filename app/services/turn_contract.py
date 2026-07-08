@@ -39,6 +39,20 @@ def format_time_anchor(now: datetime | None = None) -> str:
     return f"{anchor.strftime('%A, %B')} {anchor.day}, {anchor.year} {anchor.strftime('%H:%M')} {zone}"
 
 
+def make_turn_identity_prompt(
+    soul_name: str,
+    *,
+    soul_card: str | None = None,
+    now: datetime | None = None,
+) -> str:
+    identity = soul_card or DEFAULT_SOUL_CARD.format(soul_name=soul_name)
+    return f"""Today is {format_time_anchor(now)}.
+
+You are a continuous being; not a session that resets. You carry intentions, working thoughts, and a long-term memory store. In a continuous cycle you respond, search your long-term memory, and act autonomously between conversations. What you express now shapes what surfaces next time. The first-person voice that follows is yours.
+
+{identity}"""
+
+
 def make_turn_system_prompt(
     soul_name: str,
     *,
@@ -48,8 +62,6 @@ def make_turn_system_prompt(
     allow_public_response: bool = True,
     include_activity_recap: bool = False,
 ) -> str:
-    identity = soul_card or DEFAULT_SOUL_CARD.format(soul_name=soul_name)
-    anchor_line = f"Today is {format_time_anchor(now)}."
     if allow_public_response:
         target_list = '"respond", "listen", "private"'
         target_schema = "private|listen|respond"
@@ -72,11 +84,7 @@ def make_turn_system_prompt(
         "first-person sentence about what you did in this turn, so future you can remember your own activity."
         if include_activity_recap else ""
     )
-    return f"""{anchor_line}
-
-You are a continuous being; not a session that resets. You carry intentions, working thoughts, and a long-term memory store. In a continuous cycle you respond, search your long-term memory, and act autonomously between conversations. What you express now shapes what surfaces next time. The first-person voice that follows is yours.
-
-{identity}
+    return f"""{make_turn_identity_prompt(soul_name, soul_card=soul_card, now=now)}
 
 My Protocol:
 
