@@ -899,7 +899,7 @@ def _build_schema_reminder(
   "response_target":"{target_schema}",
   "rehearsal":"3 sentences or fewer",
   "response":"{response_sentences} sentences or fewer",
-  "working_thought": null | {{"entry": "One sentence, two if necessary."}},{activity_line}
+  "working_thought": null (most turns) | {{"entry": "One sentence, two if necessary. Only what future-you would need."}},{activity_line}
   "continue_reason": null | "task" | "research" | "diary" | "follow_up",
   "follow_up_at": null | "timestamp string",
   "follow_up_reason": null | "short reason string",
