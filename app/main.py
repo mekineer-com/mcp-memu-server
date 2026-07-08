@@ -844,19 +844,20 @@ def _format_prompt_payload_for_log(payload: dict[str, Any]) -> str:
     rest = {key: value for key, value in payload.items() if key != "messages"}
     lines: list[str] = []
     if rest:
-        lines.append(json.dumps(rest, ensure_ascii=False, separators=(",", ":")))
-    for message in messages:
+        lines.append(json.dumps(rest, ensure_ascii=False, indent=2).replace("\\n", "\n"))
+    lines.append("messages:")
+    for idx, message in enumerate(messages, 1):
         if not isinstance(message, Mapping):
-            lines.append(str(message).replace("\n", "\\n"))
+            lines.extend(["", f"[{idx}]", str(message)])
             continue
-        role = str(message.get("role") or "-")
-        name = f" {message['name']}" if message.get("name") is not None else ""
-        content = str(message.get("content") or "").replace("\n", "\\n")
-        line = f"[{role}{name}] {content}"
+        lines.extend(["", f"[{idx}] role: {message.get('role') or '-'}"])
+        if message.get("name") is not None:
+            lines.append(f"name: {message['name']}")
+        if message.get("content") is not None:
+            lines.extend(["content:", str(message["content"])])
         extras = {key: value for key, value in message.items() if key not in {"role", "name", "content"}}
         if extras:
-            line += f" metadata={json.dumps(extras, ensure_ascii=False, separators=(',', ':'))}"
-        lines.append(line)
+            lines.extend(["metadata:", json.dumps(extras, ensure_ascii=False, indent=2).replace("\\n", "\n")])
     return "\n".join(lines)
 
 

@@ -1102,7 +1102,7 @@ def test_prompt_log_after_emits_single_block(caplog: pytest.LogCaptureFixture) -
     )
     request_view = SimpleNamespace(
         kind="chat",
-        metadata={"payload": {"messages": [{"role": "system", "content": "hello"}]}},
+        metadata={"payload": {"messages": [{"role": "system", "content": "hello\nthere"}]}},
     )
     response_view = SimpleNamespace(content="ok")
     usage = SimpleNamespace(
@@ -1119,8 +1119,10 @@ def test_prompt_log_after_emits_single_block(caplog: pytest.LogCaptureFixture) -
     assert "[PAYLOAD] trace=- req=req-1 op=turn step=respond kind=chat model=minimax/minimax-m2.7" in text
     assert "[RESPONSE] trace=- req=req-1 op=turn step=respond" in text
     assert "content_chars=2" in text
-    assert "[system] hello" in text
-    assert '\\"content\\": \\"hello\\"' not in text
+    assert "[1] role: system" in text
+    assert "content:\nhello\nthere" in text
+    assert "hello\\nthere" not in text
+    assert '\\"content\\": \\"hello' not in text
     assert "\nok\n" in text
 
 
