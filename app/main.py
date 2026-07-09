@@ -134,20 +134,20 @@ _PROMPT_LOGGER = logging.getLogger("uvicorn.error")
 
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI):
-    global _FREE_TURN_FOLLOW_UP_TASK
-    if _FREE_TURN_FOLLOW_UP_TASK is None or _FREE_TURN_FOLLOW_UP_TASK.done():
-        _FREE_TURN_FOLLOW_UP_TASK = asyncio.create_task(_free_turn_followup_scheduler())
+    global _FREE_TURN_CONTINUATION_TASK
+    if _FREE_TURN_CONTINUATION_TASK is None or _FREE_TURN_CONTINUATION_TASK.done():
+        _FREE_TURN_CONTINUATION_TASK = asyncio.create_task(_free_turn_continuation_scheduler())
     try:
         yield
     finally:
-        task = _FREE_TURN_FOLLOW_UP_TASK
+        task = _FREE_TURN_CONTINUATION_TASK
         if task is not None:
             task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
                 pass
-        _FREE_TURN_FOLLOW_UP_TASK = None
+        _FREE_TURN_CONTINUATION_TASK = None
 
 
 app = FastAPI(title="mcp-memu-server", version="0.4.0", lifespan=_app_lifespan)
@@ -604,7 +604,7 @@ _BACKGROUND_ROLLUP_INFLIGHT: set[str] = set()
 _FORCED_MEMORIZE_INFLIGHT: set[str] = set()
 _FREE_TURN_INFLIGHT: set[str] = set()
 _FREE_TURN_SCHEDULED_INFLIGHT: set[str] = set()
-_FREE_TURN_FOLLOW_UP_TASK: asyncio.Task | None = None
+_FREE_TURN_CONTINUATION_TASK: asyncio.Task | None = None
 _SHUTDOWN_STATE: dict[str, Any] = {
     "draining": False,
     "stopping": False,
@@ -1282,12 +1282,12 @@ def _mark_whatsapp_outbound(
     )
 
 
-def _ensure_free_turn_followups_schema(con: sqlite3.Connection) -> None:
-    _free_turn._ensure_free_turn_followups_schema(con)
+def _ensure_free_turn_continuations_schema(con: sqlite3.Connection) -> None:
+    _free_turn._ensure_free_turn_continuations_schema(con)
 
 
-def _free_turn_followup_row(row: sqlite3.Row) -> dict[str, Any]:
-    return _free_turn._free_turn_followup_row(row, json_from_db=_json_from_db)
+def _free_turn_continuation_row(row: sqlite3.Row) -> dict[str, Any]:
+    return _free_turn._free_turn_continuation_row(row, json_from_db=_json_from_db)
 
 
 def _parse_free_turn_continue_at(raw: str) -> datetime | None:
@@ -1297,8 +1297,8 @@ def _parse_free_turn_continue_at(raw: str) -> datetime | None:
     )
 
 
-def _free_turn_followup_payload(safe: dict[str, Any]) -> dict[str, Any]:
-    return _free_turn._free_turn_followup_payload(safe)
+def _free_turn_continuation_payload(safe: dict[str, Any]) -> dict[str, Any]:
+    return _free_turn._free_turn_continuation_payload(safe)
 
 
 def _schedule_free_turn_continuation(
@@ -1327,8 +1327,8 @@ def _schedule_free_turn_continuation(
     )
 
 
-def _free_turn_followup_db_paths() -> list[Path]:
-    return _free_turn._free_turn_followup_db_paths(
+def _free_turn_continuation_db_paths() -> list[Path]:
+    return _free_turn._free_turn_continuation_db_paths(
         storage_status=_STORAGE_STATUS,
         config=_CONFIG,
         sqlite_dir_from_cfg=_sqlite_dir_from_cfg,
@@ -1336,14 +1336,14 @@ def _free_turn_followup_db_paths() -> list[Path]:
     )
 
 
-def _claim_due_free_turn_followups(
+def _claim_due_free_turn_continuations(
     db_path: Path,
     *,
     now: datetime,
     limit: int = 5,
     claim_timeout_seconds: int = 7200,
 ) -> list[dict[str, Any]]:
-    return _free_turn._claim_due_free_turn_followups(
+    return _free_turn._claim_due_free_turn_continuations(
         db_path,
         now=now,
         limit=limit,
@@ -1356,24 +1356,24 @@ def _claim_due_free_turn_followups(
     )
 
 
-def _mark_free_turn_followup(
+def _mark_free_turn_continuation(
     db_path: Path,
-    followup_id: str,
+    continuation_id: str,
     *,
     status: str,
     error: str | None = None,
 ) -> None:
-    _free_turn._mark_free_turn_followup(
+    _free_turn._mark_free_turn_continuation(
         db_path,
-        followup_id,
+        continuation_id,
         status=status,
         error=error,
         sqlite_connect=_sqlite_connect,
     )
 
 
-async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
-    await _free_turn._run_free_turn_followup(
+async def _run_free_turn_continuation(row: dict[str, Any], db_path: Path) -> None:
+    await _free_turn._run_free_turn_continuation(
         row,
         db_path,
         mark_inflight=_mark_inflight,
@@ -1382,23 +1382,23 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
         conversation_turn=conversation_turn,
         build_prompt_override_payload=_mcp_tools.build_prompt_override_payload,
         insert_whatsapp_outbound=_insert_whatsapp_outbound,
-        mark_free_turn_followup=_mark_free_turn_followup,
+        mark_free_turn_continuation=_mark_free_turn_continuation,
         clear_inflight=_clear_inflight,
         logger=logger,
     )
 
 
-async def _run_due_free_turn_followups_once() -> int:
-    return await _free_turn._run_due_free_turn_followups_once(
-        free_turn_followup_db_paths=_free_turn_followup_db_paths,
-        claim_due_free_turn_followups=_claim_due_free_turn_followups,
-        run_free_turn_followup=_run_free_turn_followup,
+async def _run_due_free_turn_continuations_once() -> int:
+    return await _free_turn._run_due_free_turn_continuations_once(
+        free_turn_continuation_db_paths=_free_turn_continuation_db_paths,
+        claim_due_free_turn_continuations=_claim_due_free_turn_continuations,
+        run_free_turn_continuation=_run_free_turn_continuation,
     )
 
 
-async def _free_turn_followup_scheduler() -> None:
-    await _free_turn._free_turn_followup_scheduler(
-        run_due_free_turn_followups_once=_run_due_free_turn_followups_once,
+async def _free_turn_continuation_scheduler() -> None:
+    await _free_turn._free_turn_continuation_scheduler(
+        run_due_free_turn_continuations_once=_run_due_free_turn_continuations_once,
         logger=logger,
     )
 

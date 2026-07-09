@@ -283,7 +283,7 @@ CREATE TABLE IF NOT EXISTS free_turn_continuations (
     con.commit()
 
 
-def _free_turn_followup_row(row: sqlite3.Row, *, json_from_db: Callable[[Any], Any]) -> dict[str, Any]:
+def _free_turn_continuation_row(row: sqlite3.Row, *, json_from_db: Callable[[Any], Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
         "user_id": row["user_id"],
@@ -326,7 +326,7 @@ def _parse_free_turn_continue_at(raw: str, *, server_timezone: Callable[[], tzin
     return None
 
 
-def _free_turn_followup_payload(safe: dict[str, Any]) -> dict[str, Any]:
+def _free_turn_continuation_payload(safe: dict[str, Any]) -> dict[str, Any]:
     kept: dict[str, Any] = {}
     for key in (
         "user",
@@ -373,8 +373,8 @@ def _schedule_free_turn_continuation(
         return None
     sqlite_ensure_nonempty(db_path)
     now_iso = datetime.now(UTC).isoformat()
-    followup_id = f"wafup_{uuid.uuid4().hex}"
-    payload = _free_turn_followup_payload(safe_payload)
+    continuation_id = f"wafup_{uuid.uuid4().hex}"
+    payload = _free_turn_continuation_payload(safe_payload)
     payload["continue_reason"] = reason
     con = sqlite_connect(db_path)
     try:
@@ -388,7 +388,7 @@ INSERT INTO free_turn_continuations (
 ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
 """,
             (
-                followup_id,
+                continuation_id,
                 user_id,
                 soul_id,
                 conversation_id,
@@ -402,12 +402,12 @@ INSERT INTO free_turn_continuations (
         con.commit()
     finally:
         con.close()
-    touch_poll_marker(db_path, "free-turn-followups", str(due_at.timestamp()))
-    logger.info("free_turn: scheduled continuation %s due_at=%s", followup_id, due_at.isoformat())
-    return followup_id
+    touch_poll_marker(db_path, "free-turn-continuations", str(due_at.timestamp()))
+    logger.info("free_turn: scheduled continuation %s due_at=%s", continuation_id, due_at.isoformat())
+    return continuation_id
 
 
-def _free_turn_followup_db_paths(
+def _free_turn_continuation_db_paths(
     *,
     storage_status: Mapping[str, Any],
     config: Mapping[str, Any],
@@ -438,7 +438,7 @@ def _claim_due_free_turn_continuations(
     claimed: list[dict[str, Any]] = []
     now_iso = now.astimezone(UTC).isoformat()
     stale_before = (now.astimezone(UTC) - timedelta(seconds=max(1, int(claim_timeout_seconds)))).isoformat()
-    if not poll_marker_due(db_path, "free-turn-followups", now=now):
+    if not poll_marker_due(db_path, "free-turn-continuations", now=now):
         return []
     if not sqlite_has_rows_quietly(
         db_path,
@@ -446,7 +446,7 @@ def _claim_due_free_turn_continuations(
         where_sql="(status = 'pending' AND due_at <= ?) OR (status = 'running' AND claimed_at < ?)",
         params=(now_iso, stale_before),
     ):
-        remove_poll_marker(db_path, "free-turn-followups")
+        remove_poll_marker(db_path, "free-turn-continuations")
         return []
     con = sqlite_connect(db_path)
     try:
@@ -468,7 +468,7 @@ LIMIT ?
             (now_iso, stale_before, max(1, min(20, int(limit)))),
         ).fetchall()
         for row in rows:
-            followup_id = str(row["id"])
+            continuation_id = str(row["id"])
             cur = con.execute(
                 """
 UPDATE free_turn_continuations
@@ -476,27 +476,27 @@ SET status = 'running', claimed_at = ?, updated_at = ?
 WHERE id = ?
   AND ((status = 'pending' AND due_at <= ?) OR (status = 'running' AND claimed_at < ?))
 """,
-                (now_iso, now_iso, followup_id, now_iso, stale_before),
+                (now_iso, now_iso, continuation_id, now_iso, stale_before),
             )
             if cur.rowcount != 1:
                 continue
             claimed_row = con.execute(
                 "SELECT * FROM free_turn_continuations WHERE id = ? LIMIT 1",
-                (followup_id,),
+                (continuation_id,),
             ).fetchone()
             if claimed_row is not None:
-                claimed.append(_free_turn_followup_row(claimed_row, json_from_db=json_from_db))
+                claimed.append(_free_turn_continuation_row(claimed_row, json_from_db=json_from_db))
         con.commit()
     finally:
         con.close()
     if not claimed:
-        remove_poll_marker(db_path, "free-turn-followups")
+        remove_poll_marker(db_path, "free-turn-continuations")
     return claimed
 
 
-def _mark_free_turn_followup(
+def _mark_free_turn_continuation(
     db_path: Path,
-    followup_id: str,
+    continuation_id: str,
     *,
     status: str,
     sqlite_connect: Callable[[Path], sqlite3.Connection],
@@ -504,7 +504,7 @@ def _mark_free_turn_followup(
 ) -> None:
     final_status = str(status or "").strip().lower()
     if final_status not in {"completed", "failed"}:
-        raise ValueError("followup status must be completed|failed")
+        raise ValueError("continuation status must be completed|failed")
     now_iso = datetime.now(UTC).isoformat()
     completed_at = now_iso if final_status == "completed" else None
     failed_at = now_iso if final_status == "failed" else None
@@ -522,7 +522,7 @@ WHERE id = ? AND status = 'running'
                 completed_at,
                 failed_at,
                 str(error or "").strip() or None,
-                followup_id,
+                continuation_id,
             ),
         )
         con.commit()
@@ -530,7 +530,7 @@ WHERE id = ? AND status = 'running'
         con.close()
 
 
-async def _run_free_turn_followup(
+async def _run_free_turn_continuation(
     row: dict[str, Any],
     db_path: Path,
     *,
@@ -540,12 +540,12 @@ async def _run_free_turn_followup(
     conversation_turn: Callable[..., Any],
     build_prompt_override_payload: Callable[[dict[str, Any]], dict[str, Any]],
     insert_whatsapp_outbound: Callable[..., str],
-    mark_free_turn_followup: Callable[..., None],
+    mark_free_turn_continuation: Callable[..., None],
     clear_inflight: Callable[[set[str], str], None],
     logger: Any,
 ) -> None:
-    followup_id = str(row.get("id") or "").strip()
-    marker = f"followup::{followup_id}"
+    continuation_id = str(row.get("id") or "").strip()
+    marker = f"continuation::{continuation_id}"
     if not mark_inflight(free_turn_scheduled_inflight, marker):
         return
     try:
@@ -606,33 +606,33 @@ async def _run_free_turn_followup(
                 media_path=media_path,
                 metadata={
                     "source": "free_turn_scheduled",
-                    "followup_id": followup_id,
+                    "continuation_id": continuation_id,
                     "requested_target": response_target,
                 },
             )
-        mark_free_turn_followup(db_path, followup_id, status="completed")
+        mark_free_turn_continuation(db_path, continuation_id, status="completed")
     except Exception as exc:
-        logger.exception("free_turn: scheduled continuation failed id=%s", followup_id)
-        mark_free_turn_followup(db_path, followup_id, status="failed", error=f"{type(exc).__name__}: {exc}")
+        logger.exception("free_turn: scheduled continuation failed id=%s", continuation_id)
+        mark_free_turn_continuation(db_path, continuation_id, status="failed", error=f"{type(exc).__name__}: {exc}")
     finally:
         clear_inflight(free_turn_scheduled_inflight, marker)
 
 
 async def _run_due_free_turn_continuations_once(
     *,
-    free_turn_followup_db_paths: Callable[[], list[Path]],
+    free_turn_continuation_db_paths: Callable[[], list[Path]],
     claim_due_free_turn_continuations: Callable[..., list[dict[str, Any]]],
-    run_free_turn_followup: Callable[[dict[str, Any], Path], Any],
+    run_free_turn_continuation: Callable[[dict[str, Any], Path], Any],
 ) -> int:
     count = 0
-    for db_path in free_turn_followup_db_paths():
+    for db_path in free_turn_continuation_db_paths():
         for row in claim_due_free_turn_continuations(db_path, now=datetime.now(UTC)):
             count += 1
-            await run_free_turn_followup(row, db_path)
+            await run_free_turn_continuation(row, db_path)
     return count
 
 
-async def _free_turn_followup_scheduler(
+async def _free_turn_continuation_scheduler(
     *,
     run_due_free_turn_continuations_once: Callable[[], Any],
     logger: Any,
