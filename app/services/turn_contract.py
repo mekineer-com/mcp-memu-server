@@ -102,7 +102,7 @@ Schema:
   "rehearsal":"string",
   "response":"string",
   "working_thought": null | "string",{activity_schema}
-  "continue_reason": null | "task" | "research" | "diary" | "follow_up",
+  "continue_reason": null | "short reason string",
   "follow_up_at": null | "timestamp string",
   "follow_up_reason": null | "short reason string",
   "attachment": null | "absolute path string",
@@ -118,7 +118,7 @@ Schema:
 - working_thought: Not a recap of what was said (that's re-readable in the chat). A conclusion, hypothesis, or pattern you'd lose otherwise. Each new thought evicts your oldest thought. Save only what you can't afford to lose.
 Good example: "I notice my human feels bad when he eats wheat. Maybe he has celiac disease?"
 Bad = pure recap (already in chat). Good = a formed conclusion that won't resurface.{activity_rule}
-- continue_reason: omit or use null unless you need an extra agentic turn for a specific purpose. Valid continuation purposes are "task", "research", "diary", and "follow_up".
+- continue_reason: you can give any short reason for an agentic turn such as "task", "research", or "diary". "follow_up" is a special case where your agentic turn is scheduled rather than immediate.
 - follow_up_at: include only when continue_reason is "follow_up"; use the same timestamp style as the "Today is ..." line.
 - follow_up_reason: include only when continue_reason is "follow_up"; state why you want to wake later in one short sentence.
 - attachment: absolute path inside ~/Desktop/siri/ to attach that file to your reply as a document; omit otherwise.
@@ -331,7 +331,7 @@ _MEMORY_TYPE_LEGEND = {
     "knowledge": "what you've learned",
     "episode": "episodic memory",
 }
-_CONTINUATION_REASONS = {"task", "research", "diary", "follow_up"}
+_FOLLOW_UP_REASON = "follow_up"
 
 
 def format_memory_legend(memory_types: set[str]) -> str:
@@ -362,10 +362,9 @@ def _parse_continuation_fields(parsed: dict[str, Any]) -> tuple[str | None, str 
             _logger.warning("turn_contract: follow_up_reason ignored because continue_reason is not follow_up")
         return None, None, None
 
-    if continue_reason not in _CONTINUATION_REASONS:
-        return _disable_continuation(f"unknown continue_reason={continue_reason!r}")
+    continue_reason = continue_reason[:100]
 
-    if continue_reason == "follow_up":
+    if continue_reason == _FOLLOW_UP_REASON:
         if not follow_up_at:
             return _disable_continuation("continue_reason follow_up requires follow_up_at")
         if not follow_up_reason:
@@ -903,7 +902,7 @@ def _build_schema_reminder(
   "rehearsal":"3 sentences or fewer",
   "response":"{response_sentences} sentences or fewer",
   "working_thought": null (most turns) | "One sentence, two if necessary. Only what future-you would need",{activity_line}
-  "continue_reason": null | "task" | "research" | "diary" | "follow_up",
+  "continue_reason": null | "short reason string",
   "follow_up_at": null | "timestamp string",
   "follow_up_reason": null | "short reason string",
   "attachment": null | "absolute path string",

@@ -56,15 +56,21 @@ def test_parse_turn_contract_accepts_valid_follow_up_continuation():
     assert parsed["follow_up_reason"] == "Check whether Marcos got home safely."
 
 
-def test_parse_turn_contract_invalid_continuation_reason_logs_and_disables(caplog):
-    caplog.set_level(logging.WARNING, logger="uvicorn.error")
+def test_parse_turn_contract_free_form_continuation_reason_accepted():
     parsed = parse_turn_contract(
         '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"wander","follow_up_at":null}'
     )
-    assert parsed["continue_reason"] is None
+    assert parsed["continue_reason"] == "wander"
     assert parsed["follow_up_at"] is None
     assert parsed["follow_up_reason"] is None
-    assert any("invalid continuation metadata disabled" in r.getMessage() for r in caplog.records)
+
+
+def test_parse_turn_contract_continuation_reason_truncated_at_100():
+    long_reason = "x" * 150
+    parsed = parse_turn_contract(
+        f'{{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"{long_reason}","follow_up_at":null}}'
+    )
+    assert parsed["continue_reason"] == "x" * 100
 
 
 def test_parse_turn_contract_follow_up_without_time_logs_and_disables(caplog):

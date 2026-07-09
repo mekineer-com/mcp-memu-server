@@ -184,7 +184,7 @@ async def _run_free_turn_chain(
             if cache_entry or annulments:
                 logger.info("free_turn: cache_entry/annulments intentionally ignored for continuation state")
             next_reason = str(contract.get("continue_reason") or "").strip().lower()
-            if next_reason not in {"task", "research", "diary"}:
+            if not next_reason or next_reason == "follow_up":
                 if next_reason == "follow_up":
                     schedule_free_turn_follow_up(
                         user_id=user_id,
