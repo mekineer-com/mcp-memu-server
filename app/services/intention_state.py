@@ -16,6 +16,7 @@ DEFAULT_DECAY_PER_TURN = 0.1
 INTENTION_DECAY_ENABLED = False  # Temporarily disabled; keep decay code for future re-enable.
 DEFAULT_INTENTION_PRIORITY = 10.0
 MAX_MEMORY_CACHE_ENTRIES = 5
+MAX_MEMORY_CACHE_ENTRY_CHARS = 300
 
 
 def _now_iso() -> str:
@@ -56,6 +57,7 @@ def normalize_memory_cache(
     value: Any,
     *,
     max_entries: int = MAX_MEMORY_CACHE_ENTRIES,
+    max_chars: int = MAX_MEMORY_CACHE_ENTRY_CHARS,
 ) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -67,7 +69,7 @@ def normalize_memory_cache(
             text = _text(item)
         if not text:
             continue
-        out.append(text)
+        out.append(text[:max_chars])
     if max_entries <= 0:
         return []
     return out[-max_entries:]
@@ -78,12 +80,13 @@ def append_memory_cache_entry(
     entry: Any,
     *,
     max_entries: int = MAX_MEMORY_CACHE_ENTRIES,
+    max_chars: int = MAX_MEMORY_CACHE_ENTRY_CHARS,
 ) -> list[str]:
-    items = normalize_memory_cache(cache, max_entries=max_entries)
+    items = normalize_memory_cache(cache, max_entries=max_entries, max_chars=max_chars)
     text = _text(entry)
     if not text:
         return items
-    items.append(text)
+    items.append(text[:max_chars])
     return items[-max_entries:]
 
 

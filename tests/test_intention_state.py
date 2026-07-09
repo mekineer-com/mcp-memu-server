@@ -73,10 +73,10 @@ def test_upsert_intention_entries_keeps_highest_priority():
     assert items["task-b"]["priority"] == 10.0
 
 
-def test_normalize_memory_cache_caps_size():
+def test_normalize_memory_cache_caps_size_and_entry_length():
     cache = normalize_memory_cache(["x" * 500 for _ in range(12)])
     assert len(cache) == 5
-    assert all(len(entry) == 500 for entry in cache)
+    assert all(len(entry) == 300 for entry in cache)
 
 
 def test_apply_intention_action_create_then_promote():
