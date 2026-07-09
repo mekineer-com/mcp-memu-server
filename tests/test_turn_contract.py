@@ -25,8 +25,7 @@ def test_parse_turn_contract_valid_json():
     assert parsed["rehearsal"] == "hmm"
     assert parsed["response_target"] == "respond"
     assert parsed["continue_reason"] is None
-    assert parsed["follow_up_at"] is None
-    assert parsed["follow_up_reason"] is None
+    assert parsed["continue_at"] is None
 
 
 def test_parse_turn_contract_null_reason_means_no_continuation():
@@ -34,8 +33,7 @@ def test_parse_turn_contract_null_reason_means_no_continuation():
         '{"response":"Hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"hmm","continue_reason":null}'
     )
     assert parsed["continue_reason"] is None
-    assert parsed["follow_up_at"] is None
-    assert parsed["follow_up_reason"] is None
+    assert parsed["continue_at"] is None
 
 
 def test_parse_turn_contract_accepts_valid_task_continuation():
@@ -43,89 +41,41 @@ def test_parse_turn_contract_accepts_valid_task_continuation():
         '{"response":"I will look into it","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ready","continue_reason":"task"}'
     )
     assert parsed["continue_reason"] == "task"
-    assert parsed["follow_up_at"] is None
-    assert parsed["follow_up_reason"] is None
+    assert parsed["continue_at"] is None
 
 
-def test_parse_turn_contract_accepts_valid_follow_up_continuation():
+def test_parse_turn_contract_accepts_scheduled_continuation():
     parsed = parse_turn_contract(
-        '{"response":"I will check later","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ready","continue_reason":"follow_up","follow_up_at":"Monday, June 8, 2026 19:00 PET","follow_up_reason":"Check whether Marcos got home safely."}'
+        '{"response":"I will check later","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ready","continue_reason":"check on marcos","continue_at":"Monday, June 8, 2026 19:00 PET"}'
     )
-    assert parsed["continue_reason"] == "follow_up"
-    assert parsed["follow_up_at"] == "Monday, June 8, 2026 19:00 PET"
-    assert parsed["follow_up_reason"] == "Check whether Marcos got home safely."
+    assert parsed["continue_reason"] == "check on marcos"
+    assert parsed["continue_at"] == "Monday, June 8, 2026 19:00 PET"
 
 
 def test_parse_turn_contract_free_form_continuation_reason_accepted():
     parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"wander","follow_up_at":null}'
+        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"wander"}'
     )
     assert parsed["continue_reason"] == "wander"
-    assert parsed["follow_up_at"] is None
-    assert parsed["follow_up_reason"] is None
+    assert parsed["continue_at"] is None
 
 
 def test_parse_turn_contract_continuation_reason_truncated_at_100():
     long_reason = "x" * 150
     parsed = parse_turn_contract(
-        f'{{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"{long_reason}","follow_up_at":null}}'
+        f'{{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"{long_reason}"}}'
     )
     assert parsed["continue_reason"] == "x" * 100
 
 
-def test_parse_turn_contract_follow_up_without_time_logs_and_disables(caplog):
+def test_parse_turn_contract_continue_at_without_reason_warns_and_ignores(caplog):
     caplog.set_level(logging.WARNING, logger="uvicorn.error")
     parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"follow_up","follow_up_at":null}'
+        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_at":"Monday, June 8, 2026 19:00 PET"}'
     )
     assert parsed["continue_reason"] is None
-    assert parsed["follow_up_at"] is None
-    assert parsed["follow_up_reason"] is None
-    assert any("follow_up requires follow_up_at" in r.getMessage() for r in caplog.records)
-
-
-def test_parse_turn_contract_follow_up_without_reason_logs_and_disables(caplog):
-    caplog.set_level(logging.WARNING, logger="uvicorn.error")
-    parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"follow_up","follow_up_at":"Monday, June 8, 2026 19:00 PET"}'
-    )
-    assert parsed["continue_reason"] is None
-    assert parsed["follow_up_at"] is None
-    assert parsed["follow_up_reason"] is None
-    assert any("follow_up requires follow_up_reason" in r.getMessage() for r in caplog.records)
-
-
-def test_parse_turn_contract_non_follow_up_time_logs_and_ignores(caplog):
-    caplog.set_level(logging.WARNING, logger="uvicorn.error")
-    parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"diary","follow_up_at":"Monday, June 8, 2026 19:00 PET"}'
-    )
-    assert parsed["continue_reason"] == "diary"
-    assert parsed["follow_up_at"] is None
-    assert parsed["follow_up_reason"] is None
-    assert any("follow_up_at ignored" in r.getMessage() for r in caplog.records)
-
-
-def test_parse_turn_contract_time_without_reason_logs_and_ignores(caplog):
-    caplog.set_level(logging.WARNING, logger="uvicorn.error")
-    parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","follow_up_at":"Monday, June 8, 2026 19:00 PET"}'
-    )
-    assert parsed["continue_reason"] is None
-    assert parsed["follow_up_at"] is None
-    assert parsed["follow_up_reason"] is None
-    assert any("follow_up_at ignored" in r.getMessage() for r in caplog.records)
-
-
-def test_parse_turn_contract_non_follow_up_reason_logs_and_ignores(caplog):
-    caplog.set_level(logging.WARNING, logger="uvicorn.error")
-    parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"task","follow_up_reason":"later"}'
-    )
-    assert parsed["continue_reason"] == "task"
-    assert parsed["follow_up_at"] is None
-    assert parsed["follow_up_reason"] is None
-    assert any("follow_up_reason ignored" in r.getMessage() for r in caplog.records)
+    assert parsed["continue_at"] is None
+    assert any("continue_at ignored" in r.getMessage() for r in caplog.records)
 
 def test_parse_turn_contract_listen_target_allows_empty_response():
     parsed = parse_turn_contract(

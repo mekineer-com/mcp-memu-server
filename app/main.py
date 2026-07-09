@@ -1306,16 +1306,16 @@ def _schedule_free_turn_follow_up(
     user_id: str,
     soul_id: str,
     conversation_id: str,
-    follow_up_at: str,
-    follow_up_reason: str,
+    continue_at: str,
+    continue_reason: str,
     safe_payload: dict[str, Any],
 ) -> str | None:
     return _free_turn._schedule_free_turn_follow_up(
         user_id=user_id,
         soul_id=soul_id,
         conversation_id=conversation_id,
-        follow_up_at=follow_up_at,
-        follow_up_reason=follow_up_reason,
+        continue_at=continue_at,
+        continue_reason=continue_reason,
         safe_payload=safe_payload,
         parse_free_turn_follow_up_at=_parse_free_turn_follow_up_at,
         sqlite_current_path=_sqlite_current_path,
@@ -3788,14 +3788,14 @@ async def conversation_turn(
                     )
                 else:
                     logger.warning("free_turn: continuation requested but claude_code is disabled")
-            elif continuation_reason == "follow_up":
+            elif turn_contract.get("continue_at"):
                 continuation_queued = bool(
                     _schedule_free_turn_follow_up(
                         user_id=uid,
                         soul_id=soul_id,
                         conversation_id=cid,
-                        follow_up_at=str(turn_contract.get("follow_up_at") or ""),
-                        follow_up_reason=str(turn_contract.get("follow_up_reason") or ""),
+                        continue_at=str(turn_contract.get("continue_at") or ""),
+                        continue_reason=str(continuation_reason or ""),
                         safe_payload=safe,
                     )
                 )

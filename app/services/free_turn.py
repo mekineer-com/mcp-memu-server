@@ -184,16 +184,18 @@ async def _run_free_turn_chain(
             if cache_entry or annulments:
                 logger.info("free_turn: cache_entry/annulments intentionally ignored for continuation state")
             next_reason = str(contract.get("continue_reason") or "").strip().lower()
-            if not next_reason or next_reason == "follow_up":
-                if next_reason == "follow_up":
-                    schedule_free_turn_follow_up(
-                        user_id=user_id,
-                        soul_id=soul_id,
-                        conversation_id=conversation_id,
-                        follow_up_at=str(contract.get("follow_up_at") or ""),
-                        follow_up_reason=str(contract.get("follow_up_reason") or ""),
-                        safe_payload=safe_payload,
-                    )
+            next_continue_at = str(contract.get("continue_at") or "").strip()
+            if not next_reason:
+                return
+            if next_continue_at:
+                schedule_free_turn_follow_up(
+                    user_id=user_id,
+                    soul_id=soul_id,
+                    conversation_id=conversation_id,
+                    continue_at=next_continue_at,
+                    continue_reason=next_reason,
+                    safe_payload=safe_payload,
+                )
                 return
             reason = next_reason
             previous_contract = contract
@@ -346,8 +348,8 @@ def _schedule_free_turn_follow_up(
     user_id: str,
     soul_id: str,
     conversation_id: str,
-    follow_up_at: str,
-    follow_up_reason: str,
+    continue_at: str,
+    continue_reason: str,
     safe_payload: dict[str, Any],
     parse_free_turn_follow_up_at: Callable[[str], datetime | None],
     sqlite_current_path: Callable[[str | None, str | None], Path | None],
@@ -357,13 +359,13 @@ def _schedule_free_turn_follow_up(
     touch_poll_marker: Callable[[Path, str, str], None],
     logger: Any,
 ) -> str | None:
-    reason = str(follow_up_reason or "").strip()
+    reason = str(continue_reason or "").strip()
     if not reason:
-        logger.warning("free_turn: follow_up ignored because follow_up_reason is missing")
+        logger.warning("free_turn: follow_up ignored because continue_reason is missing")
         return None
-    due_at = parse_free_turn_follow_up_at(follow_up_at)
+    due_at = parse_free_turn_follow_up_at(continue_at)
     if due_at is None:
-        logger.warning("free_turn: invalid follow_up_at ignored: %r", follow_up_at)
+        logger.warning("free_turn: invalid continue_at ignored: %r", continue_at)
         return None
     db_path = sqlite_current_path(user_id, soul_id)
     if db_path is None:
@@ -373,7 +375,7 @@ def _schedule_free_turn_follow_up(
     now_iso = datetime.now(UTC).isoformat()
     followup_id = f"wafup_{uuid.uuid4().hex}"
     payload = _free_turn_followup_payload(safe_payload)
-    payload["follow_up_reason"] = reason
+    payload["continue_reason"] = reason
     con = sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
@@ -390,7 +392,7 @@ INSERT INTO free_turn_followups (
                 user_id,
                 soul_id,
                 conversation_id,
-                follow_up_at,
+                continue_at,
                 due_at.isoformat(),
                 now_iso,
                 now_iso,
@@ -552,11 +554,11 @@ async def _run_free_turn_followup(
         soul_id = str(row.get("soul_id") or "").strip()
         conversation_id = str(row.get("conversation_id") or "").strip()
         user_scope = {"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id}
-        follow_up_reason = str(payload.get("follow_up_reason") or "").strip()
+        continue_reason = str(payload.get("continue_reason") or "").strip()
         trace_id = uuid.uuid4().hex
         message = (
             f"Scheduled follow-up due now. You asked to wake at {row.get('follow_up_at')}. "
-            f"Reason you gave: {follow_up_reason}. "
+            f"Reason you gave: {continue_reason}. "
             "Use fresh memory and current chat history, then decide whether to send a WhatsApp message."
         )
         retrieve_payload = {
