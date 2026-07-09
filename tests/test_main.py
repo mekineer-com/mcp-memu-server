@@ -6660,8 +6660,8 @@ def test_free_turn_follow_up_schedule_persists_pending_row(
         user_id="u1",
         soul_id="Siri",
         conversation_id="whatsapp:dm:Marcos",
-        follow_up_at=(datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
-        follow_up_reason="Check whether Marcos got home safely.",
+        continue_at=(datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+        continue_reason="Check whether Marcos got home safely.",
         safe_payload={"user": {"user_id": "u1", "soul_id": "Siri"}},
     )
 
@@ -6710,8 +6710,8 @@ async def test_due_free_turn_follow_up_runs_fresh_turn_and_queues_outbound(
         user_id="u1",
         soul_id="Siri",
         conversation_id="whatsapp:dm:Marcos",
-        follow_up_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
-        follow_up_reason="Check whether Marcos got home safely.",
+        continue_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        continue_reason="Check whether Marcos got home safely.",
         safe_payload={
             "user": {"user_id": "u1", "soul_id": "Siri"},
             "chat_name": "Marcos",
@@ -6790,8 +6790,8 @@ async def test_due_free_turn_follow_up_from_sillytavern_queues_private_whatsapp(
         user_id="u1",
         soul_id="Siri",
         conversation_id="sillytavern:chat-1",
-        follow_up_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
-        follow_up_reason="Tell Marcos what I found.",
+        continue_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        continue_reason="Tell Marcos what I found.",
         safe_payload={"user": {"user_id": "u1", "soul_id": "Siri"}},
     )
     assert followup_id
@@ -6844,8 +6844,8 @@ async def test_due_free_turn_follow_up_enqueue_failure_marks_failed(
         user_id="u1",
         soul_id="Siri",
         conversation_id="whatsapp:dm:Marcos",
-        follow_up_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
-        follow_up_reason="Check in.",
+        continue_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        continue_reason="Check in.",
         safe_payload={"user": {"user_id": "u1", "soul_id": "Siri"}},
     )
     assert followup_id

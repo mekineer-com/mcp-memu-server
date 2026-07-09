@@ -54,9 +54,9 @@ def test_parse_turn_contract_accepts_scheduled_continuation():
 
 def test_parse_turn_contract_free_form_continuation_reason_accepted():
     parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"wander"}'
+        '{"response":"hi","response_target":"respond","working_thought":null,"annulments":[],"rehearsal":"ok","continue_reason":"Write in My Diary"}'
     )
-    assert parsed["continue_reason"] == "wander"
+    assert parsed["continue_reason"] == "Write in My Diary"
     assert parsed["continue_at"] is None
 
 

@@ -3767,38 +3767,37 @@ async def conversation_turn(
             raise HTTPException(status_code=502, detail="turn contract missing or invalid response_target")
         response_text = str(turn_contract.get("response") or "").strip()
         attachment = turn_contract.get("attachment") or None
-        continuation_reason = str(turn_contract.get("continue_reason") or "").strip().lower()
+        continuation_reason = str(turn_contract.get("continue_reason") or "").strip()
         continuation_queued = False
         if not dry_run and continuation_reason:
-            if continuation_reason in {"task", "research", "diary"}:
-                if turn_session_id:
-                    continuation_queued = _queue_free_turn_chain(
-                        service=memory_service,
-                        user_id=uid,
-                        soul_id=soul_id,
-                        conversation_id=cid,
-                        session_id=turn_session_id,
-                        initial_reason=continuation_reason,
-                        initial_contract=turn_contract,
-                        system_prompt=turn_system_prompt,
-                        allow_public_response=allow_public_response,
-                        safe_payload=safe,
-                        soul_card=soul_card,
-                        system_prompt_has_activity_recap=bool(self_turn_directive),
-                    )
-                else:
-                    logger.warning("free_turn: continuation requested but claude_code is disabled")
-            elif turn_contract.get("continue_at"):
+            if turn_contract.get("continue_at"):
                 continuation_queued = bool(
                     _schedule_free_turn_follow_up(
                         user_id=uid,
                         soul_id=soul_id,
                         conversation_id=cid,
                         continue_at=str(turn_contract.get("continue_at") or ""),
-                        continue_reason=str(continuation_reason or ""),
+                        continue_reason=continuation_reason,
                         safe_payload=safe,
                     )
                 )
+            elif turn_session_id:
+                continuation_queued = _queue_free_turn_chain(
+                    service=memory_service,
+                    user_id=uid,
+                    soul_id=soul_id,
+                    conversation_id=cid,
+                    session_id=turn_session_id,
+                    initial_reason=continuation_reason,
+                    initial_contract=turn_contract,
+                    system_prompt=turn_system_prompt,
+                    allow_public_response=allow_public_response,
+                    safe_payload=safe,
+                    soul_card=soul_card,
+                    system_prompt_has_activity_recap=bool(self_turn_directive),
+                )
+            else:
+                logger.warning("free_turn: continuation requested but claude_code is disabled")
 
         # Enforce response_target contract:
         # - listen/observe: nothing is sent.

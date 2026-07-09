@@ -183,7 +183,7 @@ async def _run_free_turn_chain(
             annulments = contract.get("annulments") if isinstance(contract.get("annulments"), list) else []
             if cache_entry or annulments:
                 logger.info("free_turn: cache_entry/annulments intentionally ignored for continuation state")
-            next_reason = str(contract.get("continue_reason") or "").strip().lower()
+            next_reason = str(contract.get("continue_reason") or "").strip()
             next_continue_at = str(contract.get("continue_at") or "").strip()
             if not next_reason:
                 return
@@ -375,7 +375,7 @@ def _schedule_free_turn_follow_up(
     now_iso = datetime.now(UTC).isoformat()
     followup_id = f"wafup_{uuid.uuid4().hex}"
     payload = _free_turn_followup_payload(safe_payload)
-    payload["continue_reason"] = reason
+    payload["follow_up_reason"] = reason
     con = sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
@@ -554,7 +554,7 @@ async def _run_free_turn_followup(
         soul_id = str(row.get("soul_id") or "").strip()
         conversation_id = str(row.get("conversation_id") or "").strip()
         user_scope = {"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id}
-        continue_reason = str(payload.get("continue_reason") or "").strip()
+        continue_reason = str(payload.get("follow_up_reason") or "").strip()
         trace_id = uuid.uuid4().hex
         message = (
             f"Scheduled follow-up due now. You asked to wake at {row.get('follow_up_at')}. "

@@ -341,23 +341,18 @@ def format_memory_legend(memory_types: set[str]) -> str:
     return "Key: " + " · ".join(entries)
 
 
-def _disable_continuation(reason: str) -> tuple[str | None, None, None]:
-    _logger.warning("turn_contract: invalid continuation metadata disabled; %s", reason)
-    return None, None, None
-
-
-def _parse_continuation_fields(parsed: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+def _parse_continuation_fields(parsed: dict[str, Any]) -> tuple[str | None, str | None]:
     raw_reason = parsed.get("continue_reason")
-    continue_reason = _text(raw_reason).lower() if raw_reason is not None else ""
+    continue_reason = _text(raw_reason) if raw_reason is not None else ""
     continue_at = _text(parsed.get("continue_at")) if parsed.get("continue_at") is not None else None
 
     if not continue_reason:
         if continue_at:
             _logger.warning("turn_contract: continue_at ignored because continue_reason is missing")
-        return None, None, None
+        return None, None
 
     continue_reason = continue_reason[:100]
-    return continue_reason, continue_at, None
+    return continue_reason, continue_at
 
 
 def _format_item_suffix(item: dict[str, Any], *, now: datetime | None = None) -> str:
@@ -985,7 +980,7 @@ def parse_turn_contract(
 
     rehearsal = _text(parsed.get("rehearsal"))
     activity_recap = _text(parsed.get("activity_recap"))[:600]
-    continue_reason, continue_at, _ = _parse_continuation_fields(parsed)
+    continue_reason, continue_at = _parse_continuation_fields(parsed)
     attachment = _parse_attachment(parsed.get("attachment"), workspace=attachment_workspace)
     return {
         "response": response,
