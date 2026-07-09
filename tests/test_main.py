@@ -191,6 +191,69 @@ async def test_turn_undo_deletes_reflections_before_restoring_state(
 
 
 @pytest.mark.asyncio
+async def test_conversation_turn_dry_run_skips_annulment_memory_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "DryRun.db"
+
+    class _FakeSvc:
+        async def chat(self, *_args: object, **_kwargs: object) -> str:
+            return (
+                '{"working_thought":null,"annulments":[{"intention_id":"a","status":"completed"}],'
+                '"rehearsal":"ok","response_target":"respond","response":"ok"}'
+            )
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        main,
+        "_turn_state_read",
+        lambda *_a, **_k: (
+            {"digest_cursor": 0},
+            None,
+            db_path,
+            [],
+            {"items": [{"id": "a", "text": "Ask about sleep"}]},
+            0,
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "_persist_annulment_memories",
+        lambda **_k: (_ for _ in ()).throw(AssertionError("dry-run persisted reflection")),
+    )
+    monkeypatch.setattr(
+        main,
+        "_turn_state_write",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("dry-run wrote state")),
+    )
+    monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
+    monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
+
+    out = await main.conversation_turn(
+        "chat",
+        {
+            "user": {"user_id": "Marcos", "soul_id": "Siri", "conversation_id": "chat"},
+            "message": "preview",
+            "dry_run": True,
+            "history": [],
+            "prompt_override_payload": {
+                "user_prompt": "prompt",
+                "system_prompt": "system",
+                "memory_cache": [],
+                "intentions_active": {"items": []},
+                "retrieve_rag": {"items": [], "categories": [], "resources": []},
+            },
+        },
+    )
+
+    assert out["ok"] is True
+    assert out["response"] == "ok"
+
+
+@pytest.mark.asyncio
 async def test_atomic_session_start_returns_context_without_turn_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     state_row = {
         "digest_cursor": 0,
