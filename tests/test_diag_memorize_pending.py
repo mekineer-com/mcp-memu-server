@@ -134,6 +134,34 @@ async def test_diag_pending_requires_soul_id(monkeypatch: pytest.MonkeyPatch) ->
     assert out == {"ok": False, "reason": "soul_id_required"}
 
 
+@pytest.mark.asyncio
+async def test_diag_pending_ensures_state_schema_with_supplied_user_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    con.execute(
+        "CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY, soul_id TEXT, user_id TEXT, digest_cursor INTEGER)"
+    )
+    con.execute(
+        "INSERT INTO conversations (conversation_id, soul_id, user_id, digest_cursor) VALUES ('c1', 'Echo', 'u1', 0)"
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+
+    def _loader(con: sqlite3.Connection, **_kwargs: object) -> dict[str, list[dict]]:
+        assert "digest_cursor_source_message_id" in set(main._sqlite_table_columns(con, "conversations"))
+        return {}
+
+    monkeypatch.setattr(main, "_load_cross_memorize_tails_from_sources", _loader)
+
+    out = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
+
+    assert out["summed_unmemorized_tokens"] == 0
+
+
 def _seed_conversations(tmp_path: Path, user_ids: list[str]) -> Path:
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)

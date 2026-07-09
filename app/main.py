@@ -3341,8 +3341,8 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
     con = _sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
         if not uid:
-            _sqlite_ensure_conversation_state_schema(con)
             rows = con.execute(
                 "SELECT DISTINCT user_id FROM conversations WHERE user_id IS NOT NULL AND user_id != ''"
             ).fetchall()
