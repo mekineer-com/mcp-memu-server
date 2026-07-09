@@ -533,7 +533,7 @@ async def _run_free_turn_chain(
         record_activity_message=_record_activity_message,
         activity_recap_from_contract=_activity_recap_from_contract,
         insert_whatsapp_outbound=_insert_whatsapp_outbound,
-        schedule_free_turn_continuation=_schedule_free_turn_continuation,
+        schedule_free_turn_follow_up=_schedule_free_turn_follow_up,
         clear_inflight=_clear_inflight,
         free_turn_inflight=_FREE_TURN_INFLIGHT,
         logger=logger,
@@ -603,7 +603,7 @@ _APIMW_INFLIGHT: set[str] = set()
 _BACKGROUND_ROLLUP_INFLIGHT: set[str] = set()
 _FORCED_MEMORIZE_INFLIGHT: set[str] = set()
 _FREE_TURN_INFLIGHT: set[str] = set()
-_FREE_TURN_SCHEDULED_INFLIGHT: set[str] = set()
+_FREE_TURN_FOLLOW_UP_INFLIGHT: set[str] = set()
 _FREE_TURN_FOLLOW_UP_TASK: asyncio.Task | None = None
 _SHUTDOWN_STATE: dict[str, Any] = {
     "draining": False,
@@ -1290,8 +1290,8 @@ def _free_turn_followup_row(row: sqlite3.Row) -> dict[str, Any]:
     return _free_turn._free_turn_followup_row(row, json_from_db=_json_from_db)
 
 
-def _parse_free_turn_continue_at(raw: str) -> datetime | None:
-    return _free_turn._parse_free_turn_continue_at(
+def _parse_free_turn_follow_up_at(raw: str) -> datetime | None:
+    return _free_turn._parse_free_turn_follow_up_at(
         raw,
         server_timezone=_memorize_endpoint.server_timezone,
     )
@@ -1301,7 +1301,7 @@ def _free_turn_followup_payload(safe: dict[str, Any]) -> dict[str, Any]:
     return _free_turn._free_turn_followup_payload(safe)
 
 
-def _schedule_free_turn_continuation(
+def _schedule_free_turn_follow_up(
     *,
     user_id: str,
     soul_id: str,
@@ -1310,14 +1310,14 @@ def _schedule_free_turn_continuation(
     continue_reason: str,
     safe_payload: dict[str, Any],
 ) -> str | None:
-    return _free_turn._schedule_free_turn_continuation(
+    return _free_turn._schedule_free_turn_follow_up(
         user_id=user_id,
         soul_id=soul_id,
         conversation_id=conversation_id,
         continue_at=continue_at,
         continue_reason=continue_reason,
         safe_payload=safe_payload,
-        parse_free_turn_continue_at=_parse_free_turn_continue_at,
+        parse_free_turn_follow_up_at=_parse_free_turn_follow_up_at,
         sqlite_current_path=_sqlite_current_path,
         sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
         sqlite_connect=_sqlite_connect,
@@ -1377,7 +1377,7 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
         row,
         db_path,
         mark_inflight=_mark_inflight,
-        free_turn_scheduled_inflight=_FREE_TURN_SCHEDULED_INFLIGHT,
+        free_turn_follow_up_inflight=_FREE_TURN_FOLLOW_UP_INFLIGHT,
         conversation_retrieve=conversation_retrieve,
         conversation_turn=conversation_turn,
         build_prompt_override_payload=_mcp_tools.build_prompt_override_payload,
@@ -3790,7 +3790,7 @@ async def conversation_turn(
                     logger.warning("free_turn: continuation requested but claude_code is disabled")
             elif turn_contract.get("continue_at"):
                 continuation_queued = bool(
-                    _schedule_free_turn_continuation(
+                    _schedule_free_turn_follow_up(
                         user_id=uid,
                         soul_id=soul_id,
                         conversation_id=cid,

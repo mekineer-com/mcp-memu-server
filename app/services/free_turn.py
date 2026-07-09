@@ -119,7 +119,7 @@ async def _run_free_turn_chain(
     record_activity_message: Callable[..., bool],
     activity_recap_from_contract: Callable[[dict[str, Any]], str],
     insert_whatsapp_outbound: Callable[..., str],
-    schedule_free_turn_continuation: Callable[..., str | None],
+    schedule_free_turn_follow_up: Callable[..., str | None],
     clear_inflight: Callable[[set[str], str], None],
     free_turn_inflight: set[str],
     logger: Any,
@@ -188,7 +188,7 @@ async def _run_free_turn_chain(
             if not next_reason:
                 return
             if next_continue_at:
-                schedule_free_turn_continuation(
+                schedule_free_turn_follow_up(
                     user_id=user_id,
                     soul_id=soul_id,
                     conversation_id=conversation_id,
@@ -255,15 +255,15 @@ def _queue_free_turn_chain(
     return True
 
 
-def _ensure_free_turn_continuations_schema(con: sqlite3.Connection) -> None:
+def _ensure_free_turn_followups_schema(con: sqlite3.Connection) -> None:
     con.execute(
         """
-CREATE TABLE IF NOT EXISTS free_turn_continuations (
+CREATE TABLE IF NOT EXISTS free_turn_followups (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     soul_id TEXT NOT NULL,
     conversation_id TEXT NOT NULL,
-    continue_at TEXT NOT NULL,
+    follow_up_at TEXT NOT NULL,
     due_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed')),
     created_at TEXT NOT NULL,
@@ -277,8 +277,8 @@ CREATE TABLE IF NOT EXISTS free_turn_continuations (
 """
     )
     con.execute(
-        "CREATE INDEX IF NOT EXISTS idx_free_turn_continuations_due "
-        "ON free_turn_continuations(status, due_at)"
+        "CREATE INDEX IF NOT EXISTS idx_free_turn_followups_due "
+        "ON free_turn_followups(status, due_at)"
     )
     con.commit()
 
@@ -289,7 +289,7 @@ def _free_turn_followup_row(row: sqlite3.Row, *, json_from_db: Callable[[Any], A
         "user_id": row["user_id"],
         "soul_id": row["soul_id"],
         "conversation_id": row["conversation_id"],
-        "continue_at": row["continue_at"],
+        "follow_up_at": row["follow_up_at"],
         "due_at": row["due_at"],
         "status": row["status"],
         "created_at": row["created_at"],
@@ -302,7 +302,7 @@ def _free_turn_followup_row(row: sqlite3.Row, *, json_from_db: Callable[[Any], A
     }
 
 
-def _parse_free_turn_continue_at(raw: str, *, server_timezone: Callable[[], tzinfo]) -> datetime | None:
+def _parse_free_turn_follow_up_at(raw: str, *, server_timezone: Callable[[], tzinfo]) -> datetime | None:
     text = str(raw or "").strip()
     if not text:
         return None
@@ -343,7 +343,7 @@ def _free_turn_followup_payload(safe: dict[str, Any]) -> dict[str, Any]:
     return kept
 
 
-def _schedule_free_turn_continuation(
+def _schedule_free_turn_follow_up(
     *,
     user_id: str,
     soul_id: str,
@@ -351,7 +351,7 @@ def _schedule_free_turn_continuation(
     continue_at: str,
     continue_reason: str,
     safe_payload: dict[str, Any],
-    parse_free_turn_continue_at: Callable[[str], datetime | None],
+    parse_free_turn_follow_up_at: Callable[[str], datetime | None],
     sqlite_current_path: Callable[[str | None, str | None], Path | None],
     sqlite_ensure_nonempty: Callable[[Path], None],
     sqlite_connect: Callable[[Path], sqlite3.Connection],
@@ -361,15 +361,15 @@ def _schedule_free_turn_continuation(
 ) -> str | None:
     reason = str(continue_reason or "").strip()
     if not reason:
-        logger.warning("free_turn: scheduled continuation ignored because continue_reason is missing")
+        logger.warning("free_turn: follow_up ignored because continue_reason is missing")
         return None
-    due_at = parse_free_turn_continue_at(continue_at)
+    due_at = parse_free_turn_follow_up_at(continue_at)
     if due_at is None:
         logger.warning("free_turn: invalid continue_at ignored: %r", continue_at)
         return None
     db_path = sqlite_current_path(user_id, soul_id)
     if db_path is None:
-        logger.warning("free_turn: scheduled continuation ignored because sqlite path is unavailable")
+        logger.warning("free_turn: follow_up ignored because sqlite path is unavailable")
         return None
     sqlite_ensure_nonempty(db_path)
     now_iso = datetime.now(UTC).isoformat()
@@ -379,11 +379,11 @@ def _schedule_free_turn_continuation(
     con = sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        _ensure_free_turn_continuations_schema(con)
+        _ensure_free_turn_followups_schema(con)
         con.execute(
             """
-INSERT INTO free_turn_continuations (
-    id, user_id, soul_id, conversation_id, continue_at, due_at,
+INSERT INTO free_turn_followups (
+    id, user_id, soul_id, conversation_id, follow_up_at, due_at,
     status, created_at, updated_at, payload_json
 ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
 """,
@@ -403,7 +403,7 @@ INSERT INTO free_turn_continuations (
     finally:
         con.close()
     touch_poll_marker(db_path, "free-turn-followups", str(due_at.timestamp()))
-    logger.info("free_turn: scheduled continuation %s due_at=%s", followup_id, due_at.isoformat())
+    logger.info("free_turn: scheduled follow_up %s due_at=%s", followup_id, due_at.isoformat())
     return followup_id
 
 
@@ -419,11 +419,11 @@ def _free_turn_followup_db_paths(
     try:
         return sorted(path for path in sqlite_dir.glob("*.db") if path.is_file())
     except OSError:
-        logger.exception("free_turn: failed to scan continuation sqlite dir %s", sqlite_dir)
+        logger.exception("free_turn: failed to scan follow_up sqlite dir %s", sqlite_dir)
         return []
 
 
-def _claim_due_free_turn_continuations(
+def _claim_due_free_turn_followups(
     db_path: Path,
     *,
     now: datetime,
@@ -442,7 +442,7 @@ def _claim_due_free_turn_continuations(
         return []
     if not sqlite_has_rows_quietly(
         db_path,
-        table="free_turn_continuations",
+        table="free_turn_followups",
         where_sql="(status = 'pending' AND due_at <= ?) OR (status = 'running' AND claimed_at < ?)",
         params=(now_iso, stale_before),
     ):
@@ -452,14 +452,14 @@ def _claim_due_free_turn_continuations(
     try:
         con.row_factory = sqlite3.Row
         table = con.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'free_turn_continuations'"
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'free_turn_followups'"
         ).fetchone()
         if table is None:
             return []
         rows = con.execute(
             """
 SELECT id
-FROM free_turn_continuations
+FROM free_turn_followups
 WHERE (status = 'pending' AND due_at <= ?)
    OR (status = 'running' AND claimed_at < ?)
 ORDER BY due_at ASC
@@ -471,7 +471,7 @@ LIMIT ?
             followup_id = str(row["id"])
             cur = con.execute(
                 """
-UPDATE free_turn_continuations
+UPDATE free_turn_followups
 SET status = 'running', claimed_at = ?, updated_at = ?
 WHERE id = ?
   AND ((status = 'pending' AND due_at <= ?) OR (status = 'running' AND claimed_at < ?))
@@ -481,7 +481,7 @@ WHERE id = ?
             if cur.rowcount != 1:
                 continue
             claimed_row = con.execute(
-                "SELECT * FROM free_turn_continuations WHERE id = ? LIMIT 1",
+                "SELECT * FROM free_turn_followups WHERE id = ? LIMIT 1",
                 (followup_id,),
             ).fetchone()
             if claimed_row is not None:
@@ -512,7 +512,7 @@ def _mark_free_turn_followup(
     try:
         con.execute(
             """
-UPDATE free_turn_continuations
+UPDATE free_turn_followups
 SET status = ?, updated_at = ?, completed_at = ?, failed_at = ?, last_error = ?
 WHERE id = ? AND status = 'running'
 """,
@@ -535,7 +535,7 @@ async def _run_free_turn_followup(
     db_path: Path,
     *,
     mark_inflight: Callable[[set[str], str], bool],
-    free_turn_scheduled_inflight: set[str],
+    free_turn_follow_up_inflight: set[str],
     conversation_retrieve: Callable[..., Any],
     conversation_turn: Callable[..., Any],
     build_prompt_override_payload: Callable[[dict[str, Any]], dict[str, Any]],
@@ -546,7 +546,7 @@ async def _run_free_turn_followup(
 ) -> None:
     followup_id = str(row.get("id") or "").strip()
     marker = f"followup::{followup_id}"
-    if not mark_inflight(free_turn_scheduled_inflight, marker):
+    if not mark_inflight(free_turn_follow_up_inflight, marker):
         return
     try:
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
@@ -557,7 +557,7 @@ async def _run_free_turn_followup(
         continue_reason = str(payload.get("continue_reason") or "").strip()
         trace_id = uuid.uuid4().hex
         message = (
-            f"Scheduled continuation due now. You asked to wake at {row.get('continue_at')}. "
+            f"Scheduled follow-up due now. You asked to wake at {row.get('follow_up_at')}. "
             f"Reason you gave: {continue_reason}. "
             "Use fresh memory and current chat history, then decide whether to send a WhatsApp message."
         )
@@ -605,28 +605,28 @@ async def _run_free_turn_followup(
                 response_text=response,
                 media_path=media_path,
                 metadata={
-                    "source": "free_turn_scheduled",
+                    "source": "free_turn_follow_up",
                     "followup_id": followup_id,
                     "requested_target": response_target,
                 },
             )
         mark_free_turn_followup(db_path, followup_id, status="completed")
     except Exception as exc:
-        logger.exception("free_turn: scheduled continuation failed id=%s", followup_id)
+        logger.exception("free_turn: follow_up failed id=%s", followup_id)
         mark_free_turn_followup(db_path, followup_id, status="failed", error=f"{type(exc).__name__}: {exc}")
     finally:
-        clear_inflight(free_turn_scheduled_inflight, marker)
+        clear_inflight(free_turn_follow_up_inflight, marker)
 
 
-async def _run_due_free_turn_continuations_once(
+async def _run_due_free_turn_followups_once(
     *,
     free_turn_followup_db_paths: Callable[[], list[Path]],
-    claim_due_free_turn_continuations: Callable[..., list[dict[str, Any]]],
+    claim_due_free_turn_followups: Callable[..., list[dict[str, Any]]],
     run_free_turn_followup: Callable[[dict[str, Any], Path], Any],
 ) -> int:
     count = 0
     for db_path in free_turn_followup_db_paths():
-        for row in claim_due_free_turn_continuations(db_path, now=datetime.now(UTC)):
+        for row in claim_due_free_turn_followups(db_path, now=datetime.now(UTC)):
             count += 1
             await run_free_turn_followup(row, db_path)
     return count
@@ -634,14 +634,14 @@ async def _run_due_free_turn_continuations_once(
 
 async def _free_turn_followup_scheduler(
     *,
-    run_due_free_turn_continuations_once: Callable[[], Any],
+    run_due_free_turn_followups_once: Callable[[], Any],
     logger: Any,
 ) -> None:
     while True:
         try:
-            await run_due_free_turn_continuations_once()
+            await run_due_free_turn_followups_once()
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("free_turn: continuation scheduler pass failed")
+            logger.exception("free_turn: follow_up scheduler pass failed")
         await asyncio.sleep(30)
