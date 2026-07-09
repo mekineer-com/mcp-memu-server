@@ -3167,6 +3167,7 @@ async def test_run_memorize_segments_keeps_results_when_summary_fails(monkeypatc
     state_row: dict[str, Any] = {
         "pending_segment_ids": [],
         "digest_cursor": -1,
+        "last_memorize_at": None,
     }
 
     def fake_load_turn_state_and_soul_card(*_args, **_kwargs):
@@ -3175,6 +3176,8 @@ async def test_run_memorize_segments_keeps_results_when_summary_fails(monkeypatc
     def fake_write_conversation_state(_cid: str, *, updates: dict[str, Any], **_kwargs):
         if "digest_cursor" in updates:
             state_row["digest_cursor"] = int(updates["digest_cursor"])
+        if "last_memorize_at" in updates:
+            state_row["last_memorize_at"] = updates["last_memorize_at"]
         if "append_pending_segment_ids" in updates:
             state_row["pending_segment_ids"].extend(updates["append_pending_segment_ids"])
         if "pending_segment_ids" in updates:
@@ -3207,6 +3210,7 @@ async def test_run_memorize_segments_keeps_results_when_summary_fails(monkeypatc
 
     assert [p.name for p in segments_dir.glob("*.json")] == ["undated.json"]
     assert state_row["digest_cursor"] == 0
+    assert state_row["last_memorize_at"]
     assert state_row["pending_segment_ids"] == ["cid-1:0-0"]
 
 

@@ -514,33 +514,33 @@ def _load_cross_tail_from_sources(
             continue
         source_label = _message_log.derive_source_label(cid)
         cursor = _effective_digest_cursor_from_row(row)
-        cursor, min_timestamp, web_source = _resolve_source_cursor(
-            cid,
-            cursor,
-            row["digest_cursor_source_message_id"],
-            row["digest_cursor_ts"],
-            rolling=False,
-            hermes_home_path=hermes_home_path,
-        )
-        display_start = row["last_display_segment_start_index"]
-        display_end = row["last_display_segment_end_index"]
-        if not web_source and row["last_memorize_at"] and (display_start is None or display_end is None):
-            if resource_display_ranges is None:
-                resource_display_ranges = _m()._latest_saved_segment_display_ranges(
-                    soul_id=soul_id,
-                )
-            fallback_range = resource_display_ranges.get(cid)
-            if fallback_range is not None:
-                display_start, display_end = fallback_range
-        if not web_source and row["last_memorize_at"] and display_start is not None and display_end is not None:
-            try:
-                segment_start = max(0, int(display_start))
-                segment_end = max(segment_start, int(display_end))
-            except (TypeError, ValueError, OverflowError):
-                segment_start = segment_end = -1
-            if segment_end >= 0:
-                cursor = max(-1, max(segment_start, segment_end - (_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES - 1)) - 1)
         try:
+            cursor, min_timestamp, web_source = _resolve_source_cursor(
+                cid,
+                cursor,
+                row["digest_cursor_source_message_id"],
+                row["digest_cursor_ts"],
+                rolling=False,
+                hermes_home_path=hermes_home_path,
+            )
+            display_start = row["last_display_segment_start_index"]
+            display_end = row["last_display_segment_end_index"]
+            if not web_source and row["last_memorize_at"] and (display_start is None or display_end is None):
+                if resource_display_ranges is None:
+                    resource_display_ranges = _m()._latest_saved_segment_display_ranges(
+                        soul_id=soul_id,
+                    )
+                fallback_range = resource_display_ranges.get(cid)
+                if fallback_range is not None:
+                    display_start, display_end = fallback_range
+            if not web_source and row["last_memorize_at"] and display_start is not None and display_end is not None:
+                try:
+                    segment_start = max(0, int(display_start))
+                    segment_end = max(segment_start, int(display_end))
+                except (TypeError, ValueError, OverflowError):
+                    segment_start = segment_end = -1
+                if segment_end >= 0:
+                    cursor = max(-1, max(segment_start, segment_end - (_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES - 1)) - 1)
             tail = _m()._load_tail_for_source_conversation(
                 conversation_id=cid,
                 user_id=user_id,
@@ -957,6 +957,9 @@ def _source_cursor_checkpoint(
                 source_id = str(msg.get("source_message_id") or "").strip()
                 ts_ms = msg.get("ts_ms")
                 if not source_id or ts_ms is None:
-                    raise RuntimeError("WhatsApp web_source tail is missing checkpoint metadata")
+                    raise RuntimeError(
+                        "WhatsApp web_source tail is missing checkpoint metadata; "
+                        "repair the conversation cursor with patch_conversation_state_endpoint"
+                    )
                 final.update(source_message_id=source_id, ts=int(ts_ms) // 1000)
     return final

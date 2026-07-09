@@ -418,6 +418,8 @@ def whatsapp_web_source_message_rowid(
     target, local_ids, chat_type = _web_source_chat_match(conversation_id)
     if not chat_type or not local_ids:
         return None
+    if not db_path.exists():
+        raise FileNotFoundError(f"WhatsApp web_source db missing: {db_path}")
     con = sqlite3.connect(str(db_path))
     try:
         row = con.execute(

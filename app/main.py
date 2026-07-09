@@ -3263,7 +3263,10 @@ def _build_cross_conversation_payload(
     if not trigger_web_source:
         trigger_checkpoint = {"cursor": digest_cursor + len(trigger_tail)}
     if trigger_checkpoint is None:
-        raise RuntimeError(f"memorize tail has no checkpoint for {cid}")
+        raise RuntimeError(
+            f"memorize tail has no checkpoint for {cid}; "
+            "repair the conversation cursor with patch_conversation_state_endpoint"
+        )
     final_cursors: dict[str, dict[str, Any]] = {cid: trigger_checkpoint}
     all_messages = list(trigger_tail)
 

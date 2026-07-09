@@ -217,6 +217,20 @@ def test_web_source_cursor_resolves_rebuild_and_missing_key_floor(tmp_path: Path
     ) == (7, None)
 
 
+def test_web_source_cursor_missing_db_does_not_create_empty_sqlite(tmp_path: Path) -> None:
+    db_path = tmp_path / "missing.db"
+    with pytest.raises(FileNotFoundError, match="web_source db missing"):
+        conversation_sources.resolve_whatsapp_web_source_cursor(
+            "whatsapp:dm:15133278228@c.us",
+            1,
+            "checkpoint",
+            100,
+            db_path,
+            rolling=False,
+        )
+    assert not db_path.exists()
+
+
 def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) -> None:
     sessions_path = tmp_path / "sessions.json"
     state_db_path = tmp_path / "state.db"
