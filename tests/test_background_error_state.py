@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 from app.db import sqlite_ensure_conversation_state_schema
 from app.services import memorize_endpoint
@@ -85,6 +86,50 @@ def test_cursor_helpers_fail_on_missing_required_fields() -> None:
         effective_digest_cursor_from_row({"last_memorize_at": "2026-01-01T00:00:00+00:00"})
     with pytest.raises(KeyError):
         memorize_chat_from_row({})
+
+
+def test_source_cursor_checkpoints_write_clear_and_reject_partial() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        db_path, _ = _tmp_sqlite_setup(Path(td), soul_id="SoulCursor")
+        kwargs = {
+            "sqlite_current_path": lambda _user, _soul: db_path,
+            "soul_id": "SoulCursor",
+            "user_id": "UserCursor",
+        }
+        state, _ = write_conversation_state(
+            "conv",
+            **kwargs,
+            updates={
+                "digest_cursor": 4,
+                "digest_cursor_source_message_id": "key-4",
+                "digest_cursor_ts": 100,
+                "rolling_summary_cursor_id": 3,
+                "rolling_summary_cursor_source_message_id": "key-3",
+                "rolling_summary_cursor_ts": 90,
+            },
+        )
+        assert state["digest_cursor_source_message_id"] == "key-4"
+        assert state["rolling_summary_cursor_source_message_id"] == "key-3"
+
+        state, _ = write_conversation_state(
+            "conv",
+            **kwargs,
+            updates={"digest_cursor": 5, "rolling_summary_cursor_id": 4},
+        )
+        assert state["digest_cursor_source_message_id"] is None
+        assert state["digest_cursor_ts"] is None
+        assert state["rolling_summary_cursor_source_message_id"] is None
+        assert state["rolling_summary_cursor_ts"] is None
+
+        with pytest.raises(HTTPException, match="checkpoint must be complete"):
+            write_conversation_state(
+                "conv",
+                **kwargs,
+                updates={
+                    "digest_cursor": 6,
+                    "digest_cursor_source_message_id": "key-6",
+                },
+            )
 
 
 def test_empty_background_error_state_defaults_to_none() -> None:

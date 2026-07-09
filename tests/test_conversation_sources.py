@@ -160,8 +160,8 @@ def _write_web_source_db(path: Path, *, messages: list[dict], contacts: list[dic
                 INSERT INTO whatsapp_messages (
                   msg_key, chat_id, chat_local_id, from_me, timestamp, type, body,
                   author_id, author_local_id, from_id, from_local_id, to_id, to_local_id,
-                  has_media, source, first_seen_at, updated_at, raw_json, reactions
-                ) VALUES (?, ?, ?, ?, ?, 'chat', ?, ?, '', ?, '', null, '', 0, 'test', ?, ?, '{}', ?)
+                  has_media, revoked, source, first_seen_at, updated_at, raw_json, reactions
+                ) VALUES (?, ?, ?, ?, ?, 'chat', ?, ?, '', ?, '', null, '', 0, ?, 'test', ?, ?, '{}', ?)
                 """,
                 (
                     msg["msg_key"],
@@ -172,6 +172,7 @@ def _write_web_source_db(path: Path, *, messages: list[dict], contacts: list[dic
                     msg.get("body", ""),
                     author_id,
                     from_id,
+                    int(bool(msg.get("revoked"))),
                     timestamp,
                     timestamp,
                     msg.get("reactions"),
@@ -180,6 +181,40 @@ def _write_web_source_db(path: Path, *, messages: list[dict], contacts: list[dic
         con.commit()
     finally:
         con.close()
+
+
+def test_web_source_cursor_resolves_rebuild_and_missing_key_floor(tmp_path: Path) -> None:
+    conversation_id = "whatsapp:dm:15133278228@c.us"
+    original = tmp_path / "original.db"
+    rebuilt = tmp_path / "rebuilt.db"
+    _write_web_source_db(
+        original,
+        messages=[{"msg_key": "checkpoint", "timestamp": 100}],
+    )
+    _write_web_source_db(
+        rebuilt,
+        messages=[
+            {"msg_key": "filler", "timestamp": 99},
+            {"msg_key": "checkpoint", "timestamp": 100, "revoked": 1},
+        ],
+    )
+
+    original_rowid, _ = conversation_sources.resolve_whatsapp_web_source_cursor(
+        conversation_id, 1, "checkpoint", 100, original, rolling=False
+    )
+    rebuilt_rowid, floor = conversation_sources.resolve_whatsapp_web_source_cursor(
+        conversation_id, original_rowid, "checkpoint", 100, rebuilt, rolling=False
+    )
+    assert (original_rowid, rebuilt_rowid, floor) == (1, 2, None)
+    assert conversation_sources.resolve_whatsapp_web_source_cursor(
+        conversation_id, rebuilt_rowid, "missing", 100, rebuilt, rolling=False
+    ) == (-1, 100)
+    assert conversation_sources.resolve_whatsapp_web_source_cursor(
+        conversation_id, rebuilt_rowid, "missing", 100, rebuilt, rolling=True
+    ) == (0, 100)
+    assert conversation_sources.resolve_whatsapp_web_source_cursor(
+        conversation_id, 7, None, None, rebuilt, rolling=False
+    ) == (7, None)
 
 
 def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) -> None:

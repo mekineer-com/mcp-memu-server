@@ -110,8 +110,12 @@ CREATE TABLE IF NOT EXISTS conversations (
     user_id TEXT,
     memorize_chat INTEGER DEFAULT 1,
     digest_cursor INTEGER DEFAULT 0,
+    digest_cursor_source_message_id TEXT,
+    digest_cursor_ts INTEGER,
     rolling_summary TEXT,
     rolling_summary_cursor_id INTEGER,
+    rolling_summary_cursor_source_message_id TEXT,
+    rolling_summary_cursor_ts INTEGER,
     rolling_summary_updated_at DATETIME,
     atomic_session_started_at DATETIME,
     atomic_session_ended_at DATETIME,
@@ -147,8 +151,16 @@ CREATE TABLE IF NOT EXISTS conversations (
             )
     if "rolling_summary" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary TEXT")
+    if "digest_cursor_source_message_id" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN digest_cursor_source_message_id TEXT")
+    if "digest_cursor_ts" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN digest_cursor_ts INTEGER")
     if "rolling_summary_cursor_id" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary_cursor_id INTEGER")
+    if "rolling_summary_cursor_source_message_id" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary_cursor_source_message_id TEXT")
+    if "rolling_summary_cursor_ts" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary_cursor_ts INTEGER")
     if "rolling_summary_updated_at" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary_updated_at DATETIME")
     if "last_consolidation_error" not in conversation_cols:

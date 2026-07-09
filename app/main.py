@@ -235,6 +235,7 @@ def _load_background_rollup_tail(
     user_id: str,
     soul_id: str,
     rolling_summary_cursor_id: int | None,
+    min_timestamp: int | None = None,
 ) -> list[dict[str, Any]]:
     storage_dir, hermes_home_path, sessions_index_path, state_db_path = _resolve_cross_source_paths()
     source_label = _message_log.derive_source_label(conversation_id)
@@ -259,7 +260,10 @@ def _load_background_rollup_tail(
                 reply_prefix=reply_prefix,
                 hermes_home=hermes_home_path,
                 web_source_db_path=web_source_db_path,
-                min_timestamp=active_since,
+                min_timestamp=max(
+                    (value for value in (active_since, min_timestamp) if value is not None),
+                    default=None,
+                ),
                 assistant_source_message_ids=assistant_ids,
             )
             _stamp_assistant_display_name(tail, soul_id)
@@ -315,11 +319,21 @@ async def _run_background_rollup_for_conversation(
             return "skipped_no_db"
 
         rolling_cursor_id = state_row.get("rolling_summary_cursor_id")
+        _, hermes_home_path, _, _ = _resolve_cross_source_paths()
+        rolling_cursor_id, min_timestamp, web_source = _resolve_source_cursor(
+            cid,
+            int(rolling_cursor_id or 0),
+            state_row.get("rolling_summary_cursor_source_message_id"),
+            state_row.get("rolling_summary_cursor_ts"),
+            rolling=True,
+            hermes_home_path=hermes_home_path,
+        )
         tail = _load_background_rollup_tail(
             conversation_id=cid,
             user_id=uid,
             soul_id=sid,
-            rolling_summary_cursor_id=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
+            rolling_summary_cursor_id=rolling_cursor_id,
+            min_timestamp=min_timestamp,
         )
         if len(tail) < 2:
             return "skipped_short_tail"
@@ -381,18 +395,28 @@ async def _run_background_rollup_for_conversation(
         if not new_summary:
             raise RuntimeError("background summarize returned empty summary")
         now_iso = datetime.now(UTC).isoformat()
+        updates = {
+            "rolling_summary": new_summary,
+            "rolling_summary_cursor_id": tail_end_cursor,
+            "rolling_summary_updated_at": now_iso,
+            "updated_at": now_iso,
+            "last_background_error": None,
+            "last_background_error_at": None,
+        }
+        if web_source:
+            checkpoint = _source_cursor_checkpoint(tail, web_source=True)
+            if checkpoint is None:
+                raise RuntimeError("WhatsApp web_source rollup has no checkpoint")
+            updates.update(
+                rolling_summary_cursor_id=checkpoint["cursor"],
+                rolling_summary_cursor_source_message_id=checkpoint["source_message_id"],
+                rolling_summary_cursor_ts=checkpoint["ts"],
+            )
         _write_conversation_state(
             cid,
             soul_id=sid,
             user_id=uid,
-            updates={
-                "rolling_summary": new_summary,
-                "rolling_summary_cursor_id": tail_end_cursor,
-                "rolling_summary_updated_at": now_iso,
-                "updated_at": now_iso,
-                "last_background_error": None,
-                "last_background_error_at": None,
-            },
+            updates=updates,
         )
         return "rolled_up"
 
@@ -1788,6 +1812,9 @@ def _persist_completed_sillytavern_turn_snapshot(*args: Any, **kwargs: Any) -> A
 def _load_tail_for_source_conversation(*args: Any, **kwargs: Any) -> Any:
     return _cross_history._load_tail_for_source_conversation(*args, **kwargs)
 
+def _resolve_source_cursor(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._resolve_source_cursor(*args, **kwargs)
+
 def _latest_saved_segment_display_ranges(*args: Any, **kwargs: Any) -> Any:
     return _cross_history._latest_saved_segment_display_ranges(*args, **kwargs)
 
@@ -1824,8 +1851,8 @@ def _read_background_rolling_summaries_from_conversations(*args: Any, **kwargs: 
 def _turn_history_with_floor(*args: Any, **kwargs: Any) -> Any:
     return _cross_history._turn_history_with_floor(*args, **kwargs)
 
-def _max_nonnegative_source_conversation_index(*args: Any, **kwargs: Any) -> Any:
-    return _cross_history._max_nonnegative_source_conversation_index(*args, **kwargs)
+def _source_cursor_checkpoint(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._source_cursor_checkpoint(*args, **kwargs)
 
 
 async def _clear_consolidation_in_progress(
@@ -2030,6 +2057,22 @@ def _make_memorize_context() -> _memorize_endpoint.MemorizeContext:
     )
 
 
+def _resolve_web_source_checkpoint(
+    conversation_id: str,
+    source_message_id: str,
+) -> int | None:
+    source, db_path, _ = _resolve_whatsapp_source_config()
+    if source != "web_source":
+        raise RuntimeError("WhatsApp history source is no longer web_source")
+    _, hermes_home_path, _, _ = _resolve_cross_source_paths()
+    return _conversation_sources.whatsapp_web_source_message_rowid(
+        conversation_id,
+        source_message_id,
+        hermes_home=hermes_home_path,
+        web_source_db_path=db_path,
+    )
+
+
 def _make_memorize_run_context() -> _memorize_endpoint.MemorizeRunContext:
     return _memorize_endpoint.MemorizeRunContext(
         base=_make_memorize_context(),
@@ -2038,6 +2081,7 @@ def _make_memorize_run_context() -> _memorize_endpoint.MemorizeRunContext:
         compute_holistic_categories_summary=_compute_holistic_categories_summary,
         run_consolidation_task=_run_consolidation_task,
         clear_last_display_segments_for_nonparticipants=_clear_last_display_segments_for_nonparticipants,
+        resolve_web_source_checkpoint=_resolve_web_source_checkpoint,
         background_tasks_set=_BACKGROUND_TASKS,
     )
 
@@ -2079,7 +2123,7 @@ async def _run_memorize_segments(
     segments_dir: Path,
     zi: Any = None,
     cross_memorize: bool = False,
-    final_cursors: dict[str, int] | None = None,
+    final_cursors: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     await _memorize_endpoint.run_memorize_segments(
         memorize_segments=memorize_segments,
@@ -2967,8 +3011,19 @@ async def conversation_retrieve(
                     _con.close()
 
         chat_label_for_prompt = _chat_label_for_prompt(safe)
+        digest_cursor, min_timestamp = -1, None
+        if history:
+            _, hermes_home_path, _, _ = _resolve_cross_source_paths()
+            digest_cursor, min_timestamp, _ = _resolve_source_cursor(
+                cid,
+                _effective_digest_cursor_from_row(state_row),
+                (state_row or {}).get("digest_cursor_source_message_id"),
+                (state_row or {}).get("digest_cursor_ts"),
+                rolling=False,
+                hermes_home_path=hermes_home_path,
+            )
         history_for_ai = _filter_external_message_from_history(
-            _turn_history_with_floor(history, state_row),
+            _turn_history_with_floor(history, digest_cursor, min_timestamp),
             safe.get("external_message_id"),
         )
         cross_text = _format_cross_tail_for_ai(cross_tail, soul_id=soul_id) if cross_tail else ""
@@ -3165,9 +3220,10 @@ def _build_cross_conversation_payload(
     uid: str,
     soul_id: str,
     safe: dict[str, Any],
-    history_full: list[dict[str, Any]],
+    trigger_history: list[dict[str, Any]],
     digest_cursor: int,
     trigger_memorize_default: bool = True,
+    trigger_web_source: bool = False,
 ) -> dict[str, Any] | None:
     """Merge unmemorized tails from all conversations into one memorize payload."""
     db_path = _sqlite_current_path(uid, soul_id)
@@ -3178,15 +3234,24 @@ def _build_cross_conversation_payload(
     trigger_memorize_raw = safe.get("memorize_chat")
     trigger_memorize = trigger_memorize_raw if isinstance(trigger_memorize_raw, bool) else trigger_memorize_default
     trigger_chat_name = str(safe.get("chat_name") or "").strip()
-    trigger_cursor = max(0, digest_cursor + 1)
-    trigger_tail = _normalize_conversation(history_full[trigger_cursor:]) if trigger_cursor < len(history_full) else []
+    trigger_checkpoint = (
+        _source_cursor_checkpoint(trigger_history, web_source=True)
+        if trigger_web_source
+        else None
+    )
+    trigger_tail = _normalize_conversation(trigger_history)
     if not trigger_tail:
         return None
 
     for i, msg in enumerate(trigger_tail):
         msg["source_label"] = trigger_label
         msg["source_conversation_id"] = cid
-        msg["source_conversation_index"] = digest_cursor + 1 + i
+        if trigger_web_source:
+            raw = trigger_history[i]
+            msg["source_conversation_index"] = raw.get("source_conversation_index")
+            msg["source_message_id"] = raw.get("source_message_id")
+        else:
+            msg["source_conversation_index"] = digest_cursor + 1 + i
         msg["memorize_chat"] = trigger_memorize
         if trigger_chat_name and not str(msg.get("chat_name") or "").strip():
             msg["chat_name"] = trigger_chat_name
@@ -3194,7 +3259,11 @@ def _build_cross_conversation_payload(
         if isinstance(ts, (int, float)) and "received_at" not in msg:
             msg["received_at"] = datetime.fromtimestamp(ts / 1000.0, tz=UTC).isoformat()
 
-    final_cursors: dict[str, int] = {cid: digest_cursor + len(trigger_tail)}
+    if not trigger_web_source:
+        trigger_checkpoint = {"cursor": digest_cursor + len(trigger_tail)}
+    if trigger_checkpoint is None:
+        raise RuntimeError(f"memorize tail has no checkpoint for {cid}")
+    final_cursors: dict[str, dict[str, Any]] = {cid: trigger_checkpoint}
     all_messages = list(trigger_tail)
 
     con = _sqlite_connect(db_path)
@@ -3213,10 +3282,15 @@ def _build_cross_conversation_payload(
     finally:
         con.close()
 
+    whatsapp_source: str | None = None
     for other_cid, tail_msgs in other_tails.items():
         if not tail_msgs:
             continue
-        final_cursor = _max_nonnegative_source_conversation_index(tail_msgs)
+        source_label = _message_log.derive_source_label(other_cid)
+        if source_label.startswith("whatsapp:") and whatsapp_source is None:
+            whatsapp_source = _resolve_whatsapp_source_config()[0]
+        web_source = source_label.startswith("whatsapp:") and whatsapp_source == "web_source"
+        final_cursor = _source_cursor_checkpoint(tail_msgs, web_source=web_source)
         if final_cursor is not None:
             final_cursors[other_cid] = final_cursor
         all_messages.extend(tail_msgs)
@@ -3323,14 +3397,33 @@ def _turn_state_read(
     memory_cache_before = list(state_override_cache)
     intentions_before = _normalize_intentions_stack_impl(state_override_intentions)
     unmemorized_digest_cursor = _effective_digest_cursor_from_row(conversation_state)
+    _, hermes_home_path, _, _ = _resolve_cross_source_paths()
+    resolved_cursor, min_timestamp, trigger_web_source = _resolve_source_cursor(
+        cid,
+        unmemorized_digest_cursor,
+        conversation_state.get("digest_cursor_source_message_id"),
+        conversation_state.get("digest_cursor_ts"),
+        rolling=False,
+        hermes_home_path=hermes_home_path,
+    )
     chat_is_primary = bool(conversation_state.get("memorize_chat", True))
     primary_history = history_full if chat_is_primary else []
-    unmemorized_tokens = _estimate_unmemorized_tokens(primary_history, unmemorized_digest_cursor)
+    if min_timestamp is not None:
+        primary_history = [
+            row for row in primary_history
+            if int(row.get("ts_ms") or 0) >= min_timestamp * 1000
+        ]
+    unmemorized_history = _conversation_sources.slice_tail_with_floor(
+        primary_history,
+        since_cursor=resolved_cursor,
+        recent_fallback_messages=0,
+    )
+    unmemorized_tokens = _estimate_unmemorized_tokens(unmemorized_history, -1)
     queued_memorize_payload: dict[str, Any] | None = None
-    if (not dry_run) and primary_history:
+    if (not dry_run) and unmemorized_history:
         has_sleep_gap = _unmemorized_sleep_gap_detected(
-            primary_history,
-            unmemorized_digest_cursor,
+            unmemorized_history,
+            -1,
             safe,
             min_chunk_tokens=0,
         )
@@ -3341,9 +3434,10 @@ def _turn_state_read(
                     uid,
                     soul_id,
                     safe,
-                    primary_history,
+                    unmemorized_history,
                     unmemorized_digest_cursor,
                     True,
+                    trigger_web_source=trigger_web_source,
                 )
                 if candidate_payload is not None:
                     unmemorized_tokens = _estimate_primary_memorize_tokens(

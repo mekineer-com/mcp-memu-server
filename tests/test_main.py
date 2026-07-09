@@ -78,6 +78,10 @@ def test_turn_state_write_consumes_prior_context_after_successful_turn(monkeypat
 @pytest.mark.asyncio
 async def test_atomic_session_start_returns_context_without_turn_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     state_row = {
+        "digest_cursor": 0,
+        "digest_cursor_source_message_id": None,
+        "digest_cursor_ts": None,
+        "last_memorize_at": None,
         "prior_context": "APImw memory line",
         "memory_cache": ["working thought"],
         "intentions_active": {"items": []},
@@ -1663,7 +1667,7 @@ def test_build_cross_conversation_payload_preserves_background_cursor_semantics(
     assert len(rows) == 1
     assert rows[0]["content"] == "new"
     assert rows[0]["memorize_chat"] is False
-    assert out["_final_cursors"]["whatsapp:dm:bg-chat"] == rows[0]["source_conversation_index"]
+    assert out["_final_cursors"]["whatsapp:dm:bg-chat"]["cursor"] == rows[0]["source_conversation_index"]
 
 
 def test_build_cross_conversation_payload_isolates_cross_source_failures(
@@ -1742,6 +1746,7 @@ def test_build_cross_conversation_payload_uses_max_nonnegative_cursor_for_lineag
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _use_hermes_state_whatsapp(monkeypatch)
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -1805,7 +1810,7 @@ def test_build_cross_conversation_payload_uses_max_nonnegative_cursor_for_lineag
         True,
     )
     assert isinstance(out, dict)
-    assert out["_final_cursors"]["whatsapp:dm:bg-chat"] == 1
+    assert out["_final_cursors"]["whatsapp:dm:bg-chat"]["cursor"] == 1
 
 
 def test_load_tail_for_source_conversation_uses_web_source_when_configured(
@@ -2052,6 +2057,7 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _use_hermes_state_whatsapp(monkeypatch)
     db_path = tmp_path / "Echo.db"
     db_path.write_text("", encoding="utf-8")
     monkeypatch.setattr(
@@ -2247,6 +2253,7 @@ def test_load_cross_tail_from_sources_keeps_previous_segment_participants(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _use_hermes_state_whatsapp(monkeypatch)
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -2305,6 +2312,7 @@ def test_load_cross_tail_from_sources_recovers_previous_segment_ranges_from_save
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _use_hermes_state_whatsapp(monkeypatch)
     storage_dir = tmp_path / "resources"
     segment_dir = storage_dir / "st_chats" / "Echo_saved" / "segments"
     segment_dir.mkdir(parents=True)
@@ -3025,9 +3033,12 @@ async def test_run_memorize_segments_keeps_results_when_summary_fails(monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("fresh_cursor", "expected_cursor"), [(11, 12), (13, 13)])
 async def test_run_memorize_segments_clears_consumed_segment_background_context_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    fresh_cursor: int,
+    expected_cursor: int,
 ) -> None:
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
@@ -3047,7 +3058,9 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
             "memorize_chat": False,
             "digest_cursor": -1,
             "rolling_summary": "old rolled summary",
-            "rolling_summary_cursor_id": 11,
+            "rolling_summary_cursor_id": fresh_cursor,
+            "rolling_summary_cursor_source_message_id": None,
+            "rolling_summary_cursor_ts": None,
             "rolling_summary_updated_at": "2026-05-01T00:00:00+00:00",
         },
     }
@@ -3069,6 +3082,11 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
     monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
     monkeypatch.setattr(main, "_compute_holistic_categories_summary", fake_summary)
+    monkeypatch.setattr(
+        main,
+        "_resolve_web_source_checkpoint",
+        lambda _cid, source_id: 12 if source_id == "message-12" else None,
+    )
 
     await main._run_memorize_segments(
         memorize_segments=[
@@ -3115,7 +3133,14 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
         sleep_stats=None,
         segments_dir=segments_dir,
         cross_memorize=True,
-        final_cursors={"trigger": 0, "whatsapp:dm:bg-chat": 12},
+        final_cursors={
+            "trigger": {"cursor": 0},
+            "whatsapp:dm:bg-chat": {
+                "cursor": 12,
+                "source_message_id": "message-12",
+                "ts": 100,
+            },
+        },
     )
 
     clear_writes = [
@@ -3125,7 +3150,9 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
     assert clear_writes == [{"rolling_summary": None, "rolling_summary_updated_at": None}]
     assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary"] is None
     assert state_rows["whatsapp:dm:bg-chat"]["digest_cursor"] == -1
-    assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary_cursor_id"] == 12
+    assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary_cursor_id"] == expected_cursor
+    if fresh_cursor < 12:
+        assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary_cursor_source_message_id"] == "message-12"
 
 
 @pytest.mark.asyncio
@@ -5168,6 +5195,7 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
         "build_turn_prompt": True,
         "load_source_history": True,
         "is_live_turn": True,
+        "user_name": "Marcos",
         "chat_name": "Marcos",
         "chat_type": "dm",
     }

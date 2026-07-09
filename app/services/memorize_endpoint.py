@@ -116,6 +116,7 @@ class MemorizeRunContext:
     compute_holistic_categories_summary: Callable[..., Awaitable[str | None]]
     run_consolidation_task: Callable[..., Awaitable[dict[str, Any]]]
     clear_last_display_segments_for_nonparticipants: Callable[..., None]
+    resolve_web_source_checkpoint: Callable[[str, str], int | None]
     background_tasks_set: set[asyncio.Task]
 
 
@@ -253,7 +254,7 @@ async def run_memorize_segments(
     segments_dir: Path,
     zi: Any | None = None,
     cross_memorize: bool = False,
-    final_cursors: dict[str, int] | None = None,
+    final_cursors: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     ctx = run_ctx.base
     progress_key = ctx.memorize_lock_key(uid, soul_id)
@@ -277,6 +278,7 @@ async def run_memorize_segments(
     rolling_summaries: dict[str, dict[str, Any]] = (
         rolling_summaries_raw if isinstance(rolling_summaries_raw, dict) else {}
     )
+    run_started_at = datetime.now(UTC).isoformat()
     try:
         # Phase 1: read initial state under lock.
         async with mem_lock:
@@ -484,6 +486,7 @@ async def run_memorize_segments(
                                     user_id=uid,
                                     updates={
                                         "digest_cursor": processed_end_cursor,
+                                        "last_memorize_at": datetime.now(UTC).isoformat(),
                                     },
                                 )
                             else:
@@ -518,28 +521,81 @@ async def run_memorize_segments(
                         user_id=uid,
                         soul_id=soul_id,
                         participant_conversation_ids=set(latest_display_ranges),
+                        run_started_at=run_started_at,
                     )
-                for fc_cid, fc_cursor in final_cursors.items():
+                for fc_cid, checkpoint in final_cursors.items():
+                    fc_cursor = max(0, int(checkpoint["cursor"]))
+                    source_id = str(checkpoint.get("source_message_id") or "").strip()
+                    source_ts = checkpoint.get("ts")
+                    web_source = bool(source_id and source_ts is not None)
                     fresh_row, _, _ = run_ctx.load_turn_state_and_soul_card(
                         fc_cid,
                         user_id=uid,
                         soul_id=soul_id,
                     )
                     memorize_chat = memorize_chat_from_row(fresh_row)
+                    if web_source:
+                        payload_position = run_ctx.resolve_web_source_checkpoint(fc_cid, source_id)
+                        if payload_position is None:
+                            raise RuntimeError(
+                                f"WhatsApp web_source checkpoint disappeared for {fc_cid}; "
+                                "repair the conversation cursor before retrying"
+                            )
+                        fresh_id_field = (
+                            "digest_cursor_source_message_id"
+                            if memorize_chat
+                            else "rolling_summary_cursor_source_message_id"
+                        )
+                        fresh_cursor_field = (
+                            "digest_cursor" if memorize_chat else "rolling_summary_cursor_id"
+                        )
+                        fresh_source_id = str(fresh_row.get(fresh_id_field) or "").strip()
+                        if fresh_source_id:
+                            fresh_position = run_ctx.resolve_web_source_checkpoint(
+                                fc_cid,
+                                fresh_source_id,
+                            )
+                            if fresh_position is None:
+                                fresh_position = -1 if memorize_chat else 0
+                        else:
+                            fresh_position = int(fresh_row.get(fresh_cursor_field) or 0)
+                        if payload_position <= fresh_position:
+                            if memorize_chat:
+                                updates = {"last_memorize_at": now_iso}
+                                if fc_cid == conversation_id:
+                                    updates["append_pending_segment_ids"] = pending_segment_ids
+                                    updates["all_categories_summary"] = current_all_categories_summary
+                                ctx.write_conversation_state(
+                                    fc_cid,
+                                    soul_id=soul_id,
+                                    user_id=uid,
+                                    updates=updates,
+                                )
+                            continue
+                        fc_cursor = payload_position
                     if not memorize_chat:
+                        updates = {"rolling_summary_cursor_id": fc_cursor}
+                        if web_source:
+                            updates.update(
+                                rolling_summary_cursor_source_message_id=source_id,
+                                rolling_summary_cursor_ts=int(source_ts),
+                            )
                         ctx.write_conversation_state(
                             fc_cid,
                             soul_id=soul_id,
                             user_id=uid,
-                            updates={
-                                "rolling_summary_cursor_id": max(0, fc_cursor),
-                            },
+                            updates=updates,
                         )
                         continue
                     updates: dict[str, Any] = {
-                        "digest_cursor": max(0, fc_cursor),
+                        "digest_cursor": fc_cursor,
                         "last_memorize_at": now_iso,
                     }
+                    if web_source:
+                        updates.update(
+                            digest_cursor_source_message_id=source_id,
+                            digest_cursor_ts=int(source_ts),
+                        )
                     display_range = latest_display_ranges.get(fc_cid)
                     if cross_memorize and display_range is not None:
                         updates["last_display_segment_start_index"] = display_range[0]

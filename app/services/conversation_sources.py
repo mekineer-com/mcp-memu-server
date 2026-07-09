@@ -407,6 +407,54 @@ def _web_source_chat_match(
     return target, {target_local} if target_local else set(), chat_type
 
 
+def whatsapp_web_source_message_rowid(
+    conversation_id: str,
+    source_message_id: str,
+    *,
+    hermes_home: Path | None = None,
+    web_source_db_path: Path | None = None,
+) -> int | None:
+    db_path = _web_source_db_path(hermes_home=hermes_home, web_source_db_path=web_source_db_path)
+    target, local_ids, chat_type = _web_source_chat_match(conversation_id)
+    if not chat_type or not local_ids:
+        return None
+    con = sqlite3.connect(str(db_path))
+    try:
+        row = con.execute(
+            f"SELECT rowid FROM whatsapp_messages WHERE msg_key = ? "
+            f"AND (chat_id = ? OR chat_local_id IN ({','.join('?' for _ in local_ids)})) "
+            "LIMIT 1",
+            [str(source_message_id), target, *sorted(local_ids)],
+        ).fetchone()
+        return int(row[0]) if row is not None else None
+    finally:
+        con.close()
+
+
+def resolve_whatsapp_web_source_cursor(
+    conversation_id: str,
+    cursor: int,
+    source_message_id: str | None,
+    source_ts: int | None,
+    web_source_db_path: Path | None,
+    *,
+    rolling: bool,
+    hermes_home: Path | None = None,
+) -> tuple[int, int | None]:
+    source_id = str(source_message_id or "").strip()
+    if not source_id:
+        return int(cursor), None
+    rowid = whatsapp_web_source_message_rowid(
+        conversation_id,
+        source_id,
+        hermes_home=hermes_home,
+        web_source_db_path=web_source_db_path,
+    )
+    if rowid is not None:
+        return rowid, None
+    return (0 if rolling else -1), int(source_ts) if source_ts is not None else None
+
+
 def _render_reactions(reactions_json: str | None, contact_map: dict[str, str]) -> str:
     if not reactions_json:
         return ""

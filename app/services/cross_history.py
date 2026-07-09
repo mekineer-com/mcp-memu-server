@@ -58,6 +58,32 @@ def _resolve_whatsapp_source_config() -> tuple[str, Path | None, str]:
     return source, db_path, reply_prefix
 
 
+def _resolve_source_cursor(
+    conversation_id: str,
+    cursor: int,
+    source_message_id: str | None,
+    source_ts: int | None,
+    *,
+    rolling: bool,
+    hermes_home_path: Path | None,
+) -> tuple[int, int | None, bool]:
+    if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
+        return cursor, None, False
+    source, db_path, _ = _m()._resolve_whatsapp_source_config()
+    if source != "web_source":
+        return cursor, None, False
+    resolved, min_timestamp = _conversation_sources.resolve_whatsapp_web_source_cursor(
+        conversation_id,
+        cursor,
+        source_message_id,
+        source_ts,
+        db_path,
+        rolling=rolling,
+        hermes_home=hermes_home_path,
+    )
+    return resolved, min_timestamp, True
+
+
 def _resolve_whatsapp_history_limit() -> int:
     hermes_cfg = _m()._CONFIG.get("hermes") if isinstance(_m()._CONFIG.get("hermes"), dict) else {}
     raw = hermes_cfg.get("whatsapp_history_limit", 250)
@@ -375,6 +401,7 @@ def _load_tail_for_source_conversation(
     hermes_home_path: Path | None,
     sessions_index_path: Path | None,
     state_db_path: Path | None,
+    min_timestamp: int | None = None,
 ) -> list[dict[str, Any]]:
     source_label = _message_log.derive_source_label(conversation_id)
     if source_label.startswith("whatsapp:"):
@@ -382,6 +409,10 @@ def _load_tail_for_source_conversation(
             soul_id,
             hermes_home_path=hermes_home_path,
             state_db_path=state_db_path,
+        )
+        timestamp_floor = max(
+            (value for value in (active_since, min_timestamp) if value is not None),
+            default=None,
         )
         whatsapp_source, web_source_db_path, reply_prefix = _m()._resolve_whatsapp_source_config()
         if whatsapp_source == "web_source":
@@ -399,7 +430,7 @@ def _load_tail_for_source_conversation(
                 reply_prefix=reply_prefix,
                 hermes_home=hermes_home_path,
                 web_source_db_path=web_source_db_path,
-                min_timestamp=active_since,
+                min_timestamp=timestamp_floor,
                 assistant_source_message_ids=assistant_ids,
             )
         return _conversation_sources.load_whatsapp_tail(
@@ -409,7 +440,7 @@ def _load_tail_for_source_conversation(
             hermes_home=hermes_home_path,
             sessions_index_path=sessions_index_path,
             state_db_path=state_db_path,
-            min_timestamp=active_since,
+            min_timestamp=timestamp_floor,
         )
     if source_label == "sillytavern":
         return _conversation_sources.load_sillytavern_tail(
@@ -469,6 +500,7 @@ def _load_cross_tail_from_sources(
     excluded_id = str(exclude_conversation_id or "").strip()
     cursor_rows = con.execute(
         "SELECT conversation_id, memorize_chat, digest_cursor, last_memorize_at, "
+        "digest_cursor_source_message_id, digest_cursor_ts, "
         "last_display_segment_start_index, last_display_segment_end_index "
         "FROM conversations"
     ).fetchall()
@@ -482,9 +514,17 @@ def _load_cross_tail_from_sources(
             continue
         source_label = _message_log.derive_source_label(cid)
         cursor = _effective_digest_cursor_from_row(row)
+        cursor, min_timestamp, web_source = _resolve_source_cursor(
+            cid,
+            cursor,
+            row["digest_cursor_source_message_id"],
+            row["digest_cursor_ts"],
+            rolling=False,
+            hermes_home_path=hermes_home_path,
+        )
         display_start = row["last_display_segment_start_index"]
         display_end = row["last_display_segment_end_index"]
-        if row["last_memorize_at"] and (display_start is None or display_end is None):
+        if not web_source and row["last_memorize_at"] and (display_start is None or display_end is None):
             if resource_display_ranges is None:
                 resource_display_ranges = _m()._latest_saved_segment_display_ranges(
                     soul_id=soul_id,
@@ -492,7 +532,7 @@ def _load_cross_tail_from_sources(
             fallback_range = resource_display_ranges.get(cid)
             if fallback_range is not None:
                 display_start, display_end = fallback_range
-        if row["last_memorize_at"] and display_start is not None and display_end is not None:
+        if not web_source and row["last_memorize_at"] and display_start is not None and display_end is not None:
             try:
                 segment_start = max(0, int(display_start))
                 segment_end = max(segment_start, int(display_end))
@@ -511,6 +551,7 @@ def _load_cross_tail_from_sources(
                 hermes_home_path=hermes_home_path,
                 sessions_index_path=sessions_index_path,
                 state_db_path=state_db_path,
+                min_timestamp=min_timestamp,
             )
         except Exception as exc:
             _m().logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)
@@ -539,6 +580,7 @@ def _clear_last_display_segments_for_nonparticipants(
     user_id: str,
     soul_id: str,
     participant_conversation_ids: set[str],
+    run_started_at: str,
 ) -> None:
     db_path = _m()._sqlite_current_path(user_id or None, soul_id or None)
     if db_path is None or not db_path.exists():
@@ -549,7 +591,8 @@ def _clear_last_display_segments_for_nonparticipants(
         _m()._sqlite_ensure_conversation_state_schema(con)
         participants = {str(cid or "").strip() for cid in participant_conversation_ids if str(cid or "").strip()}
         where = ["memorize_chat = 1"]
-        params: list[Any] = []
+        where.append("(last_display_segment_at IS NULL OR last_display_segment_at <= ?)")
+        params: list[Any] = [run_started_at]
         if participants:
             placeholders = ",".join("?" for _ in participants)
             where.append(f"conversation_id NOT IN ({placeholders})")
@@ -704,7 +747,9 @@ def _load_cross_memorize_tails_from_sources(
     storage_dir, hermes_home_path, sessions_index_path, state_db_path = _m()._resolve_cross_source_paths()
     excluded_id = str(exclude_conversation_id or "").strip()
     rows = con.execute(
-        "SELECT conversation_id, digest_cursor, last_memorize_at, memorize_chat, rolling_summary_cursor_id "
+        "SELECT conversation_id, digest_cursor, digest_cursor_source_message_id, digest_cursor_ts, "
+        "last_memorize_at, memorize_chat, rolling_summary_cursor_id, "
+        "rolling_summary_cursor_source_message_id, rolling_summary_cursor_ts "
         "FROM conversations"
     ).fetchall()
     tails: dict[str, list[dict[str, Any]]] = {}
@@ -728,6 +773,14 @@ def _load_cross_memorize_tails_from_sources(
             memorize_chat = _memorize_chat_from_row(row)
             if memorize_chat:
                 cursor = _effective_digest_cursor_from_row(row)
+                cursor, min_timestamp, _ = _resolve_source_cursor(
+                    cid,
+                    cursor,
+                    row["digest_cursor_source_message_id"],
+                    row["digest_cursor_ts"],
+                    rolling=False,
+                    hermes_home_path=hermes_home_path,
+                )
                 tail = _m()._load_tail_for_source_conversation(
                     conversation_id=cid,
                     user_id=user_id,
@@ -738,6 +791,7 @@ def _load_cross_memorize_tails_from_sources(
                     hermes_home_path=hermes_home_path,
                     sessions_index_path=sessions_index_path,
                     state_db_path=state_db_path,
+                    min_timestamp=min_timestamp,
                 )
                 _m()._stamp_assistant_display_name(tail, soul_id)
                 if not tail:
@@ -760,6 +814,14 @@ def _load_cross_memorize_tails_from_sources(
                 )
                 whatsapp_source, web_source_db_path, reply_prefix = _m()._resolve_whatsapp_source_config()
                 if whatsapp_source == "web_source":
+                    rolling_cursor_id, checkpoint_floor, _ = _resolve_source_cursor(
+                        cid,
+                        int(rolling_cursor_id or 0),
+                        row["rolling_summary_cursor_source_message_id"],
+                        row["rolling_summary_cursor_ts"],
+                        rolling=True,
+                        hermes_home_path=hermes_home_path,
+                    )
                     assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
                         conversation_id=cid,
                         hermes_home=hermes_home_path,
@@ -773,7 +835,10 @@ def _load_cross_memorize_tails_from_sources(
                         reply_prefix=reply_prefix,
                         hermes_home=hermes_home_path,
                         web_source_db_path=web_source_db_path,
-                        min_timestamp=active_since,
+                        min_timestamp=max(
+                            (value for value in (active_since, checkpoint_floor) if value is not None),
+                            default=None,
+                        ),
                         assistant_source_message_ids=assistant_ids,
                     )
                 else:
@@ -856,20 +921,29 @@ TURN_HISTORY_WINDOW_MESSAGES = 8
 
 def _turn_history_with_floor(
     history: list[dict[str, Any]],
-    state_row: dict[str, Any] | None,
+    resolved_cursor: int,
+    min_timestamp: int | None = None,
 ) -> list[dict[str, Any]]:
     if not history:
         return []
-    digest_cursor = _effective_digest_cursor_from_row(state_row)
+    if min_timestamp is not None:
+        history = [
+            row for row in history
+            if int(row.get("ts_ms") or 0) >= min_timestamp * 1000
+        ]
     return _conversation_sources.slice_tail_with_floor(
         history,
-        since_cursor=digest_cursor,
+        since_cursor=resolved_cursor,
         recent_fallback_messages=TURN_HISTORY_WINDOW_MESSAGES,
     )
 
 
-def _max_nonnegative_source_conversation_index(messages: list[dict[str, Any]]) -> int | None:
-    max_index: int | None = None
+def _source_cursor_checkpoint(
+    messages: list[dict[str, Any]],
+    *,
+    web_source: bool,
+) -> dict[str, Any] | None:
+    final: dict[str, Any] | None = None
     for msg in messages:
         try:
             idx = int(msg.get("source_conversation_index"))
@@ -877,6 +951,12 @@ def _max_nonnegative_source_conversation_index(messages: list[dict[str, Any]]) -
             continue
         if idx < 0:
             continue
-        if max_index is None or idx > max_index:
-            max_index = idx
-    return max_index
+        if final is None or idx > final["cursor"]:
+            final = {"cursor": idx}
+            if web_source:
+                source_id = str(msg.get("source_message_id") or "").strip()
+                ts_ms = msg.get("ts_ms")
+                if not source_id or ts_ms is None:
+                    raise RuntimeError("WhatsApp web_source tail is missing checkpoint metadata")
+                final.update(source_message_id=source_id, ts=int(ts_ms) // 1000)
+    return final

@@ -479,7 +479,22 @@ def _turn_launch_apimw(
             user_id=uid,
             soul_id=soul_id,
         )
-        history_for_ai = _m()._turn_history_with_floor(history_full, apimw_state_row)
+        digest_cursor, min_timestamp = -1, None
+        if history_full:
+            _, hermes_home_path, _, _ = _m()._resolve_cross_source_paths()
+            digest_cursor, min_timestamp, _ = _m()._resolve_source_cursor(
+                cid,
+                _m()._effective_digest_cursor_from_row(apimw_state_row),
+                apimw_state_row.get("digest_cursor_source_message_id"),
+                apimw_state_row.get("digest_cursor_ts"),
+                rolling=False,
+                hermes_home_path=hermes_home_path,
+            )
+        history_for_ai = _m()._turn_history_with_floor(
+            history_full,
+            digest_cursor,
+            min_timestamp,
+        )
         apimw_task = asyncio.create_task(
             _m()._run_apimw(
                 safe,

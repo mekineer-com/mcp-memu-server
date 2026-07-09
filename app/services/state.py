@@ -64,6 +64,12 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "user_id": row["user_id"],
         "memorize_chat": memorize_chat_from_row(row),
         "digest_cursor": max(0, digest_cursor),
+        "digest_cursor_source_message_id": (
+            str(row["digest_cursor_source_message_id"] or "").strip() or None
+        ),
+        "digest_cursor_ts": (
+            int(row["digest_cursor_ts"]) if row["digest_cursor_ts"] is not None else None
+        ),
         "rolling_summary": (
             (str(row["rolling_summary"] or "").strip() or None)
             if "rolling_summary" in row.keys()
@@ -72,6 +78,14 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "rolling_summary_cursor_id": (
             int(row["rolling_summary_cursor_id"])
             if "rolling_summary_cursor_id" in row.keys() and row["rolling_summary_cursor_id"] is not None
+            else None
+        ),
+        "rolling_summary_cursor_source_message_id": (
+            str(row["rolling_summary_cursor_source_message_id"] or "").strip() or None
+        ),
+        "rolling_summary_cursor_ts": (
+            int(row["rolling_summary_cursor_ts"])
+            if row["rolling_summary_cursor_ts"] is not None
             else None
         ),
         "rolling_summary_updated_at": row["rolling_summary_updated_at"] if "rolling_summary_updated_at" in row.keys() else None,
@@ -103,7 +117,10 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
 def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
     return con.execute(
         "SELECT conversation_id, soul_id, user_id, memorize_chat, digest_cursor, "
-        "rolling_summary, rolling_summary_cursor_id, rolling_summary_updated_at, prior_context, "
+        "digest_cursor_source_message_id, digest_cursor_ts, "
+        "rolling_summary, rolling_summary_cursor_id, "
+        "rolling_summary_cursor_source_message_id, rolling_summary_cursor_ts, "
+        "rolling_summary_updated_at, prior_context, "
         "pending_segment_ids, last_memorize_at, "
         "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at, "
         "updated_at, undo_snapshot, "
@@ -126,8 +143,12 @@ def conversation_state_empty(
         "user_id": user_id,
         "memorize_chat": True,
         "digest_cursor": 0,
+        "digest_cursor_source_message_id": None,
+        "digest_cursor_ts": None,
         "rolling_summary": None,
         "rolling_summary_cursor_id": None,
+        "rolling_summary_cursor_source_message_id": None,
+        "rolling_summary_cursor_ts": None,
         "rolling_summary_updated_at": None,
         "prior_context": None,
         "pending_segment_ids": [],
@@ -223,12 +244,41 @@ INSERT OR IGNORE INTO conversations (
         append_pending_segment_ids = raw_updates.pop("append_pending_segment_ids", None)
         field_updates: dict[str, Any] = {}
 
+        for cursor, source_id, source_ts in (
+            ("digest_cursor", "digest_cursor_source_message_id", "digest_cursor_ts"),
+            (
+                "rolling_summary_cursor_id",
+                "rolling_summary_cursor_source_message_id",
+                "rolling_summary_cursor_ts",
+            ),
+        ):
+            has_cursor = cursor in raw_updates
+            has_source_id = source_id in raw_updates
+            has_source_ts = source_ts in raw_updates
+            if (has_source_id or has_source_ts) and not has_cursor:
+                raise HTTPException(status_code=400, detail=f"{cursor} is required with its checkpoint")
+            if not has_cursor:
+                continue
+            if has_source_id != has_source_ts:
+                raise HTTPException(status_code=400, detail=f"{cursor} checkpoint must be complete")
+            if has_source_id and (
+                (raw_updates[source_id] is None) != (raw_updates[source_ts] is None)
+            ):
+                raise HTTPException(status_code=400, detail=f"{cursor} checkpoint must be complete")
+            if not has_source_id:
+                raw_updates[source_id] = None
+                raw_updates[source_ts] = None
+
         for key, value in raw_updates.items():
             if key in {
                 "memorize_chat",
                 "digest_cursor",
+                "digest_cursor_source_message_id",
+                "digest_cursor_ts",
                 "rolling_summary",
                 "rolling_summary_cursor_id",
+                "rolling_summary_cursor_source_message_id",
+                "rolling_summary_cursor_ts",
                 "rolling_summary_updated_at",
                 "prior_context",
                 "pending_segment_ids",
@@ -245,6 +295,26 @@ INSERT OR IGNORE INTO conversations (
                 "atomic_session_ended_at",
             }:
                 field_updates[key] = value
+
+        for cursor, source_id, source_ts in (
+            ("digest_cursor", "digest_cursor_source_message_id", "digest_cursor_ts"),
+            (
+                "rolling_summary_cursor_id",
+                "rolling_summary_cursor_source_message_id",
+                "rolling_summary_cursor_ts",
+            ),
+        ):
+            if cursor not in field_updates or field_updates[source_id] is None:
+                continue
+            source_message_id = str(field_updates[source_id] or "").strip()
+            if not source_message_id or field_updates[source_ts] is None:
+                raise HTTPException(status_code=400, detail=f"{cursor} checkpoint must be complete")
+            try:
+                timestamp = int(field_updates[source_ts])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise HTTPException(status_code=400, detail=f"{source_ts} must be an integer") from exc
+            field_updates[source_id] = source_message_id
+            field_updates[source_ts] = timestamp
 
         if append_pending_segment_ids is not None:
             base_pending = field_updates.get(
