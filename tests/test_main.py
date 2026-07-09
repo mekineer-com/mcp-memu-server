@@ -69,10 +69,125 @@ def test_turn_state_write_consumes_prior_context_after_successful_turn(monkeypat
 
     monkeypatch.setattr(main, "_write_conversation_state", _write_state)
 
-    state, _ = main._turn_state_write("conv", "user", "soul", "", [], [])
+    state, _ = main._turn_state_write(
+        "conv",
+        "user",
+        "soul",
+        "",
+        [],
+        [],
+        annulment_memory_ids=["memory-1"],
+    )
 
     assert captured["prior_context"] is None
+    assert captured["undo_snapshot"]["annulment_memory_ids"] == ["memory-1"]
     assert state["prior_context"] is None
+
+
+@pytest.mark.asyncio
+async def test_annulment_memories_are_dated_historical_events() -> None:
+    created: list[dict[str, Any]] = []
+
+    class _Repo:
+        def create_item(self, **kwargs: Any) -> SimpleNamespace:
+            created.append(kwargs)
+            return SimpleNamespace(id=f"memory-{len(created)}")
+
+    svc = SimpleNamespace(
+        embed=lambda *_a, **_k: None,
+        database=SimpleNamespace(memory_item_repo=_Repo()),
+    )
+
+    async def _embed(texts: list[str], **_kwargs: Any) -> list[list[float]]:
+        return [[1.0] for _ in texts]
+
+    svc.embed = _embed
+    ids = await main._persist_annulment_memories(
+        svc=svc,
+        scope={"user_id": "Marcos", "soul_id": "Siri"},
+        conversation_id="chat",
+        intentions_before={
+            "items": [
+                {"id": "a", "text": "Ask about sleep"},
+                {"id": "b", "text": "Check the weather"},
+            ]
+        },
+        annulments=[
+            {"intention_id": "a", "status": "completed"},
+            {"intention_id": "b", "status": "deleted", "note": "No longer needed"},
+        ],
+    )
+
+    event_at = created[0]["happened_at"]
+    assert ids == ["memory-1", "memory-2"]
+    assert [row["happened_at"] for row in created] == [event_at, event_at]
+    assert created[0]["summary"] == f'On {event_at.date()}, I marked "Ask about sleep" as completed.'
+    assert created[1]["summary"] == (
+        f'On {event_at.date()}, I marked "Check the weather" as deleted. Note: No longer needed'
+    )
+
+
+@pytest.mark.asyncio
+async def test_turn_undo_deletes_reflections_before_restoring_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deleted: list[tuple[str, dict[str, str]]] = []
+    writes: list[dict[str, Any]] = []
+    snapshot = {
+        "memory_cache": ["before"],
+        "intentions_active": {"items": [{"id": "a"}]},
+        "annulment_memory_ids": ["memory-1", "memory-2"],
+    }
+    svc = SimpleNamespace(
+        graph_delete_memory=lambda item_id, *, where: deleted.append((item_id, where))
+    )
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: svc)
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"undo_snapshot": snapshot}, None, None),
+    )
+    monkeypatch.setattr(
+        main,
+        "_write_conversation_state",
+        lambda *_a, **kwargs: (writes.append(kwargs["updates"]) or ({}, None)),
+    )
+
+    out = await main.conversation_turn_undo(
+        "chat",
+        {"user": {"user_id": "Marcos", "soul_id": "Siri"}},
+    )
+
+    assert out == {"status": "restored"}
+    assert deleted == [
+        ("memory-1", {"user_id": "Marcos", "soul_id": "Siri"}),
+        ("memory-2", {"user_id": "Marcos", "soul_id": "Siri"}),
+    ]
+    assert writes == [{
+        "memory_cache": ["before"],
+        "intentions_active": {"items": [{"id": "a"}]},
+        "undo_snapshot": None,
+    }]
+
+    writes.clear()
+    svc.graph_delete_memory = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("delete failed"))
+    with pytest.raises(RuntimeError, match="delete failed"):
+        await main.conversation_turn_undo(
+            "chat",
+            {"user": {"user_id": "Marcos", "soul_id": "Siri"}},
+        )
+    assert writes == []
+
+    snapshot.pop("annulment_memory_ids")
+    monkeypatch.setattr(
+        main,
+        "_get_service_from_payload",
+        lambda _payload: (_ for _ in ()).throw(AssertionError("legacy undo needs no service")),
+    )
+    assert await main.conversation_turn_undo(
+        "chat",
+        {"user": {"user_id": "Marcos", "soul_id": "Siri"}},
+    ) == {"status": "restored"}
 
 
 @pytest.mark.asyncio
@@ -771,7 +886,6 @@ def test_conversation_state_schema_migrates_pending_segment_ids_from_old_name(
                 prior_context TEXT,
                 last_memorize_at DATETIME,
                 updated_at DATETIME,
-                undo_snapshot JSON,
                 last_background_error TEXT,
                 last_background_error_at DATETIME,
                 last_consolidation_error TEXT,
@@ -785,6 +899,7 @@ def test_conversation_state_schema_migrates_pending_segment_ids_from_old_name(
         )
 
         main._sqlite_ensure_conversation_state_schema(con)
+        assert "undo_snapshot" in main._sqlite_table_columns(con, "conversations")
         row = main._conversation_state_row(con, "cid-old")
         state = main._conversation_state_from_row(row)
 

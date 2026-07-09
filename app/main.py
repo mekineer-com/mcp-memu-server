@@ -1461,6 +1461,7 @@ async def _persist_annulment_memories(
         if isinstance(item, dict) and str(item.get("id") or "").strip()
     }
 
+    event_at = datetime.now(UTC)
     summaries: list[str] = []
     for row in annulments:
         intention_id = str(row.get("intention_id") or "").strip()
@@ -1469,9 +1470,9 @@ async def _persist_annulment_memories(
             continue
         note = str(row.get("note") or "").strip()
         intention_text = str((by_id.get(intention_id) or {}).get("text") or intention_id).strip() or intention_id
-        summary = f"Intention {status}: {intention_text}"
+        summary = f'On {event_at.date().isoformat()}, I marked "{intention_text}" as {status}.'
         if note:
-            summary = f"{summary}. Note: {note}"
+            summary = f"{summary} Note: {note}"
         summaries.append(summary)
 
     if not summaries:
@@ -1493,7 +1494,7 @@ async def _persist_annulment_memories(
             source_role="soul",
             speaker_id=f"soul:{soul_slug}",
             speaker_label=soul_label or "soul",
-            happened_at=datetime.now(UTC),
+            happened_at=event_at,
             conversation_id=conversation_id,
         )
         created_ids.append(str(item.id))
@@ -3473,6 +3474,8 @@ def _turn_state_write(
     annulment_ids: list[str],
     retrieval_ids_since_consolidation: list[str],
     memorize_chat: bool | None = None,
+    *,
+    annulment_memory_ids: list[str] | None = None,
 ) -> tuple[dict[str, Any], Any]:
     latest_state_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
     current_memory_cache = _normalize_memory_cache_impl(latest_state_row.get("memory_cache"))
@@ -3494,6 +3497,7 @@ def _turn_state_write(
         "undo_snapshot": {
             "memory_cache": current_memory_cache,
             "intentions_active": intentions_snapshot,
+            "annulment_memory_ids": list(annulment_memory_ids or []),
         },
     }
     if retrieval_ids_since_consolidation:
@@ -3724,13 +3728,21 @@ async def conversation_turn(
         annulment_memory_ids: list[str] = []
 
         if not dry_run:
+            retrieved_item_ids = _extract_result_item_ids(override_retrieve_rag)
+            annulment_memory_ids = await _persist_annulment_memories(
+                svc=memory_service,
+                scope={"user_id": uid, "soul_id": soul_id},
+                conversation_id=cid,
+                intentions_before=intentions_before,
+                annulments=normalized_annulments,
+            )
             async with state_lock:
-                retrieved_item_ids = _extract_result_item_ids(override_retrieve_rag)
                 conversation_state_after, conversation_state_path = _turn_state_write(
                     cid, uid, soul_id,
                     turn_cache_entry, turn_annulment_ids,
                     retrieved_item_ids,
                     memorize_chat=memorize_chat,
+                    annulment_memory_ids=annulment_memory_ids,
                 )
             if not bool(conversation_state_after.get("memorize_chat", True)):
                 _queue_background_rollup_task(
@@ -3740,15 +3752,6 @@ async def conversation_turn(
                     safe_payload=safe,
                     service=memory_service,
                 )
-
-        if not dry_run:
-            annulment_memory_ids = await _persist_annulment_memories(
-                svc=memory_service,
-                scope={"user_id": uid, "soul_id": soul_id},
-                conversation_id=cid,
-                intentions_before=intentions_before,
-                annulments=normalized_annulments,
-            )
 
         apimw_status = "skipped_dry_run" if dry_run else "not_started"
         if (not dry_run) and run_apimw:
@@ -3962,6 +3965,18 @@ async def conversation_turn_undo(
         if not isinstance(undo_snapshot, dict):
             return {"status": "no_snapshot"}
 
+        annulment_memory_ids = [
+            str(value or "").strip()
+            for value in undo_snapshot.get("annulment_memory_ids") or []
+            if str(value or "").strip()
+        ]
+        if annulment_memory_ids:
+            svc = _get_service_from_payload({"user": {"user_id": uid, "soul_id": soul_id}})
+            for item_id in annulment_memory_ids:
+                svc.graph_delete_memory(
+                    item_id,
+                    where={"user_id": uid, "soul_id": soul_id},
+                )
         _write_conversation_state(
             cid,
             soul_id=soul_id,

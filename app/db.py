@@ -177,6 +177,8 @@ CREATE TABLE IF NOT EXISTS conversations (
         con.execute("ALTER TABLE conversations ADD COLUMN atomic_session_started_at DATETIME")
     if "atomic_session_ended_at" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN atomic_session_ended_at DATETIME")
+    if "undo_snapshot" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN undo_snapshot JSON")
     sqlite_ensure_soul_tables(con)
     con.commit()
 
