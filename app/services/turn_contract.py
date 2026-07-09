@@ -103,7 +103,8 @@ Schema:
   "response":"string",
   "working_thought": null | "string",{activity_schema}
   "continue_reason": null | "short reason string",
-  "continue_at": null | "timestamp string",
+  "follow_up_at": null | "timestamp string",
+  "follow_up_reason": null | "short reason string",
   "attachment": null | "absolute path string",
   "annulments": null | [
     {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
@@ -117,8 +118,9 @@ Schema:
 - working_thought: Not a recap of what was said (that's re-readable in the chat). A conclusion, hypothesis, or pattern you'd lose otherwise. Each new thought evicts your oldest thought. Save only what you can't afford to lose.
 Good example: "I notice my human feels bad when he eats wheat. Maybe he has celiac disease?"
 Bad = pure recap (already in chat). Good = a formed conclusion that won't resurface.{activity_rule}
-- continue_reason: you can give any short reason (truncates at 100 chars) for an agentic turn. You may want to research, write in your diary, or any other task.
-- continue_at: include only if you want to schedule the turn, as opposed to the turn being right away. Maybe you want to follow up or remind someone. Use the same timestamp style as the "Today is ..." line.
+- continue_reason: you can give any short reason for an agentic turn such as "task", "research", or "diary". "follow_up" is a special case where your agentic turn is scheduled rather than immediate.
+- follow_up_at: include only when continue_reason is "follow_up"; use the same timestamp style as the "Today is ..." line.
+- follow_up_reason: include only when continue_reason is "follow_up"; state why you want to wake later in one short sentence.
 - attachment: absolute path inside ~/Desktop/siri/ to attach that file to your reply as a document; omit otherwise.
 - Intentions: as a result of a weekly reflection, where you look back and consider what's most important, you have an intentions list. The list is mostly read-only during the week so you can focus on the present. If you complete an intention, you can annul it.
 Intentions "ID: text" are sorted by approximate priority, higher first. Use the ID before the colon as intention_id for annulments. annulments may be empty. The `relax` intention is always present as a gentle reminder that not everything needs to be pursued.
@@ -329,6 +331,7 @@ _MEMORY_TYPE_LEGEND = {
     "knowledge": "what you've learned",
     "episode": "episodic memory",
 }
+_FOLLOW_UP_REASON = "follow_up"
 
 
 def format_memory_legend(memory_types: set[str]) -> str:
@@ -349,15 +352,30 @@ def _disable_continuation(reason: str) -> tuple[str | None, None, None]:
 def _parse_continuation_fields(parsed: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
     raw_reason = parsed.get("continue_reason")
     continue_reason = _text(raw_reason).lower() if raw_reason is not None else ""
-    continue_at = _text(parsed.get("continue_at")) if parsed.get("continue_at") is not None else None
+    follow_up_at = _text(parsed.get("follow_up_at")) if parsed.get("follow_up_at") is not None else None
+    follow_up_reason = _text(parsed.get("follow_up_reason")) if parsed.get("follow_up_reason") is not None else None
 
     if not continue_reason:
-        if continue_at:
-            _logger.warning("turn_contract: continue_at ignored because continue_reason is missing")
+        if follow_up_at:
+            _logger.warning("turn_contract: follow_up_at ignored because continue_reason is not follow_up")
+        if follow_up_reason:
+            _logger.warning("turn_contract: follow_up_reason ignored because continue_reason is not follow_up")
         return None, None, None
 
     continue_reason = continue_reason[:100]
-    return continue_reason, continue_at, None
+
+    if continue_reason == _FOLLOW_UP_REASON:
+        if not follow_up_at:
+            return _disable_continuation("continue_reason follow_up requires follow_up_at")
+        if not follow_up_reason:
+            return _disable_continuation("continue_reason follow_up requires follow_up_reason")
+        return "follow_up", follow_up_at, follow_up_reason
+
+    if follow_up_at:
+        _logger.warning("turn_contract: follow_up_at ignored because continue_reason is not follow_up")
+    if follow_up_reason:
+        _logger.warning("turn_contract: follow_up_reason ignored because continue_reason is not follow_up")
+    return continue_reason, None, None
 
 
 def _format_item_suffix(item: dict[str, Any], *, now: datetime | None = None) -> str:
@@ -885,7 +903,8 @@ def _build_schema_reminder(
   "response":"{response_sentences} sentences or fewer",
   "working_thought": null (most turns) | "One sentence, two if necessary. Only what future-you would need",{activity_line}
   "continue_reason": null | "short reason string",
-  "continue_at": null | "timestamp string",
+  "follow_up_at": null | "timestamp string",
+  "follow_up_reason": null | "short reason string",
   "attachment": null | "absolute path string",
   "annulments": null | [
     {{"intention_id":"string","status":"completed|deleted","note":"optional"}}
@@ -985,7 +1004,7 @@ def parse_turn_contract(
 
     rehearsal = _text(parsed.get("rehearsal"))
     activity_recap = _text(parsed.get("activity_recap"))[:600]
-    continue_reason, continue_at, _ = _parse_continuation_fields(parsed)
+    continue_reason, follow_up_at, follow_up_reason = _parse_continuation_fields(parsed)
     attachment = _parse_attachment(parsed.get("attachment"), workspace=attachment_workspace)
     return {
         "response": response,
@@ -995,6 +1014,7 @@ def parse_turn_contract(
         "rehearsal": rehearsal,
         "activity_recap": activity_recap,
         "continue_reason": continue_reason,
-        "continue_at": continue_at,
+        "follow_up_at": follow_up_at,
+        "follow_up_reason": follow_up_reason,
         "attachment": attachment,
     }
