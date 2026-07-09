@@ -3215,6 +3215,78 @@ async def test_run_memorize_segments_keeps_results_when_summary_fails(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_run_memorize_segments_ignores_cancel_after_batch_extraction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+
+    user_id = "u"
+    soul_id = "s"
+    conversation_id = "cid-1"
+    key = main._memorize_lock_key(user_id, soul_id)
+    main._MEMORIZE_PROGRESS.pop(key, None)
+    main._MEMORIZE_CANCEL.discard(key)
+
+    class _FakeService:
+        async def memorize_segments_batch(self, **kwargs):
+            main._MEMORIZE_CANCEL.add(key)
+            return [
+                {"pending_segment_ids": ["cid-1:0-0"]},
+                {"pending_segment_ids": ["cid-1:1-1"]},
+            ][: len(kwargs["segments"])]
+
+    state_row: dict[str, Any] = {
+        "pending_segment_ids": [],
+        "digest_cursor": -1,
+        "last_memorize_at": None,
+    }
+
+    def fake_load_turn_state_and_soul_card(*_args, **_kwargs):
+        return dict(state_row), None, None
+
+    def fake_write_conversation_state(_cid: str, *, updates: dict[str, Any], **_kwargs):
+        if "digest_cursor" in updates:
+            state_row["digest_cursor"] = int(updates["digest_cursor"])
+        if "last_memorize_at" in updates:
+            state_row["last_memorize_at"] = updates["last_memorize_at"]
+        if "append_pending_segment_ids" in updates:
+            state_row["pending_segment_ids"].extend(updates["append_pending_segment_ids"])
+        return dict(state_row), tmp_path / "Echo.db"
+
+    async def fake_summary(**_kwargs):
+        return "summary"
+
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
+    monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
+    monkeypatch.setattr(main, "_compute_holistic_categories_summary", fake_summary)
+
+    await main._run_memorize_segments(
+        memorize_segments=[
+            ("/tmp/day.json", [{"role": "user", "content": "first"}], 0, 0),
+            ("/tmp/day.json", [{"role": "user", "content": "second"}], 1, 1),
+        ],
+        svc=_FakeService(),
+        scope={"user_id": user_id, "soul_id": soul_id},
+        conversation_id=conversation_id,
+        soul_id=soul_id,
+        uid=user_id,
+        processed_cursor=-1,
+        safe={},
+        resource_url="/tmp/day.json",
+        chat_key=None,
+        merged_len=2,
+        force=False,
+        sleep_stats=None,
+        segments_dir=segments_dir,
+    )
+
+    assert state_row["digest_cursor"] == 1
+    assert state_row["pending_segment_ids"] == ["cid-1:0-0", "cid-1:1-1"]
+    assert key not in main._MEMORIZE_CANCEL
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("fresh_cursor", "expected_cursor"), [(11, 12), (13, 13)])
 async def test_run_memorize_segments_clears_consumed_segment_background_context_rows(
     monkeypatch: pytest.MonkeyPatch,

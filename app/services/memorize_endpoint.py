@@ -447,11 +447,6 @@ async def run_memorize_segments(
                 )
 
                 for seg_num, segment_job in enumerate(segment_jobs, 1):
-                    if progress_key in ctx.memorize_cancel:
-                        ctx.memorize_cancel.discard(progress_key)
-                        ctx.logger.info("memorize cancelled after batch result %d/%d", seg_num - 1, total_segments)
-                        terminal_result = "cancelled"
-                        break
                     _set_memorize_progress(
                         ctx.memorize_progress,
                         progress_key,
