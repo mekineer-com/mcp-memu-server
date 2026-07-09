@@ -6280,7 +6280,7 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize(
             self.chat_calls.append(dict(kwargs))
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"continued",'
-                '"response_target":"listen","response":"",'
+                '"response":"",'
                 '"activity_recap":"I continued the task.",'
                 '"continue_reason":"task"}'
             )
@@ -6340,6 +6340,70 @@ def test_free_turn_prompt_uses_observe_for_listen_only_policy() -> None:
 
     assert "observe/private" in prompt
     assert "Do not use listen/respond" in prompt
+
+
+def test_parse_free_turn_contract_omitted_target_requires_activity_recap() -> None:
+    parsed = main._parse_free_turn_contract(
+        '{"response":"","working_thought":null,"annulments":[],"rehearsal":"worked",'
+        '"activity_recap":"I worked on the task."}',
+        allow_public_response=True,
+    )
+    assert parsed["response_target"] == "observe"
+
+    with pytest.raises(ValueError, match="activity_recap is required"):
+        main._parse_free_turn_contract(
+            '{"response":"","response_target":null,"working_thought":null,"annulments":[],"rehearsal":"worked"}',
+            allow_public_response=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_free_turn_chain_retries_silent_contract_without_activity_recap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "SiriTest.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
+
+    class _FakeSvc:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat(self, *_args, **kwargs) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return '{"response":"","working_thought":null,"annulments":[],"rehearsal":"worked"}'
+            return (
+                '{"response":"","working_thought":null,"annulments":[],"rehearsal":"worked",'
+                '"activity_recap":"I worked on the task."}'
+            )
+
+    try:
+        await main._run_free_turn_chain(
+            marker="u1::Siri",
+            service=_FakeSvc(),
+            user_id="u1",
+            soul_id="Siri",
+            conversation_id="whatsapp:dm:Marcos",
+            session_id="session-123",
+            initial_reason="research",
+            initial_contract={"response_target": "listen", "response": "", "rehearsal": "starting"},
+            system_prompt="system",
+            allow_public_response=True,
+            safe_payload={},
+            soul_card=None,
+        )
+    finally:
+        main._FREE_TURN_INFLIGHT.clear()
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute("SELECT content FROM activity_messages").fetchall()
+    finally:
+        con.close()
+
+    assert [row["content"] for row in rows] == ["I worked on the task."]
 
 
 @pytest.mark.asyncio
