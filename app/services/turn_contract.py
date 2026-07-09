@@ -976,10 +976,10 @@ def parse_turn_contract(
     if cache_raw is None:
         cache_entry = ""
     elif isinstance(cache_raw, str):
-        cache_entry = _text(cache_raw)[:300]
+        cache_entry = _text(cache_raw)[:600]
     elif isinstance(cache_raw, dict):
         # Legacy shape from before the schema flattened to a bare string.
-        cache_entry = _text(cache_raw.get("entry"))[:300]
+        cache_entry = _text(cache_raw.get("entry"))[:600]
     else:
         raise ValueError("working_thought must be string|null")
 
