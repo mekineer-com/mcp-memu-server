@@ -667,6 +667,7 @@ def test_build_turn_prompt_renders_current_message_locator_when_already_last() -
     )
     assert "[user] hello there this is the ..." in prompt
     assert "New Message:\nhello there this is the current message" in prompt
+    assert "**schema reminder** rehearsal must be null for working_thought persistence" in prompt
     assert "[user] hello there this is the current message" not in prompt
 
 

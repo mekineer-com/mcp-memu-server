@@ -874,7 +874,7 @@ def _build_schema_reminder(
     activity_line = (
         '\n  "activity_recap": null | "first-person activity recap",' if include_activity_recap else ""
     )
-    return f"""**schema reminder**
+    return f"""**schema reminder** rehearsal must be null for working_thought persistence
 {{
 {target_schema_line}
   "rehearsal":"3 sentences or fewer",
