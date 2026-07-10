@@ -481,6 +481,8 @@ async def run_memorize_segments(
                                     user_id=uid,
                                     updates={
                                         "digest_cursor": processed_end_cursor,
+                                        "digest_cursor_source_message_id": None,
+                                        "digest_cursor_ts": None,
                                         "last_memorize_at": datetime.now(UTC).isoformat(),
                                     },
                                 )
@@ -575,6 +577,11 @@ async def run_memorize_segments(
                                 rolling_summary_cursor_source_message_id=source_id,
                                 rolling_summary_cursor_ts=int(source_ts),
                             )
+                        else:
+                            updates.update(
+                                rolling_summary_cursor_source_message_id=None,
+                                rolling_summary_cursor_ts=None,
+                            )
                         ctx.write_conversation_state(
                             fc_cid,
                             soul_id=soul_id,
@@ -590,6 +597,11 @@ async def run_memorize_segments(
                         updates.update(
                             digest_cursor_source_message_id=source_id,
                             digest_cursor_ts=int(source_ts),
+                        )
+                    else:
+                        updates.update(
+                            digest_cursor_source_message_id=None,
+                            digest_cursor_ts=None,
                         )
                     display_range = latest_display_ranges.get(fc_cid)
                     if cross_memorize and display_range is not None:
@@ -616,6 +628,8 @@ async def run_memorize_segments(
                     user_id=uid,
                     updates={
                         "digest_cursor": max(0, processed_end_cursor),
+                        "digest_cursor_source_message_id": None,
+                        "digest_cursor_ts": None,
                         "last_memorize_at": datetime.now(UTC).isoformat(),
                         "append_pending_segment_ids": pending_segment_ids,
                         "all_categories_summary": current_all_categories_summary,

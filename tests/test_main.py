@@ -3405,6 +3405,9 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
     assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary"] is None
     assert state_rows["whatsapp:dm:bg-chat"]["digest_cursor"] == -1
     assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary_cursor_id"] == expected_cursor
+    trigger_writes = [updates for cid, updates in writes if cid == "trigger" and "digest_cursor" in updates]
+    assert trigger_writes[-1]["digest_cursor_source_message_id"] is None
+    assert trigger_writes[-1]["digest_cursor_ts"] is None
     if fresh_cursor < 12:
         assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary_cursor_source_message_id"] == "message-12"
 
@@ -3505,6 +3508,9 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
     assert clear_writes == [{"rolling_summary": None, "rolling_summary_updated_at": None}]
     assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary"] is None
     assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary_cursor_id"] == 11
+    trigger_writes = [updates for cid, updates in writes if cid == "trigger" and "digest_cursor" in updates]
+    assert trigger_writes[-1]["digest_cursor_source_message_id"] is None
+    assert trigger_writes[-1]["digest_cursor_ts"] is None
 
 
 @pytest.mark.asyncio
