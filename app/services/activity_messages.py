@@ -114,6 +114,7 @@ def record_activity_message(
     recap: str,
     sqlite_current_path: Callable[[str | None, str | None], Path | None],
     logger: logging.Logger,
+    platform_name: str = "Claude Code",
     happened_at: datetime | None = None,
 ) -> bool:
     text = str(recap or "").strip()
@@ -127,6 +128,7 @@ def record_activity_message(
         return False
     sqlite_ensure_nonempty(db_path)
     activity_cid = activity_conversation_id(sid)
+    message_cid = f"activity:dm:{str(platform_name or '').strip() or 'Claude Code'}"
     now_iso = (happened_at or datetime.now(UTC)).astimezone(UTC).isoformat()
     con = sqlite_connect(db_path)
     try:
@@ -147,7 +149,7 @@ INSERT INTO activity_messages (
     user_id, soul_id, conversation_id, speaker, content, received_at
 ) VALUES (?, ?, ?, ?, ?, ?)
 """,
-            (uid, sid, activity_cid, sid, text, now_iso),
+            (uid, sid, message_cid, sid, text, now_iso),
         )
         con.commit()
         return True

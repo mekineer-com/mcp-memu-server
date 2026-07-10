@@ -613,13 +613,15 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
         con.row_factory = sqlite3.Row
         row = main._conversation_state_row(con, "chat:atomic-c1")
         state = main._conversation_state_from_row(row)
-        activity_rows = con.execute("SELECT content FROM activity_messages").fetchall()
+        activity_rows = con.execute("SELECT conversation_id, content FROM activity_messages").fetchall()
     finally:
         con.close()
     assert state is not None
     assert state["memorize_chat"] is True
     assert state["atomic_session_ended_at"]
-    assert [row["content"] for row in activity_rows] == ["We reviewed memory summaries."]
+    assert [(row["conversation_id"], row["content"]) for row in activity_rows] == [
+        ("activity:dm:Atomic", "We reviewed memory summaries.")
+    ]
 
     later_at = (datetime.fromisoformat(state["atomic_session_ended_at"]) + timedelta(seconds=1)).isoformat()
     later = await main.atomic_session_end(
@@ -642,13 +644,13 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
     try:
         con.row_factory = sqlite3.Row
         activity_rows = con.execute(
-            "SELECT content FROM activity_messages ORDER BY source_conversation_index"
+            "SELECT conversation_id, content FROM activity_messages ORDER BY source_conversation_index"
         ).fetchall()
     finally:
         con.close()
-    assert [row["content"] for row in activity_rows] == [
-        "We reviewed memory summaries.",
-        "We reviewed one more memory.",
+    assert [(row["conversation_id"], row["content"]) for row in activity_rows] == [
+        ("activity:dm:Atomic", "We reviewed memory summaries."),
+        ("activity:dm:Atomic", "We reviewed one more memory."),
     ]
 
     tail = main._conversation_sources.load_atomic_tail(
@@ -6337,6 +6339,7 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize(
         "I continued the task.",
         "I continued the task.",
     ]
+    assert {row["conversation_id"] for row in rows} == {"activity:dm:Claude Code"}
 
 
 def test_free_turn_prompt_uses_observe_for_listen_only_policy() -> None:
@@ -6598,12 +6601,14 @@ async def test_free_turn_chain_ignores_non_whatsapp_outbound(
         outbound_table = con.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'whatsapp_pending_outbounds'"
         ).fetchone()
-        activity_rows = con.execute("SELECT content FROM activity_messages").fetchall()
+        activity_rows = con.execute("SELECT conversation_id, content FROM activity_messages").fetchall()
     finally:
         con.close()
 
     assert outbound_table is None
-    assert [row["content"] for row in activity_rows] == ["continued"]
+    assert [(row["conversation_id"], row["content"]) for row in activity_rows] == [
+        ("activity:dm:Claude Code", "continued")
+    ]
 
 
 def test_free_turn_follow_up_payload_excludes_caller_timezone() -> None:

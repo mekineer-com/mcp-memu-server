@@ -1214,12 +1214,14 @@ def _record_activity_message(
     user_id: str,
     soul_id: str,
     recap: str,
+    platform_name: str = "Claude Code",
     happened_at: datetime | None = None,
 ) -> bool:
     return _activity_messages.record_activity_message(
         user_id=user_id,
         soul_id=soul_id,
         recap=recap,
+        platform_name=platform_name,
         happened_at=happened_at,
         sqlite_current_path=_sqlite_current_path,
         logger=logger,
@@ -4111,7 +4113,7 @@ async def atomic_session_end(req: AtomicSessionEndRequest):
         chat_name="Atomic",
     )
     if recap:
-        _record_activity_message(user_id=uid, soul_id=soul_id, recap=recap)
+        _record_activity_message(user_id=uid, soul_id=soul_id, recap=recap, platform_name="Atomic")
 
     ended_dt = datetime.now(UTC)
     if latest_created_at and latest_created_at > ended_dt:
