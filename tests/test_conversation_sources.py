@@ -435,8 +435,8 @@ def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_
         min_timestamp=100,
     )
 
-    assert [(row["role"], row["speaker"], row["content"]) for row in rows] == [
-        ("user", "Contact A", "hi Siri"),
+    assert [(row.get("role"), row["speaker"], row["content"]) for row in rows] == [
+        (None, "Contact A", "hi Siri"),
         ("assistant", "Siri", "hi back"),
     ]
     assert {row["chat_name"] for row in rows} == {"Contact A Chat"}
@@ -512,7 +512,7 @@ def test_load_whatsapp_web_source_tail_does_not_require_matching_prefix(tmp_path
         web_source_db_path=web_db,
     )
 
-    assert [(row["role"], row["content"]) for row in rows] == [("user", "plain from me")]
+    assert [(row.get("role"), row["content"]) for row in rows] == [(None, "plain from me")]
 
 
 def test_load_whatsapp_web_source_tail_uses_assistant_source_message_ids(tmp_path: Path) -> None:
@@ -568,8 +568,8 @@ def test_load_whatsapp_web_source_tail_does_not_substring_match_assistant_ids(tm
         assistant_source_message_ids={"SENT-ID"},
     )
 
-    assert [(row["role"], row["speaker"], row["content"]) for row in rows] == [
-        ("user", "15133278228", "human sent from linked device")
+    assert [(row.get("role"), row["speaker"], row["content"]) for row in rows] == [
+        (None, "15133278228", "human sent from linked device")
     ]
 
 
@@ -1615,7 +1615,7 @@ def test_web_source_reaction_rendered_into_content(tmp_path: Path) -> None:
     )
     assert len(rows) == 1
     assert rows[0]["content"] == "hello [reacted ❤️ — Marcos]"
-    assert rows[0]["role"] == "user"
+    assert "role" not in rows[0]
 
 
 def test_web_source_multiple_reactors(tmp_path: Path) -> None:

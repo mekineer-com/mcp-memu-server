@@ -474,6 +474,10 @@ def _render_reactions(reactions_json: str | None, contact_map: dict[str, str]) -
     return f" [reacted {', '.join(parts)}]"
 
 
+def _whatsapp_role_field(role: str) -> dict[str, str]:
+    return {"role": "assistant"} if role == "assistant" else {}
+
+
 def _web_source_row_to_tail(
     row: sqlite3.Row,
     *,
@@ -514,7 +518,7 @@ def _web_source_row_to_tail(
     return {
         "id": int(row["rowid"]),
         "source_message_id": source_message_id,
-        "role": role,
+        **_whatsapp_role_field(role),
         "speaker": speaker,
         "chat_name": resolved_chat_name,
         "content": content,
@@ -1059,7 +1063,7 @@ def _whatsapp_live_row_to_tail(
             session_user_name=fallback_name,
         )
     return {
-        "role": role,
+        **_whatsapp_role_field(role),
         "speaker": speaker,
         "chat_name": chat_name,
         "content": content,
