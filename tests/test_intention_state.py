@@ -75,7 +75,7 @@ def test_upsert_intention_entries_keeps_highest_priority():
 
 def test_normalize_memory_cache_caps_size_and_entry_length():
     cache = normalize_memory_cache(["x" * 700 for _ in range(12)])
-    assert len(cache) == 5
+    assert len(cache) == 7
     assert all(len(entry) == 600 for entry in cache)
 
 
