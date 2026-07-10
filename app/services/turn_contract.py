@@ -936,8 +936,10 @@ def parse_turn_contract(
     if not isinstance(parsed, dict):
         raise ValueError("turn response must be a JSON object")
 
-    response_target = _text(parsed.get("response_target")).lower() or "observe"
-    allowed_targets = {"respond", "listen", "observe", "private"} if allow_public_response else {"observe", "private"}
+    response_target = _text(parsed.get("response_target")).lower()
+    if not response_target:
+        raise ValueError("response_target is required")
+    allowed_targets = {"respond", "listen", "private"} if allow_public_response else {"observe", "private"}
     if response_target not in allowed_targets:
         raise ValueError(f"response_target must be one of {'|'.join(sorted(allowed_targets))}")
     response = _text(parsed.get("response"))

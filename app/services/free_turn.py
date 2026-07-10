@@ -57,20 +57,12 @@ def _parse_free_turn_contract(
     parse_turn_contract: Callable[..., dict[str, Any]],
     logger: Any,
 ) -> dict[str, Any]:
-    def _parse(text: Any) -> dict[str, Any]:
-        contract = parse_turn_contract(
-            text,
+    try:
+        return parse_turn_contract(
+            raw,
             allow_public_response=allow_public_response,
             attachment_workspace=_attachment_workspace(config),
         )
-        if str(contract.get("response_target") or "").strip().lower() in {"listen", "observe"} and not str(
-            contract.get("activity_recap") or ""
-        ).strip():
-            raise ValueError("activity_recap is required for silent free-turns")
-        return contract
-
-    try:
-        return _parse(raw)
     except (ValueError, json.JSONDecodeError):
         text = str(raw or "").strip()
         try:
@@ -78,13 +70,15 @@ def _parse_free_turn_contract(
             end = text.rfind("}")
             if start < 0 or end <= start:
                 raise ValueError("No complete JSON object found")
-            if start == 0 and end == len(text) - 1:
-                raise
             parsed = json.loads(text[start : end + 1])
         except (ValueError, json.JSONDecodeError):
             raise
         logger.warning("free_turn: Claude Code returned prose around JSON; extracted turn contract")
-        return _parse(json.dumps(parsed))
+        return parse_turn_contract(
+            json.dumps(parsed),
+            allow_public_response=allow_public_response,
+            attachment_workspace=_attachment_workspace(config),
+        )
 
 
 def _turn_generation_metadata(payload: dict[str, Any], *, config: Mapping[str, Any]) -> dict[str, str]:
@@ -150,22 +144,15 @@ async def _run_free_turn_chain(
                 previous_contract=previous_contract,
                 allow_public_response=allow_public_response,
             )
-            for attempt in (1, 2):
-                raw = await service.chat(
-                    prompt,
-                    system_prompt=free_turn_system_prompt,
-                    response_format={"type": "json_object"},
-                    op="free_turn",
-                    step=f"continue_{continuation_index}" if attempt == 1 else f"continue_{continuation_index}_retry",
-                    resume_session_id=session_id,
-                )
-                try:
-                    contract = parse_free_turn_contract(raw, allow_public_response=allow_public_response)
-                    break
-                except Exception:
-                    if attempt == 2:
-                        raise
-                    logger.warning("free_turn: turn contract parse failed; retrying once")
+            raw = await service.chat(
+                prompt,
+                system_prompt=free_turn_system_prompt,
+                response_format={"type": "json_object"},
+                op="free_turn",
+                step=f"continue_{continuation_index}",
+                resume_session_id=session_id,
+            )
+            contract = parse_free_turn_contract(raw, allow_public_response=allow_public_response)
             record_activity_message(
                 user_id=user_id,
                 soul_id=soul_id,

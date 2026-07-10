@@ -116,18 +116,11 @@ def test_parse_turn_contract_rejects_invalid_target():
         )
 
 
-def test_parse_turn_contract_omitted_target_means_observe():
-    parsed = parse_turn_contract(
-        '{"response":"","working_thought":null,"annulments":[],"rehearsal":"ok"}'
-    )
-    assert parsed["response_target"] == "observe"
-
-
-def test_parse_turn_contract_null_target_means_observe():
-    parsed = parse_turn_contract(
-        '{"response":"","response_target":null,"working_thought":null,"annulments":[],"rehearsal":"ok"}'
-    )
-    assert parsed["response_target"] == "observe"
+def test_parse_turn_contract_requires_target():
+    with pytest.raises(ValueError, match="response_target is required"):
+        parse_turn_contract(
+            '{"response":"hi","working_thought":null,"annulments":[],"rehearsal":"ok"}'
+        )
 
 
 def test_parse_turn_contract_private_target():
