@@ -34,6 +34,14 @@ def _m() -> Any:
     return _main
 
 
+def message_sort_key(msg: Mapping[str, Any]) -> tuple[str, str, int]:
+    return (
+        str(msg.get("received_at") or ""),
+        str(msg.get("source_conversation_id") or msg.get("conversation_id") or ""),
+        int(msg.get("source_conversation_index") or 0),
+    )
+
+
 def _resolve_cross_source_paths() -> tuple[Path, Path | None, Path | None, Path | None]:
     hermes_cfg = _m()._CONFIG.get("hermes") if isinstance(_m()._CONFIG.get("hermes"), dict) else {}
     hermes_home_raw = str(hermes_cfg.get("home") or "").strip()
@@ -565,13 +573,7 @@ def _load_cross_tail_from_sources(
             continue
         _m()._stamp_assistant_display_name(tail, soul_id)
         all_messages.extend(tail)
-    all_messages.sort(
-        key=lambda msg: (
-            str(msg.get("received_at") or ""),
-            str(msg.get("conversation_id") or ""),
-            int(msg.get("source_conversation_index") or 0),
-        )
-    )
+    all_messages.sort(key=message_sort_key)
     return all_messages
 
 

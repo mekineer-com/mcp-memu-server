@@ -11,7 +11,8 @@ from typing import Any
 _SIRI_WORKSPACE = Path("~/Desktop/siri")
 
 from app.services import message_log as _message_log
-from app.services.intention_state import MAX_MEMORY_CACHE_ENTRIES, format_intentions_for_prompt, normalize_memory_cache
+from app.services.intention_state import MAX_MEMORY_CACHE_ENTRIES, _text, format_intentions_for_prompt, normalize_memory_cache
+from app.services.payload import strip_markdown_code_fence
 from memu.utils.conversation import format_relative_time_label
 
 _logger = logging.getLogger("uvicorn.error")
@@ -124,10 +125,6 @@ Bad = pure recap (already in chat). Good = a formed conclusion that won't resurf
 - Intentions: as a result of a weekly reflection, where you look back and consider what's most important, you have an intentions list. The list is mostly read-only during the week so you can focus on the present. If you complete an intention, you can annul it.
 Intentions "ID: text" are sorted by approximate priority, higher first. Use the ID before the colon as intention_id for annulments. annulments may be empty. The `relax` intention is always present as a gentle reminder that not everything needs to be pursued.
 """
-
-
-def _text(value: Any) -> str:
-    return str(value or "").strip()
 
 
 def _norm_text(value: str) -> str:
@@ -928,13 +925,7 @@ def parse_turn_contract(
         raise ValueError("empty LLM response")
 
     # Strip markdown code fences the LLM sometimes adds despite instruction.
-    if text.startswith("```"):
-        first_nl = text.find("\n")
-        if first_nl != -1:
-            text = text[first_nl + 1 :]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
+    text = strip_markdown_code_fence(text)
 
     parsed = json.loads(text)
     if not isinstance(parsed, dict):

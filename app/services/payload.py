@@ -94,6 +94,39 @@ def _parse_turn_ts_ms(value: Any) -> int | None:
     return None
 
 
+def message_ts_ms(message: dict[str, Any]) -> int | None:
+    for key in ("ts_ms", "timestamp", "received_at", "created_at"):
+        ts_ms = _parse_turn_ts_ms(message.get(key))
+        if ts_ms is not None:
+            return ts_ms
+    return None
+
+
+def parse_iso_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def strip_markdown_code_fence(text: str) -> str:
+    if text.startswith("```"):
+        first_nl = text.find("\n")
+        if first_nl != -1:
+            text = text[first_nl + 1 :]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    return text
+
+
 def _normalize_conversation(conv: Any) -> Any:
     if not isinstance(conv, list):
         return conv

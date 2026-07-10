@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from app.services.payload import _parse_turn_ts_ms
+from app.services.payload import message_ts_ms
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
@@ -28,11 +28,7 @@ def parse_segment_range(segment_id: str) -> tuple[int, int]:
 
 
 def _message_happened_at(msg: dict[str, Any]) -> datetime | None:
-    ts_ms: int | None = None
-    for key in ("ts_ms", "timestamp", "received_at", "created_at"):
-        ts_ms = _parse_turn_ts_ms(msg.get(key))
-        if ts_ms is not None:
-            break
+    ts_ms = message_ts_ms(msg)
     if ts_ms is None:
         return None
     return datetime.fromtimestamp(ts_ms / 1000.0, UTC)

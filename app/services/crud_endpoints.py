@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.services.payload import strip_markdown_code_fence
 from app.services import soul_state as _soul_state
 
 _RELATIONSHIP_NAME_MAX_CHARS = 50
@@ -624,13 +625,7 @@ async def narrative_suggestion_endpoint(
     )
 
     text = str(raw or "").strip()
-    if text.startswith("```"):
-        nl = text.find("\n")
-        if nl != -1:
-            text = text[nl + 1 :]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
+    text = strip_markdown_code_fence(text)
     parsed = json.loads(text)
     new_narrative = str(parsed.get("narrative_self") or "").strip()
     companion_memory = str(parsed.get("companion_memory") or "").strip()

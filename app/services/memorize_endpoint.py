@@ -12,7 +12,7 @@ from typing import Any, TypedDict
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 
-from app.services.payload import _parse_turn_ts_ms
+from app.services.payload import message_ts_ms
 from app.services.state import effective_digest_cursor_from_row, memorize_chat_from_row
 
 
@@ -780,14 +780,6 @@ def date_label(ts_ms: int | None, zi: Any | None) -> str:
         return _local_dt(ts_ms, zi).date().isoformat()
     except (ValueError, OverflowError, OSError):
         return "undated"
-
-
-def message_ts_ms(message: dict[str, Any]) -> int | None:
-    for key in ("ts_ms", "timestamp", "received_at", "created_at"):
-        ts_ms = _parse_turn_ts_ms(message.get(key))
-        if ts_ms is not None:
-            return ts_ms
-    return None
 
 
 def _merge_manifest_segments(

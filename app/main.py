@@ -95,6 +95,7 @@ from app.services.payload import (
     _normalize_conversation,
     _normalize_turn_history,
     _parse_as_of_datetime,
+    parse_iso_datetime,
     _parse_turn_ts_ms,
     _payload_signature,
     _pick_str,
@@ -3284,13 +3285,7 @@ def _build_cross_conversation_payload(
             final_cursors[other_cid] = final_cursor
         all_messages.extend(tail_msgs)
 
-    all_messages.sort(
-        key=lambda m: (
-            str(m.get("received_at") or ""),
-            str(m.get("source_conversation_id") or m.get("conversation_id") or ""),
-            int(m.get("source_conversation_index") or 0),
-        )
-    )
+    all_messages.sort(key=_cross_history.message_sort_key)
 
     return {
         **safe,
@@ -3339,13 +3334,7 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
     finally:
         con.close()
     merged = [msg for tail in tails.values() for msg in tail]
-    merged.sort(
-        key=lambda m: (
-            str(m.get("received_at") or ""),
-            str(m.get("source_conversation_id") or m.get("conversation_id") or ""),
-            int(m.get("source_conversation_index") or 0),
-        )
-    )
+    merged.sort(key=_cross_history.message_sort_key)
     for msg in merged:
         if msg.get("ts_ms") is None:
             ts_ms = _parse_turn_ts_ms(msg.get("received_at"))
@@ -4075,21 +4064,10 @@ def _atomic_has_interchange(rows: list[dict[str, Any]]) -> bool:
     return "user" in roles and "assistant" in roles
 
 
-def _atomic_parse_dt(value: Any) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-
-
 def _atomic_latest_created_at(rows: list[dict[str, Any]]) -> datetime | None:
     latest: datetime | None = None
     for row in rows:
-        created_at = _atomic_parse_dt(row.get("created_at") or row.get("received_at"))
+        created_at = parse_iso_datetime(row.get("created_at") or row.get("received_at"))
         if created_at and (latest is None or created_at > latest):
             latest = created_at
     return latest
@@ -4107,7 +4085,7 @@ async def atomic_session_end(req: AtomicSessionEndRequest):
 
     rows = _atomic_transcript_rows(req.transcript, user_id=uid, soul_id=soul_id)
     state_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=uid, soul_id=soul_id)
-    ended_at = _atomic_parse_dt(state_row.get("atomic_session_ended_at"))
+    ended_at = parse_iso_datetime(state_row.get("atomic_session_ended_at"))
     latest_created_at = _atomic_latest_created_at(rows)
     if ended_at and (latest_created_at is None or latest_created_at <= ended_at):
         return {"ok": True, "status": "already_ended", "conversation_id": conversation_id}

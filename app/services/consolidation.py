@@ -31,6 +31,7 @@ from app.services.intention_state import (
     format_intentions_for_prompt,
 )
 from app.services.narrative_self import snapshot_previous_narrative_self
+from app.services.payload import parse_iso_datetime
 from app.services import soul_state as _soul_state
 from app.services.turn_contract import DEFAULT_SOUL_CARD, format_memory_legend, format_memory_line, format_shaped_by_line, format_relative_time_label, format_time_anchor
 
@@ -72,20 +73,6 @@ class ConsolidationDeps:
     read_list: Callable[[Path], list[dict[str, Any]]]
     normalize_text_list: Callable[[Any], list[str]]
     json_to_db: Callable[[Any], str | None]
-
-
-def _parse_iso_datetime(value: Any) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
-    try:
-        dt = datetime.fromisoformat(normalized)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
 
 
 def _slugify_intention_id(raw: Any) -> str:
@@ -468,7 +455,7 @@ def gather_consolidation_inputs(
             raise HTTPException(status_code=404, detail="conversation state not found")
 
         now = datetime.now(UTC)
-        started_at = _parse_iso_datetime(state.get("consolidation_started_at"))
+        started_at = parse_iso_datetime(state.get("consolidation_started_at"))
         if bool(state.get("consolidation_in_progress")):
             if started_at is not None and now - started_at <= stale_after:
                 return {"status": "skip", "reason": "in_progress"}
@@ -523,7 +510,7 @@ FROM intentions
 WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
 """
         params: list[Any] = [soul_id, user_id]
-        last_consolidation_at = _parse_iso_datetime(state.get("last_consolidation_at"))
+        last_consolidation_at = parse_iso_datetime(state.get("last_consolidation_at"))
         if last_consolidation_at is not None:
             intention_sql += " AND updated_at >= ?"
             params.append(last_consolidation_at.isoformat())
