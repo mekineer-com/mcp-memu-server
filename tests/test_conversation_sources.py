@@ -512,7 +512,7 @@ def test_load_whatsapp_web_source_tail_does_not_require_matching_prefix(tmp_path
         web_source_db_path=web_db,
     )
 
-    assert [(row.get("role"), row["content"]) for row in rows] == [(None, "plain from me")]
+    assert [(row.get("role"), row["content"]) for row in rows] == [("user", "plain from me")]
 
 
 def test_load_whatsapp_web_source_tail_uses_assistant_source_message_ids(tmp_path: Path) -> None:
@@ -569,7 +569,7 @@ def test_load_whatsapp_web_source_tail_does_not_substring_match_assistant_ids(tm
     )
 
     assert [(row.get("role"), row["speaker"], row["content"]) for row in rows] == [
-        (None, "15133278228", "human sent from linked device")
+        ("user", "15133278228", "human sent from linked device")
     ]
 
 

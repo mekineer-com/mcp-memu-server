@@ -474,8 +474,10 @@ def _render_reactions(reactions_json: str | None, contact_map: dict[str, str]) -
     return f" [reacted {', '.join(parts)}]"
 
 
-def _whatsapp_role_field(role: str) -> dict[str, str]:
-    return {"role": "assistant"} if role == "assistant" else {}
+def _whatsapp_role_field(role: str, *, owner_human: bool = False) -> dict[str, str]:
+    if role == "assistant" or (owner_human and role == "user"):
+        return {"role": role}
+    return {}
 
 
 def _web_source_row_to_tail(
@@ -518,7 +520,7 @@ def _web_source_row_to_tail(
     return {
         "id": int(row["rowid"]),
         "source_message_id": source_message_id,
-        **_whatsapp_role_field(role),
+        **_whatsapp_role_field(role, owner_human=from_me),
         "speaker": speaker,
         "chat_name": resolved_chat_name,
         "content": content,
