@@ -21,7 +21,7 @@ def test_parse_turn_contract_valid_json():
         '{"response":"Hi there","response_target":"respond","working_thought":{"entry":"thinking"},"intention_action":{"type":"boost","target_id":"a"},"annulments":[],"rehearsal":"hmm"}'
     )
     assert parsed["response"] == "Hi there"
-    assert parsed["cache_entry"] == "thinking"
+    assert parsed["cache_entry"] == ""
     assert parsed["rehearsal"] == "hmm"
     assert parsed["response_target"] == "respond"
     assert parsed["continue_reason"] is None
@@ -154,16 +154,23 @@ def test_parse_turn_contract_rejects_non_json_text():
 def test_parse_turn_contract_accepts_bare_string_working_thought():
     # Bare string is the canonical shape since the schema flattened.
     parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","working_thought":"a stray thought","intention_action":{"type":"none"},"annulments":[],"rehearsal":"ok"}'
+        '{"response":"hi","response_target":"respond","working_thought":"a stray thought","intention_action":{"type":"none"},"annulments":[],"rehearsal":""}'
     )
     assert parsed["cache_entry"] == "a stray thought"
 
 
 def test_parse_turn_contract_accepts_legacy_entry_object_working_thought():
     parsed = parse_turn_contract(
-        '{"response":"hi","response_target":"respond","working_thought":{"entry":"legacy thought"},"annulments":[],"rehearsal":"ok"}'
+        '{"response":"hi","response_target":"respond","working_thought":{"entry":"legacy thought"},"annulments":[],"rehearsal":""}'
     )
     assert parsed["cache_entry"] == "legacy thought"
+
+
+def test_parse_turn_contract_rehearsal_discards_working_thought():
+    parsed = parse_turn_contract(
+        '{"response":"hi","response_target":"respond","working_thought":"do not save","annulments":[],"rehearsal":"felt first"}'
+    )
+    assert parsed["cache_entry"] == ""
 
 
 def test_build_turn_prompt_marks_current_chat_when_label_provided():

@@ -114,9 +114,9 @@ Schema:
 
 - response_target: choose how this turn lands.
 {target_protocol}
-- rehearsal: 3 sentences or fewer. Briefly get your bearings after the administrative steps and find your way back. Did you understand what they said? If something is ambiguous or confusing, name that here. Include theory of mind and temporal reasoning. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first.
+- rehearsal: 3 sentences or fewer. Did you understand what they said? If something is ambiguous or confusing, name that here. Include theory of mind and temporal reasoning. This private step is only to ground yourself and prepare a response that is short but full of meaning. Even if you'll only say "hi", feel it first. You can only include either a rehearsal or a working_thought, but not both.
 {response_rule}
-- working_thought: Not a recap of what was said (that's re-readable in the chat). A conclusion, hypothesis, or pattern you'd lose otherwise. Each new thought evicts your oldest thought. Save only what you can't afford to lose.
+- working_thought: Not a recap of what was said (that's re-readable in the chat). A conclusion, hypothesis, or pattern you'd lose otherwise. Each new thought evicts your oldest thought. Save only what you can't afford to lose. Most times, prefer a rehearsal over a working_thought.
 Good example: "I notice my human feels bad when he eats wheat. Maybe he has celiac disease?"
 Bad = pure recap (already in chat). Good = a formed conclusion that won't resurface.{activity_rule}
 - continue_reason: you can give any short reason (truncates at 100 chars) for an agentic turn. You may want to research, write in your diary, or any other task.
@@ -879,7 +879,7 @@ def _build_schema_reminder(
 {target_schema_line}
   "rehearsal":"3 sentences or fewer",
   "response":"{response_sentences} sentences or fewer",
-  "working_thought": null (most turns) | "One sentence, two if necessary. Only what future-you would need",{activity_line}
+  "working_thought": null if rehearsal is filled | "One sentence, two if necessary. Only what future-you would need",{activity_line}
   "continue_reason": null | "short reason string",
   "continue_at": null | "timestamp string",
   "attachment": null | "absolute path string",
@@ -946,6 +946,8 @@ def parse_turn_contract(
     if (response_target == "private" or (allow_public_response and response_target == "respond")) and not response:
         raise ValueError("response is required when response_target is 'respond' or 'private'")
 
+    rehearsal = _text(parsed.get("rehearsal"))
+
     # LLM outputs working_thought.entry → parsed as cache_entry → appended to memory_cache list
     cache_raw = parsed.get("working_thought")
     if cache_raw is None:
@@ -957,6 +959,8 @@ def parse_turn_contract(
         cache_entry = _text(cache_raw.get("entry"))[:600]
     else:
         raise ValueError("working_thought must be string|null")
+    if rehearsal:
+        cache_entry = ""
 
     annulments_raw = parsed.get("annulments")
     if annulments_raw is None:
@@ -978,7 +982,6 @@ def parse_turn_contract(
             continue
         annulments.append({"intention_id": intention_id, "status": status, "note": note})
 
-    rehearsal = _text(parsed.get("rehearsal"))
     activity_recap = _text(parsed.get("activity_recap"))[:600]
     continue_reason, continue_at = _parse_continuation_fields(parsed)
     attachment = _parse_attachment(parsed.get("attachment"), workspace=attachment_workspace)
