@@ -6280,7 +6280,7 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize(
             self.chat_calls.append(dict(kwargs))
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"continued",'
-                '"response_target":"listen","response":"",'
+                '"response_target":null,"response":"",'
                 '"activity_recap":"I continued the task.",'
                 '"continue_reason":"task"}'
             )
@@ -6338,7 +6338,9 @@ def test_free_turn_prompt_uses_observe_for_listen_only_policy() -> None:
         allow_public_response=False,
     )
 
-    assert "null/private" in prompt
+    assert "after the live turn from [group][familia]" in prompt
+    assert '"response_target": null | "private"' in prompt
+    assert "Previous turn outcome" not in prompt
     assert "Do not use listen/respond" not in prompt
 
 
@@ -6353,6 +6355,12 @@ def test_parse_free_turn_contract_requires_private_response_or_activity_recap() 
     with pytest.raises(ValueError, match="private response or activity_recap"):
         main._parse_free_turn_contract(
             '{"response":"","response_target":null,"working_thought":null,"annulments":[],"rehearsal":"worked"}',
+            allow_public_response=True,
+        )
+    with pytest.raises(ValueError, match="observe\\|private"):
+        main._parse_free_turn_contract(
+            '{"response":"public","response_target":"respond","working_thought":null,"annulments":[],'
+            '"rehearsal":"worked","activity_recap":"I worked on the task."}',
             allow_public_response=True,
         )
 

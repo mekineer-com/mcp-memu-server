@@ -11,6 +11,8 @@ from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
+from app.services.turn_contract import _conversation_heading_from_conversation_id
+
 
 def _build_free_turn_prompt(
     *,
@@ -20,26 +22,26 @@ def _build_free_turn_prompt(
     previous_contract: dict[str, Any],
     allow_public_response: bool,
 ) -> str:
-    response_target = str(previous_contract.get("response_target") or "").strip().lower()
-    response = str(previous_contract.get("response") or "").strip()
-    rehearsal = str(previous_contract.get("rehearsal") or "").strip()
-    target_instruction = (
-        "If you choose response_target respond/private, it can be sent through WhatsApp."
-        if allow_public_response
-        else "Valid response_target values here are null/private."
-    )
+    origin_label = _conversation_heading_from_conversation_id(origin_conversation_id)
     return "\n".join(
         [
-            f"You chose continue_reason={reason!r} after the live turn from {origin_conversation_id}.",
+            f"You chose continue_reason={reason!r} after the live turn from {origin_label}.",
             f"This is continuation turn {continuation_index} of 3.",
-            "Continue only the specific task/research/diary purpose you chose.",
-            "Return the same strict turn-contract JSON. Do not invent a new user message.",
-            target_instruction,
             "",
-            "Previous turn outcome:",
-            f"- response_target: {response_target or 'unknown'}",
-            f"- response: {response or '(empty)'}",
-            f"- rehearsal: {rehearsal or '(empty)'}",
+            "**schema reminder**",
+            "{",
+            '  "response_target": null | "private",',
+            '  "rehearsal":"string",',
+            '  "response":"string",',
+            '  "working_thought": null | "string",',
+            '  "activity_recap": null | "first-person activity recap",',
+            '  "continue_reason": null | "short reason string",',
+            '  "continue_at": null | "timestamp string",',
+            '  "attachment": null | "absolute path string",',
+            '  "annulments": null | [',
+            '    {"intention_id":"string","status":"completed|deleted","note":"optional"}',
+            "  ]",
+            "}",
         ]
     )
 
@@ -60,7 +62,7 @@ def _parse_free_turn_contract(
     try:
         contract = parse_turn_contract(
             raw,
-            allow_public_response=allow_public_response,
+            allow_public_response=False,
             attachment_workspace=_attachment_workspace(config),
         )
     except (ValueError, json.JSONDecodeError):
@@ -76,7 +78,7 @@ def _parse_free_turn_contract(
         logger.warning("free_turn: Claude Code returned prose around JSON; extracted turn contract")
         contract = parse_turn_contract(
             json.dumps(parsed),
-            allow_public_response=allow_public_response,
+            allow_public_response=False,
             attachment_workspace=_attachment_workspace(config),
         )
     if str(contract.get("response_target") or "").strip().lower() != "private" and not str(
@@ -131,15 +133,13 @@ async def _run_free_turn_chain(
 ) -> None:
     reason = initial_reason
     previous_contract = initial_contract
-    free_turn_system_prompt = system_prompt
-    if not system_prompt_has_activity_recap:
-        free_turn_system_prompt = make_turn_system_prompt(
-            soul_id,
-            soul_card=soul_card,
-            response_sentences=int(config.get("turn_response_sentences", 3)),
-            allow_public_response=allow_public_response,
-            include_activity_recap=True,
-        )
+    free_turn_system_prompt = make_turn_system_prompt(
+        soul_id,
+        soul_card=soul_card,
+        response_sentences=int(config.get("turn_response_sentences", 3)),
+        allow_public_response=False,
+        include_activity_recap=True,
+    )
     try:
         for continuation_index in range(1, 4):
             prompt = _build_free_turn_prompt(
