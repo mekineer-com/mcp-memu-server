@@ -265,10 +265,6 @@ INSERT OR IGNORE INTO conversations (
                 (raw_updates[source_id] is None) != (raw_updates[source_ts] is None)
             ):
                 raise HTTPException(status_code=400, detail=f"{cursor} checkpoint must be complete")
-            if not has_source_id:
-                raw_updates[source_id] = None
-                raw_updates[source_ts] = None
-
         for key, value in raw_updates.items():
             if key in {
                 "memorize_chat",
@@ -304,7 +300,9 @@ INSERT OR IGNORE INTO conversations (
                 "rolling_summary_cursor_ts",
             ),
         ):
-            if cursor not in field_updates or field_updates[source_id] is None:
+            if cursor not in field_updates or source_id not in field_updates:
+                continue
+            if field_updates[source_id] is None:
                 continue
             source_message_id = str(field_updates[source_id] or "").strip()
             if not source_message_id or field_updates[source_ts] is None:

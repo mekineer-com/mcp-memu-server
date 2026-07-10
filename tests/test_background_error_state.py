@@ -116,6 +116,23 @@ def test_source_cursor_checkpoints_write_clear_and_reject_partial() -> None:
             **kwargs,
             updates={"digest_cursor": 5, "rolling_summary_cursor_id": 4},
         )
+        assert state["digest_cursor_source_message_id"] == "key-4"
+        assert state["digest_cursor_ts"] == 100
+        assert state["rolling_summary_cursor_source_message_id"] == "key-3"
+        assert state["rolling_summary_cursor_ts"] == 90
+
+        state, _ = write_conversation_state(
+            "conv",
+            **kwargs,
+            updates={
+                "digest_cursor": 5,
+                "digest_cursor_source_message_id": None,
+                "digest_cursor_ts": None,
+                "rolling_summary_cursor_id": 4,
+                "rolling_summary_cursor_source_message_id": None,
+                "rolling_summary_cursor_ts": None,
+            },
+        )
         assert state["digest_cursor_source_message_id"] is None
         assert state["digest_cursor_ts"] is None
         assert state["rolling_summary_cursor_source_message_id"] is None
