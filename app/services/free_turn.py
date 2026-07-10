@@ -326,7 +326,6 @@ def _free_turn_followup_payload(safe: dict[str, Any]) -> dict[str, Any]:
         "user_name",
         "chat_name",
         "chat_type",
-        "channel_mode",
         "soul_card",
         "memorize_chat",
         "allow_public_response",

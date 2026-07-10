@@ -16,7 +16,6 @@ class MemuTurnRequest(BaseModel):
     user_name: str | None = None
     soul_card: str | None = None
     debug: bool = False
-    channel_mode: str | None = None
     chat_name: str | None = None
     chat_type: str | None = None
     memorize_chat: bool | None = None
@@ -130,8 +129,6 @@ async def memu_turn_endpoint(
         retrieve_payload["user_name"] = user_name
     if req.soul_card:
         retrieve_payload["soul_card"] = str(req.soul_card)
-    if req.channel_mode:
-        retrieve_payload["channel_mode"] = str(req.channel_mode)
     if chat_name:
         retrieve_payload["chat_name"] = chat_name
     if chat_type:
