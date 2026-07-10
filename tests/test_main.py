@@ -675,6 +675,9 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
     finally:
         con.close()
     assert all(row["memorize_chat"] is True for row in tails["chat:atomic-c1"])
+    activity_tail = tails["activity:dm:Echo"]
+    assert {row["conversation_id"] for row in activity_tail} == {"activity:dm:Atomic"}
+    assert {row["source_conversation_id"] for row in activity_tail} == {"activity:dm:Echo"}
 
 
 @pytest.mark.asyncio

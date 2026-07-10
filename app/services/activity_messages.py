@@ -52,6 +52,7 @@ def activity_message_rows(
     recent_fallback_messages: int,
 ) -> list[dict[str, Any]]:
     ensure_activity_messages_schema(con)
+    activity_cid = activity_conversation_id(soul_id)
     rows = con.execute(
         """
 SELECT source_conversation_index, conversation_id, speaker, content, received_at
@@ -64,7 +65,7 @@ ORDER BY source_conversation_index ASC
     messages = [
         {
             "conversation_id": row["conversation_id"],
-            "source_conversation_id": row["conversation_id"],
+            "source_conversation_id": activity_cid,
             "source_conversation_index": int(row["source_conversation_index"]),
             "source_label": "activity",
             "role": "assistant",
