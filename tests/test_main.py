@@ -593,6 +593,12 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
             {"role": "user", "content": "hello", "created_at": "2026-07-03T00:00:00+00:00"},
             {"role": "tool", "content": "search_atoms complete", "created_at": "2026-07-03T00:00:00.500000+00:00"},
             {"role": "assistant", "content": "hi", "created_at": "2026-07-03T00:00:01+00:00"},
+            {
+                "role": "user",
+                "content": "This Atomic session is ending. Write a recap of your activity with u: hidden prompt",
+                "created_at": "2026-07-03T00:00:02+00:00",
+            },
+            {"role": "assistant", "content": "Hidden recap text.", "created_at": "2026-07-03T00:00:03+00:00"},
         ],
     )
 

@@ -4034,6 +4034,7 @@ async def atomic_session_start(req: AtomicSessionStartRequest):
 
 def _atomic_transcript_rows(transcript: list[dict[str, Any]], *, user_id: str, soul_id: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    skip_next_assistant = False
     for row in transcript or []:
         if not isinstance(row, dict):
             continue
@@ -4044,6 +4045,13 @@ def _atomic_transcript_rows(transcript: list[dict[str, Any]], *, user_id: str, s
             continue
         content = str(row.get("content") or row.get("message") or "").strip()
         if not role or not content:
+            continue
+        if skip_next_assistant and role in {"assistant", "soul"}:
+            skip_next_assistant = False
+            continue
+        skip_next_assistant = False
+        if role == "user" and content.startswith("This Atomic session is ending. Write a recap of your activity"):
+            skip_next_assistant = True
             continue
         out = {
             "role": "assistant" if role == "soul" else role,
