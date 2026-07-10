@@ -26,7 +26,7 @@ def _build_free_turn_prompt(
     target_instruction = (
         "If you choose response_target respond/private, it can be sent through WhatsApp."
         if allow_public_response
-        else "Valid response_target values here are observe/private. Do not use listen/respond."
+        else "Valid response_target values here are null/private."
     )
     return "\n".join(
         [
@@ -58,7 +58,7 @@ def _parse_free_turn_contract(
     logger: Any,
 ) -> dict[str, Any]:
     try:
-        return parse_turn_contract(
+        contract = parse_turn_contract(
             raw,
             allow_public_response=allow_public_response,
             attachment_workspace=_attachment_workspace(config),
@@ -74,11 +74,16 @@ def _parse_free_turn_contract(
         except (ValueError, json.JSONDecodeError):
             raise
         logger.warning("free_turn: Claude Code returned prose around JSON; extracted turn contract")
-        return parse_turn_contract(
+        contract = parse_turn_contract(
             json.dumps(parsed),
             allow_public_response=allow_public_response,
             attachment_workspace=_attachment_workspace(config),
         )
+    if str(contract.get("response_target") or "").strip().lower() != "private" and not str(
+        contract.get("activity_recap") or ""
+    ).strip():
+        raise ValueError("free-turn requires private response or activity_recap")
+    return contract
 
 
 def _turn_generation_metadata(payload: dict[str, Any], *, config: Mapping[str, Any]) -> dict[str, str]:

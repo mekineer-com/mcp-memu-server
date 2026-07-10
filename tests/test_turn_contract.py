@@ -116,11 +116,11 @@ def test_parse_turn_contract_rejects_invalid_target():
         )
 
 
-def test_parse_turn_contract_requires_target():
-    with pytest.raises(ValueError, match="response_target is required"):
-        parse_turn_contract(
-            '{"response":"hi","working_thought":null,"annulments":[],"rehearsal":"ok"}'
-        )
+def test_parse_turn_contract_omitted_target_means_observe():
+    parsed = parse_turn_contract(
+        '{"response":"","working_thought":null,"annulments":[],"rehearsal":"ok"}'
+    )
+    assert parsed["response_target"] == "observe"
 
 
 def test_parse_turn_contract_private_target():
@@ -465,10 +465,10 @@ def test_make_turn_system_prompt_can_include_activity_recap_for_self_turns() -> 
 
 def test_make_turn_system_prompt_forbids_public_response_when_requested() -> None:
     prompt = make_turn_system_prompt("Siri", allow_public_response=False)
-    assert '"response_target":"observe|private"' in prompt
+    assert '"response_target": null | "private"' in prompt
     assert '"respond"' not in prompt
     assert '"listen"' not in prompt
-    assert '"observe"' in prompt
+    assert "- null " in prompt
 
 
 def test_build_turn_prompt_renders_relative_time() -> None:

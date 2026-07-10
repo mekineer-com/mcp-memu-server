@@ -6057,7 +6057,7 @@ async def test_conversation_turn_observe_mode_forbids_public_response(
             captured["system_prompt"] = str(kwargs.get("system_prompt") or "")
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"watching",'
-                '"response_target":"observe","response":""}'
+                '"response_target":null,"response":""}'
             )
 
     async def _fake_persist_annulment_memories(**_kwargs):
@@ -6103,7 +6103,7 @@ async def test_conversation_turn_observe_mode_forbids_public_response(
     assert out["ok"] is True
     assert out["response_target"] == "observe"
     assert out["response"] == ""
-    assert '"response_target":"observe|private"' in captured["system_prompt"]
+    assert '"response_target": null | "private"' in captured["system_prompt"]
     assert '"respond"' not in captured["system_prompt"]
     assert "activity_recap" not in captured["system_prompt"]
 
@@ -6338,8 +6338,23 @@ def test_free_turn_prompt_uses_observe_for_listen_only_policy() -> None:
         allow_public_response=False,
     )
 
-    assert "observe/private" in prompt
-    assert "Do not use listen/respond" in prompt
+    assert "null/private" in prompt
+    assert "Do not use listen/respond" not in prompt
+
+
+def test_parse_free_turn_contract_requires_private_response_or_activity_recap() -> None:
+    parsed = main._parse_free_turn_contract(
+        '{"response":"","response_target":null,"working_thought":null,"annulments":[],"rehearsal":"worked",'
+        '"activity_recap":"I worked on the task."}',
+        allow_public_response=True,
+    )
+    assert parsed["response_target"] == "observe"
+
+    with pytest.raises(ValueError, match="private response or activity_recap"):
+        main._parse_free_turn_contract(
+            '{"response":"","response_target":null,"working_thought":null,"annulments":[],"rehearsal":"worked"}',
+            allow_public_response=True,
+        )
 
 
 @pytest.mark.asyncio

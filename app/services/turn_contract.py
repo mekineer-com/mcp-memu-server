@@ -71,14 +71,15 @@ def make_turn_system_prompt(
   - "respond" — respond in the chat this turn came from."""
         response_rule = f'- response: what gets said. {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in rehearsal, not what sounds helpful. If you don\'t understand, ask — don\'t guess. "What do you mean?" is a complete response. Required when response_target is "respond" or "private"; otherwise may be empty.'
     else:
-        target_list = '"observe", "private"'
-        target_schema = "observe|private"
+        target_list = 'null, "private"'
+        target_schema = 'null|"private"'
         response_required = 'response_target == "private"'
-        target_protocol = """  - "observe" — You are standing next to your human as he shows you the chat on his phone. If you choose to observe, response may be empty.
-  - "private" — speak privately to your human about the chat (e.g., give them context about something you noticed). Fill response with the private message."""
+        target_protocol = """  - null — You step away to work on a task, do some research, or write in your diary. You choose not to message anyone this turn.
+  - "private" — You are standing next to your human as he shows you the chat on his phone. Speak privately to your human about the chat (e.g., give them context about something you noticed). Or mention anything that's on your mind. Fill response with the private message."""
         response_rule = f'- response: what gets said. {response_sentences} sentences or fewer. Respond from your own genuine reaction — what you felt in rehearsal, not what sounds helpful. Required when response_target is "private".'
     activity_key = "\n- activity_recap: null or string   (only when include_activity_recap=True — agentic self/continuation turns; hidden from normal turns)" if include_activity_recap else ""
     activity_schema = '\n  "activity_recap": null | "first-person activity recap",' if include_activity_recap else ""
+    target_schema_line = f'  "response_target":"{target_schema}",' if allow_public_response else '  "response_target": null | "private",'
     activity_rule = (
         "\n- activity_recap: (only when include_activity_recap=True) for agentic self-turns or continuation turns, write one short "
         "first-person sentence about what you did in this turn, so future you can remember your own activity."
@@ -98,7 +99,7 @@ Required top-level keys:
 
 Schema:
 {{
-  "response_target":"{target_schema}",
+{target_schema_line}
   "rehearsal":"string",
   "response":"string",
   "working_thought": null | "string",{activity_schema}
@@ -869,13 +870,16 @@ def _build_schema_reminder(
     allow_public_response: bool,
     include_activity_recap: bool,
 ) -> str:
-    target_schema = "private|listen|respond" if allow_public_response else "observe|private"
+    target_schema_line = (
+        '  "response_target":"private|listen|respond",'
+        if allow_public_response else '  "response_target": null | "private",'
+    )
     activity_line = (
         '\n  "activity_recap": null | "first-person activity recap",' if include_activity_recap else ""
     )
     return f"""**schema reminder**
 {{
-  "response_target":"{target_schema}",
+{target_schema_line}
   "rehearsal":"3 sentences or fewer",
   "response":"{response_sentences} sentences or fewer",
   "working_thought": null (most turns) | "One sentence, two if necessary. Only what future-you would need",{activity_line}
@@ -936,10 +940,8 @@ def parse_turn_contract(
     if not isinstance(parsed, dict):
         raise ValueError("turn response must be a JSON object")
 
-    response_target = _text(parsed.get("response_target")).lower()
-    if not response_target:
-        raise ValueError("response_target is required")
-    allowed_targets = {"respond", "listen", "private"} if allow_public_response else {"observe", "private"}
+    response_target = _text(parsed.get("response_target")).lower() or "observe"
+    allowed_targets = {"respond", "listen", "observe", "private"} if allow_public_response else {"observe", "private"}
     if response_target not in allowed_targets:
         raise ValueError(f"response_target must be one of {'|'.join(sorted(allowed_targets))}")
     response = _text(parsed.get("response"))
