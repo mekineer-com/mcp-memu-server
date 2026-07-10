@@ -20,7 +20,6 @@ def _build_free_turn_prompt(
     continuation_index: int,
     origin_conversation_id: str,
     previous_contract: dict[str, Any],
-    allow_public_response: bool,
 ) -> str:
     origin_label = _conversation_heading_from_conversation_id(origin_conversation_id)
     return "\n".join(
@@ -54,7 +53,6 @@ def _attachment_workspace(config: Mapping[str, Any]) -> str | None:
 def _parse_free_turn_contract(
     raw: Any,
     *,
-    allow_public_response: bool,
     config: Mapping[str, Any],
     parse_turn_contract: Callable[..., dict[str, Any]],
     logger: Any,
@@ -115,11 +113,8 @@ async def _run_free_turn_chain(
     session_id: str,
     initial_reason: str,
     initial_contract: dict[str, Any],
-    system_prompt: str,
-    allow_public_response: bool,
     safe_payload: dict[str, Any],
     soul_card: str | None,
-    system_prompt_has_activity_recap: bool = False,
     config: Mapping[str, Any],
     make_turn_system_prompt: Callable[..., str],
     parse_free_turn_contract: Callable[..., dict[str, Any]],
@@ -147,7 +142,6 @@ async def _run_free_turn_chain(
                 continuation_index=continuation_index,
                 origin_conversation_id=conversation_id,
                 previous_contract=previous_contract,
-                allow_public_response=allow_public_response,
             )
             raw = await service.chat(
                 prompt,
@@ -157,7 +151,7 @@ async def _run_free_turn_chain(
                 step=f"continue_{continuation_index}",
                 resume_session_id=session_id,
             )
-            contract = parse_free_turn_contract(raw, allow_public_response=allow_public_response)
+            contract = parse_free_turn_contract(raw)
             record_activity_message(
                 user_id=user_id,
                 soul_id=soul_id,
@@ -219,11 +213,8 @@ def _queue_free_turn_chain(
     session_id: str,
     initial_reason: str,
     initial_contract: dict[str, Any],
-    system_prompt: str,
-    allow_public_response: bool,
     safe_payload: dict[str, Any],
     soul_card: str | None,
-    system_prompt_has_activity_recap: bool = False,
     mark_inflight: Callable[[set[str], str], bool],
     free_turn_inflight: set[str],
     background_tasks: set[asyncio.Task],
@@ -244,11 +235,8 @@ def _queue_free_turn_chain(
             session_id=session_id,
             initial_reason=initial_reason,
             initial_contract=initial_contract,
-            system_prompt=system_prompt,
-            allow_public_response=allow_public_response,
             safe_payload=safe_payload,
             soul_card=soul_card,
-            system_prompt_has_activity_recap=system_prompt_has_activity_recap,
         )
     )
     background_tasks.add(task)

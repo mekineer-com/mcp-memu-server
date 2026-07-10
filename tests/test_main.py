@@ -6303,8 +6303,6 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize(
                 "response": "",
                 "rehearsal": "starting",
             },
-            system_prompt="system mentioning activity_recap by accident",
-            allow_public_response=True,
             safe_payload={},
             soul_card=None,
         )
@@ -6335,7 +6333,6 @@ def test_free_turn_prompt_uses_observe_for_listen_only_policy() -> None:
         continuation_index=1,
         origin_conversation_id="whatsapp:group:familia",
         previous_contract={"response_target": "observe", "response": "", "rehearsal": "thinking"},
-        allow_public_response=False,
     )
 
     assert "after the live turn from [group][familia]" in prompt
@@ -6348,20 +6345,17 @@ def test_parse_free_turn_contract_requires_private_response_or_activity_recap() 
     parsed = main._parse_free_turn_contract(
         '{"response":"","response_target":null,"working_thought":null,"annulments":[],"rehearsal":"worked",'
         '"activity_recap":"I worked on the task."}',
-        allow_public_response=True,
     )
     assert parsed["response_target"] == "observe"
 
     with pytest.raises(ValueError, match="private response or activity_recap"):
         main._parse_free_turn_contract(
             '{"response":"","response_target":null,"working_thought":null,"annulments":[],"rehearsal":"worked"}',
-            allow_public_response=True,
         )
     with pytest.raises(ValueError, match="observe\\|private"):
         main._parse_free_turn_contract(
             '{"response":"public","response_target":"respond","working_thought":null,"annulments":[],'
             '"rehearsal":"worked","activity_recap":"I worked on the task."}',
-            allow_public_response=True,
         )
 
 
@@ -6475,8 +6469,6 @@ async def test_free_turn_chain_queues_whatsapp_outbound(
                 "response": "",
                 "rehearsal": "starting",
             },
-            system_prompt="system",
-            allow_public_response=True,
             safe_payload={"timezone": "America/Lima"},
             soul_card=None,
         )
@@ -6531,8 +6523,6 @@ async def test_free_turn_chain_extracts_json_contract_after_prose(
                     "response": "",
                     "rehearsal": "starting",
                 },
-                system_prompt="system",
-                allow_public_response=True,
                 safe_payload={"timezone": "America/Lima"},
                 soul_card=None,
             )
@@ -6584,8 +6574,6 @@ async def test_free_turn_chain_ignores_non_whatsapp_outbound(
                 "response": "",
                 "rehearsal": "starting",
             },
-            system_prompt="system",
-            allow_public_response=True,
             safe_payload={"timezone": "America/Lima"},
             soul_card=None,
         )

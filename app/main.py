@@ -468,14 +468,12 @@ def _build_free_turn_prompt(
     continuation_index: int,
     origin_conversation_id: str,
     previous_contract: dict[str, Any],
-    allow_public_response: bool,
 ) -> str:
     return _free_turn._build_free_turn_prompt(
         reason=reason,
         continuation_index=continuation_index,
         origin_conversation_id=origin_conversation_id,
         previous_contract=previous_contract,
-        allow_public_response=allow_public_response,
     )
 
 
@@ -483,10 +481,9 @@ def _attachment_workspace() -> str | None:
     return _free_turn._attachment_workspace(_CONFIG)
 
 
-def _parse_free_turn_contract(raw: Any, *, allow_public_response: bool) -> dict[str, Any]:
+def _parse_free_turn_contract(raw: Any) -> dict[str, Any]:
     return _free_turn._parse_free_turn_contract(
         raw,
-        allow_public_response=allow_public_response,
         config=_CONFIG,
         parse_turn_contract=_parse_turn_contract,
         logger=logger,
@@ -507,11 +504,8 @@ async def _run_free_turn_chain(
     session_id: str,
     initial_reason: str,
     initial_contract: dict[str, Any],
-    system_prompt: str,
-    allow_public_response: bool,
     safe_payload: dict[str, Any],
     soul_card: str | None,
-    system_prompt_has_activity_recap: bool = False,
 ) -> None:
     await _free_turn._run_free_turn_chain(
         marker=marker,
@@ -522,11 +516,8 @@ async def _run_free_turn_chain(
         session_id=session_id,
         initial_reason=initial_reason,
         initial_contract=initial_contract,
-        system_prompt=system_prompt,
-        allow_public_response=allow_public_response,
         safe_payload=safe_payload,
         soul_card=soul_card,
-        system_prompt_has_activity_recap=system_prompt_has_activity_recap,
         config=_CONFIG,
         make_turn_system_prompt=_make_turn_system_prompt,
         parse_free_turn_contract=_parse_free_turn_contract,
@@ -549,11 +540,8 @@ def _queue_free_turn_chain(
     session_id: str,
     initial_reason: str,
     initial_contract: dict[str, Any],
-    system_prompt: str,
-    allow_public_response: bool,
     safe_payload: dict[str, Any],
     soul_card: str | None,
-    system_prompt_has_activity_recap: bool = False,
 ) -> bool:
     return _free_turn._queue_free_turn_chain(
         service=service,
@@ -563,11 +551,8 @@ def _queue_free_turn_chain(
         session_id=session_id,
         initial_reason=initial_reason,
         initial_contract=initial_contract,
-        system_prompt=system_prompt,
-        allow_public_response=allow_public_response,
         safe_payload=safe_payload,
         soul_card=soul_card,
-        system_prompt_has_activity_recap=system_prompt_has_activity_recap,
         mark_inflight=_mark_inflight,
         free_turn_inflight=_FREE_TURN_INFLIGHT,
         background_tasks=_BACKGROUND_TASKS,
@@ -3790,11 +3775,8 @@ async def conversation_turn(
                     session_id=turn_session_id,
                     initial_reason=continuation_reason,
                     initial_contract=turn_contract,
-                    system_prompt=turn_system_prompt,
-                    allow_public_response=allow_public_response,
                     safe_payload=safe,
                     soul_card=soul_card,
-                    system_prompt_has_activity_recap=bool(self_turn_directive),
                 )
             else:
                 logger.warning("free_turn: continuation requested but claude_code is disabled")
