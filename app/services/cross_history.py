@@ -506,6 +506,7 @@ def _load_cross_tail_from_sources(
 ) -> list[dict[str, Any]]:
     storage_dir, hermes_home_path, sessions_index_path, state_db_path = _m()._resolve_cross_source_paths()
     excluded_id = str(exclude_conversation_id or "").strip()
+    excluded_key = _source_conversation_key(excluded_id)
     cursor_rows = con.execute(
         "SELECT conversation_id, memorize_chat, digest_cursor, last_memorize_at, "
         "digest_cursor_source_message_id, digest_cursor_ts, "
@@ -516,7 +517,7 @@ def _load_cross_tail_from_sources(
     resource_display_ranges: dict[str, tuple[int, int]] | None = None
     for row in cursor_rows:
         cid = str(row["conversation_id"] or "").strip()
-        if not cid or cid == excluded_id:
+        if not cid or cid == excluded_id or (excluded_key and _source_conversation_key(cid) == excluded_key):
             continue
         if cid.startswith("activity:"):
             continue
@@ -575,6 +576,17 @@ def _load_cross_tail_from_sources(
         all_messages.extend(tail)
     all_messages.sort(key=message_sort_key)
     return all_messages
+
+
+def _source_conversation_key(conversation_id: str) -> str:
+    cid = str(conversation_id or "").strip()
+    prefix = "whatsapp:group:"
+    if cid.startswith(prefix):
+        rest = cid[len(prefix):]
+        marker = "@g.us"
+        if marker in rest:
+            return f"{prefix}{rest.split(marker, 1)[0]}{marker}"
+    return cid
 
 
 def _clear_last_display_segments_for_nonparticipants(
@@ -933,6 +945,8 @@ def _turn_history_with_floor(
             row for row in history
             if int(row.get("ts_ms") or 0) >= min_timestamp * 1000
         ]
+    if resolved_cursor < 0:
+        return list(history[-TURN_HISTORY_WINDOW_MESSAGES:])
     return _conversation_sources.slice_tail_with_floor(
         history,
         since_cursor=resolved_cursor,

@@ -5202,6 +5202,72 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
     assert "[Marcos] current message ..." in query_text
 
 
+@pytest.mark.asyncio
+async def test_conversation_retrieve_uses_whatsapp_floor_without_memorize_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("whatsapp:group:g@g.us:sender@lid", 0, None),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"digest_cursor": 0, "last_memorize_at": None, "all_categories_summary": ""},
+            None,
+            db_path,
+        ),
+    )
+
+    def _fake_load_current_whatsapp_history_from_source(*_a: object, **_k: object) -> list[dict[str, object]]:
+        return [
+            {
+                "role": "user",
+                "speaker": "Marcos",
+                "chat_name": "Familia",
+                "content": f"msg_{idx:02d}",
+                "source_conversation_index": idx,
+            }
+            for idx in range(12)
+        ]
+
+    monkeypatch.setattr(main, "_load_current_whatsapp_history_from_source", _fake_load_current_whatsapp_history_from_source)
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+
+    payload = {
+        "user": {"user_id": "u1", "soul_id": "Echo"},
+        "message": "current message",
+        "query": "current message",
+        "history": [],
+        "build_turn_prompt": True,
+        "load_source_history": True,
+        "is_live_turn": True,
+        "chat_name": "Familia",
+        "chat_type": "group",
+    }
+
+    out = await main.conversation_retrieve("whatsapp:group:g@g.us:sender@lid", payload)
+    turn_history = out.get("turn_history") or []
+    assert [row["content"] for row in turn_history] == [f"msg_{idx:02d}" for idx in range(4, 12)]
+    turn_prompt = str(out.get("turn_user_prompt") or "")
+    assert "msg_04" in turn_prompt
+    assert "msg_03" not in turn_prompt
+
+
 def test_filter_current_whatsapp_history_accepts_received_at_for_active_since() -> None:
     rows = [
         {
@@ -5222,6 +5288,12 @@ def test_filter_current_whatsapp_history_accepts_received_at_for_active_since() 
     )
 
     assert [row["content"] for row in filtered] == ["kept"]
+
+
+def test_cross_tail_exclusion_matches_whatsapp_group_sender_aliases() -> None:
+    key = main._cross_history._source_conversation_key
+    assert key("whatsapp:group:123-456@g.us:111@lid") == "whatsapp:group:123-456@g.us"
+    assert key("whatsapp:group:123-456@g.us:222@lid") == "whatsapp:group:123-456@g.us"
 
 
 @pytest.mark.asyncio
