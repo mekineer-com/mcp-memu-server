@@ -269,6 +269,7 @@ def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) ->
         state_db_path=state_db_path,
     )
     assert [row["speaker"] for row in rows] == ["Marcos", "", "Contact A"]
+    assert [row.get("role") for row in rows] == ["user", "assistant", None]
 
 
 def test_load_whatsapp_tail_preserves_state_db_source_message_id(tmp_path: Path) -> None:

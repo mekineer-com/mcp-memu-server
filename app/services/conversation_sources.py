@@ -480,6 +480,17 @@ def _whatsapp_role_field(role: str, *, owner_human: bool = False) -> dict[str, s
     return {}
 
 
+def _whatsapp_state_owner_human(row: sqlite3.Row, *, conversation_id: str, role: str) -> bool:
+    chat_type, chat_id = _split_whatsapp_conversation_id(conversation_id)
+    sender_id = str(row["sender_id"] or "").strip()
+    return (
+        role == "user"
+        and chat_type == "dm"
+        and bool(sender_id)
+        and _normalize_whatsapp_match_token(sender_id) != _normalize_whatsapp_match_token(chat_id)
+    )
+
+
 def _web_source_row_to_tail(
     row: sqlite3.Row,
     *,
@@ -1065,7 +1076,10 @@ def _whatsapp_live_row_to_tail(
             session_user_name=fallback_name,
         )
     return {
-        **_whatsapp_role_field(role),
+        **_whatsapp_role_field(
+            role,
+            owner_human=_whatsapp_state_owner_human(row, conversation_id=conversation_id, role=role),
+        ),
         "speaker": speaker,
         "chat_name": chat_name,
         "content": content,
