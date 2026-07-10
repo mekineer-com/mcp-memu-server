@@ -6208,7 +6208,7 @@ async def test_conversation_turn_uses_fresh_session_id_for_retry(
             self.calls += 1
             self.session_ids.append(kwargs.get("session_id"))
             if self.calls == 1:
-                return '{"working_thought":null,"annulments":[],"rehearsal":"bad"}'
+                return '{"working_thought":null,"annulments":[],"rehearsal":"bad"'
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"retry good",'
                 '"response_target":"respond","response":"assistant says hi"}'
@@ -6363,6 +6363,16 @@ def test_parse_free_turn_contract_requires_private_response_or_activity_recap() 
             '"rehearsal":"worked","activity_recap":"I worked on the task."}',
             allow_public_response=True,
         )
+
+
+def test_public_turn_missing_target_with_response_defaults_to_respond() -> None:
+    parsed = main._parse_turn_contract(
+        '{"response":"hello","working_thought":null,"annulments":[],"rehearsal":"ready"}',
+        allow_public_response=True,
+    )
+
+    assert parsed["response_target"] == "respond"
+    assert parsed["response"] == "hello"
 
 
 @pytest.mark.asyncio
