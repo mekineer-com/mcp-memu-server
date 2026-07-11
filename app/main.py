@@ -83,6 +83,7 @@ from app.services import mcp_tools as _mcp_tools
 from app.services import message_log as _message_log
 from app.services import retrieve_orchestration as _retrieve_orchestration
 from app.services import soul_state as _soul_state
+from app.services.conversation_id import canonical_conversation_id as _canonical_conversation_id
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import memorize_endpoint as _memorize_endpoint
 from app.services import service_factory as _service_factory
@@ -1439,6 +1440,7 @@ async def _persist_annulment_memories(
     intentions_before: Any,
     annulments: list[dict[str, str]],
 ) -> list[str]:
+    conversation_id = _canonical_conversation_id(conversation_id)
     if not annulments:
         return []
 
@@ -2177,7 +2179,7 @@ async def force_consolidation(
     conversation_id: str,
     payload: dict[str, Any] = Body(...),
 ):
-    cid = str(conversation_id or "").strip()
+    cid = _canonical_conversation_id(conversation_id)
     if not cid:
         raise HTTPException(status_code=400, detail="conversation_id is required")
 
@@ -2923,7 +2925,7 @@ async def conversation_retrieve(
     conversation_id: str,
     payload: dict[str, Any] = Body(...),
 ):
-    cid = str(conversation_id or "").strip()
+    cid = _canonical_conversation_id(conversation_id)
     if not cid:
         raise HTTPException(status_code=400, detail="conversation_id is required")
     try:
@@ -3501,7 +3503,7 @@ async def conversation_turn(
     conversation_id: str,
     payload: dict[str, Any] = Body(...),
 ):
-    cid = str(conversation_id or "").strip()
+    cid = _canonical_conversation_id(conversation_id)
     try:
         if not cid:
             raise HTTPException(status_code=400, detail="conversation_id is required")
@@ -3921,7 +3923,7 @@ async def conversation_turn_undo(
     conversation_id: str,
     payload: dict[str, Any] = Body(...),
 ):
-    cid = str(conversation_id or "").strip()
+    cid = _canonical_conversation_id(conversation_id)
     if not cid:
         raise HTTPException(status_code=400, detail="conversation_id is required")
 

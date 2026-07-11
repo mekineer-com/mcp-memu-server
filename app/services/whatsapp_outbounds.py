@@ -17,6 +17,7 @@ from app.db import (
     sqlite_connect,
     sqlite_ensure_nonempty,
 )
+from app.services.conversation_id import canonical_conversation_id
 
 
 def _ensure_whatsapp_outbounds_schema(con: sqlite3.Connection) -> None:
@@ -141,7 +142,7 @@ def _insert_whatsapp_outbound(
 ) -> str:
     uid = str(user_id or "").strip()
     sid = str(soul_id or "").strip()
-    cid = str(origin_conversation_id or "").strip()
+    cid = canonical_conversation_id(origin_conversation_id)
     target_clean = str(target or "").strip().lower()
     text = str(response_text or "").strip()
     mpath = str(media_path or "").strip() or None

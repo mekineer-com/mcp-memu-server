@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
+from app.services.conversation_id import canonical_conversation_id
 from app.services.turn_contract import _conversation_heading_from_conversation_id
 
 
@@ -351,6 +352,7 @@ def _schedule_free_turn_follow_up(
     touch_poll_marker: Callable[[Path, str, str], None],
     logger: Any,
 ) -> str | None:
+    conversation_id = canonical_conversation_id(conversation_id)
     reason = str(continue_reason or "").strip()
     if not reason:
         logger.warning("free_turn: follow_up ignored because continue_reason is missing")
@@ -367,6 +369,9 @@ def _schedule_free_turn_follow_up(
     now_iso = datetime.now(UTC).isoformat()
     followup_id = f"wafup_{uuid.uuid4().hex}"
     payload = _free_turn_followup_payload(safe_payload)
+    user_payload = payload.get("user")
+    if isinstance(user_payload, dict):
+        user_payload["conversation_id"] = conversation_id
     payload["follow_up_reason"] = reason
     con = sqlite_connect(db_path)
     try:

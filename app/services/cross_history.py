@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from app.services import conversation_sources as _conversation_sources
 from app.services import memorize_endpoint as _memorize_endpoint
 from app.services import message_log as _message_log
+from app.services.conversation_id import canonical_conversation_id
 from app.services.payload import (
     _normalize_conversation,
     _normalize_turn_history,
@@ -599,14 +600,7 @@ def _load_cross_tail_from_sources(
 
 
 def _source_conversation_key(conversation_id: str) -> str:
-    cid = str(conversation_id or "").strip()
-    prefix = "whatsapp:group:"
-    if cid.startswith(prefix):
-        rest = cid[len(prefix):]
-        marker = "@g.us"
-        if marker in rest:
-            return f"{prefix}{rest.split(marker, 1)[0]}{marker}"
-    return cid
+    return canonical_conversation_id(conversation_id)
 
 
 def _clear_last_display_segments_for_nonparticipants(

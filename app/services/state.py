@@ -17,6 +17,7 @@ from app.db import (
     sqlite_ensure_conversation_state_schema,
     sqlite_ensure_nonempty,
 )
+from app.services.conversation_id import canonical_conversation_id
 from app.services import soul_state as _soul_state
 
 
@@ -115,6 +116,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
 
 
 def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
+    cid = canonical_conversation_id(conversation_id)
     return con.execute(
         "SELECT conversation_id, soul_id, user_id, memorize_chat, digest_cursor, "
         "digest_cursor_source_message_id, digest_cursor_ts, "
@@ -128,7 +130,7 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
         "last_consolidation_error, last_consolidation_error_at, "
         "atomic_session_started_at, atomic_session_ended_at "
         "FROM conversations WHERE conversation_id = ? LIMIT 1",
-        (conversation_id,),
+        (cid,),
     ).fetchone()
 
 
@@ -137,8 +139,9 @@ def conversation_state_empty(
     soul_id: str | None = None,
     user_id: str | None = None,
 ) -> dict[str, Any]:
+    cid = canonical_conversation_id(conversation_id)
     return {
-        "conversation_id": conversation_id,
+        "conversation_id": cid,
         "soul_id": soul_id,
         "user_id": user_id,
         "memorize_chat": True,
@@ -175,7 +178,7 @@ def write_conversation_state(
     user_id: str | None = None,
     updates: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Path]:
-    cid = str(conversation_id or "").strip()
+    cid = canonical_conversation_id(conversation_id)
     if not cid:
         raise HTTPException(status_code=400, detail="conversation_id is required")
 

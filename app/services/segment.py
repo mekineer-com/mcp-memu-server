@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from app.services.conversation_id import canonical_conversation_id
 from app.services.payload import message_ts_ms
 
 if TYPE_CHECKING:
@@ -71,6 +72,7 @@ def create_companion_memory(
     embedding: list[float],
     happened_at: datetime | None,
 ) -> str:
+    conversation_id = canonical_conversation_id(conversation_id)
     item = svc.database.memory_item_repo.create_item(
         resource_id=None,
         memory_type="reflection",

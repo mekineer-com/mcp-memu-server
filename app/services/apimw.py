@@ -8,6 +8,8 @@ import random
 import uuid
 from typing import Any
 
+from app.services.conversation_id import canonical_conversation_id
+
 _main: Any = None
 
 
@@ -263,6 +265,7 @@ async def _apimw_persist(
     soul_id: str,
     expected_prior_context: str = "",
 ) -> None:
+    conversation_id = canonical_conversation_id(conversation_id)
     async with _m()._retrieve_scope_lock(user_id, soul_id):
         updates: dict[str, Any] = {}
         resolved_prior_context_ids: list[str] = []
@@ -338,6 +341,7 @@ async def _run_apimw(
     state_row: dict[str, Any],
     current_history: list[dict[str, Any]],
 ) -> None:
+    conversation_id = canonical_conversation_id(conversation_id)
     try:
         svc = _m()._get_service_from_payload(payload)
         apimw_trace_id = uuid.uuid4().hex

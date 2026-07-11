@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from app import main
-from app.services import conversation_sources, crud_endpoints, retrieve_orchestration
+from app.services import conversation_sources, crud_endpoints, retrieve_orchestration, segment
 
 
 def _use_hermes_state_whatsapp(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4055,7 +4055,7 @@ async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest
         items_by_id={},
         id_map={},
         scope={"user_id": "u", "soul_id": "s"},
-        conversation_id="c",
+        conversation_id="whatsapp:group:18322935409-1579788049@g.us:222685531500721@lid",
         user_id="u",
         soul_id="s",
     )
@@ -4064,6 +4064,8 @@ async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest
     assert captured_item["memory_type"] == "subconscious"
     assert captured_item["summary"] == "remember the quiet signal"
     assert captured_item["extra"] == {"apimw_message_to_self": True}
+    assert captured_item["conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
+    assert captured_item["user_data"]["conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
 
 
 @pytest.mark.asyncio
@@ -6486,7 +6488,7 @@ async def test_whatsapp_outbound_claim_and_mark(
     out_id = main._insert_whatsapp_outbound(
         user_id="u1",
         soul_id="Siri",
-        origin_conversation_id="whatsapp:dm:Marcos",
+        origin_conversation_id="whatsapp:group:18322935409-1579788049@g.us:222685531500721@lid",
         target="respond",
         response_text="hello",
         metadata={"source": "test"},
@@ -6496,7 +6498,8 @@ async def test_whatsapp_outbound_claim_and_mark(
         {"user_id": "u1", "soul_id": "Siri", "claimed_by": "hermes-test", "limit": 10}
     )
     assert [row["id"] for row in claimed["outbounds"]] == [out_id]
-    assert claimed["outbounds"][0]["target_conversation_id"] == "whatsapp:dm:Marcos"
+    assert claimed["outbounds"][0]["origin_conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
+    assert claimed["outbounds"][0]["target_conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
     assert claimed["outbounds"][0]["metadata"] == {"source": "test"}
 
     claimed_again = await main.whatsapp_outbounds_claim(
@@ -6788,7 +6791,7 @@ def test_free_turn_follow_up_schedule_persists_pending_row(
     followup_id = main._schedule_free_turn_follow_up(
         user_id="u1",
         soul_id="Siri",
-        conversation_id="whatsapp:dm:Marcos",
+        conversation_id="whatsapp:group:18322935409-1579788049@g.us:222685531500721@lid",
         continue_at=(datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
         continue_reason="Check whether Marcos got home safely.",
         safe_payload={"user": {"user_id": "u1", "soul_id": "Siri"}},
@@ -6803,8 +6806,9 @@ def test_free_turn_follow_up_schedule_persists_pending_row(
         con.close()
     assert row is not None
     assert row["status"] == "pending"
-    assert row["conversation_id"] == "whatsapp:dm:Marcos"
+    assert row["conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
     payload = json.loads(row["payload_json"])
+    assert payload["user"]["conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
     assert payload["follow_up_reason"] == "Check whether Marcos got home safely."
 
 
@@ -7134,7 +7138,7 @@ async def test_whatsapp_outbound_insert_claim_row_with_media_path(
     out_id = main._insert_whatsapp_outbound(
         user_id="u1",
         soul_id="Siri",
-        origin_conversation_id="whatsapp:dm:Marcos",
+        origin_conversation_id="whatsapp:group:18322935409-1579788049@g.us:222685531500721@lid",
         target="private",
         response_text="",
         media_path="/home/marcos/Desktop/siri/report.pdf",
@@ -7148,8 +7152,31 @@ async def test_whatsapp_outbound_insert_claim_row_with_media_path(
     rows = claimed["outbounds"]
     assert len(rows) == 1
     assert rows[0]["id"] == out_id
+    assert rows[0]["origin_conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
     assert rows[0]["media_path"] == "/home/marcos/Desktop/siri/report.pdf"
     assert rows[0]["response_text"] == ""
+
+
+def test_companion_memory_uses_canonical_whatsapp_group_conversation_id() -> None:
+    captured: dict[str, Any] = {}
+
+    def _create_item(**kwargs: Any) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(id="mem_1")
+
+    out = segment.create_companion_memory(
+        SimpleNamespace(database=SimpleNamespace(memory_item_repo=SimpleNamespace(create_item=_create_item))),
+        user_id="Marcos",
+        soul_id="Siri",
+        conversation_id="whatsapp:group:18322935409-1579788049@g.us:222685531500721@lid",
+        summary="I noticed the pattern.",
+        embedding=[0.1],
+        happened_at=None,
+    )
+
+    assert out == "mem_1"
+    assert captured["conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
+    assert captured["user_data"]["conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
 
 
 @pytest.mark.asyncio

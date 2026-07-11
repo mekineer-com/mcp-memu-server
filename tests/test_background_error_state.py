@@ -22,6 +22,7 @@ from app.db import sqlite_ensure_conversation_state_schema
 from app.services import memorize_endpoint
 from app.services import soul_state as _soul_state
 from app.services.state import (
+    conversation_state_empty,
     conversation_state_from_row,
     conversation_state_row,
     effective_digest_cursor_from_row,
@@ -75,6 +76,38 @@ def test_background_error_fields_round_trip_through_state() -> None:
         assert loaded is not None
         assert loaded["last_background_error"] == state["last_background_error"]
         assert loaded["last_background_error_at"] == now_iso
+
+
+def test_whatsapp_group_state_ids_canonicalize_at_state_boundary() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        db_path, _sqlite_dir = _tmp_sqlite_setup(Path(td), soul_id="Siri")
+        kwargs = {
+            "sqlite_current_path": lambda _user, _soul: db_path,
+            "soul_id": "Siri",
+            "user_id": "Marcos",
+        }
+        alias = "whatsapp:group:18322935409-1579788049@g.us:222685531500721@lid"
+        canonical = "whatsapp:group:18322935409-1579788049@g.us"
+
+        state, _ = write_conversation_state(alias, **kwargs, updates={"digest_cursor": 7})
+
+        assert state["conversation_id"] == canonical
+        assert conversation_state_empty(alias)["conversation_id"] == canonical
+        con = sqlite3.connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            assert conversation_state_row(con, alias)["conversation_id"] == canonical
+            assert conversation_state_row(con, canonical)["digest_cursor"] == 7
+            assert con.execute(
+                "SELECT COUNT(*) FROM conversations WHERE conversation_id = ?",
+                (alias,),
+            ).fetchone()[0] == 0
+        finally:
+            con.close()
+
+        state, _ = write_conversation_state(canonical, **kwargs, updates={"digest_cursor": 8})
+        assert state["digest_cursor"] == 8
+        assert conversation_state_empty("whatsapp:dm:140063262396533@lid")["conversation_id"] == "whatsapp:dm:140063262396533@lid"
 
 
 def test_cursor_helpers_fail_on_missing_required_fields() -> None:

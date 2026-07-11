@@ -12,6 +12,7 @@ from typing import Any, TypedDict
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 
+from app.services.conversation_id import canonical_conversation_id
 from app.services.payload import message_ts_ms
 from app.services.state import effective_digest_cursor_from_row, memorize_chat_from_row
 
@@ -1109,7 +1110,7 @@ async def memorize_endpoint(
         scope = safe.get("user")
         if not isinstance(scope, dict):
             scope = endpoint_ctx.extract_scope(safe) or None
-        conversation_id = endpoint_ctx.extract_conversation_id(safe)
+        conversation_id = canonical_conversation_id(endpoint_ctx.extract_conversation_id(safe))
         if conversation_id and isinstance(scope, dict):
             scope = {**scope, "conversation_id": conversation_id}
 
