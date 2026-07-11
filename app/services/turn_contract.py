@@ -853,7 +853,7 @@ def _build_schema_reminder(
 {target_schema_line}
   "rehearsal":"3 sentences or fewer",
   "response":"{response_sentences} sentences or fewer",
-  "working_thought": null if rehearsal is filled | "One sentence, two if necessary. Only what future-you would need",{activity_line}
+  "working_thought": null (most turns) | "One sentence, two if necessary. Only what future-you would need",{activity_line}
   "continue_reason": null | "short reason string",
   "continue_at": null | "timestamp string",
   "attachment": null | "absolute path string",
