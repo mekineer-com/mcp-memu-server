@@ -510,9 +510,17 @@ def _load_cross_tail_from_sources(
     cursor_rows = con.execute(
         "SELECT conversation_id, memorize_chat, digest_cursor, last_memorize_at, "
         "digest_cursor_source_message_id, digest_cursor_ts, "
-        "last_display_segment_start_index, last_display_segment_end_index "
+        "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at "
         "FROM conversations"
     ).fetchall()
+    newest_display_at = max(
+        (
+            str(row["last_display_segment_at"] or "").strip()
+            for row in cursor_rows
+            if str(row["last_display_segment_at"] or "").strip()
+        ),
+        default="",
+    )
     all_messages: list[dict[str, Any]] = []
     resource_display_ranges: dict[str, tuple[int, int]] | None = None
     for row in cursor_rows:
@@ -534,7 +542,13 @@ def _load_cross_tail_from_sources(
             )
             display_start = row["last_display_segment_start_index"]
             display_end = row["last_display_segment_end_index"]
-            if not web_source and row["last_memorize_at"] and (display_start is None or display_end is None):
+            display_at = str(row["last_display_segment_at"] or "").strip()
+            if (
+                not newest_display_at
+                and not web_source
+                and row["last_memorize_at"]
+                and (display_start is None or display_end is None)
+            ):
                 if resource_display_ranges is None:
                     resource_display_ranges = _m()._latest_saved_segment_display_ranges(
                         soul_id=soul_id,
@@ -542,7 +556,13 @@ def _load_cross_tail_from_sources(
                 fallback_range = resource_display_ranges.get(cid)
                 if fallback_range is not None:
                     display_start, display_end = fallback_range
-            if not web_source and row["last_memorize_at"] and display_start is not None and display_end is not None:
+            if (
+                not web_source
+                and row["last_memorize_at"]
+                and display_start is not None
+                and display_end is not None
+                and (not newest_display_at or display_at == newest_display_at)
+            ):
                 try:
                     segment_start = max(0, int(display_start))
                     segment_end = max(segment_start, int(display_end))

@@ -2438,7 +2438,7 @@ def test_load_cross_tail_from_sources_skips_activity_conversation(
     assert rows == []
 
 
-def test_load_cross_tail_from_sources_keeps_previous_segment_participants(
+def test_load_cross_tail_from_sources_skips_stale_display_segment_participants(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2450,15 +2450,21 @@ def test_load_cross_tail_from_sources_keeps_previous_segment_participants(
         main._sqlite_ensure_conversation_state_schema(con)
         con.execute(
             "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at, "
-            "last_display_segment_start_index, last_display_segment_end_index) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("whatsapp:dm:current", 3, "2026-05-01T00:00:00+00:00", 0, 3),
+            "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("whatsapp:dm:current", 3, "2026-05-02T00:00:00+00:00", 0, 3, "2026-05-02T00:00:00+00:00"),
         )
         con.execute(
             "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at, "
-            "last_display_segment_start_index, last_display_segment_end_index) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("whatsapp:dm:previous-participant", 12, "2026-05-01T00:00:00+00:00", 10, 12),
+            "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("whatsapp:dm:previous-participant", 12, "2026-05-01T00:00:00+00:00", 10, 12, "2026-05-01T00:00:00+00:00"),
+        )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at, "
+            "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("whatsapp:dm:latest-participant", 22, "2026-05-02T00:00:00+00:00", 20, 22, "2026-05-02T00:00:00+00:00"),
         )
         con.execute(
             "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
@@ -2471,13 +2477,22 @@ def test_load_cross_tail_from_sources_keeps_previous_segment_participants(
         def _fake_load_tail_for_source_conversation(**kwargs: object) -> list[dict[str, object]]:
             cid = str(kwargs["conversation_id"])
             calls[cid] = int(kwargs["since_cursor"])
-            if cid == "whatsapp:dm:previous-participant":
+            if cid == "whatsapp:dm:previous-participant" and int(kwargs["since_cursor"]) < 10:
                 return [
                     {
                         "conversation_id": cid,
                         "source_conversation_index": 10,
                         "received_at": "2026-05-01T00:00:00+00:00",
                         "content": "previous segment floor",
+                    }
+                ]
+            if cid == "whatsapp:dm:latest-participant" and int(kwargs["since_cursor"]) < 20:
+                return [
+                    {
+                        "conversation_id": cid,
+                        "source_conversation_index": 20,
+                        "received_at": "2026-05-02T00:00:00+00:00",
+                        "content": "latest segment floor",
                     }
                 ]
             return []
@@ -2492,8 +2507,9 @@ def test_load_cross_tail_from_sources_keeps_previous_segment_participants(
     finally:
         con.close()
 
-    assert [row["content"] for row in rows] == ["previous segment floor"]
-    assert calls["whatsapp:dm:previous-participant"] == 9
+    assert [row["content"] for row in rows] == ["latest segment floor"]
+    assert calls["whatsapp:dm:previous-participant"] == 12
+    assert calls["whatsapp:dm:latest-participant"] == 19
     assert calls["whatsapp:dm:not-participant"] == 12
 
 
