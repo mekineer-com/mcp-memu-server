@@ -302,6 +302,7 @@ def _get_service_from_payload(
         for passthrough_key in (
             "enable_confidence_normalization",
             "semantic_dedupe_enabled",
+            "semantic_dedupe_similarity_threshold",
             "background_extra_messages_tokens",
         ):
             if passthrough_key in mem_cfg and passthrough_key not in memorize_config:

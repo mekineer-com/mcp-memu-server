@@ -93,7 +93,8 @@
     "background_summary_tokens": 1000,
     "background_extra_messages_tokens": 100,
     "enable_confidence_normalization": false,
-    "semantic_dedupe_enabled": true
+    "semantic_dedupe_enabled": true,
+    "semantic_dedupe_similarity_threshold": 0.85
   },
   "retrieve": {
     "apimw_enabled": true,
