@@ -264,39 +264,13 @@ def build_conversations_block(
     current_text = _text(current_user_text)
     current_name = _text(current_user_name)
     directive_text = _text(self_turn_directive)
-    last_history_item: dict[str, Any] | None = None
-    for item in reversed(history_for_render):
-        if not isinstance(item, dict):
-            continue
-        if _text(item.get("content")):
-            last_history_item = item
-            break
-    already_has_current_user_message = bool(
-        current_text
-        and not directive_text
-        and isinstance(last_history_item, dict)
-        and _text(last_history_item.get("role")).lower() == "user"
-        and _norm_text(_text(last_history_item.get("content"))) == _norm_text(current_text)
-    )
     current_content = _current_message_locator(current_text) if current_text and not directive_text else current_text
-    if current_content and not directive_text and already_has_current_user_message:
-        last_history_item["content"] = current_content
-        if current_name and not _text(last_history_item.get("name")):
-            last_history_item["name"] = current_name
-    elif current_content and not directive_text:
-        last_user_name = current_name
-        for item in history_for_render:
-            if not isinstance(item, dict):
-                continue
-            if _text(item.get("role")).lower() == "user":
-                name = _text(item.get("name"))
-                if name:
-                    last_user_name = name
+    if current_content and not directive_text:
         synthetic: dict[str, Any] = {"role": "user", "content": current_content}
         if _text(conversation_id):
             synthetic["conversation_id"] = _text(conversation_id)
-        if last_user_name:
-            synthetic["name"] = last_user_name
+        if current_name:
+            synthetic["name"] = current_name
         history_for_render.append(synthetic)
 
     has_current_history = any(

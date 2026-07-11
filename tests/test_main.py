@@ -864,20 +864,26 @@ def test_format_all_chat_history_for_ai_can_render_without_current_chat_marker()
     assert "[Siri] cross hello" in rendered
 
 
-def test_format_all_chat_history_for_ai_uses_current_user_name_before_dm_heading() -> None:
+def test_format_all_chat_history_for_ai_uses_current_user_name_not_prior_speaker() -> None:
     rendered = main._format_all_chat_history_for_ai(
-        current_history=[],
+        current_history=[
+            {
+                "role": "user",
+                "name": "Marcos",
+                "content": "I don't know the outcome of immigration.",
+            }
+        ],
         cross_tail=[],
-        conversation_id="whatsapp:dm:18322935409@s.whatsapp.net",
+        conversation_id="whatsapp:group:18322935409-1579788049@g.us",
         soul_id="Siri",
-        chat_label="[dm][Raquel]",
-        current_user_text="Haven't slept in a couple days",
-        current_user_name="Marcos",
+        chat_label="[group][Familia]",
+        current_user_text="We're going to the gym now.",
+        current_user_name="Raquel",
     )
 
-    assert "[dm][Raquel] \u2190 current chat" in rendered
-    assert "[Marcos] Haven't slept in a couple ..." in rendered
-    assert "[Raquel] Haven't slept" not in rendered
+    assert "[group][Familia] \u2190 current chat" in rendered
+    assert "[Marcos] I don't know the outcome of immigration." in rendered
+    assert "[Raquel] We're going to the gym ..." in rendered
 
 
 def test_format_all_chat_history_for_ai_places_activities_before_chats() -> None:
@@ -2967,6 +2973,7 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
     await main._run_apimw(
         {
             "message": "current hello",
+            "user_name": "Marcos",
             "chat_name": "Marcos",
             "chat_type": "dm",
         },
@@ -3057,11 +3064,9 @@ def test_build_retrieve_soul_context_queries_keeps_self_turn_out_of_user_history
     )
 
 
-def test_build_retrieve_soul_context_queries_no_duplicate_when_whitespace_differs() -> None:
-    # Last history item content matches message except for internal whitespace;
-    # guard must normalise both sides so no synthetic user turn is appended.
+def test_build_retrieve_soul_context_queries_appends_current_locator() -> None:
     history = [
-        {"source_message_id": "m1", "role": "user", "content": "hello   world"},
+        {"source_message_id": "m1", "role": "user", "content": "previous message"},
     ]
     queries = main._build_retrieve_soul_context_queries(
         soul_id="Echo",
@@ -3072,8 +3077,8 @@ def test_build_retrieve_soul_context_queries_no_duplicate_when_whitespace_differ
     history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
     assert len(history_rows) == 1
     text = str((history_rows[0].get("content") or {}).get("text") or "")
-    # "hello world" should appear exactly once — no duplicate user turn
     assert text.count("hello") == 1
+    assert "[user] hello world ..." in text
 
 
 @pytest.mark.asyncio
@@ -4512,10 +4517,13 @@ async def test_conversation_retrieve_turn_prompt_reuses_first_floored_history(
                 "role": "user",
                 "name": "Marcos",
                 "content": "Bien. Encontre algo que hacer con el IA.",
+                "source_message_id": "current-id",
                 "source_conversation_index": 3,
                 "ts_ms": 1_770_020_000_000,
             },
         ],
+        "external_message_id": "current-id",
+        "user_name": "Marcos",
         "chat_name": "Family Contact",
         "chat_type": "dm",
     }
@@ -5245,6 +5253,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
         "build_turn_prompt": True,
         "load_source_history": True,
         "is_live_turn": True,
+        "user_name": "Marcos",
         "chat_name": "Marcos",
         "chat_type": "dm",
     }

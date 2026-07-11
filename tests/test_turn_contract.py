@@ -652,12 +652,11 @@ def test_build_turn_prompt_renders_apimw_message_to_self_under_working_thoughts(
     assert prompt.index("- [profile] Marcos likes continuity.") < prompt.index("My Working Thoughts:")
 
 
-def test_build_turn_prompt_renders_current_message_locator_when_already_last() -> None:
+def test_build_turn_prompt_renders_current_message_locator() -> None:
     prompt = build_turn_prompt(
         user_message="hello there this is the current message",
         history=[
             {"role": "assistant", "content": "old 1"},
-            {"role": "user", "content": "hello there this is the current message"},
         ],
         prior_context=None,
         retrieve_rag=None,
@@ -676,7 +675,6 @@ def test_build_turn_prompt_renders_assistant_role_as_soul_name_when_available() 
         user_message="hello",
         history=[
             {"role": "assistant", "content": "old 1"},
-            {"role": "user", "content": "hello"},
         ],
         prior_context=None,
         retrieve_rag=None,
@@ -722,12 +720,11 @@ def test_build_turn_prompt_uses_grouped_renderer_for_current_whatsapp_group(tmp_
     assert "[assistant]" not in prompt
 
 
-def test_build_turn_prompt_renders_current_message_locator_when_whitespace_differs() -> None:
+def test_build_turn_prompt_normalizes_current_message_locator_whitespace() -> None:
     prompt = build_turn_prompt(
         user_message="hello   there from the current turn",
         history=[
             {"role": "assistant", "content": "old 1"},
-            {"role": "user", "content": "hello\nthere from the current turn"},
         ],
         prior_context=None,
         retrieve_rag=None,
@@ -737,7 +734,6 @@ def test_build_turn_prompt_renders_current_message_locator_when_whitespace_diffe
     )
     assert "[user] hello there from the current ..." in prompt
     assert "New Message:\nhello   there from the current turn" in prompt
-    assert "[user] hello\nthere from the current turn" not in prompt
 
 
 def test_build_turn_prompt_appends_current_message_locator_when_missing_from_history() -> None:
