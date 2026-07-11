@@ -216,6 +216,7 @@ def _log_file_path(cfg: dict) -> Path:
 
 _QUIET_PATHS = {
     "/health",
+    "/diag/memorize/pending",
     "/memorize/progress",
     "/categories/search",
     "/integration/whatsapp/outbounds/claim",

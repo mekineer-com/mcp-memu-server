@@ -50,3 +50,17 @@ def test_quiet_access_filter_suppresses_whatsapp_outbound_claim() -> None:
     )
 
     assert server_run._QuietAccessFilter().filter(record) is False
+
+
+def test_quiet_access_filter_suppresses_memorize_pending_poll() -> None:
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg='127.0.0.1:53774 - "GET /diag/memorize/pending?soul_id=Siri&user_id=Marcos HTTP/1.1" 200',
+        args=(),
+        exc_info=None,
+    )
+
+    assert server_run._QuietAccessFilter().filter(record) is False
