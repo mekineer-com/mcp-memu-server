@@ -23,6 +23,8 @@ from app.services.payload import (
 )
 from app.services.state import (
     effective_digest_cursor_from_row as _effective_digest_cursor_from_row,
+)
+from app.services.state import (
     memorize_chat_from_row as _memorize_chat_from_row,
 )
 
@@ -570,7 +572,25 @@ def _load_cross_tail_from_sources(
                 except (TypeError, ValueError, OverflowError):
                     segment_start = segment_end = -1
                 if segment_end >= 0:
-                    cursor = max(-1, max(segment_start, segment_end - (_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES - 1)) - 1)
+                    cursor = max(
+                        -1,
+                        max(segment_start, segment_end - (_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES - 1)) - 1,
+                    )
+            elif (
+                web_source
+                and cursor >= 0
+                and row["last_memorize_at"]
+                and display_start is not None
+                and display_end is not None
+                and (not newest_display_at or display_at == newest_display_at)
+            ):
+                try:
+                    segment_len = max(0, int(display_end) - int(display_start))
+                except (TypeError, ValueError, OverflowError):
+                    segment_len = -1
+                if segment_len >= 0:
+                    rewind = min(segment_len, _message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES - 1)
+                    cursor = max(-1, cursor - rewind - 1)
             tail = _m()._load_tail_for_source_conversation(
                 conversation_id=cid,
                 user_id=user_id,

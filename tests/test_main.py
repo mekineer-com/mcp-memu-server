@@ -2513,6 +2513,63 @@ def test_load_cross_tail_from_sources_skips_stale_display_segment_participants(
     assert calls["whatsapp:dm:not-participant"] == 12
 
 
+def test_load_cross_tail_from_sources_web_source_rewinds_latest_span_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        sql = (
+            "INSERT INTO conversations (conversation_id, digest_cursor, digest_cursor_source_message_id, "
+            "digest_cursor_ts, last_memorize_at, last_display_segment_start_index, "
+            "last_display_segment_end_index, last_display_segment_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        con.execute(sql, ("whatsapp:dm:latest", 112, "checkpoint", 100, "2026-05-02", 105, 112, "2026-05-02"))
+        con.execute(sql, ("whatsapp:dm:stale", 112, "checkpoint", 100, "2026-05-01", 105, 112, "2026-05-01"))
+        con.execute(sql, ("whatsapp:dm:missing", 112, "missing", 100, "2026-05-02", 105, 112, "2026-05-02"))
+        con.commit()
+
+        def _fake_resolve_source_cursor(cid: str, *_args: object, **_kwargs: object) -> tuple[int, int | None, bool]:
+            return (-1, 100, True) if cid.endswith(":missing") else (12, None, True)
+
+        monkeypatch.setattr(main._cross_history, "_resolve_source_cursor", _fake_resolve_source_cursor)
+        calls: dict[str, object] = {}
+
+        def _fake_load_tail_for_source_conversation(**kwargs: object) -> list[dict[str, object]]:
+            cid = str(kwargs["conversation_id"])
+            calls[cid] = (kwargs["since_cursor"], kwargs["min_timestamp"])
+            if cid.endswith(":latest") and kwargs["since_cursor"] == 4:
+                return [
+                    {
+                        "conversation_id": cid,
+                        "source_conversation_index": 5,
+                        "received_at": "2026-05-02T00:00:00+00:00",
+                        "content": "rebuilt web-source floor",
+                    }
+                ]
+            return []
+
+        monkeypatch.setattr(main, "_load_tail_for_source_conversation", _fake_load_tail_for_source_conversation)
+        rows = main._load_cross_tail_from_sources(
+            con,
+            user_id="u1",
+            soul_id="Echo",
+            exclude_conversation_id="",
+        )
+    finally:
+        con.close()
+
+    assert [row["content"] for row in rows] == ["rebuilt web-source floor"]
+    assert calls == {
+        "whatsapp:dm:latest": (4, None),
+        "whatsapp:dm:stale": (12, None),
+        "whatsapp:dm:missing": (-1, 100),
+    }
+
+
 def test_load_cross_tail_from_sources_recovers_previous_segment_ranges_from_saved_segment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
