@@ -554,7 +554,6 @@ def load_whatsapp_web_source_tail(
     hermes_home: Path | None = None,
     web_source_db_path: Path | None = None,
     min_timestamp: float | None = None,
-    max_messages: int | None = None,
     assistant_source_message_ids: set[str] | None = None,
     include_floor_without_new: bool = False,
 ) -> list[dict[str, Any]]:
@@ -568,7 +567,6 @@ def load_whatsapp_web_source_tail(
         hermes_home=hermes_home,
         web_source_db_path=web_source_db_path,
         min_timestamp=min_timestamp,
-        max_messages=max_messages,
         assistant_source_message_ids=assistant_source_message_ids,
         include_floor_without_new=include_floor_without_new,
     )
@@ -595,7 +593,6 @@ def load_whatsapp_web_source_tail_after_rowid(
         hermes_home=hermes_home,
         web_source_db_path=web_source_db_path,
         min_timestamp=min_timestamp,
-        max_messages=None,
         assistant_source_message_ids=assistant_source_message_ids,
     )
 
@@ -611,7 +608,6 @@ def _load_whatsapp_web_source_tail(
     hermes_home: Path | None,
     web_source_db_path: Path | None,
     min_timestamp: float | None,
-    max_messages: int | None,
     assistant_source_message_ids: set[str] | None,
     include_floor_without_new: bool = False,
 ) -> list[dict[str, Any]]:
@@ -636,11 +632,6 @@ def _load_whatsapp_web_source_tail(
         where.append("m.timestamp >= ?")
         params.append(float(min_timestamp))
 
-    limit_tail = (
-        max(1, int(max_messages))
-        if max_messages is not None and not cursor_is_rowid and cursor < 0 and recent_fallback_messages <= 0
-        else None
-    )
     select_sql = f"""
         SELECT
           m.rowid, m.msg_key, m.chat_id, m.from_me, m.timestamp, m.body,
@@ -657,19 +648,7 @@ def _load_whatsapp_web_source_tail(
         LEFT JOIN whatsapp_contacts cf ON cf.contact_id = m.from_id
         WHERE {" AND ".join(where)}
     """
-    if limit_tail is not None:
-        sql = f"""
-            SELECT *
-            FROM (
-              {select_sql}
-              ORDER BY m.timestamp DESC, m.rowid DESC
-              LIMIT ?
-            )
-            ORDER BY timestamp ASC, rowid ASC
-        """
-        params.append(limit_tail)
-    else:
-        sql = f"{select_sql} ORDER BY m.timestamp ASC, m.rowid ASC"
+    sql = f"{select_sql} ORDER BY m.timestamp ASC, m.rowid ASC"
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
     try:
@@ -998,7 +977,6 @@ def _load_whatsapp_live_rows(
     state_db_path: Path | None,
     min_timestamp: float | None,
     after_message_id: int | None = None,
-    limit_tail: int | None = None,
 ) -> tuple[list[sqlite3.Row], str, str, dict[str, str], set[str]]:
     sessions_path, db_path = _resolve_hermes_paths(
         hermes_home=hermes_home,
@@ -1047,17 +1025,10 @@ def _load_whatsapp_live_rows(
             f"{source_message_id_select} FROM messages "
             f"WHERE {where}"
         )
-        if limit_tail is not None:
-            rows = con.execute(
-                f"SELECT * FROM ({select_sql} ORDER BY timestamp DESC, id DESC LIMIT ?) "
-                "ORDER BY timestamp ASC, id ASC",
-                [*params, int(limit_tail)],
-            ).fetchall()
-        else:
-            rows = con.execute(
-                f"{select_sql} ORDER BY timestamp ASC, id ASC",
-                params,
-            ).fetchall()
+        rows = con.execute(
+            f"{select_sql} ORDER BY timestamp ASC, id ASC",
+            params,
+        ).fetchall()
     finally:
         con.close()
 
@@ -1113,20 +1084,13 @@ def load_whatsapp_tail(
     sessions_index_path: Path | None = None,
     state_db_path: Path | None = None,
     min_timestamp: float | None = None,
-    max_messages: int | None = None,
 ) -> list[dict[str, Any]]:
-    limit_tail = (
-        max(1, int(max_messages))
-        if max_messages is not None and since_cursor < 0 and recent_fallback_messages <= 0
-        else None
-    )
     rows, chat_name, source_label, session_user_name, primary_session_ids = _load_whatsapp_live_rows(
         conversation_id=conversation_id,
         hermes_home=hermes_home,
         sessions_index_path=sessions_index_path,
         state_db_path=state_db_path,
         min_timestamp=min_timestamp,
-        limit_tail=limit_tail,
     )
 
     all_rows: list[dict[str, Any]] = []

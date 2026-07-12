@@ -46,8 +46,7 @@
     "home": "../hermes-channels/data",
     "whatsapp_history_source": "web_source",
     "whatsapp_web_source_db": "../hermes-channels/data/whatsapp/web_source.db",
-    "whatsapp_reply_prefix": "",
-    "whatsapp_history_limit": 250
+    "whatsapp_reply_prefix": ""
   },
   "mcp": {
     "http_path": "/mcp",

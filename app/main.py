@@ -1767,9 +1767,6 @@ def _resolve_cross_source_paths(*args: Any, **kwargs: Any) -> Any:
 def _resolve_whatsapp_source_config(*args: Any, **kwargs: Any) -> Any:
     return _cross_history._resolve_whatsapp_source_config(*args, **kwargs)
 
-def _resolve_whatsapp_history_limit(*args: Any, **kwargs: Any) -> Any:
-    return _cross_history._resolve_whatsapp_history_limit(*args, **kwargs)
-
 def _load_soul_active_since(*args: Any, **kwargs: Any) -> Any:
     return _cross_history._load_soul_active_since(*args, **kwargs)
 

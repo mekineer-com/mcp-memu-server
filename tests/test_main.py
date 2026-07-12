@@ -1131,7 +1131,7 @@ def test_current_whatsapp_history_uses_configured_web_source_and_filters_current
     assert captured["since_cursor"] == -1
     assert captured["recent_fallback_messages"] == 0
     assert captured["min_timestamp"] == 1780160400.0
-    assert captured["max_messages"] == 250
+    assert "max_messages" not in captured
 
 
 def test_current_whatsapp_history_empty_web_source_does_not_fallback_to_state(

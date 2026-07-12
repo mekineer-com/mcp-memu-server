@@ -95,15 +95,6 @@ def _resolve_source_cursor(
     return resolved, min_timestamp, True
 
 
-def _resolve_whatsapp_history_limit() -> int:
-    hermes_cfg = _m()._CONFIG.get("hermes") if isinstance(_m()._CONFIG.get("hermes"), dict) else {}
-    raw = hermes_cfg.get("whatsapp_history_limit", 250)
-    try:
-        return max(1, min(int(raw), 5000))
-    except (TypeError, ValueError):
-        return 250
-
-
 def _load_soul_active_since(
     soul_id: str,
     *,
@@ -236,7 +227,6 @@ def _load_current_whatsapp_history_from_source(
         return None
     _storage_dir, hermes_home_path, sessions_index_path, state_db_path = _m()._resolve_cross_source_paths()
     whatsapp_source, web_source_db_path, reply_prefix = _m()._resolve_whatsapp_source_config()
-    history_limit = _m()._resolve_whatsapp_history_limit()
     if whatsapp_source == "web_source":
         assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
             conversation_id=conversation_id,
@@ -253,7 +243,6 @@ def _load_current_whatsapp_history_from_source(
             hermes_home=hermes_home_path,
             web_source_db_path=web_source_db_path,
             min_timestamp=active_since,
-            max_messages=history_limit,
             assistant_source_message_ids=assistant_ids,
         )
     else:
@@ -265,7 +254,6 @@ def _load_current_whatsapp_history_from_source(
             sessions_index_path=sessions_index_path,
             state_db_path=state_db_path,
             min_timestamp=active_since,
-            max_messages=history_limit,
         )
     if not external_message_id or not exclude_external_message:
         return rows
