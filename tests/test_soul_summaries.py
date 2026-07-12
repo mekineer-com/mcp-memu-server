@@ -169,18 +169,33 @@ def test_soul_summary_route_rejects_stale_snapshot(monkeypatch, tmp_path) -> Non
     assert exc_info.value.detail == "summary_snapshot_stale"
 
 
-def test_soul_summary_route_updates_displayed_snapshot(monkeypatch, tmp_path) -> None:
+def test_atomic_narrative_correction_updates_state_without_evolution(monkeypatch, tmp_path) -> None:
     path = tmp_path / "soul.db"
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     soul_state.ensure_schema(con)
     con.execute(
-        "UPDATE soul_state SET narrative_self = 'current', narrative_self_approved = 'approved', summaries_revision = 4"
+        "CREATE TABLE narrative_history (id TEXT, narrative_self TEXT, related_memory_ids TEXT, created_at TEXT)"
+    )
+    con.execute(
+        "UPDATE soul_state SET narrative_self = 'current', narrative_self_approved = 'approved', "
+        "summaries_revision = 4, updated_at = 'old'"
     )
     con.commit()
     con.close()
+    journal_entries = []
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
-    monkeypatch.setattr(soul_summaries, "append_summary_journal", lambda **_kwargs: None)
+    monkeypatch.setattr(soul_summaries, "append_summary_journal", lambda **entry: journal_entries.append(entry))
+    monkeypatch.setattr(
+        main,
+        "_get_service_from_payload",
+        lambda _payload: (_ for _ in ()).throw(AssertionError("corrections do not resolve MemoryService")),
+    )
+    monkeypatch.setattr(
+        main,
+        "snapshot_previous_narrative_self",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("corrections do not snapshot old self")),
+    )
 
     out = asyncio.run(
         main.soul_summary_update(
@@ -198,3 +213,10 @@ def test_soul_summary_route_updates_displayed_snapshot(monkeypatch, tmp_path) ->
     assert out["approved_summary"] == "edited"
     assert out["previous_summary"] == "current"
     assert out["summaries_revision"] == 5
+    assert len(journal_entries) == 1
+
+    check = sqlite3.connect(path)
+    check.row_factory = sqlite3.Row
+    assert check.execute("SELECT COUNT(*) FROM narrative_history").fetchone()[0] == 0
+    assert soul_state.read(check)["updated_at"] != "old"
+    check.close()

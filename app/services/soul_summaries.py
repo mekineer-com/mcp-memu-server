@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from memu.app.category_summary_journal import append_summary_journal
@@ -13,6 +14,10 @@ _KINDS = {
     "narrative_self": ("Narrative Self", "soul-summary:narrative_self"),
     "all_categories_summary": ("All Categories Summary", "soul-summary:all_categories_summary"),
 }
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 def _kind(kind: str) -> tuple[str, str]:
@@ -31,8 +36,9 @@ def current_revision(con: sqlite3.Connection) -> int:
 def reserve_revision(con: sqlite3.Connection, expected_revision: int) -> int:
     soul_state.ensure_schema(con)
     result = con.execute(
-        "UPDATE soul_state SET summaries_revision = summaries_revision + 1 WHERE id = 1 AND summaries_revision = ?",
-        (expected_revision,),
+        "UPDATE soul_state SET summaries_revision = summaries_revision + 1, updated_at = ? "
+        "WHERE id = 1 AND summaries_revision = ?",
+        (_now(), expected_revision),
     )
     if result.rowcount != 1:
         raise ValueError("summary_snapshot_stale")
@@ -64,20 +70,27 @@ def write_live(
         raise ValueError("summary_snapshot_stale")
     if not clean:
         if advance_revision_on_noop:
-            con.execute("UPDATE soul_state SET summaries_revision = summaries_revision + 1 WHERE id = 1")
+            con.execute(
+                "UPDATE soul_state SET summaries_revision = summaries_revision + 1, updated_at = ? WHERE id = 1",
+                (_now(),),
+            )
             return soul_state.read(con)
         raise ValueError("summary is required")
     if before == clean:
         if approve and str(row[1] or "") != clean:
             result = con.execute(
-                f"UPDATE soul_state SET {kind}_approved = ?, summaries_revision = summaries_revision + 1 "
+                f"UPDATE soul_state SET {kind}_approved = ?, summaries_revision = summaries_revision + 1, "
+                f"updated_at = ? "
                 f"WHERE id = 1{' AND summaries_revision = ?' if guarded else ''}",
-                (clean, expected_revision) if guarded else (clean,),
+                (clean, _now(), expected_revision) if guarded else (clean, _now()),
             )
             if result.rowcount != 1:
                 raise ValueError("summary_snapshot_stale")
         elif guarded or advance_revision_on_noop:
-            con.execute("UPDATE soul_state SET summaries_revision = summaries_revision + 1 WHERE id = 1")
+            con.execute(
+                "UPDATE soul_state SET summaries_revision = summaries_revision + 1, updated_at = ? WHERE id = 1",
+                (_now(),),
+            )
         return soul_state.read(con)
 
     append_summary_journal(
@@ -92,12 +105,13 @@ def write_live(
     params: list[Any] = [before_value, clean]
     if approve:
         params.append(clean)
+    params.append(_now())
     where = " AND summaries_revision = ?" if guarded else ""
     if guarded:
         params.append(expected_revision)
     result = con.execute(
         f"UPDATE soul_state SET {kind}_previous = ?, {kind} = ?{approved}, "
-        f"summaries_revision = summaries_revision + 1 WHERE id = 1{where}",
+        f"summaries_revision = summaries_revision + 1, updated_at = ? WHERE id = 1{where}",
         tuple(params),
     )
     if result.rowcount != 1:
@@ -122,9 +136,10 @@ def approve(
     if guarded and (int(row[1] or 0) != expected_revision or current != displayed_summary):
         raise ValueError("summary_snapshot_stale")
     result = con.execute(
-        f"UPDATE soul_state SET {kind}_approved = ?, summaries_revision = summaries_revision + 1 "
+        f"UPDATE soul_state SET {kind}_approved = ?, summaries_revision = summaries_revision + 1, "
+        f"updated_at = ? "
         f"WHERE id = 1{' AND summaries_revision = ?' if guarded else ''}",
-        (current, expected_revision) if guarded else (current,),
+        (current, _now(), expected_revision) if guarded else (current, _now()),
     )
     if result.rowcount != 1:
         raise ValueError("summary_snapshot_stale")
