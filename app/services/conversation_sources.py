@@ -556,6 +556,7 @@ def load_whatsapp_web_source_tail(
     min_timestamp: float | None = None,
     max_messages: int | None = None,
     assistant_source_message_ids: set[str] | None = None,
+    include_floor_without_new: bool = False,
 ) -> list[dict[str, Any]]:
     return _load_whatsapp_web_source_tail(
         conversation_id=conversation_id,
@@ -569,6 +570,7 @@ def load_whatsapp_web_source_tail(
         min_timestamp=min_timestamp,
         max_messages=max_messages,
         assistant_source_message_ids=assistant_source_message_ids,
+        include_floor_without_new=include_floor_without_new,
     )
 
 
@@ -611,6 +613,7 @@ def _load_whatsapp_web_source_tail(
     min_timestamp: float | None,
     max_messages: int | None,
     assistant_source_message_ids: set[str] | None,
+    include_floor_without_new: bool = False,
 ) -> list[dict[str, Any]]:
     db_path = _web_source_db_path(hermes_home=hermes_home, web_source_db_path=web_source_db_path)
     if not db_path.exists():
@@ -735,6 +738,7 @@ def _load_whatsapp_web_source_tail(
         all_rows,
         since_cursor=cursor,
         recent_fallback_messages=recent_fallback_messages,
+        include_floor_without_new=include_floor_without_new,
     )
 
 
@@ -743,6 +747,7 @@ def slice_tail_with_floor(
     *,
     since_cursor: int,
     recent_fallback_messages: int,
+    include_floor_without_new: bool = False,
 ) -> list[dict[str, Any]]:
     def _row_cursor_value(row: dict[str, Any], fallback_idx: int) -> int:
         raw = row.get("source_conversation_index")
@@ -765,7 +770,13 @@ def slice_tail_with_floor(
             for idx, row in enumerate(all_rows)
             if _row_cursor_value(row, idx) > since_cursor
         ]
-    if tail and recent_fallback_messages > 0 and len(tail) < recent_fallback_messages and len(all_rows) > len(tail):
+    if (
+        since_cursor >= 0
+        and recent_fallback_messages > 0
+        and len(tail) < recent_fallback_messages
+        and len(all_rows) > len(tail)
+        and (tail or include_floor_without_new)
+    ):
         tail = list(all_rows[-recent_fallback_messages:])
     return tail
 

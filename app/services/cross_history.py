@@ -413,6 +413,7 @@ def _load_tail_for_source_conversation(
     sessions_index_path: Path | None,
     state_db_path: Path | None,
     min_timestamp: int | None = None,
+    include_floor_without_new: bool = False,
 ) -> list[dict[str, Any]]:
     source_label = _message_log.derive_source_label(conversation_id)
     if source_label.startswith("whatsapp:"):
@@ -443,6 +444,7 @@ def _load_tail_for_source_conversation(
                 web_source_db_path=web_source_db_path,
                 min_timestamp=timestamp_floor,
                 assistant_source_message_ids=assistant_ids,
+                include_floor_without_new=include_floor_without_new,
             )
         return _conversation_sources.load_whatsapp_tail(
             conversation_id=conversation_id,
@@ -546,6 +548,14 @@ def _load_cross_tail_from_sources(
             display_start = row["last_display_segment_start_index"]
             display_end = row["last_display_segment_end_index"]
             display_at = str(row["last_display_segment_at"] or "").strip()
+            latest_display_participant = bool(
+                web_source
+                and row["last_memorize_at"]
+                and display_start is not None
+                and display_end is not None
+                and newest_display_at
+                and display_at == newest_display_at
+            )
             if (
                 not newest_display_at
                 and not web_source
@@ -576,21 +586,6 @@ def _load_cross_tail_from_sources(
                         -1,
                         max(segment_start, segment_end - (_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES - 1)) - 1,
                     )
-            elif (
-                web_source
-                and cursor >= 0
-                and row["last_memorize_at"]
-                and display_start is not None
-                and display_end is not None
-                and (not newest_display_at or display_at == newest_display_at)
-            ):
-                try:
-                    segment_len = max(0, int(display_end) - int(display_start))
-                except (TypeError, ValueError, OverflowError):
-                    segment_len = -1
-                if segment_len >= 0:
-                    rewind = min(segment_len, _message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES - 1)
-                    cursor = max(-1, cursor - rewind - 1)
             tail = _m()._load_tail_for_source_conversation(
                 conversation_id=cid,
                 user_id=user_id,
@@ -602,6 +597,7 @@ def _load_cross_tail_from_sources(
                 sessions_index_path=sessions_index_path,
                 state_db_path=state_db_path,
                 min_timestamp=min_timestamp,
+                include_floor_without_new=latest_display_participant,
             )
         except Exception as exc:
             _m().logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)

@@ -183,6 +183,67 @@ def _write_web_source_db(path: Path, *, messages: list[dict], contacts: list[dic
         con.close()
 
 
+@pytest.mark.parametrize(
+    ("indices", "cursor", "include_floor_without_new", "expected"),
+    [
+        ([10, 20, 30, 40, 50, 60, 70, 80, 90, 100], 10, False, [20, 30, 40, 50, 60, 70, 80, 90, 100]),
+        ([10, 20, 30, 40, 50, 60, 70, 80, 90, 100], 80, False, [30, 40, 50, 60, 70, 80, 90, 100]),
+        ([10, 20, 30, 40, 50, 60, 70, 80, 90, 100], 100, True, [30, 40, 50, 60, 70, 80, 90, 100]),
+        ([10, 20, 30, 40, 50, 60, 70, 80, 90, 100], 100, False, []),
+        ([10, 20, 30], -1, True, [10, 20, 30]),
+        ([10, 20, 30], 30, True, [10, 20, 30]),
+    ],
+)
+def test_slice_tail_with_floor_sparse_indices(
+    indices: list[int],
+    cursor: int,
+    include_floor_without_new: bool,
+    expected: list[int],
+) -> None:
+    rows = [{"source_conversation_index": index} for index in indices]
+
+    tail = conversation_sources.slice_tail_with_floor(
+        rows,
+        since_cursor=cursor,
+        recent_fallback_messages=8,
+        include_floor_without_new=include_floor_without_new,
+    )
+
+    assert [row["source_conversation_index"] for row in tail] == expected
+
+
+def test_load_whatsapp_web_source_tail_floors_sparse_chat_rows_without_new(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    messages = []
+    for index in range(10):
+        messages.extend(
+            [
+                {"msg_key": f"target-{index}", "timestamp": 100 + index * 2, "body": f"target {index}"},
+                {
+                    "msg_key": f"other-{index}",
+                    "chat_id": "99999999999@c.us",
+                    "from_id": "99999999999@c.us",
+                    "timestamp": 101 + index * 2,
+                    "body": f"other {index}",
+                },
+            ]
+        )
+    _write_web_source_db(web_db, messages=messages)
+
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:dm:15133278228",
+        since_cursor=20,
+        recent_fallback_messages=8,
+        soul_id="Siri",
+        reply_prefix="",
+        web_source_db_path=web_db,
+        include_floor_without_new=True,
+    )
+
+    assert [row["content"] for row in rows] == [f"target {index}" for index in range(2, 10)]
+    assert [row["source_conversation_index"] for row in rows] == [5, 7, 9, 11, 13, 15, 17, 19]
+
+
 def test_web_source_cursor_resolves_rebuild_and_missing_key_floor(tmp_path: Path) -> None:
     conversation_id = "whatsapp:dm:15133278228@c.us"
     original = tmp_path / "original.db"

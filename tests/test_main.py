@@ -2519,7 +2519,7 @@ def test_load_cross_tail_from_sources_skips_stale_display_segment_participants(
     assert calls["whatsapp:dm:not-participant"] == 12
 
 
-def test_load_cross_tail_from_sources_web_source_rewinds_latest_span_only(
+def test_load_cross_tail_from_sources_web_source_floors_latest_participant_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2535,25 +2535,29 @@ def test_load_cross_tail_from_sources_web_source_rewinds_latest_span_only(
         )
         con.execute(sql, ("whatsapp:dm:latest", 112, "checkpoint", 100, "2026-05-02", 105, 112, "2026-05-02"))
         con.execute(sql, ("whatsapp:dm:stale", 112, "checkpoint", 100, "2026-05-01", 105, 112, "2026-05-01"))
-        con.execute(sql, ("whatsapp:dm:missing", 112, "missing", 100, "2026-05-02", 105, 112, "2026-05-02"))
+        con.execute(sql, ("whatsapp:dm:not-participant", 112, "checkpoint", 100, "2026-05-02", None, None, ""))
         con.commit()
 
         def _fake_resolve_source_cursor(cid: str, *_args: object, **_kwargs: object) -> tuple[int, int | None, bool]:
-            return (-1, 100, True) if cid.endswith(":missing") else (12, None, True)
+            return (12, None, True)
 
         monkeypatch.setattr(main._cross_history, "_resolve_source_cursor", _fake_resolve_source_cursor)
         calls: dict[str, object] = {}
 
         def _fake_load_tail_for_source_conversation(**kwargs: object) -> list[dict[str, object]]:
             cid = str(kwargs["conversation_id"])
-            calls[cid] = (kwargs["since_cursor"], kwargs["min_timestamp"])
-            if cid.endswith(":latest") and kwargs["since_cursor"] == 4:
+            calls[cid] = (
+                kwargs["since_cursor"],
+                kwargs["min_timestamp"],
+                kwargs["include_floor_without_new"],
+            )
+            if cid.endswith(":latest") and kwargs["include_floor_without_new"]:
                 return [
                     {
                         "conversation_id": cid,
                         "source_conversation_index": 5,
                         "received_at": "2026-05-02T00:00:00+00:00",
-                        "content": "rebuilt web-source floor",
+                        "content": "latest participant floor",
                     }
                 ]
             return []
@@ -2568,11 +2572,11 @@ def test_load_cross_tail_from_sources_web_source_rewinds_latest_span_only(
     finally:
         con.close()
 
-    assert [row["content"] for row in rows] == ["rebuilt web-source floor"]
+    assert [row["content"] for row in rows] == ["latest participant floor"]
     assert calls == {
-        "whatsapp:dm:latest": (4, None),
-        "whatsapp:dm:stale": (12, None),
-        "whatsapp:dm:missing": (-1, 100),
+        "whatsapp:dm:latest": (12, None, True),
+        "whatsapp:dm:stale": (12, None, False),
+        "whatsapp:dm:not-participant": (12, None, False),
     }
 
 
