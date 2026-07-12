@@ -2534,7 +2534,6 @@ def test_load_cross_tail_from_sources_web_source_rewinds_latest_span_only(
             "last_display_segment_end_index, last_display_segment_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
         con.execute(sql, ("whatsapp:dm:latest", 112, "checkpoint", 100, "2026-05-02", 105, 112, "2026-05-02"))
-        con.execute(sql, ("whatsapp:dm:busy", 112, "checkpoint", 100, "2026-05-02", 105, 112, "2026-05-02"))
         con.execute(sql, ("whatsapp:dm:stale", 112, "checkpoint", 100, "2026-05-01", 105, 112, "2026-05-01"))
         con.execute(sql, ("whatsapp:dm:missing", 112, "missing", 100, "2026-05-02", 105, 112, "2026-05-02"))
         con.commit()
@@ -2557,16 +2556,6 @@ def test_load_cross_tail_from_sources_web_source_rewinds_latest_span_only(
                         "content": "rebuilt web-source floor",
                     }
                 ]
-            if cid.endswith(":busy") and kwargs["since_cursor"] == 4:
-                return [
-                    {
-                        "conversation_id": cid,
-                        "source_conversation_index": idx,
-                        "received_at": "2026-05-02T00:00:00+00:00",
-                        "content": "old display row" if idx == 5 else f"new row {idx}",
-                    }
-                    for idx in [5, *range(13, 21)]
-                ]
             return []
 
         monkeypatch.setattr(main, "_load_tail_for_source_conversation", _fake_load_tail_for_source_conversation)
@@ -2579,13 +2568,9 @@ def test_load_cross_tail_from_sources_web_source_rewinds_latest_span_only(
     finally:
         con.close()
 
-    contents = [row["content"] for row in rows]
-    assert "rebuilt web-source floor" in contents
-    assert "old display row" not in contents
-    assert {f"new row {idx}" for idx in range(13, 21)} <= set(contents)
+    assert [row["content"] for row in rows] == ["rebuilt web-source floor"]
     assert calls == {
         "whatsapp:dm:latest": (4, None),
-        "whatsapp:dm:busy": (4, None),
         "whatsapp:dm:stale": (12, None),
         "whatsapp:dm:missing": (-1, 100),
     }

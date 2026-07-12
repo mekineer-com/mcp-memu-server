@@ -543,7 +543,6 @@ def _load_cross_tail_from_sources(
                 rolling=False,
                 hermes_home_path=hermes_home_path,
             )
-            resolved_cursor = cursor
             display_start = row["last_display_segment_start_index"]
             display_end = row["last_display_segment_end_index"]
             display_at = str(row["last_display_segment_at"] or "").strip()
@@ -604,14 +603,6 @@ def _load_cross_tail_from_sources(
                 state_db_path=state_db_path,
                 min_timestamp=min_timestamp,
             )
-            if web_source and resolved_cursor >= 0:
-                post_cursor_tail = _conversation_sources.slice_tail_with_floor(
-                    tail,
-                    since_cursor=resolved_cursor,
-                    recent_fallback_messages=_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
-                )
-                if post_cursor_tail:
-                    tail = post_cursor_tail
         except Exception as exc:
             _m().logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)
             is_lid_gap = "LID↔phone mapping gap" in str(exc)
