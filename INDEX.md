@@ -24,6 +24,7 @@ mcp-memu-server/
 ├── app/services/sqlite_scope.py
 ├── app/services/crud_endpoints.py
 ├── app/services/state.py
+├── app/services/soul_summaries.py
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
 ├── config.json              # Runtime config (llm, storage, listen, categories, memu path)
 ├── config.example.json      # Template
@@ -68,8 +69,10 @@ mcp-memu-server/
 | `/souls/{soul_id}/intentions` | GET | Long-term life goals (`intentions_life_goals` table) |
 | `/souls/{soul_id}/relationships` | GET/POST | User-declared relationship entities |
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or soft-delete one relationship |
-| `/souls/{soul_id}/narrative_suggestion` | POST | Snapshot `narrative_self` before overwrite |
-| `/pending` | GET | Pending review queue: unapproved memories + categories |
+| `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot |
+| `/pending` | GET | Review queue: unapproved memories/categories plus persistent soul summaries and revision |
+| `/soul-summary/{kind}` | PATCH | Journal and approve an Atomic manual correction with snapshot guard |
+| `/soul-summary/{kind}/approve` | POST | Approve the displayed soul-summary value with snapshot guard |
 | `/memory/{item_id}/approve` | POST | Bless current memory value |
 | `/memory/{item_id}` | DELETE | Hard-delete with dependent cleanup (fts, edit_history, triples) |
 | `/category/{category_id}/approve` | POST | Bless current category summary |
@@ -109,6 +112,7 @@ mcp-memu-server/
 | `app/services/turn_contract.py` | `make_turn_system_prompt()`, `build_turn_prompt()`, `parse_turn_contract()`, `build_conversations_block()`, `build_turn_context_block()` — soul turn prompt construction and JSON contract parsing. Single entry point for all AI-facing chat display. |
 | `app/services/intention_state.py` | Intentions normalization and prompt formatting. Owns memory cache entry caps (`MAX_MEMORY_CACHE_ENTRIES`, `MAX_MEMORY_CACHE_ENTRY_CHARS`). |
 | `app/services/soul_state.py` | Soul-level singleton state: `narrative_self`, `all_categories_summary`, `memory_cache`, `intentions_active` |
+| `app/services/soul_summaries.py` | Journaled live/previous/approved soul-summary writes and review revision guards |
 | `app/services/message_log.py` | Cross-conversation history rendering: `format_merged_history()`, source-label derivation, WhatsApp normalization, activity-log block |
 | `app/services/xml_utils.py` | `extract_xml_fragment()`, `xml_text()` — used by consolidation pipeline |
 | `app/services/narrative_self.py` | `snapshot_previous_narrative_self()` — writes `evolved_into` Triple before consolidation overwrites identity |
