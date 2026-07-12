@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from app.services import soul_state, soul_summaries
+from app.services.state import write_conversation_state
 from app import main
 
 
@@ -117,6 +118,25 @@ def test_journal_failure_leaves_soul_summary_unchanged(monkeypatch) -> None:
             edited_by="pipeline",
         )
     assert soul_state.read(con)["all_categories_summary"] is None
+
+
+def test_all_categories_only_state_write_commits(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "soul.db"
+    sqlite3.connect(path).close()
+    monkeypatch.setattr(soul_summaries, "append_summary_journal", lambda **_kwargs: None)
+
+    write_conversation_state(
+        "chat",
+        sqlite_current_path=lambda _uid, _sid: path,
+        soul_id="s",
+        user_id="u",
+        updates={"all_categories_summary": "holistic"},
+    )
+
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    assert soul_state.read(con)["all_categories_summary"] == "holistic"
+    con.close()
 
 
 def test_soul_summary_route_rejects_stale_snapshot(monkeypatch, tmp_path) -> None:

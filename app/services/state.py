@@ -419,7 +419,7 @@ INSERT OR IGNORE INTO conversations (
                 f"UPDATE conversations SET {', '.join(assignments)} WHERE conversation_id = ?",
                 tuple(params),
             )
-        if soul_updates or field_updates:
+        if soul_updates or field_updates or all_categories_summary is not _MISSING:
             con.commit()
 
         state_out = conversation_state_from_row(conversation_state_row(con, cid))
