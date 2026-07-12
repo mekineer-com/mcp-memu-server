@@ -98,7 +98,7 @@ def default_config() -> dict[str, Any]:
             "defaults": ["personal_info", "preferences", "relationships", "goals"],
             "max_total": 12,
             "dynamic_category_cluster_size": 3,
-            "category_summary_target_length": 300,
+            "category_summary_target_words": 300,
         },
         "retrieve": {
             "apimw_enabled": True,

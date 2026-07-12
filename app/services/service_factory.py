@@ -296,8 +296,8 @@ def _get_service_from_payload(
             memorize_config["memory_categories"] = fixed_cats
         memorize_config["dynamic_category_cluster_size"] = int(cats_cfg.get("dynamic_category_cluster_size", 3) or 3)
         memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
-        memorize_config["category_summary_target_length"] = int(
-            cats_cfg.get("category_summary_target_length", 300) or 300
+        memorize_config["category_summary_target_words"] = int(
+            cats_cfg.get("category_summary_target_words", 300) or 300
         )
         memorize_config["episode_items_per_segment"] = episode_items_per_segment
         memorize_config["min_chunk_tokens"] = min_chunk_tokens
