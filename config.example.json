@@ -85,7 +85,7 @@
       }
     ],
     "max_total": 12,
-    "dynamic_category_cluster_size": 3
+    "dynamic_category_cluster_size": 10
   },
   "memorize": {
     "min_chunk_tokens": 8000,
