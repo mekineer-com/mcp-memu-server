@@ -3955,7 +3955,8 @@ def test_memory_graph_category_update_reserves_summary_revision(monkeypatch: pyt
     con.close()
 
     class _Svc:
-        def graph_memory(self, _item_id, *, where):
+        def graph_memory(self, item_id, *, where):
+            assert item_id == "category:c1"
             assert where == {"user_id": "u", "soul_id": "s"}
             return {"id": "category:c1", "summary": "shown"}
 
@@ -3967,7 +3968,7 @@ def test_memory_graph_category_update_reserves_summary_revision(monkeypatch: pyt
 
     out = asyncio.run(
         main.memory_graph_category_update(
-            category_id="c1",
+            category_id="category:c1",
             user_id="u",
             soul_id="s",
             payload={

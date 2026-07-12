@@ -2839,7 +2839,8 @@ def _reserve_category_snapshot(
     scope: dict[str, str],
     snapshot: tuple[int, str],
 ) -> int:
-    current = svc.graph_memory(f"category:{category_id}", where=scope)
+    item_id = category_id if category_id.startswith("category:") else f"category:{category_id}"
+    current = svc.graph_memory(item_id, where=scope)
     if current is None:
         raise HTTPException(status_code=404, detail="category not found")
     if str(current.get("summary") or "") != snapshot[1]:
@@ -2854,7 +2855,7 @@ def _reserve_category_snapshot(
         raise HTTPException(status_code=409, detail="summary_snapshot_stale") from exc
     finally:
         con.close()
-    current = svc.graph_memory(f"category:{category_id}", where=scope)
+    current = svc.graph_memory(item_id, where=scope)
     if current is None or str(current.get("summary") or "") != snapshot[1]:
         raise HTTPException(status_code=409, detail="summary_snapshot_stale")
     return revision
