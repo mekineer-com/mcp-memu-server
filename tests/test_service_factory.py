@@ -55,6 +55,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
 
     cfg = {
         "llm": {"step_models": {}},
+        "categories": {"category_summary_target_length": 275},
         "memorize": {"background_extra_messages_tokens": 321},
         "claude_code": True,
         "claude_code_model": "claude-opus-4-7",
@@ -112,6 +113,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert captured["claude_code_timeout_seconds"] == 3600
     assert captured["memorize_config"]["min_chunk_tokens"] == 4000
     assert captured["memorize_config"]["background_extra_messages_tokens"] == 321
+    assert captured["memorize_config"]["category_summary_target_length"] == 275
 
 
 def test_client_llm_profiles_suppress_server_step_model_routing(monkeypatch: pytest.MonkeyPatch) -> None:
