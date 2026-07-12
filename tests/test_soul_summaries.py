@@ -57,6 +57,21 @@ CREATE TABLE soul_state (
     check.close()
 
 
+def test_schema_ensure_commits_missing_singleton_row(tmp_path) -> None:
+    path = tmp_path / "empty.db"
+    con = sqlite3.connect(path)
+    soul_state.ensure_schema(con)
+    con.execute("DELETE FROM soul_state")
+    con.commit()
+    soul_state.ensure_schema(con)
+    assert not con.in_transaction
+    con.close()
+
+    check = sqlite3.connect(path)
+    assert check.execute("SELECT COUNT(*) FROM soul_state").fetchone()[0] == 1
+    check.close()
+
+
 def test_soul_summary_write_approve_and_journal(monkeypatch, tmp_path) -> None:
     journal = tmp_path / "journal.jsonl"
 

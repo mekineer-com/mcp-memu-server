@@ -27,7 +27,12 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         "all_categories_summary_approved": "TEXT",
         "summaries_revision": "INTEGER NOT NULL DEFAULT 0",
     }
-    needs_migration = not table_exists or any(name not in existing_cols for name in added_columns)
+    missing_row = table_exists and con.execute("SELECT COUNT(*) FROM soul_state").fetchone()[0] == 0
+    needs_migration = (
+        not table_exists
+        or missing_row
+        or any(name not in existing_cols for name in added_columns)
+    )
     owns_migration = needs_migration and not con.in_transaction
     if owns_migration:
         con.execute("BEGIN")
