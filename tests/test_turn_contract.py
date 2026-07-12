@@ -1,6 +1,6 @@
 import logging
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -8,12 +8,34 @@ import pytest
 from app import main
 from app.services.turn_contract import (
     _parse_attachment,
+    build_conversations_block,
     build_turn_prompt,
     format_relative_time_label,
     make_turn_identity_prompt,
     make_turn_system_prompt,
     parse_turn_contract,
 )
+
+
+def test_current_message_starts_today_after_yesterday_history() -> None:
+    yesterday = datetime.now().astimezone().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=1)
+
+    rendered = build_conversations_block(
+        history=[
+            {
+                "role": "assistant",
+                "content": "You're describing yourself, love ...",
+                "received_at": yesterday.isoformat(),
+            }
+        ],
+        conversation_id="whatsapp:dm:Marcos",
+        soul_name="Siri",
+        current_user_text="Let's head home. We've been ...",
+        current_user_name="Marcos",
+    )
+
+    assert "--- yesterday ---" in rendered
+    assert "--- today ---\n[Marcos] Let's head home." in rendered
 
 
 def test_parse_turn_contract_valid_json():

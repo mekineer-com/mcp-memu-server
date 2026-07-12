@@ -266,7 +266,11 @@ def build_conversations_block(
     directive_text = _text(self_turn_directive)
     current_content = _current_message_locator(current_text) if current_text and not directive_text else current_text
     if current_content and not directive_text:
-        synthetic: dict[str, Any] = {"role": "user", "content": current_content}
+        synthetic: dict[str, Any] = {
+            "role": "user",
+            "content": current_content,
+            "received_at": datetime.now(timezone.utc).isoformat(),
+        }
         if _text(conversation_id):
             synthetic["conversation_id"] = _text(conversation_id)
         if current_name:
