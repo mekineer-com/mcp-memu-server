@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import asyncio
 
 import pytest
 
 from app.services import soul_state, soul_summaries
+from app import main
 
 
 def _connection() -> sqlite3.Connection:
@@ -100,3 +102,64 @@ def test_journal_failure_leaves_soul_summary_unchanged(monkeypatch) -> None:
             edited_by="pipeline",
         )
     assert soul_state.read(con)["all_categories_summary"] is None
+
+
+def test_soul_summary_route_rejects_stale_snapshot(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "soul.db"
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    soul_state.ensure_schema(con)
+    con.execute(
+        "UPDATE soul_state SET narrative_self = 'current', narrative_self_approved = 'approved', summaries_revision = 4"
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
+    monkeypatch.setattr(soul_summaries, "append_summary_journal", lambda **_kwargs: None)
+
+    with pytest.raises(main.HTTPException) as exc_info:
+        asyncio.run(
+            main.soul_summary_update(
+                kind="narrative_self",
+                user_id="u",
+                soul_id="s",
+                payload={
+                    "summary": "edited",
+                    "displayed_summary": "current",
+                    "summaries_revision": 3,
+                },
+            )
+        )
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "summary_snapshot_stale"
+
+
+def test_soul_summary_route_updates_displayed_snapshot(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "soul.db"
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    soul_state.ensure_schema(con)
+    con.execute(
+        "UPDATE soul_state SET narrative_self = 'current', narrative_self_approved = 'approved', summaries_revision = 4"
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
+    monkeypatch.setattr(soul_summaries, "append_summary_journal", lambda **_kwargs: None)
+
+    out = asyncio.run(
+        main.soul_summary_update(
+            kind="narrative_self",
+            user_id="u",
+            soul_id="s",
+            payload={
+                "summary": "edited",
+                "displayed_summary": "current",
+                "summaries_revision": 4,
+            },
+        )
+    )
+    assert out["summary"] == "edited"
+    assert out["approved_summary"] == "edited"
+    assert out["previous_summary"] == "current"
+    assert out["summaries_revision"] == 5

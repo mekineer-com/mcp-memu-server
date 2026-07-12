@@ -3859,7 +3859,12 @@ def test_memory_graph_pending_endpoint_uses_scoped_service(monkeypatch: pytest.M
 
     out = asyncio.run(main.memory_graph_pending(user_id="u", soul_id="s"))
 
-    assert out == {"items": [], "categories": []}
+    assert out == {
+        "items": [],
+        "categories": [],
+        "soul_summaries": [],
+        "summaries_revision": 0,
+    }
     assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}
     assert calls["where"] == {"user_id": "u", "soul_id": "s"}
 
@@ -3940,6 +3945,39 @@ def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: 
     assert calls["where"] == {"user_id": "u", "soul_id": "s"}
     assert calls["edited_by"] == "surfer"
     assert calls["approved"] is True
+
+
+def test_memory_graph_category_update_reserves_summary_revision(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    path = tmp_path / "soul.db"
+    con = main._sqlite_connect(path)
+    con.row_factory = sqlite3.Row
+    main._soul_state.ensure_schema(con)
+    con.close()
+
+    class _Svc:
+        def graph_memory(self, _item_id, *, where):
+            assert where == {"user_id": "u", "soul_id": "s"}
+            return {"id": "category:c1", "summary": "shown"}
+
+        async def graph_update_category_summary(self, _item_id, **_kwargs):
+            return {"id": "category:c1", "summary": "edited"}
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
+
+    out = asyncio.run(
+        main.memory_graph_category_update(
+            category_id="c1",
+            user_id="u",
+            soul_id="s",
+            payload={
+                "summary": "edited",
+                "displayed_summary": "shown",
+                "summaries_revision": 0,
+            },
+        )
+    )
+    assert out["summaries_revision"] == 1
 
 
 def test_memory_graph_category_approve_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPatch):

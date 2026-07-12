@@ -48,15 +48,20 @@ def write_live(
     edited_by: str,
     approve: bool = False,
     advance_revision_on_noop: bool = False,
+    expected_revision: int | None = None,
+    displayed_summary: str | None = None,
 ) -> dict[str, Any]:
     _label, summary_id = _kind(kind)
     clean = str(summary or "").strip()
     soul_state.ensure_schema(con)
     row = con.execute(
-        f"SELECT {kind}, {kind}_approved FROM soul_state WHERE id = 1"
+        f"SELECT {kind}, {kind}_approved, summaries_revision FROM soul_state WHERE id = 1"
     ).fetchone()
     before_value = row[0]
     before = str(before_value or "")
+    guarded = expected_revision is not None
+    if guarded and (int(row[2] or 0) != expected_revision or before != displayed_summary):
+        raise ValueError("summary_snapshot_stale")
     if not clean:
         if advance_revision_on_noop:
             con.execute("UPDATE soul_state SET summaries_revision = summaries_revision + 1 WHERE id = 1")
@@ -64,11 +69,14 @@ def write_live(
         raise ValueError("summary is required")
     if before == clean:
         if approve and str(row[1] or "") != clean:
-            con.execute(
-                f"UPDATE soul_state SET {kind}_approved = ?, summaries_revision = summaries_revision + 1 WHERE id = 1",
-                (clean,),
+            result = con.execute(
+                f"UPDATE soul_state SET {kind}_approved = ?, summaries_revision = summaries_revision + 1 "
+                f"WHERE id = 1{' AND summaries_revision = ?' if guarded else ''}",
+                (clean, expected_revision) if guarded else (clean,),
             )
-        elif advance_revision_on_noop:
+            if result.rowcount != 1:
+                raise ValueError("summary_snapshot_stale")
+        elif guarded or advance_revision_on_noop:
             con.execute("UPDATE soul_state SET summaries_revision = summaries_revision + 1 WHERE id = 1")
         return soul_state.read(con)
 
@@ -84,25 +92,42 @@ def write_live(
     params: list[Any] = [before_value, clean]
     if approve:
         params.append(clean)
-    con.execute(
+    where = " AND summaries_revision = ?" if guarded else ""
+    if guarded:
+        params.append(expected_revision)
+    result = con.execute(
         f"UPDATE soul_state SET {kind}_previous = ?, {kind} = ?{approved}, "
-        "summaries_revision = summaries_revision + 1 WHERE id = 1",
+        f"summaries_revision = summaries_revision + 1 WHERE id = 1{where}",
         tuple(params),
     )
+    if result.rowcount != 1:
+        raise ValueError("summary_snapshot_stale")
     return soul_state.read(con)
 
 
-def approve(con: sqlite3.Connection, *, kind: str) -> dict[str, Any]:
+def approve(
+    con: sqlite3.Connection,
+    *,
+    kind: str,
+    expected_revision: int | None = None,
+    displayed_summary: str | None = None,
+) -> dict[str, Any]:
     _kind(kind)
     soul_state.ensure_schema(con)
-    row = con.execute(f"SELECT {kind} FROM soul_state WHERE id = 1").fetchone()
+    row = con.execute(f"SELECT {kind}, summaries_revision FROM soul_state WHERE id = 1").fetchone()
     current = str(row[0] or "").strip()
     if not current:
         raise ValueError("summary is required")
-    con.execute(
-        f"UPDATE soul_state SET {kind}_approved = ?, summaries_revision = summaries_revision + 1 WHERE id = 1",
-        (current,),
+    guarded = expected_revision is not None
+    if guarded and (int(row[1] or 0) != expected_revision or current != displayed_summary):
+        raise ValueError("summary_snapshot_stale")
+    result = con.execute(
+        f"UPDATE soul_state SET {kind}_approved = ?, summaries_revision = summaries_revision + 1 "
+        f"WHERE id = 1{' AND summaries_revision = ?' if guarded else ''}",
+        (current, expected_revision) if guarded else (current,),
     )
+    if result.rowcount != 1:
+        raise ValueError("summary_snapshot_stale")
     return soul_state.read(con)
 
 

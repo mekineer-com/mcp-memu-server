@@ -83,6 +83,7 @@ from app.services import mcp_tools as _mcp_tools
 from app.services import message_log as _message_log
 from app.services import retrieve_orchestration as _retrieve_orchestration
 from app.services import soul_state as _soul_state
+from app.services import soul_summaries as _soul_summaries
 from app.services.conversation_id import canonical_conversation_id as _canonical_conversation_id
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import memorize_endpoint as _memorize_endpoint
@@ -2785,7 +2786,151 @@ async def memory_graph_pending(
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
     scope = {"user_id": uid, "soul_id": sid}
     svc = _get_service_from_payload({"user": scope})
-    return svc.graph_list_pending(where=scope)
+    pending = svc.graph_list_pending(where=scope)
+    db_path = _sqlite_current_path(uid, sid)
+    pending["soul_summaries"] = []
+    pending["summaries_revision"] = 0
+    if db_path is not None and db_path.exists():
+        con = _sqlite_connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            pending["soul_summaries"] = _soul_summaries.list_for_review(con)
+            pending["summaries_revision"] = _soul_summaries.current_revision(con)
+        finally:
+            con.close()
+    return pending
+
+
+def _summary_snapshot(payload: Mapping[str, Any]) -> tuple[int, str] | None:
+    has_revision = "summaries_revision" in payload
+    has_displayed = "displayed_summary" in payload
+    if has_revision != has_displayed:
+        raise HTTPException(status_code=400, detail="summaries_revision and displayed_summary are required together")
+    if not has_revision:
+        return None
+    revision = payload["summaries_revision"]
+    displayed = payload["displayed_summary"]
+    if isinstance(revision, bool) or not isinstance(revision, int) or not isinstance(displayed, str):
+        raise HTTPException(status_code=400, detail="invalid summary snapshot")
+    return revision, displayed
+
+
+def _summary_db(user_id: str, soul_id: str) -> tuple[sqlite3.Connection, dict[str, str]]:
+    db_path = _sqlite_current_path(user_id, soul_id)
+    if db_path is None or not db_path.exists():
+        raise HTTPException(status_code=404, detail="soul state not found")
+    con = _sqlite_connect(db_path)
+    con.row_factory = sqlite3.Row
+    _soul_state.ensure_schema(con)
+    return con, {"user_id": user_id, "soul_id": soul_id}
+
+
+def _soul_summary_response(con: sqlite3.Connection, kind: str) -> dict[str, Any]:
+    item = next((row for row in _soul_summaries.list_for_review(con) if row["kind"] == kind), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="soul summary not found")
+    return {**item, "summaries_revision": _soul_summaries.current_revision(con)}
+
+
+def _reserve_category_snapshot(
+    svc: Any,
+    *,
+    category_id: str,
+    scope: dict[str, str],
+    snapshot: tuple[int, str],
+) -> int:
+    current = svc.graph_memory(f"category:{category_id}", where=scope)
+    if current is None:
+        raise HTTPException(status_code=404, detail="category not found")
+    if str(current.get("summary") or "") != snapshot[1]:
+        raise HTTPException(status_code=409, detail="summary_snapshot_stale")
+    con, _scope = _summary_db(scope["user_id"], scope["soul_id"])
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        revision = _soul_summaries.reserve_revision(con, snapshot[0])
+        con.commit()
+    except ValueError as exc:
+        con.rollback()
+        raise HTTPException(status_code=409, detail="summary_snapshot_stale") from exc
+    finally:
+        con.close()
+    current = svc.graph_memory(f"category:{category_id}", where=scope)
+    if current is None or str(current.get("summary") or "") != snapshot[1]:
+        raise HTTPException(status_code=409, detail="summary_snapshot_stale")
+    return revision
+
+
+@app.patch("/soul-summary/{kind}", operation_id="soul_summary_update")
+async def soul_summary_update(
+    kind: str,
+    user_id: str,
+    soul_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    summary = payload.get("summary")
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    if not isinstance(summary, str) or not summary.strip():
+        raise HTTPException(status_code=400, detail="summary is required")
+    snapshot = _summary_snapshot(payload)
+    if snapshot is None:
+        raise HTTPException(status_code=400, detail="summary snapshot is required")
+    con, scope = _summary_db(uid, sid)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        _soul_summaries.write_live(
+            con,
+            kind=kind,
+            summary=summary,
+            scope=scope,
+            edited_by="atomic:user",
+            approve=True,
+            expected_revision=snapshot[0],
+            displayed_summary=snapshot[1],
+        )
+        con.commit()
+        return _soul_summary_response(con, kind)
+    except ValueError as exc:
+        con.rollback()
+        status = 409 if str(exc) == "summary_snapshot_stale" else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    finally:
+        con.close()
+
+
+@app.post("/soul-summary/{kind}/approve", operation_id="soul_summary_approve")
+async def soul_summary_approve(
+    kind: str,
+    user_id: str,
+    soul_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    snapshot = _summary_snapshot(payload)
+    if snapshot is None:
+        raise HTTPException(status_code=400, detail="summary snapshot is required")
+    con, _scope = _summary_db(uid, sid)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        _soul_summaries.approve(
+            con,
+            kind=kind,
+            expected_revision=snapshot[0],
+            displayed_summary=snapshot[1],
+        )
+        con.commit()
+        return _soul_summary_response(con, kind)
+    except ValueError as exc:
+        con.rollback()
+        status = 409 if str(exc) == "summary_snapshot_stale" else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    finally:
+        con.close()
 
 
 @app.patch("/memory/{item_id}", operation_id="memory_graph_item_update")
@@ -2879,6 +3024,12 @@ async def memory_graph_category_update(
         raise HTTPException(status_code=400, detail="summary is required")
     scope = {"user_id": uid, "soul_id": sid}
     svc = _get_service_from_payload({"user": scope})
+    snapshot = _summary_snapshot(payload)
+    revision = (
+        _reserve_category_snapshot(svc, category_id=category_id, scope=scope, snapshot=snapshot)
+        if snapshot is not None
+        else None
+    )
     try:
         item = await svc.graph_update_category_summary(
             category_id,
@@ -2893,6 +3044,8 @@ async def memory_graph_category_update(
         item = None
     if item is None:
         raise HTTPException(status_code=404, detail="category not found")
+    if revision is not None:
+        item = {**item, "summaries_revision": revision}
     return item
 
 
@@ -2901,6 +3054,7 @@ async def memory_graph_category_approve(
     category_id: str,
     user_id: str,
     soul_id: str,
+    payload: dict[str, Any] | None = None,
 ):
     uid = str(user_id or "").strip()
     sid = str(soul_id or "").strip()
@@ -2908,12 +3062,20 @@ async def memory_graph_category_approve(
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
     scope = {"user_id": uid, "soul_id": sid}
     svc = _get_service_from_payload({"user": scope})
+    snapshot = _summary_snapshot(payload or {})
+    revision = (
+        _reserve_category_snapshot(svc, category_id=category_id, scope=scope, snapshot=snapshot)
+        if snapshot is not None
+        else None
+    )
     try:
         item = svc.graph_approve_category(category_id, where=scope)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if item is None:
         raise HTTPException(status_code=404, detail="category not found")
+    if revision is not None:
+        item = {**item, "summaries_revision": revision}
     return item
 
 
