@@ -31,6 +31,7 @@ from app.services.intention_state import (
     format_intentions_for_prompt,
 )
 from app.services.narrative_self import snapshot_previous_narrative_self
+from app.services import soul_summaries as _soul_summaries
 from app.services.payload import parse_iso_datetime
 from app.services import soul_state as _soul_state
 from app.services.turn_contract import DEFAULT_SOUL_CARD, format_memory_legend, format_memory_line, format_shaped_by_line, format_relative_time_label, format_time_anchor
@@ -905,7 +906,13 @@ def write_consolidation_outputs(
                 "VALUES (?, ?, ?, ?)",
                 (narrative_id, narrative_self, deps.json_to_db([]), now_iso),
             )
-            _soul_state.write(con, {"narrative_self": narrative_self})
+            _soul_summaries.write_live(
+                con,
+                kind="narrative_self",
+                summary=narrative_self,
+                scope={"user_id": user_id, "soul_id": soul_id},
+                edited_by="consolidation",
+            )
 
         life_goal_rows = con.execute(
             """

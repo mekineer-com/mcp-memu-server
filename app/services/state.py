@@ -19,6 +19,7 @@ from app.db import (
 )
 from app.services.conversation_id import canonical_conversation_id
 from app.services import soul_state as _soul_state
+from app.services import soul_summaries as _soul_summaries
 
 
 _MISSING = object()
@@ -233,6 +234,7 @@ INSERT OR IGNORE INTO conversations (
             existing_state = conversation_state_from_row(conversation_state_row(con, cid)) or seed
 
         raw_updates = dict(updates) if updates else {}
+        all_categories_summary = raw_updates.pop("all_categories_summary", _MISSING)
         soul_updates = {k: raw_updates.pop(k) for k in list(raw_updates) if k in _soul_state._VALID_FIELDS}
         for append_key, field in (
             ("append_retrieval_ids_since_consolidation", "retrieval_ids_since_consolidation"),
@@ -244,6 +246,15 @@ INSERT OR IGNORE INTO conversations (
                 soul_updates[field] = merge_unique_text_lists(current.get(field), appended)
         if soul_updates:
             _soul_state.write(con, soul_updates)
+        if all_categories_summary is not _MISSING:
+            _soul_summaries.write_live(
+                con,
+                kind="all_categories_summary",
+                summary=all_categories_summary,
+                scope={"user_id": scoped_user, "soul_id": scoped_soul},
+                edited_by="pipeline",
+                advance_revision_on_noop=True,
+            )
         append_pending_segment_ids = raw_updates.pop("append_pending_segment_ids", None)
         field_updates: dict[str, Any] = {}
 

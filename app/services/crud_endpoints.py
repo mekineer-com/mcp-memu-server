@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from app.services.payload import strip_markdown_code_fence
 from app.services import soul_state as _soul_state
+from app.services import soul_summaries as _soul_summaries
 
 _RELATIONSHIP_NAME_MAX_CHARS = 50
 _RELATIONSHIP_TEXT_MAX_CHARS = 50
@@ -645,14 +646,9 @@ async def narrative_suggestion_endpoint(
         )
 
     if new_narrative and db_path is not None and current_narrative != new_narrative:
+        old_embedding = None
         if current_narrative:
             [old_embedding] = await svc.embed([current_narrative], profile="embedding")
-            snapshot_previous_narrative_self(
-                svc,
-                scope=scope,
-                old_text=current_narrative,
-                old_embedding=old_embedding,
-            )
 
         sqlite_ensure_nonempty(db_path)
         con = sqlite_connect(db_path)
@@ -666,10 +662,23 @@ async def narrative_suggestion_endpoint(
                 "VALUES (?, ?, ?, ?)",
                 (narrative_id, new_narrative, "[]", now_iso),
             )
-            _soul_state.write(con, {"narrative_self": new_narrative})
+            _soul_summaries.write_live(
+                con,
+                kind="narrative_self",
+                summary=new_narrative,
+                scope=scope,
+                edited_by="narrative_suggestion",
+            )
             con.commit()
         finally:
             con.close()
+        if current_narrative:
+            snapshot_previous_narrative_self(
+                svc,
+                scope=scope,
+                old_text=current_narrative,
+                old_embedding=old_embedding,
+            )
         return {"narrative_self": new_narrative}
 
     if current_narrative:
