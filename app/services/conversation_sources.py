@@ -50,6 +50,22 @@ def _hermes_base(hermes_home: Path | None = None) -> Path:
     return raw.expanduser().resolve()
 
 
+def _load_whatsapp_owner_tokens(hermes_base: Path) -> set[str]:
+    creds_path = hermes_base / "whatsapp" / "session" / "creds.json"
+    try:
+        data = json.loads(creds_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    me = data.get("me") if isinstance(data, dict) else None
+    if not isinstance(me, dict):
+        return set()
+    return {
+        token
+        for key in ("id", "lid")
+        if (token := _normalize_whatsapp_match_token(str(me.get(key) or "")))
+    }
+
+
 def _resolve_hermes_paths(
     *,
     hermes_home: Path | None = None,
@@ -480,14 +496,26 @@ def _whatsapp_role_field(role: str, *, owner_human: bool = False) -> dict[str, s
     return {}
 
 
-def _whatsapp_state_owner_human(row: sqlite3.Row, *, conversation_id: str, role: str) -> bool:
+def _whatsapp_state_owner_human(
+    row: sqlite3.Row,
+    *,
+    conversation_id: str,
+    role: str,
+    owner_tokens: set[str],
+) -> bool:
     chat_type, chat_id = _split_whatsapp_conversation_id(conversation_id)
     sender_id = str(row["sender_id"] or "").strip()
+    sender_token = _normalize_whatsapp_match_token(sender_id)
     return (
         role == "user"
-        and chat_type == "dm"
-        and bool(sender_id)
-        and _normalize_whatsapp_match_token(sender_id) != _normalize_whatsapp_match_token(chat_id)
+        and bool(sender_token)
+        and (
+            sender_token in owner_tokens
+            or (
+                chat_type == "dm"
+                and sender_token != _normalize_whatsapp_match_token(chat_id)
+            )
+        )
     )
 
 
@@ -977,7 +1005,7 @@ def _load_whatsapp_live_rows(
     state_db_path: Path | None,
     min_timestamp: float | None,
     after_message_id: int | None = None,
-) -> tuple[list[sqlite3.Row], str, str, dict[str, str], set[str]]:
+) -> tuple[list[sqlite3.Row], str, str, dict[str, str], set[str], set[str]]:
     sessions_path, db_path = _resolve_hermes_paths(
         hermes_home=hermes_home,
         sessions_index_path=sessions_index_path,
@@ -1032,7 +1060,14 @@ def _load_whatsapp_live_rows(
     finally:
         con.close()
 
-    return rows, chat_name, f"whatsapp:{chat_type}", session_user_name, primary_session_ids
+    return (
+        rows,
+        chat_name,
+        f"whatsapp:{chat_type}",
+        session_user_name,
+        primary_session_ids,
+        _load_whatsapp_owner_tokens(db_path.parent),
+    )
 
 
 def _whatsapp_live_row_to_tail(
@@ -1043,6 +1078,7 @@ def _whatsapp_live_row_to_tail(
     chat_name: str,
     session_user_name: dict[str, str],
     source_index: int,
+    owner_tokens: set[str],
 ) -> dict[str, Any] | None:
     content = str(row["content"] or "").strip()
     if not content or _is_gateway_notice(content):
@@ -1060,7 +1096,12 @@ def _whatsapp_live_row_to_tail(
     return {
         **_whatsapp_role_field(
             role,
-            owner_human=_whatsapp_state_owner_human(row, conversation_id=conversation_id, role=role),
+            owner_human=_whatsapp_state_owner_human(
+                row,
+                conversation_id=conversation_id,
+                role=role,
+                owner_tokens=owner_tokens,
+            ),
         ),
         "speaker": speaker,
         "chat_name": chat_name,
@@ -1085,12 +1126,14 @@ def load_whatsapp_tail(
     state_db_path: Path | None = None,
     min_timestamp: float | None = None,
 ) -> list[dict[str, Any]]:
-    rows, chat_name, source_label, session_user_name, primary_session_ids = _load_whatsapp_live_rows(
-        conversation_id=conversation_id,
-        hermes_home=hermes_home,
-        sessions_index_path=sessions_index_path,
-        state_db_path=state_db_path,
-        min_timestamp=min_timestamp,
+    rows, chat_name, source_label, session_user_name, primary_session_ids, owner_tokens = (
+        _load_whatsapp_live_rows(
+            conversation_id=conversation_id,
+            hermes_home=hermes_home,
+            sessions_index_path=sessions_index_path,
+            state_db_path=state_db_path,
+            min_timestamp=min_timestamp,
+        )
     )
 
     all_rows: list[dict[str, Any]] = []
@@ -1113,6 +1156,7 @@ def load_whatsapp_tail(
             chat_name=chat_name,
             session_user_name=session_user_name,
             source_index=source_index,
+            owner_tokens=owner_tokens,
         )
         if item is not None:
             all_rows.append(item)
@@ -1134,13 +1178,15 @@ def load_whatsapp_tail_after_message_id(
     min_timestamp: float | None = None,
 ) -> list[dict[str, Any]]:
     cursor_id = int(after_message_id or 0)
-    rows, chat_name, source_label, session_user_name, _primary_session_ids = _load_whatsapp_live_rows(
-        conversation_id=conversation_id,
-        hermes_home=hermes_home,
-        sessions_index_path=sessions_index_path,
-        state_db_path=state_db_path,
-        min_timestamp=min_timestamp,
-        after_message_id=cursor_id,
+    rows, chat_name, source_label, session_user_name, _primary_session_ids, owner_tokens = (
+        _load_whatsapp_live_rows(
+            conversation_id=conversation_id,
+            hermes_home=hermes_home,
+            sessions_index_path=sessions_index_path,
+            state_db_path=state_db_path,
+            min_timestamp=min_timestamp,
+            after_message_id=cursor_id,
+        )
     )
 
     out: list[dict[str, Any]] = []
@@ -1153,6 +1199,7 @@ def load_whatsapp_tail_after_message_id(
             chat_name=chat_name,
             session_user_name=session_user_name,
             source_index=row_id,
+            owner_tokens=owner_tokens,
         )
         if item is not None:
             out.append({"id": row_id, **item})

@@ -333,6 +333,62 @@ def test_load_whatsapp_tail_prefers_per_message_sender_fields(tmp_path: Path) ->
     assert [row.get("role") for row in rows] == ["user", "assistant", None]
 
 
+def test_load_whatsapp_tail_keeps_only_group_owner_as_user(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sessions_path = sessions_dir / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    creds_dir = tmp_path / "whatsapp" / "session"
+    creds_dir.mkdir(parents=True)
+    creds_dir.joinpath("creds.json").write_text(
+        json.dumps(
+            {
+                "me": {
+                    "id": "12025550199:19@s.whatsapp.net",
+                    "lid": "111222333444555:19@lid",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent:main:whatsapp:group:family@g.us": {
+                    "session_id": "s1",
+                    "platform": "whatsapp",
+                    "origin": {
+                        "platform": "whatsapp",
+                        "chat_type": "group",
+                        "chat_id": "family@g.us",
+                        "chat_name": "Family",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_state_db(
+        state_db_path,
+        [
+            ("s1", "user", "owner message", 100.0, "12025550199@s.whatsapp.net", "Account Owner"),
+            ("s1", "user", "member message", 101.0, "12025550200@s.whatsapp.net", "Group Member"),
+        ],
+    )
+
+    rows = conversation_sources.load_whatsapp_tail(
+        conversation_id="whatsapp:group:family@g.us",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        hermes_home=tmp_path,
+    )
+
+    assert [(row.get("role"), row["speaker"]) for row in rows] == [
+        ("user", "Account Owner"),
+        (None, "Group Member"),
+    ]
+
+
 def test_load_whatsapp_tail_preserves_state_db_source_message_id(tmp_path: Path) -> None:
     sessions_path = tmp_path / "sessions.json"
     state_db_path = tmp_path / "state.db"
