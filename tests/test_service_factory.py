@@ -113,6 +113,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert captured["claude_code_timeout_seconds"] == 3600
     assert captured["memorize_config"]["min_chunk_tokens"] == 4000
     assert captured["memorize_config"]["background_extra_messages_tokens"] == 321
+    assert captured["memorize_config"]["dynamic_category_cluster_size"] == 10
     assert captured["memorize_config"]["category_summary_target_words"] == 275
 
 

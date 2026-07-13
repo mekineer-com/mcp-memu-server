@@ -81,3 +81,7 @@ def test_default_whatsapp_paths_point_at_channels_data() -> None:
     assert hermes["state_db_path"].endswith("/hermes-channels/data/state.db")
     assert hermes["sessions_index_path"].endswith("/hermes-channels/data/sessions/sessions.json")
     assert hermes["whatsapp_web_source_db"].endswith("/hermes-channels/data/whatsapp/web_source.db")
+
+
+def test_default_dynamic_category_cluster_size_matches_engine() -> None:
+    assert default_config()["categories"]["dynamic_category_cluster_size"] == 10

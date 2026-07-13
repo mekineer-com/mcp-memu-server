@@ -96,7 +96,7 @@ def default_config() -> dict[str, Any]:
         "categories": {
             "defaults": ["personal_info", "preferences", "relationships", "goals"],
             "max_total": 12,
-            "dynamic_category_cluster_size": 3,
+            "dynamic_category_cluster_size": 10,
             "category_summary_target_words": 300,
         },
         "retrieve": {
