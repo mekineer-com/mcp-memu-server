@@ -426,7 +426,7 @@ async def test_atomic_canvas_source_threads_scope_and_edges(monkeypatch: pytest.
         def graph_atomic_canvas_source(self, **kwargs: Any) -> dict[str, Any]:
             captured.update(kwargs)
             return {
-                "atoms": [{"id": "memory:m1"}],
+                "atoms": [{"id": "memory:m1", "embedding_f32_le_b64": "AACAPwAAAAA="}],
                 "edges": [{"source": "memory:m1", "target": "memory:m2", "weight": 0.8}],
                 "count": 1,
                 "total_count": 1,
@@ -437,6 +437,8 @@ async def test_atomic_canvas_source_threads_scope_and_edges(monkeypatch: pytest.
     out = await main.atomic_memory_canvas_source(user_id="Marcos", soul_id="Siri", limit=7)
 
     assert out["edges"][0]["weight"] == 0.8
+    assert out["atoms"][0]["embedding_f32_le_b64"] == "AACAPwAAAAA="
+    assert "embedding" not in out["atoms"][0]
     assert captured == {"where": {"user_id": "Marcos", "soul_id": "Siri"}, "limit": 7}
 
 
