@@ -214,19 +214,14 @@ def _log_file_path(cfg: dict) -> Path:
     return (ROOT / "mcp-memu-server.log").resolve()
 
 
-_QUIET_PATHS = {
-    "/health",
-    "/diag/memorize/pending",
-    "/memorize/progress",
-    "/categories/search",
-    "/integration/whatsapp/outbounds/claim",
-}
-
-
 class _QuietAccessFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        return not any(p in msg for p in _QUIET_PATHS)
+        if record.name != "uvicorn.access":
+            return True
+        try:
+            return int(record.getMessage().rsplit(" ", 1)[-1]) >= 400
+        except ValueError:
+            return True
 
 
 def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:

@@ -38,13 +38,13 @@ def test_enforce_single_instance_clears_live_foreign_pid(tmp_path: Path, monkeyp
     assert not pid_file.exists()
 
 
-def test_quiet_access_filter_suppresses_whatsapp_outbound_claim() -> None:
+def test_quiet_access_filter_suppresses_successful_request() -> None:
     record = logging.LogRecord(
         name="uvicorn.access",
         level=logging.INFO,
         pathname=__file__,
         lineno=1,
-        msg='127.0.0.1:54446 - "POST /integration/whatsapp/outbounds/claim HTTP/1.1" 200',
+        msg='127.0.0.1:54446 - "GET /api/canvas/global HTTP/1.1" 200',
         args=(),
         exc_info=None,
     )
@@ -52,15 +52,29 @@ def test_quiet_access_filter_suppresses_whatsapp_outbound_claim() -> None:
     assert server_run._QuietAccessFilter().filter(record) is False
 
 
-def test_quiet_access_filter_suppresses_memorize_pending_poll() -> None:
+def test_quiet_access_filter_keeps_failed_request() -> None:
     record = logging.LogRecord(
         name="uvicorn.access",
         level=logging.INFO,
         pathname=__file__,
         lineno=1,
-        msg='127.0.0.1:53774 - "GET /diag/memorize/pending?soul_id=Siri&user_id=Marcos HTTP/1.1" 200',
+        msg='127.0.0.1:53774 - "GET /api/canvas/global HTTP/1.1" 500',
         args=(),
         exc_info=None,
     )
 
-    assert server_run._QuietAccessFilter().filter(record) is False
+    assert server_run._QuietAccessFilter().filter(record) is True
+
+
+def test_quiet_access_filter_keeps_application_log() -> None:
+    record = logging.LogRecord(
+        name="uvicorn.error",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="Application startup complete.",
+        args=(),
+        exc_info=None,
+    )
+
+    assert server_run._QuietAccessFilter().filter(record) is True
