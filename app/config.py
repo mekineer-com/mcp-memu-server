@@ -89,7 +89,6 @@ def default_config() -> dict[str, Any]:
             "home": str(channels_data),
             "state_db_path": str(channels_data / "state.db"),
             "sessions_index_path": str(channels_data / "sessions" / "sessions.json"),
-            "whatsapp_history_source": "web_source",
             "whatsapp_web_source_db": str(channels_data / "whatsapp" / "web_source.db"),
             "whatsapp_reply_prefix": "",
         },

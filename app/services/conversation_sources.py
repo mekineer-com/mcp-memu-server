@@ -13,7 +13,6 @@ from typing import Any
 from app.config import sanitize_db_filename
 from app.services import memorize_endpoint
 
-_NUMERIC_LIKE_RE = re.compile(r"^[0-9+\-() .]+$")
 _ST_SNAPSHOT_FILE = "latest_history.json"
 _GATEWAY_NOTICE_PREFIXES = (
     "⚠️ Gateway shutting down — ",
@@ -48,22 +47,6 @@ def _hermes_base(hermes_home: Path | None = None) -> Path:
     fallback = Path(__file__).resolve().parents[3] / "hermes-channels" / "data"
     raw = hermes_home or Path(os.getenv("HERMES_HOME") or os.getenv("CHANNELS_HOME") or fallback)
     return raw.expanduser().resolve()
-
-
-def _load_whatsapp_owner_tokens(hermes_base: Path) -> set[str]:
-    creds_path = hermes_base / "whatsapp" / "session" / "creds.json"
-    try:
-        data = json.loads(creds_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return set()
-    me = data.get("me") if isinstance(data, dict) else None
-    if not isinstance(me, dict):
-        return set()
-    return {
-        token
-        for key in ("id", "lid")
-        if (token := _normalize_whatsapp_match_token(str(me.get(key) or "")))
-    }
 
 
 def _resolve_hermes_paths(
@@ -122,19 +105,6 @@ def load_soul_active_since(
         raise RuntimeError(
             f"invalid active_since for soul {selected!r} in {db_path}: {row[0]!r}"
         ) from exc
-
-
-def _messages_source_message_id_select(con: sqlite3.Connection, db_path: Path) -> str:
-    columns = {
-        str(row[1])
-        for row in con.execute("PRAGMA table_info(messages)").fetchall()
-        if len(row) > 1
-    }
-    if "source_message_id" in columns:
-        return "source_message_id"
-    raise RuntimeError(
-        f"state.db missing required column messages.source_message_id: {db_path}"
-    )
 
 
 def _parse_session_key_chat_token(session_key: str, *, chat_type: str) -> str:
@@ -198,52 +168,6 @@ def _collect_whatsapp_session_entries(
             }
         )
     return out, chat_type
-
-
-def _pick_chat_name(entries: list[dict[str, Any]], fallback: str, *, chat_type: str) -> str:
-    def collect_names(keys: tuple[str, ...]) -> list[str]:
-        names: list[str] = []
-        seen: set[str] = set()
-        for entry in entries:
-            for key in keys:
-                value = str(entry.get(key) or "").strip()
-                if value and value not in seen:
-                    seen.add(value)
-                    names.append(value)
-        return names
-
-    if chat_type != "group":
-        chat_names = collect_names(("chat_name",))
-        non_numeric_chat_names = [name for name in chat_names if not _NUMERIC_LIKE_RE.fullmatch(name)]
-        if non_numeric_chat_names:
-            return min(non_numeric_chat_names, key=lambda name: (len(name), name))
-
-        user_names = collect_names(("user_name",))
-        non_numeric_user_names = [name for name in user_names if not _NUMERIC_LIKE_RE.fullmatch(name)]
-        if non_numeric_user_names:
-            return min(non_numeric_user_names, key=lambda name: (len(name), name))
-        if chat_names:
-            return min(chat_names, key=lambda name: (len(name), name))
-        if user_names:
-            return min(user_names, key=lambda name: (len(name), name))
-        return fallback
-
-    names: list[str] = []
-    seen: set[str] = set()
-    for entry in entries:
-        value = str(entry.get("chat_name") or "").strip()
-        if value and value not in seen:
-            seen.add(value)
-            names.append(value)
-    if not names:
-        for entry in entries:
-            value = str(entry.get("user_name") or "").strip()
-            if value and value not in seen:
-                seen.add(value)
-                names.append(value)
-    if not names:
-        return fallback
-    return min(names, key=lambda name: (int(bool(_NUMERIC_LIKE_RE.fullmatch(name))), len(name), name))
 
 
 def _expand_session_ids_with_lineage(db_path: Path, session_ids: list[str]) -> list[str]:
@@ -494,29 +418,6 @@ def _whatsapp_role_field(role: str, *, owner_human: bool = False) -> dict[str, s
     if role == "assistant" or (owner_human and role == "user"):
         return {"role": role}
     return {}
-
-
-def _whatsapp_state_owner_human(
-    row: sqlite3.Row,
-    *,
-    conversation_id: str,
-    role: str,
-    owner_tokens: set[str],
-) -> bool:
-    chat_type, chat_id = _split_whatsapp_conversation_id(conversation_id)
-    sender_id = str(row["sender_id"] or "").strip()
-    sender_token = _normalize_whatsapp_match_token(sender_id)
-    return (
-        role == "user"
-        and bool(sender_token)
-        and (
-            sender_token in owner_tokens
-            or (
-                chat_type == "dm"
-                and sender_token != _normalize_whatsapp_match_token(chat_id)
-            )
-        )
-    )
 
 
 def _web_source_row_to_tail(
@@ -995,212 +896,3 @@ def load_atomic_tail(
         recent_fallback_messages=recent_fallback_messages,
         source_label="atomic",
     )
-
-
-def _load_whatsapp_live_rows(
-    *,
-    conversation_id: str,
-    hermes_home: Path | None,
-    sessions_index_path: Path | None,
-    state_db_path: Path | None,
-    min_timestamp: float | None,
-    after_message_id: int | None = None,
-) -> tuple[list[sqlite3.Row], str, str, dict[str, str], set[str], set[str]]:
-    sessions_path, db_path = _resolve_hermes_paths(
-        hermes_home=hermes_home,
-        sessions_index_path=sessions_index_path,
-        state_db_path=state_db_path,
-    )
-    entries, chat_type = _collect_whatsapp_session_entries(
-        _load_sessions_index(sessions_path),
-        conversation_id=conversation_id,
-    )
-    if not entries:
-        raise RuntimeError(f"no WhatsApp session mapping for conversation_id={conversation_id!r}")
-    if not db_path.exists():
-        raise FileNotFoundError(f"Hermes state db missing: {db_path}")
-
-    fallback_name = str(conversation_id).split(":", 2)[-1].strip() or "contact"
-    chat_name = _pick_chat_name(entries, fallback_name, chat_type=chat_type)
-    session_ids: list[str] = []
-    session_user_name: dict[str, str] = {}
-    for entry in entries:
-        sid = str(entry.get("session_id") or "").strip()
-        if sid and sid not in session_user_name:
-            session_ids.append(sid)
-            session_user_name[sid] = str(entry.get("user_name") or "").strip()
-    primary_session_ids = set(session_ids)
-    session_ids = _expand_session_ids_with_lineage(db_path, session_ids)
-
-    placeholders = ",".join("?" for _ in session_ids)
-    where = (
-        f"session_id IN ({placeholders}) AND role IN ('user', 'assistant') "
-        "AND content IS NOT NULL AND TRIM(content) != ''"
-    )
-    params: list[Any] = list(session_ids)
-    if after_message_id is not None:
-        where += " AND id > ?"
-        params.append(int(after_message_id))
-    if min_timestamp is not None:
-        where += " AND timestamp >= ?"
-        params.append(float(min_timestamp))
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
-    try:
-        source_message_id_select = _messages_source_message_id_select(con, db_path)
-        select_sql = (
-            "SELECT id, session_id, role, content, timestamp, sender_id, sender_name, "
-            f"{source_message_id_select} FROM messages "
-            f"WHERE {where}"
-        )
-        rows = con.execute(
-            f"{select_sql} ORDER BY timestamp ASC, id ASC",
-            params,
-        ).fetchall()
-    finally:
-        con.close()
-
-    return (
-        rows,
-        chat_name,
-        f"whatsapp:{chat_type}",
-        session_user_name,
-        primary_session_ids,
-        _load_whatsapp_owner_tokens(db_path.parent),
-    )
-
-
-def _whatsapp_live_row_to_tail(
-    row: sqlite3.Row,
-    *,
-    conversation_id: str,
-    source_label: str,
-    chat_name: str,
-    session_user_name: dict[str, str],
-    source_index: int,
-    owner_tokens: set[str],
-) -> dict[str, Any] | None:
-    content = str(row["content"] or "").strip()
-    if not content or _is_gateway_notice(content):
-        return None
-    role = str(row["role"] or "").strip().lower()
-    sid = str(row["session_id"] or "").strip()
-    speaker = ""
-    if role in {"user", "assistant"}:
-        fallback_name = session_user_name.get(sid, "") if role == "user" else ""
-        speaker = _resolve_whatsapp_row_speaker(
-            sender_name=row["sender_name"],
-            sender_id=row["sender_id"],
-            session_user_name=fallback_name,
-        )
-    return {
-        **_whatsapp_role_field(
-            role,
-            owner_human=_whatsapp_state_owner_human(
-                row,
-                conversation_id=conversation_id,
-                role=role,
-                owner_tokens=owner_tokens,
-            ),
-        ),
-        "speaker": speaker,
-        "chat_name": chat_name,
-        "content": content,
-        "source_message_id": str(row["source_message_id"] or ""),
-        "source_label": source_label,
-        "ts_ms": _to_epoch_ms(row["timestamp"]),
-        "received_at": _to_iso_utc(row["timestamp"]),
-        "conversation_id": conversation_id,
-        "source_conversation_id": conversation_id,
-        "source_conversation_index": source_index,
-    }
-
-
-def load_whatsapp_tail(
-    *,
-    conversation_id: str,
-    since_cursor: int,
-    recent_fallback_messages: int,
-    hermes_home: Path | None = None,
-    sessions_index_path: Path | None = None,
-    state_db_path: Path | None = None,
-    min_timestamp: float | None = None,
-) -> list[dict[str, Any]]:
-    rows, chat_name, source_label, session_user_name, primary_session_ids, owner_tokens = (
-        _load_whatsapp_live_rows(
-            conversation_id=conversation_id,
-            hermes_home=hermes_home,
-            sessions_index_path=sessions_index_path,
-            state_db_path=state_db_path,
-            min_timestamp=min_timestamp,
-        )
-    )
-
-    all_rows: list[dict[str, Any]] = []
-    primary_index = 0
-    lineage_index = -1
-    for row in rows:
-        sid = str(row["session_id"] or "").strip()
-        if sid in primary_session_ids:
-            source_index = primary_index
-            primary_index += 1
-        else:
-            # Parent-session rows are historical context. Keep active-session
-            # cursors non-negative and stable across lineage expansion.
-            source_index = lineage_index
-            lineage_index -= 1
-        item = _whatsapp_live_row_to_tail(
-            row,
-            conversation_id=conversation_id,
-            source_label=source_label,
-            chat_name=chat_name,
-            session_user_name=session_user_name,
-            source_index=source_index,
-            owner_tokens=owner_tokens,
-        )
-        if item is not None:
-            all_rows.append(item)
-
-    return slice_tail_with_floor(
-        all_rows,
-        since_cursor=since_cursor,
-        recent_fallback_messages=recent_fallback_messages,
-    )
-
-
-def load_whatsapp_tail_after_message_id(
-    *,
-    conversation_id: str,
-    after_message_id: int | None,
-    hermes_home: Path | None = None,
-    sessions_index_path: Path | None = None,
-    state_db_path: Path | None = None,
-    min_timestamp: float | None = None,
-) -> list[dict[str, Any]]:
-    cursor_id = int(after_message_id or 0)
-    rows, chat_name, source_label, session_user_name, _primary_session_ids, owner_tokens = (
-        _load_whatsapp_live_rows(
-            conversation_id=conversation_id,
-            hermes_home=hermes_home,
-            sessions_index_path=sessions_index_path,
-            state_db_path=state_db_path,
-            min_timestamp=min_timestamp,
-            after_message_id=cursor_id,
-        )
-    )
-
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        row_id = int(row["id"])
-        item = _whatsapp_live_row_to_tail(
-            row,
-            conversation_id=conversation_id,
-            source_label=source_label,
-            chat_name=chat_name,
-            session_user_name=session_user_name,
-            source_index=row_id,
-            owner_tokens=owner_tokens,
-        )
-        if item is not None:
-            out.append({"id": row_id, **item})
-    return out

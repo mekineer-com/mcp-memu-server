@@ -44,7 +44,6 @@
   },
   "hermes": {
     "home": "../hermes-channels/data",
-    "whatsapp_history_source": "web_source",
     "whatsapp_web_source_db": "../hermes-channels/data/whatsapp/web_source.db",
     "whatsapp_reply_prefix": ""
   },

@@ -15,19 +15,6 @@ from app import main
 from app.services import conversation_sources, crud_endpoints, retrieve_orchestration, segment
 
 
-def _use_hermes_state_whatsapp(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setitem(
-        main._CONFIG,
-        "hermes",
-        {
-            "home": "~/.hermes",
-            "whatsapp_history_source": "hermes_state",
-            "whatsapp_web_source_db": "~/.hermes/whatsapp/web_source.db",
-            "whatsapp_reply_prefix": "",
-        },
-    )
-
-
 def _messages_table_exists(con: sqlite3.Connection) -> bool:
     row = con.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
@@ -1107,8 +1094,8 @@ def test_current_whatsapp_history_uses_configured_web_source_and_filters_current
     )
     monkeypatch.setattr(
         main,
-        "_resolve_whatsapp_source_config",
-        lambda: ("web_source", tmp_path / "web_source.db", "✦ *Siri*: "),
+        "_resolve_whatsapp_web_source_config",
+        lambda: (tmp_path / "web_source.db", "✦ *Siri*: "),
     )
 
     captured: dict[str, Any] = {}
@@ -1136,7 +1123,7 @@ def test_current_whatsapp_history_uses_configured_web_source_and_filters_current
     assert "max_messages" not in captured
 
 
-def test_current_whatsapp_history_empty_web_source_does_not_fallback_to_state(
+def test_current_whatsapp_history_empty_web_source_stays_empty(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1147,16 +1134,10 @@ def test_current_whatsapp_history_empty_web_source_does_not_fallback_to_state(
     )
     monkeypatch.setattr(
         main,
-        "_resolve_whatsapp_source_config",
-        lambda: ("web_source", tmp_path / "web_source.db", "✦ *Echo*: "),
+        "_resolve_whatsapp_web_source_config",
+        lambda: (tmp_path / "web_source.db", "✦ *Echo*: "),
     )
     monkeypatch.setattr(main._conversation_sources, "load_whatsapp_web_source_tail", lambda **_kwargs: [])
-    monkeypatch.setattr(
-        main._conversation_sources,
-        "load_whatsapp_tail",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("state.db fallback should not run")),
-    )
-
     rows = main._load_current_whatsapp_history_from_source(
         "whatsapp:dm:15133278228",
         "Echo",
@@ -1807,7 +1788,6 @@ def test_build_cross_conversation_payload_preserves_background_cursor_semantics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _use_hermes_state_whatsapp(monkeypatch)
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -1831,7 +1811,7 @@ def test_build_cross_conversation_payload_preserves_background_cursor_semantics(
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
     monkeypatch.setattr(
         main._conversation_sources,
-        "load_whatsapp_tail_after_message_id",
+        "load_whatsapp_web_source_tail_after_rowid",
         lambda **_kwargs: [
             {
                 "id": 11,
@@ -1839,6 +1819,8 @@ def test_build_cross_conversation_payload_preserves_background_cursor_semantics(
                 "speaker": "Marcos",
                 "chat_name": "Marcos",
                 "content": "new",
+                "source_message_id": "msg-11",
+                "ts_ms": 1_000,
                 "source_label": "whatsapp:dm",
                 "received_at": "2026-05-01T00:01:00+00:00",
                 "conversation_id": "whatsapp:dm:bg-chat",
@@ -1939,78 +1921,7 @@ def test_build_cross_conversation_payload_isolates_cross_source_failures(
     assert rows[0]["content"] == "hello from good"
 
 
-def test_build_cross_conversation_payload_uses_max_nonnegative_cursor_for_lineage_tail(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _use_hermes_state_whatsapp(monkeypatch)
-    db_path = tmp_path / "Echo.db"
-    con = main._sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        main._sqlite_ensure_conversation_state_schema(con)
-        now_iso = datetime.now(UTC).isoformat()
-        con.execute(
-            "INSERT INTO conversations (conversation_id, memorize_chat, digest_cursor, last_memorize_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("trigger", 1, -1, None, now_iso),
-        )
-        con.execute(
-            "INSERT INTO conversations (conversation_id, memorize_chat, digest_cursor, last_memorize_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("whatsapp:dm:bg-chat", 1, 0, now_iso, now_iso),
-        )
-        con.commit()
-    finally:
-        con.close()
-
-    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
-    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
-    monkeypatch.setattr(
-        main,
-        "_load_tail_for_source_conversation",
-        lambda **kwargs: [
-            {
-                "role": "user",
-                "speaker": "Marcos",
-                "chat_name": "Marcos",
-                "content": "new child",
-                "source_label": "whatsapp:dm",
-                "received_at": "2026-05-01T00:01:00+00:00",
-                "conversation_id": kwargs["conversation_id"],
-                "source_conversation_id": kwargs["conversation_id"],
-                "source_conversation_index": 1,
-            },
-            {
-                "role": "user",
-                "speaker": "Marcos",
-                "chat_name": "Marcos",
-                "content": "newer parent context",
-                "source_label": "whatsapp:dm",
-                "received_at": "2026-05-01T00:02:00+00:00",
-                "conversation_id": kwargs["conversation_id"],
-                "source_conversation_id": kwargs["conversation_id"],
-                "source_conversation_index": -1,
-            },
-        ]
-        if kwargs["conversation_id"] == "whatsapp:dm:bg-chat"
-        else [],
-    )
-
-    out = main._build_cross_conversation_payload(
-        "trigger",
-        "u1",
-        "Echo",
-        {"memorize_chat": True},
-        [{"role": "user", "content": "hello from trigger"}],
-        -1,
-        True,
-    )
-    assert isinstance(out, dict)
-    assert out["_final_cursors"]["whatsapp:dm:bg-chat"]["cursor"] == 1
-
-
-def test_load_tail_for_source_conversation_uses_web_source_when_configured(
+def test_load_tail_for_source_conversation_uses_web_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2019,7 +1930,6 @@ def test_load_tail_for_source_conversation_uses_web_source_when_configured(
         main._CONFIG,
         "hermes",
         {
-            "whatsapp_history_source": "web_source",
             "whatsapp_web_source_db": str(tmp_path / "web_source.db"),
             "whatsapp_reply_prefix": "✦ *Siri*: ",
         },
@@ -2069,8 +1979,8 @@ def test_load_background_rollup_tail_uses_assistant_source_ids_for_web_source(
     )
     monkeypatch.setattr(
         main,
-        "_resolve_whatsapp_source_config",
-        lambda: ("web_source", tmp_path / "web_source.db", "✦ *Echo*: "),
+        "_resolve_whatsapp_web_source_config",
+        lambda: (tmp_path / "web_source.db", "✦ *Echo*: "),
     )
     monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: 100.0)
     monkeypatch.setattr(
@@ -2169,7 +2079,6 @@ async def test_build_cross_conversation_payload_keeps_background_tail_without_ro
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _use_hermes_state_whatsapp(monkeypatch)
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -2193,7 +2102,7 @@ async def test_build_cross_conversation_payload_keeps_background_tail_without_ro
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
     monkeypatch.setattr(
         main._conversation_sources,
-        "load_whatsapp_tail_after_message_id",
+        "load_whatsapp_web_source_tail_after_rowid",
         lambda **_kwargs: [
             {
                 "id": 11,
@@ -2201,6 +2110,8 @@ async def test_build_cross_conversation_payload_keeps_background_tail_without_ro
                 "speaker": "Marcos",
                 "chat_name": "Marcos",
                 "content": "new one",
+                "source_message_id": "msg-11",
+                "ts_ms": 1_000,
                 "source_label": "whatsapp:dm",
                 "received_at": "2026-05-01T00:01:00+00:00",
                 "conversation_id": "whatsapp:dm:bg-chat",
@@ -2213,6 +2124,8 @@ async def test_build_cross_conversation_payload_keeps_background_tail_without_ro
                 "speaker": "Marcos",
                 "chat_name": "Marcos",
                 "content": "new two",
+                "source_message_id": "msg-12",
+                "ts_ms": 2_000,
                 "source_label": "whatsapp:dm",
                 "received_at": "2026-05-01T04:01:00+00:00",
                 "conversation_id": "whatsapp:dm:bg-chat",
@@ -2254,7 +2167,6 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _use_hermes_state_whatsapp(monkeypatch)
     db_path = tmp_path / "Echo.db"
     db_path.write_text("", encoding="utf-8")
     monkeypatch.setattr(
@@ -2280,6 +2192,8 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
                 "role": "user",
                 "speaker": "Marcos",
                 "content": "first",
+                "source_message_id": "msg-11",
+                "ts_ms": 1_000,
                 "source_label": "whatsapp:dm",
                 "source_conversation_index": 11,
                 "received_at": "2026-05-01T00:01:00+00:00",
@@ -2288,6 +2202,8 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
                 "role": "user",
                 "speaker": "Marcos",
                 "content": "second",
+                "source_message_id": "msg-12",
+                "ts_ms": 2_000,
                 "source_label": "whatsapp:dm",
                 "source_conversation_index": 12,
                 "received_at": "2026-05-01T04:01:00+00:00",
@@ -2373,7 +2289,6 @@ def test_load_cross_tail_from_sources_reads_whatsapp_conversations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _use_hermes_state_whatsapp(monkeypatch)
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -2387,7 +2302,7 @@ def test_load_cross_tail_from_sources_reads_whatsapp_conversations(
 
         monkeypatch.setattr(
             main._conversation_sources,
-            "load_whatsapp_tail",
+            "load_whatsapp_web_source_tail",
             lambda **_kwargs: [
                 {
                     "conversation_id": "whatsapp:dm:15133278228",
@@ -2444,81 +2359,6 @@ def test_load_cross_tail_from_sources_skips_activity_conversation(
         con.close()
 
     assert rows == []
-
-
-def test_load_cross_tail_from_sources_skips_stale_display_segment_participants(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _use_hermes_state_whatsapp(monkeypatch)
-    db_path = tmp_path / "Echo.db"
-    con = main._sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        main._sqlite_ensure_conversation_state_schema(con)
-        con.execute(
-            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at, "
-            "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            ("whatsapp:dm:current", 3, "2026-05-02T00:00:00+00:00", 0, 3, "2026-05-02T00:00:00+00:00"),
-        )
-        con.execute(
-            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at, "
-            "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            ("whatsapp:dm:previous-participant", 12, "2026-05-01T00:00:00+00:00", 10, 12, "2026-05-01T00:00:00+00:00"),
-        )
-        con.execute(
-            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at, "
-            "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            ("whatsapp:dm:latest-participant", 22, "2026-05-02T00:00:00+00:00", 20, 22, "2026-05-02T00:00:00+00:00"),
-        )
-        con.execute(
-            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
-            ("whatsapp:dm:not-participant", 12, "2026-05-01T00:00:00+00:00"),
-        )
-        con.commit()
-
-        calls: dict[str, int] = {}
-
-        def _fake_load_tail_for_source_conversation(**kwargs: object) -> list[dict[str, object]]:
-            cid = str(kwargs["conversation_id"])
-            calls[cid] = int(kwargs["since_cursor"])
-            if cid == "whatsapp:dm:previous-participant" and int(kwargs["since_cursor"]) < 10:
-                return [
-                    {
-                        "conversation_id": cid,
-                        "source_conversation_index": 10,
-                        "received_at": "2026-05-01T00:00:00+00:00",
-                        "content": "previous segment floor",
-                    }
-                ]
-            if cid == "whatsapp:dm:latest-participant" and int(kwargs["since_cursor"]) < 20:
-                return [
-                    {
-                        "conversation_id": cid,
-                        "source_conversation_index": 20,
-                        "received_at": "2026-05-02T00:00:00+00:00",
-                        "content": "latest segment floor",
-                    }
-                ]
-            return []
-
-        monkeypatch.setattr(main, "_load_tail_for_source_conversation", _fake_load_tail_for_source_conversation)
-        rows = main._load_cross_tail_from_sources(
-            con,
-            user_id="u1",
-            soul_id="Echo",
-            exclude_conversation_id="whatsapp:dm:current",
-        )
-    finally:
-        con.close()
-
-    assert [row["content"] for row in rows] == ["latest segment floor"]
-    assert calls["whatsapp:dm:previous-participant"] == 12
-    assert calls["whatsapp:dm:latest-participant"] == 19
-    assert calls["whatsapp:dm:not-participant"] == 12
 
 
 def test_load_cross_tail_from_sources_web_source_floors_latest_participant_only(
@@ -2582,85 +2422,6 @@ def test_load_cross_tail_from_sources_web_source_floors_latest_participant_only(
     }
 
 
-def test_load_cross_tail_from_sources_recovers_previous_segment_ranges_from_saved_segment(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _use_hermes_state_whatsapp(monkeypatch)
-    storage_dir = tmp_path / "resources"
-    segment_dir = storage_dir / "st_chats" / "Echo_saved" / "segments"
-    segment_dir.mkdir(parents=True)
-    (segment_dir / "2026-05-01.json").write_text(
-        json.dumps(
-            [
-                {
-                    "source_conversation_id": "whatsapp:dm:previous-participant",
-                    "source_conversation_index": 20,
-                    "memorize_chat": True,
-                    "content": "start",
-                },
-                {
-                    "source_conversation_id": "whatsapp:dm:previous-participant",
-                    "source_conversation_index": 23,
-                    "memorize_chat": True,
-                    "content": "end",
-                },
-            ]
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(main, "_get_storage_dir", lambda *_a, **_k: storage_dir)
-
-    db_path = tmp_path / "Echo.db"
-    con = main._sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        main._sqlite_ensure_conversation_state_schema(con)
-        con.execute(
-            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
-            ("whatsapp:dm:current", 3, "2026-05-01T00:00:00+00:00"),
-        )
-        con.execute(
-            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
-            ("whatsapp:dm:previous-participant", 23, "2026-05-01T00:00:00+00:00"),
-        )
-        con.execute(
-            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
-            ("whatsapp:dm:not-participant", 23, "2026-05-01T00:00:00+00:00"),
-        )
-        con.commit()
-
-        calls: dict[str, int] = {}
-
-        def _fake_load_tail_for_source_conversation(**kwargs: object) -> list[dict[str, object]]:
-            cid = str(kwargs["conversation_id"])
-            calls[cid] = int(kwargs["since_cursor"])
-            if cid == "whatsapp:dm:previous-participant":
-                return [
-                    {
-                        "conversation_id": cid,
-                        "source_conversation_index": 20,
-                        "received_at": "2026-05-01T00:00:00+00:00",
-                        "content": "recovered previous segment floor",
-                    }
-                ]
-            return []
-
-        monkeypatch.setattr(main, "_load_tail_for_source_conversation", _fake_load_tail_for_source_conversation)
-        rows = main._load_cross_tail_from_sources(
-            con,
-            user_id="u1",
-            soul_id="Echo",
-            exclude_conversation_id="whatsapp:dm:current",
-        )
-    finally:
-        con.close()
-
-    assert [row["content"] for row in rows] == ["recovered previous segment floor"]
-    assert calls["whatsapp:dm:previous-participant"] == 19
-    assert calls["whatsapp:dm:not-participant"] == 23
-
-
 def test_load_cross_tail_from_sources_fails_loud_for_broken_web_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2680,7 +2441,6 @@ def test_load_cross_tail_from_sources_fails_loud_for_broken_web_source(
             "hermes",
             {
                 "home": "~/.hermes",
-                "whatsapp_history_source": "web_source",
                 "whatsapp_web_source_db": "~/.hermes/whatsapp/web_source.db",
                 "whatsapp_reply_prefix": "",
             },

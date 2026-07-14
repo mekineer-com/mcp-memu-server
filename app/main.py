@@ -248,36 +248,25 @@ def _load_background_rollup_tail(
             hermes_home_path=hermes_home_path,
             state_db_path=state_db_path,
         )
-        whatsapp_source, web_source_db_path, reply_prefix = _resolve_whatsapp_source_config()
-        if whatsapp_source == "web_source":
-            assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
-                conversation_id=conversation_id,
-                hermes_home=hermes_home_path,
-                sessions_index_path=sessions_index_path,
-                state_db_path=state_db_path,
-            )
-            tail = _conversation_sources.load_whatsapp_web_source_tail_after_rowid(
-                conversation_id=conversation_id,
-                after_rowid=rolling_summary_cursor_id,
-                soul_id=soul_id,
-                reply_prefix=reply_prefix,
-                hermes_home=hermes_home_path,
-                web_source_db_path=web_source_db_path,
-                min_timestamp=max(
-                    (value for value in (active_since, min_timestamp) if value is not None),
-                    default=None,
-                ),
-                assistant_source_message_ids=assistant_ids,
-            )
-            _stamp_assistant_display_name(tail, soul_id)
-            return tail
-        tail = _conversation_sources.load_whatsapp_tail_after_message_id(
+        web_source_db_path, reply_prefix = _resolve_whatsapp_web_source_config()
+        assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
             conversation_id=conversation_id,
-            after_message_id=rolling_summary_cursor_id,
             hermes_home=hermes_home_path,
             sessions_index_path=sessions_index_path,
             state_db_path=state_db_path,
-            min_timestamp=active_since,
+        )
+        tail = _conversation_sources.load_whatsapp_web_source_tail_after_rowid(
+            conversation_id=conversation_id,
+            after_rowid=rolling_summary_cursor_id,
+            soul_id=soul_id,
+            reply_prefix=reply_prefix,
+            hermes_home=hermes_home_path,
+            web_source_db_path=web_source_db_path,
+            min_timestamp=max(
+                (value for value in (active_since, min_timestamp) if value is not None),
+                default=None,
+            ),
+            assistant_source_message_ids=assistant_ids,
         )
         _stamp_assistant_display_name(tail, soul_id)
         return tail
@@ -1765,8 +1754,8 @@ TURN_HISTORY_WINDOW_MESSAGES = _cross_history.TURN_HISTORY_WINDOW_MESSAGES
 def _resolve_cross_source_paths(*args: Any, **kwargs: Any) -> Any:
     return _cross_history._resolve_cross_source_paths(*args, **kwargs)
 
-def _resolve_whatsapp_source_config(*args: Any, **kwargs: Any) -> Any:
-    return _cross_history._resolve_whatsapp_source_config(*args, **kwargs)
+def _resolve_whatsapp_web_source_config(*args: Any, **kwargs: Any) -> Any:
+    return _cross_history._resolve_whatsapp_web_source_config(*args, **kwargs)
 
 def _load_soul_active_since(*args: Any, **kwargs: Any) -> Any:
     return _cross_history._load_soul_active_since(*args, **kwargs)
@@ -2050,9 +2039,7 @@ def _resolve_web_source_checkpoint(
     conversation_id: str,
     source_message_id: str,
 ) -> int | None:
-    source, db_path, _ = _resolve_whatsapp_source_config()
-    if source != "web_source":
-        raise RuntimeError("WhatsApp history source is no longer web_source")
+    db_path, _ = _resolve_whatsapp_web_source_config()
     _, hermes_home_path, _, _ = _resolve_cross_source_paths()
     return _conversation_sources.whatsapp_web_source_message_rowid(
         conversation_id,
@@ -3436,14 +3423,11 @@ def _build_cross_conversation_payload(
     finally:
         con.close()
 
-    whatsapp_source: str | None = None
     for other_cid, tail_msgs in other_tails.items():
         if not tail_msgs:
             continue
         source_label = _message_log.derive_source_label(other_cid)
-        if source_label.startswith("whatsapp:") and whatsapp_source is None:
-            whatsapp_source = _resolve_whatsapp_source_config()[0]
-        web_source = source_label.startswith("whatsapp:") and whatsapp_source == "web_source"
+        web_source = source_label.startswith("whatsapp:")
         final_cursor = _source_cursor_checkpoint(tail_msgs, web_source=web_source)
         if final_cursor is not None:
             final_cursors[other_cid] = final_cursor

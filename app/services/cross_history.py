@@ -56,17 +56,12 @@ def _resolve_cross_source_paths() -> tuple[Path, Path | None, Path | None, Path 
     return _m()._get_storage_dir(_m()._CONFIG), hermes_home_path, sessions_index_path, state_db_path
 
 
-def _resolve_whatsapp_source_config() -> tuple[str, Path | None, str]:
+def _resolve_whatsapp_web_source_config() -> tuple[Path | None, str]:
     hermes_cfg = _m()._CONFIG.get("hermes") if isinstance(_m()._CONFIG.get("hermes"), dict) else {}
-    source = str(hermes_cfg.get("whatsapp_history_source") or "hermes_state").strip().lower()
-    if source in {"state_db", "hermes_state"}:
-        source = "hermes_state"
-    elif source != "web_source":
-        raise RuntimeError(f"unsupported hermes.whatsapp_history_source: {source!r}")
     db_raw = str(hermes_cfg.get("whatsapp_web_source_db") or "").strip()
     db_path = Path(db_raw).expanduser().resolve() if db_raw else None
     reply_prefix = str(hermes_cfg.get("whatsapp_reply_prefix") or "")
-    return source, db_path, reply_prefix
+    return db_path, reply_prefix
 
 
 def _resolve_source_cursor(
@@ -80,9 +75,7 @@ def _resolve_source_cursor(
 ) -> tuple[int, int | None, bool]:
     if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
         return cursor, None, False
-    source, db_path, _ = _m()._resolve_whatsapp_source_config()
-    if source != "web_source":
-        return cursor, None, False
+    db_path, _ = _m()._resolve_whatsapp_web_source_config()
     resolved, min_timestamp = _conversation_sources.resolve_whatsapp_web_source_cursor(
         conversation_id,
         cursor,
@@ -226,35 +219,24 @@ def _load_current_whatsapp_history_from_source(
     if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
         return None
     _storage_dir, hermes_home_path, sessions_index_path, state_db_path = _m()._resolve_cross_source_paths()
-    whatsapp_source, web_source_db_path, reply_prefix = _m()._resolve_whatsapp_source_config()
-    if whatsapp_source == "web_source":
-        assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
-            conversation_id=conversation_id,
-            hermes_home=hermes_home_path,
-            sessions_index_path=sessions_index_path,
-            state_db_path=state_db_path,
-        )
-        rows = _conversation_sources.load_whatsapp_web_source_tail(
-            conversation_id=conversation_id,
-            since_cursor=-1,
-            recent_fallback_messages=0,
-            soul_id=soul_id,
-            reply_prefix=reply_prefix,
-            hermes_home=hermes_home_path,
-            web_source_db_path=web_source_db_path,
-            min_timestamp=active_since,
-            assistant_source_message_ids=assistant_ids,
-        )
-    else:
-        rows = _conversation_sources.load_whatsapp_tail(
-            conversation_id=conversation_id,
-            since_cursor=-1,
-            recent_fallback_messages=0,
-            hermes_home=hermes_home_path,
-            sessions_index_path=sessions_index_path,
-            state_db_path=state_db_path,
-            min_timestamp=active_since,
-        )
+    web_source_db_path, reply_prefix = _m()._resolve_whatsapp_web_source_config()
+    assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
+        conversation_id=conversation_id,
+        hermes_home=hermes_home_path,
+        sessions_index_path=sessions_index_path,
+        state_db_path=state_db_path,
+    )
+    rows = _conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id=conversation_id,
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id=soul_id,
+        reply_prefix=reply_prefix,
+        hermes_home=hermes_home_path,
+        web_source_db_path=web_source_db_path,
+        min_timestamp=active_since,
+        assistant_source_message_ids=assistant_ids,
+    )
     if not external_message_id or not exclude_external_message:
         return rows
     return _m()._filter_external_message_from_history(rows, external_message_id)
@@ -414,34 +396,24 @@ def _load_tail_for_source_conversation(
             (value for value in (active_since, min_timestamp) if value is not None),
             default=None,
         )
-        whatsapp_source, web_source_db_path, reply_prefix = _m()._resolve_whatsapp_source_config()
-        if whatsapp_source == "web_source":
-            assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
-                conversation_id=conversation_id,
-                hermes_home=hermes_home_path,
-                sessions_index_path=sessions_index_path,
-                state_db_path=state_db_path,
-            )
-            return _conversation_sources.load_whatsapp_web_source_tail(
-                conversation_id=conversation_id,
-                since_cursor=since_cursor,
-                recent_fallback_messages=recent_fallback_messages,
-                soul_id=soul_id,
-                reply_prefix=reply_prefix,
-                hermes_home=hermes_home_path,
-                web_source_db_path=web_source_db_path,
-                min_timestamp=timestamp_floor,
-                assistant_source_message_ids=assistant_ids,
-                include_floor_without_new=include_floor_without_new,
-            )
-        return _conversation_sources.load_whatsapp_tail(
+        web_source_db_path, reply_prefix = _m()._resolve_whatsapp_web_source_config()
+        assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
             conversation_id=conversation_id,
-            since_cursor=since_cursor,
-            recent_fallback_messages=recent_fallback_messages,
             hermes_home=hermes_home_path,
             sessions_index_path=sessions_index_path,
             state_db_path=state_db_path,
+        )
+        return _conversation_sources.load_whatsapp_web_source_tail(
+            conversation_id=conversation_id,
+            since_cursor=since_cursor,
+            recent_fallback_messages=recent_fallback_messages,
+            soul_id=soul_id,
+            reply_prefix=reply_prefix,
+            hermes_home=hermes_home_path,
+            web_source_db_path=web_source_db_path,
             min_timestamp=timestamp_floor,
+            assistant_source_message_ids=assistant_ids,
+            include_floor_without_new=include_floor_without_new,
         )
     if source_label == "sillytavern":
         return _conversation_sources.load_sillytavern_tail(
@@ -590,11 +562,7 @@ def _load_cross_tail_from_sources(
         except Exception as exc:
             _m().logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)
             is_lid_gap = "LID↔phone mapping gap" in str(exc)
-            is_web_source_whatsapp = (
-                source_label.startswith("whatsapp:")
-                and _m()._resolve_whatsapp_source_config()[0] == "web_source"
-            )
-            if is_web_source_whatsapp and not is_lid_gap:
+            if source_label.startswith("whatsapp:") and not is_lid_gap:
                 raise RuntimeError(f"WhatsApp web_source read failed for {cid}: {exc}") from exc
             continue
         _m()._stamp_assistant_display_name(tail, soul_id)
@@ -844,44 +812,34 @@ def _load_cross_memorize_tails_from_sources(
                     hermes_home_path=hermes_home_path,
                     state_db_path=state_db_path,
                 )
-                whatsapp_source, web_source_db_path, reply_prefix = _m()._resolve_whatsapp_source_config()
-                if whatsapp_source == "web_source":
-                    rolling_cursor_id, checkpoint_floor, _ = _resolve_source_cursor(
-                        cid,
-                        int(rolling_cursor_id or 0),
-                        row["rolling_summary_cursor_source_message_id"],
-                        row["rolling_summary_cursor_ts"],
-                        rolling=True,
-                        hermes_home_path=hermes_home_path,
-                    )
-                    assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
-                        conversation_id=cid,
-                        hermes_home=hermes_home_path,
-                        sessions_index_path=sessions_index_path,
-                        state_db_path=state_db_path,
-                    )
-                    tail = _conversation_sources.load_whatsapp_web_source_tail_after_rowid(
-                        conversation_id=cid,
-                        after_rowid=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
-                        soul_id=soul_id,
-                        reply_prefix=reply_prefix,
-                        hermes_home=hermes_home_path,
-                        web_source_db_path=web_source_db_path,
-                        min_timestamp=max(
-                            (value for value in (active_since, checkpoint_floor) if value is not None),
-                            default=None,
-                        ),
-                        assistant_source_message_ids=assistant_ids,
-                    )
-                else:
-                    tail = _conversation_sources.load_whatsapp_tail_after_message_id(
-                        conversation_id=cid,
-                        after_message_id=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
-                        hermes_home=hermes_home_path,
-                        sessions_index_path=sessions_index_path,
-                        state_db_path=state_db_path,
-                        min_timestamp=active_since,
-                    )
+                web_source_db_path, reply_prefix = _m()._resolve_whatsapp_web_source_config()
+                rolling_cursor_id, checkpoint_floor, _ = _resolve_source_cursor(
+                    cid,
+                    int(rolling_cursor_id or 0),
+                    row["rolling_summary_cursor_source_message_id"],
+                    row["rolling_summary_cursor_ts"],
+                    rolling=True,
+                    hermes_home_path=hermes_home_path,
+                )
+                assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
+                    conversation_id=cid,
+                    hermes_home=hermes_home_path,
+                    sessions_index_path=sessions_index_path,
+                    state_db_path=state_db_path,
+                )
+                tail = _conversation_sources.load_whatsapp_web_source_tail_after_rowid(
+                    conversation_id=cid,
+                    after_rowid=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
+                    soul_id=soul_id,
+                    reply_prefix=reply_prefix,
+                    hermes_home=hermes_home_path,
+                    web_source_db_path=web_source_db_path,
+                    min_timestamp=max(
+                        (value for value in (active_since, checkpoint_floor) if value is not None),
+                        default=None,
+                    ),
+                    assistant_source_message_ids=assistant_ids,
+                )
             elif source_label == "sillytavern":
                 tail = _conversation_sources.load_sillytavern_tail(
                     storage_dir=storage_dir,
@@ -908,11 +866,7 @@ def _load_cross_memorize_tails_from_sources(
         except Exception as exc:
             _m().logger.error("cross-memorize source read failed for conversation_id=%s: %s", cid, exc)
             is_lid_gap = "LID↔phone mapping gap" in str(exc)
-            is_web_source_whatsapp = (
-                _message_log.derive_source_label(cid).startswith("whatsapp:")
-                and _m()._resolve_whatsapp_source_config()[0] == "web_source"
-            )
-            if is_web_source_whatsapp and not is_lid_gap:
+            if _message_log.derive_source_label(cid).startswith("whatsapp:") and not is_lid_gap:
                 raise RuntimeError(f"WhatsApp web_source read failed for {cid}: {exc}") from exc
             continue
     return tails
