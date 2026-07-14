@@ -96,7 +96,7 @@ mcp-memu-server/
 | `app/services/activity_messages.py` | `activity_messages` scoped-SQLite table for synthetic self-DM activity recaps (`My Activities:`) |
 | `app/services/whatsapp_outbounds.py` | `whatsapp_pending_outbounds` scoped-SQLite queue for WhatsApp replies/attachments |
 | `app/services/memorize_endpoint.py` | `/memorize` core: segment-file persistence, forced-memorize runner, rolling-summary injection, sleep-gap/token chunking, progress/cancel |
-| `app/services/conversation_sources.py` | Source adapters: WhatsApp from Hermes Channels (`sessions.json` + `state.db`), ST from `st_chats/*/latest_history.json`. Handles cursor slicing, floor backfill, and role normalization at the memU boundary. |
+| `app/services/conversation_sources.py` | Source adapters: WhatsApp history from `web_source.db`, with Channels session/state metadata for soul activation and assistant IDs; ST from `st_chats/*/latest_history.json`. Handles cursor slicing, floor backfill, and role normalization at the memU boundary. |
 | `app/services/cross_history.py` | Cross-conversation history: formats AI-facing all-chat history, assembles cross-tail/background memorize feeds, manages display-segment cleanup |
 | `app/services/apimw.py` | APImw background memory-weaving pipeline: retrieve → synthesize prior-context/message-to-self → persist |
 | `app/services/admin_routes.py` | Health/version/shutdown/diag endpoint handlers |

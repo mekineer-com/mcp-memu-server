@@ -1849,6 +1849,30 @@ def test_build_cross_conversation_payload_preserves_background_cursor_semantics(
     assert out["_final_cursors"]["whatsapp:dm:bg-chat"]["cursor"] == rows[0]["source_conversation_index"]
 
 
+def test_source_cursor_checkpoint_uses_highest_web_source_rowid() -> None:
+    checkpoint = main._source_cursor_checkpoint(
+        [
+            {
+                "source_conversation_index": 17,
+                "source_message_id": "message-17",
+                "ts_ms": 17_000,
+            },
+            {
+                "source_conversation_index": 9,
+                "source_message_id": "message-9",
+                "ts_ms": 9_000,
+            },
+        ],
+        web_source=True,
+    )
+
+    assert checkpoint == {
+        "cursor": 17,
+        "source_message_id": "message-17",
+        "ts": 17,
+    }
+
+
 def test_build_cross_conversation_payload_isolates_cross_source_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
