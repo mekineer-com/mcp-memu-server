@@ -2963,6 +2963,7 @@ async def test_run_memorize_segments_batches_one_job_per_persisted_segment(tmp_p
     for segment_job, messages in zip(segments, segment_messages, strict=True):
         payload = segment_job["segment"]
         assert payload["message_indices"] == list(range(len(messages)))
+        assert payload["context_only"] is False
         assert json.loads(segment_job["raw_text"]) == messages
 
 
@@ -3496,6 +3497,7 @@ async def test_context_only_segment_advances_cursor_without_memory_work(
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
     captured_paths: list[Path] = []
+    captured_payloads: list[dict[str, Any]] = []
     writes: list[tuple[str, dict[str, Any]]] = []
     state_rows = {
         "background": {
@@ -3508,6 +3510,7 @@ async def test_context_only_segment_advances_cursor_without_memory_work(
     class _FakeService:
         async def memorize_segments_batch(self, *, segments: list[dict[str, Any]], **_kwargs):
             captured_paths.extend(Path(segment["resource_url"]) for segment in segments)
+            captured_payloads.extend(segment["segment"] for segment in segments)
             return [
                 {
                     "resources": [],
@@ -3572,6 +3575,22 @@ async def test_context_only_segment_advances_cursor_without_memory_work(
     )
 
     assert captured_paths and all(not path.exists() for path in captured_paths)
+    assert captured_payloads == [
+        {
+            "message_indices": [0],
+            "segment_id": "trigger:0-0",
+            "segment_background_context_rows": [
+                {
+                    "summary": "durable background context",
+                    "source_label": "background",
+                    "source_conversation_id": "background",
+                    "rolled_up": True,
+                    "anchor_index": 0,
+                }
+            ],
+            "context_only": True,
+        }
+    ]
     assert state_rows["background"]["rolling_summary_cursor_id"] == 4
     assert state_rows["background"]["rolling_summary"] == "durable background context"
     assert not any("rolling_summary" in updates for _cid, updates in writes)
