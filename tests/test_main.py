@@ -3488,6 +3488,95 @@ async def test_run_memorize_segments_fresh_background_context_does_not_write_rol
     assert rolling_summary_writes == []
 
 
+@pytest.mark.asyncio
+async def test_context_only_segment_advances_cursor_without_memory_work(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    captured_paths: list[Path] = []
+    writes: list[tuple[str, dict[str, Any]]] = []
+    state_rows = {
+        "background": {
+            "memorize_chat": False,
+            "rolling_summary": "durable background context",
+            "rolling_summary_cursor_id": 2,
+        }
+    }
+
+    class _FakeService:
+        async def memorize_segments_batch(self, *, segments: list[dict[str, Any]], **_kwargs):
+            captured_paths.extend(Path(segment["resource_url"]) for segment in segments)
+            return [
+                {
+                    "resources": [],
+                    "items": [],
+                    "categories": [],
+                    "relations": [],
+                    "pending_segment_ids": [],
+                }
+            ]
+
+    def fake_load_turn_state_and_soul_card(cid: str, **_kwargs):
+        return dict(state_rows.get(cid, {})), None, tmp_path / "TestSoul.db"
+
+    def fake_write_conversation_state(cid: str, *, updates: dict[str, Any], **_kwargs):
+        writes.append((cid, dict(updates)))
+        state_rows.setdefault(cid, {}).update(updates)
+        return dict(state_rows[cid]), tmp_path / "TestSoul.db"
+
+    async def fail_summary(**_kwargs):
+        raise AssertionError("context-only completion must not rebuild summaries")
+
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
+    monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
+    monkeypatch.setattr(main, "_compute_holistic_categories_summary", fail_summary)
+
+    await main._run_memorize_segments(
+        memorize_segments=[
+            (
+                "/tmp/day.json",
+                [
+                    {
+                        "role": "user",
+                        "content": "background context",
+                        "memorize_chat": False,
+                        "source_conversation_id": "background",
+                        "source_conversation_index": 4,
+                    }
+                ],
+                0,
+                0,
+            )
+        ],
+        svc=_FakeService(),
+        scope={"user_id": "test-user", "soul_id": "TestSoul"},
+        conversation_id="trigger",
+        soul_id="TestSoul",
+        uid="test-user",
+        processed_cursor=-1,
+        safe={
+            "_background_rolling_summaries": {
+                "background": {"summary": "durable background context", "source_label": "background"}
+            }
+        },
+        resource_url="/tmp/day.json",
+        chat_key=None,
+        merged_len=1,
+        force=False,
+        sleep_stats=None,
+        segments_dir=segments_dir,
+        cross_memorize=True,
+        final_cursors={"background": {"cursor": 4}},
+    )
+
+    assert captured_paths and all(not path.exists() for path in captured_paths)
+    assert state_rows["background"]["rolling_summary_cursor_id"] == 4
+    assert state_rows["background"]["rolling_summary"] == "durable background context"
+    assert not any("rolling_summary" in updates for _cid, updates in writes)
+
+
 def test_timeline_endpoint_returns_entity_edges(monkeypatch: pytest.MonkeyPatch):
     class _EntityRepo:
         def list_all(self, where=None):

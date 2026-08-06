@@ -94,6 +94,7 @@ class SegmentMemorizeJob(TypedDict):
     segment_start_index: int
     segment_end_index: int
     segment_id: str
+    has_primary_messages: bool
 
 
 @dataclass(slots=True)
@@ -261,6 +262,7 @@ async def run_memorize_segments(
     progress_key = ctx.memorize_lock_key(uid, soul_id)
     mem_lock = ctx.get_memorize_lock(progress_key)
     has_results = False
+    has_memory_results = False
     pending_segment_ids: list[str] = []
     processed_end_cursor = processed_cursor
     current_all_categories_summary: str | None = None
@@ -327,8 +329,14 @@ async def run_memorize_segments(
                 n += 1
                 fn_base = f"{d1}" if d1 == d2 else f"{d1}__{d2}"
                 segment_path = (segments_dir / f"{fn_base}_{n}.json").resolve()
-            segment_path.write_text(segment_raw_text, encoding="utf-8")
-            created_segment_paths.append(segment_path)
+            has_primary_messages = any(
+                message.get("memorize_chat") is not False
+                for message in segment_messages
+                if isinstance(message, dict)
+            )
+            if has_primary_messages:
+                segment_path.write_text(segment_raw_text, encoding="utf-8")
+                created_segment_paths.append(segment_path)
             segment_id = f"{conversation_id or 'cross'}:{segment_start_index}-{segment_end_index}"
             segment_background_rows: list[dict[str, Any]] = []
             seen_background_sources: set[str] = set()
@@ -367,7 +375,8 @@ async def run_memorize_segments(
                         "anchor_index": int(idx),
                     }
                 )
-                consumed_background_summary_ids.add(source_cid)
+                if has_primary_messages:
+                    consumed_background_summary_ids.add(source_cid)
             segment_jobs.append(
                 {
                     "segment_payload": {
@@ -381,6 +390,7 @@ async def run_memorize_segments(
                     "segment_start_index": segment_start_index,
                     "segment_end_index": segment_end_index,
                     "segment_id": segment_id,
+                    "has_primary_messages": has_primary_messages,
                 }
             )
 
@@ -459,8 +469,10 @@ async def run_memorize_segments(
                     ep_result = batch_results[seg_num - 1] if seg_num - 1 < len(batch_results) else None
                     if isinstance(ep_result, dict):
                         has_results = True
-                        pending_segment_ids.extend(run_ctx.normalize_text_list(ep_result.get("pending_segment_ids")))
-                        if cross_memorize:
+                        if segment_job["has_primary_messages"]:
+                            has_memory_results = True
+                            pending_segment_ids.extend(run_ctx.normalize_text_list(ep_result.get("pending_segment_ids")))
+                        if cross_memorize and segment_job["has_primary_messages"]:
                             latest_display_ranges = _segment_display_ranges(segment_job["segment_messages"])
                     segment_end_index = segment_job["segment_end_index"]
                     if conversation_id and not cross_memorize:
@@ -492,7 +504,7 @@ async def run_memorize_segments(
                                 processed_end_cursor = max(processed_end_cursor, fresh_cursor)
 
         # Phase 3: holistic summary LLM call — outside the lock.
-        if conversation_id and has_results:
+        if conversation_id and has_memory_results:
             _set_memorize_progress(
                 ctx.memorize_progress,
                 progress_key,
@@ -636,11 +648,11 @@ async def run_memorize_segments(
                         "all_categories_summary": current_all_categories_summary,
                     },
                 )
-            if conversation_id and has_results:
+            if conversation_id and has_memory_results:
                 # Pending ids now reference these files; the failure path must not unlink them
                 # or consolidation would reject the whole pending list as missing history.
                 created_segment_paths.clear()
-            if has_results:
+            if has_memory_results:
                 for bg_cid in consumed_background_summary_ids:
                     ctx.write_conversation_state(
                         bg_cid,
@@ -653,7 +665,7 @@ async def run_memorize_segments(
                     )
 
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
-            if conversation_id and (has_results or had_existing_pending):
+            if conversation_id and (has_memory_results or had_existing_pending):
                 consolidation_started = True
                 _set_memorize_progress(
                     ctx.memorize_progress,
