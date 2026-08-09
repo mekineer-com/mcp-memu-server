@@ -10,10 +10,8 @@ mcp-memu-server/
 ├── app/main.py              # Core orchestration + remaining endpoints
 ├── app/config.py            # Runtime config load/save/mask + path + sqlite DSN helpers
 ├── app/db.py                # SQLite helpers, schema ensures, JSON marshalling
-├── app/database.py          # SQLAlchemy async engine + session factory
 ├── app/models/base.py       # Declarative ORM base
 ├── app/services/consolidation.py
-├── app/services/diary.py
 ├── app/services/memorize_endpoint.py
 ├── app/services/activity_messages.py
 ├── app/services/whatsapp_outbounds.py
@@ -91,7 +89,6 @@ mcp-memu-server/
 | `app/config.py` | `load_config()`, `save_config()`, `mask_config()`, storage path normalization, sqlite DSN scoping |
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
 | `app/services/consolidation.py` | Consolidation pipeline: segment queue → LLM call → narrative_self + life-goals + companion memory + graph edges |
-| `app/services/diary.py` | Legacy diary helpers for consolidation history. Do not reintroduce diary/episode chat slices into consolidation prompts. |
 | `app/services/graph_edges.py` | Edge normalization + write/invalidate helpers (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`) |
 | `app/services/activity_messages.py` | `activity_messages` scoped-SQLite table for synthetic self-DM activity recaps (`My Activities:`) |
 | `app/services/whatsapp_outbounds.py` | `whatsapp_pending_outbounds` scoped-SQLite queue for WhatsApp replies/attachments |
@@ -139,7 +136,7 @@ from memu.prompts.memory_type import ...  # type prompts
 | Modify memorize flow | `app/services/memorize_endpoint.py` |
 | Modify retrieval flow | `app/services/retrieve_orchestration.py` |
 | Modify soul turn loop | `app/main.py` → `conversation_turn()` + `app/services/turn_contract.py` |
-| Modify consolidation / diary writes | `app/services/consolidation.py`, `app/services/diary.py` |
+| Modify consolidation | `app/services/consolidation.py` |
 | Modify conversation state | `app/services/state.py` |
 | Modify turn intentions (working stack) | `app/services/intention_state.py` |
 | Modify life goals (long-term) | `app/services/consolidation.py` — `intentions_life_goals` table |
