@@ -6,7 +6,7 @@ import re
 import sqlite3
 import uuid
 import xml.etree.ElementTree as ET
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 log = logging.getLogger(__name__)
 
 from fastapi import HTTPException
+from memu.app.dossier import DossierRevisionStaleError
 from memu.prompts.consolidation import consolidation as consolidation_prompt
 
 from app.services.segment import (
@@ -38,6 +39,7 @@ from app.services.turn_contract import DEFAULT_SOUL_CARD, format_memory_legend, 
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
+    from memu.database.models import MemoryCategory
 
 
 _SEGMENT_SUFFIX_RE = re.compile(r"_(\d+)\.json$")
@@ -214,6 +216,71 @@ def _format_categories_for_prompt(rows: list[sqlite3.Row]) -> str:
         else:
             lines.append(f"\n# {name}\n{summary}")
     return "\n".join(lines).strip() or "(none yet)"
+
+
+def _format_dossier_context_for_prompt(
+    dossier_index: str,
+    relevant_dossiers: Sequence[MemoryCategory],
+) -> str:
+    parts = ["# Dossier index", dossier_index.strip() or "(none)", "", "# Relevant dossiers"]
+    if relevant_dossiers:
+        for dossier in relevant_dossiers:
+            parts.extend(
+                [
+                    f"## {dossier.name}",
+                    f"Description: {dossier.description}",
+                    str(dossier.summary or ""),
+                    "",
+                ]
+            )
+        parts.pop()
+    else:
+        parts.append("(none)")
+    rendered = "\n".join(parts)
+    if len(rendered.split()) / 0.75 > 100_000:
+        raise ValueError("Consolidation dossier context exceeds 100000 tokens")
+    return rendered
+
+
+async def prepare_dossier_consolidation_context(
+    svc: MemoryService,
+    *,
+    inputs: dict[str, Any],
+    soul_id: str,
+    user_id: str,
+    consolidation_llm_profile: str | None,
+) -> dict[str, Any]:
+    revision_profile = svc.memorize_config.category_update_llm_profile
+    effective_consolidation_profile = consolidation_llm_profile or "default"
+    for profile_name in (revision_profile, effective_consolidation_profile):
+        if profile_name not in svc.llm_profiles.profiles:
+            raise KeyError(f"Step profile '{profile_name}' not found in config")
+
+    scope = {"soul_id": soul_id, "user_id": user_id}
+    for dossier in svc.list_due_dossiers(scope):
+        for attempt in range(2):
+            bundle = svc.prepare_dossier_revision(
+                dossier.id,
+                scope,
+                narrative_self=inputs.get("narrative_self"),
+                active_life_goals=inputs["active_life_goals"],
+                removed_life_goals=inputs["removed_life_goals"],
+            )
+            decision = await svc.generate_dossier_revision(bundle)
+            try:
+                await svc.apply_dossier_revision(bundle, decision, scope)
+            except DossierRevisionStaleError:
+                if attempt:
+                    raise
+                continue
+            break
+
+    inputs["dossier_index"] = svc.build_dossier_index(scope)
+    inputs["relevant_dossiers"] = svc.list_dossiers_for_segments(
+        scope,
+        segment_ids=inputs["selected_segment_ids"],
+    )
+    return inputs
 
 
 def _format_life_goals_for_prompt(active: list[str], removed: list[str]) -> str:

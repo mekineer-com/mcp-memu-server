@@ -1,21 +1,195 @@
-import pytest
+import sqlite3
+import tempfile
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+from memu.app.dossier import DossierRevisionStaleError
+
+from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
+from app.services import segment
+from app.services import soul_state as _soul_state
+from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
+from app.services.consolidation import _format_dossier_context_for_prompt
 from app.services.consolidation import _format_segment_memory_items_for_prompt
 from app.services.consolidation import _remap_edges_with_memory_ids
 from app.services.consolidation import _parse_consolidation_xml
 from app.services.consolidation import _select_interval_segment_window
-from app.services.consolidation import run_consolidation_llm
 from app.services.consolidation import gather_consolidation_inputs
-from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
-from app.services import segment
+from app.services.consolidation import prepare_dossier_consolidation_context
+from app.services.consolidation import run_consolidation_llm
 from app.services.graph_edges import invalidate_memory_edges, write_memory_edges
-from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
 from app.services.state import conversation_state_from_row, conversation_state_row, write_conversation_state
-from app.services import soul_state as _soul_state
-import sqlite3
-import tempfile
-from pathlib import Path
-from datetime import UTC, datetime, timedelta
+
+
+class _DossierContextService:
+    def __init__(self, *, due_ids=(), profiles=("default", "revision"), stale_count=0) -> None:
+        self.memorize_config = SimpleNamespace(category_update_llm_profile="revision")
+        self.llm_profiles = SimpleNamespace(profiles={name: object() for name in profiles})
+        self.due = [SimpleNamespace(id=dossier_id) for dossier_id in due_ids]
+        self.stale_count = stale_count
+        self.calls: list[tuple] = []
+
+    def list_due_dossiers(self, scope):
+        self.calls.append(("due", scope))
+        return self.due
+
+    def prepare_dossier_revision(self, dossier_id, scope, **context):
+        self.calls.append(("prepare", dossier_id, scope, context))
+        return {"dossier": SimpleNamespace(id=dossier_id)}
+
+    async def generate_dossier_revision(self, bundle):
+        dossier_id = bundle["dossier"].id
+        self.calls.append(("generate", dossier_id))
+        return {"dossier_id": dossier_id}
+
+    async def apply_dossier_revision(self, bundle, decision, scope):
+        dossier_id = bundle["dossier"].id
+        self.calls.append(("apply", dossier_id, decision, scope))
+        if self.stale_count:
+            self.stale_count -= 1
+            raise DossierRevisionStaleError("changed")
+
+    def build_dossier_index(self, scope):
+        self.calls.append(("index", scope))
+        return "- Health: Current health"
+
+    def list_dossiers_for_segments(self, scope, *, segment_ids):
+        self.calls.append(("relevant", scope, list(segment_ids)))
+        return [SimpleNamespace(name="Health", description="Current health", summary="Body [M4].")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profiles", "consolidation_profile", "missing"),
+    [
+        (("default",), None, "revision"),
+        (("default", "revision"), "reflection", "reflection"),
+    ],
+)
+async def test_dossier_context_preflights_both_profiles(
+    profiles, consolidation_profile, missing
+) -> None:
+    svc = _DossierContextService(due_ids=("first",), profiles=profiles)
+    with pytest.raises(KeyError, match=missing):
+        await prepare_dossier_consolidation_context(
+            svc,
+            inputs={
+                "active_life_goals": [],
+                "removed_life_goals": [],
+                "selected_segment_ids": ["segment-1"],
+            },
+            soul_id="TestSoul",
+            user_id="TestUser",
+            consolidation_llm_profile=consolidation_profile,
+        )
+    assert svc.calls == []
+
+
+@pytest.mark.asyncio
+async def test_dossier_context_retries_one_stale_and_preserves_due_order() -> None:
+    svc = _DossierContextService(due_ids=("first", "second"), stale_count=1)
+    inputs = {
+        "narrative_self": "I am steady.",
+        "active_life_goals": ["Stay curious"],
+        "removed_life_goals": ["Old goal"],
+        "selected_segment_ids": ["segment-2", "segment-3"],
+    }
+
+    result = await prepare_dossier_consolidation_context(
+        svc,
+        inputs=inputs,
+        soul_id="TestSoul",
+        user_id="TestUser",
+        consolidation_llm_profile=None,
+    )
+
+    assert result is inputs
+    assert [call[1] for call in svc.calls if call[0] == "generate"] == [
+        "first",
+        "first",
+        "second",
+    ]
+    assert result["dossier_index"] == "- Health: Current health"
+    assert result["relevant_dossiers"][0].summary == "Body [M4]."
+    assert (
+        "relevant",
+        {"soul_id": "TestSoul", "user_id": "TestUser"},
+        ["segment-2", "segment-3"],
+    ) in svc.calls
+    first_context = next(call[3] for call in svc.calls if call[0] == "prepare")
+    assert first_context == {
+        "narrative_self": "I am steady.",
+        "active_life_goals": ["Stay curious"],
+        "removed_life_goals": ["Old goal"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_dossier_context_aborts_after_second_stale() -> None:
+    svc = _DossierContextService(due_ids=("first", "second"), stale_count=2)
+    with pytest.raises(DossierRevisionStaleError):
+        await prepare_dossier_consolidation_context(
+            svc,
+            inputs={
+                "active_life_goals": [],
+                "removed_life_goals": [],
+                "selected_segment_ids": ["segment-1"],
+            },
+            soul_id="TestSoul",
+            user_id="TestUser",
+            consolidation_llm_profile=None,
+        )
+    assert [call[1] for call in svc.calls if call[0] == "generate"] == ["first", "first"]
+    assert not any(call[0] in {"index", "relevant"} for call in svc.calls)
+
+
+@pytest.mark.asyncio
+async def test_dossier_context_without_due_dossiers_still_builds_context() -> None:
+    svc = _DossierContextService()
+    inputs = {
+        "active_life_goals": [],
+        "removed_life_goals": [],
+        "selected_segment_ids": ["segment-4"],
+    }
+    await prepare_dossier_consolidation_context(
+        svc,
+        inputs=inputs,
+        soul_id="TestSoul",
+        user_id="TestUser",
+        consolidation_llm_profile=None,
+    )
+    assert inputs["dossier_index"] == "- Health: Current health"
+    assert (
+        "relevant",
+        {"soul_id": "TestSoul", "user_id": "TestUser"},
+        ["segment-4"],
+    ) in svc.calls
+
+
+def test_format_dossier_context_preserves_prose_and_rejects_oversize() -> None:
+    prose = "## Timeline\n- A remembered day [M12]."
+    rendered = _format_dossier_context_for_prompt(
+        "- Health: A living account",
+        [SimpleNamespace(name="Health", description="A living account", summary=prose)],
+    )
+    assert rendered == (
+        "# Dossier index\n"
+        "- Health: A living account\n\n"
+        "# Relevant dossiers\n"
+        "## Health\n"
+        "Description: A living account\n"
+        f"{prose}"
+    )
+    assert "[M12]" in rendered
+    assert "[1]" not in rendered
+
+    with pytest.raises(ValueError, match="exceeds 100000 tokens"):
+        _format_dossier_context_for_prompt(
+            "",
+            [SimpleNamespace(name="Large", description="Large", summary="word " * 75_001)],
+        )
 
 
 def test_parse_consolidation_xml_edges_and_write_helpers() -> None:
