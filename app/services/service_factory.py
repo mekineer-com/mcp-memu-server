@@ -363,6 +363,8 @@ def _get_service_from_payload(
             svc.intercept_after_llm_call(prompt_log_after, name="response_logger")
             svc.intercept_on_error_llm_call(prompt_log_on_error, name="error_logger")
 
+        svc.require_dossier_cutover_ready(extract_scope(payload) or {})
+
         if len(_SERVICES) >= 50:
             oldest_key = next(iter(_SERVICES), None)
             if oldest_key is not None:

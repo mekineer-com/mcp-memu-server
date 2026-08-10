@@ -46,6 +46,9 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         def __init__(self, **kwargs) -> None:
             captured.update(kwargs)
 
+        def require_dossier_cutover_ready(self, scope) -> None:
+            captured["cutover_scope"] = scope
+
     class _DummyUserModel(BaseModel):
         text: str = ""
 
@@ -115,6 +118,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert captured["memorize_config"]["background_extra_messages_tokens"] == 321
     assert captured["memorize_config"]["dynamic_category_cluster_size"] == 10
     assert captured["memorize_config"]["category_summary_target_words"] == 275
+    assert captured["cutover_scope"] == {"user_id": "u", "soul_id": "echo"}
 
 
 def test_client_llm_profiles_suppress_server_step_model_routing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -123,6 +127,9 @@ def test_client_llm_profiles_suppress_server_step_model_routing(monkeypatch: pyt
     class _FakeService:
         def __init__(self, **kwargs) -> None:
             captured.update(kwargs)
+
+        def require_dossier_cutover_ready(self, scope) -> None:
+            captured["cutover_scope"] = scope
 
     class _DummyUserModel(BaseModel):
         text: str = ""
@@ -183,6 +190,9 @@ def test_server_step_models_inject_when_client_profiles_absent(monkeypatch: pyte
     class _FakeService:
         def __init__(self, **kwargs) -> None:
             captured.update(kwargs)
+
+        def require_dossier_cutover_ready(self, scope) -> None:
+            captured["cutover_scope"] = scope
 
     class _DummyUserModel(BaseModel):
         text: str = ""
