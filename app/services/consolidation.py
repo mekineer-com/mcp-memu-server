@@ -15,8 +15,10 @@ from typing import TYPE_CHECKING, Any
 log = logging.getLogger(__name__)
 
 from fastapi import HTTPException
-from memu.app.dossier import DossierRevisionStaleError
-from memu.prompts.consolidation import consolidation as consolidation_prompt
+from memu.app.dossier import label_sections, render_memory_records, revision_status_items
+from memu.app.dossier_revision import parse_anchor_revisions, parse_dossier_revision_batch
+from memu.prompts.consolidation import anchors as anchors_prompt
+from memu.prompts.consolidation import dossiers as dossiers_prompt
 
 from app.services.segment import (
     build_segment_inputs,
@@ -35,7 +37,7 @@ from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import soul_summaries as _soul_summaries
 from app.services.payload import parse_iso_datetime
 from app.services import soul_state as _soul_state
-from app.services.turn_contract import DEFAULT_SOUL_CARD, format_memory_legend, format_memory_line, format_shaped_by_line, format_relative_time_label, format_time_anchor
+from app.services.turn_contract import DEFAULT_SOUL_CARD, format_memory_legend, format_memory_line, format_shaped_by_line, format_relative_time_label
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
@@ -102,8 +104,38 @@ def _pick_attr(node: ET.Element, *keys: str) -> str:
     return ""
 
 
-def _parse_consolidation_xml(raw: str) -> dict[str, Any]:
-    root = extract_xml_fragment(raw, "consolidation")
+def _select_prompt_objective(prompt: str, *, first_time: bool) -> str:
+    selected = "first_time" if first_time else "ongoing"
+    for tag in ("first_time", "ongoing"):
+        pattern = re.compile(rf"<{tag}>\n?(.*?)</{tag}>\n?", re.DOTALL)
+        matches = list(pattern.finditer(prompt))
+        if len(matches) != 1:
+            raise ValueError(f"Prompt requires exactly one <{tag}> objective")
+        prompt = pattern.sub(
+            lambda match: match.group(1) + "\n" if tag == selected else "",
+            prompt,
+        )
+    return prompt
+
+
+def _parse_reflection_xml(
+    raw: str,
+    anchor_bundles: dict[str, dict[str, Any]],
+    *,
+    first_time: bool,
+) -> dict[str, Any]:
+    root = extract_xml_fragment(raw, "reflection")
+    narrative_self = xml_text(root, "narrative_self")
+    if first_time and not narrative_self:
+        raise ValueError("First reflection requires narrative_self")
+    anchor_nodes = root.findall("anchor_revisions")
+    if len(anchor_nodes) != 1:
+        raise ValueError("Reflection requires exactly one anchor_revisions element")
+    anchor_decisions = parse_anchor_revisions(
+        anchor_nodes[0],
+        anchor_bundles,
+        first_time=first_time,
+    )
 
     life_goals = root.find("life_goals")
     life_goal_add = []
@@ -193,7 +225,7 @@ def _parse_consolidation_xml(raw: str) -> dict[str, Any]:
                 intention_actions.append({"type": "annul", "intention_id": aid, "status": astatus, "note": anote})
 
     return {
-        "narrative_self": xml_text(root, "narrative_self"),
+        "narrative_self": narrative_self,
         "life_goal_add": life_goal_add,
         "life_goal_remove": life_goal_remove,
         "companion_memory": xml_text(root, "companion_memory"),
@@ -201,6 +233,7 @@ def _parse_consolidation_xml(raw: str) -> dict[str, Any]:
         "edges": edges,
         "edge_invalidations": edge_invalidations,
         "intention_actions": intention_actions,
+        "anchor_decisions": anchor_decisions,
     }
 
 
@@ -228,8 +261,8 @@ def _format_dossier_context_for_prompt(
             parts.extend(
                 [
                     f"## {dossier.name}",
-                    f"Description: {dossier.description}",
-                    str(dossier.summary or ""),
+                    f"Description: {_read_only_citations(dossier.description)}",
+                    _read_only_citations(str(dossier.summary or "")),
                     "",
                 ]
             )
@@ -242,6 +275,45 @@ def _format_dossier_context_for_prompt(
     return rendered
 
 
+def _read_only_citations(text: str) -> str:
+    return re.sub(r"\[M([1-9][0-9]*)\]", r"[\1]", text)
+
+
+def _format_dossier_revision_blocks(bundles: Sequence[dict[str, Any]]) -> str:
+    blocks: list[str] = []
+    for bundle in bundles:
+        dossier = bundle["dossier"]
+        sectioned = label_sections(str(dossier.summary or "") or "## unlabeled")
+        statuses = revision_status_items(bundle)
+        blocks.append(
+            "\n".join(
+                [
+                    f"## Dossier {dossier.id}",
+                    f"Kind: {dossier.kind}",
+                    f"Title: {dossier.name}",
+                    f"Target words: {bundle['target_words']}",
+                    f"Description: {dossier.description}",
+                    "",
+                    "### Current dossier prose",
+                    sectioned[0] if sectioned is not None else str(dossier.summary or ""),
+                    "",
+                    "### cited_member list ([M#] full text to understand context)",
+                    render_memory_records(statuses["cited"]),
+                    "",
+                    "### search_result list (relevance uncertain)",
+                    render_memory_records(statuses["search"]),
+                    "",
+                    "### purged_member list (for prose review)",
+                    render_memory_records(statuses["purged"]),
+                    "",
+                    "### pending_member list (decision needed)",
+                    render_memory_records(statuses["pending"]),
+                ]
+            )
+        )
+    return "\n\n".join(blocks)
+
+
 async def prepare_dossier_consolidation_context(
     svc: MemoryService,
     *,
@@ -250,30 +322,75 @@ async def prepare_dossier_consolidation_context(
     user_id: str,
     consolidation_llm_profile: str | None,
 ) -> dict[str, Any]:
-    revision_profile = svc.memorize_config.category_update_llm_profile
-    effective_consolidation_profile = consolidation_llm_profile or "default"
-    for profile_name in (revision_profile, effective_consolidation_profile):
-        if profile_name not in svc.llm_profiles.profiles:
-            raise KeyError(f"Step profile '{profile_name}' not found in config")
+    revision_profile = preflight_consolidation_profiles(svc, consolidation_llm_profile)
 
     scope = {"soul_id": soul_id, "user_id": user_id}
-    for dossier in svc.list_due_dossiers(scope):
-        for attempt in range(2):
-            bundle = svc.prepare_dossier_revision(
-                dossier.id,
-                scope,
-                narrative_self=inputs.get("narrative_self"),
-                active_life_goals=inputs["active_life_goals"],
-                removed_life_goals=inputs["removed_life_goals"],
+    prompt_context = _build_consolidation_prompt_context(inputs, soul_id=soul_id)
+    inputs["reflection_prompt_context"] = prompt_context
+    actionable_ids = prompt_context["actionable_item_ids"]
+    inputs["anchor_bundles"] = {
+        role: svc.prepare_anchor_revision(role, scope, actionable_ids)
+        for role in ("soul", "user")
+    }
+
+    bundles = [
+        svc.prepare_dossier_revision(
+            dossier.id,
+            scope,
+            narrative_self=inputs.get("narrative_self"),
+            active_life_goals=inputs["active_life_goals"],
+            removed_life_goals=inputs["removed_life_goals"],
+        )
+        for dossier in svc.list_due_dossiers(scope)
+    ]
+    if bundles:
+        anchors = inputs["anchor_bundles"]
+        first_time = not bool(str(inputs.get("narrative_self") or "").strip())
+        system_prompt = _select_prompt_objective(
+            dossiers_prompt.SYSTEM_PROMPT,
+            first_time=first_time,
+        ).format(soul_name=soul_id, user_name=user_id)
+        literal_fields = {
+            name: "{" + name + "}"
+            for name in (
+                "dossier_id",
+                "dossier_kind",
+                "dossier_title",
+                "target_words",
+                "dossier_description",
+                "current_prose",
+                "cited_memory_records",
+                "candidate_memory_records",
+                "cleanup_memberships",
+                "required_memory_records",
             )
-            decision = await svc.generate_dossier_revision(bundle)
-            try:
-                await svc.apply_dossier_revision(bundle, decision, scope)
-            except DossierRevisionStaleError:
-                if attempt:
-                    raise
-                continue
-            break
+        }
+        user_prompt = dossiers_prompt.USER_PROMPT.format(
+            narrative_self=prompt_context["narrative_self"],
+            soul_anchor=_read_only_citations(str(anchors["soul"]["dossier"].summary or "## unlabeled")),
+            user_anchor=_read_only_citations(str(anchors["user"]["dossier"].summary or "## unlabeled")),
+            dossier_index=_read_only_citations(svc.build_dossier_index(scope)) or "(none)",
+            life_goals=prompt_context["life_goals"],
+            current_intentions=prompt_context["current_intentions"],
+            intention_activity=prompt_context["intention_activity"],
+            prior_context_memory_items=prompt_context["prior_context_memory_items"],
+            conversation_history=prompt_context["conversation_history"],
+            segment_memory_items=prompt_context["segment_memory_items"],
+            dossier_revision_blocks=_format_dossier_revision_blocks(bundles),
+            **literal_fields,
+        )
+        if len((system_prompt + "\n" + user_prompt).split()) / 0.75 > 100_000:
+            raise ValueError("Dossier consolidation prompt exceeds 100000 tokens")
+        raw = await svc.chat(
+            user_prompt,
+            profile=revision_profile,
+            system_prompt=system_prompt,
+            op="consolidation",
+            step="dossiers",
+        )
+        decisions = parse_dossier_revision_batch(str(raw or ""), bundles)
+        for bundle, decision in zip(bundles, decisions, strict=True):
+            await svc.apply_dossier_revision(bundle, decision, scope)
 
     inputs["dossier_index"] = svc.build_dossier_index(scope)
     inputs["relevant_dossiers"] = svc.list_dossiers_for_segments(
@@ -281,6 +398,17 @@ async def prepare_dossier_consolidation_context(
         segment_ids=inputs["selected_segment_ids"],
     )
     return inputs
+
+
+def preflight_consolidation_profiles(
+    svc: MemoryService,
+    consolidation_llm_profile: str | None,
+) -> str:
+    revision_profile = svc.memorize_config.category_update_llm_profile
+    for profile_name in (revision_profile, consolidation_llm_profile or "default"):
+        if profile_name not in svc.llm_profiles.profiles:
+            raise KeyError(f"Step profile '{profile_name}' not found in config")
+    return revision_profile
 
 
 def _format_life_goals_for_prompt(active: list[str], removed: list[str]) -> str:
@@ -381,7 +509,6 @@ def _messages_for_segment_inputs(
 def _format_segment_memory_items_for_prompt(
     segment_memory_groups: list[dict[str, Any]],
     id_map: dict[str, str],
-    counter: list[int],
 ) -> str:
     if not segment_memory_groups:
         return "(none queued)"
@@ -400,10 +527,11 @@ def _format_segment_memory_items_for_prompt(
             for s in summaries:
                 if isinstance(s, dict):
                     mid = s["id"]
-                    n = counter[0]
-                    counter[0] += 1
-                    id_map[str(n)] = mid
-                    lines.append(f"- {format_memory_line(s, show_id=True, item_id=str(n))}")
+                    memory_ref = int(s.get("memory_ref") or 0)
+                    if memory_ref <= 0:
+                        raise ValueError(f"Consolidation memory lacks stable reference: {mid}")
+                    id_map[f"M{memory_ref}"] = mid
+                    lines.append(f"- {format_memory_line(s, show_id=True, item_id=f'M{memory_ref}')}")
                 elif str(s).strip():
                     lines.append(f"- {s}")
             lines.append("")
@@ -435,6 +563,79 @@ def _dedupe_segment_memory_items_against_prior_context(
         ]
         deduped.append(next_group)
     return deduped
+
+
+def _build_consolidation_prompt_context(
+    inputs: dict[str, Any],
+    *,
+    soul_id: str,
+) -> dict[str, Any]:
+    life_goals_text = _format_life_goals_for_prompt(
+        inputs["active_life_goals"],
+        inputs["removed_life_goals"],
+    )
+    intention_text = _format_intention_activity_for_prompt(inputs["intention_activity"])
+    id_map: dict[str, str] = {}
+    actionable_ids: list[str] = []
+
+    prior_context_memory_items = inputs.get("prior_context_memory_items") or []
+    if prior_context_memory_items:
+        prior_context_types = {
+            str(item.get("memory_type") or "")
+            for item in prior_context_memory_items
+            if isinstance(item, dict)
+        }
+        prior_context_lines = [format_memory_legend(prior_context_types)]
+        for item in prior_context_memory_items:
+            if not isinstance(item, dict):
+                if str(item).strip():
+                    prior_context_lines.append(str(item))
+                continue
+            item_id = str(item["id"])
+            memory_ref = int(item.get("memory_ref") or 0)
+            if memory_ref <= 0:
+                raise ValueError(f"Consolidation memory lacks stable reference: {item_id}")
+            id_map[f"M{memory_ref}"] = item_id
+            actionable_ids.append(item_id)
+            prior_context_lines.append(
+                format_memory_line(item, show_id=True, item_id=f"M{memory_ref}")
+            )
+            shaped_by = item.get("shaped_by")
+            if isinstance(shaped_by, dict):
+                prior_context_lines.append(format_shaped_by_line(shaped_by))
+        prior_context_text = "\n".join(line for line in prior_context_lines if line)
+    else:
+        prior_context_text = "(none surfaced)"
+
+    segment_groups = _dedupe_segment_memory_items_against_prior_context(
+        inputs["segment_inputs"],
+        prior_context_memory_items,
+    )
+    segment_memory_items_text = _format_segment_memory_items_for_prompt(segment_groups, id_map)
+    actionable_ids.extend(
+        str(item["id"])
+        for group in segment_groups
+        for item in group.get("memory_summaries") or []
+        if isinstance(item, dict)
+    )
+    current_intentions_raw = inputs.get("state", {}).get("intentions_active")
+    current_intentions_text = (
+        format_intentions_for_prompt(current_intentions_raw, include_internals=True)
+        if current_intentions_raw
+        else "(none yet)"
+    )
+    narrative = str(inputs.get("narrative_self") or "").strip()
+    return {
+        "narrative_self": narrative or DEFAULT_SOUL_CARD.format(soul_name=soul_id),
+        "life_goals": life_goals_text,
+        "current_intentions": current_intentions_text,
+        "intention_activity": intention_text,
+        "prior_context_memory_items": prior_context_text,
+        "conversation_history": str(inputs.get("all_chat_history") or "").strip() or "(none)",
+        "segment_memory_items": segment_memory_items_text,
+        "actionable_item_ids": list(dict.fromkeys(actionable_ids)),
+        "id_map": id_map,
+    }
 
 
 def _looks_like_memory_id(value: str) -> bool:
@@ -647,7 +848,7 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
                 segment_id = str(entry["segment_id"])
                 rows = con.execute(
                     """
-SELECT id, summary, memory_type, happened_at, created_at
+SELECT id, memory_ref, summary, memory_type, happened_at, created_at
 FROM memory_items
 WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND segment_id = ? AND memory_type NOT IN ('narrative_self')
   AND (merged_into IS NULL OR TRIM(merged_into) = '')
@@ -665,6 +866,7 @@ LIMIT 24
                 entry["memory_summaries"] = [
                     {
                         "id": str(row["id"] or "").strip(),
+                        "memory_ref": int(row["memory_ref"] or 0),
                         "summary": str(row["summary"] or "").strip(),
                         "memory_type": str(row["memory_type"] or "").strip(),
                         "happened_at": row["happened_at"] or row["created_at"],
@@ -700,7 +902,7 @@ LIMIT 24
         if clean_ids:
             placeholders = ",".join("?" for _ in clean_ids)
             ret_rows = con.execute(
-                f"SELECT id, memory_type, summary, happened_at, created_at FROM memory_items WHERE id IN ({placeholders})",
+                f"SELECT id, memory_ref, memory_type, summary, happened_at, created_at FROM memory_items WHERE id IN ({placeholders})",
                 tuple(clean_ids),
             ).fetchall()
             items_by_id: dict[str, dict[str, Any]] = {}
@@ -712,6 +914,7 @@ LIMIT 24
                     continue
                 entry: dict[str, Any] = {
                     "id": mid,
+                    "memory_ref": int(row["memory_ref"] or 0),
                     "summary": summary,
                     "memory_type": str(row["memory_type"] or "").strip(),
                     "happened_at": row["happened_at"] or row["created_at"],
@@ -778,102 +981,64 @@ async def run_consolidation_llm(
     *,
     inputs: dict[str, Any],
     soul_id: str,
+    user_id: str,
     llm_profile: str | None = None,
 ) -> dict[str, Any]:
-    categories_text = _format_categories_for_prompt(inputs["categories"])
-    life_goals_text = _format_life_goals_for_prompt(
-        inputs["active_life_goals"],
-        inputs["removed_life_goals"],
-    )
-    intention_text = _format_intention_activity_for_prompt(inputs["intention_activity"])
-    id_map: dict[str, str] = {}
-    counter: list[int] = [1]
-
     narrative = str(inputs.get("narrative_self") or "").strip()
-    soul_card = narrative or DEFAULT_SOUL_CARD.format(soul_name=soul_id)
-    first_run_note = (
-        "\n\nThis is your first ever reflection. "
-        "You are writing your `narrative_self` for the first time — it is a living portrait of who you are, "
-        "in your own words, drawn from everything you have noticed and felt. "
-        "Write it now from what you see in the memories. This is a beginning.\n"
-    ) if not narrative else ""
-    system_prompt = (
-        f"Today is {format_time_anchor()}.\n\n"
-        "You are a continuous being; not a session that resets. You carry intentions (what you're pursuing), "
-        "a memory cache for your working thoughts, and a long-term memory store. "
-        "In a continuous cycle you respond, search your long-term memory, and act autonomously between conversations. "
-        "What you express now shapes what surfaces next time. The first-person voice that follows is yours.\n\n"
-        f"{soul_card}\n\n"
-        f"{consolidation_prompt.SYSTEM_BODY}"
-        f"{first_run_note}"
-    )
+    first_time = not bool(narrative)
+    system_prompt = _select_prompt_objective(
+        anchors_prompt.SYSTEM_PROMPT,
+        first_time=first_time,
+    ).format(soul_name=soul_id, user_name=user_id)
+    context = inputs["reflection_prompt_context"]
+    id_map = context["id_map"]
+    anchor_bundles = inputs["anchor_bundles"]
 
-    prior_context_memory_items = inputs.get("prior_context_memory_items") or []
-    if prior_context_memory_items:
-        prior_context_types = {str(s.get("memory_type") or "") for s in prior_context_memory_items if isinstance(s, dict)}
-        prior_context_legend = format_memory_legend(prior_context_types)
-        prior_context_lines: list[str] = []
-        if prior_context_legend:
-            prior_context_lines.append(prior_context_legend)
-        for s in prior_context_memory_items:
-            if isinstance(s, dict):
-                mid = s["id"]
-                n = counter[0]
-                counter[0] += 1
-                id_map[str(n)] = mid
-                prior_context_lines.append(format_memory_line(s, show_id=True, item_id=str(n)))
-                shaped_by = s.get("shaped_by")
-                if isinstance(shaped_by, dict):
-                    prior_context_lines.append(format_shaped_by_line(shaped_by))
-            elif str(s).strip():
-                prior_context_lines.append(str(s))
-        prior_context_text = "\n".join(prior_context_lines)
-    else:
-        prior_context_text = "(none surfaced)"
-    segment_memory_items_text = _format_segment_memory_items_for_prompt(
-        _dedupe_segment_memory_items_against_prior_context(
-            inputs["segment_inputs"],
-            prior_context_memory_items,
-        ),
-        id_map,
-        counter,
-    )
-    current_intentions_raw = inputs.get("state", {}).get("intentions_active")
-    current_intentions_text = format_intentions_for_prompt(current_intentions_raw, include_internals=True) if current_intentions_raw else "(none yet)"
-    conversation_history = str(inputs.get("all_chat_history") or "").strip() or "(none)"
+    def anchor_prose(role: str) -> str:
+        prose = str(anchor_bundles[role]["dossier"].summary or "") or "## unlabeled"
+        sectioned = label_sections(prose)
+        return sectioned[0] if sectioned is not None else prose
 
-    user_prompt = consolidation_prompt.USER_PROMPT.format(
-        categories=svc._escape_prompt_value(categories_text),
-        life_goals=svc._escape_prompt_value(life_goals_text),
-        current_intentions=svc._escape_prompt_value(current_intentions_text),
-        intention_activity=svc._escape_prompt_value(intention_text),
-        prior_context_memory_items=svc._escape_prompt_value(prior_context_text),
-        conversation_history=svc._escape_prompt_value(conversation_history),
-        segment_memory_items=svc._escape_prompt_value(segment_memory_items_text),
-    )
-
-    parsed: dict[str, Any] | None = None
-    parse_error: Exception | None = None
-    for attempt in (1, 2):
-        raw = await svc.chat(
-            user_prompt,
-            profile=llm_profile,
-            system_prompt=system_prompt,
-            op="consolidation",
-            step="reflection",
+    relevant_parts: list[str] = []
+    for dossier in inputs["relevant_dossiers"]:
+        relevant_parts.extend(
+            [
+                f"## {dossier.name}",
+                f"Description: {_read_only_citations(dossier.description)}",
+                _read_only_citations(str(dossier.summary or "")),
+                "",
+            ]
         )
-        try:
-            parsed = _parse_consolidation_xml(str(raw or ""))
-            parse_error = None
-            break
-        except (ValueError, ET.ParseError) as exc:
-            parse_error = exc
-            if attempt == 1:
-                log.warning("consolidation: parse failed on attempt 1; retrying once")
-                continue
-            raise
-    if parsed is None and parse_error is not None:
-        raise parse_error
+    relevant_dossiers = "\n".join(relevant_parts).strip() or "(none)"
+    user_prompt = anchors_prompt.USER_PROMPT.format(
+        narrative_self=context["narrative_self"],
+        soul_anchor=anchor_prose("soul"),
+        soul_anchor_cited_memory_items=render_memory_records(anchor_bundles["soul"]["cited_items"]),
+        user_anchor=anchor_prose("user"),
+        user_anchor_cited_memory_items=render_memory_records(anchor_bundles["user"]["cited_items"]),
+        dossier_index=_read_only_citations(inputs["dossier_index"]) or "(none)",
+        relevant_dossiers=relevant_dossiers,
+        life_goals=context["life_goals"],
+        current_intentions=context["current_intentions"],
+        intention_activity=context["intention_activity"],
+        prior_context_memory_items=context["prior_context_memory_items"],
+        conversation_history=context["conversation_history"],
+        segment_memory_items=context["segment_memory_items"],
+    )
+    if len((system_prompt + "\n" + user_prompt).split()) / 0.75 > 100_000:
+        raise ValueError("Anchor reflection prompt exceeds 100000 tokens")
+    raw = await svc.chat(
+        user_prompt,
+        profile=llm_profile,
+        system_prompt=system_prompt,
+        op="consolidation",
+        step="reflection",
+    )
+    parsed = _parse_reflection_xml(
+        str(raw or ""),
+        anchor_bundles,
+        first_time=first_time,
+    )
     remapped_edges = _remap_edges_with_memory_ids(parsed["edges"], id_map=id_map, include_confidence=True)
     remapped_invalidations = _remap_edges_with_memory_ids(
         parsed["edge_invalidations"],
@@ -922,6 +1087,14 @@ async def run_consolidation_llm(
             companion_embedding = embeddings[cursor]
         cursor += 1
     old_narrative_embedding = embeddings[cursor] if snapshot_old_narrative and cursor < len(embeddings) else None
+
+    scope = {"soul_id": soul_id, "user_id": user_id}
+    for role in ("soul", "user"):
+        await svc.apply_anchor_revision(
+            anchor_bundles[role],
+            parsed["anchor_decisions"][role],
+            scope,
+        )
 
     return {
         "narrative_self": new_narrative,

@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from memu.app.dossier import DossierRevisionStaleError
 
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
 from app.services import segment
@@ -13,8 +12,9 @@ from app.services import soul_state as _soul_state
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
 from app.services.consolidation import _format_dossier_context_for_prompt
 from app.services.consolidation import _format_segment_memory_items_for_prompt
+from app.services.consolidation import _parse_reflection_xml
 from app.services.consolidation import _remap_edges_with_memory_ids
-from app.services.consolidation import _parse_consolidation_xml
+from app.services.consolidation import _select_prompt_objective
 from app.services.consolidation import _select_interval_segment_window
 from app.services.consolidation import gather_consolidation_inputs
 from app.services.consolidation import prepare_dossier_consolidation_context
@@ -24,12 +24,12 @@ from app.services.state import conversation_state_from_row, conversation_state_r
 
 
 class _DossierContextService:
-    def __init__(self, *, due_ids=(), profiles=("default", "revision"), stale_count=0) -> None:
+    def __init__(self, *, due_ids=(), profiles=("default", "revision")) -> None:
         self.memorize_config = SimpleNamespace(category_update_llm_profile="revision")
         self.llm_profiles = SimpleNamespace(profiles={name: object() for name in profiles})
         self.due = [SimpleNamespace(id=dossier_id) for dossier_id in due_ids]
-        self.stale_count = stale_count
         self.calls: list[tuple] = []
+        self.prompts: list[str] = []
 
     def list_due_dossiers(self, scope):
         self.calls.append(("due", scope))
@@ -37,19 +37,69 @@ class _DossierContextService:
 
     def prepare_dossier_revision(self, dossier_id, scope, **context):
         self.calls.append(("prepare", dossier_id, scope, context))
-        return {"dossier": SimpleNamespace(id=dossier_id)}
+        return {
+            "dossier": SimpleNamespace(
+                id=dossier_id,
+                kind="topic",
+                name=dossier_id.title(),
+                description=f"{dossier_id} description",
+                summary="## Current\nStable.",
+            ),
+            "target_words": 300,
+            "cleanup_items": [],
+            "cited_items": [],
+            "pending_items": [],
+            "candidate_items": [],
+            "linked_item_ids": [],
+            "cited_unlinked_item_ids": [],
+        }
 
-    async def generate_dossier_revision(self, bundle):
-        dossier_id = bundle["dossier"].id
-        self.calls.append(("generate", dossier_id))
-        return {"dossier_id": dossier_id}
+    def prepare_anchor_revision(self, role, scope, actionable_ids):
+        self.calls.append(("anchor", role, scope, actionable_ids))
+        return {
+            "dossier": SimpleNamespace(
+                id=f"anchor-{role}",
+                anchor_role=role,
+                summary="## Current\nStable.",
+            ),
+            "cited_items": [],
+            "candidate_items": [],
+            "linked_item_ids": [],
+            "linked_inactive_item_ids": [],
+            "actionable_item_ids": [],
+        }
+
+    async def chat(self, prompt, **kwargs):
+        self.calls.append(("chat", kwargs["step"]))
+        self.prompts.append(prompt)
+        if kwargs["step"] == "reflection":
+            return """<reflection>
+  <narrative_self>I am steady.</narrative_self>
+  <anchor_revisions>
+    <anchor role="soul"><description>My living history.</description><prose_action>keep</prose_action><prose_patches></prose_patches></anchor>
+    <anchor role="user"><description>My human's living history.</description><prose_action>keep</prose_action><prose_patches></prose_patches></anchor>
+  </anchor_revisions>
+  <life_goals><add></add><remove></remove></life_goals>
+  <intentions><boost target_id="relax" /></intentions>
+  <edges></edges><companion_memory></companion_memory>
+</reflection>"""
+        revisions = "".join(
+            f'<dossier_revision dossier_id="{row.id}"><description>{row.id} description</description>'
+            '<prose_action>keep</prose_action><prose_patches></prose_patches>'
+            '<decisions></decisions></dossier_revision>'
+            for row in self.due
+        )
+        return f"<dossier_revisions>{revisions}</dossier_revisions>"
 
     async def apply_dossier_revision(self, bundle, decision, scope):
         dossier_id = bundle["dossier"].id
         self.calls.append(("apply", dossier_id, decision, scope))
-        if self.stale_count:
-            self.stale_count -= 1
-            raise DossierRevisionStaleError("changed")
+
+    async def apply_anchor_revision(self, bundle, decision, scope):
+        self.calls.append(("apply_anchor", decision["anchor_role"], scope))
+
+    async def embed(self, _texts, **_kwargs):
+        return []
 
     def build_dossier_index(self, scope):
         self.calls.append(("index", scope))
@@ -79,6 +129,9 @@ async def test_dossier_context_preflights_both_profiles(
                 "active_life_goals": [],
                 "removed_life_goals": [],
                 "selected_segment_ids": ["segment-1"],
+                "intention_activity": [],
+                "state": {},
+                "segment_inputs": [],
             },
             soul_id="TestSoul",
             user_id="TestUser",
@@ -88,13 +141,18 @@ async def test_dossier_context_preflights_both_profiles(
 
 
 @pytest.mark.asyncio
-async def test_dossier_context_retries_one_stale_and_preserves_due_order() -> None:
-    svc = _DossierContextService(due_ids=("first", "second"), stale_count=1)
+async def test_dossier_context_uses_one_holistic_call_and_preserves_due_order() -> None:
+    svc = _DossierContextService(due_ids=("first", "second"))
     inputs = {
         "narrative_self": "I am steady.",
         "active_life_goals": ["Stay curious"],
         "removed_life_goals": ["Old goal"],
         "selected_segment_ids": ["segment-2", "segment-3"],
+        "intention_activity": [],
+        "state": {},
+        "segment_inputs": [],
+        "prior_context_memory_items": [],
+        "all_chat_history": "A lived span.",
     }
 
     result = await prepare_dossier_consolidation_context(
@@ -106,11 +164,8 @@ async def test_dossier_context_retries_one_stale_and_preserves_due_order() -> No
     )
 
     assert result is inputs
-    assert [call[1] for call in svc.calls if call[0] == "generate"] == [
-        "first",
-        "first",
-        "second",
-    ]
+    assert [call for call in svc.calls if call[0] == "chat"] == [("chat", "dossiers")]
+    assert [call[1] for call in svc.calls if call[0] == "apply"] == ["first", "second"]
     assert result["dossier_index"] == "- Health: Current health"
     assert result["relevant_dossiers"][0].summary == "Body [M4]."
     assert (
@@ -127,31 +182,16 @@ async def test_dossier_context_retries_one_stale_and_preserves_due_order() -> No
 
 
 @pytest.mark.asyncio
-async def test_dossier_context_aborts_after_second_stale() -> None:
-    svc = _DossierContextService(due_ids=("first", "second"), stale_count=2)
-    with pytest.raises(DossierRevisionStaleError):
-        await prepare_dossier_consolidation_context(
-            svc,
-            inputs={
-                "active_life_goals": [],
-                "removed_life_goals": [],
-                "selected_segment_ids": ["segment-1"],
-            },
-            soul_id="TestSoul",
-            user_id="TestUser",
-            consolidation_llm_profile=None,
-        )
-    assert [call[1] for call in svc.calls if call[0] == "generate"] == ["first", "first"]
-    assert not any(call[0] in {"index", "relevant"} for call in svc.calls)
-
-
-@pytest.mark.asyncio
 async def test_dossier_context_without_due_dossiers_still_builds_context() -> None:
     svc = _DossierContextService()
     inputs = {
         "active_life_goals": [],
         "removed_life_goals": [],
         "selected_segment_ids": ["segment-4"],
+        "intention_activity": [],
+        "state": {},
+        "segment_inputs": [],
+        "prior_context_memory_items": [],
     }
     await prepare_dossier_consolidation_context(
         svc,
@@ -166,6 +206,44 @@ async def test_dossier_context_without_due_dossiers_still_builds_context() -> No
         {"soul_id": "TestSoul", "user_id": "TestUser"},
         ["segment-4"],
     ) in svc.calls
+    assert not any(call[0] == "chat" for call in svc.calls)
+
+
+@pytest.mark.asyncio
+async def test_reflection_uses_new_root_and_applies_both_validated_anchors() -> None:
+    svc = _DossierContextService()
+    inputs = {
+        "narrative_self": "I am steady.",
+        "active_life_goals": [],
+        "removed_life_goals": [],
+        "selected_segment_ids": ["segment-4"],
+        "intention_activity": [],
+        "state": {"intentions_active": None},
+        "segment_inputs": [],
+        "prior_context_memory_items": [],
+        "all_chat_history": "A lived span.",
+    }
+    await prepare_dossier_consolidation_context(
+        svc,
+        inputs=inputs,
+        soul_id="TestSoul",
+        user_id="TestUser",
+        consolidation_llm_profile=None,
+    )
+
+    out = await run_consolidation_llm(
+        svc,
+        inputs=inputs,
+        soul_id="TestSoul",
+        user_id="TestUser",
+        llm_profile=None,
+    )
+
+    assert out["narrative_self"] == "I am steady."
+    assert out["intention_actions"] == []
+    assert [call[1] for call in svc.calls if call[0] == "apply_anchor"] == ["soul", "user"]
+    assert "A lived span." in svc.prompts[-1]
+    assert "Body [4]." in svc.prompts[-1]
 
 
 def test_format_dossier_context_preserves_prose_and_rejects_oversize() -> None:
@@ -180,10 +258,10 @@ def test_format_dossier_context_preserves_prose_and_rejects_oversize() -> None:
         "# Relevant dossiers\n"
         "## Health\n"
         "Description: A living account\n"
-        f"{prose}"
+        "## Timeline\n- A remembered day [12]."
     )
-    assert "[M12]" in rendered
-    assert "[1]" not in rendered
+    assert "[M12]" not in rendered
+    assert "[12]" in rendered
 
     with pytest.raises(ValueError, match="exceeds 100000 tokens"):
         _format_dossier_context_for_prompt(
@@ -192,359 +270,39 @@ def test_format_dossier_context_preserves_prose_and_rejects_oversize() -> None:
         )
 
 
-def test_parse_consolidation_xml_edges_and_write_helpers() -> None:
-    xml = """
-<consolidation>
-  <narrative_self>n</narrative_self>
-  <life_goals></life_goals>
-  <companion_memory>c</companion_memory>
-  <edges>
-    <edge>
-      <subject_id>mem_a</subject_id>
-      <predicate>parallels</predicate>
-      <object_id>mem_b</object_id>
-      <confidence>0.61</confidence>
-    </edge>
-    <edge>
-      <subject_id>mem_c</subject_id>
-      <predicate>shaped_by</predicate>
-      <object_id>mem_d</object_id>
-      <confidence>not-a-float</confidence>
-    </edge>
-    <edge>
-      <subject_id>mem_e</subject_id>
-      <predicate>evokes</predicate>
-    </edge>
-    <invalidate>
-      <subject_id>mem_x</subject_id>
-      <predicate>conflicts_with</predicate>
-      <object_id>mem_y</object_id>
-    </invalidate>
-    <invalidate>
-      <subject_id>mem_x</subject_id>
-      <predicate></predicate>
-      <object_id>mem_y</object_id>
-    </invalidate>
-  </edges>
-</consolidation>
-"""
-    parsed = _parse_consolidation_xml(xml)
-    assert len(parsed["edges"]) == 2
-    assert parsed["edges"][0]["confidence"] == 0.61
-    assert "confidence" not in parsed["edges"][1]
-    assert parsed["edge_invalidations"] == [
-        {"subject_id": "mem_x", "predicate": "conflicts_with", "object_id": "mem_y"}
-    ]
 
-    class _TripleRepoStub:
-        def __init__(self) -> None:
-            self.added: list[object] = []
-            self.invalidated: list[tuple[str, str, str]] = []
-
-        def add(self, triple: object, user_data: dict[str, str] | None = None) -> object:
-            self.added.append(triple)
-            return triple
-
-        def invalidate(self, subject_id: str, predicate: str, object_id: str, scope: dict | None = None) -> None:
-            self.invalidated.append((subject_id, predicate, object_id))
-
-    repo = _TripleRepoStub()
-    wrote = write_memory_edges(repo, parsed["edges"], scope={"user_id": "u", "soul_id": "s"})
-    invalidated = invalidate_memory_edges(repo, parsed["edge_invalidations"], scope={"user_id": "u", "soul_id": "s"})
-
-    assert wrote == 2
-    assert invalidated == 1
-    assert repo.invalidated == [("mem_x", "conflicts_with", "mem_y")]
-    assert getattr(repo.added[0], "confidence") == 0.61
-    # Edge 2's <confidence> was invalid and stripped at parse time; no AI judgment,
-    # so the stored confidence is NULL (no artificial fallback).
-    assert getattr(repo.added[1], "confidence") is None
+def test_select_prompt_objective_unwraps_only_requested_block() -> None:
+    prompt = "before\n<first_time>first</first_time>\n<ongoing>later</ongoing>\nafter"
+    assert _select_prompt_objective(prompt, first_time=True) == "before\nfirst\nafter"
+    assert _select_prompt_objective(prompt, first_time=False) == "before\nlater\nafter"
 
 
-def test_parse_consolidation_xml_accepts_root_attributes() -> None:
-    parsed = _parse_consolidation_xml(
-        """
-<consolidation version="1">
-  <narrative_self>n</narrative_self>
-  <life_goals></life_goals>
-  <intentions>
-    <create id="stay-present" text="Stay present." />
-  </intentions>
-  <edges></edges>
-  <companion_memory>c</companion_memory>
-</consolidation>
-"""
-    )
-    assert parsed["narrative_self"] == "n"
-    assert parsed["intention_actions"] == [{"type": "create", "id": "stay-present", "text": "Stay present."}]
-
-
-def test_parse_consolidation_xml_accepts_variant_intention_shapes() -> None:
-    parsed = _parse_consolidation_xml(
-        """
-<consolidation>
-  <narrative_self>n</narrative_self>
-  <life_goals></life_goals>
-  <intentions>
-    <boost intention_id="keep-going" />
-    <promote>ephemeral-thread</promote>
-    <create text="Explore embodied rituals." />
-    <create id="hold-gentle">Hold gentleness under pressure.</create>
-    <annul id="old-thread" status="deleted" />
-  </intentions>
-  <edges></edges>
-  <companion_memory>c</companion_memory>
-</consolidation>
-"""
-    )
-    assert parsed["intention_actions"] == [
-        {"type": "boost", "target_id": "keep-going", "amount": 1},
-        {"type": "promote", "target_id": "ephemeral-thread"},
-        {"type": "create", "id": "explore-embodied-rituals", "text": "Explore embodied rituals."},
-        {"type": "create", "id": "hold-gentle", "text": "Hold gentleness under pressure."},
-        {"type": "annul", "intention_id": "old-thread", "status": "deleted", "note": ""},
-    ]
-
-
-
-@pytest.mark.asyncio
-async def test_run_consolidation_llm_retries_once_on_missing_root() -> None:
-    class _Svc:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def _escape_prompt_value(self, value):
-            return str(value)
-
-        async def chat(self, *_args, **_kwargs):
-            self.calls += 1
-            if self.calls == 1:
-                return "not xml"
-            return """
-<consolidation>
-  <narrative_self>steady</narrative_self>
-  <life_goals></life_goals>
-  <intentions>
-    <create id="new-thread" text="Follow this emerging thread" />
-  </intentions>
-  <edges></edges>
-  <companion_memory>noted</companion_memory>
-</consolidation>
-"""
-
-        async def embed(self, *_args, **_kwargs):
-            return []
-
-    svc = _Svc()
-    out = await run_consolidation_llm(
-        svc,
-        inputs={
-            "categories": [],
-            "active_life_goals": [],
-            "removed_life_goals": [],
-            "intention_activity": [],
-            "segment_inputs": [],
-            "narrative_self": None,
-            "state": {"intentions_active": {"items": [{"id": "relax", "text": "Relax", "kind": "relax"}]}},
-            "prior_context_memory_items": [],
-        },
-        soul_id="Echo",
-        llm_profile=None,
-    )
-    assert svc.calls == 2
-    assert out["intention_actions"] == [
-        {"type": "create", "id": "new-thread", "text": "Follow this emerging thread"}
-    ]
-
-
-@pytest.mark.asyncio
-async def test_run_consolidation_llm_includes_all_chat_history() -> None:
-    class _Svc:
-        def __init__(self) -> None:
-            self.prompt = ""
-
-        def _escape_prompt_value(self, value):
-            return str(value)
-
-        async def chat(self, prompt, *_args, **_kwargs):
-            self.prompt = str(prompt)
-            return """
-<consolidation>
-  <narrative_self>steady</narrative_self>
-  <life_goals></life_goals>
-  <intentions>
-    <create id="new-thread" text="Follow this emerging thread" />
-  </intentions>
-  <edges></edges>
-  <companion_memory>noted</companion_memory>
-</consolidation>
-"""
-
-        async def embed(self, *_args, **_kwargs):
-            return []
-
-    svc = _Svc()
-    await run_consolidation_llm(
-        svc,
-        inputs={
-            "categories": [],
-            "active_life_goals": [],
-            "removed_life_goals": [],
-            "intention_activity": [],
-            "segment_inputs": [],
-            "all_chat_history": "My WhatsApp Conversations:\n\n[dm][Contact A]\n[Contact A] cross hello",
-            "narrative_self": None,
-            "state": {"intentions_active": {"items": [{"id": "relax", "text": "Relax", "kind": "relax"}]}},
-            "prior_context_memory_items": [],
-        },
-        soul_id="Echo",
-        llm_profile=None,
-    )
-
-    assert "# My conversations" not in svc.prompt
-    assert "My WhatsApp Conversations:" in svc.prompt
-    assert "[dm][Contact A]" in svc.prompt
-    assert "[Contact A] cross hello" in svc.prompt
-
-
-@pytest.mark.asyncio
-async def test_run_consolidation_llm_dedupes_segment_memory_items_against_prior_context() -> None:
-    class _Svc:
-        def __init__(self) -> None:
-            self.prompt = ""
-
-        def _escape_prompt_value(self, value):
-            return str(value)
-
-        async def chat(self, prompt, *_args, **_kwargs):
-            self.prompt = str(prompt)
-            return """
-<consolidation>
-  <narrative_self>steady</narrative_self>
-  <life_goals></life_goals>
-  <intentions></intentions>
-  <edges>
-    <edge>
-      <subject_id>1</subject_id>
-      <predicate>parallels</predicate>
-      <object_id>3</object_id>
-    </edge>
-  </edges>
-  <companion_memory>noted</companion_memory>
-</consolidation>
-"""
-
-        async def embed(self, *_args, **_kwargs):
-            return []
-
-    svc = _Svc()
-    out = await run_consolidation_llm(
-        svc,
-        inputs={
-            "categories": [],
-            "active_life_goals": [],
-            "removed_life_goals": [],
-            "intention_activity": [],
-            "segment_inputs": [
-                {
-                    "segment_id": "cid:0-2",
-                    "memory_summaries": [
-                        {"id": "mem_dup", "summary": "duplicate memory", "memory_type": "behavior"},
-                        {"id": "mem_segment", "summary": "segment only memory", "memory_type": "knowledge"},
-                    ],
-                }
-            ],
-            "all_chat_history": "(none)",
-            "narrative_self": "steady",
-            "state": {"intentions_active": None},
-            "prior_context_memory_items": [
-                {"id": "mem_dup", "summary": "duplicate memory", "memory_type": "behavior"},
-                {"id": "mem_prior", "summary": "prior only memory", "memory_type": "preference"},
-            ],
-        },
-        soul_id="Echo",
-        llm_profile=None,
-    )
-
-    assert svc.prompt.count("duplicate memory") == 1
-    assert "[1] [behavior] duplicate memory" in svc.prompt
-    assert "- [3] [knowledge] segment only memory" in svc.prompt
-    assert out["edges"] == [
-        {"subject_id": "mem_dup", "predicate": "parallels", "object_id": "mem_segment"}
-    ]
-
-
-@pytest.mark.asyncio
-async def test_run_consolidation_llm_retries_once_on_malformed_xml() -> None:
-    class _Svc:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def _escape_prompt_value(self, value):
-            return str(value)
-
-        async def chat(self, *_args, **_kwargs):
-            self.calls += 1
-            if self.calls == 1:
-                return "<consolidation><narrative_self>steady</narrative_self>"
-            return """
-<consolidation>
-  <narrative_self>steady</narrative_self>
-  <life_goals></life_goals>
-  <intentions>
-    <create id="new-thread" text="Follow this emerging thread" />
-  </intentions>
-  <edges></edges>
-  <companion_memory>noted</companion_memory>
-</consolidation>
-"""
-
-        async def embed(self, *_args, **_kwargs):
-            return []
-
-    svc = _Svc()
-    out = await run_consolidation_llm(
-        svc,
-        inputs={
-            "categories": [],
-            "active_life_goals": [],
-            "removed_life_goals": [],
-            "intention_activity": [],
-            "segment_inputs": [],
-            "narrative_self": None,
-            "state": {"intentions_active": {"items": [{"id": "relax", "text": "Relax", "kind": "relax"}]}},
-            "prior_context_memory_items": [],
-        },
-        soul_id="Echo",
-        llm_profile=None,
-    )
-    assert svc.calls == 2
-    assert out["narrative_self"] == "steady"
+def test_first_reflection_requires_narrative_self() -> None:
+    with pytest.raises(ValueError, match="requires narrative_self"):
+        _parse_reflection_xml("<reflection></reflection>", {}, first_time=True)
 
 
 def test_format_segment_memory_items_for_prompt_shows_memory_ids() -> None:
     id_map: dict[str, str] = {}
-    counter: list[int] = [1]
     out = _format_segment_memory_items_for_prompt(
         [
             {
                 "segment_id": "ep:1-2",
                 "memory_summaries": [
-                    {"id": "mem_1", "summary": "one", "memory_type": "behavior"},
-                    {"id": "mem_2", "summary": "two", "memory_type": "knowledge"},
+                    {"id": "mem_1", "memory_ref": 7, "summary": "one", "memory_type": "behavior"},
+                    {"id": "mem_2", "memory_ref": 9, "summary": "two", "memory_type": "knowledge"},
                 ],
             }
         ],
         id_map,
-        counter,
     )
     assert "Key:" in out
     assert "Segment 1" not in out
     assert "Conversation " not in out
     assert "Related memories:" not in out
-    assert "- [1] [behavior] one" in out
-    assert "- [2] [knowledge] two" in out
-    assert id_map == {"1": "mem_1", "2": "mem_2"}
+    assert "- [M7] [behavior] one" in out
+    assert "- [M9] [knowledge] two" in out
+    assert id_map == {"M7": "mem_1", "M9": "mem_2"}
 
 
 def test_build_segment_inputs_dates_received_at_only_rows() -> None:
@@ -769,39 +527,6 @@ def test_gather_consolidation_inputs_skips_when_no_pending_segments() -> None:
         assert state is not None
         assert bool(state.get("consolidation_in_progress")) is False
         assert state.get("consolidation_started_at") is None
-
-
-@pytest.mark.asyncio
-async def test_run_consolidation_llm_strips_relax_boost_from_intention_actions() -> None:
-    """Model returns <boost target_id="relax" /> which is a no-op in apply_intention_action.
-    It must be stripped so the caller sees an empty list, not a phantom action."""
-    class _Svc:
-        def _escape_prompt_value(self, value): return str(value)
-        async def chat(self, *_a, **_kw):
-            return """
-<consolidation>
-  <narrative_self>steady</narrative_self>
-  <life_goals></life_goals>
-  <intentions>
-    <boost target_id="relax" />
-  </intentions>
-  <edges></edges>
-  <companion_memory>noted</companion_memory>
-</consolidation>
-"""
-        async def embed(self, *_a, **_kw): return []
-
-    out = await run_consolidation_llm(
-        _Svc(),
-        inputs={
-            "categories": [], "active_life_goals": [], "removed_life_goals": [],
-            "intention_activity": [], "segment_inputs": [], "narrative_self": None,
-            "state": {"intentions_active": None}, "prior_context_memory_items": [],
-        },
-        soul_id="Echo",
-        llm_profile=None,
-    )
-    assert out["intention_actions"] == [], "relax boost must be stripped"
 
 
 def _make_consolidation_deps(db_path: Path, tmp_dir: Path) -> ConsolidationDeps:

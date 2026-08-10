@@ -67,6 +67,8 @@ from app.services import whatsapp_outbounds as _whatsapp_outbounds
 from app.services.consolidation import (
     ConsolidationDeps,
     gather_consolidation_inputs as _gather_consolidation_inputs,
+    prepare_dossier_consolidation_context as _prepare_dossier_consolidation_context,
+    preflight_consolidation_profiles as _preflight_consolidation_profiles,
     run_consolidation_llm as _run_consolidation_llm,
     write_consolidation_outputs as _write_consolidation_outputs,
 )
@@ -1862,6 +1864,8 @@ async def _run_consolidation_pipeline_once(
     user_id: str,
     force: bool = False,
 ) -> dict[str, Any]:
+    consolidation_profile = _resolve_profile_if_configured(svc, "consolidation")
+    _preflight_consolidation_profiles(svc, consolidation_profile)
     async with state_lock:
         prep = _gather_consolidation_inputs(
             deps,
@@ -1889,12 +1893,20 @@ async def _run_consolidation_pipeline_once(
         soul_id=soul_id,
         mark_current_chat=False,
     )
+    await _prepare_dossier_consolidation_context(
+        svc,
+        inputs=prep,
+        soul_id=soul_id,
+        user_id=user_id,
+        consolidation_llm_profile=consolidation_profile,
+    )
 
     consolidation_llm = await _run_consolidation_llm(
         svc,
         inputs=prep,
         soul_id=soul_id,
-        llm_profile=_resolve_profile_if_configured(svc, "consolidation"),
+        user_id=user_id,
+        llm_profile=consolidation_profile,
     )
     async with state_lock:
         result = _write_consolidation_outputs(

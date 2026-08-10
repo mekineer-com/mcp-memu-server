@@ -89,7 +89,7 @@ mcp-memu-server/
 |--------|---------|
 | `app/config.py` | `load_config()`, `save_config()`, `mask_config()`, storage path normalization, sqlite DSN scoping |
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
-| `app/services/consolidation.py` | Consolidation pipeline: segment queue → LLM call → narrative_self + life-goals + companion memory + graph edges |
+| `app/services/consolidation.py` | Consolidation pipeline: segment queue → holistic due-dossier revision → anchor reflection → narrative_self + life-goals + companion memory + graph edges |
 | `app/services/graph_edges.py` | Edge normalization + write/invalidate helpers (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`) |
 | `app/services/activity_messages.py` | `activity_messages` scoped-SQLite table for synthetic self-DM activity recaps (`My Activities:`) |
 | `app/services/whatsapp_outbounds.py` | `whatsapp_pending_outbounds` scoped-SQLite queue for WhatsApp replies/attachments |
@@ -121,7 +121,7 @@ mcp-memu-server/
 
 ```python
 from memu.app import MemoryService    # main facade
-from memu.prompts.consolidation import consolidation  # consolidation prompt
+from memu.prompts.consolidation import anchors, dossiers  # two-call reflection prompts
 from memu.prompts.memory_type import ...  # type prompts
 ```
 
