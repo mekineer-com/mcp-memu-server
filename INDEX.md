@@ -24,6 +24,7 @@ mcp-memu-server/
 ├── app/services/state.py
 ├── app/services/soul_summaries.py
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
+├── migrate_category_taxonomy.py # Offline inventory/discover/apply/validate migration; explicit DB only
 ├── config.json              # Runtime config (llm, storage, listen, categories, memu path)
 ├── config.example.json      # Template
 ├── tests/                   # pytest suite; see `TESTING.md` for run command
@@ -142,6 +143,7 @@ from memu.prompts.memory_type import ...  # type prompts
 | Modify life goals (long-term) | `app/services/consolidation.py` — `intentions_life_goals` table |
 | Modify DB schema/helpers | `app/db.py` |
 | Change config shape | `config.json` + `app/config.py` |
+| Migrate legacy categories to dossiers | `migrate_category_taxonomy.py` + root `PLAN_category_taxonomy_slice_G_migration.md` |
 
 ## Config (`config.json`)
 
