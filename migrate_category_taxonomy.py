@@ -256,6 +256,25 @@ def _active_memory_clause(alias: str = "m") -> str:
     """
 
 
+def _active_memory_identity(
+    conn: sqlite3.Connection,
+    active_where: str,
+    params: Sequence[Any],
+) -> dict[str, Any]:
+    rows = conn.execute(
+        "SELECT m.id, m.memory_type, m.summary, m.happened_at, m.created_at, m.embedding "
+        f"FROM memory_items m{active_where} ORDER BY m.id",
+        params,
+    ).fetchall()
+    digest = hashlib.sha256()
+    for row in rows:
+        digest.update(json.dumps(list(row[:5]), ensure_ascii=False, default=str).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(bytes(row[5] or b""))
+        digest.update(b"\0")
+    return {"count": len(rows), "sha256": digest.hexdigest()}
+
+
 def scan_database(path: Path) -> dict[str, Any]:
     resolved = path.expanduser().resolve()
     if not resolved.is_file():
@@ -283,7 +302,8 @@ def scan_database(path: Path) -> dict[str, Any]:
             if scope is not None
             else f" WHERE {_active_memory_clause()}"
         )
-        active_count = int(conn.execute(f"SELECT COUNT(*) FROM memory_items m{active_where}", params).fetchone()[0])
+        active_memory_identity = _active_memory_identity(conn, active_where, params)
+        active_count = int(active_memory_identity["count"])
         missing_refs = int(
             conn.execute(
                 f"SELECT COUNT(*) FROM memory_items m{active_where} AND m.memory_ref IS NULL",
@@ -327,6 +347,7 @@ def scan_database(path: Path) -> dict[str, Any]:
         "schema_version": schema_version,
         "memory_scopes": ordered_memory_scopes,
         "all_scopes": ordered_all_scopes,
+        "active_memory_identity": active_memory_identity,
         "active_memories": active_count,
         "missing_memory_refs": missing_refs,
         "duplicate_memory_refs": duplicate_refs,
@@ -476,7 +497,9 @@ def _migration_cluster_id(candidate_ids: Sequence[str]) -> str:
 
 def _validate_dossiers(path: Path, scope: Mapping[str, str], *, require_approved: bool) -> list[dict[str, Any]]:
     payload = _read_json(path)
-    rows = payload.get("dossiers") if isinstance(payload, dict) else payload
+    if not isinstance(payload, dict) or payload.get("scope") != dict(scope):
+        raise MigrationError(f"dossier artifact scope does not match target: {path}")
+    rows = payload.get("dossiers")
     if not isinstance(rows, list):
         raise MigrationError(f"dossier artifact must contain a dossiers list: {path}")
     normalized: set[str] = set()
@@ -681,11 +704,19 @@ def _new_manifest(
         "version": MIGRATION_VERSION,
         "database": str(database.expanduser().resolve()),
         "source_identity": report["identity"],
+        "active_memory_identity": report["active_memory_identity"],
         "scope": dict(scope),
         "schema_version": report["schema_version"],
         "model_identity": dict(model_identity),
         "discovery": {"prepared": False, "batches": [], "reviews": [], "complete": False},
-        "apply": {"reset": False, "dossiers": [], "batches": [], "revisions": [], "complete": False},
+        "apply": {
+            "reset": False,
+            "seeded": False,
+            "dossiers": [],
+            "batches": [],
+            "revisions": [],
+            "complete": False,
+        },
         "pending_operation": None,
     }
 
@@ -720,6 +751,13 @@ async def _create_dossiers(service: Any, scope: Mapping[str, str], rows: Sequenc
                 or existing.kind != row["kind"]
             ):
                 raise MigrationError(f"existing dossier differs from approved artifact: {row['title']}")
+            if existing.summary != "## unlabeled":
+                raise MigrationError(f"existing dossier has unexpected migration prose: {row['title']}")
+            if (
+                existing.approved_description != existing.description
+                or existing.approved_summary != existing.summary
+            ):
+                store.memory_category_repo.approve_category_summary(existing.id, scope)
             created_ids.append(existing.id)
             continue
         [embedding] = await service.embed(
@@ -753,6 +791,15 @@ async def _ensure_approved_anchors(service: Any, scope: Mapping[str, str]) -> No
     anchors = await service.ensure_dossier_anchors(scope)
     for anchor in anchors.values():
         service.database.memory_category_repo.approve_category_summary(anchor.id, scope)
+
+
+def _assert_taxonomy_empty(store: Any, scope: Mapping[str, str]) -> None:
+    if (
+        store.memory_category_repo.list_categories(scope)
+        or store.category_item_repo.list_relations(scope)
+        or store.dossier_candidate_repo.list_candidates(scope, unresolved_only=False)
+    ):
+        raise MigrationError("taxonomy reset did not clear all scoped category state")
 
 
 def _file_proposals(
@@ -932,6 +979,7 @@ async def discover_database(
         if not discovery.get("prepared"):
             _set_pending(paths["manifest"], manifest, "discovery_prepare")
             service.database.memory_category_repo.clear_categories(scope)
+            _assert_taxonomy_empty(service.database, scope)
             service.database.memory_item_repo.backfill_memory_refs(scope)
             await _ensure_approved_anchors(service, scope)
             await _create_dossiers(service, scope, seeds)
@@ -1133,6 +1181,8 @@ async def apply_database(
     manifest = _load_manifest(paths["manifest"], database, scope)
     discovery = manifest["discovery"]
     apply_state = manifest["apply"]
+    if manifest.get("active_memory_identity") != report.get("active_memory_identity"):
+        raise MigrationError("active memory set changed since discovery")
     if not discovery.get("complete"):
         raise MigrationError("discovery and human dossier review must finish before apply")
 
@@ -1178,20 +1228,17 @@ async def apply_database(
             raise MigrationError("configured taxonomy migration model changed during startup")
         if not apply_state.get("reset"):
             service.database.memory_category_repo.clear_categories(scope)
-            if (
-                service.database.memory_category_repo.list_categories(scope)
-                or service.database.category_item_repo.list_relations(scope)
-                or service.database.dossier_candidate_repo.list_candidates(scope, unresolved_only=False)
-            ):
-                raise MigrationError("taxonomy reset did not clear all scoped category state")
+            _assert_taxonomy_empty(service.database, scope)
             apply_state["reset"] = True
             _set_pending(paths["manifest"], manifest, None)
 
-        _set_pending(paths["manifest"], manifest, "target_dossier_seed")
-        service.database.memory_item_repo.backfill_memory_refs(scope)
-        await _ensure_approved_anchors(service, scope)
-        apply_state["dossiers"] = await _create_dossiers(service, scope, dossiers)
-        _set_pending(paths["manifest"], manifest, None)
+        if not apply_state.get("seeded"):
+            _set_pending(paths["manifest"], manifest, "target_dossier_seed")
+            service.database.memory_item_repo.backfill_memory_refs(scope)
+            await _ensure_approved_anchors(service, scope)
+            apply_state["dossiers"] = await _create_dossiers(service, scope, dossiers)
+            apply_state["seeded"] = True
+            _set_pending(paths["manifest"], manifest, None)
 
         rows = await _assignment_rows(service, database, scope)
         batches = _prompt_batches(
@@ -1243,14 +1290,13 @@ async def apply_database(
                 if not isinstance(decision, dict):
                     raise MigrationError(f"dossier revision cache is invalid for {dossier.name}")
             else:
-                try:
-                    decision = await service.generate_dossier_revision(bundle)
-                except ValueError as exc:
-                    if "exceeds 100000 tokens" in str(exc):
-                        apply_state["blocked_dossier"] = {"id": dossier.id, "title": dossier.name}
-                        _atomic_write_json(paths["manifest"], manifest)
-                        raise MigrationError(f"dossier exceeds the 100000-token revision guard: {dossier.name}") from exc
-                    raise
+                if _estimate_tokens(system_prompt + "\n" + user_prompt) > 100_000:
+                    apply_state["blocked_dossier"] = {"id": dossier.id, "title": dossier.name}
+                    _atomic_write_json(paths["manifest"], manifest)
+                    raise MigrationError(
+                        f"dossier exceeds the 100000-token revision guard: {dossier.name}"
+                    )
+                decision = await service.generate_dossier_revision(bundle)
                 entry = {
                     "dossier_id": dossier.id,
                     "title": dossier.name,
@@ -1306,10 +1352,10 @@ def validate_database(database: Path, *, dossier_path: Path | None = None) -> di
     scope = _require_scope(report)
     errors: list[str] = []
     warnings: list[str] = []
-    artifact_titles: set[str] | None = None
+    artifact_dossiers: dict[str, dict[str, Any]] | None = None
     if dossier_path is not None:
-        artifact_titles = {
-            _normalize_title(row["title"])
+        artifact_dossiers = {
+            _normalize_title(row["title"]): row
             for row in _validate_dossiers(dossier_path, scope, require_approved=True)
         }
 
@@ -1365,8 +1411,20 @@ def validate_database(database: Path, *, dossier_path: Path | None = None) -> di
     normalized_titles = [_normalize_title(row["name"]) for row in categories.values()]
     if len(normalized_titles) != len(set(normalized_titles)):
         errors.append("duplicate normalized dossier titles remain")
-    if artifact_titles is not None and {_normalize_title(row["name"]) for row in ordinary} != artifact_titles:
-        errors.append("stored non-anchor dossiers differ from the approved artifact")
+    if artifact_dossiers is not None:
+        stored_dossiers = {_normalize_title(row["name"]): row for row in ordinary}
+        if stored_dossiers.keys() != artifact_dossiers.keys():
+            errors.append("stored non-anchor dossiers differ from the approved artifact")
+        else:
+            for title, artifact in artifact_dossiers.items():
+                stored = stored_dossiers[title]
+                if (
+                    stored.get("kind") != artifact["kind"]
+                    or stored.get("approved_description") != artifact["description"]
+                ):
+                    errors.append(
+                        f"stored dossier identity differs from the approved artifact: {stored['name']}"
+                    )
     if all_candidates:
         errors.append(f"{all_candidates} dossier candidate rows remain")
     if cross_scope_relations:
