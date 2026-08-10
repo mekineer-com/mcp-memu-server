@@ -7,7 +7,6 @@ import asyncio
 import pytest
 
 from app.services import soul_state, soul_summaries
-from app.services.state import write_conversation_state
 from app import main
 
 
@@ -50,7 +49,7 @@ CREATE TABLE soul_state (
     check.row_factory = sqlite3.Row
     state = soul_state.read(check)
     assert state["narrative_self_approved"] == "old self"
-    assert state["all_categories_summary_approved"] == "old cats"
+    assert "all_categories_summary" not in state
     check.execute("UPDATE soul_state SET narrative_self = 'new self' WHERE id = 1")
     check.commit()
     soul_state.ensure_schema(check)
@@ -100,43 +99,6 @@ def test_soul_summary_write_approve_and_journal(monkeypatch, tmp_path) -> None:
     assert state["narrative_self_approved"] == "first self"
     assert state["summaries_revision"] == 2
     assert soul_summaries.list_for_review(con)[0]["pending"] is False
-
-
-def test_journal_failure_leaves_soul_summary_unchanged(monkeypatch) -> None:
-    con = _connection()
-
-    def fail(**_kwargs):
-        raise OSError("blocked")
-
-    monkeypatch.setattr(soul_summaries, "append_summary_journal", fail)
-    with pytest.raises(OSError, match="blocked"):
-        soul_summaries.write_live(
-            con,
-            kind="all_categories_summary",
-            summary="new",
-            scope={"user_id": "u", "soul_id": "s"},
-            edited_by="pipeline",
-        )
-    assert soul_state.read(con)["all_categories_summary"] is None
-
-
-def test_all_categories_only_state_write_commits(monkeypatch, tmp_path) -> None:
-    path = tmp_path / "soul.db"
-    sqlite3.connect(path).close()
-    monkeypatch.setattr(soul_summaries, "append_summary_journal", lambda **_kwargs: None)
-
-    write_conversation_state(
-        "chat",
-        sqlite_current_path=lambda _uid, _sid: path,
-        soul_id="s",
-        user_id="u",
-        updates={"all_categories_summary": "holistic"},
-    )
-
-    con = sqlite3.connect(path)
-    con.row_factory = sqlite3.Row
-    assert soul_state.read(con)["all_categories_summary"] == "holistic"
-    con.close()
 
 
 def test_soul_summary_route_rejects_stale_snapshot(monkeypatch, tmp_path) -> None:

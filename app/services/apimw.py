@@ -55,12 +55,14 @@ async def _apimw_retrieve_items(
     conversation_id: str,
     apimw_k: int,
     trace_id: str,
+    all_categories_summary: str = "",
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     retrieve_queries = _m()._build_retrieve_soul_context_queries(
         soul_id=soul_id,
         message=focus_text,
         history=history,
         state_row=state_row,
+        all_categories_summary=all_categories_summary,
         identity_mode="apimw",
         conversation_id=conversation_id,
         conversations_block=conversations_block,
@@ -100,6 +102,7 @@ async def _apimw_collect_memory_items(
     apimw_random_count: int,
     scope: dict[str, str],
     trace_id: str,
+    all_categories_summary: str = "",
 ) -> list[dict[str, Any]]:
     _retrieve_result, retrieved_items = await _m()._apimw_retrieve_items(
         payload,
@@ -108,6 +111,7 @@ async def _apimw_collect_memory_items(
         soul_id=soul_id,
         history=history,
         state_row=state_row,
+        all_categories_summary=all_categories_summary,
         conversation_id=conversation_id,
         apimw_k=apimw_k,
         trace_id=trace_id,
@@ -166,6 +170,7 @@ async def _apimw_synthesize(
     soul_id: str,
     conversation_id: str,
     scope: dict[str, str],
+    all_categories_summary: str = "",
     llm_profile: str | None = None,
     trace_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]], dict[str, str]]:
@@ -200,7 +205,7 @@ async def _apimw_synthesize(
         history=[],
         prior_context=None,
         retrieve_rag=None,
-        all_categories_summary=state_row.get("all_categories_summary"),
+        all_categories_summary=all_categories_summary,
         memory_cache=memory_cache,
         intentions_active=intentions_active,
         conversations_block=segment_text,
@@ -346,6 +351,7 @@ async def _run_apimw(
         svc = _m()._get_service_from_payload(payload)
         apimw_trace_id = uuid.uuid4().hex
         scope = {"user_id": user_id, "soul_id": soul_id}
+        all_categories_summary = svc.build_dossier_index(scope)
         apimw_item_top_k = _m()._apimw_memory_count_from_cfg(_m()._CONFIG)
         apimw_random_count = _m()._apimw_random_count_from_cfg(_m()._CONFIG)
 
@@ -376,6 +382,7 @@ async def _run_apimw(
             conversations_block=segment_text,
             history=current_history,
             state_row=state_row,
+            all_categories_summary=all_categories_summary,
             conversation_id=conversation_id,
             soul_id=soul_id,
             apimw_k=apimw_item_top_k,
@@ -389,6 +396,7 @@ async def _run_apimw(
             svc,
             combined_items=combined_items,
             state_row=state_row,
+            all_categories_summary=all_categories_summary,
             segment_text=segment_text,
             current_message_text=current_message_text,
             user_id=user_id,

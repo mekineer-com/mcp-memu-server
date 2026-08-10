@@ -2712,7 +2712,11 @@ def test_build_retrieve_soul_context_queries_uses_full_history_for_apimw_rewrite
 async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, str] = {}
 
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        main,
+        "_get_service_from_payload",
+        lambda *_a, **_k: SimpleNamespace(build_dossier_index=lambda _scope: "- Joy: Alive"),
+    )
     monkeypatch.setattr(main, "_apimw_memory_count_from_cfg", lambda *_a, **_k: 5)
     monkeypatch.setattr(main, "_apimw_random_count_from_cfg", lambda *_a, **_k: 0)
     monkeypatch.setattr(
@@ -3029,72 +3033,6 @@ async def test_run_memorize_segments_preserves_pending_ids_on_extraction_failure
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_segments_keeps_results_when_summary_fails(monkeypatch: pytest.MonkeyPatch, tmp_path):
-    segments_dir = tmp_path / "segments"
-    segments_dir.mkdir()
-
-    class _FakeService:
-        async def memorize_segments_batch(self, **_kwargs):
-            return [{"pending_segment_ids": ["cid-1:0-0"]}]
-
-    user_id = "u"
-    soul_id = "s"
-    conversation_id = "cid-1"
-    key = main._memorize_lock_key(user_id, soul_id)
-    main._MEMORIZE_PROGRESS.pop(key, None)
-    main._MEMORIZE_CANCEL.discard(key)
-
-    state_row: dict[str, Any] = {
-        "pending_segment_ids": [],
-        "digest_cursor": -1,
-        "last_memorize_at": None,
-    }
-
-    def fake_load_turn_state_and_soul_card(*_args, **_kwargs):
-        return dict(state_row), None, None
-
-    def fake_write_conversation_state(_cid: str, *, updates: dict[str, Any], **_kwargs):
-        if "digest_cursor" in updates:
-            state_row["digest_cursor"] = int(updates["digest_cursor"])
-        if "last_memorize_at" in updates:
-            state_row["last_memorize_at"] = updates["last_memorize_at"]
-        if "append_pending_segment_ids" in updates:
-            state_row["pending_segment_ids"].extend(updates["append_pending_segment_ids"])
-        if "pending_segment_ids" in updates:
-            state_row["pending_segment_ids"] = list(updates.get("pending_segment_ids") or [])
-        return dict(state_row), tmp_path / "Echo.db"
-
-    async def fail_summary(**_kwargs):
-        raise RuntimeError("summary boom")
-
-    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
-    monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
-    monkeypatch.setattr(main, "_compute_holistic_categories_summary", fail_summary)
-
-    await main._run_memorize_segments(
-        memorize_segments=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0, 0)],
-        svc=_FakeService(),
-        scope={"user_id": user_id, "soul_id": soul_id},
-        conversation_id=conversation_id,
-        soul_id=soul_id,
-        uid=user_id,
-        processed_cursor=-1,
-        safe={},
-        resource_url="/tmp/day.json",
-        chat_key=None,
-        merged_len=1,
-        force=False,
-        sleep_stats=None,
-        segments_dir=segments_dir,
-    )
-
-    assert [p.name for p in segments_dir.glob("*.json")] == ["undated.json"]
-    assert state_row["digest_cursor"] == 0
-    assert state_row["last_memorize_at"]
-    assert state_row["pending_segment_ids"] == ["cid-1:0-0"]
-
-
-@pytest.mark.asyncio
 async def test_run_memorize_segments_ignores_cancel_after_batch_extraction(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -3134,12 +3072,8 @@ async def test_run_memorize_segments_ignores_cancel_after_batch_extraction(
             state_row["pending_segment_ids"].extend(updates["append_pending_segment_ids"])
         return dict(state_row), tmp_path / "Echo.db"
 
-    async def fake_summary(**_kwargs):
-        return "summary"
-
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
     monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
-    monkeypatch.setattr(main, "_compute_holistic_categories_summary", fake_summary)
 
     await main._run_memorize_segments(
         memorize_segments=[
@@ -3210,12 +3144,8 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
             state_rows[cid]["rolling_summary"] = None
         return dict(state_rows[cid]), tmp_path / "Echo.db"
 
-    async def fake_summary(**_kwargs):
-        return "summary"
-
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
     monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
-    monkeypatch.setattr(main, "_compute_holistic_categories_summary", fake_summary)
     monkeypatch.setattr(
         main,
         "_resolve_web_source_checkpoint",
@@ -3328,12 +3258,8 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
         state_rows.setdefault(cid, {}).update(updates)
         return dict(state_rows[cid]), tmp_path / "Echo.db"
 
-    async def fake_summary(**_kwargs):
-        return "summary"
-
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
     monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
-    monkeypatch.setattr(main, "_compute_holistic_categories_summary", fake_summary)
 
     await main._run_memorize_segments(
         memorize_segments=[
@@ -3432,12 +3358,8 @@ async def test_run_memorize_segments_fresh_background_context_does_not_write_rol
         state_rows.setdefault(cid, {}).update(updates)
         return dict(state_rows[cid]), tmp_path / "Echo.db"
 
-    async def fake_summary(**_kwargs):
-        return "summary"
-
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
     monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
-    monkeypatch.setattr(main, "_compute_holistic_categories_summary", fake_summary)
 
     await main._run_memorize_segments(
         memorize_segments=[
@@ -3529,12 +3451,8 @@ async def test_context_only_segment_advances_cursor_without_memory_work(
         state_rows.setdefault(cid, {}).update(updates)
         return dict(state_rows[cid]), tmp_path / "TestSoul.db"
 
-    async def fail_summary(**_kwargs):
-        raise AssertionError("context-only completion must not rebuild summaries")
-
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
     monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
-    monkeypatch.setattr(main, "_compute_holistic_categories_summary", fail_summary)
 
     await main._run_memorize_segments(
         memorize_segments=[
@@ -3745,6 +3663,10 @@ def test_memory_graph_pending_endpoint_uses_scoped_service(monkeypatch: pytest.M
             calls["where"] = where
             return {"items": [], "categories": []}
 
+        def build_dossier_index(self, where):
+            assert where == {"user_id": "u", "soul_id": "s"}
+            return "- Joy: What lights me up"
+
     def _fake_service(payload):
         calls["payload"] = payload
         return _Svc()
@@ -3756,7 +3678,18 @@ def test_memory_graph_pending_endpoint_uses_scoped_service(monkeypatch: pytest.M
     assert out == {
         "items": [],
         "categories": [],
-        "soul_summaries": [],
+        "soul_summaries": [
+            {
+                "id": "soul-summary:all_categories_summary",
+                "kind": "all_categories_summary",
+                "label": "Dossier Index",
+                "summary": "- Joy: What lights me up",
+                "approved_summary": "- Joy: What lights me up",
+                "previous_summary": None,
+                "pending": False,
+                "read_only": True,
+            }
+        ],
         "summaries_revision": 0,
     }
     assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}
@@ -3811,9 +3744,13 @@ def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: 
     calls: dict[str, object] = {}
 
     class _Svc:
-        async def graph_update_category_summary(self, item_id, *, summary, where, edited_by, approved):
+        async def graph_update_category_summary(
+            self, item_id, *, summary, title, description, where, edited_by, approved
+        ):
             calls["item_id"] = item_id
             calls["summary"] = summary
+            calls["title"] = title
+            calls["description"] = description
             calls["where"] = where
             calls["edited_by"] = edited_by
             calls["approved"] = approved
@@ -4095,8 +4032,8 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
             }
         ],
         state_row={
-            "all_categories_summary": "# Holistic Self Summary\n- SoulA carries one integrated self-summary.",
         },
+        all_categories_summary="# Dossier Index\n- SoulA carries one integrated self-summary.",
         segment_text="My WhatsApp Conversations:\n\n[dm][Marcos]\n[Marcos] earlier hello",
         current_message_text="hello",
         user_id="u",
@@ -4112,7 +4049,7 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
     }
     assert items_by_id["mem_one"]["summary"] == "Marcos likes continuity."
     assert id_map == {"1": "mem_one"}
-    assert captured["user_prompt"].startswith("# Holistic Self Summary\n- SoulA carries one integrated self-summary.")
+    assert captured["user_prompt"].startswith("# Dossier Index\n- SoulA carries one integrated self-summary.")
     assert "Identity: # Identity" not in captured["user_prompt"]
     assert "# Identity" not in captured["user_prompt"]
     assert "Summaries:" not in captured["user_prompt"]

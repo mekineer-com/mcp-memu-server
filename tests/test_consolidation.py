@@ -11,7 +11,6 @@ from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensur
 from app.services import segment
 from app.services import soul_state as _soul_state
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
-from app.services.consolidation import _format_dossier_context_for_prompt
 from app.services.consolidation import _format_segment_memory_items_for_prompt
 from app.services.consolidation import _parse_reflection_xml
 from app.services.consolidation import _remap_edges_with_memory_ids
@@ -191,7 +190,8 @@ async def test_dossier_context_keeps_first_apply_when_second_is_stale() -> None:
             consolidation_llm_profile=None,
         )
     assert [call[1] for call in svc.calls if call[0] == "apply"] == ["first", "second"]
-    assert not any(call[0] in {"index", "relevant"} for call in svc.calls)
+    assert len([call for call in svc.calls if call[0] == "index"]) == 1
+    assert not any(call[0] == "relevant" for call in svc.calls)
 
 
 @pytest.mark.asyncio
@@ -257,31 +257,6 @@ async def test_reflection_uses_new_root_and_applies_both_validated_anchors() -> 
     assert [call[1] for call in svc.calls if call[0] == "apply_anchor"] == ["soul", "user"]
     assert "A lived span." in svc.prompts[-1]
     assert "Body [4]." in svc.prompts[-1]
-
-
-def test_format_dossier_context_preserves_prose_and_rejects_oversize() -> None:
-    prose = "## Timeline\n- A remembered day [M12]."
-    rendered = _format_dossier_context_for_prompt(
-        "- Health: A living account",
-        [SimpleNamespace(name="Health", description="A living account", summary=prose)],
-    )
-    assert rendered == (
-        "# Dossier index\n"
-        "- Health: A living account\n\n"
-        "# Relevant dossiers\n"
-        "## Health\n"
-        "Description: A living account\n"
-        "## Timeline\n- A remembered day [12]."
-    )
-    assert "[M12]" not in rendered
-    assert "[12]" in rendered
-
-    with pytest.raises(ValueError, match="exceeds 100000 tokens"):
-        _format_dossier_context_for_prompt(
-            "",
-            [SimpleNamespace(name="Large", description="Large", summary="word " * 75_001)],
-        )
-
 
 
 def test_select_prompt_objective_unwraps_only_requested_block() -> None:

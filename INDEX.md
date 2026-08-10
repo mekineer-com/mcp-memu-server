@@ -25,7 +25,7 @@ mcp-memu-server/
 ├── app/services/soul_summaries.py
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
 ├── migrate_category_taxonomy.py # Offline inventory/discover/apply/validate migration; explicit DB only
-├── config.json              # Runtime config (llm, storage, listen, categories, memu path)
+├── config.json              # Runtime config (llm, storage, listen, dossier policy, memu path)
 ├── config.example.json      # Template
 ├── tests/                   # pytest suite; see `TESTING.md` for run command
 ├── alembic/                 # DB migration scripts
@@ -69,7 +69,7 @@ mcp-memu-server/
 | `/souls/{soul_id}/relationships` | GET/POST | User-declared relationship entities |
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or soft-delete one relationship |
 | `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot |
-| `/pending` | GET | Review queue: unapproved memories/categories plus persistent soul summaries and revision |
+| `/pending` | GET | Review queue: unapproved memories/dossiers, persistent narrative self, and read-only deterministic dossier index |
 | `/soul-summary/{kind}` | PATCH | Journal and approve an Atomic manual correction with snapshot guard |
 | `/soul-summary/{kind}/approve` | POST | Approve the displayed soul-summary value with snapshot guard |
 | `/memory/{item_id}/approve` | POST | Bless current memory value |
@@ -109,7 +109,7 @@ mcp-memu-server/
 | `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, queue management. Canonicalizes WhatsApp group IDs before all reads/writes. |
 | `app/services/turn_contract.py` | `make_turn_system_prompt()`, `build_turn_prompt()`, `parse_turn_contract()`, `build_conversations_block()`, `build_turn_context_block()` — soul turn prompt construction and JSON contract parsing. Single entry point for all AI-facing chat display. |
 | `app/services/intention_state.py` | Intentions normalization and prompt formatting. Owns memory cache entry caps (`MAX_MEMORY_CACHE_ENTRIES`, `MAX_MEMORY_CACHE_ENTRY_CHARS`). |
-| `app/services/soul_state.py` | Soul-level singleton state: `narrative_self`, `all_categories_summary`, `memory_cache`, `intentions_active` |
+| `app/services/soul_state.py` | Soul-level singleton state: `narrative_self`, `memory_cache`, `intentions_active`; the dossier index is projected from memU, never stored |
 | `app/services/soul_summaries.py` | Journaled live/previous/approved soul-summary writes and review revision guards |
 | `app/services/message_log.py` | Cross-conversation history rendering: `format_merged_history()`, source-label derivation, WhatsApp normalization, activity-log block |
 | `app/services/xml_utils.py` | `extract_xml_fragment()`, `xml_text()` — used by consolidation pipeline |
@@ -152,7 +152,7 @@ llm:        provider, api_key, base_url, chat_model, embed_model
 storage:    resources_dir, metadata_store (provider + dsn)
 listen:     host, port
 memu:       path (to memu/src)
-categories: defaults[], dynamic-category thresholds
+categories: dynamic dossier cluster size and revision target words
 retrieve:   apimw_enabled, apimw_cadence, apimw_memory_count, apimw_random_count, mental_health_query
 claude_code: claude_code_workspace, claude_code_permission_mode, claude_code_timeout_seconds
 memorize:   min_chunk_tokens, background_summary_tokens, background_extra_messages_tokens

@@ -28,7 +28,6 @@ from app.config import (
     STARTUP_WARNINGS as _STARTUP_WARNINGS,
     STORAGE_STATUS as _STORAGE_STATUS,
     blob_config_from_cfg as _blob_config_from_cfg,
-    categories_from_cfg as _categories_from_cfg,
     config_path as _config_path,
     database_config_from_cfg as _database_config_from_cfg,
     default_llm_profiles_from_server_config as _default_llm_profiles_from_server_config,
@@ -972,7 +971,6 @@ def _get_service_from_payload(payload: dict[str, Any]):
         default_llm_profiles_from_server_config=_default_llm_profiles_from_server_config,
         database_config_from_cfg=_database_config_from_cfg,
         blob_config_from_cfg=_blob_config_from_cfg,
-        categories_from_cfg=_categories_from_cfg,
         normalize_sqlite_dsn=_normalize_sqlite_dsn,
         sqlite_dsn_for_scope=_sqlite_dsn_for_scope,
         sqlite_file_from_dsn=_sqlite_file_from_dsn,
@@ -1483,44 +1481,6 @@ async def _persist_annulment_memories(
     return created_ids
 
 
-async def _compute_holistic_categories_summary(
-    *,
-    svc: Any,
-    soul_id: str,
-    user_id: str,
-) -> str | None:
-    where: dict[str, Any] = {}
-    if soul_id:
-        where["soul_id"] = soul_id
-    if user_id:
-        where["user_id"] = user_id
-    categories = svc.database.memory_category_repo.list_categories(where)
-    lines: list[str] = []
-    for cat in sorted(categories.values(), key=lambda c: c.name.casefold()):
-        name = cat.name.strip()
-        summary = str(cat.summary or "").strip()
-        if name and summary:
-            if summary.lstrip().startswith(f"# {name}"):
-                lines.append(summary)
-            else:
-                lines.append(f"## {name}\n{summary}")
-    if not lines:
-        return None
-
-    full_text = "\n\n".join(lines)
-    system_prompt = (
-        f"You are {soul_id}. Write a 250-350 word overview of your life from the summaries below, in your own voice."
-    )
-    result = await svc.chat(
-        full_text,
-        profile="holistic_summary",
-        system_prompt=system_prompt,
-        op="categories",
-        step="holistic_summary",
-    )
-    return str(result or "").strip() or None
-
-
 # ==== Retrieve & APIMW pipeline ====
 
 async def _run_retrieve(
@@ -1918,20 +1878,6 @@ async def _run_consolidation_pipeline_once(
             soul_id=soul_id,
             user_id=user_id,
         )
-    # LLM call outside the lock — can take several seconds.
-    holistic_summary = await _compute_holistic_categories_summary(
-        svc=svc,
-        soul_id=soul_id,
-        user_id=user_id,
-    )
-    async with state_lock:
-        # Re-read fresh state so we only stomp all_categories_summary (strictly newer).
-        _write_conversation_state(
-            conversation_id,
-            soul_id=soul_id,
-            user_id=user_id,
-            updates={"all_categories_summary": holistic_summary},
-        )
     return {"status": "ok", "result": result}
 
 
@@ -2066,7 +2012,6 @@ def _make_memorize_run_context() -> _memorize_endpoint.MemorizeRunContext:
         base=_make_memorize_context(),
         load_turn_state_and_soul_card=_load_turn_state_and_soul_card,
         normalize_text_list=_normalize_text_list,
-        compute_holistic_categories_summary=_compute_holistic_categories_summary,
         run_consolidation_task=_run_consolidation_task,
         clear_last_display_segments_for_nonparticipants=_clear_last_display_segments_for_nonparticipants,
         resolve_web_source_checkpoint=_resolve_web_source_checkpoint,
@@ -2407,6 +2352,7 @@ async def get_conversation_state(
         sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
         conversation_state_from_row=_conversation_state_from_row,
         conversation_state_row=_conversation_state_row,
+        get_service_from_payload=_get_service_from_payload,
     )
 
 
@@ -2797,6 +2743,19 @@ async def memory_graph_pending(
             pending["summaries_revision"] = _soul_summaries.current_revision(con)
         finally:
             con.close()
+    dossier_index = svc.build_dossier_index(scope)
+    pending["soul_summaries"].append(
+        {
+            "id": "soul-summary:all_categories_summary",
+            "kind": "all_categories_summary",
+            "label": "Dossier Index",
+            "summary": dossier_index,
+            "approved_summary": dossier_index,
+            "previous_summary": None,
+            "pending": False,
+            "read_only": True,
+        }
+    )
     return pending
 
 
@@ -2867,6 +2826,8 @@ async def soul_summary_update(
     soul_id: str,
     payload: dict[str, Any] = Body(...),
 ):
+    if kind == "all_categories_summary":
+        raise HTTPException(status_code=409, detail="all_categories_summary is read-only")
     uid = str(user_id or "").strip()
     sid = str(soul_id or "").strip()
     summary = payload.get("summary")
@@ -2907,6 +2868,8 @@ async def soul_summary_approve(
     soul_id: str,
     payload: dict[str, Any] = Body(...),
 ):
+    if kind == "all_categories_summary":
+        raise HTTPException(status_code=409, detail="all_categories_summary is read-only")
     uid = str(user_id or "").strip()
     sid = str(soul_id or "").strip()
     if not uid or not sid:
@@ -3018,10 +2981,15 @@ async def memory_graph_category_update(
     uid = str(user_id or "").strip()
     sid = str(soul_id or "").strip()
     summary = payload.get("summary")
+    title = payload.get("title")
+    description = payload.get("description")
     if not uid or not sid:
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
-    if not isinstance(summary, str) or not summary.strip():
-        raise HTTPException(status_code=400, detail="summary is required")
+    supplied = (summary, title, description)
+    if not any(value is not None for value in supplied):
+        raise HTTPException(status_code=400, detail="title, description, or summary is required")
+    if any(value is not None and (not isinstance(value, str) or not value.strip()) for value in supplied):
+        raise HTTPException(status_code=400, detail="dossier text fields must be non-empty strings")
     scope = {"user_id": uid, "soul_id": sid}
     svc = _get_service_from_payload({"user": scope})
     snapshot = _summary_snapshot(payload)
@@ -3034,6 +3002,8 @@ async def memory_graph_category_update(
         item = await svc.graph_update_category_summary(
             category_id,
             summary=summary,
+            title=title,
+            description=description,
             where=scope,
             edited_by=payload.get("edited_by") if isinstance(payload.get("edited_by"), str) else None,
             approved=payload.get("approved") is True,
@@ -3096,6 +3066,10 @@ async def conversation_retrieve(
         if uid and soul_id:
             safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
             safe["conversation_id"] = cid
+        svc = _get_service_from_payload(safe) if uid and soul_id else None
+        all_categories_summary = (
+            svc.build_dossier_index({"user_id": uid, "soul_id": soul_id}) if svc is not None else ""
+        )
         message = _pick_str(safe, "message", "query") or ""
         self_turn_directive = _pick_str(safe, "self_turn_directive") or ""
         self_turn_label = _pick_str(safe, "self_turn_label") or ""
@@ -3208,6 +3182,7 @@ async def conversation_retrieve(
                 message=retrieve_focus,
                 history=history_for_ai,
                 state_row=state_row or {},
+                all_categories_summary=all_categories_summary,
                 conversation_id=cid,
                 chat_label=chat_label_for_prompt,
                 conversations_block=all_chat_history_for_ai or None,
@@ -3254,7 +3229,7 @@ async def conversation_retrieve(
                     history=history_for_ai,
                     prior_context=out.get("prior_context"),
                     retrieve_rag=atomic_retrieve_rag,
-                    all_categories_summary=_state_row.get("all_categories_summary"),
+                    all_categories_summary=all_categories_summary,
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
                     apimw_message_to_self=_state_row.get("apimw_message_to_self"),
@@ -3314,7 +3289,7 @@ async def conversation_retrieve(
                     history=turn_history,
                     prior_context=out.get("prior_context"),
                     retrieve_rag=out.get("result"),
-                    all_categories_summary=_state_row.get("all_categories_summary"),
+                    all_categories_summary=all_categories_summary,
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
                     apimw_message_to_self=_state_row.get("apimw_message_to_self"),

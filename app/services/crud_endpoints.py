@@ -181,9 +181,16 @@ async def list_memory_categories_endpoint(
 
     cats_map = svc.database.memory_category_repo.list_categories(scope)
     out = [
-        {"name": c.name, "summary": c.summary or ""}
+        {
+            "id": c.id,
+            "name": c.name,
+            "description": c.description,
+            "summary": c.summary or "",
+            "kind": c.kind,
+            "anchor_role": c.anchor_role,
+        }
         for c in cats_map.values()
-        if c.name and (include_empty or has_category_content({"name": c.name, "summary": c.summary or ""}))
+        if c.name and (include_empty or c.description.strip() or str(c.summary or "").strip())
     ]
     return {"categories": out}
 
@@ -213,9 +220,16 @@ async def search_memory_categories_endpoint(
 
         cats_map = svc.database.memory_category_repo.list_categories(scope)
         out = [
-            {"name": c.name, "summary": c.summary or ""}
+            {
+                "id": c.id,
+                "name": c.name,
+                "description": c.description,
+                "summary": c.summary or "",
+                "kind": c.kind,
+                "anchor_role": c.anchor_role,
+            }
             for c in cats_map.values()
-            if c.name and (include_empty or has_category_content({"name": c.name, "summary": c.summary or ""}))
+            if c.name and (include_empty or c.description.strip() or str(c.summary or "").strip())
         ]
         record_call("categories.search", safe, ok=True, info={"returned": len(out)})
         return {"categories": out}
@@ -582,7 +596,9 @@ async def narrative_suggestion_endpoint(
 
     db_path = sqlite_current_path(uid, sid)
     current_narrative = ""
-    all_cats_summary = ""
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = get_service_from_payload({"user": scope})
+    all_cats_summary = svc.build_dossier_index(scope)
     if db_path is not None and db_path.exists():
         con = sqlite_connect(db_path)
         try:
@@ -590,7 +606,6 @@ async def narrative_suggestion_endpoint(
             sqlite_ensure_conversation_state_schema(con)
             soul = _soul_state.read(con)
             current_narrative = str(soul.get("narrative_self") or "").strip()
-            all_cats_summary = str(soul.get("all_categories_summary") or "").strip()
         finally:
             con.close()
 
@@ -616,7 +631,6 @@ async def narrative_suggestion_endpoint(
         f"{uid}'s suggestion:\n{suggestion}"
     )
 
-    svc = get_service_from_payload({"user": {"user_id": uid, "soul_id": sid}})
     raw = await svc.chat(
         user_prompt,
         system_prompt=system_prompt,
@@ -631,7 +645,6 @@ async def narrative_suggestion_endpoint(
     new_narrative = str(parsed.get("narrative_self") or "").strip()
     companion_memory = str(parsed.get("companion_memory") or "").strip()
 
-    scope = {"user_id": uid, "soul_id": sid}
     if companion_memory and db_path is not None:
         sqlite_ensure_nonempty(db_path)
         [companion_embedding] = await svc.embed([companion_memory], profile="embedding")
@@ -696,6 +709,7 @@ async def get_conversation_state_endpoint(
     sqlite_ensure_conversation_state_schema: Callable[[sqlite3.Connection], None],
     conversation_state_from_row: Callable[..., dict[str, Any] | None],
     conversation_state_row: Callable[[sqlite3.Connection, str], sqlite3.Row | None],
+    get_service_from_payload: Callable[[dict[str, Any]], Any],
 ) -> dict[str, Any]:
     cid = str(conversation_id or "").strip()
     if not cid:
@@ -707,6 +721,8 @@ async def get_conversation_state_endpoint(
     uid = str(user_id or "").strip() or None
 
     if sid:
+        if not uid:
+            raise HTTPException(status_code=400, detail="user_id query parameter is required")
         db_path = sqlite_current_path(uid, sid)
         if db_path is None:
             raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
@@ -721,6 +737,11 @@ async def get_conversation_state_endpoint(
             con.close()
     else:
         raise HTTPException(status_code=400, detail="soul_id query parameter is required")
+
+    if state_out is not None:
+        scope = {"user_id": uid, "soul_id": sid}
+        svc = get_service_from_payload({"user": scope})
+        state_out["all_categories_summary"] = svc.build_dossier_index(scope)
 
     return {"ok": True, "state": state_out, "path": str(db_path) if db_path else None}
 

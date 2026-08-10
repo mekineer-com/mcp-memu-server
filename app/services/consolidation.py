@@ -41,7 +41,6 @@ from app.services.turn_contract import DEFAULT_SOUL_CARD, format_memory_legend, 
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
-    from memu.database.models import MemoryCategory
 
 
 _SEGMENT_SUFFIX_RE = re.compile(r"_(\d+)\.json$")
@@ -235,44 +234,6 @@ def _parse_reflection_xml(
         "intention_actions": intention_actions,
         "anchor_decisions": anchor_decisions,
     }
-
-
-def _format_categories_for_prompt(rows: list[sqlite3.Row]) -> str:
-    lines: list[str] = []
-    for row in rows:
-        name = str(row["name"] or "").strip()
-        summary = str(row["summary"] or "").strip()
-        if not name or not summary:
-            continue
-        if summary.startswith(f"# {name}"):
-            lines.append(f"\n{summary}")
-        else:
-            lines.append(f"\n# {name}\n{summary}")
-    return "\n".join(lines).strip() or "(none yet)"
-
-
-def _format_dossier_context_for_prompt(
-    dossier_index: str,
-    relevant_dossiers: Sequence[MemoryCategory],
-) -> str:
-    parts = ["# Dossier index", dossier_index.strip() or "(none)", "", "# Relevant dossiers"]
-    if relevant_dossiers:
-        for dossier in relevant_dossiers:
-            parts.extend(
-                [
-                    f"## {dossier.name}",
-                    f"Description: {_read_only_citations(dossier.description)}",
-                    _read_only_citations(str(dossier.summary or "")),
-                    "",
-                ]
-            )
-        parts.pop()
-    else:
-        parts.append("(none)")
-    rendered = "\n".join(parts)
-    if len(rendered.split()) / 0.75 > 100_000:
-        raise ValueError("Consolidation dossier context exceeds 100000 tokens")
-    return rendered
 
 
 def _read_only_citations(text: str) -> str:

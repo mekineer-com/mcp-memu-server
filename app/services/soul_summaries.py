@@ -12,7 +12,6 @@ from app.services import soul_state
 
 _KINDS = {
     "narrative_self": ("Narrative Self", "soul-summary:narrative_self"),
-    "all_categories_summary": ("All Categories Summary", "soul-summary:all_categories_summary"),
 }
 
 

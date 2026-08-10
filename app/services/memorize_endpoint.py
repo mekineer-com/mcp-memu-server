@@ -115,7 +115,6 @@ class MemorizeRunContext:
     base: MemorizeContext
     load_turn_state_and_soul_card: Callable[..., tuple[dict[str, Any], str | None, str | None]]
     normalize_text_list: Callable[[Any], list[str]]
-    compute_holistic_categories_summary: Callable[..., Awaitable[str | None]]
     run_consolidation_task: Callable[..., Awaitable[dict[str, Any]]]
     clear_last_display_segments_for_nonparticipants: Callable[..., None]
     resolve_web_source_checkpoint: Callable[[str, str], int | None]
@@ -265,7 +264,6 @@ async def run_memorize_segments(
     has_memory_results = False
     pending_segment_ids: list[str] = []
     processed_end_cursor = processed_cursor
-    current_all_categories_summary: str | None = None
     soul_card_for_memorize: str | None = None
     cached_retrieval_ids: list[str] = []
     cached_prior_context_ids: list[str] = []
@@ -291,7 +289,6 @@ async def run_memorize_segments(
                     user_id=uid,
                     soul_id=soul_id,
                 )
-                current_all_categories_summary = str(state_row.get("all_categories_summary") or "").strip() or None
                 raw_ret_ids = state_row.get("retrieval_ids_since_consolidation")
                 if isinstance(raw_ret_ids, list):
                     cached_retrieval_ids = [str(rid).strip() for rid in raw_ret_ids if str(rid).strip()]
@@ -432,7 +429,6 @@ async def run_memorize_segments(
                         for job in segment_jobs
                     ],
                     user=scope,
-                    all_categories_summary=current_all_categories_summary,
                     soul_card=soul_card_for_memorize,
                     memory_retrieve_history=cached_retrieval_ids or None,
                     memory_prior_context=cached_prior_context_ids or None,
@@ -504,26 +500,7 @@ async def run_memorize_segments(
                                 # Another runner advanced the cursor past this segment; honour the further value.
                                 processed_end_cursor = max(processed_end_cursor, fresh_cursor)
 
-        # Phase 3: holistic summary LLM call — outside the lock.
-        if conversation_id and has_memory_results:
-            _set_memorize_progress(
-                ctx.memorize_progress,
-                progress_key,
-                active=True,
-                phase="summarizing",
-                current=total_segments,
-                total=max(1, total_segments),
-            )
-            try:
-                current_all_categories_summary = await run_ctx.compute_holistic_categories_summary(
-                    svc=svc,
-                    soul_id=soul_id,
-                    user_id=uid,
-                )
-            except Exception:
-                ctx.logger.exception("memorize holistic category summary failed after extraction; continuing")
-
-        # Phase 4: final state flush + bookkeeping under lock.
+        # Phase 3: final state flush + bookkeeping under lock.
         async with mem_lock:
             if has_results and final_cursors:
                 now_iso = datetime.now(UTC).isoformat()
@@ -575,7 +552,6 @@ async def run_memorize_segments(
                                 updates = {"last_memorize_at": now_iso}
                                 if fc_cid == conversation_id:
                                     updates["append_pending_segment_ids"] = pending_segment_ids
-                                    updates["all_categories_summary"] = current_all_categories_summary
                                 ctx.write_conversation_state(
                                     fc_cid,
                                     soul_id=soul_id,
@@ -628,7 +604,6 @@ async def run_memorize_segments(
                         updates["last_display_segment_at"] = None
                     if fc_cid == conversation_id:
                         updates["append_pending_segment_ids"] = pending_segment_ids
-                        updates["all_categories_summary"] = current_all_categories_summary
                     ctx.write_conversation_state(
                         fc_cid,
                         soul_id=soul_id,
@@ -646,7 +621,6 @@ async def run_memorize_segments(
                         "digest_cursor_ts": None,
                         "last_memorize_at": datetime.now(UTC).isoformat(),
                         "append_pending_segment_ids": pending_segment_ids,
-                        "all_categories_summary": current_all_categories_summary,
                     },
                 )
             if conversation_id and has_memory_results:

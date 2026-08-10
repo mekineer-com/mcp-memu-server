@@ -218,7 +218,6 @@ def _get_service_from_payload(
     default_llm_profiles_from_server_config: Any,
     database_config_from_cfg: Any,
     blob_config_from_cfg: Any,
-    categories_from_cfg: Any,
     normalize_sqlite_dsn: Any,
     sqlite_dsn_for_scope: Any,
     sqlite_file_from_dsn: Any,
@@ -289,13 +288,9 @@ def _get_service_from_payload(
     blob_config = payload.get("blob_config") or {}
     memorize_config = payload.get("memorize_config") or {}
 
-    fixed_cats = categories_from_cfg(config)
     if isinstance(memorize_config, dict):
         cats_cfg = (config.get("categories") or {}) if isinstance(config.get("categories"), dict) else {}
-        if fixed_cats:
-            memorize_config["memory_categories"] = fixed_cats
         memorize_config["dynamic_category_cluster_size"] = int(cats_cfg.get("dynamic_category_cluster_size", 10) or 10)
-        memorize_config["max_categories_total"] = int((cats_cfg.get("max_total", 12)) or 0)
         memorize_config["category_summary_target_words"] = int(
             cats_cfg.get("category_summary_target_words", 300) or 300
         )

@@ -23,8 +23,6 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         "apimw_message_to_self": "TEXT",
         "narrative_self_previous": "TEXT",
         "narrative_self_approved": "TEXT",
-        "all_categories_summary_previous": "TEXT",
-        "all_categories_summary_approved": "TEXT",
         "summaries_revision": "INTEGER NOT NULL DEFAULT 0",
     }
     missing_row = table_exists and con.execute("SELECT COUNT(*) FROM soul_state").fetchone()[0] == 0
@@ -43,9 +41,6 @@ CREATE TABLE IF NOT EXISTS soul_state (
     narrative_self TEXT,
     narrative_self_previous TEXT,
     narrative_self_approved TEXT,
-    all_categories_summary TEXT,
-    all_categories_summary_previous TEXT,
-    all_categories_summary_approved TEXT,
     summaries_revision INTEGER NOT NULL DEFAULT 0,
     memory_cache JSON DEFAULT '[]',
     intentions_active JSON,
@@ -64,8 +59,6 @@ CREATE TABLE IF NOT EXISTS soul_state (
         con.execute(f"ALTER TABLE soul_state ADD COLUMN {name} {definition}")
         if name == "narrative_self_approved":
             con.execute("UPDATE soul_state SET narrative_self_approved = narrative_self")
-        elif name == "all_categories_summary_approved":
-            con.execute("UPDATE soul_state SET all_categories_summary_approved = all_categories_summary")
     if con.execute("SELECT COUNT(*) FROM soul_state").fetchone()[0] == 0:
         con.execute("INSERT INTO soul_state (id, updated_at) VALUES (1, ?)", (datetime.now(UTC).isoformat(),))
     if owns_migration:
@@ -81,9 +74,6 @@ def read(con: sqlite3.Connection) -> dict[str, Any]:
         "narrative_self": row["narrative_self"],
         "narrative_self_previous": row["narrative_self_previous"],
         "narrative_self_approved": row["narrative_self_approved"],
-        "all_categories_summary": row["all_categories_summary"],
-        "all_categories_summary_previous": row["all_categories_summary_previous"],
-        "all_categories_summary_approved": row["all_categories_summary_approved"],
         "summaries_revision": int(row["summaries_revision"] or 0),
         "memory_cache": normalize_memory_cache(json_from_db(row["memory_cache"])),
         "intentions_active": normalize_intentions_stack(json_from_db(row["intentions_active"])),
@@ -103,9 +93,6 @@ def defaults() -> dict[str, Any]:
         "narrative_self": None,
         "narrative_self_previous": None,
         "narrative_self_approved": None,
-        "all_categories_summary": None,
-        "all_categories_summary_previous": None,
-        "all_categories_summary_approved": None,
         "summaries_revision": 0,
         "memory_cache": [],
         "intentions_active": normalize_intentions_stack(None),

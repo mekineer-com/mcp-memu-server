@@ -113,6 +113,7 @@ def _build_retrieve_soul_context_queries(
     message: str,
     history: list[dict[str, Any]],
     state_row: dict[str, Any],
+    all_categories_summary: str | None = None,
     identity_mode: str = "retrieve",
     conversation_id: str | None = None,
     chat_label: str | None = None,
@@ -129,7 +130,7 @@ def _build_retrieve_soul_context_queries(
     identity_context = _build_retrieve_identity_context(soul_id, apimw=(identity_mode == "apimw"))
     if identity_context:
         soul_context_for_retrieve.append({"role": "identity_context", "content": {"text": identity_context}})
-    all_cats_summary = str(state_row.get("all_categories_summary") or "").strip()
+    all_cats_summary = str(all_categories_summary or "").strip()
     if all_cats_summary:
         soul_context_for_retrieve.append({"role": "all_categories_summary", "content": {"text": all_cats_summary}})
 

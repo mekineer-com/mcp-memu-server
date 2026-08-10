@@ -93,8 +93,6 @@ def default_config() -> dict[str, Any]:
             "whatsapp_reply_prefix": "",
         },
         "categories": {
-            "defaults": ["personal_info", "preferences", "relationships", "goals"],
-            "max_total": 12,
             "dynamic_category_cluster_size": 10,
             "category_summary_target_words": 300,
         },
@@ -274,30 +272,6 @@ def mask_config(cfg: dict[str, Any]) -> dict[str, Any]:
     key = out.get("llm", {}).get("api_key", "")
     if isinstance(key, str) and key:
         out["llm"]["api_key"] = key[:4] + "..." + key[-4:]
-    return out
-
-
-def categories_from_cfg(cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    cats_cfg = cfg.get("categories") if isinstance(cfg.get("categories"), dict) else {}
-    raw = cats_cfg.get("defaults") if isinstance(cats_cfg.get("defaults"), list) else []
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    for c in raw:
-        name = None
-        desc = ""
-        if isinstance(c, str):
-            name = c.strip()
-        elif isinstance(c, dict):
-            name = str(c.get("name") or "").strip()
-            desc = str(c.get("description") or "").strip()
-        if not name:
-            continue
-        key = name.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({"name": name, "description": desc})
     return out
 
 

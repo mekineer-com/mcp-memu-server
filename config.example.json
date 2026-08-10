@@ -64,25 +64,6 @@
   },
   "pid_file": "./.memu-server.pid",
   "categories": {
-    "defaults": [
-      {
-        "name": "Identity",
-        "description": "Who the participants are as people — their character, traits, personality, inner life, and characteristic ways of being"
-      },
-      {
-        "name": "Preferences",
-        "description": "What the participants value, enjoy, dislike, or are drawn toward"
-      },
-      {
-        "name": "Relationships",
-        "description": "The bond between participants — its texture, history, and quality of connection"
-      },
-      {
-        "name": "Experiences",
-        "description": "Meaningful moments — lived, shared, or dreamed — that reveal or shape who someone is or how they relate"
-      }
-    ],
-    "max_total": 12,
     "dynamic_category_cluster_size": 10,
     "category_summary_target_words": 300
   },
