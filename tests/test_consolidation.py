@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from memu.app.dossier import DossierRevisionStaleError
 
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
 from app.services import segment
@@ -18,16 +19,18 @@ from app.services.consolidation import _select_prompt_objective
 from app.services.consolidation import _select_interval_segment_window
 from app.services.consolidation import gather_consolidation_inputs
 from app.services.consolidation import prepare_dossier_consolidation_context
+from app.services.consolidation import preflight_consolidation_profiles
 from app.services.consolidation import run_consolidation_llm
 from app.services.graph_edges import invalidate_memory_edges, write_memory_edges
 from app.services.state import conversation_state_from_row, conversation_state_row, write_conversation_state
 
 
 class _DossierContextService:
-    def __init__(self, *, due_ids=(), profiles=("default", "revision")) -> None:
+    def __init__(self, *, due_ids=(), profiles=("default", "revision"), stale_id=None) -> None:
         self.memorize_config = SimpleNamespace(category_update_llm_profile="revision")
         self.llm_profiles = SimpleNamespace(profiles={name: object() for name in profiles})
         self.due = [SimpleNamespace(id=dossier_id) for dossier_id in due_ids]
+        self.stale_id = stale_id
         self.calls: list[tuple] = []
         self.prompts: list[str] = []
 
@@ -94,6 +97,8 @@ class _DossierContextService:
     async def apply_dossier_revision(self, bundle, decision, scope):
         dossier_id = bundle["dossier"].id
         self.calls.append(("apply", dossier_id, decision, scope))
+        if dossier_id == self.stale_id:
+            raise DossierRevisionStaleError("changed")
 
     async def apply_anchor_revision(self, bundle, decision, scope):
         self.calls.append(("apply_anchor", decision["anchor_role"], scope))
@@ -110,7 +115,6 @@ class _DossierContextService:
         return [SimpleNamespace(name="Health", description="Current health", summary="Body [M4].")]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("profiles", "consolidation_profile", "missing"),
     [
@@ -118,25 +122,12 @@ class _DossierContextService:
         (("default", "revision"), "reflection", "reflection"),
     ],
 )
-async def test_dossier_context_preflights_both_profiles(
+def test_consolidation_preflight_checks_both_profiles(
     profiles, consolidation_profile, missing
 ) -> None:
     svc = _DossierContextService(due_ids=("first",), profiles=profiles)
     with pytest.raises(KeyError, match=missing):
-        await prepare_dossier_consolidation_context(
-            svc,
-            inputs={
-                "active_life_goals": [],
-                "removed_life_goals": [],
-                "selected_segment_ids": ["segment-1"],
-                "intention_activity": [],
-                "state": {},
-                "segment_inputs": [],
-            },
-            soul_id="TestSoul",
-            user_id="TestUser",
-            consolidation_llm_profile=consolidation_profile,
-        )
+        preflight_consolidation_profiles(svc, consolidation_profile)
     assert svc.calls == []
 
 
@@ -179,6 +170,28 @@ async def test_dossier_context_uses_one_holistic_call_and_preserves_due_order() 
         "active_life_goals": ["Stay curious"],
         "removed_life_goals": ["Old goal"],
     }
+
+
+@pytest.mark.asyncio
+async def test_dossier_context_keeps_first_apply_when_second_is_stale() -> None:
+    svc = _DossierContextService(due_ids=("first", "second"), stale_id="second")
+    with pytest.raises(DossierRevisionStaleError):
+        await prepare_dossier_consolidation_context(
+            svc,
+            inputs={
+                "active_life_goals": [],
+                "removed_life_goals": [],
+                "selected_segment_ids": ["segment-1"],
+                "intention_activity": [],
+                "state": {},
+                "segment_inputs": [],
+            },
+            soul_id="TestSoul",
+            user_id="TestUser",
+            consolidation_llm_profile=None,
+        )
+    assert [call[1] for call in svc.calls if call[0] == "apply"] == ["first", "second"]
+    assert not any(call[0] in {"index", "relevant"} for call in svc.calls)
 
 
 @pytest.mark.asyncio

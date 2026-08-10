@@ -322,7 +322,7 @@ async def prepare_dossier_consolidation_context(
     user_id: str,
     consolidation_llm_profile: str | None,
 ) -> dict[str, Any]:
-    revision_profile = preflight_consolidation_profiles(svc, consolidation_llm_profile)
+    revision_profile = svc.memorize_config.category_update_llm_profile
 
     scope = {"soul_id": soul_id, "user_id": user_id}
     prompt_context = _build_consolidation_prompt_context(inputs, soul_id=soul_id)
