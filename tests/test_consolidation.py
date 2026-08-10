@@ -150,7 +150,6 @@ async def test_dossier_context_uses_one_holistic_call_and_preserves_due_order() 
         inputs=inputs,
         soul_id="TestSoul",
         user_id="TestUser",
-        consolidation_llm_profile=None,
     )
 
     assert result is inputs
@@ -187,7 +186,6 @@ async def test_dossier_context_keeps_first_apply_when_second_is_stale() -> None:
             },
             soul_id="TestSoul",
             user_id="TestUser",
-            consolidation_llm_profile=None,
         )
     assert [call[1] for call in svc.calls if call[0] == "apply"] == ["first", "second"]
     assert len([call for call in svc.calls if call[0] == "index"]) == 1
@@ -211,7 +209,6 @@ async def test_dossier_context_without_due_dossiers_still_builds_context() -> No
         inputs=inputs,
         soul_id="TestSoul",
         user_id="TestUser",
-        consolidation_llm_profile=None,
     )
     assert inputs["dossier_index"] == "- Health: Current health"
     assert (
@@ -241,7 +238,6 @@ async def test_reflection_uses_new_root_and_applies_both_validated_anchors() -> 
         inputs=inputs,
         soul_id="TestSoul",
         user_id="TestUser",
-        consolidation_llm_profile=None,
     )
 
     out = await run_consolidation_llm(

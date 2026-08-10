@@ -1858,7 +1858,6 @@ async def _run_consolidation_pipeline_once(
         inputs=prep,
         soul_id=soul_id,
         user_id=user_id,
-        consolidation_llm_profile=consolidation_profile,
     )
 
     consolidation_llm = await _run_consolidation_llm(

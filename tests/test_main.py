@@ -250,7 +250,6 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
         "prior_context": "APImw memory line",
         "memory_cache": ["working thought"],
         "intentions_active": {"items": []},
-        "all_categories_summary": "Category summary",
         "apimw_message_to_self": "[subconscious] quiet note",
     }
 
@@ -3120,7 +3119,6 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
             "memorize_chat": True,
             "digest_cursor": -1,
             "pending_segment_ids": [],
-            "all_categories_summary": "",
         },
         "whatsapp:dm:bg-chat": {
             "memorize_chat": False,
@@ -3239,7 +3237,6 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
             "memorize_chat": True,
             "digest_cursor": -1,
             "pending_segment_ids": [],
-            "all_categories_summary": "",
         },
         "whatsapp:dm:bg-chat": {
             "digest_cursor": -1,
@@ -3338,7 +3335,6 @@ async def test_run_memorize_segments_fresh_background_context_does_not_write_rol
             "memorize_chat": True,
             "digest_cursor": -1,
             "pending_segment_ids": [],
-            "all_categories_summary": "",
         },
         "whatsapp:dm:bg-chat": {
             "memorize_chat": False,
@@ -4945,7 +4941,7 @@ async def test_conversation_retrieve_uses_sillytavern_floor_after_memorize(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 10, "last_memorize_at": "2026-05-01T00:00:00+00:00", "all_categories_summary": ""},
+            {"digest_cursor": 10, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
             None,
             db_path,
         ),
@@ -4984,7 +4980,7 @@ async def test_conversation_retrieve_does_not_consume_prior_context(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 0, "last_memorize_at": None, "all_categories_summary": ""},
+            {"digest_cursor": 0, "last_memorize_at": None},
             None,
             db_path,
         ),
@@ -5035,7 +5031,7 @@ async def test_conversation_retrieve_sillytavern_floor_is_not_a_cap(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 2, "last_memorize_at": "2026-05-01T00:00:00+00:00", "all_categories_summary": ""},
+            {"digest_cursor": 2, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
             None,
             db_path,
         ),
@@ -5085,7 +5081,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 10, "last_memorize_at": "2026-05-01T00:00:00+00:00", "all_categories_summary": ""},
+            {"digest_cursor": 10, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
             None,
             db_path,
         ),
@@ -5182,7 +5178,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_without_memorize_cursor
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 0, "last_memorize_at": None, "all_categories_summary": ""},
+            {"digest_cursor": 0, "last_memorize_at": None},
             None,
             db_path,
         ),
@@ -5276,7 +5272,7 @@ async def test_conversation_retrieve_uses_live_message_to_trigger_floor_without_
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 11, "last_memorize_at": "2026-05-01T00:00:00+00:00", "all_categories_summary": ""},
+            {"digest_cursor": 11, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
             None,
             db_path,
         ),
@@ -5360,7 +5356,7 @@ async def test_conversation_retrieve_preserves_source_indexes_for_primary_floor(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 243, "last_memorize_at": "2026-05-01T00:00:00+00:00", "all_categories_summary": ""},
+            {"digest_cursor": 243, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
             None,
             db_path,
         ),
@@ -5446,7 +5442,7 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 11, "last_memorize_at": "2026-05-01T00:00:00+00:00", "all_categories_summary": ""},
+            {"digest_cursor": 11, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
             None,
             db_path,
         ),

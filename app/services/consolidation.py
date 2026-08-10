@@ -281,7 +281,6 @@ async def prepare_dossier_consolidation_context(
     inputs: dict[str, Any],
     soul_id: str,
     user_id: str,
-    consolidation_llm_profile: str | None,
 ) -> dict[str, Any]:
     revision_profile = svc.memorize_config.category_update_llm_profile
 
