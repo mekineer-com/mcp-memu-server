@@ -13,6 +13,7 @@ import pytest
 
 from app import main
 from app.services import conversation_sources, crud_endpoints, retrieve_orchestration, segment
+from memu.app.memorize_segments import grouped_chat_happened_at
 
 
 def _messages_table_exists(con: sqlite3.Connection) -> bool:
@@ -1634,6 +1635,14 @@ def test_normalize_conversation_uses_received_at_when_timestamp_missing():
     assert isinstance(out, list) and out
     assert out[0]["ts_ms"] == int(datetime(2026, 4, 16, 12, 0, tzinfo=UTC).timestamp() * 1000)
     assert out[0]["received_at"] == "2026-04-16T12:00:00Z"
+
+
+def test_normalized_day_only_timestamp_reaches_memu_without_day_shift():
+    out = main._normalize_conversation(
+        [{"role": "user", "content": "fictional day", "received_at": "2026-01-02"}]
+    )
+
+    assert grouped_chat_happened_at(out[0]) == datetime(2026, 1, 2)
 
 
 def test_normalize_conversation_preserves_cross_memorize_metadata():
