@@ -255,6 +255,75 @@ async def test_reflection_uses_new_root_and_applies_both_validated_anchors() -> 
     assert "Body [4]." in svc.prompts[-1]
 
 
+@pytest.mark.asyncio
+async def test_reflection_resolves_edges_from_anchor_cited_memories() -> None:
+    svc = _DossierContextService()
+    cited_at = datetime(2026, 1, 2, tzinfo=UTC)
+    anchor_item = SimpleNamespace(
+        id="anchor-memory",
+        memory_ref=77,
+        summary="A remembered promise.",
+        happened_at=cited_at,
+        created_at=cited_at,
+    )
+    original_prepare = svc.prepare_anchor_revision
+
+    def _prepare_anchor(role, scope, actionable_ids):
+        bundle = original_prepare(role, scope, actionable_ids)
+        if role == "soul":
+            bundle["cited_items"] = [anchor_item]
+        return bundle
+
+    async def _reflection_chat(prompt, **kwargs):
+        svc.prompts.append(prompt)
+        return """<reflection>
+  <anchor_revisions>
+    <anchor role="soul"><description>My living history.</description><prose_action>keep</prose_action><prose_patches></prose_patches></anchor>
+    <anchor role="user"><description>My human's living history.</description><prose_action>keep</prose_action><prose_patches></prose_patches></anchor>
+  </anchor_revisions>
+  <life_goals></life_goals><intentions></intentions>
+  <edges><edge><subject_id>M77</subject_id><predicate>evokes</predicate><object_id>M88</object_id><confidence>0.8</confidence></edge></edges>
+  <companion_memory></companion_memory>
+</reflection>"""
+
+    svc.prepare_anchor_revision = _prepare_anchor
+    svc.chat = _reflection_chat
+    inputs = {
+        "narrative_self": "I am steady.",
+        "active_life_goals": [],
+        "removed_life_goals": [],
+        "selected_segment_ids": ["segment-4"],
+        "intention_activity": [],
+        "state": {},
+        "segment_inputs": [],
+        "prior_context_memory_items": [
+            {"id": "period-memory", "memory_ref": 88, "memory_type": "knowledge", "summary": "A new realization."}
+        ],
+    }
+    await prepare_dossier_consolidation_context(
+        svc,
+        inputs=inputs,
+        soul_id="TestSoul",
+        user_id="TestUser",
+    )
+
+    out = await run_consolidation_llm(
+        svc,
+        inputs=inputs,
+        soul_id="TestSoul",
+        user_id="TestUser",
+    )
+
+    assert out["edges"] == [
+        {
+            "subject_id": "anchor-memory",
+            "predicate": "evokes",
+            "object_id": "period-memory",
+            "confidence": 0.8,
+        }
+    ]
+
+
 def test_select_prompt_objective_unwraps_only_requested_block() -> None:
     prompt = "before\n<first_time>first</first_time>\n<ongoing>later</ongoing>\nafter"
     assert _select_prompt_objective(prompt, first_time=True) == "before\nfirst\nafter"

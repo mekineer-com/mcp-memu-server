@@ -3416,8 +3416,14 @@ async def test_context_only_segment_advances_cursor_without_memory_work(
     segments_dir.mkdir()
     captured_paths: list[Path] = []
     captured_payloads: list[dict[str, Any]] = []
+    recorded_calls: list[dict[str, Any]] = []
     writes: list[tuple[str, dict[str, Any]]] = []
     state_rows = {
+        "trigger": {
+            "memorize_chat": True,
+            "digest_cursor": -1,
+            "pending_segment_ids": ["trigger:old"],
+        },
         "background": {
             "memorize_chat": False,
             "rolling_summary": "durable background context",
@@ -3447,8 +3453,17 @@ async def test_context_only_segment_advances_cursor_without_memory_work(
         state_rows.setdefault(cid, {}).update(updates)
         return dict(state_rows[cid]), tmp_path / "TestSoul.db"
 
+    async def fake_consolidation_task(*_args, **_kwargs):
+        return {"status": "skip"}
+
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
     monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
+    monkeypatch.setattr(main, "_run_consolidation_task", fake_consolidation_task)
+    monkeypatch.setattr(
+        main,
+        "_record_call",
+        lambda _name, _payload, *, ok, info: recorded_calls.append({"ok": ok, **info}),
+    )
 
     await main._run_memorize_segments(
         memorize_segments=[
@@ -3508,6 +3523,7 @@ async def test_context_only_segment_advances_cursor_without_memory_work(
     assert state_rows["background"]["rolling_summary_cursor_id"] == 4
     assert state_rows["background"]["rolling_summary"] == "durable background context"
     assert not any("rolling_summary" in updates for _cid, updates in writes)
+    assert recorded_calls[-1]["pendingSegmentRetryOnly"] is True
 
 
 def test_timeline_endpoint_returns_entity_edges(monkeypatch: pytest.MonkeyPatch):

@@ -69,27 +69,6 @@ See `INDEX.md` for the full endpoint list and task→file guide.
 
 ---
 
-## Codebase orientation
-
-```
-mcp-memu-server/
-├── app/main.py              # All endpoints + business logic
-├── app/db.py                # SQLite helpers
-├── app/database.py          # SQLAlchemy async engine
-├── app/config.py            # Config loading + LLM profile builder
-├── app/services/consolidation.py # Consolidation pipeline
-├── app/services/diary.py    # Diary helper primitives
-├── app/services/graph_edges.py   # Entity graph edge writing
-├── app/services/state.py    # Conversation state management
-├── app/services/turn_contract.py   # Soul turn prompt construction
-├── app/services/intention_state.py # Intentions normalization
-├── app/services/mcp_tools.py     # MCP tool definitions
-├── run.py                   # Entry point
-└── config.json              # Runtime config (not committed)
-```
-
----
-
 ## Development
 
 ```bash

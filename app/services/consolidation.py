@@ -703,16 +703,6 @@ def gather_consolidation_inputs(
         if not pending_segment_ids:
             return {"status": "skip", "reason": "no_pending_segments"}
 
-        category_rows = con.execute(
-            """
-SELECT name, summary
-FROM categories
-WHERE soul_id = ? AND user_id = ?
-ORDER BY name ASC
-""",
-            (soul_id, user_id),
-        ).fetchall()
-
         life_goal_rows = con.execute(
             """
 SELECT id, description, status
@@ -919,7 +909,6 @@ LIMIT 24
             "db_path": db_path,
             "state": state,
             "segment_ids": pending_segment_ids,
-            "categories": category_rows,
             "active_life_goals": active_goals,
             "removed_life_goals": removed_goals,
             "intention_activity": intention_activity,
@@ -953,6 +942,12 @@ async def run_consolidation_llm(
     context = inputs["reflection_prompt_context"]
     id_map = context["id_map"]
     anchor_bundles = inputs["anchor_bundles"]
+    for bundle in anchor_bundles.values():
+        for item in bundle["cited_items"]:
+            memory_ref = int(item.memory_ref or 0)
+            if memory_ref <= 0:
+                raise ValueError(f"Consolidation memory lacks stable reference: {item.id}")
+            id_map[f"M{memory_ref}"] = str(item.id)
 
     def anchor_prose(role: str) -> str:
         prose = str(anchor_bundles[role]["dossier"].summary or "") or "## unlabeled"
@@ -1220,6 +1215,7 @@ INSERT INTO life_goals (
             if aid and aid.lower() != "relax":
                 current_intentions = remove_intentions(current_intentions, [aid])
 
+    # Preflight the state writer before companion and graph side effects.
     deps.write_conversation_state(
         conversation_id,
         soul_id=soul_id,

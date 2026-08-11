@@ -679,7 +679,7 @@ async def run_memorize_segments(
                     "memorizeSegmentPersistedCount": total_segments,
                     "minChunkTokens": ctx.min_chunk_tokens,
                     "memorizeDeferred": not force and not has_results,
-                    "pendingSegmentRetryOnly": bool(had_existing_pending and not has_results),
+                    "pendingSegmentRetryOnly": bool(had_existing_pending and not has_memory_results),
                     "sleepSplitMinLullSeconds": ctx.sleep_split_min_lull_seconds,
                     "sleepSplitStats": sleep_stats,
                 },
