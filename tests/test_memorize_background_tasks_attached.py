@@ -210,13 +210,49 @@ def test_cross_manifest_ranges_are_non_rebuildable_and_non_overlapping() -> None
         rebuildable=False,
     )
 
-    assert cross_segments[0][2:] == (8, 10)
+    assert cross_segments[0][2:] == (0, 2, (8, 10))
     assert out == [
         {"start": 0, "end": 7},
         {"start": 8, "end": 10, "rebuildable": False},
     ]
     assert main_module._memorize_endpoint._canonical_manifest_segments(out) == [
         {"start": 0, "end": 7},
+    ]
+
+
+def test_context_only_units_do_not_consume_durable_segment_coordinates() -> None:
+    segments = main_module._memorize_endpoint._offset_memorize_segments(
+        [
+            ("memory://context", [{"content": "listen", "memorize_chat": False}], 8, 8),
+            ("memory://active", [{"content": "remember", "memorize_chat": True}], 9, 9),
+        ],
+        start=8,
+    )
+
+    assert segments[0][4] is None
+    assert segments[1][4] == (8, 8)
+    assert main_module._memorize_endpoint._merge_manifest_segments(
+        [{"start": 0, "end": 7}],
+        segments,
+        rebuildable=False,
+    ) == [
+        {"start": 0, "end": 7},
+        {"start": 8, "end": 8, "rebuildable": False},
+    ]
+
+
+def test_failed_run_releases_only_its_manifest_range(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"segments": [{"start": 0, "end": 12}]}),
+        encoding="utf-8",
+    )
+
+    main_module._memorize_endpoint._remove_manifest_ranges(manifest_path, [(8, 10)])
+
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["segments"] == [
+        {"start": 0, "end": 7},
+        {"start": 11, "end": 12},
     ]
 
 
@@ -236,7 +272,11 @@ def test_cross_memorize_endpoint_marks_manifest_range(
     recorded: list[tuple[int, int]] = []
 
     async def fake_run(**kwargs) -> None:
-        recorded.extend((start, end) for _url, _messages, start, end in kwargs.get("memorize_segments") or [])
+        recorded.extend(
+            durable_range
+            for _url, _messages, _source_start, _source_end, durable_range in kwargs.get("memorize_segments") or []
+            if durable_range is not None
+        )
 
     def fake_write_conversation_state(*_a, **_k):
         return ({"digest_cursor": 7, "last_memorize_at": "2026-06-14T00:00:00+00:00", "pending_segment_ids": []}, tmp_path / "state.db")
@@ -277,6 +317,15 @@ def test_cross_memorize_endpoint_marks_manifest_range(
         {"start": 0, "end": 7},
         {"start": 8, "end": 10, "rebuildable": False},
     ]
+
+    payload["conversation"] = [
+        {"role": "user", "name": "u1", "content": "listen", "memorize_chat": False},
+    ]
+    resp = client.post("/memorize", json=payload)
+
+    assert resp.status_code == 202
+    assert recorded == [(8, 10)]
+    assert json.loads((chat_dir / "manifest.json").read_text(encoding="utf-8"))["segments"] == manifest["segments"]
 
 
 def test_force_without_rebuild_does_not_archive_db(

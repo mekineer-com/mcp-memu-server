@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 from app.services.conversation_id import canonical_conversation_id
 from app.services.payload import message_ts_ms
-from app.services.state import effective_digest_cursor_from_row, memorize_chat_from_row
+from app.services.state import effective_digest_cursor_from_row
 
 
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
@@ -93,8 +93,43 @@ class SegmentMemorizeJob(TypedDict):
     segment_raw_text: str
     segment_start_index: int
     segment_end_index: int
-    segment_id: str
-    has_primary_messages: bool
+    segment_id: str | None
+    memory_producing: bool
+
+
+MemorizeSegment = tuple[
+    str,
+    list[dict[str, Any]],
+    int,
+    int,
+    tuple[int, int] | None,
+]
+
+
+def _cursor_updates_for_unit(
+    *,
+    memory_producing: bool,
+    cursor: int | None,
+    now_iso: str,
+    source_message_id: str = "",
+    source_ts: Any = None,
+    pending_segment_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    pending = pending_segment_ids or []
+    if not memory_producing and pending:
+        raise RuntimeError("context-only memorize unit cannot append pending segment ids")
+
+    updates: dict[str, Any] = {}
+    if cursor is not None:
+        prefix = "digest" if memory_producing else "rolling_summary"
+        updates[f"{prefix}_cursor" if memory_producing else "rolling_summary_cursor_id"] = max(0, cursor)
+        updates[f"{prefix}_cursor_source_message_id"] = source_message_id or None
+        updates[f"{prefix}_cursor_ts"] = int(source_ts) if source_message_id and source_ts is not None else None
+    if memory_producing:
+        updates["last_memorize_at"] = now_iso
+        if pending:
+            updates["append_pending_segment_ids"] = pending
+    return updates
 
 
 @dataclass(slots=True)
@@ -238,7 +273,7 @@ async def run_forced_memorize_from_turn(
 
 async def run_memorize_segments(
     *,
-    memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]],
+    memorize_segments: list[MemorizeSegment],
     svc: Any,
     scope: dict[str, Any],
     conversation_id: str | None,
@@ -271,9 +306,15 @@ async def run_memorize_segments(
     consumed_background_summary_ids: set[str] = set()
     latest_display_ranges: dict[str, tuple[int, int]] = {}
     created_segment_paths: list[Path] = []
+    reserved_manifest_ranges = [
+        durable_range
+        for _resource_url, _messages, _source_start, _source_end, durable_range in memorize_segments
+        if durable_range is not None
+    ]
     total_segments = 0
     had_existing_pending = False
     consolidation_started = False
+    durable_segments_committed = False
     terminal_result: str = "success"
     rolling_summaries_raw = safe.get("_background_rolling_summaries")
     rolling_summaries: dict[str, dict[str, Any]] = (
@@ -307,6 +348,7 @@ async def run_memorize_segments(
             segment_messages,
             segment_start_index,
             segment_end_index,
+            durable_range,
         ) in enumerate(memorize_segments):
             if progress_key in ctx.memorize_cancel:
                 ctx.memorize_cancel.discard(progress_key)
@@ -326,15 +368,21 @@ async def run_memorize_segments(
                 n += 1
                 fn_base = f"{d1}" if d1 == d2 else f"{d1}__{d2}"
                 segment_path = (segments_dir / f"{fn_base}_{n}.json").resolve()
-            has_primary_messages = any(
+            memory_producing = any(
                 message.get("memorize_chat") is not False
                 for message in segment_messages
                 if isinstance(message, dict)
             )
-            if has_primary_messages:
+            if memory_producing != (durable_range is not None):
+                raise RuntimeError("memorize policy and durable segment range disagree")
+            if memory_producing:
                 segment_path.write_text(segment_raw_text, encoding="utf-8")
                 created_segment_paths.append(segment_path)
-            segment_id = f"{conversation_id or 'cross'}:{segment_start_index}-{segment_end_index}"
+            segment_id = (
+                f"{conversation_id or 'cross'}:{durable_range[0]}-{durable_range[1]}"
+                if durable_range is not None
+                else None
+            )
             segment_background_rows: list[dict[str, Any]] = []
             seen_background_sources: set[str] = set()
             if conversation_rolling_summary and conversation_id and not cross_memorize:
@@ -372,23 +420,25 @@ async def run_memorize_segments(
                         "anchor_index": int(idx),
                     }
                 )
-                if has_primary_messages:
+                if memory_producing:
                     consumed_background_summary_ids.add(source_cid)
+            segment_payload: dict[str, Any] = {
+                "message_indices": list(range(len(segment_messages))),
+                "segment_background_context_rows": segment_background_rows,
+                "context_only": not memory_producing,
+            }
+            if segment_id is not None:
+                segment_payload["segment_id"] = segment_id
             segment_jobs.append(
                 {
-                    "segment_payload": {
-                        "message_indices": list(range(len(segment_messages))),
-                        "segment_id": segment_id,
-                        "segment_background_context_rows": segment_background_rows,
-                        "context_only": not has_primary_messages,
-                    },
+                    "segment_payload": segment_payload,
                     "segment_messages": segment_messages,
                     "segment_resource_url": str(segment_path),
                     "segment_raw_text": segment_raw_text,
                     "segment_start_index": segment_start_index,
                     "segment_end_index": segment_end_index,
                     "segment_id": segment_id,
-                    "has_primary_messages": has_primary_messages,
+                    "memory_producing": memory_producing,
                 }
             )
 
@@ -443,11 +493,11 @@ async def run_memorize_segments(
                     ),
                 )
                 if len(batch_results) != len(segment_jobs):
-                    msg = (
+                    error_message = (
                         f"memorize_segments_batch returned {len(batch_results)} results "
                         f"for {len(segment_jobs)} segment jobs"
                     )
-                    raise RuntimeError(msg)
+                    raise RuntimeError(error_message)
                 ctx.logger.info(
                     "memorize batch segments=%d elapsed=%.1fs",
                     total_segments,
@@ -466,10 +516,13 @@ async def run_memorize_segments(
                     ep_result = batch_results[seg_num - 1] if seg_num - 1 < len(batch_results) else None
                     if isinstance(ep_result, dict):
                         has_results = True
-                        if segment_job["has_primary_messages"]:
+                        result_pending = run_ctx.normalize_text_list(ep_result.get("pending_segment_ids"))
+                        if not segment_job["memory_producing"] and result_pending:
+                            raise RuntimeError("context-only memorize unit returned pending segment ids")
+                        if segment_job["memory_producing"]:
                             has_memory_results = True
-                            pending_segment_ids.extend(run_ctx.normalize_text_list(ep_result.get("pending_segment_ids")))
-                        if cross_memorize and segment_job["has_primary_messages"]:
+                            pending_segment_ids.extend(result_pending)
+                        if cross_memorize and segment_job["memory_producing"]:
                             latest_display_ranges = _segment_display_ranges(segment_job["segment_messages"])
                     segment_end_index = segment_job["segment_end_index"]
                     if conversation_id and not cross_memorize:
@@ -480,21 +533,23 @@ async def run_memorize_segments(
                                 user_id=uid,
                                 soul_id=soul_id,
                             )
-                            fresh_cursor = int(fresh_row.get("digest_cursor") or 0)
+                            memory_producing = segment_job["memory_producing"]
+                            cursor_field = "digest_cursor" if memory_producing else "rolling_summary_cursor_id"
+                            fresh_cursor = int(fresh_row.get(cursor_field) or 0)
                             if fresh_cursor <= segment_end_index:
                                 processed_end_cursor = max(processed_end_cursor, segment_end_index)
                                 # per-segment advance — crash recovery needs the cursor to move
                                 # only after the whole segment completes.
+                                updates = _cursor_updates_for_unit(
+                                    memory_producing=memory_producing,
+                                    cursor=processed_end_cursor,
+                                    now_iso=datetime.now(UTC).isoformat(),
+                                )
                                 ctx.write_conversation_state(
                                     conversation_id,
                                     soul_id=soul_id,
                                     user_id=uid,
-                                    updates={
-                                        "digest_cursor": processed_end_cursor,
-                                        "digest_cursor_source_message_id": None,
-                                        "digest_cursor_ts": None,
-                                        "last_memorize_at": datetime.now(UTC).isoformat(),
-                                    },
+                                    updates=updates,
                                 )
                             else:
                                 # Another runner advanced the cursor past this segment; honour the further value.
@@ -502,6 +557,12 @@ async def run_memorize_segments(
 
         # Phase 3: final state flush + bookkeeping under lock.
         async with mem_lock:
+            if terminal_result == "cancelled":
+                for segment_path in created_segment_paths:
+                    segment_path.unlink(missing_ok=True)
+                created_segment_paths.clear()
+                if conversation_id:
+                    _remove_manifest_ranges(segments_dir.parent / "manifest.json", reserved_manifest_ranges)
             if has_results and final_cursors:
                 now_iso = datetime.now(UTC).isoformat()
                 if cross_memorize:
@@ -513,6 +574,9 @@ async def run_memorize_segments(
                     )
                 for fc_cid, checkpoint in final_cursors.items():
                     fc_cursor = max(0, int(checkpoint["cursor"]))
+                    checkpoint_memory_producing = checkpoint.get("memory_producing")
+                    if not isinstance(checkpoint_memory_producing, bool):
+                        raise RuntimeError(f"memorize checkpoint missing captured policy for {fc_cid}")
                     source_id = str(checkpoint.get("source_message_id") or "").strip()
                     source_ts = checkpoint.get("ts")
                     web_source = bool(source_id and source_ts is not None)
@@ -521,7 +585,6 @@ async def run_memorize_segments(
                         user_id=uid,
                         soul_id=soul_id,
                     )
-                    memorize_chat = memorize_chat_from_row(fresh_row)
                     if web_source:
                         payload_position = run_ctx.resolve_web_source_checkpoint(fc_cid, source_id)
                         if payload_position is None:
@@ -531,11 +594,11 @@ async def run_memorize_segments(
                             )
                         fresh_id_field = (
                             "digest_cursor_source_message_id"
-                            if memorize_chat
+                            if checkpoint_memory_producing
                             else "rolling_summary_cursor_source_message_id"
                         )
                         fresh_cursor_field = (
-                            "digest_cursor" if memorize_chat else "rolling_summary_cursor_id"
+                            "digest_cursor" if checkpoint_memory_producing else "rolling_summary_cursor_id"
                         )
                         fresh_source_id = str(fresh_row.get(fresh_id_field) or "").strip()
                         if fresh_source_id:
@@ -544,14 +607,17 @@ async def run_memorize_segments(
                                 fresh_source_id,
                             )
                             if fresh_position is None:
-                                fresh_position = -1 if memorize_chat else 0
+                                fresh_position = -1 if checkpoint_memory_producing else 0
                         else:
                             fresh_position = int(fresh_row.get(fresh_cursor_field) or 0)
                         if payload_position <= fresh_position:
-                            if memorize_chat:
-                                updates = {"last_memorize_at": now_iso}
-                                if fc_cid == conversation_id:
-                                    updates["append_pending_segment_ids"] = pending_segment_ids
+                            updates = _cursor_updates_for_unit(
+                                memory_producing=checkpoint_memory_producing,
+                                cursor=None,
+                                now_iso=now_iso,
+                                pending_segment_ids=(pending_segment_ids if fc_cid == conversation_id else None),
+                            )
+                            if updates:
                                 ctx.write_conversation_state(
                                     fc_cid,
                                     soul_id=soul_id,
@@ -560,73 +626,46 @@ async def run_memorize_segments(
                                 )
                             continue
                         fc_cursor = payload_position
-                    if not memorize_chat:
-                        updates = {"rolling_summary_cursor_id": fc_cursor}
-                        if web_source:
-                            updates.update(
-                                rolling_summary_cursor_source_message_id=source_id,
-                                rolling_summary_cursor_ts=int(source_ts),
-                            )
-                        else:
-                            updates.update(
-                                rolling_summary_cursor_source_message_id=None,
-                                rolling_summary_cursor_ts=None,
-                            )
-                        ctx.write_conversation_state(
-                            fc_cid,
-                            soul_id=soul_id,
-                            user_id=uid,
-                            updates=updates,
-                        )
-                        continue
-                    updates: dict[str, Any] = {
-                        "digest_cursor": fc_cursor,
-                        "last_memorize_at": now_iso,
-                    }
-                    if web_source:
-                        updates.update(
-                            digest_cursor_source_message_id=source_id,
-                            digest_cursor_ts=int(source_ts),
-                        )
-                    else:
-                        updates.update(
-                            digest_cursor_source_message_id=None,
-                            digest_cursor_ts=None,
-                        )
+                    updates = _cursor_updates_for_unit(
+                        memory_producing=checkpoint_memory_producing,
+                        cursor=fc_cursor,
+                        now_iso=now_iso,
+                        source_message_id=source_id,
+                        source_ts=source_ts,
+                        pending_segment_ids=(pending_segment_ids if fc_cid == conversation_id else None),
+                    )
                     display_range = latest_display_ranges.get(fc_cid)
-                    if cross_memorize and display_range is not None:
+                    if checkpoint_memory_producing and cross_memorize and display_range is not None:
                         updates["last_display_segment_start_index"] = display_range[0]
                         updates["last_display_segment_end_index"] = display_range[1]
                         updates["last_display_segment_at"] = now_iso
-                    elif cross_memorize:
+                    elif checkpoint_memory_producing and cross_memorize:
                         updates["last_display_segment_start_index"] = None
                         updates["last_display_segment_end_index"] = None
                         updates["last_display_segment_at"] = None
-                    if fc_cid == conversation_id:
-                        updates["append_pending_segment_ids"] = pending_segment_ids
                     ctx.write_conversation_state(
                         fc_cid,
                         soul_id=soul_id,
                         user_id=uid,
                         updates=updates,
                     )
-            elif conversation_id and has_results:
+            elif conversation_id and has_results and pending_segment_ids:
                 ctx.write_conversation_state(
                     conversation_id,
                     soul_id=soul_id,
                     user_id=uid,
-                    updates={
-                        "digest_cursor": max(0, processed_end_cursor),
-                        "digest_cursor_source_message_id": None,
-                        "digest_cursor_ts": None,
-                        "last_memorize_at": datetime.now(UTC).isoformat(),
-                        "append_pending_segment_ids": pending_segment_ids,
-                    },
+                    updates=_cursor_updates_for_unit(
+                        memory_producing=True,
+                        cursor=None,
+                        now_iso=datetime.now(UTC).isoformat(),
+                        pending_segment_ids=pending_segment_ids,
+                    ),
                 )
             if conversation_id and has_memory_results:
                 # Pending ids now reference these files; the failure path must not unlink them
                 # or consolidation would reject the whole pending list as missing history.
                 created_segment_paths.clear()
+                durable_segments_committed = True
             if has_memory_results:
                 for bg_cid in consumed_background_summary_ids:
                     ctx.write_conversation_state(
@@ -712,6 +751,12 @@ async def run_memorize_segments(
                 segment_path.unlink(missing_ok=True)
             except OSError:
                 ctx.logger.warning("failed to remove failed memorize segment file %s", segment_path)
+        if conversation_id and not durable_segments_committed:
+            try:
+                async with mem_lock:
+                    _remove_manifest_ranges(segments_dir.parent / "manifest.json", reserved_manifest_ranges)
+            except (OSError, ValueError, json.JSONDecodeError):
+                ctx.logger.exception("failed to release memorize manifest ranges")
         _set_memorize_progress(
             ctx.memorize_progress,
             progress_key,
@@ -772,7 +817,7 @@ def date_label(ts_ms: int | None, zi: Any | None) -> str:
 
 def _merge_manifest_segments(
     existing: list[dict[str, Any]],
-    memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]],
+    memorize_segments: list[MemorizeSegment],
     *,
     rebuildable: bool = True,
 ) -> list[dict[str, Any]]:
@@ -803,8 +848,10 @@ def _merge_manifest_segments(
                     non_rebuildable.append({"start": st_i, "end": en_i, "rebuildable": False})
             else:
                 canonical.append((st_i, en_i))
-    for _resource_url, _messages, start, end in memorize_segments:
-        parsed = parsed_range(start, end)
+    for _resource_url, _messages, _source_start, _source_end, durable_range in memorize_segments:
+        if durable_range is None:
+            continue
+        parsed = parsed_range(*durable_range)
         if parsed is None:
             continue
         st_i, en_i = parsed
@@ -847,17 +894,53 @@ def _next_manifest_start(segments: list[dict[str, Any]]) -> int:
     return max_end + 1
 
 
+def _remove_manifest_ranges(path: Path, ranges: list[tuple[int, int]]) -> None:
+    if not path.exists() or not ranges:
+        return
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    existing = manifest.get("segments") if isinstance(manifest.get("segments"), list) else []
+    remaining: list[dict[str, Any]] = []
+    for segment in existing:
+        if not isinstance(segment, dict):
+            continue
+        try:
+            pieces = [(int(segment["start"]), int(segment["end"]))]
+        except (KeyError, TypeError, ValueError):
+            continue
+        for remove_start, remove_end in ranges:
+            pieces = [
+                piece
+                for start, end in pieces
+                for piece in (
+                    ([(start, min(end, remove_start - 1))] if start < remove_start else [])
+                    + ([(max(start, remove_end + 1), end)] if end > remove_end else [])
+                )
+            ]
+        for start, end in pieces:
+            remaining.append({**segment, "start": start, "end": end})
+    manifest["segments"] = remaining
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _offset_memorize_segments(
     memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]],
     *,
     start: int,
-) -> list[tuple[str, list[dict[str, Any]], int, int]]:
-    out: list[tuple[str, list[dict[str, Any]], int, int]] = []
+) -> list[MemorizeSegment]:
+    out: list[MemorizeSegment] = []
     cursor = max(0, start)
-    for resource_url, messages, _old_start, _old_end in memorize_segments:
-        end = cursor + len(messages) - 1
-        out.append((resource_url, messages, cursor, end))
-        cursor = end + 1
+    for resource_url, messages, source_start, source_end in memorize_segments:
+        memory_producing = any(
+            message.get("memorize_chat") is not False
+            for message in messages
+            if isinstance(message, dict)
+        )
+        durable_range = None
+        if memory_producing:
+            end = cursor + len(messages) - 1
+            durable_range = (cursor, end)
+            cursor = end + 1
+        out.append((resource_url, messages, source_start, source_end, durable_range))
     return out
 
 
@@ -1225,33 +1308,13 @@ async def memorize_endpoint(
                     segment_start = split_idx
 
                 segments = keep_segments + new_segments
-                manifest_out = {
-                    "v": 1,
-                    "tz": str(zi),
-                    "segments": segments,
-                    "split": {
-                        "min_lull_seconds": ctx.sleep_split_min_lull_seconds,
-                    },
-                    "source": {
-                        "conversation_id": conversation_id or "",
-                        "conversationId": conversation_id or "",
-                        "chatKey": chat_key,
-                        "chatKeySource": chat_key_source or "",
-                    },
-                }
-                manifest_path.write_text(json.dumps(manifest_out, ensure_ascii=False, indent=2), encoding="utf-8")
 
-            memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]] = []
+            raw_memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]] = []
             if is_cross or tail:
                 tail_start = 0 if is_cross else max(0, processed_cursor + 1)
                 if tail_start < len(merged):
-                    memorize_segments = [(resource_url, merged[tail_start:], tail_start, len(merged) - 1)]
-                    if is_cross:
-                        memorize_segments = _offset_memorize_segments(
-                            memorize_segments,
-                            start=_next_manifest_start(manifest_segments_existing),
-                        )
-                if not memorize_segments:
+                    raw_memorize_segments = [(resource_url, merged[tail_start:], tail_start, len(merged) - 1)]
+                if not raw_memorize_segments:
                     progress_key = ctx.memorize_lock_key(uid, soul_id)
                     if conversation_id and has_pending_segments:
                         _set_memorize_progress(
@@ -1294,6 +1357,7 @@ async def memorize_endpoint(
                     )
             elif rebuild:
                 processed_cursor = -1
+                manifest_segments_existing = []
                 if segments_dir and segments_dir.exists():
                     for old_seg in segments_dir.glob("*.json"):
                         old_seg.unlink(missing_ok=True)
@@ -1313,13 +1377,13 @@ async def memorize_endpoint(
                     seg_messages = merged[effective_start : seg_end + 1]
                     if not seg_messages:
                         continue
-                    memorize_segments.append((resource_url, seg_messages, effective_start, seg_end))
+                    raw_memorize_segments.append((resource_url, seg_messages, effective_start, seg_end))
 
-            if force and not tail and not is_cross and not memorize_segments:
+            if force and not tail and not is_cross and not raw_memorize_segments:
                 if isinstance(merged, list) and merged:
                     force_start = max(0, processed_cursor + 1)
                     if force_start < len(merged):
-                        memorize_segments = [
+                        raw_memorize_segments = [
                             (resource_url, merged[chunk_start : chunk_end + 1], chunk_start, chunk_end)
                             for chunk_start, chunk_end in _chunk_index_ranges_by_token_budget(
                                 merged,
@@ -1328,7 +1392,7 @@ async def memorize_endpoint(
                                 max_chunk_tokens=_FORCE_MEMORIZE_MAX_CHUNK_TOKENS,
                             )
                         ]
-                if not memorize_segments:
+                if not raw_memorize_segments:
                     _set_memorize_progress(
                         ctx.memorize_progress,
                         ctx.memorize_lock_key(uid, soul_id),
@@ -1339,6 +1403,11 @@ async def memorize_endpoint(
                         status_code=200,
                         content={"ok": True, "status": "nothing_to_memorize", "conversation_id": conversation_id},
                     )
+
+            memorize_segments = _offset_memorize_segments(
+                raw_memorize_segments,
+                start=_next_manifest_start(manifest_segments_existing),
+            )
 
             if conversation_id and memorize_segments:
                 manifest_segments = _merge_manifest_segments(

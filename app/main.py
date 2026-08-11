@@ -2039,7 +2039,7 @@ def _make_memorize_endpoint_context() -> _memorize_endpoint.MemorizeEndpointCont
 
 async def _run_memorize_segments(
     *,
-    memorize_segments: list[tuple[str, list[dict[str, Any]], int, int]],
+    memorize_segments: list[_memorize_endpoint.MemorizeSegment],
     svc: Any,
     scope: dict[str, Any],
     conversation_id: str | None,
@@ -3390,6 +3390,7 @@ def _build_cross_conversation_payload(
             f"memorize tail has no checkpoint for {cid}; "
             "repair the conversation cursor with patch_conversation_state_endpoint"
         )
+    trigger_checkpoint["memory_producing"] = trigger_memorize
     final_cursors: dict[str, dict[str, Any]] = {cid: trigger_checkpoint}
     all_messages = list(trigger_tail)
 
@@ -3416,6 +3417,11 @@ def _build_cross_conversation_payload(
         web_source = source_label.startswith("whatsapp:")
         final_cursor = _source_cursor_checkpoint(tail_msgs, web_source=web_source)
         if final_cursor is not None:
+            final_cursor["memory_producing"] = any(
+                msg.get("memorize_chat") is not False
+                for msg in tail_msgs
+                if isinstance(msg, dict)
+            )
             final_cursors[other_cid] = final_cursor
         all_messages.extend(tail_msgs)
 

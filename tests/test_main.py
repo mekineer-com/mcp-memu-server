@@ -1855,6 +1855,7 @@ def test_build_cross_conversation_payload_preserves_background_cursor_semantics(
     assert rows[0]["content"] == "new"
     assert rows[0]["memorize_chat"] is False
     assert out["_final_cursors"]["whatsapp:dm:bg-chat"]["cursor"] == rows[0]["source_conversation_index"]
+    assert out["_final_cursors"]["whatsapp:dm:bg-chat"]["memory_producing"] is False
 
 
 def test_source_cursor_checkpoint_uses_highest_web_source_rowid() -> None:
@@ -2900,7 +2901,10 @@ async def test_run_memorize_segments_records_failure_progress_on_exception(tmp_p
 
     with pytest.raises(RuntimeError):
         await main._run_memorize_segments(
-            memorize_segments=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0, 0)],
+            memorize_segments=main._memorize_endpoint._offset_memorize_segments(
+                [("/tmp/day.json", [{"role": "user", "content": "x"}], 0, 0)],
+                start=0,
+            ),
             svc=_FailingService(),
             scope={"user_id": user_id, "soul_id": soul_id},
             conversation_id=None,
@@ -2951,10 +2955,13 @@ async def test_run_memorize_segments_batches_one_job_per_persisted_segment(tmp_p
     main._MEMORIZE_CANCEL.discard(key)
 
     await main._run_memorize_segments(
-        memorize_segments=[
-            ("/tmp/day.json", segment_messages[0], 0, 1),
-            ("/tmp/day.json", segment_messages[1], 2, 2),
-        ],
+        memorize_segments=main._memorize_endpoint._offset_memorize_segments(
+            [
+                ("/tmp/day.json", segment_messages[0], 0, 1),
+                ("/tmp/day.json", segment_messages[1], 2, 2),
+            ],
+            start=0,
+        ),
         svc=_FakeService(),
         scope={"user_id": user_id, "soul_id": soul_id},
         conversation_id=None,
@@ -3015,7 +3022,10 @@ async def test_run_memorize_segments_preserves_pending_ids_on_extraction_failure
 
     with pytest.raises(RuntimeError):
         await main._run_memorize_segments(
-            memorize_segments=[("/tmp/day.json", [{"role": "user", "content": "x"}], 0, 0)],
+            memorize_segments=main._memorize_endpoint._offset_memorize_segments(
+                [("/tmp/day.json", [{"role": "user", "content": "x"}], 0, 0)],
+                start=0,
+            ),
             svc=_FailingService(),
             scope={"user_id": user_id, "soul_id": soul_id},
             conversation_id=conversation_id,
@@ -3084,10 +3094,13 @@ async def test_run_memorize_segments_ignores_cancel_after_batch_extraction(
     monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
 
     await main._run_memorize_segments(
-        memorize_segments=[
-            ("/tmp/day.json", [{"role": "user", "content": "first"}], 0, 0),
-            ("/tmp/day.json", [{"role": "user", "content": "second"}], 1, 1),
-        ],
+        memorize_segments=main._memorize_endpoint._offset_memorize_segments(
+            [
+                ("/tmp/day.json", [{"role": "user", "content": "first"}], 0, 0),
+                ("/tmp/day.json", [{"role": "user", "content": "second"}], 1, 1),
+            ],
+            start=0,
+        ),
         svc=_FakeService(),
         scope={"user_id": user_id, "soul_id": soul_id},
         conversation_id=conversation_id,
@@ -3181,6 +3194,7 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
                 ],
                 0,
                 1,
+                (0, 1),
             )
         ],
         svc=_FakeService(),
@@ -3205,11 +3219,12 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
         segments_dir=segments_dir,
         cross_memorize=True,
         final_cursors={
-            "trigger": {"cursor": 0},
+            "trigger": {"cursor": 0, "memory_producing": True},
             "whatsapp:dm:bg-chat": {
                 "cursor": 12,
                 "source_message_id": "message-12",
                 "ts": 100,
+                "memory_producing": False,
             },
         },
     )
@@ -3289,6 +3304,7 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
                 ],
                 0,
                 1,
+                (0, 1),
             )
         ],
         svc=_FakeService(),
@@ -3388,6 +3404,7 @@ async def test_run_memorize_segments_fresh_background_context_does_not_write_rol
                 ],
                 0,
                 1,
+                (0, 1),
             )
         ],
         svc=_FakeService(),
@@ -3489,6 +3506,7 @@ async def test_context_only_segment_advances_cursor_without_memory_work(
                 ],
                 0,
                 0,
+                None,
             )
         ],
         svc=_FakeService(),
@@ -3509,14 +3527,13 @@ async def test_context_only_segment_advances_cursor_without_memory_work(
         sleep_stats=None,
         segments_dir=segments_dir,
         cross_memorize=True,
-        final_cursors={"background": {"cursor": 4}},
+        final_cursors={"background": {"cursor": 4, "memory_producing": False}},
     )
 
     assert captured_paths and all(not path.exists() for path in captured_paths)
     assert captured_payloads == [
         {
             "message_indices": [0],
-            "segment_id": "trigger:0-0",
             "segment_background_context_rows": [
                 {
                     "summary": "durable background context",
@@ -3533,6 +3550,135 @@ async def test_context_only_segment_advances_cursor_without_memory_work(
     assert state_rows["background"]["rolling_summary"] == "durable background context"
     assert not any("rolling_summary" in updates for _cid, updates in writes)
     assert recorded_calls[-1]["pendingSegmentRetryOnly"] is True
+
+
+@pytest.mark.asyncio
+async def test_non_cross_context_only_advances_only_rolling_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    state = {
+        "memorize_chat": True,
+        "digest_cursor": 2,
+        "rolling_summary_cursor_id": 1,
+        "last_memorize_at": "before",
+        "pending_segment_ids": [],
+    }
+
+    class _FakeService:
+        async def memorize_segments_batch(self, **_kwargs):
+            return [{"pending_segment_ids": []}]
+
+    def fake_load(*_args, **_kwargs):
+        return dict(state), None, tmp_path / "TestSoul.db"
+
+    def fake_write(_cid: str, *, updates: dict[str, Any], **_kwargs):
+        state.update(updates)
+        return dict(state), tmp_path / "TestSoul.db"
+
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load)
+    monkeypatch.setattr(main, "_write_conversation_state", fake_write)
+
+    await main._run_memorize_segments(
+        memorize_segments=[
+            (
+                "/tmp/day.json",
+                [{"role": "user", "content": "listen", "memorize_chat": False}],
+                3,
+                3,
+                None,
+            )
+        ],
+        svc=_FakeService(),
+        scope={"user_id": "test-user", "soul_id": "TestSoul"},
+        conversation_id="test-chat",
+        soul_id="TestSoul",
+        uid="test-user",
+        processed_cursor=2,
+        safe={},
+        resource_url="/tmp/day.json",
+        chat_key=None,
+        merged_len=1,
+        force=False,
+        sleep_stats=None,
+        segments_dir=segments_dir,
+    )
+
+    assert state["digest_cursor"] == 2
+    assert state["rolling_summary_cursor_id"] == 3
+    assert state["last_memorize_at"] == "before"
+    assert list(segments_dir.glob("*.json")) == []
+
+
+@pytest.mark.asyncio
+async def test_context_only_web_checkpoint_ignores_live_policy_reread(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    writes: list[dict[str, Any]] = []
+
+    class _FakeService:
+        async def memorize_segments_batch(self, **_kwargs):
+            return [{"pending_segment_ids": []}]
+
+    def fake_load(cid: str, **_kwargs):
+        if cid == "background":
+            return {
+                "memorize_chat": True,
+                "digest_cursor": 9,
+                "rolling_summary_cursor_id": 5,
+                "rolling_summary_cursor_source_message_id": "message-5",
+                "last_memorize_at": "before",
+            }, None, tmp_path / "TestSoul.db"
+        return {"pending_segment_ids": []}, None, tmp_path / "TestSoul.db"
+
+    def fake_write(_cid: str, *, updates: dict[str, Any], **_kwargs):
+        writes.append(dict(updates))
+        return dict(updates), tmp_path / "TestSoul.db"
+
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load)
+    monkeypatch.setattr(main, "_write_conversation_state", fake_write)
+    monkeypatch.setattr(main, "_resolve_web_source_checkpoint", lambda _cid, source_id: int(source_id.rsplit("-", 1)[1]))
+
+    await main._run_memorize_segments(
+        memorize_segments=[
+            (
+                "/tmp/day.json",
+                [{"role": "user", "content": "listen", "memorize_chat": False}],
+                4,
+                4,
+                None,
+            )
+        ],
+        svc=_FakeService(),
+        scope={"user_id": "test-user", "soul_id": "TestSoul"},
+        conversation_id="trigger",
+        soul_id="TestSoul",
+        uid="test-user",
+        processed_cursor=-1,
+        safe={},
+        resource_url="/tmp/day.json",
+        chat_key=None,
+        merged_len=1,
+        force=False,
+        sleep_stats=None,
+        segments_dir=segments_dir,
+        cross_memorize=True,
+        final_cursors={
+            "background": {
+                "cursor": 4,
+                "source_message_id": "message-4",
+                "ts": 4,
+                "memory_producing": False,
+            }
+        },
+    )
+
+    assert writes == []
 
 
 def test_timeline_endpoint_returns_entity_edges(monkeypatch: pytest.MonkeyPatch):
