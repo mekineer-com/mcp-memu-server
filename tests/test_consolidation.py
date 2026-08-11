@@ -12,6 +12,7 @@ from app.services import segment
 from app.services import soul_state as _soul_state
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
 from app.services.consolidation import _format_segment_memory_items_for_prompt
+from app.services.consolidation import _is_first_reflection
 from app.services.consolidation import _parse_reflection_xml
 from app.services.consolidation import _remap_edges_with_memory_ids
 from app.services.consolidation import _select_prompt_objective
@@ -66,6 +67,8 @@ class _DossierContextService:
                 summary="## Current\nStable.",
             ),
             "cited_items": [],
+            "cleanup_items": [],
+            "pending_items": [],
             "candidate_items": [],
             "linked_item_ids": [],
             "linked_inactive_item_ids": [],
@@ -132,8 +135,12 @@ def test_consolidation_preflight_checks_both_profiles(
 
 
 @pytest.mark.asyncio
-async def test_dossier_context_uses_one_holistic_call_and_preserves_due_order() -> None:
-    svc = _DossierContextService(due_ids=("first", "second"))
+@pytest.mark.parametrize(
+    "due_ids",
+    [("first",), ("first", "second"), ("first", "second", "third"), ("first", "second", "third", "fourth")],
+)
+async def test_dossier_context_uses_one_holistic_call_and_preserves_due_order(due_ids) -> None:
+    svc = _DossierContextService(due_ids=due_ids)
     inputs = {
         "narrative_self": "I am steady.",
         "active_life_goals": ["Stay curious"],
@@ -155,7 +162,7 @@ async def test_dossier_context_uses_one_holistic_call_and_preserves_due_order() 
 
     assert result is inputs
     assert [call for call in svc.calls if call[0] == "chat"] == [("chat", "dossiers")]
-    assert [call[1] for call in svc.calls if call[0] == "apply"] == ["first", "second"]
+    assert [call[1] for call in svc.calls if call[0] == "apply"] == list(due_ids)
     assert result["dossier_index"] == "- Health: Current health"
     assert result["relevant_dossiers"][0].summary == "Body [M4]."
     assert (
@@ -221,6 +228,46 @@ async def test_dossier_context_without_due_dossiers_still_builds_context() -> No
 
 
 @pytest.mark.asyncio
+async def test_consolidation_preflights_no_whitespace_prompts() -> None:
+    def inputs():
+        return {
+            "narrative_self": "I am steady.",
+            "active_life_goals": [],
+            "removed_life_goals": [],
+            "selected_segment_ids": ["segment-4"],
+            "intention_activity": [],
+            "state": {},
+            "segment_inputs": [],
+            "prior_context_memory_items": [],
+            "all_chat_history": "x" * 400_001,
+        }
+
+    with pytest.raises(ValueError, match="Dossier consolidation prompt exceeds"):
+        await prepare_dossier_consolidation_context(
+            _DossierContextService(due_ids=("first",)),
+            inputs=inputs(),
+            soul_id="TestSoul",
+            user_id="TestUser",
+        )
+
+    svc = _DossierContextService()
+    anchor_inputs = inputs()
+    await prepare_dossier_consolidation_context(
+        svc,
+        inputs=anchor_inputs,
+        soul_id="TestSoul",
+        user_id="TestUser",
+    )
+    with pytest.raises(ValueError, match="Anchor reflection prompt exceeds"):
+        await run_consolidation_llm(
+            svc,
+            inputs=anchor_inputs,
+            soul_id="TestSoul",
+            user_id="TestUser",
+        )
+
+
+@pytest.mark.asyncio
 async def test_reflection_uses_new_root_and_applies_both_validated_anchors() -> None:
     svc = _DossierContextService()
     inputs = {
@@ -273,11 +320,14 @@ async def test_reflection_resolves_edges_from_anchor_cited_memories() -> None:
         bundle = original_prepare(role, scope, actionable_ids)
         if role == "soul":
             bundle["cited_items"] = [anchor_item]
+            bundle["cleanup_items"] = [anchor_item]
+            bundle["linked_inactive_item_ids"] = [anchor_item.id]
         return bundle
 
     async def _reflection_chat(prompt, **kwargs):
         svc.prompts.append(prompt)
         return """<reflection>
+  <narrative_self>I am steady.</narrative_self>
   <anchor_revisions>
     <anchor role="soul"><description>My living history.</description><prose_action>keep</prose_action><prose_patches></prose_patches></anchor>
     <anchor role="user"><description>My human's living history.</description><prose_action>keep</prose_action><prose_patches></prose_patches></anchor>
@@ -323,6 +373,8 @@ async def test_reflection_resolves_edges_from_anchor_cited_memories() -> None:
             "confidence": 0.8,
         }
     ]
+    assert "# Inactive memories cited by your dossier anchor\n[M77]" in svc.prompts[-1]
+    assert "# Memories cited by your dossier anchor\n(none)" in svc.prompts[-1]
 
 
 def test_select_prompt_objective_unwraps_only_requested_block() -> None:
@@ -334,6 +386,19 @@ def test_select_prompt_objective_unwraps_only_requested_block() -> None:
 def test_first_reflection_requires_narrative_self() -> None:
     with pytest.raises(ValueError, match="requires narrative_self"):
         _parse_reflection_xml("<reflection></reflection>", {}, first_time=True)
+    with pytest.raises(ValueError, match="requires narrative_self"):
+        _parse_reflection_xml("<reflection></reflection>", {}, first_time=False)
+
+
+def test_first_reflection_includes_reseeded_blank_anchor() -> None:
+    inputs = {
+        "narrative_self": "I already know myself.",
+        "anchor_bundles": {
+            "soul": {"dossier": SimpleNamespace(summary="## Becoming\nAlive.")},
+            "user": {"dossier": SimpleNamespace(summary="")},
+        },
+    }
+    assert _is_first_reflection(inputs)
 
 
 def test_format_segment_memory_items_for_prompt_shows_memory_ids() -> None:

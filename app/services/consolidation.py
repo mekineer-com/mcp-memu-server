@@ -16,7 +16,11 @@ log = logging.getLogger(__name__)
 
 from fastapi import HTTPException
 from memu.app.dossier import label_sections, render_memory_records, revision_status_items
-from memu.app.dossier_revision import parse_anchor_revisions, parse_dossier_revision_batch
+from memu.app.dossier_revision import (
+    estimate_prompt_tokens,
+    parse_anchor_revisions,
+    parse_dossier_revision_batch,
+)
 from memu.prompts.consolidation import anchors as anchors_prompt
 from memu.prompts.consolidation import dossiers as dossiers_prompt
 
@@ -117,6 +121,15 @@ def _select_prompt_objective(prompt: str, *, first_time: bool) -> str:
     return prompt
 
 
+def _is_first_reflection(inputs: dict[str, Any]) -> bool:
+    if not str(inputs.get("narrative_self") or "").strip():
+        return True
+    return any(
+        not str(bundle["dossier"].summary or "").strip()
+        for bundle in inputs["anchor_bundles"].values()
+    )
+
+
 def _parse_reflection_xml(
     raw: str,
     anchor_bundles: dict[str, dict[str, Any]],
@@ -125,8 +138,8 @@ def _parse_reflection_xml(
 ) -> dict[str, Any]:
     root = extract_xml_fragment(raw, "reflection")
     narrative_self = xml_text(root, "narrative_self")
-    if first_time and not narrative_self:
-        raise ValueError("First reflection requires narrative_self")
+    if not narrative_self:
+        raise ValueError("Reflection requires narrative_self")
     anchor_nodes = root.findall("anchor_revisions")
     if len(anchor_nodes) != 1:
         raise ValueError("Reflection requires exactly one anchor_revisions element")
@@ -308,7 +321,7 @@ async def prepare_dossier_consolidation_context(
     ]
     if bundles:
         anchors = inputs["anchor_bundles"]
-        first_time = not bool(str(inputs.get("narrative_self") or "").strip())
+        first_time = _is_first_reflection(inputs)
         system_prompt = _select_prompt_objective(
             dossiers_prompt.SYSTEM_PROMPT,
             first_time=first_time,
@@ -342,7 +355,7 @@ async def prepare_dossier_consolidation_context(
             dossier_revision_blocks=_format_dossier_revision_blocks(bundles),
             **literal_fields,
         )
-        if len((system_prompt + "\n" + user_prompt).split()) / 0.75 > 100_000:
+        if estimate_prompt_tokens(system_prompt + "\n" + user_prompt) > 100_000:
             raise ValueError("Dossier consolidation prompt exceeds 100000 tokens")
         raw = await svc.chat(
             user_prompt,
@@ -936,8 +949,7 @@ async def run_consolidation_llm(
     user_id: str,
     llm_profile: str | None = None,
 ) -> dict[str, Any]:
-    narrative = str(inputs.get("narrative_self") or "").strip()
-    first_time = not bool(narrative)
+    first_time = _is_first_reflection(inputs)
     system_prompt = _select_prompt_objective(
         anchors_prompt.SYSTEM_PROMPT,
         first_time=first_time,
@@ -968,12 +980,25 @@ async def run_consolidation_llm(
             ]
         )
     relevant_dossiers = "\n".join(relevant_parts).strip() or "(none)"
+    anchor_statuses = {
+        role: revision_status_items(bundle) for role, bundle in anchor_bundles.items()
+    }
     user_prompt = anchors_prompt.USER_PROMPT.format(
         narrative_self=context["narrative_self"],
         soul_anchor=anchor_prose("soul"),
-        soul_anchor_cited_memory_items=render_memory_records(anchor_bundles["soul"]["cited_items"]),
+        soul_anchor_cited_memory_items=render_memory_records(
+            anchor_statuses["soul"]["cited"]
+        ),
+        soul_anchor_inactive_cited_memory_items=render_memory_records(
+            anchor_statuses["soul"]["purged"]
+        ),
         user_anchor=anchor_prose("user"),
-        user_anchor_cited_memory_items=render_memory_records(anchor_bundles["user"]["cited_items"]),
+        user_anchor_cited_memory_items=render_memory_records(
+            anchor_statuses["user"]["cited"]
+        ),
+        user_anchor_inactive_cited_memory_items=render_memory_records(
+            anchor_statuses["user"]["purged"]
+        ),
         dossier_index=_read_only_citations(inputs["dossier_index"]) or "(none)",
         relevant_dossiers=relevant_dossiers,
         life_goals=context["life_goals"],
@@ -983,7 +1008,7 @@ async def run_consolidation_llm(
         conversation_history=context["conversation_history"],
         segment_memory_items=context["segment_memory_items"],
     )
-    if len((system_prompt + "\n" + user_prompt).split()) / 0.75 > 100_000:
+    if estimate_prompt_tokens(system_prompt + "\n" + user_prompt) > 100_000:
         raise ValueError("Anchor reflection prompt exceeds 100000 tokens")
     raw = await svc.chat(
         user_prompt,
