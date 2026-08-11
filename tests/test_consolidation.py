@@ -33,8 +33,8 @@ class _DossierContextService:
         self.calls: list[tuple] = []
         self.prompts: list[str] = []
 
-    def list_due_dossiers(self, scope):
-        self.calls.append(("due", scope))
+    def list_due_dossiers(self, scope, *, segment_ids):
+        self.calls.append(("due", scope, segment_ids))
         return self.due
 
     def prepare_dossier_revision(self, dossier_id, scope, **context):
@@ -53,6 +53,7 @@ class _DossierContextService:
             "pending_items": [],
             "candidate_items": [],
             "linked_item_ids": [],
+            "linked_inactive_item_ids": [],
             "cited_unlinked_item_ids": [],
         }
 

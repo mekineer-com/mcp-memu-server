@@ -301,7 +301,10 @@ async def prepare_dossier_consolidation_context(
             active_life_goals=inputs["active_life_goals"],
             removed_life_goals=inputs["removed_life_goals"],
         )
-        for dossier in svc.list_due_dossiers(scope)
+        for dossier in svc.list_due_dossiers(
+            scope,
+            segment_ids=inputs["selected_segment_ids"],
+        )
     ]
     if bundles:
         anchors = inputs["anchor_bundles"]
