@@ -269,7 +269,7 @@ def build_conversations_block(
         synthetic: dict[str, Any] = {
             "role": "user",
             "content": current_content,
-            "received_at": datetime.now(timezone.utc).isoformat(),
+            "received_at": datetime.now(timezone.utc).astimezone().isoformat(),
         }
         if _text(conversation_id):
             synthetic["conversation_id"] = _text(conversation_id)
