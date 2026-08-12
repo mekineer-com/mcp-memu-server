@@ -1304,15 +1304,20 @@ async def apply_database(
             apply_state["seeded"] = True
             _set_pending(paths["manifest"], manifest, None)
 
-        rows = await _assignment_rows(service, database, scope)
-        batches = _prompt_batches(
-            rows,
-            system_prompt=ASSIGNMENT_SYSTEM_PROMPT,
-            render_user=lambda batch: _render_assignment_user(batch, scope),
-        )
         entries = apply_state["batches"]
-        if len(entries) > len(batches):
-            raise MigrationError("assignment manifest has more batches than the current exact prompts")
+        if apply_state["revisions"]:
+            apply_state["assignments_complete"] = True
+        if apply_state.get("assignments_complete"):
+            batches = []
+        else:
+            rows = await _assignment_rows(service, database, scope)
+            batches = _prompt_batches(
+                rows,
+                system_prompt=ASSIGNMENT_SYSTEM_PROMPT,
+                render_user=lambda batch: _render_assignment_user(batch, scope),
+            )
+            if len(entries) > len(batches):
+                raise MigrationError("assignment manifest has more batches than the current exact prompts")
         for index, batch in enumerate(batches):
             user_prompt = _render_assignment_user(batch, scope)
             allowed_titles = {
@@ -1337,6 +1342,9 @@ async def apply_database(
             _file_proposals(service, scope, batch, decision, forbid_candidates=True)
             entry["committed"] = True
             _set_pending(paths["manifest"], manifest, None)
+        if not apply_state.get("assignments_complete"):
+            apply_state["assignments_complete"] = True
+            _atomic_write_json(paths["manifest"], manifest)
 
         from memu.app.dossier import render_dossier_revision_prompts
 

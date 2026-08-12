@@ -558,6 +558,7 @@ A neutral rehearsal memory {memory_ref.group(0)}.</body></section></prose_patche
         assert conn.execute("SELECT COUNT(*) FROM category_items WHERE category_id = ?", (legacy.id,)).fetchone()[0] == 0
     manifest = migration._read_json(manifest_path)
     assert manifest["apply"]["seeded"] is True
+    assert manifest["apply"]["assignments_complete"] is True
 
     build_count = builds
     rerun = await migration.apply_database(
