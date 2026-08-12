@@ -25,6 +25,7 @@ from app.config import (
     default_llm_profiles_from_server_config,
     sqlite_dir_from_cfg,
 )
+from app.services.payload import strip_markdown_code_fence
 
 
 MIGRATION_VERSION = 2
@@ -444,7 +445,7 @@ def _parse_taxonomy_output(
     *,
     allowed_titles: Mapping[str, set[str]] | None = None,
 ) -> dict[str, list[str]]:
-    text = str(raw or "").strip()
+    text = strip_markdown_code_fence(str(raw or "").strip())
     if (
         not text.startswith("<taxonomy_memories>")
         or not text.endswith("</taxonomy_memories>")

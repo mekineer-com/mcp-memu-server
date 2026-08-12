@@ -90,6 +90,7 @@ def test_taxonomy_parser_requires_exact_complete_refs_and_supplied_assignment_ti
         ["[M1]", "[M2]"],
         allowed_titles={"[M1]": {"Shared Adventures"}, "[M2]": set()},
     ) == {"[M1]": ["Shared Adventures"], "[M2]": []}
+    assert migration._parse_taxonomy_output(f"```xml\n{raw}\n```", ["[M1]", "[M2]"])
 
     with pytest.raises(migration.MigrationError, match="unsupplied"):
         migration._parse_taxonomy_output(
