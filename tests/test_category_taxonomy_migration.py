@@ -4,6 +4,7 @@ import re
 import sqlite3
 from contextlib import closing
 from datetime import date
+from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
@@ -142,6 +143,37 @@ def test_resume_identity_includes_embedding_model() -> None:
     assert first != second
 
 
+def test_artifacts_are_source_keyed_and_prompt_limit_handles_unbroken_text(tmp_path) -> None:
+    first = migration._artifact_paths(tmp_path / "a" / "soul.db", tmp_path)
+    second = migration._artifact_paths(tmp_path / "b" / "soul.db", tmp_path)
+    assert first != second
+
+    oversized = {"text": "x" * (migration.MAX_PROMPT_TOKENS * 4 + 1)}
+    with pytest.raises(migration.MigrationError, match="single memory exceeds"):
+        migration._prompt_batches(
+            [{"text": "short"}, oversized],
+            system_prompt="system",
+            render_user=lambda rows: "".join(row["text"] for row in rows),
+        )
+
+
+def test_completed_discovery_artifacts_are_reverified(tmp_path) -> None:
+    database = tmp_path / "copy.db"
+    dossiers = tmp_path / "dossiers.json"
+    _database(database)
+    migration._checkpoint_stopped_database(database)
+    dossiers.write_text("{}", encoding="utf-8")
+    paths = {"discovery_db": database, "dossiers": dossiers}
+    discovery = {
+        "discovery_database_identity": migration._database_identity(database),
+        "dossier_artifact_hash": migration._sha256_file(dossiers),
+    }
+    migration._verify_discovery_artifacts(paths, discovery)
+    dossiers.write_text('{"changed": true}', encoding="utf-8")
+    with pytest.raises(migration.MigrationError, match="artifact is missing or changed"):
+        migration._verify_discovery_artifacts(paths, discovery)
+
+
 def test_dossier_artifact_rejects_scope_mismatch_duplicates_and_unapproved_rows(tmp_path) -> None:
     scope = {"user_id": "test-user", "soul_id": "test-soul"}
     path = tmp_path / "dossiers.json"
@@ -263,7 +295,7 @@ async def test_interrupted_reset_rejects_changed_memories_even_when_taxonomy_is_
 
     monkeypatch.setattr(migration, "_configured_profiles", lambda _cfg: {"default": {}})
     monkeypatch.setattr(migration, "_model_identity", lambda _cfg, _profiles: MODEL_IDENTITY)
-    with pytest.raises(migration.MigrationError, match="verified backup is missing"):
+    with pytest.raises(migration.MigrationError, match="recovery backup is missing or changed"):
         await migration.apply_database(
             database,
             cfg={},
@@ -273,6 +305,22 @@ async def test_interrupted_reset_rejects_changed_memories_even_when_taxonomy_is_
         )
 
     backup.write_bytes(database.read_bytes())
+    manifest["apply"]["backup_identity"] = migration._database_identity(backup)
+    manifest["apply"]["backup_source_identity"] = manifest["source_identity"]
+    migration._atomic_write_json(paths["manifest"], manifest)
+    backup.write_bytes(b"corrupt")
+    with pytest.raises(migration.MigrationError, match="recovery backup is missing or changed"):
+        await migration.apply_database(
+            database,
+            cfg={},
+            work_dir=work_dir,
+            dossier_path=paths["dossiers"],
+            backup_dir=tmp_path,
+        )
+
+    backup.write_bytes(database.read_bytes())
+    manifest["apply"]["backup_identity"] = migration._database_identity(backup)
+    migration._atomic_write_json(paths["manifest"], manifest)
     with closing(sqlite3.connect(database)) as conn:
         conn.execute("UPDATE memory_items SET summary = ? WHERE id = ?", ("Changed", "memory-1"))
         conn.commit()
@@ -452,13 +500,46 @@ A neutral rehearsal memory {memory_ref.group(0)}.</body></section></prose_patche
     assert discovered["status"] == "awaiting_dossier_approval"
     assert database.read_bytes() == source_before
 
-    dossier_path = work_dir / "test-soul.dossiers.json"
+    completed_discovery = await migration.discover_database(
+        database, cfg={}, work_dir=work_dir, seed_path=seed_path
+    )
+    assert completed_discovery["status"] == "complete"
+    seed_payload = migration._read_json(seed_path)
+    seed_payload["dossiers"][0]["description"] = "Changed seed identity."
+    migration._atomic_write_json(seed_path, seed_payload)
+    with pytest.raises(migration.MigrationError, match="seed dossiers changed"):
+        await migration.discover_database(
+            database, cfg={}, work_dir=work_dir, seed_path=seed_path
+        )
+    seed_payload["dossiers"][0]["description"] = "A brief about daily life."
+    migration._atomic_write_json(seed_path, seed_payload)
+
+    dossier_path = Path(discovered["dossiers"])
+    manifest_path = Path(discovered["manifest"])
+    real_scan = migration.scan_database
+    scan_count = 0
+
+    def drift_on_final_scan(path):
+        nonlocal scan_count
+        report = real_scan(path)
+        if Path(path).resolve() == database.resolve():
+            scan_count += 1
+            if scan_count == 3:
+                report["active_memory_identity"] = {"count": 2, "sha256": "changed"}
+        return report
+
+    monkeypatch.setattr(migration, "scan_database", drift_on_final_scan)
+    with pytest.raises(migration.MigrationError, match="active memory set changed during apply"):
+        await migration.apply_database(
+            database,
+            cfg={},
+            work_dir=work_dir,
+            dossier_path=dossier_path,
+            backup_dir=backup_dir,
+        )
+    monkeypatch.setattr(migration, "scan_database", real_scan)
     applied = await migration.apply_database(
-        database,
-        cfg={},
-        work_dir=work_dir,
-        dossier_path=dossier_path,
-        backup_dir=backup_dir,
+        database, cfg={}, work_dir=work_dir, dossier_path=dossier_path, backup_dir=backup_dir
     )
     assert applied["validation"]["ok"] is True
     assert applied["validation"]["uncategorized_memories"] == 0
@@ -468,7 +549,7 @@ A neutral rehearsal memory {memory_ref.group(0)}.</body></section></prose_patche
     with closing(sqlite3.connect(database)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM categories WHERE id = ?", (legacy.id,)).fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM category_items WHERE category_id = ?", (legacy.id,)).fetchone()[0] == 0
-    manifest = migration._read_json(work_dir / "test-soul.taxonomy-migration.json")
+    manifest = migration._read_json(manifest_path)
     assert manifest["apply"]["seeded"] is True
 
     build_count = builds

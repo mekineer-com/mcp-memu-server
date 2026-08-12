@@ -27,9 +27,13 @@ from app.config import (
 )
 
 
-MIGRATION_VERSION = 1
+MIGRATION_VERSION = 2
 MAX_PROMPT_TOKENS = 90_000
 DOSSIER_KINDS = {"lore", "topic", "goal"}
+OFFLINE_RECOVERY = (
+    "Keep every database writer stopped until apply validates successfully; "
+    "after an interruption, retry apply or restore the recorded backup manually."
+)
 SCOPED_TABLES = (
     "memory_items",
     "categories",
@@ -177,6 +181,16 @@ def _sha256_file(path: Path) -> str:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _sha256_json(payload: Any) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _database_identity(path: Path, *, include_hash: bool = True) -> dict[str, Any]:
@@ -394,8 +408,10 @@ def _render_memory(row: Mapping[str, Any]) -> str:
     return f"{_memory_ref(row)} | {_memory_day(row)} | {row.get('memory_type')}\n{summary}"
 
 
-def _estimate_tokens(text: str) -> float:
-    return len(text.split()) / 0.75
+def _estimate_tokens(text: str) -> int:
+    from memu.app.dossier_revision import estimate_prompt_tokens
+
+    return estimate_prompt_tokens(text)
 
 
 def _prompt_batches(
@@ -415,6 +431,8 @@ def _prompt_batches(
             raise MigrationError(f"single memory exceeds the {MAX_PROMPT_TOKENS}-token prompt limit")
         batches.append(current)
         current = [row]
+        if _estimate_tokens(system_prompt + "\n" + render_user(current)) > MAX_PROMPT_TOKENS:
+            raise MigrationError(f"single memory exceeds the {MAX_PROMPT_TOKENS}-token prompt limit")
     if current:
         batches.append(current)
     return batches
@@ -475,18 +493,14 @@ def _parse_taxonomy_output(
 
 
 def _prompt_hash(system_prompt: str, user_prompt: str, model_identity: Mapping[str, Any]) -> str:
-    payload = json.dumps(
+    return _sha256_json(
         {
             "contract_version": MIGRATION_VERSION,
             "model": model_identity,
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+        }
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _migration_cluster_id(candidate_ids: Sequence[str]) -> str:
@@ -677,16 +691,22 @@ def _timestamped_backup(path: Path, backup_dir: Path) -> Path:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     destination = backup_dir / f"{path.stem}-pre-taxonomy-{stamp}{path.suffix or '.db'}"
     _sqlite_backup(path, destination)
-    if not destination.is_file() or destination.stat().st_size == 0:
-        raise MigrationError(f"backup verification failed: {destination}")
-    with closing(_open_read_only(destination)) as conn:
-        if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-            raise MigrationError(f"backup integrity check failed: {destination}")
+    _verify_sqlite_file(destination, label="backup")
     return destination
 
 
+def _verify_sqlite_file(path: Path, *, label: str) -> None:
+    if not path.is_file() or path.stat().st_size == 0:
+        raise MigrationError(f"{label} verification failed: {path}")
+    with closing(_open_read_only(path)) as conn:
+        if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise MigrationError(f"{label} integrity check failed: {path}")
+
+
 def _artifact_paths(database: Path, work_dir: Path) -> dict[str, Path]:
-    stem = database.expanduser().resolve().stem
+    resolved = database.expanduser().resolve()
+    source_key = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:8]
+    stem = f"{resolved.stem}-{source_key}"
     return {
         "manifest": work_dir / f"{stem}.taxonomy-migration.json",
         "dossiers": work_dir / f"{stem}.dossiers.json",
@@ -719,6 +739,30 @@ def _new_manifest(
         },
         "pending_operation": None,
     }
+
+
+def _verify_discovery_artifacts(paths: Mapping[str, Path], discovery: Mapping[str, Any]) -> None:
+    dossier_hash = discovery.get("dossier_artifact_hash")
+    if not paths["dossiers"].is_file() or _sha256_file(paths["dossiers"]) != dossier_hash:
+        raise MigrationError("completed discovery dossier artifact is missing or changed")
+    expected_database = discovery.get("discovery_database_identity")
+    if not isinstance(expected_database, dict) or _database_identity(paths["discovery_db"]) != expected_database:
+        raise MigrationError("completed discovery database is missing or changed")
+    _verify_sqlite_file(paths["discovery_db"], label="discovery database")
+
+
+def _verify_recovery_backup(manifest: Mapping[str, Any], apply_state: Mapping[str, Any]) -> None:
+    path = Path(str(apply_state.get("backup") or ""))
+    expected = apply_state.get("backup_identity")
+    if (
+        apply_state.get("backup_source_identity") != manifest.get("source_identity")
+        or not isinstance(expected, dict)
+        or not path.is_file()
+    ):
+        raise MigrationError(f"recorded recovery backup is missing or changed. {OFFLINE_RECOVERY}")
+    if _database_identity(path) != expected:
+        raise MigrationError(f"recorded recovery backup is missing or changed. {OFFLINE_RECOVERY}")
+    _verify_sqlite_file(path, label="recovery backup")
 
 
 def _load_manifest(path: Path, database: Path, scope: Mapping[str, str]) -> dict[str, Any]:
@@ -871,7 +915,9 @@ async def _cached_taxonomy_batch(
     input_hash = _prompt_hash(system_prompt, user_prompt, model_identity)
     if index < len(entries):
         entry = entries[index]
-        if entry.get("input_hash") != input_hash or entry.get("memory_refs") != expected_refs:
+        if entry.get("memory_refs") != expected_refs:
+            raise MigrationError(f"cached taxonomy batch {index + 1} no longer matches its input memories")
+        if not entry.get("committed") and entry.get("input_hash") != input_hash:
             raise MigrationError(f"cached taxonomy batch {index + 1} no longer matches its exact prompt")
         raw = str(entry.get("raw_output") or "")
         return _parse_taxonomy_output(raw, expected_refs, allowed_titles=allowed_titles), entry
@@ -943,12 +989,17 @@ async def discover_database(
     model_identity = _model_identity(cfg, profiles)
     paths = _artifact_paths(database, work_dir)
     seeds = _validate_dossiers(seed_path, scope, require_approved=True) if seed_path else []
+    seed_hash = _sha256_json(seeds)
 
     if paths["manifest"].exists():
         manifest = _load_manifest(paths["manifest"], database, scope)
         if manifest.get("model_identity") != model_identity:
             raise MigrationError("configured taxonomy migration model changed")
+        if manifest.get("seed_dossier_hash") != seed_hash:
+            raise MigrationError("seed dossiers changed since discovery began")
         if manifest["discovery"].get("complete"):
+            _verify_source_identity(manifest, report)
+            _verify_discovery_artifacts(paths, manifest["discovery"])
             return {
                 "status": "complete",
                 "manifest": str(paths["manifest"]),
@@ -966,6 +1017,7 @@ async def discover_database(
     else:
         _sqlite_backup(database, paths["discovery_db"])
         manifest = _new_manifest(database, report, scope, model_identity)
+        manifest["seed_dossier_hash"] = seed_hash
         _atomic_write_json(paths["manifest"], manifest)
 
     discovery = manifest["discovery"]
@@ -1116,6 +1168,11 @@ async def discover_database(
             "dossiers": dossier_rows,
         }
         _atomic_write_json(paths["dossiers"], artifact)
+        _close_service(service)
+        service = None
+        _checkpoint_stopped_database(paths["discovery_db"])
+        discovery["dossier_artifact_hash"] = _sha256_file(paths["dossiers"])
+        discovery["discovery_database_identity"] = _database_identity(paths["discovery_db"])
         discovery["complete"] = True
         _atomic_write_json(paths["manifest"], manifest)
         return {
@@ -1201,16 +1258,20 @@ async def apply_database(
 
     _checkpoint_stopped_database(database)
     report = scan_database(database)
+    if manifest.get("active_memory_identity") != report.get("active_memory_identity"):
+        raise MigrationError(f"active memory set changed since discovery. {OFFLINE_RECOVERY}")
+    if apply_state.get("backup"):
+        _verify_recovery_backup(manifest, apply_state)
     if not apply_state.get("reset"):
         if manifest.get("pending_operation") != "target_reset":
             _verify_source_identity(manifest, report)
             backup = _timestamped_backup(database, backup_dir.expanduser().resolve())
             manifest["dossier_artifact_hash"] = dossier_hash
             apply_state["backup"] = str(backup)
+            apply_state["backup_identity"] = _database_identity(backup)
+            apply_state["backup_source_identity"] = report["identity"]
             _set_pending(paths["manifest"], manifest, "target_reset")
         else:
-            if not Path(str(apply_state.get("backup") or "")).is_file():
-                raise MigrationError("target reset was interrupted and its verified backup is missing")
             taxonomy_is_empty = (
                 not report["categories"]
                 and report["category_links"] == 0
@@ -1326,9 +1387,13 @@ async def apply_database(
     finally:
         _close_service(service)
 
+    _checkpoint_stopped_database(database)
+    final_report = scan_database(database)
+    if manifest.get("active_memory_identity") != final_report.get("active_memory_identity"):
+        raise MigrationError(f"active memory set changed during apply. {OFFLINE_RECOVERY}")
     validation = validate_database(database, dossier_path=dossier_path)
     if not validation["ok"]:
-        raise MigrationError("target apply committed but validation failed; keep services stopped")
+        raise MigrationError(f"target apply committed but validation failed. {OFFLINE_RECOVERY}")
     apply_state["complete"] = True
     _atomic_write_json(paths["manifest"], manifest)
     return {
@@ -1525,7 +1590,11 @@ def _parser() -> argparse.ArgumentParser:
     discover.add_argument("database", type=Path)
     discover.add_argument("--seed-dossiers", type=Path)
 
-    apply_parser = subparsers.add_parser("apply", help="reset and rebuild one stopped target database")
+    apply_parser = subparsers.add_parser(
+        "apply",
+        help="reset and rebuild one stopped target database",
+        description=OFFLINE_RECOVERY,
+    )
     apply_parser.add_argument("database", type=Path)
     apply_parser.add_argument("--dossiers", type=Path)
     apply_parser.add_argument("--backup-dir", type=Path)
@@ -1602,6 +1671,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = asyncio.run(_run(args))
     except (MigrationError, OSError, sqlite3.Error, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        if args.phase == "apply" and OFFLINE_RECOVERY not in str(exc):
+            print(OFFLINE_RECOVERY, file=sys.stderr)
         return 1
     print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True, default=str))
     if isinstance(result, dict) and result.get("ok") is False:
