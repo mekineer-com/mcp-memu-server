@@ -28,7 +28,7 @@ from app.config import (
 
 
 MIGRATION_VERSION = 2
-MAX_PROMPT_TOKENS = 90_000
+MAX_PROMPT_TOKENS = 40_000
 DOSSIER_KINDS = {"lore", "topic", "goal"}
 OFFLINE_RECOVERY = (
     "Keep every database writer stopped until apply validates successfully; "
