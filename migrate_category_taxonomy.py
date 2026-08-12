@@ -399,14 +399,16 @@ def _memory_ref(row: Mapping[str, Any]) -> str:
     return f"[M{value}]"
 
 
-def _memory_day(row: Mapping[str, Any]) -> str:
-    value = str(row.get("happened_at") or row.get("created_at") or "").strip()
-    return value[:10] if len(value) >= 10 else "unknown"
-
-
 def _render_memory(row: Mapping[str, Any]) -> str:
-    summary = " ".join(str(row.get("summary") or "").split())
-    return f"{_memory_ref(row)} | {_memory_day(row)} | {row.get('memory_type')}\n{summary}"
+    from memu.app.dossier_revision import render_memory_record
+
+    _memory_ref(row)
+    return render_memory_record(
+        int(row["memory_ref"]),
+        str(row.get("memory_type") or "memory"),
+        row.get("happened_at") or row.get("created_at"),
+        str(row.get("summary") or ""),
+    )
 
 
 def _estimate_tokens(text: str) -> int:
