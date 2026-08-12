@@ -26,6 +26,8 @@ CREATE TABLE soul_state (
     id INTEGER PRIMARY KEY,
     narrative_self TEXT,
     all_categories_summary TEXT,
+    all_categories_summary_previous TEXT,
+    all_categories_summary_approved TEXT,
     memory_cache JSON DEFAULT '[]',
     intentions_active JSON,
     retrieve_rewrite_angle INTEGER DEFAULT 0,
@@ -39,7 +41,9 @@ CREATE TABLE soul_state (
 """
     )
     con.execute(
-        "INSERT INTO soul_state (id, narrative_self, all_categories_summary) VALUES (1, 'old self', 'old cats')"
+        "INSERT INTO soul_state (id, narrative_self, all_categories_summary, "
+        "all_categories_summary_previous, all_categories_summary_approved) "
+        "VALUES (1, 'old self', 'old cats', 'older cats', 'approved cats')"
     )
     con.commit()
     soul_state.ensure_schema(con)
@@ -50,6 +54,11 @@ CREATE TABLE soul_state (
     state = soul_state.read(check)
     assert state["narrative_self_approved"] == "old self"
     assert "all_categories_summary" not in state
+    legacy_values = check.execute(
+        "SELECT all_categories_summary, all_categories_summary_previous, "
+        "all_categories_summary_approved FROM soul_state WHERE id = 1"
+    ).fetchone()
+    assert tuple(legacy_values) == ("old cats", "older cats", "approved cats")
     check.execute("UPDATE soul_state SET narrative_self = 'new self' WHERE id = 1")
     check.commit()
     soul_state.ensure_schema(check)
@@ -70,6 +79,25 @@ def test_schema_ensure_commits_missing_singleton_row(tmp_path) -> None:
     check = sqlite3.connect(path)
     assert check.execute("SELECT COUNT(*) FROM soul_state").fetchone()[0] == 1
     check.close()
+
+
+def test_fresh_schema_omits_holistic_summary_columns() -> None:
+    con = _connection()
+    columns = {row[1] for row in con.execute("PRAGMA table_info(soul_state)")}
+
+    assert not {
+        "all_categories_summary",
+        "all_categories_summary_previous",
+        "all_categories_summary_approved",
+    } & columns
+
+
+@pytest.mark.parametrize("route", [main.soul_summary_update, main.soul_summary_approve])
+def test_dossier_index_routes_are_read_only(route) -> None:
+    with pytest.raises(main.HTTPException) as exc_info:
+        asyncio.run(route(kind="all_categories_summary", user_id="u", soul_id="s", payload={}))
+
+    assert exc_info.value.status_code == 409
 
 
 def test_soul_summary_write_approve_and_journal(monkeypatch, tmp_path) -> None:

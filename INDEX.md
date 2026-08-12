@@ -3,6 +3,8 @@
 > This file exists so agents can orient themselves without scanning the tree.
 > `.claudeignore` blocks auto-scan of this directory — read this first.
 
+`# Marcos' reminder: a category is a dossier.`
+
 ## Layout
 
 ```

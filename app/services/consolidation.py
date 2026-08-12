@@ -296,6 +296,7 @@ def _format_dossier_revision_blocks(bundles: Sequence[dict[str, Any]]) -> str:
     return "\n\n".join(blocks)
 
 
+# Marcos' reminder: a category is a dossier.
 async def prepare_dossier_consolidation_context(
     svc: MemoryService,
     *,
