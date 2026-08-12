@@ -546,6 +546,12 @@ A neutral rehearsal memory {memory_ref.group(0)}.</body></section></prose_patche
     assert applied["validation"]["dossiers"] == 1
     assert applied["validation"]["pending_dossier_approvals"] == ["Daily Life"]
     assert migration.scan_database(database)["anchors"] == 2
+    reopened = MemoryService(
+        database_config={"metadata_store": {"provider": "sqlite", "dsn": f"sqlite:///{database}"}},
+        user_config={"model": _Scope},
+    )
+    reopened.require_dossier_cutover_ready(scope)
+    reopened.database.close()
     with closing(sqlite3.connect(database)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM categories WHERE id = ?", (legacy.id,)).fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM category_items WHERE category_id = ?", (legacy.id,)).fetchone()[0] == 0
