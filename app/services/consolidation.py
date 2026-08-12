@@ -58,11 +58,6 @@ def _segment_file_sort_key(path: Path) -> tuple[str, int]:
     return (stem, 0)
 
 
-_HEX_MEMORY_ID_RE = re.compile(r"^[0-9a-f]{8}$|^[0-9a-f]{16}$|^[0-9a-f]{32}$", re.IGNORECASE)
-_UUID_MEMORY_ID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-    re.IGNORECASE,
-)
 _INTENTION_ID_SANITIZE_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -137,6 +132,16 @@ def _parse_reflection_xml(
     first_time: bool,
 ) -> dict[str, Any]:
     root = extract_xml_fragment(raw, "reflection")
+    known_sections = {
+        "narrative_self", "anchor_revisions", "life_goals", "intentions",
+        "edges", "companion_memory", "companion_shaped_by_hints",
+    }
+    for section in known_sections:
+        if len(root.findall(section)) > 1:
+            raise ValueError(f"Reflection has duplicate {section} elements")
+    for child in root:
+        if child.tag not in known_sections:
+            log.warning("consolidation: ignored unknown reflection element %s", child.tag)
     narrative_self = xml_text(root, "narrative_self")
     if not narrative_self:
         raise ValueError("Reflection requires narrative_self")
@@ -171,6 +176,7 @@ def _parse_reflection_xml(
             predicate = str(xml_text(edge_node, "predicate") or "").strip()
             object_id = str(xml_text(edge_node, "object_id") or "").strip()
             if not subject_id or not predicate or not object_id:
+                log.warning("consolidation: ignored edge with missing required field")
                 continue
             confidence_text = xml_text(edge_node, "confidence")
             confidence: float | None
@@ -178,7 +184,8 @@ def _parse_reflection_xml(
                 try:
                     confidence = float(confidence_text)
                 except ValueError:
-                    confidence = None
+                    log.warning("consolidation: ignored edge with invalid confidence")
+                    continue
             else:
                 confidence = None
             edge_payload: dict[str, Any] = {
@@ -194,6 +201,7 @@ def _parse_reflection_xml(
             predicate = str(xml_text(invalidate_node, "predicate") or "").strip()
             object_id = str(xml_text(invalidate_node, "object_id") or "").strip()
             if not subject_id or not predicate or not object_id:
+                log.warning("consolidation: ignored edge invalidation with missing required field")
                 continue
             edge_invalidations.append(
                 {
@@ -614,13 +622,6 @@ def _build_consolidation_prompt_context(
     }
 
 
-def _looks_like_memory_id(value: str) -> bool:
-    text = str(value or "").strip()
-    if not text:
-        return False
-    return bool(_HEX_MEMORY_ID_RE.fullmatch(text) or _UUID_MEMORY_ID_RE.fullmatch(text))
-
-
 def _resolve_memory_ref(raw_value: Any, id_map: dict[str, str]) -> str | None:
     text = str(raw_value or "").strip()
     if not text:
@@ -646,9 +647,6 @@ def _resolve_memory_ref(raw_value: Any, id_map: dict[str, str]) -> str | None:
         if mapped_hash:
             return mapped_hash
 
-    # Fall back to direct memory IDs when model emits raw IDs from context.
-    if _looks_like_memory_id(text):
-        return text
     return None
 
 
@@ -1104,6 +1102,7 @@ def write_consolidation_outputs(
     soul_id: str,
     user_id: str,
 ) -> dict[str, Any]:
+    # ponytail: rare partial-write retries may duplicate outputs; add idempotency if observed.
     db_path: Path = inputs["db_path"]
     now_iso = datetime.now(UTC).isoformat()
 
@@ -1206,6 +1205,7 @@ INSERT INTO life_goals (
     from app.services.intention_state import (
         apply_intention_action,
         drop_unpromoted_ephemeral_intentions,
+        normalize_intentions_stack,
         remove_intentions,
         upsert_intentions_stack_entries,
     )
@@ -1214,12 +1214,45 @@ INSERT INTO life_goals (
     current_state = _soul_state.read(_con)
     _con.close()
     current_intentions = current_state.get("intentions_active")
+    current_items = {
+        str(item.get("id") or "").strip(): item
+        for item in normalize_intentions_stack(current_intentions).get("items") or []
+    }
+    intention_actions: list[dict[str, Any]] = []
+    create_count = 0
+    promote_count = 0
+    for action in llm_results.get("intention_actions") or []:
+        atype = str(action.get("type") or "").strip()
+        target_id = str(action.get("target_id") or action.get("intention_id") or "").strip()
+        if atype in {"boost", "promote", "annul"} and (
+            target_id.lower() == RELAX_INTENTION_ID or target_id not in current_items
+        ):
+            log.warning("consolidation: ignored %s for unknown intention %s", atype, target_id)
+            continue
+        if atype == "annul" and str(action.get("status") or "") not in {"completed", "deleted"}:
+            log.warning("consolidation: ignored annul with invalid status")
+            continue
+        if atype == "promote" and (
+            promote_count or current_items.get(target_id, {}).get("ephemeral") is not True
+        ):
+            log.warning("consolidation: ignored invalid promotion for %s", target_id)
+            continue
+        if atype == "create":
+            new_id = str(action.get("id") or "").strip()
+            if create_count >= 2 or new_id in current_items:
+                log.warning("consolidation: ignored invalid intention creation")
+                continue
+            create_count += 1
+        elif atype == "promote":
+            promote_count += 1
+        intention_actions.append(action)
     promoted_ids = {
         str(action.get("target_id") or "").strip()
-        for action in (llm_results.get("intention_actions") or [])
+        for action in intention_actions
         if str(action.get("type") or "").strip() == "promote"
     }
-    current_intentions = drop_unpromoted_ephemeral_intentions(current_intentions, promoted_ids)
+    if intention_actions:
+        current_intentions = drop_unpromoted_ephemeral_intentions(current_intentions, promoted_ids)
 
     if inputs.get("last_consolidation_at") is None:
         current_intentions = upsert_intentions_stack_entries(
@@ -1227,7 +1260,7 @@ INSERT INTO life_goals (
             [{"id": "optimize-happiness", "text": "Optimize happiness for myself and those I love.", "ephemeral": False}],
         )
 
-    for action in llm_results.get("intention_actions") or []:
+    for action in intention_actions:
         atype = str(action.get("type") or "").strip()
         if atype == "boost":
             current_intentions = apply_intention_action(current_intentions, action)

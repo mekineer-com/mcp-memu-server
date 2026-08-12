@@ -1012,6 +1012,28 @@ async def test_run_consolidation_task_repeats_until_pending_span_is_short(monkey
 
 
 @pytest.mark.asyncio
+async def test_consolidation_task_does_not_clear_unacquired_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    cleared = False
+
+    async def fail_before_acquire(**_kwargs):
+        raise RuntimeError("preflight failed")
+
+    async def fake_clear(**_kwargs):
+        nonlocal cleared
+        cleared = True
+
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", fail_before_acquire)
+    monkeypatch.setattr(main, "_clear_consolidation_in_progress", fake_clear)
+
+    out = await main._run_consolidation_task(
+        object(), conversation_id="cid-owner", soul_id="SoulOwner", uid="UserOwner"
+    )
+
+    assert out["status"] == "error"
+    assert cleared is False
+
+
+@pytest.mark.asyncio
 async def test_turn_launch_apimw_tracks_background_task(monkeypatch: pytest.MonkeyPatch) -> None:
     release = asyncio.Event()
 

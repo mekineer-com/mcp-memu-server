@@ -1822,6 +1822,7 @@ async def _run_consolidation_pipeline_once(
     conversation_id: str,
     soul_id: str,
     user_id: str,
+    marker_acquired: asyncio.Event,
     force: bool = False,
 ) -> dict[str, Any]:
     consolidation_profile = _resolve_profile_if_configured(svc, "consolidation")
@@ -1838,6 +1839,7 @@ async def _run_consolidation_pipeline_once(
         )
     if prep.get("status") == "skip":
         return {"status": "skipped", "reason": prep.get("reason")}
+    marker_acquired.set()
     current_chat_messages = [
         row for row in (prep.get("current_chat_messages") or [])
         if isinstance(row, dict)
@@ -1900,11 +1902,11 @@ async def _run_consolidation_task(
         )
     deps = _make_consolidation_deps()
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
-    pipeline_started = False
+    marker_acquired = asyncio.Event()
     try:
         completed = 0
         while True:
-            pipeline_started = True
+            marker_acquired.clear()
             out = await _run_consolidation_pipeline_once(
                 svc=svc,
                 deps=deps,
@@ -1912,6 +1914,7 @@ async def _run_consolidation_task(
                 conversation_id=conversation_id,
                 soul_id=soul_id,
                 user_id=uid,
+                marker_acquired=marker_acquired,
                 force=False,
             )
             if out.get("status") == "skipped":
@@ -1948,7 +1951,7 @@ async def _run_consolidation_task(
         return {"ok": True, "status": "ok"}
     except Exception as exc:
         logger.exception("consolidation failed (non-fatal)")
-        if pipeline_started:
+        if marker_acquired.is_set():
             await _clear_consolidation_in_progress(
                 state_lock=state_lock,
                 conversation_id=conversation_id,
@@ -2127,7 +2130,7 @@ async def force_consolidation(
     uid = ""
     soul_id = ""
     state_lock: asyncio.Lock | None = None
-    pipeline_started = False
+    marker_acquired = asyncio.Event()
     try:
         safe = _safe_payload(payload)
         scope = _extract_scope(safe)
@@ -2142,7 +2145,6 @@ async def force_consolidation(
         svc = _get_service_from_payload(safe)
 
         state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
-        pipeline_started = True
         out = await _run_consolidation_pipeline_once(
             svc=svc,
             deps=_make_consolidation_deps(),
@@ -2150,6 +2152,7 @@ async def force_consolidation(
             conversation_id=cid,
             soul_id=soul_id,
             user_id=uid,
+            marker_acquired=marker_acquired,
             force=True,
         )
         if out.get("status") == "skipped":
@@ -2169,7 +2172,7 @@ async def force_consolidation(
         )
         return {"ok": True, "status": "completed", "result": result}
     except HTTPException as exc:
-        if pipeline_started and exc.status_code >= 500:
+        if marker_acquired.is_set() and exc.status_code >= 500:
             await _clear_consolidation_in_progress(
                 state_lock=state_lock,
                 conversation_id=cid,
@@ -2182,7 +2185,7 @@ async def force_consolidation(
         raise
     except Exception as exc:
         logger.exception("consolidation.force failed: %s", exc)
-        if pipeline_started:
+        if marker_acquired.is_set():
             await _clear_consolidation_in_progress(
                 state_lock=state_lock,
                 conversation_id=cid,

@@ -390,6 +390,15 @@ def test_first_reflection_requires_narrative_self() -> None:
         _parse_reflection_xml("<reflection></reflection>", {}, first_time=False)
 
 
+def test_reflection_rejects_duplicate_state_sections() -> None:
+    with pytest.raises(ValueError, match="duplicate narrative_self"):
+        _parse_reflection_xml(
+            "<reflection><narrative_self>one</narrative_self><narrative_self>two</narrative_self></reflection>",
+            {},
+            first_time=False,
+        )
+
+
 def test_first_reflection_includes_reseeded_blank_anchor() -> None:
     inputs = {
         "narrative_self": "I already know myself.",
@@ -489,10 +498,19 @@ def test_remap_edges_with_memory_ids_accepts_numbered_and_bracketed_refs() -> No
     ]
 
 
-def test_remap_edges_with_memory_ids_drops_unresolved_ids() -> None:
-    payload = [{"subject_id": "partner-marker", "predicate": "shaped_by", "object_id": "52"}]
+def test_remap_edges_with_memory_ids_rejects_unreviewed_raw_ids() -> None:
+    payload = [{"subject_id": "deadbeef", "predicate": "shaped_by", "object_id": "cafebabe"}]
     mapped = _remap_edges_with_memory_ids(payload, id_map={}, include_confidence=False)
     assert mapped == []
+
+
+def test_write_memory_edges_ignores_invalid_confidence() -> None:
+    svc = _make_svc_stub()
+    assert write_memory_edges(
+        svc.database.triple_repo,
+        [{"subject_id": "m1", "predicate": "evokes", "object_id": "m2", "confidence": 2}],
+        scope={},
+    ) == 0
 
 
 def test_write_consolidation_outputs_preserves_remaining_pending_segment_ids() -> None:
@@ -862,7 +880,10 @@ def test_write_consolidation_outputs_created_ephemeral_survives_turns_until_next
         assert after_turn_items["new-thread"]["ephemeral"] is True
 
 
-def test_write_consolidation_outputs_drops_unpromoted_old_ephemeral() -> None:
+@pytest.mark.parametrize("intention_actions", [[], [{"type": "promote", "target_id": "fabricated"}]])
+def test_write_consolidation_outputs_preserves_intentions_on_missing_or_invalid_action(
+    intention_actions: list[dict[str, str]],
+) -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp_dir = Path(td)
         db_path = tmp_dir / "soul.db"
@@ -895,7 +916,7 @@ def test_write_consolidation_outputs_drops_unpromoted_old_ephemeral() -> None:
             _make_consolidation_deps(db_path, tmp_dir),
             _make_svc_stub(),
             inputs={"db_path": db_path, "last_consolidation_at": "2026-06-01T00:00:00+00:00"},
-            llm_results=_base_llm_results(),
+            llm_results=_base_llm_results(intention_actions=intention_actions),
             conversation_id="conv-drop-eph",
             soul_id="SoulE",
             user_id="UserE",
@@ -911,7 +932,7 @@ def test_write_consolidation_outputs_drops_unpromoted_old_ephemeral() -> None:
         finally:
             check_con.close()
 
-        assert "old-eph" not in items
+        assert "old-eph" in items
         assert "stable" in items
 
 
