@@ -3814,6 +3814,25 @@ def test_memory_graph_item_endpoint_uses_scoped_service(monkeypatch: pytest.Monk
     assert calls["where"] == {"user_id": "u", "soul_id": "s"}
 
 
+def test_memory_graph_category_detail_includes_summary_revision(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    path = tmp_path / "soul.db"
+    con = main._sqlite_connect(path)
+    main._soul_state.ensure_schema(con)
+    con.execute("UPDATE soul_state SET summaries_revision = 4")
+    con.commit()
+    con.close()
+
+    service = SimpleNamespace(
+        graph_memory=lambda _item_id, *, where: {"id": "category:c1", "summary": "shown"}
+    )
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
+
+    out = asyncio.run(main.memory_graph_item(item_id="category:c1", user_id="u", soul_id="s"))
+
+    assert out["summaries_revision"] == 4
+
+
 def test_memory_graph_item_update_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPatch):
     calls: dict[str, object] = {}
 

@@ -2719,6 +2719,14 @@ async def memory_graph_item(
     item = svc.graph_memory(item_id, where=scope)
     if item is None:
         raise HTTPException(status_code=404, detail="memory not found")
+    if item_id.startswith("category:"):
+        db_path = _sqlite_current_path(uid, sid)
+        if db_path is not None and db_path.exists():
+            con = _sqlite_connect(db_path)
+            try:
+                item = {**item, "summaries_revision": _soul_summaries.current_revision(con)}
+            finally:
+                con.close()
     return item
 
 
