@@ -1981,12 +1981,17 @@ def test_load_tail_for_source_conversation_uses_web_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
+    channels_home = tmp_path / "channels"
+    channels_home.mkdir()
+    (channels_home / "config.json").write_text(
+        json.dumps({"reply_prefix": "✦ *Siri*: "})
+    )
     monkeypatch.setitem(
         main._CONFIG,
         "hermes",
         {
+            "home": str(channels_home),
             "whatsapp_web_source_db": str(tmp_path / "web_source.db"),
-            "whatsapp_reply_prefix": "✦ *Siri*: ",
         },
     )
     monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: 100.0)

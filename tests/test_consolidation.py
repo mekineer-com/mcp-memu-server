@@ -310,6 +310,7 @@ async def test_reflection_resolves_edges_from_anchor_cited_memories() -> None:
     anchor_item = SimpleNamespace(
         id="anchor-memory",
         memory_ref=77,
+        memory_type="knowledge",
         summary="A remembered promise.",
         happened_at=cited_at,
         created_at=cited_at,

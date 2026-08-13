@@ -60,7 +60,14 @@ def _resolve_whatsapp_web_source_config() -> tuple[Path | None, str]:
     hermes_cfg = _m()._CONFIG.get("hermes") if isinstance(_m()._CONFIG.get("hermes"), dict) else {}
     db_raw = str(hermes_cfg.get("whatsapp_web_source_db") or "").strip()
     db_path = Path(db_raw).expanduser().resolve() if db_raw else None
-    reply_prefix = str(hermes_cfg.get("whatsapp_reply_prefix") or "")
+    home_raw = str(hermes_cfg.get("home") or "").strip()
+    channels_config = Path(home_raw).expanduser().resolve() / "config.json" if home_raw else None
+    channels_cfg = (
+        json.loads(channels_config.read_text())
+        if channels_config and channels_config.exists()
+        else {}
+    )
+    reply_prefix = str(channels_cfg.get("reply_prefix") or "")
     return db_path, reply_prefix
 
 

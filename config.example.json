@@ -43,8 +43,7 @@
   },
   "hermes": {
     "home": "../hermes-channels/data",
-    "whatsapp_web_source_db": "../hermes-channels/data/whatsapp/web_source.db",
-    "whatsapp_reply_prefix": ""
+    "whatsapp_web_source_db": "../hermes-channels/data/whatsapp/web_source.db"
   },
   "mcp": {
     "http_path": "/mcp",

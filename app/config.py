@@ -90,7 +90,6 @@ def default_config() -> dict[str, Any]:
             "state_db_path": str(channels_data / "state.db"),
             "sessions_index_path": str(channels_data / "sessions" / "sessions.json"),
             "whatsapp_web_source_db": str(channels_data / "whatsapp" / "web_source.db"),
-            "whatsapp_reply_prefix": "",
         },
         "categories": {
             "dynamic_category_cluster_size": 10,
