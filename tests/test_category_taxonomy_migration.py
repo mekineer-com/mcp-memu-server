@@ -79,6 +79,18 @@ def test_inventory_is_read_only_and_reports_scope(tmp_path) -> None:
     assert report["vector_storage"]["memory_items"] == {"blob": 1}
 
 
+def test_migration_memory_render_is_date_stable() -> None:
+    row = {
+        "id": "memory-1",
+        "memory_ref": 1,
+        "memory_type": "knowledge",
+        "summary": "A stable memory.",
+        "happened_at": "2026-08-01T10:00:00",
+    }
+
+    assert migration._render_memory(row) == "[M1] [knowledge] (2026-08-01) A stable memory."
+
+
 def test_taxonomy_parser_requires_exact_complete_refs_and_supplied_assignment_titles() -> None:
     raw = """<taxonomy_memories>
   <memory ref="[M1]"><categories><category>Shared Adventures</category></categories></memory>

@@ -402,12 +402,13 @@ def _memory_ref(row: Mapping[str, Any]) -> str:
 def _render_memory(row: Mapping[str, Any]) -> str:
     from memu.app.dossier_revision import render_memory_record
 
-    _memory_ref(row)
+    memory_ref = _memory_ref(row)
     return render_memory_record(
-        int(row["memory_ref"]),
+        int(memory_ref[2:-1]),
         str(row.get("memory_type") or "memory"),
         row.get("happened_at") or row.get("created_at"),
         str(row.get("summary") or ""),
+        include_relative=False,
     )
 
 
@@ -1352,7 +1353,9 @@ async def apply_database(
         while due := service.list_due_dossiers(scope):
             dossier = due[0]
             bundle = service.prepare_dossier_revision(dossier.id, scope)
-            system_prompt, user_prompt = render_dossier_revision_prompts(bundle)
+            system_prompt, user_prompt = render_dossier_revision_prompts(
+                bundle, include_relative=False
+            )
             input_hash = _prompt_hash(system_prompt, user_prompt, model_identity)
             entry = next((row for row in revision_entries if row.get("dossier_id") == dossier.id), None)
             if entry is not None:
