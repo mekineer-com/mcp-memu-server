@@ -3856,10 +3856,6 @@ def test_memory_graph_pending_endpoint_uses_scoped_service(monkeypatch: pytest.M
             calls["where"] = where
             return {"items": [], "categories": []}
 
-        def build_dossier_index(self, where):
-            assert where == {"user_id": "u", "soul_id": "s"}
-            return "- Joy: What lights me up"
-
     def _fake_service(payload):
         calls["payload"] = payload
         return _Svc()
@@ -3871,18 +3867,7 @@ def test_memory_graph_pending_endpoint_uses_scoped_service(monkeypatch: pytest.M
     assert out == {
         "items": [],
         "categories": [],
-        "soul_summaries": [
-            {
-                "id": "soul-summary:all_categories_summary",
-                "kind": "all_categories_summary",
-                "label": "Dossier Index",
-                "summary": "- Joy: What lights me up",
-                "approved_summary": "- Joy: What lights me up",
-                "previous_summary": None,
-                "pending": False,
-                "read_only": True,
-            }
-        ],
+        "soul_summaries": [],
         "summaries_revision": 0,
     }
     assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}

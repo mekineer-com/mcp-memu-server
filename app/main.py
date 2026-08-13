@@ -2745,19 +2745,6 @@ async def memory_graph_pending(
             pending["summaries_revision"] = _soul_summaries.current_revision(con)
         finally:
             con.close()
-    dossier_index = svc.build_dossier_index(scope)
-    pending["soul_summaries"].append(
-        {
-            "id": "soul-summary:all_categories_summary",
-            "kind": "all_categories_summary",
-            "label": "Dossier Index",
-            "summary": dossier_index,
-            "approved_summary": dossier_index,
-            "previous_summary": None,
-            "pending": False,
-            "read_only": True,
-        }
-    )
     return pending
 
 

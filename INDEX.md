@@ -56,8 +56,8 @@ mcp-memu-server/
 | `/integration/atomic/session_end` | POST | Atomic session close: accepts transcript + `activity_recap`, posts to memU memorize |
 | `/integration/atomic/chat_profile` | GET | Atomic-facing LLM profile (includes API key — do not log) |
 | `/integration/atomic/prompt_log` | POST | Atomic prompt-log sink (writes to `mcp-memu-server.log` when `debug.log_prompts` enabled) |
-| `/integration/atomic/atoms` | GET | Paginated atom list; `category_id`/`tag_id` filter, `cursor` pagination |
-| `/integration/atomic/tags` | GET | Category/tag list with counts |
+| `/integration/atomic/atoms` | GET | Paginated atom list with canonical dossier metadata; `category_id`/`tag_id` filter, `cursor` pagination |
+| `/integration/atomic/tags` | GET | Category/tag list with kind, activity state, and counts |
 | `/integration/atomic/canvas-source` | GET/POST | Canvas source: all memories + categories; POST accepts `atom_ids[]` for subset rebuilds |
 | `/integration/atomic/neighborhood/{item_id}` | GET | Cosine-similar memory neighborhood |
 | `/integration/atomic/similar/{item_id}` | GET | Pure cosine-similarity graph (no DB expansion) |
@@ -71,7 +71,7 @@ mcp-memu-server/
 | `/souls/{soul_id}/relationships` | GET/POST | User-declared relationship entities |
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or soft-delete one relationship |
 | `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot |
-| `/pending` | GET | Review queue: unapproved memories/dossiers, persistent narrative self, and read-only deterministic dossier index |
+| `/pending` | GET | Review queue: unapproved memories/dossiers and persistent narrative self |
 | `/soul-summary/{kind}` | PATCH | Journal and approve an Atomic manual correction with snapshot guard |
 | `/soul-summary/{kind}/approve` | POST | Approve the displayed soul-summary value with snapshot guard |
 | `/memory/{item_id}/approve` | POST | Bless current memory value |
