@@ -2502,7 +2502,6 @@ def test_load_cross_tail_from_sources_fails_loud_for_broken_web_source(
             {
                 "home": "~/.hermes",
                 "whatsapp_web_source_db": "~/.hermes/whatsapp/web_source.db",
-                "whatsapp_reply_prefix": "",
             },
         )
         monkeypatch.setattr(

@@ -63,7 +63,7 @@ def _resolve_whatsapp_web_source_config() -> tuple[Path | None, str]:
     home_raw = str(hermes_cfg.get("home") or "").strip()
     channels_config = Path(home_raw).expanduser().resolve() / "config.json" if home_raw else None
     channels_cfg = (
-        json.loads(channels_config.read_text())
+        json.loads(channels_config.read_text(encoding="utf-8"))
         if channels_config and channels_config.exists()
         else {}
     )
