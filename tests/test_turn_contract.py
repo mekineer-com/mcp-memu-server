@@ -812,6 +812,26 @@ def test_render_retrieve_non_dict_logs_error_and_returns_empties(caplog) -> None
     assert any("_render_retrieve" in r.message for r in caplog.records)
 
 
+def test_retrieve_renders_all_items_selected_by_memu() -> None:
+    prompt = build_turn_prompt(
+        user_message="hello",
+        history=[],
+        prior_context=None,
+        retrieve_rag={
+            "categories": [],
+            "items": [
+                {"id": f"m{index}", "memory_type": "knowledge", "summary": f"memory {index}"}
+                for index in range(1, 14)
+            ],
+        },
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+    )
+
+    assert "memory 13" in prompt
+
+
 # --- attachment gate ---
 
 def test_parse_attachment_accepts_path_inside_workspace(tmp_path: Path) -> None:

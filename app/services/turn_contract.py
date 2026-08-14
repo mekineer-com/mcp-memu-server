@@ -442,7 +442,7 @@ def _render_retrieve(
     seen_items: set[str] = set()
     items = result.get("items")
     if isinstance(items, list):
-        for item in items[:12]:
+        for item in items:
             if not isinstance(item, dict):
                 continue
             memory_type = _text(item.get("memory_type") or "memory")
