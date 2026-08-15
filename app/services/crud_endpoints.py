@@ -37,6 +37,15 @@ def _normalize_relationship_text(raw: Any) -> str:
     return text
 
 
+def _relationship_aliases(payload: Mapping[str, Any]) -> list[str] | None:
+    if "aliases" not in payload:
+        return None
+    aliases = payload["aliases"]
+    if not isinstance(aliases, list):
+        raise HTTPException(status_code=400, detail="aliases must be a list")
+    return [str(alias or "").strip() for alias in aliases if str(alias or "").strip()]
+
+
 def _relationship_speaker_id(entity_id: str) -> str:
     return f"entity:{entity_id}"
 
@@ -340,6 +349,7 @@ async def create_relationship_endpoint(
     uid = str(payload.get("user_id") or "").strip()
     name = _normalize_relationship_name(payload.get("name"))
     relationship = _normalize_relationship_text(payload.get("relationship"))
+    aliases = _relationship_aliases(payload)
     entity_type = str(payload.get("entity_type") or "person").strip().lower() or "person"
     if entity_type not in {"person", "topic", "place", "project"}:
         raise HTTPException(status_code=400, detail="entity_type must be person/topic/place/project")
@@ -395,10 +405,13 @@ async def create_relationship_endpoint(
             where=scope,
             name=name,
             entity_type=entity_type,
+            aliases=aliases,
             property_updates=property_updates,
             property_removals=property_removals,
         )
     else:
+        if aliases is not None:
+            property_updates["aliases"] = aliases
         entity = repo.create(
             name,
             entity_type,
@@ -428,10 +441,15 @@ async def update_relationship_endpoint(
 
     name_raw = payload.get("name")
     relationship_raw = payload.get("relationship")
-    if name_raw is None and relationship_raw is None:
-        raise HTTPException(status_code=400, detail="name or relationship required")
+    entity_type_raw = payload.get("entity_type")
+    aliases = _relationship_aliases(payload)
+    if name_raw is None and relationship_raw is None and entity_type_raw is None and aliases is None:
+        raise HTTPException(status_code=400, detail="name, relationship, entity_type, or aliases required")
     next_name = _normalize_relationship_name(name_raw) if name_raw is not None else None
     next_relationship = _normalize_relationship_text(relationship_raw) if relationship_raw is not None else None
+    next_entity_type = str(entity_type_raw).strip().lower() if entity_type_raw is not None else None
+    if next_entity_type is not None and next_entity_type not in {"person", "topic", "place", "project"}:
+        raise HTTPException(status_code=400, detail="entity_type must be person/topic/place/project")
     svc = _assert_relationship_write_path(
         uid,
         sid,
@@ -456,6 +474,8 @@ async def update_relationship_endpoint(
         entity_id,
         where={"user_id": uid, "soul_id": sid},
         name=next_name,
+        entity_type=next_entity_type,
+        aliases=aliases,
         property_updates=property_updates,
         property_removals=property_removals,
     )

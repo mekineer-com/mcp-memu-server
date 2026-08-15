@@ -4152,6 +4152,8 @@ async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous
     ]
 
     class _Repo:
+        updated: dict[str, Any] | None = None
+
         def list_by_ids(self, entity_ids, _scope):
             return [entity for entity in entities if entity.id in entity_ids]
 
@@ -4159,6 +4161,7 @@ async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous
             return entities
 
         def update(self, entity_id, **kwargs):
+            self.updated = kwargs
             entity = next(entity for entity in entities if entity.id == entity_id)
             return SimpleNamespace(
                 id=entity.id,
@@ -4167,7 +4170,8 @@ async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous
                 properties={"origin": "user_declared", "active": True},
             )
 
-    service = SimpleNamespace(database=SimpleNamespace(entity_repo=_Repo()))
+    repo = _Repo()
+    service = SimpleNamespace(database=SimpleNamespace(entity_repo=repo))
     common = {
         "soul_id": "test-soul",
         "get_service_from_payload": lambda _payload: service,
@@ -4176,10 +4180,18 @@ async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous
         "json_from_db": main._json_from_db,
     }
     selected = await crud_endpoints.create_relationship_endpoint(
-        payload={"user_id": "test-user", "name": "Taylor", "entity_id": "b2c3d4e5"},
+        payload={
+            "user_id": "test-user",
+            "name": "Taylor",
+            "entity_id": "b2c3d4e5",
+            "entity_type": "person",
+            "aliases": ["Tay"],
+        },
         **common,
     )
     assert selected["speaker_id"] == "entity:b2c3d4e5"
+    assert repo.updated is not None
+    assert repo.updated["aliases"] == ["Tay"]
 
     with pytest.raises(main.HTTPException) as exc:
         await crud_endpoints.create_relationship_endpoint(
@@ -4187,6 +4199,47 @@ async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous
             **common,
         )
     assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_relationship_update_carries_entity_fields_in_one_repo_write(tmp_path: Path):
+    entity = SimpleNamespace(
+        id="a1b2c3d4",
+        name="Taylor",
+        entity_type="person",
+        properties={"origin": "user_declared", "active": True},
+    )
+    writes: list[dict[str, Any]] = []
+
+    class _Repo:
+        def list_by_ids(self, _entity_ids, _scope):
+            return [entity]
+
+        def update(self, _entity_id, **kwargs):
+            writes.append(kwargs)
+            return entity
+
+    service = SimpleNamespace(database=SimpleNamespace(entity_repo=_Repo()))
+    await crud_endpoints.update_relationship_endpoint(
+        soul_id="test-soul",
+        speaker_id="entity:a1b2c3d4",
+        payload={
+            "user_id": "test-user",
+            "name": "Taylor",
+            "relationship": "friend",
+            "entity_type": "person",
+            "aliases": [],
+        },
+        get_service_from_payload=lambda _payload: service,
+        sqlite_current_path=lambda _uid, _sid: tmp_path / "test.db",
+        sqlite_ensure_nonempty=lambda _path: None,
+        json_from_db=main._json_from_db,
+    )
+
+    assert len(writes) == 1
+    assert writes[0]["entity_type"] == "person"
+    assert writes[0]["aliases"] == []
+    assert writes[0]["property_updates"]["relationship"] == "friend"
 
 
 @pytest.mark.asyncio
