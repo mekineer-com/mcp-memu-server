@@ -60,6 +60,7 @@ mcp-memu-server/
 | `/integration/atomic/tags` | GET | Category/tag list with kind, activity state, and counts |
 | `/integration/atomic/entities` | GET/POST | Scoped entity list or create-always entity write |
 | `/integration/atomic/entities/{entity_id}` | GET/PATCH | Scoped entity detail or stable-ID name/type/alias edit |
+| `/integration/atomic/entities/{entity_id}/merge-preview` / `merge` | GET/POST | Preview then atomically absorb one duplicate entity into the open canonical entity |
 | `/integration/atomic/memories/{memory_id}/entities/{entity_id}` | PUT/DELETE | Transactionally attach/detach one current `mentions` edge |
 | `/integration/atomic/canvas-source` | GET/POST | Canvas source: all memories + categories; POST accepts `atom_ids[]` for subset rebuilds |
 | `/integration/atomic/neighborhood/{item_id}` | GET | Cosine-similar memory neighborhood |

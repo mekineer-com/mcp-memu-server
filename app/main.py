@@ -21,6 +21,7 @@ from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from memu.app import MemoryService
+from memu.app.graph import EntityMergeConflictError
 from pydantic import BaseModel, Field
 
 from app import procedural as _procedural
@@ -2673,6 +2674,60 @@ async def atomic_update_entity(
     if entity is None:
         raise HTTPException(status_code=404, detail="entity not found")
     return entity
+
+
+@app.get(
+    "/integration/atomic/entities/{entity_id}/merge-preview",
+    operation_id="atomic_preview_entity_merge",
+    tags=["integration"],
+)
+async def atomic_preview_entity_merge(
+    entity_id: str,
+    duplicate_entity_id: str,
+    user_id: str,
+    soul_id: str,
+):
+    scope = {"user_id": str(user_id or "").strip(), "soul_id": str(soul_id or "").strip()}
+    if not all(scope.values()):
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    try:
+        return _get_service_from_payload({"user": scope}).graph_preview_entity_merge(
+            entity_id, duplicate_entity_id, where=scope
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post(
+    "/integration/atomic/entities/{entity_id}/merge",
+    operation_id="atomic_merge_entities",
+    tags=["integration"],
+)
+async def atomic_merge_entities(
+    entity_id: str,
+    user_id: str,
+    soul_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    scope = {"user_id": str(user_id or "").strip(), "soul_id": str(soul_id or "").strip()}
+    duplicate_id = str(payload.get("duplicate_entity_id") or "").strip()
+    if not all(scope.values()) or not duplicate_id:
+        raise HTTPException(status_code=400, detail="user_id, soul_id, and duplicate_entity_id are required")
+    try:
+        return _get_service_from_payload({"user": scope}).graph_merge_entities(
+            entity_id, duplicate_id, where=scope
+        )
+    except EntityMergeConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"conflicts": exc.conflicts, "canonical": exc.canonical, "duplicate": exc.duplicate},
+        ) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 async def _atomic_set_memory_entity(

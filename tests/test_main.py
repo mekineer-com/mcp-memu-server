@@ -450,6 +450,14 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
             captured.append(("update", {"entity_id": entity_id, **kwargs}))
             return {"id": entity_id, "name": kwargs["name"]}
 
+        def graph_preview_entity_merge(self, entity_id: str, duplicate_id: str, **kwargs: Any) -> dict[str, Any]:
+            captured.append(("preview_merge", {"entity_id": entity_id, "duplicate_id": duplicate_id, **kwargs}))
+            return {"can_merge": True}
+
+        def graph_merge_entities(self, entity_id: str, duplicate_id: str, **kwargs: Any) -> dict[str, Any]:
+            captured.append(("merge", {"entity_id": entity_id, "duplicate_id": duplicate_id, **kwargs}))
+            return {"id": entity_id}
+
         def graph_attach_entity(self, memory_id: str, entity_id: str, **kwargs: Any) -> dict[str, Any]:
             captured.append(("attach", {"memory_id": memory_id, "entity_id": entity_id, **kwargs}))
             return {"id": f"memory:{memory_id}"}
@@ -469,10 +477,16 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
         soul_id="Siri",
         payload={"name": "Renamed"},
     )
+    preview = await main.atomic_preview_entity_merge("e1", "e2", "Marcos", "Siri")
+    merged = await main.atomic_merge_entities(
+        "e1", "Marcos", "Siri", {"duplicate_entity_id": "e2"}
+    )
     attached = await main.atomic_attach_entity("m1", "e1", "Marcos", "Siri")
 
     assert listing["total_count"] == 1
     assert detail["id"] == "e1"
+    assert preview["can_merge"] is True
+    assert merged["id"] == "e1"
     assert created["id"] == "e2"
     assert updated["name"] == "Renamed"
     assert attached["id"] == "memory:m1"
@@ -481,11 +495,28 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
         ("e1", {"where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("create", {"name": "New Place", "entity_type": "place", "aliases": None, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("update", {"entity_id": "e1", "name": "Renamed", "entity_type": None, "aliases": None, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
+        ("preview_merge", {"entity_id": "e1", "duplicate_id": "e2", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
+        ("merge", {"entity_id": "e1", "duplicate_id": "e2", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("attach", {"memory_id": "m1", "entity_id": "e1", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
     ]
     with pytest.raises(main.HTTPException) as exc:
         await main.atomic_memory_entity(entity_id="missing", user_id="Marcos", soul_id="Siri")
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_atomic_entity_merge_maps_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeSvc:
+        def graph_merge_entities(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise main.EntityMergeConflictError({"id": "e1"}, {"id": "e2"}, ["states differ"])
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+
+    with pytest.raises(main.HTTPException) as exc:
+        await main.atomic_merge_entities("e1", "Marcos", "Siri", {"duplicate_entity_id": "e2"})
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["conflicts"] == ["states differ"]
 
 
 @pytest.mark.asyncio
