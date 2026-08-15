@@ -337,6 +337,33 @@ def _web_source_db_path(*, hermes_home: Path | None, web_source_db_path: Path | 
     return _hermes_base(hermes_home) / "whatsapp" / "web_source.db"
 
 
+def _load_whatsapp_source_ref_map(web_source_db_path: Path) -> dict[str, str]:
+    path = web_source_db_path.with_name("contact_store.json")
+    if not path.exists():
+        return {}
+    contacts = json.loads(path.read_text(encoding="utf-8")).get("contacts")
+    if not isinstance(contacts, dict):
+        raise RuntimeError(f"WhatsApp contact store must contain a contacts object: {path}")
+    source_refs: dict[str, str] = {}
+    for record in contacts.values():
+        if not isinstance(record, dict):
+            raise RuntimeError(f"WhatsApp contact store contains an invalid contact: {path}")
+        preferred = _normalize_whatsapp_match_token(str(record.get("preferred_jid") or ""))
+        if not preferred:
+            continue
+        aliases = record.get("aliases") or []
+        if not isinstance(aliases, list):
+            raise RuntimeError(f"WhatsApp contact aliases must be a list: {path}")
+        for value in [preferred, *aliases]:
+            alias = _normalize_whatsapp_match_token(str(value or ""))
+            owner = source_refs.get(alias)
+            if owner and owner != preferred:
+                raise RuntimeError(f"WhatsApp alias {alias!r} has multiple preferred JIDs in {path}")
+            if alias:
+                source_refs[alias] = preferred
+    return source_refs
+
+
 def _web_source_chat_match(
     conversation_id: str,
 ) -> tuple[str, set[str], str]:
@@ -430,6 +457,7 @@ def _web_source_row_to_tail(
     reply_prefix: str,
     assistant_source_message_ids: set[str],
     contact_map: dict[str, str],
+    source_ref_map: dict[str, str],
 ) -> dict[str, Any] | None:
     body = str(row["body"] or "").strip()
     if not body or _is_gateway_notice(body):
@@ -457,10 +485,16 @@ def _web_source_row_to_tail(
     reaction_tag = _render_reactions(row["reactions"], contact_map)
     if reaction_tag:
         content = content + reaction_tag
+    source_ref: dict[str, str] = {}
+    if not from_me:
+        participant_id = _normalize_whatsapp_match_token(str(row["author_id"] or row["from_id"] or ""))
+        if participant_id:
+            source_ref["source_ref"] = f"whatsapp:{source_ref_map.get(participant_id, participant_id)}"
     return {
         "id": int(row["rowid"]),
         "source_message_id": source_message_id,
         **_whatsapp_role_field(role, owner_human=from_me),
+        **source_ref,
         "speaker": speaker,
         "chat_name": resolved_chat_name,
         "content": content,
@@ -619,6 +653,7 @@ def _load_whatsapp_web_source_tail(
             if value:
                 contact_map[local_id] = value
                 break
+    source_ref_map = _load_whatsapp_source_ref_map(db_path)
 
     chat_name = str(conversation_id).split(":", 2)[-1].strip() or "contact"
     assistant_ids = {
@@ -638,6 +673,7 @@ def _load_whatsapp_web_source_tail(
             reply_prefix=reply_prefix,
             assistant_source_message_ids=assistant_ids,
             contact_map=contact_map,
+            source_ref_map=source_ref_map,
         ))
     ]
     if cursor_is_rowid:

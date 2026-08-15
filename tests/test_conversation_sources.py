@@ -323,6 +323,73 @@ def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_
     assert [row["source_conversation_index"] for row in rows] == [2, 3]
 
 
+def test_whatsapp_tail_projects_one_source_ref_for_phone_and_lid_aliases(tmp_path: Path) -> None:
+    web_db = tmp_path / "web_source.db"
+    phone_jid = "15550001111@c.us"
+    lid_jid = "111111111111111@lid"
+    _write_web_source_db(
+        web_db,
+        messages=[
+            {
+                "msg_key": "phone",
+                "timestamp": 100,
+                "body": "from phone identity",
+                "chat_id": "123456789@g.us",
+                "author_id": phone_jid,
+                "from_id": "123456789@g.us",
+            },
+            {
+                "msg_key": "lid",
+                "timestamp": 101,
+                "body": "from lid identity",
+                "chat_id": "123456789@g.us",
+                "author_id": lid_jid,
+                "from_id": "123456789@g.us",
+            },
+            {
+                "msg_key": "owner",
+                "timestamp": 102,
+                "body": "account owner",
+                "chat_id": "123456789@g.us",
+                "from_me": True,
+            },
+            {
+                "msg_key": "soul-message-id",
+                "timestamp": 103,
+                "body": "soul reply",
+                "chat_id": "123456789@g.us",
+                "from_me": True,
+            },
+        ],
+    )
+    (tmp_path / "contact_store.json").write_text(
+        json.dumps({
+            "version": 1,
+            "contacts": {
+                lid_jid: {"preferred_jid": lid_jid, "aliases": [phone_jid, lid_jid]},
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:group:123456789@g.us",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id="TestSoul",
+        reply_prefix="",
+        web_source_db_path=web_db,
+        assistant_source_message_ids={"soul-message-id"},
+    )
+
+    assert [row.get("source_ref") for row in rows] == [
+        f"whatsapp:{lid_jid}",
+        f"whatsapp:{lid_jid}",
+        None,
+        None,
+    ]
+
+
 def test_load_whatsapp_web_source_tail_after_rowid_uses_monotonic_cursor(tmp_path: Path) -> None:
     web_db = tmp_path / "web_source.db"
     _write_web_source_db(
