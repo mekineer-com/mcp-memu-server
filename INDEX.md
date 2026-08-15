@@ -58,6 +58,8 @@ mcp-memu-server/
 | `/integration/atomic/prompt_log` | POST | Atomic prompt-log sink (writes to `mcp-memu-server.log` when `debug.log_prompts` enabled) |
 | `/integration/atomic/atoms` | GET | Paginated atom list with canonical dossier metadata; `category_id`/`tag_id` filter, `cursor` pagination |
 | `/integration/atomic/tags` | GET | Category/tag list with kind, activity state, and counts |
+| `/integration/atomic/entities` | GET | Scoped entity list with relationship/orphan state, linked-memory counts, and activity dates |
+| `/integration/atomic/entities/{entity_id}` | GET | Scoped entity detail with chronologically linked active memories |
 | `/integration/atomic/canvas-source` | GET/POST | Canvas source: all memories + categories; POST accepts `atom_ids[]` for subset rebuilds |
 | `/integration/atomic/neighborhood/{item_id}` | GET | Cosine-similar memory neighborhood |
 | `/integration/atomic/similar/{item_id}` | GET | Pure cosine-similarity graph (no DB expansion) |

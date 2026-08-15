@@ -2594,6 +2594,33 @@ async def atomic_memory_tags(
     return svc.graph_atomic_tags(where=scope, min_count=min_count)
 
 
+@app.get("/integration/atomic/entities", operation_id="atomic_memory_entities", tags=["integration"])
+async def atomic_memory_entities(user_id: str, soul_id: str):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    return _get_service_from_payload({"user": scope}).graph_atomic_entities(where=scope)
+
+
+@app.get(
+    "/integration/atomic/entities/{entity_id}",
+    operation_id="atomic_memory_entity",
+    tags=["integration"],
+)
+async def atomic_memory_entity(entity_id: str, user_id: str, soul_id: str):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    entity = _get_service_from_payload({"user": scope}).graph_atomic_entity(entity_id, where=scope)
+    if entity is None:
+        raise HTTPException(status_code=404, detail="entity not found")
+    return entity
+
+
 @app.get("/integration/atomic/canvas-source", operation_id="atomic_memory_canvas_source", tags=["integration"])
 async def atomic_memory_canvas_source(
     user_id: str,

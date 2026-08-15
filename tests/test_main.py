@@ -430,6 +430,42 @@ async def test_atomic_canvas_source_threads_scope_and_edges(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
+async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    class _FakeSvc:
+        def graph_atomic_entities(self, **kwargs: Any) -> dict[str, Any]:
+            captured.append(("list", kwargs))
+            return {"entities": [{"id": "e1", "name": "Annie"}], "total_count": 1}
+
+        def graph_atomic_entity(self, entity_id: str, **kwargs: Any) -> dict[str, Any] | None:
+            captured.append((entity_id, kwargs))
+            return {"id": entity_id, "name": "Annie", "memories": []} if entity_id == "e1" else None
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+
+    listing = await main.atomic_memory_entities(user_id="Marcos", soul_id="Siri")
+    detail = await main.atomic_memory_entity(entity_id="e1", user_id="Marcos", soul_id="Siri")
+
+    assert listing["total_count"] == 1
+    assert detail["id"] == "e1"
+    assert captured == [
+        ("list", {"where": {"user_id": "Marcos", "soul_id": "Siri"}}),
+        ("e1", {"where": {"user_id": "Marcos", "soul_id": "Siri"}}),
+    ]
+    with pytest.raises(main.HTTPException) as exc:
+        await main.atomic_memory_entity(entity_id="missing", user_id="Marcos", soul_id="Siri")
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_atomic_entities_require_scope() -> None:
+    with pytest.raises(main.HTTPException) as exc:
+        await main.atomic_memory_entities(user_id="", soul_id="Siri")
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_atomic_canvas_source_threads_atom_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
