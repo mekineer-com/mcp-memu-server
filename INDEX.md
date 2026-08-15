@@ -59,7 +59,8 @@ mcp-memu-server/
 | `/integration/atomic/atoms` | GET | Paginated atom list with canonical dossier metadata; `category_id`/`tag_id` filter, `cursor` pagination |
 | `/integration/atomic/tags` | GET | Category/tag list with kind, activity state, and counts |
 | `/integration/atomic/entities` | GET/POST | Scoped entity list or create-always entity write |
-| `/integration/atomic/entities/{entity_id}` | GET/PATCH | Scoped entity detail or stable-ID name/type/alias edit |
+| `/integration/atomic/entities/{entity_id}` | GET/PATCH/DELETE | Scoped entity detail, stable-ID name/type/alias edit, or safe deletion of an unreferenced extracted entity |
+| `/integration/atomic/entities/{entity_id}/ignore` / `restore` | POST | Reversibly suppress or restore an extracted entity without changing its references |
 | `/integration/atomic/entities/{entity_id}/merge-preview` / `merge` | GET/POST | Preview then atomically absorb one duplicate entity into the open canonical entity |
 | `/integration/atomic/memories/{memory_id}/entities/{entity_id}` | PUT/DELETE | Transactionally attach/detach one current `mentions` edge |
 | `/integration/atomic/canvas-source` | GET/POST | Canvas source: all memories + categories; POST accepts `atom_ids[]` for subset rebuilds |

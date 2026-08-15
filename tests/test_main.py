@@ -458,6 +458,13 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
             captured.append(("merge", {"entity_id": entity_id, "duplicate_id": duplicate_id, **kwargs}))
             return {"id": entity_id}
 
+        def graph_set_entity_ignored(self, entity_id: str, **kwargs: Any) -> dict[str, Any]:
+            captured.append(("set_ignored", {"entity_id": entity_id, **kwargs}))
+            return {"id": entity_id, "ignored": kwargs["ignored"]}
+
+        def graph_delete_entity(self, entity_id: str, **kwargs: Any) -> None:
+            captured.append(("delete", {"entity_id": entity_id, **kwargs}))
+
         def graph_attach_entity(self, memory_id: str, entity_id: str, **kwargs: Any) -> dict[str, Any]:
             captured.append(("attach", {"memory_id": memory_id, "entity_id": entity_id, **kwargs}))
             return {"id": f"memory:{memory_id}"}
@@ -481,12 +488,18 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
     merged = await main.atomic_merge_entities(
         "e1", "Marcos", "Siri", {"duplicate_entity_id": "e2"}
     )
+    ignored = await main.atomic_ignore_entity("e1", "Marcos", "Siri")
+    restored = await main.atomic_restore_entity("e1", "Marcos", "Siri")
+    deleted = await main.atomic_delete_entity("e2", "Marcos", "Siri")
     attached = await main.atomic_attach_entity("m1", "e1", "Marcos", "Siri")
 
     assert listing["total_count"] == 1
     assert detail["id"] == "e1"
     assert preview["can_merge"] is True
     assert merged["id"] == "e1"
+    assert ignored["ignored"] is True
+    assert restored["ignored"] is False
+    assert deleted == {"ok": True, "entity_id": "e2"}
     assert created["id"] == "e2"
     assert updated["name"] == "Renamed"
     assert attached["id"] == "memory:m1"
@@ -497,6 +510,9 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
         ("update", {"entity_id": "e1", "name": "Renamed", "entity_type": None, "aliases": None, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("preview_merge", {"entity_id": "e1", "duplicate_id": "e2", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("merge", {"entity_id": "e1", "duplicate_id": "e2", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
+        ("set_ignored", {"entity_id": "e1", "ignored": True, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
+        ("set_ignored", {"entity_id": "e1", "ignored": False, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
+        ("delete", {"entity_id": "e2", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("attach", {"memory_id": "m1", "entity_id": "e1", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
     ]
     with pytest.raises(main.HTTPException) as exc:
@@ -517,6 +533,21 @@ async def test_atomic_entity_merge_maps_conflict(monkeypatch: pytest.MonkeyPatch
 
     assert exc.value.status_code == 409
     assert exc.value.detail["conflicts"] == ["states differ"]
+
+
+@pytest.mark.asyncio
+async def test_atomic_entity_action_maps_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeSvc:
+        def graph_delete_entity(self, *_args: Any, **_kwargs: Any) -> None:
+            raise main.EntityActionConflictError(["Graph references: 1"])
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+
+    with pytest.raises(main.HTTPException) as exc:
+        await main.atomic_delete_entity("e1", "user", "soul")
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["conflicts"] == ["Graph references: 1"]
 
 
 @pytest.mark.asyncio
@@ -4223,6 +4254,14 @@ async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous
     assert selected["speaker_id"] == "entity:b2c3d4e5"
     assert repo.updated is not None
     assert repo.updated["aliases"] == ["Tay"]
+
+    entities[0].properties = {"ignored": True}
+    with pytest.raises(main.HTTPException) as ignored_exc:
+        await crud_endpoints.create_relationship_endpoint(
+            payload={"user_id": "test-user", "name": "Taylor", "entity_id": "a1b2c3d4"},
+            **common,
+        )
+    assert ignored_exc.value.status_code == 409
 
     with pytest.raises(main.HTTPException) as exc:
         await crud_endpoints.create_relationship_endpoint(

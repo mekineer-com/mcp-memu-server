@@ -398,6 +398,8 @@ async def create_relationship_endpoint(
     if matches:
         entity = matches[0]
         props = _relationship_properties(entity.properties, json_from_db=json_from_db)
+        if props.get("ignored") is True:
+            raise HTTPException(status_code=409, detail="entity is ignored")
         if str(props.get("origin") or "").strip():
             _assert_user_declared_relationship(props)
         entity = repo.update(

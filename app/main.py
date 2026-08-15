@@ -21,7 +21,7 @@ from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from memu.app import MemoryService
-from memu.app.graph import EntityMergeConflictError
+from memu.app.graph import EntityActionConflictError, EntityMergeConflictError
 from pydantic import BaseModel, Field
 
 from app import procedural as _procedural
@@ -2676,6 +2676,50 @@ async def atomic_update_entity(
     return entity
 
 
+async def _atomic_set_entity_ignored(
+    entity_id: str,
+    user_id: str,
+    soul_id: str,
+    *,
+    ignored: bool,
+):
+    scope = {"user_id": str(user_id or "").strip(), "soul_id": str(soul_id or "").strip()}
+    if not all(scope.values()):
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    try:
+        return _get_service_from_payload({"user": scope}).graph_set_entity_ignored(
+            entity_id, ignored=ignored, where=scope
+        )
+    except EntityActionConflictError as exc:
+        raise HTTPException(status_code=409, detail={"conflicts": exc.conflicts}) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/integration/atomic/entities/{entity_id}/ignore", tags=["integration"])
+async def atomic_ignore_entity(entity_id: str, user_id: str, soul_id: str):
+    return await _atomic_set_entity_ignored(entity_id, user_id, soul_id, ignored=True)
+
+
+@app.post("/integration/atomic/entities/{entity_id}/restore", tags=["integration"])
+async def atomic_restore_entity(entity_id: str, user_id: str, soul_id: str):
+    return await _atomic_set_entity_ignored(entity_id, user_id, soul_id, ignored=False)
+
+
+@app.delete("/integration/atomic/entities/{entity_id}", tags=["integration"])
+async def atomic_delete_entity(entity_id: str, user_id: str, soul_id: str):
+    scope = {"user_id": str(user_id or "").strip(), "soul_id": str(soul_id or "").strip()}
+    if not all(scope.values()):
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    try:
+        _get_service_from_payload({"user": scope}).graph_delete_entity(entity_id, where=scope)
+    except EntityActionConflictError as exc:
+        raise HTTPException(status_code=409, detail={"conflicts": exc.conflicts}) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "entity_id": entity_id}
+
+
 @app.get(
     "/integration/atomic/entities/{entity_id}/merge-preview",
     operation_id="atomic_preview_entity_merge",
@@ -2752,6 +2796,8 @@ async def _atomic_set_memory_entity(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except EntityActionConflictError as exc:
+        raise HTTPException(status_code=409, detail={"conflicts": exc.conflicts}) from exc
     if memory is None:
         raise HTTPException(status_code=404, detail="memory not found")
     return memory
