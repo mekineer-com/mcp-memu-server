@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
+from memu.database.models import normalize_entity_name
 
 from app.services.payload import strip_markdown_code_fence
 from app.services import soul_state as _soul_state
@@ -108,23 +109,6 @@ def _assert_user_declared_relationship(props: Mapping[str, Any] | None) -> None:
         raise HTTPException(status_code=409, detail="entity is not user-declared")
 
 
-def _select_relationship_row(
-    con: sqlite3.Connection,
-    *,
-    entity_id: str,
-    user_id: str,
-    soul_id: str,
-) -> sqlite3.Row | None:
-    return con.execute(
-        """
-SELECT id, name, entity_type, normalized, properties
-FROM entities
-WHERE id = ? AND user_id = ? AND soul_id = ?
-""",
-        (entity_id, user_id, soul_id),
-    ).fetchone()
-
-
 def _assert_relationship_write_path(
     user_id: str,
     soul_id: str,
@@ -132,14 +116,25 @@ def _assert_relationship_write_path(
     get_service_from_payload: Callable[[dict[str, Any]], Any],
     sqlite_current_path: Callable[[str | None, str | None], Path | None],
     sqlite_ensure_nonempty: Callable[[Path], None],
-) -> tuple[Any, Path]:
+) -> Any:
     scope = {"user_id": user_id, "soul_id": soul_id}
     svc = get_service_from_payload({"user": scope})
     db_path = sqlite_current_path(user_id, soul_id)
     if db_path is None:
         raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
     sqlite_ensure_nonempty(db_path)
-    return svc, db_path
+    return svc
+
+
+def _entity_name_matches(entity: Any, name: str) -> bool:
+    needle = normalize_entity_name(name)
+    properties = getattr(entity, "properties", None)
+    aliases = properties.get("aliases", []) if isinstance(properties, Mapping) else []
+    return needle in {
+        normalize_entity_name(str(value or ""))
+        for value in [getattr(entity, "name", ""), *(aliases if isinstance(aliases, list) else [])]
+        if str(value or "").strip()
+    }
 
 
 async def list_memory_categories_endpoint(
@@ -339,8 +334,6 @@ async def create_relationship_endpoint(
     get_service_from_payload: Callable[[dict[str, Any]], Any],
     sqlite_current_path: Callable[[str | None, str | None], Path | None],
     sqlite_ensure_nonempty: Callable[[Path], None],
-    sqlite_connect: Callable[[Path], sqlite3.Connection],
-    json_to_db: Callable[[Any], str | None],
     json_from_db: Callable[[Any], Any],
 ) -> dict[str, Any]:
     sid = str(soul_id or "").strip()
@@ -356,7 +349,7 @@ async def create_relationship_endpoint(
         raise HTTPException(status_code=400, detail="user_id required")
 
     scope = {"user_id": uid, "soul_id": sid}
-    svc, db_path = _assert_relationship_write_path(
+    svc = _assert_relationship_write_path(
         uid,
         sid,
         get_service_from_payload=get_service_from_payload,
@@ -364,55 +357,55 @@ async def create_relationship_endpoint(
         sqlite_ensure_nonempty=sqlite_ensure_nonempty,
     )
 
-    entity = svc.database.entity_repo.get_or_create(
-        name=name,
-        entity_type=entity_type,
-        user_data=scope,
-    )
-    entity_id = str(entity.id)
-    con = sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        row = _select_relationship_row(
-            con,
-            entity_id=entity_id,
-            user_id=uid,
-            soul_id=sid,
+    repo = svc.database.entity_repo
+    requested_id_raw = str(payload.get("entity_id") or "").strip()
+    requested_id = (
+        _validate_relationship_speaker_id(
+            requested_id_raw if requested_id_raw.startswith("entity:") else f"entity:{requested_id_raw}"
         )
-        if row is None:
-            raise HTTPException(status_code=500, detail="failed to create relationship")
-        props = _relationship_properties(row["properties"], json_from_db=json_from_db)
+        if requested_id_raw
+        else ""
+    )
+    if requested_id:
+        matches = repo.list_by_ids({requested_id}, scope)
+    else:
+        matches = [entity for entity in repo.list_all(scope) if _entity_name_matches(entity, name)]
+        if len(matches) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail={"message": "relationship name is ambiguous", "entity_ids": [entity.id for entity in matches]},
+            )
+    if requested_id and not matches:
+        raise HTTPException(status_code=404, detail="entity not found")
+
+    property_updates: dict[str, Any] = {
+        "origin": _RELATIONSHIP_ORIGIN_USER_DECLARED,
+        "active": True,
+    }
+    property_removals = {"relationship"} if not relationship else set()
+    if relationship:
+        property_updates["relationship"] = relationship
+    if matches:
+        entity = matches[0]
+        props = _relationship_properties(entity.properties, json_from_db=json_from_db)
         if str(props.get("origin") or "").strip():
             _assert_user_declared_relationship(props)
-        props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
-        props["active"] = True
-        if relationship:
-            props["relationship"] = relationship
-        else:
-            props.pop("relationship", None)
-        con.execute(
-            """
-UPDATE entities
-SET name = ?, entity_type = ?, properties = ?, updated_at = ?
-WHERE id = ?
-""",
-            (
-                name,
-                entity_type,
-                json_to_db(props),
-                datetime.now(UTC).isoformat(),
-                str(row["id"]),
-            ),
-        )
-        con.commit()
-        return _relationship_item_from_values(
-            entity_id=entity_id,
+        entity = repo.update(
+            entity.id,
+            where=scope,
             name=name,
             entity_type=entity_type,
-            properties=props,
-        ) or {}
-    finally:
-        con.close()
+            property_updates=property_updates,
+            property_removals=property_removals,
+        )
+    else:
+        entity = repo.create(
+            name,
+            entity_type,
+            scope,
+            properties=property_updates,
+        )
+    return _relationship_item_from_entity(entity, json_from_db=json_from_db) or {}
 
 
 async def update_relationship_endpoint(
@@ -423,8 +416,6 @@ async def update_relationship_endpoint(
     get_service_from_payload: Callable[[dict[str, Any]], Any],
     sqlite_current_path: Callable[[str | None, str | None], Path | None],
     sqlite_ensure_nonempty: Callable[[Path], None],
-    sqlite_connect: Callable[[Path], sqlite3.Connection],
-    json_to_db: Callable[[Any], str | None],
     json_from_db: Callable[[Any], Any],
 ) -> dict[str, Any]:
     sid = str(soul_id or "").strip()
@@ -441,57 +432,34 @@ async def update_relationship_endpoint(
         raise HTTPException(status_code=400, detail="name or relationship required")
     next_name = _normalize_relationship_name(name_raw) if name_raw is not None else None
     next_relationship = _normalize_relationship_text(relationship_raw) if relationship_raw is not None else None
-    _svc, db_path = _assert_relationship_write_path(
+    svc = _assert_relationship_write_path(
         uid,
         sid,
         get_service_from_payload=get_service_from_payload,
         sqlite_current_path=sqlite_current_path,
         sqlite_ensure_nonempty=sqlite_ensure_nonempty,
     )
-    con = sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        row = _select_relationship_row(
-            con,
-            entity_id=entity_id,
-            user_id=uid,
-            soul_id=sid,
-        )
-        if row is None:
-            raise HTTPException(status_code=404, detail="relationship not found")
-
-        props = _relationship_properties(row["properties"], json_from_db=json_from_db)
-        _assert_user_declared_relationship(props)
-        props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
-        props["active"] = True
-        if relationship_raw is not None:
-            if next_relationship:
-                props["relationship"] = next_relationship
-            else:
-                props.pop("relationship", None)
-        final_name = next_name or str(row["name"] or "").strip()
-        con.execute(
-            """
-UPDATE entities
-SET name = ?, properties = ?, updated_at = ?
-WHERE id = ?
-""",
-            (
-                final_name,
-                json_to_db(props),
-                datetime.now(UTC).isoformat(),
-                str(row["id"]),
-            ),
-        )
-        con.commit()
-        return _relationship_item_from_values(
-            entity_id=entity_id,
-            name=final_name,
-            entity_type=str(row["entity_type"] or "").strip() or "person",
-            properties=props,
-        ) or {}
-    finally:
-        con.close()
+    repo = svc.database.entity_repo
+    matches = repo.list_by_ids({entity_id}, {"user_id": uid, "soul_id": sid})
+    if not matches:
+        raise HTTPException(status_code=404, detail="relationship not found")
+    props = _relationship_properties(matches[0].properties, json_from_db=json_from_db)
+    _assert_user_declared_relationship(props)
+    property_updates: dict[str, Any] = {"origin": _RELATIONSHIP_ORIGIN_USER_DECLARED, "active": True}
+    property_removals: set[str] = set()
+    if relationship_raw is not None:
+        if next_relationship:
+            property_updates["relationship"] = next_relationship
+        else:
+            property_removals.add("relationship")
+    entity = repo.update(
+        entity_id,
+        where={"user_id": uid, "soul_id": sid},
+        name=next_name,
+        property_updates=property_updates,
+        property_removals=property_removals,
+    )
+    return _relationship_item_from_entity(entity, json_from_db=json_from_db) or {}
 
 
 async def delete_relationship_endpoint(
@@ -502,8 +470,6 @@ async def delete_relationship_endpoint(
     get_service_from_payload: Callable[[dict[str, Any]], Any],
     sqlite_current_path: Callable[[str | None, str | None], Path | None],
     sqlite_ensure_nonempty: Callable[[Path], None],
-    sqlite_connect: Callable[[Path], sqlite3.Connection],
-    json_to_db: Callable[[Any], str | None],
     json_from_db: Callable[[Any], Any],
 ) -> dict[str, Any]:
     sid = str(soul_id or "").strip()
@@ -514,46 +480,30 @@ async def delete_relationship_endpoint(
         raise HTTPException(status_code=400, detail="user_id required")
     entity_id = _validate_relationship_speaker_id(speaker_id)
 
-    _svc, db_path = _assert_relationship_write_path(
+    svc = _assert_relationship_write_path(
         uid,
         sid,
         get_service_from_payload=get_service_from_payload,
         sqlite_current_path=sqlite_current_path,
         sqlite_ensure_nonempty=sqlite_ensure_nonempty,
     )
-    con = sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        row = _select_relationship_row(
-            con,
-            entity_id=entity_id,
-            user_id=uid,
-            soul_id=sid,
-        )
-        if row is None:
-            return {"ok": True, "speaker_id": _relationship_speaker_id(entity_id)}
-        props = _relationship_properties(row["properties"], json_from_db=json_from_db)
-        _assert_user_declared_relationship(props)
-        props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
-        props["active"] = False
-        now_iso = datetime.now(UTC).isoformat()
-        props["deleted_at"] = now_iso
-        con.execute(
-            """
-UPDATE entities
-SET properties = ?, updated_at = ?
-WHERE id = ?
-""",
-            (
-                json_to_db(props),
-                now_iso,
-                str(row["id"]),
-            ),
-        )
-        con.commit()
+    scope = {"user_id": uid, "soul_id": sid}
+    repo = svc.database.entity_repo
+    matches = repo.list_by_ids({entity_id}, scope)
+    if not matches:
         return {"ok": True, "speaker_id": _relationship_speaker_id(entity_id)}
-    finally:
-        con.close()
+    props = _relationship_properties(matches[0].properties, json_from_db=json_from_db)
+    _assert_user_declared_relationship(props)
+    repo.update(
+        entity_id,
+        where=scope,
+        property_updates={
+            "origin": _RELATIONSHIP_ORIGIN_USER_DECLARED,
+            "active": False,
+            "deleted_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    return {"ok": True, "speaker_id": _relationship_speaker_id(entity_id)}
 
 
 async def narrative_suggestion_endpoint(

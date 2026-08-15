@@ -58,8 +58,9 @@ mcp-memu-server/
 | `/integration/atomic/prompt_log` | POST | Atomic prompt-log sink (writes to `mcp-memu-server.log` when `debug.log_prompts` enabled) |
 | `/integration/atomic/atoms` | GET | Paginated atom list with canonical dossier metadata; `category_id`/`tag_id` filter, `cursor` pagination |
 | `/integration/atomic/tags` | GET | Category/tag list with kind, activity state, and counts |
-| `/integration/atomic/entities` | GET | Scoped entity list with relationship/orphan state, linked-memory counts, and activity dates |
-| `/integration/atomic/entities/{entity_id}` | GET | Scoped entity detail with chronologically linked active memories |
+| `/integration/atomic/entities` | GET/POST | Scoped entity list or create-always entity write |
+| `/integration/atomic/entities/{entity_id}` | GET/PATCH | Scoped entity detail or stable-ID name/type/alias edit |
+| `/integration/atomic/memories/{memory_id}/entities/{entity_id}` | PUT/DELETE | Transactionally attach/detach one current `mentions` edge |
 | `/integration/atomic/canvas-source` | GET/POST | Canvas source: all memories + categories; POST accepts `atom_ids[]` for subset rebuilds |
 | `/integration/atomic/neighborhood/{item_id}` | GET | Cosine-similar memory neighborhood |
 | `/integration/atomic/similar/{item_id}` | GET | Pure cosine-similarity graph (no DB expansion) |
@@ -70,7 +71,7 @@ mcp-memu-server/
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/conversation/{id}/consolidation/force` | POST | Force consolidation now (lock-safe) |
 | `/souls/{soul_id}/intentions` | GET | Long-term life goals (`intentions_life_goals` table) |
-| `/souls/{soul_id}/relationships` | GET/POST | User-declared relationship entities |
+| `/souls/{soul_id}/relationships` | GET/POST | User-declared relationship entities; POST may promote an exact entity ID |
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or soft-delete one relationship by stable `entity:<entities.id>` reference |
 | `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot |
 | `/pending` | GET | Review queue: unapproved memories/dossiers and persistent narrative self |

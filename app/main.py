@@ -2275,8 +2275,6 @@ async def create_relationship(
         get_service_from_payload=_get_service_from_payload,
         sqlite_current_path=_sqlite_current_path,
         sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
-        sqlite_connect=_sqlite_connect,
-        json_to_db=_json_to_db,
         json_from_db=_json_from_db,
     )
 
@@ -2294,8 +2292,6 @@ async def update_relationship(
         get_service_from_payload=_get_service_from_payload,
         sqlite_current_path=_sqlite_current_path,
         sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
-        sqlite_connect=_sqlite_connect,
-        json_to_db=_json_to_db,
         json_from_db=_json_from_db,
     )
 
@@ -2313,8 +2309,6 @@ async def delete_relationship(
         get_service_from_payload=_get_service_from_payload,
         sqlite_current_path=_sqlite_current_path,
         sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
-        sqlite_connect=_sqlite_connect,
-        json_to_db=_json_to_db,
         json_from_db=_json_from_db,
     )
 
@@ -2604,6 +2598,33 @@ async def atomic_memory_entities(user_id: str, soul_id: str):
     return _get_service_from_payload({"user": scope}).graph_atomic_entities(where=scope)
 
 
+def _atomic_entity_aliases(payload: dict[str, Any]) -> list[str] | None:
+    aliases = payload.get("aliases")
+    if aliases is None:
+        return None
+    if not isinstance(aliases, list):
+        raise HTTPException(status_code=400, detail="aliases must be a list")
+    return [str(alias or "").strip() for alias in aliases if str(alias or "").strip()]
+
+
+@app.post("/integration/atomic/entities", operation_id="atomic_create_entity", tags=["integration"])
+async def atomic_create_entity(user_id: str, soul_id: str, payload: dict[str, Any] = Body(...)):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    try:
+        return _get_service_from_payload({"user": scope}).graph_create_entity(
+            str(payload.get("name") or ""),
+            str(payload.get("entity_type") or ""),
+            aliases=_atomic_entity_aliases(payload),
+            where=scope,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get(
     "/integration/atomic/entities/{entity_id}",
     operation_id="atomic_memory_entity",
@@ -2619,6 +2640,84 @@ async def atomic_memory_entity(entity_id: str, user_id: str, soul_id: str):
     if entity is None:
         raise HTTPException(status_code=404, detail="entity not found")
     return entity
+
+
+@app.patch(
+    "/integration/atomic/entities/{entity_id}",
+    operation_id="atomic_update_entity",
+    tags=["integration"],
+)
+async def atomic_update_entity(
+    entity_id: str,
+    user_id: str,
+    soul_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    if not any(key in payload for key in ("name", "entity_type", "aliases")):
+        raise HTTPException(status_code=400, detail="name, entity_type, or aliases required")
+    scope = {"user_id": uid, "soul_id": sid}
+    try:
+        entity = _get_service_from_payload({"user": scope}).graph_update_entity(
+            entity_id,
+            name=str(payload["name"]) if "name" in payload else None,
+            entity_type=str(payload["entity_type"]) if "entity_type" in payload else None,
+            aliases=_atomic_entity_aliases(payload),
+            where=scope,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if entity is None:
+        raise HTTPException(status_code=404, detail="entity not found")
+    return entity
+
+
+async def _atomic_set_memory_entity(
+    memory_id: str,
+    entity_id: str,
+    user_id: str,
+    soul_id: str,
+    *,
+    attached: bool,
+) -> dict[str, Any]:
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    try:
+        memory = (
+            svc.graph_attach_entity(memory_id, entity_id, where=scope)
+            if attached
+            else svc.graph_detach_entity(memory_id, entity_id, where=scope)
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if memory is None:
+        raise HTTPException(status_code=404, detail="memory not found")
+    return memory
+
+
+@app.put(
+    "/integration/atomic/memories/{memory_id}/entities/{entity_id}",
+    operation_id="atomic_attach_entity",
+    tags=["integration"],
+)
+async def atomic_attach_entity(memory_id: str, entity_id: str, user_id: str, soul_id: str):
+    return await _atomic_set_memory_entity(memory_id, entity_id, user_id, soul_id, attached=True)
+
+
+@app.delete(
+    "/integration/atomic/memories/{memory_id}/entities/{entity_id}",
+    operation_id="atomic_detach_entity",
+    tags=["integration"],
+)
+async def atomic_detach_entity(memory_id: str, entity_id: str, user_id: str, soul_id: str):
+    return await _atomic_set_memory_entity(memory_id, entity_id, user_id, soul_id, attached=False)
 
 
 @app.get("/integration/atomic/canvas-source", operation_id="atomic_memory_canvas_source", tags=["integration"])

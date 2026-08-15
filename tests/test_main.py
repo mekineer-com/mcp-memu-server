@@ -442,16 +442,46 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
             captured.append((entity_id, kwargs))
             return {"id": entity_id, "name": "Annie", "memories": []} if entity_id == "e1" else None
 
+        def graph_create_entity(self, name: str, entity_type: str, **kwargs: Any) -> dict[str, Any]:
+            captured.append(("create", {"name": name, "entity_type": entity_type, **kwargs}))
+            return {"id": "e2", "name": name}
+
+        def graph_update_entity(self, entity_id: str, **kwargs: Any) -> dict[str, Any]:
+            captured.append(("update", {"entity_id": entity_id, **kwargs}))
+            return {"id": entity_id, "name": kwargs["name"]}
+
+        def graph_attach_entity(self, memory_id: str, entity_id: str, **kwargs: Any) -> dict[str, Any]:
+            captured.append(("attach", {"memory_id": memory_id, "entity_id": entity_id, **kwargs}))
+            return {"id": f"memory:{memory_id}"}
+
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
 
     listing = await main.atomic_memory_entities(user_id="Marcos", soul_id="Siri")
     detail = await main.atomic_memory_entity(entity_id="e1", user_id="Marcos", soul_id="Siri")
+    created = await main.atomic_create_entity(
+        user_id="Marcos",
+        soul_id="Siri",
+        payload={"name": "New Place", "entity_type": "place"},
+    )
+    updated = await main.atomic_update_entity(
+        entity_id="e1",
+        user_id="Marcos",
+        soul_id="Siri",
+        payload={"name": "Renamed"},
+    )
+    attached = await main.atomic_attach_entity("m1", "e1", "Marcos", "Siri")
 
     assert listing["total_count"] == 1
     assert detail["id"] == "e1"
+    assert created["id"] == "e2"
+    assert updated["name"] == "Renamed"
+    assert attached["id"] == "memory:m1"
     assert captured == [
         ("list", {"where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("e1", {"where": {"user_id": "Marcos", "soul_id": "Siri"}}),
+        ("create", {"name": "New Place", "entity_type": "place", "aliases": None, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
+        ("update", {"entity_id": "e1", "name": "Renamed", "entity_type": None, "aliases": None, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
+        ("attach", {"memory_id": "m1", "entity_id": "e1", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
     ]
     with pytest.raises(main.HTTPException) as exc:
         await main.atomic_memory_entity(entity_id="missing", user_id="Marcos", soul_id="Siri")
@@ -4114,26 +4144,49 @@ def test_assert_user_declared_relationship_is_strict():
         crud_endpoints._assert_user_declared_relationship({"origin": "extracted"})
 
 
-def test_relationship_lookup_uses_entity_id_when_names_collide():
-    con = sqlite3.connect(":memory:")
-    con.row_factory = sqlite3.Row
-    con.execute(
-        "CREATE TABLE entities (id TEXT, name TEXT, entity_type TEXT, normalized TEXT, properties TEXT, user_id TEXT, soul_id TEXT)"
-    )
-    con.executemany(
-        "INSERT INTO entities VALUES (?, 'Taylor', 'person', 'taylor', '{}', 'test-user', 'test-soul')",
-        [("a1b2c3d4",), ("b2c3d4e5",)],
-    )
+@pytest.mark.asyncio
+async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous_name(tmp_path: Path):
+    entities = [
+        SimpleNamespace(id="a1b2c3d4", name="Taylor", entity_type="person", properties={}),
+        SimpleNamespace(id="b2c3d4e5", name="Taylor", entity_type="person", properties={}),
+    ]
 
-    row = crud_endpoints._select_relationship_row(
-        con,
-        entity_id="b2c3d4e5",
-        user_id="test-user",
-        soul_id="test-soul",
-    )
+    class _Repo:
+        def list_by_ids(self, entity_ids, _scope):
+            return [entity for entity in entities if entity.id in entity_ids]
 
-    assert row is not None and row["id"] == "b2c3d4e5"
-    con.close()
+        def list_all(self, _scope):
+            return entities
+
+        def update(self, entity_id, **kwargs):
+            entity = next(entity for entity in entities if entity.id == entity_id)
+            return SimpleNamespace(
+                id=entity.id,
+                name=kwargs["name"],
+                entity_type=kwargs["entity_type"],
+                properties={"origin": "user_declared", "active": True},
+            )
+
+    service = SimpleNamespace(database=SimpleNamespace(entity_repo=_Repo()))
+    common = {
+        "soul_id": "test-soul",
+        "get_service_from_payload": lambda _payload: service,
+        "sqlite_current_path": lambda _uid, _sid: tmp_path / "test.db",
+        "sqlite_ensure_nonempty": lambda _path: None,
+        "json_from_db": main._json_from_db,
+    }
+    selected = await crud_endpoints.create_relationship_endpoint(
+        payload={"user_id": "test-user", "name": "Taylor", "entity_id": "b2c3d4e5"},
+        **common,
+    )
+    assert selected["speaker_id"] == "entity:b2c3d4e5"
+
+    with pytest.raises(main.HTTPException) as exc:
+        await crud_endpoints.create_relationship_endpoint(
+            payload={"user_id": "test-user", "name": "Taylor"},
+            **common,
+        )
+    assert exc.value.status_code == 409
 
 
 @pytest.mark.asyncio
