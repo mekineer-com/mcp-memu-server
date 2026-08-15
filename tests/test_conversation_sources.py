@@ -389,6 +389,29 @@ def test_whatsapp_tail_projects_one_source_ref_for_phone_and_lid_aliases(tmp_pat
         None,
     ]
 
+    dm_db = tmp_path / "dm_web_source.db"
+    _write_web_source_db(
+        dm_db,
+        messages=[
+            {
+                "msg_key": "dm",
+                "timestamp": 100,
+                "body": "from a direct message",
+                "chat_id": phone_jid,
+                "from_id": phone_jid,
+            },
+        ],
+    )
+    dm_rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id=f"whatsapp:dm:{phone_jid}",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+        soul_id="TestSoul",
+        reply_prefix="",
+        web_source_db_path=dm_db,
+    )
+    assert [row.get("source_ref") for row in dm_rows] == [f"whatsapp:{lid_jid}"]
+
 
 def test_load_whatsapp_web_source_tail_after_rowid_uses_monotonic_cursor(tmp_path: Path) -> None:
     web_db = tmp_path / "web_source.db"
