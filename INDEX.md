@@ -29,7 +29,7 @@ mcp-memu-server/
 ├── migrate_category_taxonomy.py # Offline inventory/discover/apply/validate migration; explicit DB only
 ├── config.json              # Runtime config (llm, storage, listen, dossier policy, memu path)
 ├── config.example.json      # Template
-├── tests/                   # pytest suite; see `TESTING.md` for run command
+├── tests/                   # pytest suite (`./.venv/bin/python -m pytest -q tests/`)
 ├── alembic/                 # DB migration scripts
 ├── storage/                 # Default SQLite DB + resource dir
 ├── errors.log               # ERROR-level log (RotatingFileHandler, 512KB, 2 backups) — gitignored
@@ -46,7 +46,10 @@ mcp-memu-server/
 | `/admin/shutdown` | POST | Request graceful shutdown (drain mode) |
 | `/admin/shutdown/status` | GET | Shutdown progress + active request counts |
 | `/memorize` | POST | Extract memories from conversation. `force=true` bypasses sleep-gap; `rebuild=true` wipes and resets cursor (implies force). Auto-memorize also fires inside `/conversation/{id}/turn`. |
+| `/memorize/progress` | GET | Live memorize batch progress |
+| `/memorize/cancel` | POST | Cancel the running memorize batch |
 | `/retrieve` | POST | Query memories. Optional `as_of` for temporal triple filtering. |
+| `/graph` | GET | Recent memory graph (items + edges) for graph clients |
 | `/timeline` | GET | Entity relationship timeline |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt: enriches query with identity, categories, memory cache, intentions, and current-chat history before calling memu. |
 | `/conversation/{id}/turn` | POST | Soul turn loop: runs LLM with turn contract, persists intentions + cache, fires APImw in background on cadence, manages free-turn continuations and attachments. |
@@ -67,6 +70,8 @@ mcp-memu-server/
 | `/integration/atomic/neighborhood/{item_id}` | GET | Cosine-similar memory neighborhood |
 | `/integration/atomic/similar/{item_id}` | GET | Pure cosine-similarity graph (no DB expansion) |
 | `/integration/atomic/search` | GET | Read-only memory FTS + vector search |
+| `/integration/whatsapp/outbounds/claim` | POST | Claim queued WhatsApp replies/attachments for delivery |
+| `/integration/whatsapp/outbounds/mark` | POST | Mark a claimed WhatsApp outbound sent or failed |
 | `/integration/memu/retrieve` | POST | MCP retrieve wrapper |
 | `/integration/memu/memorize` | POST | MCP memorize wrapper (`force` supported) |
 | `/integration/memu/consolidate` | POST | MCP force-consolidation wrapper |
@@ -79,8 +84,11 @@ mcp-memu-server/
 | `/pending` | GET | Review queue: unapproved memories/dossiers and persistent narrative self |
 | `/soul-summary/{kind}` | PATCH | Journal and approve an Atomic manual correction with snapshot guard |
 | `/soul-summary/{kind}/approve` | POST | Approve the displayed soul-summary value with snapshot guard |
+| `/memory/{item_id}` | GET | Single memory detail with graph context |
+| `/memory/{item_id}` | PATCH | Edit memory value (write-live, approve-later) |
 | `/memory/{item_id}/approve` | POST | Bless current memory value |
 | `/memory/{item_id}` | DELETE | Hard-delete with dependent cleanup (fts, edit_history, triples) |
+| `/category/{category_id}` | PATCH | Edit dossier title/description/prose with snapshot guard |
 | `/category/{category_id}/approve` | POST | Bless current category summary |
 | `/categories` | GET | List all categories |
 | `/categories/search` | POST | Search categories |
@@ -157,13 +165,18 @@ from memu.prompts.memory_type import ...  # type prompts
 ```
 llm:        provider, api_key, base_url, chat_model, embed_model
 storage:    resources_dir, metadata_store (provider + dsn)
+hermes:     home, whatsapp_web_source_db (Channels data paths)
+mcp:        http_path, sse_path
 listen:     host, port
 memu:       path (to memu/src)
+python:     executable, force_venv
+pid_file:   server pid path
 categories: dynamic dossier cluster size and revision target words
 retrieve:   apimw_enabled, apimw_cadence, apimw_memory_count, apimw_random_count, mental_health_query
 claude_code: claude_code_workspace, claude_code_permission_mode, claude_code_timeout_seconds
 memorize:   min_chunk_tokens, background_summary_tokens, background_extra_messages_tokens
 consolidation_interval_days: pending segment window (default 7)
+turn_response_sentences: soul reply length target
 debug:      log_prompts (bool)
 ```
 
