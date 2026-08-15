@@ -4068,38 +4068,38 @@ def test_memory_graph_category_approve_endpoint_uses_scoped_service(monkeypatch:
 
 
 def test_validate_relationship_speaker_id_rejects_reserved_prefixes():
-    assert crud_endpoints._validate_relationship_speaker_id("entity:brother") == "brother"
+    assert crud_endpoints._validate_relationship_speaker_id("entity:a1b2c3d4") == "a1b2c3d4"
     with pytest.raises(main.HTTPException):
         crud_endpoints._validate_relationship_speaker_id("user:marcos")
     with pytest.raises(main.HTTPException):
-        crud_endpoints._validate_relationship_speaker_id("entity:brother!")
+        crud_endpoints._validate_relationship_speaker_id("entity:not-an-id!")
 
 
 def test_relationship_item_from_values_filters_non_declared_or_inactive():
     item = crud_endpoints._relationship_item_from_values(
-        normalized="brother",
-        name="Brother",
+        entity_id="a1b2c3d4",
+        name="Rowan",
         entity_type="person",
         properties={"origin": "user_declared", "relationship": "sibling", "active": True},
     )
     assert item is not None
-    assert item["speaker_id"] == "entity:brother"
+    assert item["speaker_id"] == "entity:a1b2c3d4"
     assert item["relationship"] == "sibling"
 
     assert crud_endpoints._relationship_item_from_values(
-        normalized="brother",
-        name="Brother",
+        entity_id="a1b2c3d4",
+        name="Rowan",
         entity_type="person",
         properties={"origin": "extracted", "relationship": "sibling", "active": True},
     ) is None
     assert crud_endpoints._relationship_item_from_values(
-        normalized="brother",
-        name="Brother",
+        entity_id="a1b2c3d4",
+        name="Rowan",
         entity_type="person",
         properties={"origin": "user_declared", "active": False},
     ) is None
     assert crud_endpoints._relationship_item_from_values(
-        normalized="",
+        entity_id="",
         name="Broken",
         entity_type="person",
         properties={"origin": "user_declared", "active": True},
@@ -4112,6 +4112,28 @@ def test_assert_user_declared_relationship_is_strict():
         crud_endpoints._assert_user_declared_relationship({"origin": ""})
     with pytest.raises(main.HTTPException):
         crud_endpoints._assert_user_declared_relationship({"origin": "extracted"})
+
+
+def test_relationship_lookup_uses_entity_id_when_names_collide():
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.execute(
+        "CREATE TABLE entities (id TEXT, name TEXT, entity_type TEXT, normalized TEXT, properties TEXT, user_id TEXT, soul_id TEXT)"
+    )
+    con.executemany(
+        "INSERT INTO entities VALUES (?, 'Taylor', 'person', 'taylor', '{}', 'test-user', 'test-soul')",
+        [("a1b2c3d4",), ("b2c3d4e5",)],
+    )
+
+    row = crud_endpoints._select_relationship_row(
+        con,
+        entity_id="b2c3d4e5",
+        user_id="test-user",
+        soul_id="test-soul",
+    )
+
+    assert row is not None and row["id"] == "b2c3d4e5"
+    con.close()
 
 
 @pytest.mark.asyncio

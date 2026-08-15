@@ -17,7 +17,6 @@ from app.services import soul_summaries as _soul_summaries
 
 _RELATIONSHIP_NAME_MAX_CHARS = 50
 _RELATIONSHIP_TEXT_MAX_CHARS = 50
-_RELATIONSHIP_RESERVED_PREFIXES = ("user:", "soul:", "peer:", "environment:")
 _RELATIONSHIP_ORIGIN_USER_DECLARED = "user_declared"
 
 
@@ -37,29 +36,20 @@ def _normalize_relationship_text(raw: Any) -> str:
     return text
 
 
-def _slugify_relationship_name(name: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "_", str(name or "").strip().lower()).strip("_")
-    if not slug:
-        raise HTTPException(status_code=400, detail="name does not contain usable slug characters")
-    return slug
-
-
-def _relationship_speaker_id_from_normalized(normalized: str) -> str:
-    return f"entity:{normalized}"
+def _relationship_speaker_id(entity_id: str) -> str:
+    return f"entity:{entity_id}"
 
 
 def _validate_relationship_speaker_id(raw: Any) -> str:
-    speaker_id = str(raw or "").strip().lower()
+    speaker_id = str(raw or "").strip()
     if not speaker_id:
         raise HTTPException(status_code=400, detail="speaker_id required")
-    if any(speaker_id.startswith(prefix) for prefix in _RELATIONSHIP_RESERVED_PREFIXES):
-        raise HTTPException(status_code=400, detail="reserved speaker prefix")
-    if not speaker_id.startswith("entity:"):
+    if not speaker_id.casefold().startswith("entity:"):
         raise HTTPException(status_code=400, detail="speaker_id must start with entity:")
-    normalized = speaker_id[len("entity:") :].strip()
-    if not normalized or re.search(r"[^a-z0-9_]", normalized):
-        raise HTTPException(status_code=400, detail="speaker_id slug is invalid")
-    return normalized
+    entity_id = speaker_id[len("entity:") :].strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", entity_id) is None:
+        raise HTTPException(status_code=400, detail="entity ID is invalid")
+    return entity_id
 
 
 def _relationship_properties(
@@ -75,13 +65,13 @@ def _relationship_properties(
 
 def _relationship_item_from_values(
     *,
-    normalized: str,
+    entity_id: str,
     name: str,
     entity_type: str,
     properties: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
-    normalized = str(normalized or "").strip()
-    if not normalized:
+    entity_id = str(entity_id or "").strip()
+    if not entity_id:
         return None
     props = dict(properties or {})
     if str(props.get("origin") or "").strip() != _RELATIONSHIP_ORIGIN_USER_DECLARED:
@@ -89,7 +79,7 @@ def _relationship_item_from_values(
     if props.get("active") is False:
         return None
     return {
-        "speaker_id": _relationship_speaker_id_from_normalized(normalized),
+        "speaker_id": _relationship_speaker_id(entity_id),
         "name": str(name or "").strip(),
         "relationship": str(props.get("relationship") or "").strip(),
         "entity_type": str(entity_type or "person").strip() or "person",
@@ -101,11 +91,11 @@ def _relationship_item_from_entity(
     *,
     json_from_db: Callable[[Any], Any],
 ) -> dict[str, Any] | None:
-    normalized = str(getattr(entity, "normalized", "") or "").strip()
-    if not normalized:
+    entity_id = str(getattr(entity, "id", "") or "").strip()
+    if not entity_id:
         return None
     return _relationship_item_from_values(
-        normalized=normalized,
+        entity_id=entity_id,
         name=str(getattr(entity, "name", "") or ""),
         entity_type=str(getattr(entity, "entity_type", "") or ""),
         properties=_relationship_properties(getattr(entity, "properties", None), json_from_db=json_from_db),
@@ -121,7 +111,7 @@ def _assert_user_declared_relationship(props: Mapping[str, Any] | None) -> None:
 def _select_relationship_row(
     con: sqlite3.Connection,
     *,
-    normalized: str,
+    entity_id: str,
     user_id: str,
     soul_id: str,
 ) -> sqlite3.Row | None:
@@ -129,10 +119,9 @@ def _select_relationship_row(
         """
 SELECT id, name, entity_type, normalized, properties
 FROM entities
-WHERE normalized = ? AND user_id = ? AND soul_id = ?
-LIMIT 1
+WHERE id = ? AND user_id = ? AND soul_id = ?
 """,
-        (normalized, user_id, soul_id),
+        (entity_id, user_id, soul_id),
     ).fetchone()
 
 
@@ -330,7 +319,7 @@ WHERE user_id = ? AND soul_id = ?
         item
         for item in (
             _relationship_item_from_values(
-                normalized=str(row["normalized"] or ""),
+                entity_id=str(row["id"] or ""),
                 name=str(row["name"] or ""),
                 entity_type=str(row["entity_type"] or ""),
                 properties=_relationship_properties(row["properties"], json_from_db=json_from_db),
@@ -366,8 +355,6 @@ async def create_relationship_endpoint(
     if not uid:
         raise HTTPException(status_code=400, detail="user_id required")
 
-    normalized = _slugify_relationship_name(name)
-    _validate_relationship_speaker_id(_relationship_speaker_id_from_normalized(normalized))
     scope = {"user_id": uid, "soul_id": sid}
     svc, db_path = _assert_relationship_write_path(
         uid,
@@ -377,29 +364,23 @@ async def create_relationship_endpoint(
         sqlite_ensure_nonempty=sqlite_ensure_nonempty,
     )
 
+    entity = svc.database.entity_repo.get_or_create(
+        name=name,
+        entity_type=entity_type,
+        user_data=scope,
+    )
+    entity_id = str(entity.id)
     con = sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
         row = _select_relationship_row(
             con,
-            normalized=normalized,
+            entity_id=entity_id,
             user_id=uid,
             soul_id=sid,
         )
         if row is None:
-            svc.database.entity_repo.get_or_create(
-                name=name,
-                entity_type=entity_type,
-                user_data=scope,
-            )
-            row = _select_relationship_row(
-                con,
-                normalized=normalized,
-                user_id=uid,
-                soul_id=sid,
-            )
-            if row is None:
-                raise HTTPException(status_code=500, detail="failed to create relationship")
+            raise HTTPException(status_code=500, detail="failed to create relationship")
         props = _relationship_properties(row["properties"], json_from_db=json_from_db)
         if str(props.get("origin") or "").strip():
             _assert_user_declared_relationship(props)
@@ -425,7 +406,7 @@ WHERE id = ?
         )
         con.commit()
         return _relationship_item_from_values(
-            normalized=normalized,
+            entity_id=entity_id,
             name=name,
             entity_type=entity_type,
             properties=props,
@@ -452,7 +433,7 @@ async def update_relationship_endpoint(
         raise HTTPException(status_code=400, detail="soul_id required")
     if not uid:
         raise HTTPException(status_code=400, detail="user_id required")
-    normalized = _validate_relationship_speaker_id(speaker_id)
+    entity_id = _validate_relationship_speaker_id(speaker_id)
 
     name_raw = payload.get("name")
     relationship_raw = payload.get("relationship")
@@ -472,7 +453,7 @@ async def update_relationship_endpoint(
         con.row_factory = sqlite3.Row
         row = _select_relationship_row(
             con,
-            normalized=normalized,
+            entity_id=entity_id,
             user_id=uid,
             soul_id=sid,
         )
@@ -504,7 +485,7 @@ WHERE id = ?
         )
         con.commit()
         return _relationship_item_from_values(
-            normalized=normalized,
+            entity_id=entity_id,
             name=final_name,
             entity_type=str(row["entity_type"] or "").strip() or "person",
             properties=props,
@@ -531,7 +512,7 @@ async def delete_relationship_endpoint(
         raise HTTPException(status_code=400, detail="soul_id required")
     if not uid:
         raise HTTPException(status_code=400, detail="user_id required")
-    normalized = _validate_relationship_speaker_id(speaker_id)
+    entity_id = _validate_relationship_speaker_id(speaker_id)
 
     _svc, db_path = _assert_relationship_write_path(
         uid,
@@ -545,12 +526,12 @@ async def delete_relationship_endpoint(
         con.row_factory = sqlite3.Row
         row = _select_relationship_row(
             con,
-            normalized=normalized,
+            entity_id=entity_id,
             user_id=uid,
             soul_id=sid,
         )
         if row is None:
-            return {"ok": True, "speaker_id": _relationship_speaker_id_from_normalized(normalized)}
+            return {"ok": True, "speaker_id": _relationship_speaker_id(entity_id)}
         props = _relationship_properties(row["properties"], json_from_db=json_from_db)
         _assert_user_declared_relationship(props)
         props["origin"] = _RELATIONSHIP_ORIGIN_USER_DECLARED
@@ -570,7 +551,7 @@ WHERE id = ?
             ),
         )
         con.commit()
-        return {"ok": True, "speaker_id": _relationship_speaker_id_from_normalized(normalized)}
+        return {"ok": True, "speaker_id": _relationship_speaker_id(entity_id)}
     finally:
         con.close()
 
