@@ -91,6 +91,13 @@ def default_config() -> dict[str, Any]:
             "sessions_index_path": str(channels_data / "sessions" / "sessions.json"),
             "whatsapp_web_source_db": str(channels_data / "whatsapp" / "web_source.db"),
         },
+        "mentra": {
+            "enabled": False,
+            "gemini_api_key": "",
+            "model": "gemini-3.1-flash-live-preview",
+            "voice": "Kore",
+            "integration_bearer_token": "",
+        },
         "categories": {
             "dynamic_category_cluster_size": 10,
             "category_summary_target_words": 300,
@@ -266,11 +273,16 @@ def save_config(cfg: dict[str, Any]) -> None:
     p.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
-def mask_config(cfg: dict[str, Any]) -> dict[str, Any]:
+def mask_config(cfg: dict[str, Any], *, include_llm_secret: bool = False) -> dict[str, Any]:
     out = json.loads(json.dumps(cfg))
     key = out.get("llm", {}).get("api_key", "")
-    if isinstance(key, str) and key:
+    if not include_llm_secret and isinstance(key, str) and key:
         out["llm"]["api_key"] = key[:4] + "..." + key[-4:]
+    mentra = out.get("mentra")
+    if isinstance(mentra, dict):
+        for field in ("gemini_api_key", "integration_bearer_token"):
+            if mentra.get(field):
+                mentra[field] = "***"
     return out
 
 

@@ -45,6 +45,13 @@
     "home": "../hermes-channels/data",
     "whatsapp_web_source_db": "../hermes-channels/data/whatsapp/web_source.db"
   },
+  "mentra": {
+    "enabled": false,
+    "gemini_api_key": "",
+    "model": "gemini-3.1-flash-live-preview",
+    "voice": "Kore",
+    "integration_bearer_token": ""
+  },
   "mcp": {
     "http_path": "/mcp",
     "sse_path": "/sse"

@@ -63,6 +63,7 @@ from app.services import activity_messages as _activity_messages
 from app.services import apimw as _apimw
 from app.services import cross_history as _cross_history
 from app.services import free_turn as _free_turn
+from app.services import mentra_routes as _mentra_routes
 from app.services import whatsapp_outbounds as _whatsapp_outbounds
 from app.services.consolidation import (
     ConsolidationDeps,
@@ -1599,13 +1600,16 @@ _admin_routes.register_admin_routes(
     sqlite_build_scope_where=_sqlite_build_scope_where,
     logger=logger,
 )
+_mentra_routes.register_mentra_routes(app, get_config=lambda: _CONFIG)
 
 
 # ---- Config endpoints ----
 
 @app.get("/config", operation_id="get_config")
 async def get_config(include_secrets: bool = False):
-    return JSONResponse(content={"ok": True, "config": _CONFIG if include_secrets else _mask_config(_CONFIG)})
+    return JSONResponse(
+        content={"ok": True, "config": _mask_config(_CONFIG, include_llm_secret=include_secrets)}
+    )
 
 
 @app.post("/config", operation_id="set_config")
