@@ -393,6 +393,9 @@ async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: py
         limit=3,
         mode="keyword",
         since_days=7,
+        memory_only=True,
+        exclude_entity_id="entity-1",
+        exclude_category_id="category-1",
     )
 
     assert out["nodes"][0]["id"] == "memory:m1"
@@ -402,6 +405,9 @@ async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: py
         "limit": 3,
         "mode": "keyword",
         "since_days": 7,
+        "memory_only": True,
+        "exclude_entity_id": "entity-1",
+        "exclude_category_id": "category-1",
     }
 
 
@@ -482,7 +488,7 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
         entity_id="e1",
         user_id="Marcos",
         soul_id="Siri",
-        payload={"name": "Renamed"},
+        payload={"name": "Renamed", "description": "A person"},
     )
     preview = await main.atomic_preview_entity_merge("e1", "e2", "Marcos", "Siri")
     merged = await main.atomic_merge_entities(
@@ -507,7 +513,7 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
         ("list", {"where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("e1", {"where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("create", {"name": "New Place", "entity_type": "place", "aliases": None, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
-        ("update", {"entity_id": "e1", "name": "Renamed", "entity_type": None, "aliases": None, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
+        ("update", {"entity_id": "e1", "name": "Renamed", "entity_type": None, "aliases": None, "where": {"user_id": "Marcos", "soul_id": "Siri"}, "description": "A person"}),
         ("preview_merge", {"entity_id": "e1", "duplicate_id": "e2", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("merge", {"entity_id": "e1", "duplicate_id": "e2", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("set_ignored", {"entity_id": "e1", "ignored": True, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
@@ -518,6 +524,26 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
     with pytest.raises(main.HTTPException) as exc:
         await main.atomic_memory_entity(entity_id="missing", user_id="Marcos", soul_id="Siri")
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_atomic_entity_description_preserves_omitted_and_explicit_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, Any]] = []
+
+    class _FakeSvc:
+        def graph_update_entity(self, entity_id: str, **kwargs: Any) -> dict[str, Any]:
+            captured.append({"entity_id": entity_id, **kwargs})
+            return {"id": entity_id}
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
+
+    await main.atomic_update_entity("e1", "user", "soul", {"name": "Same"})
+    await main.atomic_update_entity("e1", "user", "soul", {"description": ""})
+
+    assert "description" not in captured[0]
+    assert captured[1]["description"] == ""
 
 
 @pytest.mark.asyncio
