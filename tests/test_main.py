@@ -4200,6 +4200,17 @@ def test_category_membership_routes_reserve_snapshot_and_forward_state(
             {"displayed_summary": "shown", "summaries_revision": 0},
         )
     )
+    with pytest.raises(main.HTTPException) as stale:
+        asyncio.run(
+            main.memory_graph_category_memory_attach(
+                "c1",
+                "m2",
+                "user",
+                "soul",
+                {"displayed_summary": "shown", "summaries_revision": 0},
+            )
+        )
+    assert stale.value.status_code == 409
     detached = asyncio.run(
         main.memory_graph_category_memory_detach(
             "c1",
