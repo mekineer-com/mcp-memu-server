@@ -4388,6 +4388,15 @@ async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous
     assert repo.updated is not None
     assert repo.updated["aliases"] == ["Tay"]
 
+    entities[1].properties = {"origin": "user_declared", "active": False}
+    restored = await crud_endpoints.create_relationship_endpoint(
+        payload={"user_id": "test-user", "name": "Taylor", "entity_id": "b2c3d4e5"},
+        **common,
+    )
+    assert restored["speaker_id"] == "entity:b2c3d4e5"
+    assert repo.updated is not None
+    assert repo.updated["property_updates"]["active"] is True
+
     entities[0].properties = {"ignored": True}
     with pytest.raises(main.HTTPException) as ignored_exc:
         await crud_endpoints.create_relationship_endpoint(
