@@ -4163,6 +4163,107 @@ def test_memory_graph_category_update_reserves_summary_revision(monkeypatch: pyt
     assert out["summaries_revision"] == 1
 
 
+def test_category_membership_routes_reserve_snapshot_and_forward_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    path = tmp_path / "soul.db"
+    con = main._sqlite_connect(path)
+    main._soul_state.ensure_schema(con)
+    con.close()
+    calls: list[dict[str, Any]] = []
+
+    class _Svc:
+        def graph_memory(self, _item_id, *, where):
+            assert where == {"user_id": "user", "soul_id": "soul"}
+            return {"id": "category:c1", "summary": "shown"}
+
+        def graph_set_category_membership(self, category_id, memory_id, **kwargs):
+            calls.append({"category_id": category_id, "memory_id": memory_id, **kwargs})
+            return {"id": f"category:{category_id}", "summary": "shown", "members": []}
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
+
+    attached = asyncio.run(
+        main.memory_graph_category_memory_attach(
+            "category:c1",
+            "memory:m1",
+            "user",
+            "soul",
+            {"displayed_summary": "shown", "summaries_revision": 0},
+        )
+    )
+    detached = asyncio.run(
+        main.memory_graph_category_memory_detach(
+            "c1",
+            "m1",
+            "user",
+            "soul",
+            {"displayed_summary": "shown", "summaries_revision": 1},
+        )
+    )
+
+    assert attached["summaries_revision"] == 1
+    assert detached["summaries_revision"] == 2
+    assert calls == [
+        {
+            "category_id": "c1",
+            "memory_id": "m1",
+            "attached": True,
+            "expected_displayed_summary": "shown",
+            "where": {"user_id": "user", "soul_id": "soul"},
+        },
+        {
+            "category_id": "c1",
+            "memory_id": "m1",
+            "attached": False,
+            "expected_displayed_summary": "shown",
+            "where": {"user_id": "user", "soul_id": "soul"},
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        (main.DossierRevisionStaleError("stale"), 409),
+        (main.DossierMembershipConflictError("cited"), 409),
+        (KeyError("missing"), 404),
+        (ValueError("bad"), 400),
+    ],
+)
+def test_category_membership_routes_map_engine_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    status: int,
+):
+    class _Svc:
+        def graph_set_category_membership(self, *_args, **_kwargs):
+            raise error
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
+    monkeypatch.setattr(main, "_reserve_category_snapshot", lambda *_args, **_kwargs: 1)
+
+    with pytest.raises(main.HTTPException) as exc:
+        asyncio.run(
+            main.memory_graph_category_memory_attach(
+                "c1",
+                "m1",
+                "user",
+                "soul",
+                {"displayed_summary": "shown", "summaries_revision": 0},
+            )
+        )
+    assert exc.value.status_code == status
+
+
+def test_category_membership_routes_require_snapshot():
+    with pytest.raises(main.HTTPException) as exc:
+        asyncio.run(main.memory_graph_category_memory_attach("c1", "m1", "user", "soul", {}))
+    assert exc.value.status_code == 400
+
+
 def test_memory_graph_category_approve_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPatch):
     calls: dict[str, object] = {}
 

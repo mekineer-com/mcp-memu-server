@@ -21,7 +21,12 @@ from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from memu.app import MemoryService
-from memu.app.graph import EntityActionConflictError, EntityMergeConflictError
+from memu.app.dossier import DossierRevisionStaleError
+from memu.app.graph import (
+    DossierMembershipConflictError,
+    EntityActionConflictError,
+    EntityMergeConflictError,
+)
 from pydantic import BaseModel, Field
 
 from app import procedural as _procedural
@@ -3261,6 +3266,81 @@ async def memory_graph_category_update(
     if revision is not None:
         item = {**item, "summaries_revision": revision}
     return item
+
+
+async def _memory_graph_category_membership(
+    category_id: str,
+    memory_id: str,
+    user_id: str,
+    soul_id: str,
+    payload: dict[str, Any],
+    *,
+    attached: bool,
+):
+    uid = str(user_id or "").strip()
+    sid = str(soul_id or "").strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    snapshot = _summary_snapshot(payload)
+    if snapshot is None:
+        raise HTTPException(status_code=400, detail="summary snapshot is required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    raw_category_id = category_id.removeprefix("category:")
+    raw_memory_id = memory_id.removeprefix("memory:")
+    revision = _reserve_category_snapshot(
+        svc,
+        category_id=raw_category_id,
+        scope=scope,
+        snapshot=snapshot,
+    )
+    try:
+        item = svc.graph_set_category_membership(
+            raw_category_id,
+            raw_memory_id,
+            attached=attached,
+            expected_displayed_summary=snapshot[1],
+            where=scope,
+        )
+    except (DossierRevisionStaleError, DossierMembershipConflictError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {**item, "summaries_revision": revision}
+
+
+@app.put(
+    "/category/{category_id}/memory/{memory_id}",
+    operation_id="memory_graph_category_memory_attach",
+)
+async def memory_graph_category_memory_attach(
+    category_id: str,
+    memory_id: str,
+    user_id: str,
+    soul_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    return await _memory_graph_category_membership(
+        category_id, memory_id, user_id, soul_id, payload, attached=True
+    )
+
+
+@app.delete(
+    "/category/{category_id}/memory/{memory_id}",
+    operation_id="memory_graph_category_memory_detach",
+)
+async def memory_graph_category_memory_detach(
+    category_id: str,
+    memory_id: str,
+    user_id: str,
+    soul_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    return await _memory_graph_category_membership(
+        category_id, memory_id, user_id, soul_id, payload, attached=False
+    )
 
 
 @app.post("/category/{category_id}/approve", operation_id="memory_graph_category_approve")

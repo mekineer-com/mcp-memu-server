@@ -90,6 +90,7 @@ mcp-memu-server/
 | `/memory/{item_id}/approve` | POST | Bless current memory value |
 | `/memory/{item_id}` | DELETE | Hard-delete with dependent cleanup (fts, edit_history, triples) |
 | `/category/{category_id}` | PATCH | Edit dossier title/description/prose with snapshot guard |
+| `/category/{category_id}/memory/{memory_id}` | PUT/DELETE | Snapshot-guarded dossier membership attach/detach |
 | `/category/{category_id}/approve` | POST | Bless current category summary |
 | `/categories` | GET | List all categories |
 | `/categories/search` | POST | Search categories |
