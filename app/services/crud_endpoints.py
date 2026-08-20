@@ -465,7 +465,7 @@ async def update_relationship_endpoint(
         raise HTTPException(status_code=404, detail="relationship not found")
     props = _relationship_properties(matches[0].properties, json_from_db=json_from_db)
     _assert_user_declared_relationship(props)
-    property_updates: dict[str, Any] = {"origin": _RELATIONSHIP_ORIGIN_USER_DECLARED, "active": True}
+    property_updates: dict[str, Any] = {"origin": _RELATIONSHIP_ORIGIN_USER_DECLARED}
     property_removals: set[str] = set()
     if relationship_raw is not None:
         if next_relationship:

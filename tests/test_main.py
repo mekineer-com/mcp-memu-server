@@ -410,6 +410,12 @@ async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: py
         "exclude_category_id": "category-1",
     }
 
+    captured.clear()
+    await main.atomic_memory_search(q="plain", user_id="Marcos", soul_id="Siri")
+    assert captured["memory_only"] is False
+    assert captured["exclude_entity_id"] is None
+    assert captured["exclude_category_id"] is None
+
 
 @pytest.mark.asyncio
 async def test_atomic_canvas_source_threads_scope_and_edges(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4404,7 +4410,7 @@ async def test_relationship_update_carries_entity_fields_in_one_repo_write(tmp_p
         id="a1b2c3d4",
         name="Taylor",
         entity_type="person",
-        properties={"origin": "user_declared", "active": True},
+        properties={"origin": "user_declared", "active": False},
     )
     writes: list[dict[str, Any]] = []
 
@@ -4417,7 +4423,7 @@ async def test_relationship_update_carries_entity_fields_in_one_repo_write(tmp_p
             return entity
 
     service = SimpleNamespace(database=SimpleNamespace(entity_repo=_Repo()))
-    await crud_endpoints.update_relationship_endpoint(
+    result = await crud_endpoints.update_relationship_endpoint(
         soul_id="test-soul",
         speaker_id="entity:a1b2c3d4",
         payload={
@@ -4437,6 +4443,8 @@ async def test_relationship_update_carries_entity_fields_in_one_repo_write(tmp_p
     assert writes[0]["entity_type"] == "person"
     assert writes[0]["aliases"] == []
     assert writes[0]["property_updates"]["relationship"] == "friend"
+    assert "active" not in writes[0]["property_updates"]
+    assert result == {}
 
 
 @pytest.mark.asyncio
