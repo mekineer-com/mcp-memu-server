@@ -488,13 +488,13 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
     created = await main.atomic_create_entity(
         user_id="Marcos",
         soul_id="Siri",
-        payload={"name": "New Place", "entity_type": "place"},
+        payload={"name": "New Library", "entity_type": "WhatsApp integration library"},
     )
     updated = await main.atomic_update_entity(
         entity_id="e1",
         user_id="Marcos",
         soul_id="Siri",
-        payload={"name": "Renamed", "description": "A person"},
+        payload={"name": "Renamed"},
     )
     preview = await main.atomic_preview_entity_merge("e1", "e2", "Marcos", "Siri")
     merged = await main.atomic_merge_entities(
@@ -518,8 +518,8 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
     assert captured == [
         ("list", {"where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("e1", {"where": {"user_id": "Marcos", "soul_id": "Siri"}}),
-        ("create", {"name": "New Place", "entity_type": "place", "aliases": None, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
-        ("update", {"entity_id": "e1", "name": "Renamed", "entity_type": None, "aliases": None, "where": {"user_id": "Marcos", "soul_id": "Siri"}, "description": "A person"}),
+        ("create", {"name": "New Library", "entity_type": "WhatsApp integration library", "aliases": None, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
+        ("update", {"entity_id": "e1", "name": "Renamed", "entity_type": None, "aliases": None, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("preview_merge", {"entity_id": "e1", "duplicate_id": "e2", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("merge", {"entity_id": "e1", "duplicate_id": "e2", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
         ("set_ignored", {"entity_id": "e1", "ignored": True, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
@@ -533,23 +533,11 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
 
 
 @pytest.mark.asyncio
-async def test_atomic_entity_description_preserves_omitted_and_explicit_blank(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_atomic_entity_update_rejects_description_only(
 ) -> None:
-    captured: list[dict[str, Any]] = []
-
-    class _FakeSvc:
-        def graph_update_entity(self, entity_id: str, **kwargs: Any) -> dict[str, Any]:
-            captured.append({"entity_id": entity_id, **kwargs})
-            return {"id": entity_id}
-
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
-
-    await main.atomic_update_entity("e1", "user", "soul", {"name": "Same"})
-    await main.atomic_update_entity("e1", "user", "soul", {"description": ""})
-
-    assert "description" not in captured[0]
-    assert captured[1]["description"] == ""
+    with pytest.raises(main.HTTPException) as exc:
+        await main.atomic_update_entity("e1", "user", "soul", {"description": "legacy"})
+    assert exc.value.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -4390,13 +4378,14 @@ async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous
             "user_id": "test-user",
             "name": "Taylor",
             "entity_id": "b2c3d4e5",
-            "entity_type": "person",
+            "entity_type": "Family friend",
             "aliases": ["Tay"],
         },
         **common,
     )
     assert selected["speaker_id"] == "entity:b2c3d4e5"
     assert repo.updated is not None
+    assert repo.updated["entity_type"] == "Family friend"
     assert repo.updated["aliases"] == ["Tay"]
 
     entities[1].properties = {"origin": "user_declared", "active": False}
@@ -4451,7 +4440,7 @@ async def test_relationship_update_carries_entity_fields_in_one_repo_write(tmp_p
             "user_id": "test-user",
             "name": "Taylor",
             "relationship": "friend",
-            "entity_type": "person",
+            "entity_type": "Family friend",
             "aliases": [],
         },
         get_service_from_payload=lambda _payload: service,
@@ -4461,7 +4450,7 @@ async def test_relationship_update_carries_entity_fields_in_one_repo_write(tmp_p
     )
 
     assert len(writes) == 1
-    assert writes[0]["entity_type"] == "person"
+    assert writes[0]["entity_type"] == "Family friend"
     assert writes[0]["aliases"] == []
     assert writes[0]["property_updates"]["relationship"] == "friend"
     assert "active" not in writes[0]["property_updates"]

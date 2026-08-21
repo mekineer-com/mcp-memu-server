@@ -2667,12 +2667,11 @@ async def atomic_update_entity(
     sid = str(soul_id or "").strip()
     if not uid or not sid:
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
-    if not any(key in payload for key in ("name", "entity_type", "aliases", "description")):
-        raise HTTPException(status_code=400, detail="name, entity_type, aliases, or description required")
-    scope = {"user_id": uid, "soul_id": sid}
-    updates: dict[str, Any] = {}
     if "description" in payload:
-        updates["description"] = str(payload.get("description") or "")
+        raise HTTPException(status_code=400, detail="description is not supported for entities")
+    if not any(key in payload for key in ("name", "entity_type", "aliases")):
+        raise HTTPException(status_code=400, detail="name, entity_type, or aliases required")
+    scope = {"user_id": uid, "soul_id": sid}
     try:
         entity = _get_service_from_payload({"user": scope}).graph_update_entity(
             entity_id,
@@ -2680,7 +2679,6 @@ async def atomic_update_entity(
             entity_type=str(payload["entity_type"]) if "entity_type" in payload else None,
             aliases=_atomic_entity_aliases(payload),
             where=scope,
-            **updates,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

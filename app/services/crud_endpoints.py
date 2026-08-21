@@ -350,9 +350,7 @@ async def create_relationship_endpoint(
     name = _normalize_relationship_name(payload.get("name"))
     relationship = _normalize_relationship_text(payload.get("relationship"))
     aliases = _relationship_aliases(payload)
-    entity_type = str(payload.get("entity_type") or "person").strip().lower() or "person"
-    if entity_type not in {"person", "topic", "place", "project"}:
-        raise HTTPException(status_code=400, detail="entity_type must be person/topic/place/project")
+    entity_type = str(payload.get("entity_type") or "person").strip() or "person"
     if not sid:
         raise HTTPException(status_code=400, detail="soul_id required")
     if not uid:
@@ -449,9 +447,9 @@ async def update_relationship_endpoint(
         raise HTTPException(status_code=400, detail="name, relationship, entity_type, or aliases required")
     next_name = _normalize_relationship_name(name_raw) if name_raw is not None else None
     next_relationship = _normalize_relationship_text(relationship_raw) if relationship_raw is not None else None
-    next_entity_type = str(entity_type_raw).strip().lower() if entity_type_raw is not None else None
-    if next_entity_type is not None and next_entity_type not in {"person", "topic", "place", "project"}:
-        raise HTTPException(status_code=400, detail="entity_type must be person/topic/place/project")
+    next_entity_type = str(entity_type_raw).strip() if entity_type_raw is not None else None
+    if next_entity_type is not None and not next_entity_type:
+        raise HTTPException(status_code=400, detail="entity_type is required")
     svc = _assert_relationship_write_path(
         uid,
         sid,
