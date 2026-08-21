@@ -41,6 +41,7 @@ mcp-memu-server/
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
+| `/` | GET | Serves bundled memU-ui if present, else a JSON health stub |
 | `/health` | GET | Health check |
 | `/version` | GET | Build / server instance identity |
 | `/admin/shutdown` | POST | Request graceful shutdown (drain mode) |
@@ -167,8 +168,9 @@ from memu.prompts.memory_type import ...  # type prompts
 
 ```
 llm:        provider, api_key, base_url, chat_model, embed_model
-storage:    resources_dir, metadata_store (provider + dsn)
-hermes:     home, whatsapp_web_source_db (Channels data paths)
+storage:    resources_dir, sqlite_dir, metadata_store (provider + dsn)
+hermes:     home, state_db_path, sessions_index_path, whatsapp_web_source_db (Channels data paths)
+mentra:     enabled, gemini_api_key, model, voice, integration_bearer_token
 mcp:        http_path, sse_path
 listen:     host, port
 memu:       path (to memu/src)
@@ -176,8 +178,9 @@ python:     executable, force_venv
 pid_file:   server pid path
 categories: dynamic dossier cluster size and revision target words
 retrieve:   apimw_enabled, apimw_cadence, apimw_memory_count, apimw_random_count, mental_health_query
-claude_code: claude_code_workspace, claude_code_permission_mode, claude_code_timeout_seconds
-memorize:   min_chunk_tokens, background_summary_tokens, background_extra_messages_tokens
+claude_code*: top-level keys, not a block — claude_code, claude_code_model, claude_code_effort, claude_code_permission_mode, claude_code_settings, claude_code_workspace, claude_code_timeout_seconds
+memorize:   min_chunk_tokens, episodes_per_segment, background_summary_tokens, background_extra_messages_tokens, enable_confidence_normalization, semantic_dedupe_enabled, semantic_dedupe_similarity_threshold
+procedural: yaml_dir, db_path
 consolidation_interval_days: pending segment window (default 7)
 turn_response_sentences: soul reply length target
 debug:      log_prompts (bool)
