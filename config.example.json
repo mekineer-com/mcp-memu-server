@@ -43,6 +43,8 @@
   },
   "hermes": {
     "home": "../hermes-channels/data",
+    "state_db_path": "../hermes-channels/data/state.db",
+    "sessions_index_path": "../hermes-channels/data/sessions/sessions.json",
     "whatsapp_web_source_db": "../hermes-channels/data/whatsapp/web_source.db"
   },
   "mentra": {
@@ -89,6 +91,10 @@
     "mental_health_query": true
   },
   "consolidation_interval_days": 7,
+  "procedural": {
+    "yaml_dir": "../memu/procedural",
+    "db_path": "../memu/sqlite/procedural.db"
+  },
   "turn_response_sentences": 4,
   "debug": {
     "log_prompts": false

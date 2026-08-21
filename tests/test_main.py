@@ -4387,6 +4387,7 @@ async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous
     assert repo.updated is not None
     assert repo.updated["entity_type"] == "Family friend"
     assert repo.updated["aliases"] == ["Tay"]
+    assert repo.updated["property_removals"] == {"active", "deleted_at", "relationship"}
 
     entities[1].properties = {"origin": "user_declared", "active": False}
     restored = await crud_endpoints.create_relationship_endpoint(
@@ -4395,7 +4396,7 @@ async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous
     )
     assert restored["speaker_id"] == "entity:b2c3d4e5"
     assert repo.updated is not None
-    assert repo.updated["property_updates"]["active"] is True
+    assert repo.updated["property_removals"] == {"active", "deleted_at", "relationship"}
 
     entities[0].properties = {"ignored": True}
     with pytest.raises(main.HTTPException) as ignored_exc:
@@ -4454,6 +4455,7 @@ async def test_relationship_update_carries_entity_fields_in_one_repo_write(tmp_p
     assert writes[0]["aliases"] == []
     assert writes[0]["property_updates"]["relationship"] == "friend"
     assert "active" not in writes[0]["property_updates"]
+    assert "origin" not in writes[0]["property_updates"]
 
 
 @pytest.mark.asyncio

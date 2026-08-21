@@ -386,11 +386,10 @@ async def create_relationship_endpoint(
     if requested_id and not matches:
         raise HTTPException(status_code=404, detail="entity not found")
 
-    property_updates: dict[str, Any] = {
-        "origin": _RELATIONSHIP_ORIGIN_USER_DECLARED,
-        "active": True,
-    }
-    property_removals = {"relationship"} if not relationship else set()
+    property_updates: dict[str, Any] = {"origin": _RELATIONSHIP_ORIGIN_USER_DECLARED}
+    property_removals = {"active", "deleted_at"}
+    if not relationship:
+        property_removals.add("relationship")
     if relationship:
         property_updates["relationship"] = relationship
     if matches:
@@ -463,7 +462,7 @@ async def update_relationship_endpoint(
         raise HTTPException(status_code=404, detail="relationship not found")
     props = _relationship_properties(matches[0].properties, json_from_db=json_from_db)
     _assert_user_declared_relationship(props)
-    property_updates: dict[str, Any] = {"origin": _RELATIONSHIP_ORIGIN_USER_DECLARED}
+    property_updates: dict[str, Any] = {}
     property_removals: set[str] = set()
     if relationship_raw is not None:
         if next_relationship:
