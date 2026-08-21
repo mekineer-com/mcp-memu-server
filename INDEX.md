@@ -80,7 +80,7 @@ mcp-memu-server/
 | `/conversation/{id}/consolidation/force` | POST | Force consolidation now (lock-safe) |
 | `/souls/{soul_id}/intentions` | GET | Long-term life goals (`intentions_life_goals` table) |
 | `/souls/{soul_id}/relationships` | GET/POST | User-declared relationship entities; POST may promote an exact entity ID |
-| `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or soft-delete one relationship by stable `entity:<entities.id>` reference |
+| `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or remove Relationship properties from one stable `entity:<entities.id>` reference |
 | `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot |
 | `/pending` | GET | Review queue: unapproved memories/dossiers and persistent narrative self |
 | `/soul-summary/{kind}` | PATCH | Journal and approve an Atomic manual correction with snapshot guard |

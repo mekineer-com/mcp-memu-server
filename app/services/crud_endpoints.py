@@ -517,11 +517,7 @@ async def delete_relationship_endpoint(
     repo.update(
         entity_id,
         where=scope,
-        property_updates={
-            "origin": _RELATIONSHIP_ORIGIN_USER_DECLARED,
-            "active": False,
-            "deleted_at": datetime.now(UTC).isoformat(),
-        },
+        property_removals={"origin", "relationship", "active", "deleted_at"},
     )
     return {"ok": True, "speaker_id": _relationship_speaker_id(entity_id)}
 

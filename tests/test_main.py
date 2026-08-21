@@ -4457,6 +4457,51 @@ async def test_relationship_update_carries_entity_fields_in_one_repo_write(tmp_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("active", [True, False])
+async def test_relationship_delete_removes_only_relationship_properties(tmp_path: Path, active: bool):
+    entity = SimpleNamespace(
+        id="a1b2c3d4",
+        name="Taylor",
+        entity_type="person",
+        properties={
+            "origin": "user_declared",
+            "relationship": "friend",
+            "active": active,
+            "deleted_at": "legacy",
+            "aliases": ["Tay"],
+            "source_refs": ["whatsapp:123"],
+            "ignored": False,
+        },
+    )
+    writes: list[dict[str, Any]] = []
+
+    class _Repo:
+        def list_by_ids(self, _entity_ids, _scope):
+            return [entity]
+
+        def update(self, _entity_id, **kwargs):
+            writes.append(kwargs)
+            return entity
+
+    service = SimpleNamespace(database=SimpleNamespace(entity_repo=_Repo()))
+    result = await crud_endpoints.delete_relationship_endpoint(
+        soul_id="test-soul",
+        speaker_id="entity:a1b2c3d4",
+        user_id="test-user",
+        get_service_from_payload=lambda _payload: service,
+        sqlite_current_path=lambda _uid, _sid: tmp_path / "test.db",
+        sqlite_ensure_nonempty=lambda _path: None,
+        json_from_db=main._json_from_db,
+    )
+
+    assert result == {"ok": True, "speaker_id": "entity:a1b2c3d4"}
+    assert writes == [{
+        "where": {"user_id": "test-user", "soul_id": "test-soul"},
+        "property_removals": {"origin", "relationship", "active", "deleted_at"},
+    }]
+
+
+@pytest.mark.asyncio
 async def test_list_relationships_does_not_create_missing_scoped_db(tmp_path: Path):
     db_path = tmp_path / "s.db"
 
