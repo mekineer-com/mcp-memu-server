@@ -1637,7 +1637,9 @@ _mentra_routes.register_mentra_routes(
     get_config=lambda: _CONFIG,
     get_service_from_scope=lambda scope: _get_service_from_payload({"user": scope}),
     load_turn_state_and_soul_card=_load_turn_state_and_soul_card,
-    build_identity_context=_build_retrieve_identity_context,
+    build_identity_context=lambda soul_id: _build_retrieve_identity_context(
+        soul_id, memory_search_available=False
+    ),
     load_cross_chat_context=_load_mentra_cross_chat_context,
 )
 

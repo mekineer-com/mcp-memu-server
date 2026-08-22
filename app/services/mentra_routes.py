@@ -22,9 +22,12 @@ _TOKEN_SETUP_FIELD_MASK = ",".join(
         "generationConfig",
         "systemInstruction",
         "tools",
+        "realtimeInputConfig",
         "inputAudioTranscription",
         "outputAudioTranscription",
         "contextWindowCompression",
+        "proactivity",
+        "historyConfig",
     )
 )
 _leases: dict[str, tuple[str, str, float]] = {}
@@ -96,9 +99,12 @@ async def _mint_gemini_token(
         },
         "systemInstruction": {"parts": [{"text": system_instruction}]},
         "tools": [],
+        "realtimeInputConfig": {},
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
         "contextWindowCompression": {"slidingWindow": {}},
+        "proactivity": {"proactiveAudio": False},
+        "historyConfig": {},
     }
     body = json.dumps(
         {

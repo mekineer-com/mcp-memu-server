@@ -2852,6 +2852,12 @@ def test_build_retrieve_identity_context_uses_shared_time_anchor(monkeypatch: py
     assert out.startswith(f"Today is {sentinel_anchor}.")
 
 
+def test_build_retrieve_identity_context_omits_search_when_unavailable() -> None:
+    out = main._build_retrieve_identity_context("Echo", memory_search_available=False)
+    assert "search your long-term memory" not in out
+    assert "identity dossiers" in out
+
+
 def test_build_retrieve_soul_context_queries_includes_full_history() -> None:
     history = [
         {"source_message_id": f"m{i}", "role": "user", "content": f"msg {i}"}

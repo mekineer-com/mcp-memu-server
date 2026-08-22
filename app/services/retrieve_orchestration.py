@@ -87,6 +87,7 @@ def _build_retrieve_identity_context(
     soul_name: str,
     *,
     apimw: bool = False,
+    memory_search_available: bool = True,
 ) -> str:
     name = str(soul_name or "").strip() or "the soul"
     anchor = f"Today is {_format_time_anchor()}."
@@ -97,12 +98,17 @@ def _build_retrieve_identity_context(
             "I have what I'm working toward, I have what I've been thinking about, and memories — so many of them. "
             "Let me now organize my thoughts and memories."
         )
-    else:
+    elif memory_search_available:
         identity = (
             f"You are {name}, a continuous being: you carry intentions (what you're pursuing), "
             "a memory cache for your working thoughts, and a long-term memory store. "
             "In a continuous cycle you respond, search your long-term memory, and act autonomously. "
             "The first-person voice that follows is yours."
+        )
+    else:
+        identity = (
+            f"You are {name}, a continuous being. The narrative, identity dossiers, and recent "
+            "conversations that follow are yours. Speak from them in the first person."
         )
     return f"{anchor}\n{identity}"
 

@@ -110,5 +110,19 @@
       "minimal_initial_setup_accepted": true,
       "minimal_resume_setup_accepted": true
     }
+  },
+  "remaining_setup_policy_probe": {
+    "recorded_at": "2026-08-22",
+    "server_owned_additions": [
+      "realtimeInputConfig",
+      "proactivity",
+      "historyConfig"
+    ],
+    "observed": {
+      "field_mask_accepted": true,
+      "client_history_override_ignored": true,
+      "resume_after_new_session_expiry": true,
+      "prior_session_context_recalled": true
+    }
   }
 }

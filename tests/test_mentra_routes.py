@@ -294,16 +294,20 @@ def test_token_mint_uses_measured_constrained_wire(
     assert request.get_header("X-goog-api-key") == "secret"
     assert payload["uses"] == 1
     assert payload["fieldMask"] == (
-        "model,generationConfig,systemInstruction,tools,inputAudioTranscription,"
-        "outputAudioTranscription,contextWindowCompression"
+        "model,generationConfig,systemInstruction,tools,realtimeInputConfig,"
+        "inputAudioTranscription,outputAudioTranscription,contextWindowCompression,"
+        "proactivity,historyConfig"
     )
     assert setup["model"] == "models/gemini-2.5-flash-native-audio-preview-12-2025"
     assert setup["tools"] == []
+    assert setup["realtimeInputConfig"] == {}
     assert setup["generationConfig"]["responseModalities"] == ["AUDIO"]
     assert setup["inputAudioTranscription"] == {}
     assert setup["outputAudioTranscription"] == {}
     assert "sessionResumption" not in setup
     assert setup["contextWindowCompression"] == {"slidingWindow": {}}
+    assert setup["proactivity"] == {"proactiveAudio": False}
+    assert setup["historyConfig"] == {}
     expires = datetime.fromisoformat(payload["expireTime"].replace("Z", "+00:00"))
     new_session = datetime.fromisoformat(
         payload["newSessionExpireTime"].replace("Z", "+00:00")
