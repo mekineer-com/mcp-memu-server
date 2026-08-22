@@ -106,7 +106,9 @@
       "field_mask_accepted": true,
       "locked_client_conflicts_ignored": true,
       "same_one_use_token_reconnected": true,
-      "prior_session_context_recalled": true
+      "prior_session_context_recalled": true,
+      "minimal_initial_setup_accepted": true,
+      "minimal_resume_setup_accepted": true
     }
   }
 }
