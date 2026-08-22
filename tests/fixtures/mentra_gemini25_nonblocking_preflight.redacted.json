@@ -1,0 +1,82 @@
+{
+  "recorded_at": "2026-08-22T14:37:11.808Z",
+  "purpose": "Redacted live evidence for the Gemini 2.5 constrained token wire; not a production token template.",
+  "request": {
+    "method": "POST",
+    "url": "https://generativelanguage.googleapis.com/v1alpha/auth_tokens",
+    "headers": {
+      "content-type": "application/json",
+      "x-goog-api-key": "<redacted>"
+    },
+    "body": {
+      "uses": 1,
+      "expireTime": "2026-08-22T14:42:10.492Z",
+      "newSessionExpireTime": "2026-08-22T14:38:10.492Z",
+      "bidiGenerateContentSetup": {
+        "model": "models/gemini-2.5-flash-native-audio-preview-12-2025",
+        "generationConfig": {
+          "responseModalities": [
+            "AUDIO"
+          ],
+          "speechConfig": {
+            "voiceConfig": {
+              "prebuiltVoiceConfig": {
+                "voiceName": "Kore"
+              }
+            }
+          }
+        },
+        "systemInstruction": {
+          "parts": [
+            {
+              "text": "You are a concise fictional test companion. Whenever asked for the fictional access code, you MUST call recall_memory."
+            }
+          ]
+        },
+        "tools": [
+          {
+            "functionDeclarations": [
+              {
+                "name": "recall_memory",
+                "description": "Retrieve one fictional memory.",
+                "behavior": "NON_BLOCKING",
+                "parameters": {
+                  "type": "OBJECT",
+                  "properties": {
+                    "query": {
+                      "type": "STRING"
+                    }
+                  },
+                  "required": [
+                    "query"
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "inputAudioTranscription": {},
+        "outputAudioTranscription": {},
+        "sessionResumption": {},
+        "contextWindowCompression": {
+          "slidingWindow": {}
+        }
+      }
+    }
+  },
+  "observed_response": {
+    "status": 200,
+    "body": {
+      "name": "<redacted-ephemeral-token>"
+    }
+  },
+  "prior_socket_observations": {
+    "endpoint": "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
+    "setup_complete": true,
+    "non_blocking_tool_called": true,
+    "audio_chunks_before_tool_call": 76,
+    "audio_chunks_during_1500ms_tool_delay": 0,
+    "silent_result_used_on_next_turn": true,
+    "resumable_handle_received": true
+  }
+}
