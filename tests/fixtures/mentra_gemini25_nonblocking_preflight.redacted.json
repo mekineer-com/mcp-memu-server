@@ -96,5 +96,17 @@
       "token_audio_parts_observed": 34,
       "client_text_modality_ignored": true
     }
+  },
+  "resumption_field_mask_probe": {
+    "recorded_at": "2026-08-22",
+    "field_mask": "model,generationConfig,systemInstruction,tools,inputAudioTranscription,outputAudioTranscription,contextWindowCompression",
+    "token_setup_omits": "sessionResumption",
+    "client_setup_supplies": "sessionResumption.handle",
+    "observed": {
+      "field_mask_accepted": true,
+      "locked_client_conflicts_ignored": true,
+      "same_one_use_token_reconnected": true,
+      "prior_session_context_recalled": true
+    }
   }
 }

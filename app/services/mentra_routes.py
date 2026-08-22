@@ -16,6 +16,17 @@ from pydantic import BaseModel, field_validator
 
 _DEVICE_SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LEASE_SECONDS = 90
+_TOKEN_SETUP_FIELD_MASK = ",".join(
+    (
+        "model",
+        "generationConfig",
+        "systemInstruction",
+        "tools",
+        "inputAudioTranscription",
+        "outputAudioTranscription",
+        "contextWindowCompression",
+    )
+)
 _leases: dict[str, tuple[str, str, float]] = {}
 _lease_lock = asyncio.Lock()
 # ponytail: one global Start lock; use per-soul locks only if concurrent souls need faster starts.
@@ -87,7 +98,6 @@ async def _mint_gemini_token(
         "tools": [],
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
-        "sessionResumption": {},
         "contextWindowCompression": {"slidingWindow": {}},
     }
     body = json.dumps(
@@ -95,6 +105,7 @@ async def _mint_gemini_token(
             "uses": 1,
             "expireTime": _rfc3339(now + timedelta(minutes=30)),
             "newSessionExpireTime": _rfc3339(now + timedelta(seconds=60)),
+            "fieldMask": _TOKEN_SETUP_FIELD_MASK,
             "bidiGenerateContentSetup": setup,
         }
     ).encode()
