@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
 import io
 import json
 from datetime import UTC, datetime
@@ -135,6 +136,19 @@ def test_start_auth_and_validation_precede_bootstrap(
     assert calls["token"] == []
 
 
+def test_start_requires_model_and_voice_before_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, calls, config = _session_app(monkeypatch)
+
+    config["mentra"]["model"] = ""
+    assert client.post("/integration/mentra/session/start", json=START, headers=AUTH).status_code == 503
+    config["mentra"]["model"] = "model"
+    config["mentra"]["voice"] = ""
+    assert client.post("/integration/mentra/session/start", json=START, headers=AUTH).status_code == 503
+    assert calls["service"] == 0
+
+
 def test_start_builds_bounded_instruction_and_returns_only_client_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -191,11 +205,19 @@ def test_lease_resume_heartbeat_and_end_are_scoped(
     assert client.post(
         "/integration/mentra/session/start", json=competing, headers=AUTH
     ).status_code == 409
+    other_user = {**START, "user_id": "Another Fictional User"}
+    assert client.post(
+        "/integration/mentra/session/start", json=other_user, headers=AUTH
+    ).status_code == 409
     assert calls["service"] == 2
 
     scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
     assert client.post(
         "/integration/mentra/session/wrong/heartbeat", json=scope, headers=AUTH
+    ).status_code == 404
+    wrong_user_scope = {**scope, "user_id": "Another Fictional User"}
+    assert client.post(
+        "/integration/mentra/session/phone-1/heartbeat", json=wrong_user_scope, headers=AUTH
     ).status_code == 404
     assert client.post(
         "/integration/mentra/session/phone-1/heartbeat", json=scope, headers=AUTH
@@ -225,12 +247,16 @@ def test_failed_token_mint_rolls_back_new_and_renewed_lease(
     assert client.post(
         "/integration/mentra/session/start", json=competing, headers=AUTH
     ).status_code == 200
-    lease_before = mentra_routes._leases[(START["user_id"], START["soul_id"])]
+    lease_before = mentra_routes._leases[START["soul_id"]]
     failed_renewal = client.post(
         "/integration/mentra/session/start", json=competing, headers=AUTH
     )
     assert failed_renewal.status_code == 502
-    assert mentra_routes._leases[(START["user_id"], START["soul_id"])] == lease_before
+    assert mentra_routes._leases[START["soul_id"]] == lease_before
+
+
+def test_route_registration_has_no_conversation_state_write_seam() -> None:
+    assert "write_conversation_state" not in inspect.signature(register_mentra_routes).parameters
 
 
 def test_token_mint_uses_measured_constrained_wire(

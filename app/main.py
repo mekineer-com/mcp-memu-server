@@ -1609,8 +1609,8 @@ def _load_mentra_cross_chat_context(
     *, user_id: str, soul_id: str, conversation_id: str
 ) -> str:
     db_path = _sqlite_current_path(user_id, soul_id)
-    if db_path is None or not db_path.exists():
-        raise RuntimeError("Mentra soul database does not exist")
+    if db_path is None:
+        raise RuntimeError("Mentra soul database path could not be resolved")
     con = _sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row

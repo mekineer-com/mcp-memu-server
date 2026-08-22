@@ -78,5 +78,21 @@
     "audio_chunks_during_1500ms_tool_delay": 0,
     "silent_result_used_on_next_turn": true,
     "resumable_handle_received": true
+  },
+  "constraint_override_probe": {
+    "recorded_at": "2026-08-22",
+    "client_setup_conflicts": {
+      "model": "models/gemini-client-override-must-not-exist",
+      "system_instruction_marker": "CLIENT_OVERRIDE_391",
+      "response_modality": "TEXT",
+      "extra_tool": "client_override_tool"
+    },
+    "token_owned_marker": "TOKEN_LOCKED_742",
+    "observed": {
+      "setup_complete": true,
+      "token_owned_marker_used": true,
+      "client_marker_used": false,
+      "client_model_ignored": true
+    }
   }
 }

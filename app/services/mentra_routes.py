@@ -16,7 +16,7 @@ from pydantic import BaseModel, field_validator
 
 _DEVICE_SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LEASE_SECONDS = 90
-_leases: dict[tuple[str, str], tuple[str, float]] = {}
+_leases: dict[str, tuple[str, str, float]] = {}
 _lease_lock = asyncio.Lock()
 # ponytail: one global Start lock; use per-soul locks only if concurrent souls need faster starts.
 _start_lock = asyncio.Lock()
@@ -47,6 +47,7 @@ class MentraSessionStart(BaseModel):
     @field_validator("mode")
     @classmethod
     def validate_mode(cls, value: str) -> str:
+        # Slice 7 consumes the mode when manual VAD is implemented.
         value = value.strip()
         if value not in {"continuous", "manual"}:
             raise ValueError("must be continuous or manual")
@@ -192,16 +193,22 @@ def register_mentra_routes(
             raise HTTPException(status_code=503, detail="Mentra Gemini credential is not configured")
         model = str(config.get("model") or "").strip()
         voice = str(config.get("voice") or "").strip()
+        if not model:
+            raise HTTPException(status_code=503, detail="Mentra Gemini model is not configured")
+        if not voice:
+            raise HTTPException(status_code=503, detail="Mentra Gemini voice is not configured")
         scope = {"user_id": body.user_id, "soul_id": body.soul_id}
-        lease_key = (body.user_id, body.soul_id)
+        lease_key = body.soul_id
 
         async with _start_lock:
             async with _lease_lock:
                 active = _leases.get(lease_key)
-                if active and active[1] <= time.monotonic():
+                if active and active[2] <= time.monotonic():
                     _leases.pop(lease_key, None)
                     active = None
-                if active and active[0] != body.device_session_id:
+                if active and (
+                    active[0] != body.device_session_id or active[1] != body.user_id
+                ):
                     raise HTTPException(status_code=409, detail="Another Mentra session is active")
 
             service = get_service_from_scope(scope)
@@ -227,7 +234,11 @@ def register_mentra_routes(
 
             async with _lease_lock:
                 previous = _leases.get(lease_key)
-                _leases[lease_key] = (body.device_session_id, time.monotonic() + _LEASE_SECONDS)
+                _leases[lease_key] = (
+                    body.device_session_id,
+                    body.user_id,
+                    time.monotonic() + _LEASE_SECONDS,
+                )
             try:
                 token = await _mint_gemini_token(
                     api_key=api_key,
@@ -265,17 +276,17 @@ def register_mentra_routes(
         dependencies=auth,
     )
     async def mentra_session_heartbeat(session_id: str, body: MentraSessionScope) -> dict[str, bool]:
-        key = (body.user_id, body.soul_id)
+        key = body.soul_id
         async with _lease_lock:
             active = _leases.get(key)
             if not active:
                 raise HTTPException(status_code=404, detail="Mentra session not found")
-            if active[1] <= time.monotonic():
+            if active[2] <= time.monotonic():
                 _leases.pop(key, None)
                 raise HTTPException(status_code=404, detail="Mentra session not found")
-            if active[0] != session_id:
+            if active[0] != session_id or active[1] != body.user_id:
                 raise HTTPException(status_code=404, detail="Mentra session not found")
-            _leases[key] = (session_id, time.monotonic() + _LEASE_SECONDS)
+            _leases[key] = (session_id, body.user_id, time.monotonic() + _LEASE_SECONDS)
         return {"ok": True}
 
     @app.post(
@@ -284,13 +295,13 @@ def register_mentra_routes(
         dependencies=auth,
     )
     async def mentra_session_end(session_id: str, body: MentraSessionScope) -> dict[str, bool]:
-        key = (body.user_id, body.soul_id)
+        key = body.soul_id
         async with _lease_lock:
             active = _leases.get(key)
-            if not active or active[1] <= time.monotonic():
+            if not active or active[2] <= time.monotonic():
                 _leases.pop(key, None)
                 return {"ok": True}
-            if active[0] != session_id:
+            if active[0] != session_id or active[1] != body.user_id:
                 raise HTTPException(status_code=409, detail="Another Mentra session is active")
             _leases.pop(key, None)
         return {"ok": True}
