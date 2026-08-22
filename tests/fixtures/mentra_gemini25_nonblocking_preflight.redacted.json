@@ -92,7 +92,9 @@
       "setup_complete": true,
       "token_owned_marker_used": true,
       "client_marker_used": false,
-      "client_model_ignored": true
+      "client_model_ignored": true,
+      "token_audio_parts_observed": 34,
+      "client_text_modality_ignored": true
     }
   }
 }
