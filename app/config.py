@@ -94,7 +94,7 @@ def default_config() -> dict[str, Any]:
         "mentra": {
             "enabled": False,
             "gemini_api_key": "",
-            "model": "gemini-3.1-flash-live-preview",
+            "model": "gemini-2.5-flash-native-audio-preview-12-2025",
             "voice": "Kore",
             "integration_bearer_token": "",
         },

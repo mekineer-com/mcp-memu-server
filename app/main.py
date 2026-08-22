@@ -1605,7 +1605,41 @@ _admin_routes.register_admin_routes(
     sqlite_build_scope_where=_sqlite_build_scope_where,
     logger=logger,
 )
-_mentra_routes.register_mentra_routes(app, get_config=lambda: _CONFIG)
+def _load_mentra_cross_chat_context(
+    *, user_id: str, soul_id: str, conversation_id: str
+) -> str:
+    db_path = _sqlite_current_path(user_id, soul_id)
+    if db_path is None or not db_path.exists():
+        raise RuntimeError("Mentra soul database does not exist")
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
+        cross_tail = _cross_history._load_cross_tail_with_activities_from_sources(
+            con,
+            user_id=user_id,
+            soul_id=soul_id,
+            exclude_conversation_id=conversation_id,
+        )
+    finally:
+        con.close()
+    return _cross_history._format_all_chat_history_for_ai(
+        current_history=[],
+        cross_tail=cross_tail,
+        conversation_id=conversation_id,
+        soul_id=soul_id,
+        mark_current_chat=False,
+    )
+
+
+_mentra_routes.register_mentra_routes(
+    app,
+    get_config=lambda: _CONFIG,
+    get_service_from_scope=lambda scope: _get_service_from_payload({"user": scope}),
+    load_turn_state_and_soul_card=_load_turn_state_and_soul_card,
+    build_identity_context=_build_retrieve_identity_context,
+    load_cross_chat_context=_load_mentra_cross_chat_context,
+)
 
 
 # ---- Config endpoints ----
@@ -1624,6 +1658,16 @@ async def set_config(req: Request):
         body = await req.json()
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="Config must be a JSON object")
+        incoming_mentra = body.get("mentra")
+        if isinstance(incoming_mentra, dict):
+            current_mentra = _CONFIG.get("mentra")
+            body = {
+                **body,
+                "mentra": {
+                    **(current_mentra if isinstance(current_mentra, dict) else {}),
+                    **incoming_mentra,
+                },
+            }
         merged = {**_CONFIG, **body}
         _save_config(merged)
         _CONFIG = merged
