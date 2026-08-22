@@ -124,5 +124,14 @@
       "resume_after_new_session_expiry": true,
       "prior_session_context_recalled": true
     }
+  },
+  "cross_token_handle_probe": {
+    "recorded_at": "2026-08-22",
+    "input": "Soul A handle presented with Soul B constrained token under the same Gemini API key",
+    "observed": {
+      "setup_accepted": true,
+      "soul_a_session_context_recalled": true
+    },
+    "decision": "Treat a resumption handle as a soul-scoped secret capability; never accept one from MiniApp config, UI, RPC, or another soul's storage."
   }
 }

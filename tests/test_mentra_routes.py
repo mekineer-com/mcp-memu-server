@@ -308,6 +308,7 @@ def test_token_mint_uses_measured_constrained_wire(
     assert setup["contextWindowCompression"] == {"slidingWindow": {}}
     assert setup["proactivity"] == {"proactiveAudio": False}
     assert setup["historyConfig"] == {}
+    assert set(payload["fieldMask"].split(",")) == set(setup)
     expires = datetime.fromisoformat(payload["expireTime"].replace("Z", "+00:00"))
     new_session = datetime.fromisoformat(
         payload["newSessionExpireTime"].replace("Z", "+00:00")
