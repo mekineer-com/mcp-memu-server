@@ -144,11 +144,14 @@
       "second_spoken_turn_completed": true,
       "transcription_after_1500ms_post_boundary_quiet_window": false,
       "reflection_trimmed_exact_no_summary": true,
-      "reflection_audio_parts_discarded": 9,
-      "resumption_handle_observed": false,
+      "reflection_audio_parts_observed": 9,
+      "initial_probe_parser_field": "handle (incorrect)",
+      "corrected_wire_field": "newHandle",
+      "resumption_handle_observed": true,
       "resumption_wait_seconds": 20,
-      "production_shaped_sessions_without_handle": 2
+      "same_one_use_token_resume_setup_complete": true,
+      "transcription_replayed_before_new_input": false
     },
-    "decision": "Phase 0 remains blocked. Do not implement 5b until current production-shaped setup emits a resumption handle and replay behavior is measured; do not rely on the older resumption fixture claim alone."
+    "decision": "Phase 0 is closed. Treat input transcription as one atomic field per measured spoken turn, append output-transcription deltas, finalize interruption at the following turnComplete, and do not expect transcript replay on an idle resumed socket. MiniApp must parse sessionResumptionUpdate.newHandle."
   }
 }
