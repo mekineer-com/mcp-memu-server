@@ -5,6 +5,7 @@ import copy
 import inspect
 import io
 import json
+from concurrent.futures import CancelledError as FutureCancelledError
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -51,7 +52,7 @@ def _session_app(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     *,
-    token_results: list[str | Exception] | None = None,
+    token_results: list[str | BaseException] | None = None,
     state_results: list[Exception | None] | None = None,
     raise_server_exceptions: bool = True,
 ) -> tuple[TestClient, dict[str, Any], dict[str, Any]]:
@@ -92,7 +93,7 @@ def _session_app(
     async def mint(**kwargs: str) -> str:
         calls["token"].append(kwargs)
         result = next(results)
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             raise result
         return result
 
@@ -334,6 +335,22 @@ def test_second_start_is_rejected_while_same_soul_start_is_in_progress(
 
     assert response.status_code == 409
     assert calls["service"] == 0
+
+
+def test_cancelled_start_always_releases_in_progress_claim(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _, _ = _session_app(
+        monkeypatch,
+        tmp_path,
+        token_results=[asyncio.CancelledError()],
+    )
+
+    with pytest.raises((asyncio.CancelledError, FutureCancelledError)):
+        client.post("/integration/mentra/session/start", json=START, headers=AUTH)
+
+    assert START["soul_id"] not in mentra_routes._start_claims
 
 
 def test_route_registration_has_explicit_transcript_state_seams() -> None:

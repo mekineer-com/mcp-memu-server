@@ -409,15 +409,11 @@ def register_mentra_routes(
             _start_claims[lease_key] = sitting_id
 
         try:
-            service = get_service_from_scope(scope)
-            anchors = await service.ensure_dossier_anchors(scope)
-        except ValueError as exc:
-            await _release_start_claim_if_owned(lease_key, sitting_id)
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except Exception:
-            await _release_start_claim_if_owned(lease_key, sitting_id)
-            raise
-        try:
+            try:
+                service = get_service_from_scope(scope)
+                anchors = await service.ensure_dossier_anchors(scope)
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             _, narrative, _ = load_turn_state_and_soul_card(
                 conversation_id, user_id=body.user_id, soul_id=body.soul_id
             )
@@ -433,21 +429,17 @@ def register_mentra_routes(
                 user_anchor=_anchor_prose(anchors["user"]),
                 chats=str(chats or "").strip(),
             )
-        except Exception:
-            await _release_start_claim_if_owned(lease_key, sitting_id)
-            raise
-        try:
-            token = await _mint_gemini_token(
-                api_key=api_key,
-                model=model,
-                voice=voice,
-                system_instruction=instruction,
-            )
-        except Exception as exc:
-            await _release_start_claim_if_owned(lease_key, sitting_id)
-            raise HTTPException(status_code=502, detail="Gemini session token request failed") from exc
-
-        try:
+            try:
+                token = await _mint_gemini_token(
+                    api_key=api_key,
+                    model=model,
+                    voice=voice,
+                    system_instruction=instruction,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502, detail="Gemini session token request failed"
+                ) from exc
             async with get_soul_lock(body.user_id, body.soul_id):
                 history = conversation_sources.load_mentra_history_snapshot(
                     storage_dir=get_storage_dir(),
@@ -477,9 +469,8 @@ def register_mentra_routes(
                         time.monotonic() + _LEASE_SECONDS,
                     )
                     _start_claims.pop(lease_key, None)
-        except Exception:
+        finally:
             await _release_start_claim_if_owned(lease_key, sitting_id)
-            raise
 
         return {
             "ok": True,
