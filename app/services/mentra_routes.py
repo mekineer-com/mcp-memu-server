@@ -49,6 +49,7 @@ class _Lease(NamedTuple):
 
 
 _leases: dict[str, _Lease] = {}
+_start_claims: dict[str, str] = {}
 _lease_lock = asyncio.Lock()
 
 
@@ -174,11 +175,21 @@ class _SequenceConflict(Exception):
         self.expected_sequence = expected_sequence
 
 
+def _transcript_rows_by_sequence(history: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    rows: dict[int, dict[str, Any]] = {}
+    previous = 0
+    for row in history:
+        sequence = row.get("sequence")
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= previous:
+            raise RuntimeError("mentra snapshot sequence is not strictly increasing")
+        rows[sequence] = row
+        previous = sequence
+    return rows
+
+
 def _next_transcript_sequence(history: list[dict[str, Any]]) -> int:
-    for expected, row in enumerate(history, start=1):
-        if row.get("sequence") != expected:
-            raise RuntimeError("mentra snapshot sequence is not contiguous")
-    return len(history) + 1
+    rows = _transcript_rows_by_sequence(history)
+    return max(rows, default=0) + 1
 
 
 def _stored_event(event: MentraTranscriptEvent, *, received_at: str) -> dict[str, Any]:
@@ -212,7 +223,8 @@ def _merge_transcript_events(
     *,
     sitting_id: str,
 ) -> tuple[list[dict[str, Any]], int, int]:
-    expected = _next_transcript_sequence(history)
+    rows_by_sequence = _transcript_rows_by_sequence(history)
+    expected = max(rows_by_sequence, default=0) + 1
     accepted = 0
     duplicates = 0
     merged = list(history)
@@ -220,24 +232,23 @@ def _merge_transcript_events(
         if event.event_id != f"{sitting_id}:{event.sequence}":
             raise _SequenceConflict(expected)
         if event.sequence < expected:
-            if not _same_event(history[event.sequence - 1], event):
+            existing = rows_by_sequence.get(event.sequence)
+            if existing is None or not _same_event(existing, event):
                 raise _SequenceConflict(expected)
             duplicates += 1
             continue
         if event.sequence != expected:
             raise _SequenceConflict(expected)
-        merged.append(_stored_event(event, received_at=datetime.now(UTC).isoformat()))
+        merged.append(_stored_event(event, received_at=_rfc3339(datetime.now(UTC))))
         expected += 1
         accepted += 1
     return merged, accepted, duplicates
 
 
-async def _release_lease_if_owned(lease_key: str, sitting_id: str) -> None:
+async def _release_start_claim_if_owned(lease_key: str, sitting_id: str) -> None:
     async with _lease_lock:
-        active = _leases.get(lease_key)
-        if active is None or active.sitting_id != sitting_id:
-            return
-        _leases.pop(lease_key, None)
+        if _start_claims.get(lease_key) == sitting_id:
+            _start_claims.pop(lease_key, None)
 
 
 def _rfc3339(value: datetime) -> str:
@@ -383,45 +394,28 @@ def register_mentra_routes(
         conversation_id = f"mentra:{body.device_session_id}"
         sitting_id = secrets.token_urlsafe(18)
 
-        try:
-            async with get_soul_lock(body.user_id, body.soul_id):
-                async with _lease_lock:
-                    active = _leases.get(lease_key)
-                    if active and active.expires_at <= time.monotonic():
-                        _leases.pop(lease_key, None)
-                        active = None
-                    if active and (
-                        active.device_session_id != body.device_session_id
-                        or active.user_id != body.user_id
-                    ):
-                        raise HTTPException(
-                            status_code=409, detail="Another Mentra session is active"
-                        )
-                    _leases[lease_key] = _Lease(
-                        sitting_id,
-                        body.user_id,
-                        body.device_session_id,
-                        time.monotonic() + _LEASE_SECONDS,
-                    )
-                history = conversation_sources.load_mentra_history_snapshot(
-                    storage_dir=get_storage_dir(),
-                    user_id=body.user_id,
-                    soul_id=body.soul_id,
-                    conversation_id=conversation_id,
-                )
-                next_sequence = _next_transcript_sequence(history)
-        except Exception:
-            await _release_lease_if_owned(lease_key, sitting_id)
-            raise
+        async with _lease_lock:
+            active = _leases.get(lease_key)
+            if active and active.expires_at <= time.monotonic():
+                _leases.pop(lease_key, None)
+                active = None
+            if active and (
+                active.device_session_id != body.device_session_id
+                or active.user_id != body.user_id
+            ):
+                raise HTTPException(status_code=409, detail="Another Mentra session is active")
+            if lease_key in _start_claims:
+                raise HTTPException(status_code=409, detail="Mentra session start is already in progress")
+            _start_claims[lease_key] = sitting_id
 
         try:
             service = get_service_from_scope(scope)
             anchors = await service.ensure_dossier_anchors(scope)
         except ValueError as exc:
-            await _release_lease_if_owned(lease_key, sitting_id)
+            await _release_start_claim_if_owned(lease_key, sitting_id)
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception:
-            await _release_lease_if_owned(lease_key, sitting_id)
+            await _release_start_claim_if_owned(lease_key, sitting_id)
             raise
         try:
             _, narrative, _ = load_turn_state_and_soul_card(
@@ -440,7 +434,7 @@ def register_mentra_routes(
                 chats=str(chats or "").strip(),
             )
         except Exception:
-            await _release_lease_if_owned(lease_key, sitting_id)
+            await _release_start_claim_if_owned(lease_key, sitting_id)
             raise
         try:
             token = await _mint_gemini_token(
@@ -450,13 +444,42 @@ def register_mentra_routes(
                 system_instruction=instruction,
             )
         except Exception as exc:
-            await _release_lease_if_owned(lease_key, sitting_id)
+            await _release_start_claim_if_owned(lease_key, sitting_id)
             raise HTTPException(status_code=502, detail="Gemini session token request failed") from exc
 
-        async with _lease_lock:
-            active = _leases.get(lease_key)
-            if active is None or active.sitting_id != sitting_id:
-                raise HTTPException(status_code=409, detail="Mentra session was superseded")
+        try:
+            async with get_soul_lock(body.user_id, body.soul_id):
+                history = conversation_sources.load_mentra_history_snapshot(
+                    storage_dir=get_storage_dir(),
+                    user_id=body.user_id,
+                    soul_id=body.soul_id,
+                    conversation_id=conversation_id,
+                )
+                next_sequence = _next_transcript_sequence(history)
+                async with _lease_lock:
+                    if _start_claims.get(lease_key) != sitting_id:
+                        raise HTTPException(status_code=409, detail="Mentra session was superseded")
+                    active = _leases.get(lease_key)
+                    if active and active.expires_at <= time.monotonic():
+                        _leases.pop(lease_key, None)
+                        active = None
+                    if active and (
+                        active.device_session_id != body.device_session_id
+                        or active.user_id != body.user_id
+                    ):
+                        raise HTTPException(
+                            status_code=409, detail="Another Mentra session is active"
+                        )
+                    _leases[lease_key] = _Lease(
+                        sitting_id,
+                        body.user_id,
+                        body.device_session_id,
+                        time.monotonic() + _LEASE_SECONDS,
+                    )
+                    _start_claims.pop(lease_key, None)
+        except Exception:
+            await _release_start_claim_if_owned(lease_key, sitting_id)
+            raise
 
         return {
             "ok": True,

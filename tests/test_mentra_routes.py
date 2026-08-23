@@ -29,8 +29,10 @@ START = {
 @pytest.fixture(autouse=True)
 def clear_leases() -> None:
     mentra_routes._leases.clear()
+    mentra_routes._start_claims.clear()
     yield
     mentra_routes._leases.clear()
+    mentra_routes._start_claims.clear()
 
 
 def _configured() -> dict[str, Any]:
@@ -281,7 +283,7 @@ def test_lease_resume_heartbeat_and_end_are_scoped(
     ).status_code == 200
 
 
-def test_failed_token_mint_releases_only_its_sitting_claim(
+def test_failed_replacement_start_preserves_healthy_sitting(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -294,24 +296,44 @@ def test_failed_token_mint_releases_only_its_sitting_claim(
     failed = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
     assert failed.status_code == 502
     competing = {**START, "device_session_id": "phone-2"}
-    assert client.post(
+    healthy = client.post(
         "/integration/mentra/session/start", json=competing, headers=AUTH
-    ).status_code == 200
+    )
+    assert healthy.status_code == 200
+    healthy_sitting = healthy.json()["session_id"]
+    lease_before = mentra_routes._leases[START["soul_id"]]
     failed_renewal = client.post(
         "/integration/mentra/session/start", json=competing, headers=AUTH
     )
     assert failed_renewal.status_code == 502
-    assert START["soul_id"] not in mentra_routes._leases
+    assert mentra_routes._leases[START["soul_id"]] == lease_before
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    assert client.post(
+        f"/integration/mentra/session/{healthy_sitting}/heartbeat",
+        json=scope,
+        headers=AUTH,
+    ).status_code == 200
 
 
-def test_failed_superseded_start_cannot_release_newer_sitting() -> None:
-    mentra_routes._leases["Codexia"] = mentra_routes._Lease(
-        "newer-sitting", "Fictional User", "phone-1", float("inf")
-    )
+def test_failed_start_claim_cleanup_cannot_remove_newer_claim() -> None:
+    mentra_routes._start_claims["Codexia"] = "newer-sitting"
 
-    asyncio.run(mentra_routes._release_lease_if_owned("Codexia", "older-sitting"))
+    asyncio.run(mentra_routes._release_start_claim_if_owned("Codexia", "older-sitting"))
 
-    assert mentra_routes._leases["Codexia"].sitting_id == "newer-sitting"
+    assert mentra_routes._start_claims["Codexia"] == "newer-sitting"
+
+
+def test_second_start_is_rejected_while_same_soul_start_is_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    mentra_routes._start_claims[START["soul_id"]] = "in-progress"
+
+    response = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
+
+    assert response.status_code == 409
+    assert calls["service"] == 0
 
 
 def test_route_registration_has_explicit_transcript_state_seams() -> None:
@@ -389,9 +411,67 @@ def test_transcript_append_is_contiguous_idempotent_and_initializes_state(
         conversation_id="mentra:phone-1",
     )
     assert [row["sequence"] for row in history] == [1, 2, 3]
-    assert all(row["received_at"] for row in history)
+    assert all(row["received_at"].endswith("Z") for row in history)
     assert len(calls["state_writes"]) == 3
     assert calls["state_writes"][0][1]["updates"] == {"memorize_chat": True}
+
+
+def test_sequence_and_duplicate_lookup_tolerate_compacted_prefix() -> None:
+    history = [
+        {
+            "event_id": "fictional-sitting:40",
+            "sequence": 40,
+            "event_kind": "transcript",
+            "role": "user",
+            "content": "Retained fictional line.",
+            "transcript_status": "complete",
+            "received_at": "2026-08-23T10:00:00.000Z",
+        },
+        {
+            "event_id": "fictional-sitting:42",
+            "sequence": 42,
+            "event_kind": "transcript",
+            "role": "assistant",
+            "content": "Retained fictional reply.",
+            "transcript_status": "complete",
+            "received_at": "2026-08-23T10:00:01.000Z",
+        },
+    ]
+    events = mentra_routes.MentraTranscriptBatch.model_validate(
+        {
+            "user_id": "Fictional User",
+            "soul_id": "Codexia",
+            "events": [
+                {
+                    "event_id": "fictional-sitting:42",
+                    "sequence": 42,
+                    "event_kind": "transcript",
+                    "role": "assistant",
+                    "content": "Retained fictional reply.",
+                    "status": "complete",
+                },
+                {
+                    "event_id": "fictional-sitting:43",
+                    "sequence": 43,
+                    "event_kind": "transcript",
+                    "role": "user",
+                    "content": "New fictional line.",
+                    "status": "complete",
+                },
+            ],
+        }
+    ).events
+
+    merged, accepted, duplicates = mentra_routes._merge_transcript_events(
+        history,
+        events,
+        sitting_id="fictional-sitting",
+    )
+
+    assert mentra_routes._next_transcript_sequence(history) == 43
+    assert [row["sequence"] for row in merged] == [40, 42, 43]
+    assert (accepted, duplicates) == (1, 1)
+    assert merged[-1]["received_at"].endswith("Z")
 
 
 def test_transcript_append_rejects_holes_conflicts_and_redacts_validation_input(
