@@ -38,6 +38,17 @@ def test_current_message_starts_today_after_yesterday_history() -> None:
     assert "--- today ---\n[Marcos] Let's head home." in rendered
 
 
+def test_mentra_current_history_uses_smartglasses_section_and_marker() -> None:
+    rendered = build_conversations_block(
+        history=[{"role": "assistant", "speaker": "Codexia", "content": "Fictional reply."}],
+        conversation_id="mentra:test-device",
+        soul_name="Codexia",
+    )
+
+    assert "My Smartglasses Conversations:" in rendered
+    assert "[dm][Smartglasses] ← current chat" in rendered
+
+
 def test_parse_turn_contract_valid_json():
     parsed = parse_turn_contract(
         '{"response":"Hi there","response_target":"respond","working_thought":{"entry":"thinking"},"intention_action":{"type":"boost","target_id":"a"},"annulments":[],"rehearsal":"hmm"}'

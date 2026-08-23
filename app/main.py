@@ -1615,6 +1615,16 @@ def _load_mentra_cross_chat_context(
     try:
         con.row_factory = sqlite3.Row
         _sqlite_ensure_conversation_state_schema(con)
+        state = _conversation_state_from_row(_conversation_state_row(con, conversation_id))
+        digest_cursor = int((state or {}).get("digest_cursor") or 0)
+        current_tail = _conversation_sources.load_mentra_tail(
+            storage_dir=_get_storage_dir(_CONFIG),
+            user_id=user_id,
+            soul_id=soul_id,
+            conversation_id=conversation_id,
+            since_cursor=digest_cursor,
+            recent_fallback_messages=_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
+        )
         cross_tail = _cross_history._load_cross_tail_with_activities_from_sources(
             con,
             user_id=user_id,
@@ -1624,11 +1634,11 @@ def _load_mentra_cross_chat_context(
     finally:
         con.close()
     return _cross_history._format_all_chat_history_for_ai(
-        current_history=[],
+        current_history=current_tail,
         cross_tail=cross_tail,
         conversation_id=conversation_id,
         soul_id=soul_id,
-        mark_current_chat=False,
+        mark_current_chat=True,
     )
 
 
@@ -1641,6 +1651,11 @@ _mentra_routes.register_mentra_routes(
         soul_id, memory_search_available=False
     ),
     load_cross_chat_context=_load_mentra_cross_chat_context,
+    get_storage_dir=lambda: _get_storage_dir(_CONFIG),
+    get_soul_lock=lambda user_id, soul_id: _get_memorize_lock(
+        _memorize_lock_key(user_id, soul_id)
+    ),
+    write_conversation_state=_write_conversation_state,
 )
 
 

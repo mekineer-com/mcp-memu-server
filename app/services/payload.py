@@ -170,6 +170,13 @@ def _normalize_conversation(conv: Any) -> Any:
                 ),
                 **({"received_at": m.get("received_at")} if m.get("received_at") is not None else {}),
                 **({"memorize_chat": m.get("memorize_chat")} if isinstance(m.get("memorize_chat"), bool) else {}),
+                **(
+                    {
+                        key: m[key]
+                        for key in ("event_id", "sequence", "event_kind", "transcript_status")
+                        if m.get(key) is not None
+                    }
+                ),
             }
         )
     return out
@@ -256,7 +263,11 @@ def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
         source_message_id = _pick_str(item, "source_message_id", "id", "mid") or str(idx)
         if not content:
             continue
-        item_out = {"role": role, "content": content, "source_message_id": source_message_id}
+        item_out: dict[str, Any] = {
+            "role": role,
+            "content": content,
+            "source_message_id": source_message_id,
+        }
         if name:
             item_out["name"] = name
         ts_ms = _parse_turn_ts_ms(item.get("ts_ms"))
@@ -266,7 +277,15 @@ def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
             ts_ms = _parse_turn_ts_ms(item.get("received_at"))
         if ts_ms is not None:
             item_out["ts_ms"] = ts_ms
-        for key in ("conversation_id", "source_conversation_id", "source_label", "chat_name"):
+        for key in (
+            "conversation_id",
+            "source_conversation_id",
+            "source_label",
+            "chat_name",
+            "event_id",
+            "event_kind",
+            "transcript_status",
+        ):
             value = _pick_str(item, key)
             if value:
                 item_out[key] = value
@@ -274,6 +293,12 @@ def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
         if raw_source_index is not None:
             try:
                 item_out["source_conversation_index"] = int(raw_source_index)
+            except (TypeError, ValueError, OverflowError):
+                pass
+        raw_sequence = item.get("sequence")
+        if raw_sequence is not None:
+            try:
+                item_out["sequence"] = int(raw_sequence)
             except (TypeError, ValueError, OverflowError):
                 pass
         out.append(item_out)

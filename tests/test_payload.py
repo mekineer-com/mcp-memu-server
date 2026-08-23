@@ -20,3 +20,21 @@ def test_normalize_conversation_preserves_speaker_as_name_for_memorize() -> None
             "source_label": "whatsapp:dm",
         }
     ]
+
+
+def test_normalize_conversation_preserves_mentra_event_metadata() -> None:
+    out = _normalize_conversation([
+        {
+            "role": "assistant",
+            "content": "Fictional reflection.",
+            "event_id": "fictional-sitting:2",
+            "sequence": 2,
+            "event_kind": "sitting_summary",
+            "transcript_status": "complete",
+        }
+    ])
+
+    assert out[0]["event_id"] == "fictional-sitting:2"
+    assert out[0]["sequence"] == 2
+    assert out[0]["event_kind"] == "sitting_summary"
+    assert out[0]["transcript_status"] == "complete"

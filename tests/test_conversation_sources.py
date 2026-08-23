@@ -36,6 +36,89 @@ def test_atomic_snapshot_blank_speakers_fall_back_to_scope_names(tmp_path: Path)
     ]
 
 
+def test_mentra_snapshot_uses_sequence_cursor_and_honest_record_labels(tmp_path: Path) -> None:
+    history = [
+        {
+            "event_id": "fictional-sitting:1",
+            "sequence": 1,
+            "event_kind": "transcript",
+            "role": "user",
+            "content": "A partial fictional thought.",
+            "transcript_status": "interrupted",
+            "received_at": "2026-08-23T01:00:00+00:00",
+        },
+        {
+            "event_id": "fictional-sitting:2",
+            "sequence": 2,
+            "event_kind": "sitting_summary",
+            "role": "assistant",
+            "content": "I noticed a fictional emotional shift.",
+            "received_at": "2026-08-23T01:01:00+00:00",
+        },
+    ]
+    conversation_sources.persist_mentra_history_snapshot(
+        storage_dir=tmp_path,
+        user_id="Fictional User",
+        soul_id="Codexia",
+        conversation_id="mentra:test-device",
+        history=history,
+    )
+
+    rows = conversation_sources.load_mentra_tail(
+        storage_dir=tmp_path,
+        user_id="Fictional User",
+        soul_id="Codexia",
+        conversation_id="mentra:test-device",
+        since_cursor=0,
+        recent_fallback_messages=0,
+    )
+
+    assert [row["source_conversation_index"] for row in rows] == [1, 2]
+    assert rows[0]["content"].endswith("[interrupted]")
+    assert rows[1]["content"].startswith("[End-of-sitting reflection]")
+    assert rows[0]["speaker"] == "Fictional User"
+    assert rows[1]["speaker"] == "Codexia"
+    assert all(row["source_label"] == "mentra" for row in rows)
+    assert all(isinstance(row["ts_ms"], int) for row in rows)
+    assert (tmp_path / "mentra_chats").exists()
+    assert not (tmp_path / "st_chats").exists()
+
+
+def test_mentra_snapshot_replace_failure_keeps_prior_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kwargs = {
+        "storage_dir": tmp_path,
+        "user_id": "Fictional User",
+        "soul_id": "Codexia",
+        "conversation_id": "mentra:test-device",
+    }
+    first = [{
+        "event_id": "fictional-sitting:1",
+        "sequence": 1,
+        "event_kind": "transcript",
+        "role": "user",
+        "content": "First fictional line.",
+        "transcript_status": "complete",
+        "received_at": "2026-08-23T01:00:00+00:00",
+    }]
+    conversation_sources.persist_mentra_history_snapshot(**kwargs, history=first)
+    monkeypatch.setattr(
+        conversation_sources.os,
+        "replace",
+        lambda *_args: (_ for _ in ()).throw(OSError("fictional replace failure")),
+    )
+
+    with pytest.raises(OSError, match="fictional replace failure"):
+        conversation_sources.persist_mentra_history_snapshot(
+            **kwargs,
+            history=[*first, {**first[0], "sequence": 2}],
+        )
+
+    assert conversation_sources.load_mentra_history_snapshot(**kwargs) == first
+
+
 def test_hermes_base_defaults_to_channels_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("HERMES_HOME", raising=False)
     monkeypatch.setenv("CHANNELS_HOME", str(tmp_path))

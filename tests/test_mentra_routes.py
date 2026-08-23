@@ -47,12 +47,24 @@ def _configured() -> dict[str, Any]:
 
 def _session_app(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     *,
     token_results: list[str | Exception] | None = None,
+    state_results: list[Exception | None] | None = None,
+    raise_server_exceptions: bool = True,
 ) -> tuple[TestClient, dict[str, Any], dict[str, Any]]:
     config = _configured()
-    calls: dict[str, Any] = {"service": 0, "token": [], "state": [], "cross": []}
+    calls: dict[str, Any] = {
+        "service": 0,
+        "token": [],
+        "state": [],
+        "cross": [],
+        "state_writes": [],
+    }
     results = iter(token_results or ["ephemeral-1", "ephemeral-2", "ephemeral-3"])
+    writes = iter(state_results or [])
+    sitting_ids = iter(("sitting-1", "sitting-2", "sitting-3", "sitting-4"))
+    soul_lock = asyncio.Lock()
 
     class Service:
         async def ensure_dossier_anchors(self, scope: dict[str, str]) -> dict[str, Any]:
@@ -82,7 +94,14 @@ def _session_app(
             raise result
         return result
 
+    def write_state(*args: Any, **kwargs: Any) -> None:
+        calls["state_writes"].append((args, kwargs))
+        result = next(writes, None)
+        if isinstance(result, Exception):
+            raise result
+
     monkeypatch.setattr(mentra_routes, "_mint_gemini_token", mint)
+    monkeypatch.setattr(mentra_routes.secrets, "token_urlsafe", lambda _length: next(sitting_ids))
     app = FastAPI()
     register_mentra_routes(
         app,
@@ -91,8 +110,11 @@ def _session_app(
         load_turn_state_and_soul_card=load_state,
         build_identity_context=lambda soul_id: f"Today is server time.\nYou are {soul_id}.",
         load_cross_chat_context=load_cross,
+        get_storage_dir=lambda: tmp_path,
+        get_soul_lock=lambda _user_id, _soul_id: soul_lock,
+        write_conversation_state=write_state,
     )
-    return TestClient(app), calls, config
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions), calls, config
 
 
 def test_mentra_health_requires_enabled_configured_bearer() -> None:
@@ -119,8 +141,9 @@ def test_mentra_health_requires_enabled_configured_bearer() -> None:
 
 def test_start_auth_and_validation_precede_bootstrap(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    client, calls, _ = _session_app(monkeypatch)
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
 
     assert client.post("/integration/mentra/session/start", json={}, headers=AUTH).status_code == 422
     assert client.post("/integration/mentra/session/start", json={}).status_code == 401
@@ -138,8 +161,9 @@ def test_start_auth_and_validation_precede_bootstrap(
 
 def test_start_requires_model_and_voice_before_bootstrap(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    client, calls, config = _session_app(monkeypatch)
+    client, calls, config = _session_app(monkeypatch, tmp_path)
 
     config["mentra"]["model"] = ""
     assert client.post("/integration/mentra/session/start", json=START, headers=AUTH).status_code == 503
@@ -151,16 +175,18 @@ def test_start_requires_model_and_voice_before_bootstrap(
 
 def test_start_builds_bounded_instruction_and_returns_only_client_contract(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    client, calls, _ = _session_app(monkeypatch)
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
 
     response = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
     assert response.status_code == 200
     body = response.json()
     assert body == {
         "ok": True,
-        "session_id": "phone-1",
+        "session_id": "sitting-1",
         "conversation_id": "mentra:phone-1",
+        "next_transcript_sequence": 1,
         "model": "gemini-2.5-flash-native-audio-preview-12-2025",
         "voice": "Kore",
         "ephemeral_token": "ephemeral-1",
@@ -193,12 +219,15 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
 
 def test_lease_resume_heartbeat_and_end_are_scoped(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    client, calls, _ = _session_app(monkeypatch)
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
 
     first = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
     resumed = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
     assert first.status_code == resumed.status_code == 200
+    assert first.json()["session_id"] == "sitting-1"
+    assert resumed.json()["session_id"] == "sitting-2"
     assert first.json()["ephemeral_token"] != resumed.json()["ephemeral_token"]
 
     competing = {**START, "device_session_id": "phone-2"}
@@ -217,27 +246,48 @@ def test_lease_resume_heartbeat_and_end_are_scoped(
     ).status_code == 404
     wrong_user_scope = {**scope, "user_id": "Another Fictional User"}
     assert client.post(
-        "/integration/mentra/session/phone-1/heartbeat", json=wrong_user_scope, headers=AUTH
+        "/integration/mentra/session/sitting-2/heartbeat", json=wrong_user_scope, headers=AUTH
     ).status_code == 404
     assert client.post(
-        "/integration/mentra/session/phone-1/heartbeat", json=scope, headers=AUTH
+        "/integration/mentra/session/sitting-2/heartbeat", json=scope, headers=AUTH
     ).status_code == 200
+    stale_append = client.post(
+        "/integration/mentra/session/sitting-1/transcripts/append",
+        json={
+            **scope,
+            "events": [{
+                "event_id": "sitting-1:1",
+                "sequence": 1,
+                "event_kind": "transcript",
+                "role": "user",
+                "content": "A stale fictional line.",
+                "status": "complete",
+            }],
+        },
+        headers=AUTH,
+    )
+    assert stale_append.status_code == 404
     assert client.post(
         "/integration/mentra/session/wrong/end", json=scope, headers=AUTH
     ).status_code == 409
     assert client.post(
-        "/integration/mentra/session/phone-1/end", json=scope, headers=AUTH
+        "/integration/mentra/session/sitting-1/end", json=scope, headers=AUTH
+    ).status_code == 409
+    assert client.post(
+        "/integration/mentra/session/sitting-2/end", json=scope, headers=AUTH
     ).status_code == 200
     assert client.post(
-        "/integration/mentra/session/phone-1/end", json=scope, headers=AUTH
+        "/integration/mentra/session/sitting-2/end", json=scope, headers=AUTH
     ).status_code == 200
 
 
-def test_failed_token_mint_rolls_back_new_and_renewed_lease(
+def test_failed_token_mint_releases_only_its_sitting_claim(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     client, _, _ = _session_app(
         monkeypatch,
+        tmp_path,
         token_results=[RuntimeError("upstream"), "token", RuntimeError("upstream")],
     )
 
@@ -247,16 +297,189 @@ def test_failed_token_mint_rolls_back_new_and_renewed_lease(
     assert client.post(
         "/integration/mentra/session/start", json=competing, headers=AUTH
     ).status_code == 200
-    lease_before = mentra_routes._leases[START["soul_id"]]
     failed_renewal = client.post(
         "/integration/mentra/session/start", json=competing, headers=AUTH
     )
     assert failed_renewal.status_code == 502
-    assert mentra_routes._leases[START["soul_id"]] == lease_before
+    assert START["soul_id"] not in mentra_routes._leases
 
 
-def test_route_registration_has_no_conversation_state_write_seam() -> None:
-    assert "write_conversation_state" not in inspect.signature(register_mentra_routes).parameters
+def test_failed_superseded_start_cannot_release_newer_sitting() -> None:
+    mentra_routes._leases["Codexia"] = mentra_routes._Lease(
+        "newer-sitting", "Fictional User", "phone-1", float("inf")
+    )
+
+    asyncio.run(mentra_routes._release_lease_if_owned("Codexia", "older-sitting"))
+
+    assert mentra_routes._leases["Codexia"].sitting_id == "newer-sitting"
+
+
+def test_route_registration_has_explicit_transcript_state_seams() -> None:
+    parameters = inspect.signature(register_mentra_routes).parameters
+    assert {"get_storage_dir", "get_soul_lock", "write_conversation_state"} <= set(parameters)
+
+
+def test_transcript_append_is_contiguous_idempotent_and_initializes_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    endpoint = f"/integration/mentra/session/{sitting_id}/transcripts/append"
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    events = [
+        {
+            "event_id": f"{sitting_id}:1",
+            "sequence": 1,
+            "event_kind": "transcript",
+            "role": "user",
+            "content": "A fictional question.",
+            "status": "complete",
+        },
+        {
+            "event_id": f"{sitting_id}:2",
+            "sequence": 2,
+            "event_kind": "transcript",
+            "role": "assistant",
+            "content": "A fictional answer.",
+            "status": "complete",
+        },
+    ]
+
+    first = client.post(endpoint, json={**scope, "events": events}, headers=AUTH)
+    replay = client.post(endpoint, json={**scope, "events": events}, headers=AUTH)
+    suffix = client.post(
+        endpoint,
+        json={
+            **scope,
+            "events": [
+                events[1],
+                {
+                    "event_id": f"{sitting_id}:3",
+                    "sequence": 3,
+                    "event_kind": "sitting_summary",
+                    "role": "assistant",
+                    "content": "I noticed a fictional shift.",
+                },
+            ],
+        },
+        headers=AUTH,
+    )
+    restarted = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
+
+    assert first.json() == {
+        "ok": True,
+        "conversation_id": "mentra:phone-1",
+        "ack_sequence": 2,
+        "accepted": 2,
+        "duplicates": 0,
+        "memorize_check_queued": False,
+    }
+    assert replay.json()["accepted"] == 0
+    assert replay.json()["duplicates"] == 2
+    assert suffix.json()["accepted"] == 1
+    assert suffix.json()["duplicates"] == 1
+    assert restarted.json()["next_transcript_sequence"] == 4
+    history = mentra_routes.conversation_sources.load_mentra_history_snapshot(
+        storage_dir=tmp_path,
+        user_id=START["user_id"],
+        soul_id=START["soul_id"],
+        conversation_id="mentra:phone-1",
+    )
+    assert [row["sequence"] for row in history] == [1, 2, 3]
+    assert all(row["received_at"] for row in history)
+    assert len(calls["state_writes"]) == 3
+    assert calls["state_writes"][0][1]["updates"] == {"memorize_chat": True}
+
+
+def test_transcript_append_rejects_holes_conflicts_and_redacts_validation_input(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _, _ = _session_app(monkeypatch, tmp_path)
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    endpoint = f"/integration/mentra/session/{sitting_id}/transcripts/append"
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+
+    hole = client.post(
+        endpoint,
+        json={
+            **scope,
+            "events": [{
+                "event_id": f"{sitting_id}:2",
+                "sequence": 2,
+                "event_kind": "transcript",
+                "role": "user",
+                "content": "Fictional hole.",
+                "status": "complete",
+            }],
+        },
+        headers=AUTH,
+    )
+    private_text = "PRIVATE-FICTIONAL-TRANSCRIPT"
+    invalid = client.post(
+        endpoint,
+        json={
+            **scope,
+            "events": [{
+                "event_id": f"{sitting_id}:1",
+                "sequence": 1,
+                "event_kind": "transcript",
+                "role": "user",
+                "content": private_text,
+                "status": "complete",
+                "timestamp": "client-time-is-forbidden",
+            }],
+        },
+        headers=AUTH,
+    )
+
+    assert hole.status_code == 409
+    assert hole.json()["detail"] == {"expected_sequence": 1}
+    assert invalid.status_code == 422
+    assert invalid.json() == {"detail": "Invalid transcript batch"}
+    assert private_text not in invalid.text
+
+
+def test_transcript_retry_repairs_state_after_snapshot_was_written(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, calls, _ = _session_app(
+        monkeypatch,
+        tmp_path,
+        state_results=[RuntimeError("fictional state failure"), None],
+        raise_server_exceptions=False,
+    )
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    endpoint = f"/integration/mentra/session/{sitting_id}/transcripts/append"
+    payload = {
+        "user_id": START["user_id"],
+        "soul_id": START["soul_id"],
+        "events": [{
+            "event_id": f"{sitting_id}:1",
+            "sequence": 1,
+            "event_kind": "transcript",
+            "role": "user",
+            "content": "A recoverable fictional line.",
+            "status": "interrupted",
+        }],
+    }
+
+    failed = client.post(endpoint, json=payload, headers=AUTH)
+    repaired = client.post(endpoint, json=payload, headers=AUTH)
+
+    assert failed.status_code == 500
+    assert repaired.status_code == 200
+    assert repaired.json()["accepted"] == 0
+    assert repaired.json()["duplicates"] == 1
+    assert len(calls["state_writes"]) == 2
 
 
 def test_token_mint_uses_measured_constrained_wire(

@@ -57,8 +57,9 @@ mcp-memu-server/
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn (single-step, `undo_snapshot`) |
 | `/integration/memu/turn` | POST | MCP single-call turn wrapper: retrieve then turn |
 | `/integration/mentra/health` | GET | Bearer-authenticated Mentra ingress health check; disabled by default |
-| `/integration/mentra/session/start` | POST | Authenticated soul bootstrap plus constrained Gemini Live token; one process-local active lease per soul |
-| `/integration/mentra/session/{id}/heartbeat` / `end` | POST | Renew or release a scoped Mentra session lease |
+| `/integration/mentra/session/start` | POST | Authenticated soul bootstrap plus constrained Gemini Live token; returns a fresh sitting ID and next device-conversation transcript sequence |
+| `/integration/mentra/session/{id}/heartbeat` / `end` | POST | Renew or release one sitting-scoped Mentra lease |
+| `/integration/mentra/session/{id}/transcripts/append` | POST | Redacted-validation, contiguous/idempotent transcript or sitting-summary append into the atomic Mentra snapshot |
 | `/integration/atomic/session_start` | POST | Atomic session bootstrap: stripped retrieve snapshot → seeds `chat:atomic-<uuid>` |
 | `/integration/atomic/session_end` | POST | Atomic session close: accepts transcript + `activity_recap`, posts to memU memorize |
 | `/integration/atomic/chat_profile` | GET | Atomic-facing LLM profile (includes API key — do not log) |
@@ -113,9 +114,9 @@ mcp-memu-server/
 | `app/services/graph_edges.py` | Edge normalization + write/invalidate helpers (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`) |
 | `app/services/activity_messages.py` | `activity_messages` scoped-SQLite table for synthetic self-DM activity recaps (`My Activities:`) |
 | `app/services/whatsapp_outbounds.py` | `whatsapp_pending_outbounds` scoped-SQLite queue for WhatsApp replies/attachments |
-| `app/services/mentra_routes.py` | Authenticated Mentra health/session boundary, bootstrap prompt assembly, constrained Gemini token mint, and process-local lease lifecycle |
+| `app/services/mentra_routes.py` | Authenticated Mentra boundary: sitting-scoped lease lifecycle, bootstrap/token mint, and contiguous transcript append/ack |
 | `app/services/memorize_endpoint.py` | `/memorize` core: segment-file persistence, forced-memorize runner, rolling-summary injection, sleep-gap/token chunking, progress/cancel. Listen-only segments advance source cursors without producing memory, consuming rolling summaries, or retaining segment files. |
-| `app/services/conversation_sources.py` | Source adapters: WhatsApp history from `web_source.db`, with Channels session/state metadata for soul activation and assistant IDs; ST from `st_chats/*/latest_history.json`. Handles cursor slicing, floor backfill, and role normalization at the memU boundary. |
+| `app/services/conversation_sources.py` | Source adapters: WhatsApp from `web_source.db`; ST, Atomic, and Mentra from channel-specific `latest_history.json` snapshots. Handles atomic writes, cursor slicing, floor backfill, and role normalization. |
 | `app/services/cross_history.py` | Cross-conversation history: formats AI-facing all-chat history, assembles cross-tail/background memorize feeds, manages display-segment cleanup |
 | `app/services/apimw.py` | APImw background memory-weaving pipeline: retrieve → synthesize prior-context/message-to-self → persist |
 | `app/services/admin_routes.py` | Health/version/shutdown/diag endpoint handlers |

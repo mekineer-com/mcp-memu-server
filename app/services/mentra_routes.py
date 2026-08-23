@@ -8,10 +8,20 @@ import time
 import urllib.request
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal, NamedTuple
 
-from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, field_validator
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    StrictInt,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+from app.services import conversation_sources
 
 
 _DEVICE_SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
@@ -30,10 +40,16 @@ _TOKEN_SETUP_FIELD_MASK = ",".join(
         "historyConfig",
     )
 )
-_leases: dict[str, tuple[str, str, float]] = {}
+
+class _Lease(NamedTuple):
+    sitting_id: str
+    user_id: str
+    device_session_id: str
+    expires_at: float
+
+
+_leases: dict[str, _Lease] = {}
 _lease_lock = asyncio.Lock()
-# ponytail: one global Start lock; use per-soul locks only if concurrent souls need faster starts.
-_start_lock = asyncio.Lock()
 
 
 class MentraSessionStart(BaseModel):
@@ -79,6 +95,149 @@ class MentraSessionScope(BaseModel):
         if not value:
             raise ValueError("must not be blank")
         return value
+
+
+class MentraTranscriptEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    sequence: StrictInt
+    event_kind: Literal["transcript", "sitting_summary"]
+    role: Literal["user", "assistant"]
+    content: str
+    status: Literal["complete", "interrupted"] | None = None
+
+    @field_validator("event_id")
+    @classmethod
+    def validate_event_id(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 256:
+            raise ValueError("must be 1-256 characters")
+        return value
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        if len(value) > 16_000:
+            raise ValueError("is too long")
+        return value
+
+    @field_validator("sequence")
+    @classmethod
+    def validate_sequence(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("must be positive")
+        return value
+
+    @model_validator(mode="after")
+    def validate_kind(self) -> MentraTranscriptEvent:
+        if self.event_kind == "transcript" and self.status is None:
+            raise ValueError("transcript status is required")
+        if self.event_kind == "sitting_summary" and (
+            self.role != "assistant" or self.status is not None
+        ):
+            raise ValueError("sitting_summary must be an assistant event without status")
+        return self
+
+
+class MentraTranscriptBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
+    soul_id: str
+    events: list[MentraTranscriptEvent]
+
+    @field_validator("user_id", "soul_id")
+    @classmethod
+    def validate_identity(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+    @field_validator("events")
+    @classmethod
+    def validate_events(cls, value: list[MentraTranscriptEvent]) -> list[MentraTranscriptEvent]:
+        if not 1 <= len(value) <= 16:
+            raise ValueError("must contain 1-16 events")
+        sequences = [event.sequence for event in value]
+        if any(right != left + 1 for left, right in zip(sequences, sequences[1:], strict=False)):
+            raise ValueError("event sequences must be contiguous and increasing")
+        return value
+
+
+class _SequenceConflict(Exception):
+    def __init__(self, expected_sequence: int):
+        self.expected_sequence = expected_sequence
+
+
+def _next_transcript_sequence(history: list[dict[str, Any]]) -> int:
+    for expected, row in enumerate(history, start=1):
+        if row.get("sequence") != expected:
+            raise RuntimeError("mentra snapshot sequence is not contiguous")
+    return len(history) + 1
+
+
+def _stored_event(event: MentraTranscriptEvent, *, received_at: str) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "event_id": event.event_id,
+        "sequence": event.sequence,
+        "event_kind": event.event_kind,
+        "role": event.role,
+        "content": event.content,
+        "received_at": received_at,
+    }
+    if event.status is not None:
+        row["transcript_status"] = event.status
+    return row
+
+
+def _same_event(row: dict[str, Any], event: MentraTranscriptEvent) -> bool:
+    return (
+        row.get("event_id") == event.event_id
+        and row.get("sequence") == event.sequence
+        and row.get("event_kind") == event.event_kind
+        and row.get("role") == event.role
+        and row.get("content") == event.content
+        and row.get("transcript_status") == event.status
+    )
+
+
+def _merge_transcript_events(
+    history: list[dict[str, Any]],
+    events: list[MentraTranscriptEvent],
+    *,
+    sitting_id: str,
+) -> tuple[list[dict[str, Any]], int, int]:
+    expected = _next_transcript_sequence(history)
+    accepted = 0
+    duplicates = 0
+    merged = list(history)
+    for event in events:
+        if event.event_id != f"{sitting_id}:{event.sequence}":
+            raise _SequenceConflict(expected)
+        if event.sequence < expected:
+            if not _same_event(history[event.sequence - 1], event):
+                raise _SequenceConflict(expected)
+            duplicates += 1
+            continue
+        if event.sequence != expected:
+            raise _SequenceConflict(expected)
+        merged.append(_stored_event(event, received_at=datetime.now(UTC).isoformat()))
+        expected += 1
+        accepted += 1
+    return merged, accepted, duplicates
+
+
+async def _release_lease_if_owned(lease_key: str, sitting_id: str) -> None:
+    async with _lease_lock:
+        active = _leases.get(lease_key)
+        if active is None or active.sitting_id != sitting_id:
+            return
+        _leases.pop(lease_key, None)
 
 
 def _rfc3339(value: datetime) -> str:
@@ -166,6 +325,9 @@ def register_mentra_routes(
     load_turn_state_and_soul_card: Callable[..., tuple[dict[str, Any], str | None, Any]] | None = None,
     build_identity_context: Callable[[str], str] | None = None,
     load_cross_chat_context: Callable[..., str] | None = None,
+    get_storage_dir: Callable[[], Path] | None = None,
+    get_soul_lock: Callable[[str, str], asyncio.Lock] | None = None,
+    write_conversation_state: Callable[..., Any] | None = None,
 ) -> None:
     async def require_bearer(authorization: str | None = Header(default=None)) -> None:
         config = get_config().get("mentra") or {}
@@ -201,6 +363,8 @@ def register_mentra_routes(
             or load_turn_state_and_soul_card is None
             or build_identity_context is None
             or load_cross_chat_context is None
+            or get_storage_dir is None
+            or get_soul_lock is None
         ):
             raise HTTPException(status_code=503, detail="Mentra session bootstrap is not configured")
 
@@ -216,30 +380,57 @@ def register_mentra_routes(
             raise HTTPException(status_code=503, detail="Mentra Gemini voice is not configured")
         scope = {"user_id": body.user_id, "soul_id": body.soul_id}
         lease_key = body.soul_id
+        conversation_id = f"mentra:{body.device_session_id}"
+        sitting_id = secrets.token_urlsafe(18)
 
-        async with _start_lock:
-            async with _lease_lock:
-                active = _leases.get(lease_key)
-                if active and active[2] <= time.monotonic():
-                    _leases.pop(lease_key, None)
-                    active = None
-                if active and (
-                    active[0] != body.device_session_id or active[1] != body.user_id
-                ):
-                    raise HTTPException(status_code=409, detail="Another Mentra session is active")
+        try:
+            async with get_soul_lock(body.user_id, body.soul_id):
+                async with _lease_lock:
+                    active = _leases.get(lease_key)
+                    if active and active.expires_at <= time.monotonic():
+                        _leases.pop(lease_key, None)
+                        active = None
+                    if active and (
+                        active.device_session_id != body.device_session_id
+                        or active.user_id != body.user_id
+                    ):
+                        raise HTTPException(
+                            status_code=409, detail="Another Mentra session is active"
+                        )
+                    _leases[lease_key] = _Lease(
+                        sitting_id,
+                        body.user_id,
+                        body.device_session_id,
+                        time.monotonic() + _LEASE_SECONDS,
+                    )
+                history = conversation_sources.load_mentra_history_snapshot(
+                    storage_dir=get_storage_dir(),
+                    user_id=body.user_id,
+                    soul_id=body.soul_id,
+                    conversation_id=conversation_id,
+                )
+                next_sequence = _next_transcript_sequence(history)
+        except Exception:
+            await _release_lease_if_owned(lease_key, sitting_id)
+            raise
 
+        try:
             service = get_service_from_scope(scope)
-            try:
-                anchors = await service.ensure_dossier_anchors(scope)
-            except ValueError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            anchors = await service.ensure_dossier_anchors(scope)
+        except ValueError as exc:
+            await _release_lease_if_owned(lease_key, sitting_id)
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception:
+            await _release_lease_if_owned(lease_key, sitting_id)
+            raise
+        try:
             _, narrative, _ = load_turn_state_and_soul_card(
-                f"mentra:{body.device_session_id}", user_id=body.user_id, soul_id=body.soul_id
+                conversation_id, user_id=body.user_id, soul_id=body.soul_id
             )
             chats = load_cross_chat_context(
                 user_id=body.user_id,
                 soul_id=body.soul_id,
-                conversation_id=f"mentra:{body.device_session_id}",
+                conversation_id=conversation_id,
             )
             instruction = _build_bootstrap_instruction(
                 identity=build_identity_context(body.soul_id),
@@ -248,33 +439,30 @@ def register_mentra_routes(
                 user_anchor=_anchor_prose(anchors["user"]),
                 chats=str(chats or "").strip(),
             )
+        except Exception:
+            await _release_lease_if_owned(lease_key, sitting_id)
+            raise
+        try:
+            token = await _mint_gemini_token(
+                api_key=api_key,
+                model=model,
+                voice=voice,
+                system_instruction=instruction,
+            )
+        except Exception as exc:
+            await _release_lease_if_owned(lease_key, sitting_id)
+            raise HTTPException(status_code=502, detail="Gemini session token request failed") from exc
 
-            async with _lease_lock:
-                previous = _leases.get(lease_key)
-                _leases[lease_key] = (
-                    body.device_session_id,
-                    body.user_id,
-                    time.monotonic() + _LEASE_SECONDS,
-                )
-            try:
-                token = await _mint_gemini_token(
-                    api_key=api_key,
-                    model=model,
-                    voice=voice,
-                    system_instruction=instruction,
-                )
-            except Exception as exc:
-                async with _lease_lock:
-                    if previous is None:
-                        _leases.pop(lease_key, None)
-                    else:
-                        _leases[lease_key] = previous
-                raise HTTPException(status_code=502, detail="Gemini session token request failed") from exc
+        async with _lease_lock:
+            active = _leases.get(lease_key)
+            if active is None or active.sitting_id != sitting_id:
+                raise HTTPException(status_code=409, detail="Mentra session was superseded")
 
         return {
             "ok": True,
-            "session_id": body.device_session_id,
-            "conversation_id": f"mentra:{body.device_session_id}",
+            "session_id": sitting_id,
+            "conversation_id": conversation_id,
+            "next_transcript_sequence": next_sequence,
             "model": model,
             "voice": voice,
             "ephemeral_token": token,
@@ -298,12 +486,12 @@ def register_mentra_routes(
             active = _leases.get(key)
             if not active:
                 raise HTTPException(status_code=404, detail="Mentra session not found")
-            if active[2] <= time.monotonic():
+            if active.expires_at <= time.monotonic():
                 _leases.pop(key, None)
                 raise HTTPException(status_code=404, detail="Mentra session not found")
-            if active[0] != session_id or active[1] != body.user_id:
+            if active.sitting_id != session_id or active.user_id != body.user_id:
                 raise HTTPException(status_code=404, detail="Mentra session not found")
-            _leases[key] = (session_id, body.user_id, time.monotonic() + _LEASE_SECONDS)
+            _leases[key] = active._replace(expires_at=time.monotonic() + _LEASE_SECONDS)
         return {"ok": True}
 
     @app.post(
@@ -312,13 +500,82 @@ def register_mentra_routes(
         dependencies=auth,
     )
     async def mentra_session_end(session_id: str, body: MentraSessionScope) -> dict[str, bool]:
+        if get_soul_lock is None:
+            raise HTTPException(status_code=503, detail="Mentra session teardown is not configured")
         key = body.soul_id
-        async with _lease_lock:
-            active = _leases.get(key)
-            if not active or active[2] <= time.monotonic():
+        async with get_soul_lock(body.user_id, body.soul_id):
+            async with _lease_lock:
+                active = _leases.get(key)
+                if not active or active.expires_at <= time.monotonic():
+                    _leases.pop(key, None)
+                    return {"ok": True}
+                if active.sitting_id != session_id or active.user_id != body.user_id:
+                    raise HTTPException(status_code=409, detail="Another Mentra session is active")
                 _leases.pop(key, None)
-                return {"ok": True}
-            if active[0] != session_id or active[1] != body.user_id:
-                raise HTTPException(status_code=409, detail="Another Mentra session is active")
-            _leases.pop(key, None)
         return {"ok": True}
+
+    @app.post(
+        "/integration/mentra/session/{sitting_id}/transcripts/append",
+        tags=["integration"],
+        dependencies=auth,
+    )
+    async def mentra_transcripts_append(sitting_id: str, request: Request) -> dict[str, Any]:
+        if get_storage_dir is None or get_soul_lock is None or write_conversation_state is None:
+            raise HTTPException(status_code=503, detail="Mentra transcript persistence is not configured")
+        try:
+            raw = await request.json()
+            body = MentraTranscriptBatch.model_validate(raw)
+        except (ValueError, ValidationError):
+            raise HTTPException(status_code=422, detail="Invalid transcript batch") from None
+
+        conversation_id: str
+        async with get_soul_lock(body.user_id, body.soul_id):
+            storage_dir = get_storage_dir()
+            async with _lease_lock:
+                active = _leases.get(body.soul_id)
+                if not active or active.expires_at <= time.monotonic():
+                    _leases.pop(body.soul_id, None)
+                    raise HTTPException(status_code=404, detail="Mentra session not found")
+                if active.sitting_id != sitting_id or active.user_id != body.user_id:
+                    raise HTTPException(status_code=404, detail="Mentra session not found")
+                conversation_id = f"mentra:{active.device_session_id}"
+
+            history = conversation_sources.load_mentra_history_snapshot(
+                storage_dir=storage_dir,
+                user_id=body.user_id,
+                soul_id=body.soul_id,
+                conversation_id=conversation_id,
+            )
+            try:
+                merged, accepted, duplicates = _merge_transcript_events(
+                    history,
+                    body.events,
+                    sitting_id=sitting_id,
+                )
+            except _SequenceConflict as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"expected_sequence": exc.expected_sequence},
+                ) from None
+            conversation_sources.persist_mentra_history_snapshot(
+                storage_dir=storage_dir,
+                user_id=body.user_id,
+                soul_id=body.soul_id,
+                conversation_id=conversation_id,
+                history=merged,
+            )
+            write_conversation_state(
+                conversation_id,
+                soul_id=body.soul_id,
+                user_id=body.user_id,
+                updates={"memorize_chat": True},
+            )
+
+        return {
+            "ok": True,
+            "conversation_id": conversation_id,
+            "ack_sequence": _next_transcript_sequence(merged) - 1,
+            "accepted": accepted,
+            "duplicates": duplicates,
+            "memorize_check_queued": False,
+        }

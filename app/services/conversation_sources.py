@@ -14,6 +14,11 @@ from app.config import sanitize_db_filename
 from app.services import memorize_endpoint
 
 _ST_SNAPSHOT_FILE = "latest_history.json"
+_CHAT_SNAPSHOT_DIRS = {
+    "sillytavern": "st_chats",
+    "atomic": "atomic_chats",
+    "mentra": "mentra_chats",
+}
 _GATEWAY_NOTICE_PREFIXES = (
     "⚠️ Gateway shutting down — ",
     "⚠️ Gateway restarting — ",
@@ -733,7 +738,10 @@ def _chat_snapshot_path(
     conversation_id: str,
     source_label: str,
 ) -> Path:
-    chats_dir = (storage_dir / ("atomic_chats" if source_label == "atomic" else "st_chats")).resolve()
+    directory = _CHAT_SNAPSHOT_DIRS.get(source_label)
+    if directory is None:
+        raise ValueError(f"unsupported chat snapshot source: {source_label}")
+    chats_dir = (storage_dir / directory).resolve()
     chat_dir, _chat_key, _source = memorize_endpoint.resolve_chat_storage_dir(
         chats_dir,
         user_id,
@@ -830,6 +838,51 @@ def persist_atomic_history_snapshot(
     )
 
 
+def persist_mentra_history_snapshot(
+    *,
+    storage_dir: Path,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    history: list[dict[str, Any]],
+) -> None:
+    persist_chat_history_snapshot(
+        storage_dir=storage_dir,
+        user_id=user_id,
+        soul_id=soul_id,
+        conversation_id=conversation_id,
+        history=history,
+        chat_name="Smartglasses",
+        source_label="mentra",
+    )
+
+
+def load_mentra_history_snapshot(
+    *,
+    storage_dir: Path,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+) -> list[dict[str, Any]]:
+    path = _chat_snapshot_path(
+        storage_dir=storage_dir,
+        user_id=user_id,
+        soul_id=soul_id,
+        conversation_id=conversation_id,
+        source_label="mentra",
+    )
+    if not path.exists():
+        return []
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or raw.get("conversation_id") != conversation_id:
+        raise RuntimeError(f"mentra snapshot identity mismatch: {path}")
+    if raw.get("source_label") != "mentra" or not isinstance(raw.get("history"), list):
+        raise RuntimeError(f"mentra snapshot is invalid: {path}")
+    if not all(isinstance(row, dict) for row in raw["history"]):
+        raise RuntimeError(f"mentra snapshot history contains an invalid row: {path}")
+    return list(raw["history"])
+
+
 def load_chat_snapshot_tail(
     *,
     storage_dir: Path,
@@ -865,7 +918,7 @@ def load_chat_snapshot_tail(
             continue
         role = str(item.get("role") or "").strip() or "unknown"
         speaker = str(item.get("name") or "").strip()
-        if source_label == "atomic" and not speaker:
+        if source_label in {"atomic", "mentra"} and not speaker:
             if role == "user":
                 speaker = user_id
             elif role in {"assistant", "soul"}:
@@ -874,19 +927,38 @@ def load_chat_snapshot_tail(
         received_at = _to_iso_utc((float(ts_ms) / 1000.0) if isinstance(ts_ms, (int, float)) else "")
         if not received_at:
             received_at = str(item.get("received_at") or item.get("created_at") or "").strip()
-        all_rows.append(
-            {
-                "role": role,
-                "speaker": speaker,
-                "chat_name": chat_name,
-                "content": content,
-                "source_label": source_label,
-                "received_at": received_at,
-                "conversation_id": conversation_id,
-                "source_conversation_id": conversation_id,
-                "source_conversation_index": idx,
-            }
-        )
+        source_index = item.get("sequence") if source_label == "mentra" else idx
+        row = {
+            "role": role,
+            "speaker": speaker,
+            "chat_name": chat_name,
+            "content": (
+                f"[End-of-sitting reflection] {content}"
+                if item.get("event_kind") == "sitting_summary"
+                else (
+                    f"{content} [interrupted]"
+                    if item.get("transcript_status") == "interrupted"
+                    else content
+                )
+            ),
+            "source_label": source_label,
+            "received_at": received_at,
+            "conversation_id": conversation_id,
+            "source_conversation_id": conversation_id,
+            "source_conversation_index": source_index,
+        }
+        if source_label == "mentra":
+            try:
+                received = datetime.fromisoformat(received_at.replace("Z", "+00:00"))
+                if received.tzinfo is None:
+                    raise ValueError
+                row["ts_ms"] = int(received.timestamp() * 1000)
+            except (ValueError, OverflowError):
+                raise RuntimeError(f"mentra snapshot row has invalid received_at: {path}") from None
+            for key in ("event_id", "sequence", "event_kind", "transcript_status"):
+                if item.get(key) is not None:
+                    row[key] = item[key]
+        all_rows.append(row)
     return slice_tail_with_floor(
         all_rows,
         since_cursor=since_cursor,
@@ -932,3 +1004,26 @@ def load_atomic_tail(
         recent_fallback_messages=recent_fallback_messages,
         source_label="atomic",
     )
+
+
+def load_mentra_tail(
+    *,
+    storage_dir: Path,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    since_cursor: int,
+    recent_fallback_messages: int,
+) -> list[dict[str, Any]]:
+    try:
+        return load_chat_snapshot_tail(
+            storage_dir=storage_dir,
+            user_id=user_id,
+            soul_id=soul_id,
+            conversation_id=conversation_id,
+            since_cursor=since_cursor,
+            recent_fallback_messages=recent_fallback_messages,
+            source_label="mentra",
+        )
+    except FileNotFoundError:
+        return []

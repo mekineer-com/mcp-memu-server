@@ -2176,6 +2176,82 @@ def test_load_tail_for_source_conversation_uses_web_source(
     assert captured["min_timestamp"] == 100.0
 
 
+def test_mentra_bootstrap_marks_prior_tail_as_current_smartglasses_chat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Codexia.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
+            ("mentra:test-device", 0),
+        )
+        con.commit()
+    finally:
+        con.close()
+    conversation_sources.persist_mentra_history_snapshot(
+        storage_dir=tmp_path,
+        user_id="Fictional User",
+        soul_id="Codexia",
+        conversation_id="mentra:test-device",
+        history=[{
+            "event_id": "fictional-sitting:1",
+            "sequence": 1,
+            "event_kind": "transcript",
+            "role": "assistant",
+            "content": "A prior fictional reply.",
+            "transcript_status": "complete",
+            "received_at": "2026-08-23T01:00:00+00:00",
+        }],
+    )
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: db_path)
+    monkeypatch.setattr(main, "_get_storage_dir", lambda _config: tmp_path)
+    monkeypatch.setattr(main, "_load_activity_tail_for_ai", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(main, "_load_cross_tail_from_sources", lambda *_args, **_kwargs: [])
+
+    rendered = main._load_mentra_cross_chat_context(
+        user_id="Fictional User",
+        soul_id="Codexia",
+        conversation_id="mentra:test-device",
+    )
+
+    assert "My Smartglasses Conversations:" in rendered
+    assert "[dm][Smartglasses] ← current chat" in rendered
+    assert "[Codexia] A prior fictional reply." in rendered
+
+
+def test_load_tail_for_source_conversation_dispatches_mentra(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def load_mentra(**kwargs: Any) -> list[dict[str, Any]]:
+        captured.update(kwargs)
+        return [{"content": "Fictional smartglasses tail."}]
+
+    monkeypatch.setattr(main._conversation_sources, "load_mentra_tail", load_mentra)
+
+    rows = main._load_tail_for_source_conversation(
+        conversation_id="mentra:test-device",
+        user_id="Fictional User",
+        soul_id="Codexia",
+        since_cursor=4,
+        recent_fallback_messages=8,
+        storage_dir=tmp_path,
+        hermes_home_path=None,
+        sessions_index_path=None,
+        state_db_path=None,
+    )
+
+    assert rows == [{"content": "Fictional smartglasses tail."}]
+    assert captured["since_cursor"] == 4
+    assert captured["conversation_id"] == "mentra:test-device"
+
+
 def test_load_background_rollup_tail_uses_assistant_source_ids_for_web_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
