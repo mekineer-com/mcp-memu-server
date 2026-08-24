@@ -393,6 +393,7 @@ def register_mentra_routes(
         lease_key = body.soul_id
         conversation_id = f"mentra:{body.device_session_id}"
         sitting_id = secrets.token_urlsafe(18)
+        storage_dir = get_storage_dir()
 
         async with _lease_lock:
             active = _leases.get(lease_key)
@@ -417,11 +418,26 @@ def register_mentra_routes(
             _, narrative, _ = load_turn_state_and_soul_card(
                 conversation_id, user_id=body.user_id, soul_id=body.soul_id
             )
+            history_before_context = conversation_sources.load_mentra_history_snapshot(
+                storage_dir=storage_dir,
+                user_id=body.user_id,
+                soul_id=body.soul_id,
+                conversation_id=conversation_id,
+            )
+            context_next_sequence = _next_transcript_sequence(history_before_context)
             chats = load_cross_chat_context(
                 user_id=body.user_id,
                 soul_id=body.soul_id,
                 conversation_id=conversation_id,
             )
+            history_after_context = conversation_sources.load_mentra_history_snapshot(
+                storage_dir=storage_dir,
+                user_id=body.user_id,
+                soul_id=body.soul_id,
+                conversation_id=conversation_id,
+            )
+            if _next_transcript_sequence(history_after_context) != context_next_sequence:
+                raise HTTPException(status_code=409, detail="Mentra history changed during Start; retry")
             instruction = _build_bootstrap_instruction(
                 identity=build_identity_context(body.soul_id),
                 narrative=str(narrative or "").strip(),
@@ -442,15 +458,17 @@ def register_mentra_routes(
                 ) from exc
             async with get_soul_lock(body.user_id, body.soul_id):
                 history = conversation_sources.load_mentra_history_snapshot(
-                    storage_dir=get_storage_dir(),
+                    storage_dir=storage_dir,
                     user_id=body.user_id,
                     soul_id=body.soul_id,
                     conversation_id=conversation_id,
                 )
                 next_sequence = _next_transcript_sequence(history)
+                if next_sequence != context_next_sequence:
+                    raise HTTPException(
+                        status_code=409, detail="Mentra history changed during Start; retry"
+                    )
                 async with _lease_lock:
-                    if _start_claims.get(lease_key) != sitting_id:
-                        raise HTTPException(status_code=409, detail="Mentra session was superseded")
                     active = _leases.get(lease_key)
                     if active and active.expires_at <= time.monotonic():
                         _leases.pop(lease_key, None)

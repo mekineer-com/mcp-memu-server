@@ -316,6 +316,56 @@ def test_failed_replacement_start_preserves_healthy_sitting(
     ).status_code == 200
 
 
+def test_replacement_start_rejects_context_that_changed_during_mint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _, _ = _session_app(monkeypatch, tmp_path)
+    mint_count = 0
+
+    async def mint(**_kwargs: str) -> str:
+        nonlocal mint_count
+        mint_count += 1
+        if mint_count == 2:
+            mentra_routes.conversation_sources.persist_mentra_history_snapshot(
+                storage_dir=tmp_path,
+                user_id=START["user_id"],
+                soul_id=START["soul_id"],
+                conversation_id="mentra:phone-1",
+                history=[
+                    {
+                        "event_id": "sitting-1:1",
+                        "sequence": 1,
+                        "event_kind": "transcript",
+                        "role": "user",
+                        "content": "A fictional late line.",
+                        "transcript_status": "complete",
+                        "received_at": "2026-08-23T20:00:00.000Z",
+                    }
+                ],
+            )
+        return f"token-{mint_count}"
+
+    monkeypatch.setattr(mentra_routes, "_mint_gemini_token", mint)
+    healthy = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
+    assert healthy.status_code == 200
+    healthy_sitting = healthy.json()["session_id"]
+
+    stale = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
+    assert stale.status_code == 409
+    assert stale.json()["detail"] == "Mentra history changed during Start; retry"
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    assert client.post(
+        f"/integration/mentra/session/{healthy_sitting}/heartbeat",
+        json=scope,
+        headers=AUTH,
+    ).status_code == 200
+
+    refreshed = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
+    assert refreshed.status_code == 200
+    assert refreshed.json()["next_transcript_sequence"] == 2
+
+
 def test_failed_start_claim_cleanup_cannot_remove_newer_claim() -> None:
     mentra_routes._start_claims["Codexia"] = "newer-sitting"
 

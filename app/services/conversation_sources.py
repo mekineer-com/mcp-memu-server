@@ -767,7 +767,9 @@ def persist_chat_history_snapshot(
         "conversation_id": str(conversation_id or "").strip(),
         "chat_name": str(chat_name or "").strip(),
         "source_label": source_label,
-        "updated_at": datetime.now(UTC).isoformat(),
+        "updated_at": datetime.now(UTC)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z"),
         "history": list(history or []),
     }
     path = _chat_snapshot_path(

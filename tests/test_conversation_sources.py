@@ -82,6 +82,9 @@ def test_mentra_snapshot_uses_sequence_cursor_and_honest_record_labels(tmp_path:
     assert all(isinstance(row["ts_ms"], int) for row in rows)
     assert (tmp_path / "mentra_chats").exists()
     assert not (tmp_path / "st_chats").exists()
+    snapshot_path = next((tmp_path / "mentra_chats").rglob("latest_history.json"))
+    envelope = json.loads(snapshot_path.read_text())
+    assert envelope["updated_at"].endswith("Z")
 
 
 def test_mentra_snapshot_replace_failure_keeps_prior_history(
