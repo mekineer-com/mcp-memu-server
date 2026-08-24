@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 
 from app import main
 from app.services import conversation_sources, crud_endpoints, retrieve_orchestration, segment
@@ -5875,6 +5876,7 @@ async def test_conversation_retrieve_preserves_history_already_floored_by_source
     assert "floored_0" in query_text
     assert "floored_7" in query_text
     telemetry = json.dumps(main._LAST_CALLS[-1])
+    assert main._LAST_CALLS[-1]["info"]["queryCount"] == len(captured["safe"]["queries"])
     assert "remember this" not in telemetry
     assert "floored_" not in telemetry
 
@@ -5904,6 +5906,24 @@ async def test_mentra_retrieve_suppresses_prompt_body_logging(
     assert out["ok"] is True
     assert logged == []
     assert main._MENTRA_RECALL_ACTIVE.get() is False
+
+
+@pytest.mark.asyncio
+async def test_non_mentra_retrieve_keeps_diagnostic_error_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raise(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("diagnostic detail")
+
+    monkeypatch.setattr(main, "_run_retrieve", _raise)
+    main._LAST_CALLS.clear()
+    with pytest.raises(HTTPException):
+        await main.conversation_retrieve(
+            "integrity:test",
+            {"query": "fictional", "queries": [{"role": "user", "content": "fictional"}]},
+        )
+
+    assert main._LAST_CALLS[-1]["error"] == "RuntimeError: diagnostic detail"
 
 
 @pytest.mark.asyncio

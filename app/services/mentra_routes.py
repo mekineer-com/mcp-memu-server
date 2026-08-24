@@ -378,6 +378,7 @@ def register_mentra_routes(
     load_cross_chat_context: Callable[..., str] | None = None,
     load_current_history: Callable[..., list[dict[str, Any]]] | None = None,
     conversation_retrieve: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
+    record_call: Callable[..., None] | None = None,
     get_storage_dir: Callable[[], Path] | None = None,
     get_soul_lock: Callable[[str, str], asyncio.Lock] | None = None,
     write_conversation_state: Callable[..., Any] | None = None,
@@ -590,33 +591,70 @@ def register_mentra_routes(
                 raise HTTPException(status_code=404, detail="Mentra session not found")
             conversation_id = f"mentra:{active.device_session_id}"
 
-        history = load_current_history(
-            user_id=body.user_id,
-            soul_id=body.soul_id,
-            conversation_id=conversation_id,
-        )
-        payload = {
-            "user": {
-                "user_id": body.user_id,
-                "soul_id": body.soul_id,
-                "conversation_id": conversation_id,
-            },
-            "message": body.query,
-            "query": body.query,
-            "history": history,
-            "force_retrieve": True,
-            "_read_only_retrieve": True,
-            "mental_health_addon": False,
+        scope = {
+            "user_id": body.user_id,
+            "soul_id": body.soul_id,
+            "conversation_id": conversation_id,
         }
+        started_at = time.monotonic()
         try:
+            history = load_current_history(
+                user_id=body.user_id,
+                soul_id=body.soul_id,
+                conversation_id=conversation_id,
+            )
+            payload = {
+                "user": scope,
+                "message": body.query,
+                "query": body.query,
+                "history": history,
+                "force_retrieve": True,
+                "_read_only_retrieve": True,
+                "mental_health_addon": False,
+            }
             retrieve_out = await conversation_retrieve(conversation_id, payload)
+        except HTTPException as exc:
+            status = 502 if exc.status_code == 504 else exc.status_code
+            if record_call is not None:
+                record_call(
+                    "mentra.recall",
+                    {"user": scope},
+                    ok=False,
+                    error=f"HTTP {status}",
+                )
+            raise HTTPException(status_code=status, detail="Mentra memory recall failed") from exc
         except Exception as exc:
-            raise HTTPException(status_code=502, detail="Mentra memory recall failed") from exc
-        context = turn_contract.render_retrieve_context(retrieve_out.get("result"))
+            if record_call is not None:
+                record_call(
+                    "mentra.recall",
+                    {"user": scope},
+                    ok=False,
+                    error=type(exc).__name__,
+                )
+            raise HTTPException(status_code=500, detail="Mentra memory recall failed") from exc
+        result = retrieve_out.get("result")
+        context = turn_contract.render_retrieve_context(result)
+        categories = result.get("categories") if isinstance(result, dict) else None
+        items = result.get("items") if isinstance(result, dict) else None
+        retrieve_ms = retrieve_out.get("retrieve_ms")
+        if record_call is not None:
+            record_call(
+                "mentra.recall",
+                {"user": scope},
+                ok=True,
+                info={
+                    "wallMs": int((time.monotonic() - started_at) * 1000),
+                    "retrieveMs": retrieve_ms,
+                    "resultCounts": {
+                        "categories": len(categories) if isinstance(categories, list) else 0,
+                        "items": len(items) if isinstance(items, list) else 0,
+                    },
+                },
+            )
         return {
             "ok": True,
             "context": context or "No relevant memory found.",
-            "retrieve_ms": retrieve_out.get("retrieve_ms"),
+            "retrieve_ms": retrieve_ms,
         }
 
     @app.post(

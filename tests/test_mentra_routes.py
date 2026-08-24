@@ -12,7 +12,7 @@ from threading import Event
 from typing import Any, Callable
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.services import mentra_routes
@@ -70,6 +70,7 @@ def _session_app(
         "state_writes": [],
         "memorize_checks": [],
         "recalls": [],
+        "route_telemetry": [],
     }
     results = iter(token_results or ["ephemeral-1", "ephemeral-2", "ephemeral-3"])
     writes = iter(state_results or [])
@@ -151,6 +152,9 @@ def _session_app(
     def schedule(*args: Any, **kwargs: Any) -> str:
         return (schedule_auto_memorize or (lambda *_a, **_k: "launched"))(*args, **kwargs)
 
+    def record_call(*args: Any, **kwargs: Any) -> None:
+        calls["route_telemetry"].append((args, copy.deepcopy(kwargs)))
+
     monkeypatch.setattr(mentra_routes, "_mint_gemini_token", mint)
     monkeypatch.setattr(mentra_routes.secrets, "token_urlsafe", lambda _length: next(sitting_ids))
     app = FastAPI()
@@ -163,6 +167,7 @@ def _session_app(
         load_cross_chat_context=load_cross,
         load_current_history=load_current,
         conversation_retrieve=retrieve,
+        record_call=record_call,
         get_storage_dir=lambda: tmp_path,
         get_soul_lock=lambda _user_id, _soul_id: soul_lock,
         write_conversation_state=write_state,
@@ -341,7 +346,7 @@ def test_failed_replacement_start_preserves_healthy_sitting(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    client, _, _ = _session_app(
+    client, calls, _ = _session_app(
         monkeypatch,
         tmp_path,
         token_results=[RuntimeError("upstream"), "token", RuntimeError("upstream")],
@@ -444,7 +449,7 @@ def test_cancelled_start_always_releases_in_progress_claim(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    client, _, _ = _session_app(
+    client, calls, _ = _session_app(
         monkeypatch,
         tmp_path,
         token_results=[asyncio.CancelledError()],
@@ -464,6 +469,7 @@ def test_route_registration_has_explicit_transcript_state_seams() -> None:
         "write_conversation_state",
         "load_current_history",
         "conversation_retrieve",
+        "record_call",
     } <= set(parameters)
 
 
@@ -507,13 +513,24 @@ def test_recall_is_sitting_scoped_read_only_compact_and_unlocked(
     assert "memory-secret-id" not in response.text
     assert calls["lease_locked_during_retrieve"] is False
     assert calls["soul_locked_during_retrieve"] is False
+    telemetry_args, telemetry_kwargs = calls["route_telemetry"][-1]
+    assert telemetry_args[0] == "mentra.recall"
+    assert telemetry_kwargs == {
+        "ok": True,
+        "info": {
+            "wallMs": pytest.approx(0, abs=1000),
+            "retrieveMs": 123,
+            "resultCounts": {"categories": 1, "items": 1},
+        },
+    }
+    assert "remember the fictional lighthouse" not in json.dumps(calls["route_telemetry"])
 
 
 def test_recall_failure_is_generic(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    client, _, _ = _session_app(
+    client, calls, _ = _session_app(
         monkeypatch,
         tmp_path,
         retrieve_result=RuntimeError("private fictional query leaked"),
@@ -531,9 +548,49 @@ def test_recall_failure_is_generic(
         headers=AUTH,
     )
 
-    assert response.status_code == 502
+    assert response.status_code == 500
     assert response.json() == {"detail": "Mentra memory recall failed"}
     assert "private fictional" not in response.text
+    assert calls["route_telemetry"][-1][1] == {"ok": False, "error": "RuntimeError"}
+
+
+def test_recall_timeout_is_temporary_and_config_failure_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    timeout_client, _, _ = _session_app(
+        monkeypatch,
+        tmp_path,
+        retrieve_result=HTTPException(status_code=504, detail="private timeout"),
+    )
+    timeout_sitting = timeout_client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    request = {"user_id": START["user_id"], "soul_id": START["soul_id"], "query": "private"}
+    timeout = timeout_client.post(
+        f"/integration/mentra/session/{timeout_sitting}/recall",
+        json=request,
+        headers=AUTH,
+    )
+    assert timeout.status_code == 502
+    assert timeout.json() == {"detail": "Mentra memory recall failed"}
+
+    mentra_routes._leases.clear()
+    config_client, _, _ = _session_app(
+        monkeypatch,
+        tmp_path,
+        retrieve_result=HTTPException(status_code=503, detail="private config"),
+    )
+    config_sitting = config_client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    config = config_client.post(
+        f"/integration/mentra/session/{config_sitting}/recall",
+        json=request,
+        headers=AUTH,
+    )
+    assert config.status_code == 503
+    assert config.json() == {"detail": "Mentra memory recall failed"}
 
 
 def test_slow_recall_does_not_hold_lease_or_soul_lock(

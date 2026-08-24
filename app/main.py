@@ -1682,6 +1682,7 @@ _mentra_routes.register_mentra_routes(
     conversation_retrieve=lambda conversation_id, payload: _mentra_conversation_retrieve(
         conversation_id, payload
     ),
+    record_call=_record_call,
     get_storage_dir=lambda: _get_storage_dir(_CONFIG),
     get_soul_lock=lambda user_id, soul_id: _get_memorize_lock(
         _memorize_lock_key(user_id, soul_id)
@@ -3747,12 +3748,22 @@ async def conversation_retrieve(
         result_items = result.get("items") if isinstance(result, dict) else None
         result_resources = result.get("resources") if isinstance(result, dict) else None
         queries = out.get("queries")
+        fallback_queries = safe.get("queries")
+        query_count = (
+            queries
+            if isinstance(queries, int) and not isinstance(queries, bool)
+            else len(queries)
+            if isinstance(queries, list)
+            else len(fallback_queries)
+            if isinstance(fallback_queries, list)
+            else 0
+        )
         _record_call(
             "conversation.retrieve",
             safe,
             ok=True,
             info={
-                "queryCount": len(queries) if isinstance(queries, list) else 0,
+                "queryCount": query_count,
                 "resultCounts": {
                     "categories": len(result_categories) if isinstance(result_categories, list) else 0,
                     "items": len(result_items) if isinstance(result_items, list) else 0,
@@ -3775,7 +3786,11 @@ async def conversation_retrieve(
             "conversation.retrieve",
             payload,
             ok=False,
-            error=type(exc).__name__,
+            error=(
+                type(exc).__name__
+                if _MENTRA_RECALL_ACTIVE.get()
+                else f"{type(exc).__name__}: {exc}"
+            ),
         )
         _raise_upstream_http_error(exc, op="conversation.retrieve")
 
