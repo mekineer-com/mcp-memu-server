@@ -2904,6 +2904,93 @@ def test_turn_state_read_excludes_background_chat_from_segment_trigger(monkeypat
     assert queued is None
 
 
+@pytest.mark.asyncio
+async def test_auto_memorize_collision_rechecks_latest_scope_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = main._memorize_lock_key("u1", "Echo")
+    release = asyncio.Event()
+    runs: list[dict[str, Any]] = []
+    rechecked_history: list[list[dict[str, Any]]] = []
+
+    async def run(payload: dict[str, Any]) -> bool:
+        runs.append(payload)
+        if len(runs) == 1:
+            await release.wait()
+        return True
+
+    def prepare(*_args: Any, **kwargs: Any) -> tuple[int, dict[str, Any] | None]:
+        history = list(_args[5])
+        rechecked_history.append(history)
+        return 9000, {"run": "recheck"}
+
+    monkeypatch.setattr(main, "_run_forced_memorize_from_turn", run)
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", lambda *_a, **_k: ({}, None, None))
+    monkeypatch.setattr(main, "_prepare_auto_memorize", prepare)
+    main._FORCED_MEMORIZE_INFLIGHT.discard(marker)
+    main._FORCED_MEMORIZE_RECHECK.pop(marker, None)
+    try:
+        first_scope = main._auto_memorize_scope("cid", "u1", "Echo", {}, [{"content": "first"}])
+        latest_scope = main._auto_memorize_scope("cid", "u1", "Echo", {}, [{"content": "latest"}])
+        assert main._schedule_auto_memorize({"run": "first"}, first_scope) is True
+        await asyncio.sleep(0)
+        assert main._schedule_auto_memorize({"run": "ignored"}, latest_scope) is True
+
+        release.set()
+        for _ in range(20):
+            if len(runs) == 2 and marker not in main._FORCED_MEMORIZE_INFLIGHT:
+                break
+            await asyncio.sleep(0)
+
+        assert runs == [{"run": "first"}, {"run": "recheck"}]
+        assert rechecked_history == [[{"content": "latest"}]]
+        assert marker not in main._FORCED_MEMORIZE_RECHECK
+    finally:
+        release.set()
+        await asyncio.gather(*list(main._BACKGROUND_TASKS), return_exceptions=True)
+        main._FORCED_MEMORIZE_INFLIGHT.discard(marker)
+        main._FORCED_MEMORIZE_RECHECK.pop(marker, None)
+
+
+@pytest.mark.asyncio
+async def test_auto_memorize_failure_discards_pending_recheck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = main._memorize_lock_key("u1", "Echo")
+    release = asyncio.Event()
+    prepares = 0
+
+    async def fail(_payload: dict[str, Any]) -> bool:
+        await release.wait()
+        return False
+
+    def prepare(*_args: Any, **_kwargs: Any) -> tuple[int, dict[str, Any] | None]:
+        nonlocal prepares
+        prepares += 1
+        return 9000, {"run": "unexpected"}
+
+    monkeypatch.setattr(main, "_run_forced_memorize_from_turn", fail)
+    monkeypatch.setattr(main, "_prepare_auto_memorize", prepare)
+    main._FORCED_MEMORIZE_INFLIGHT.discard(marker)
+    main._FORCED_MEMORIZE_RECHECK.pop(marker, None)
+    try:
+        scope = main._auto_memorize_scope("cid", "u1", "Echo", {}, [{"content": "latest"}])
+        main._schedule_auto_memorize({"run": "first"}, scope)
+        await asyncio.sleep(0)
+        main._schedule_auto_memorize({"run": "ignored"}, scope)
+        release.set()
+        await asyncio.gather(*list(main._BACKGROUND_TASKS))
+        await asyncio.sleep(0)
+
+        assert prepares == 0
+        assert marker not in main._FORCED_MEMORIZE_INFLIGHT
+        assert marker not in main._FORCED_MEMORIZE_RECHECK
+    finally:
+        release.set()
+        main._FORCED_MEMORIZE_INFLIGHT.discard(marker)
+        main._FORCED_MEMORIZE_RECHECK.pop(marker, None)
+
+
 def test_parse_as_of_datetime_accepts_iso_date_and_datetime():
     date_only = main._parse_as_of_datetime("2026-04-18")
     assert date_only is not None

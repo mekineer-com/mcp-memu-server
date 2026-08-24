@@ -59,7 +59,7 @@ mcp-memu-server/
 | `/integration/mentra/health` | GET | Bearer-authenticated Mentra ingress health check; disabled by default |
 | `/integration/mentra/session/start` | POST | Authenticated soul bootstrap plus constrained Gemini Live token; returns a fresh sitting ID and next device-conversation transcript sequence |
 | `/integration/mentra/session/{id}/heartbeat` / `end` | POST | Renew or release one sitting-scoped Mentra lease |
-| `/integration/mentra/session/{id}/transcripts/append` | POST | Redacted-validation, contiguous/idempotent transcript or sitting-summary append into the atomic Mentra snapshot |
+| `/integration/mentra/session/{id}/transcripts/append` | POST | Redacted-validation, contiguous/idempotent transcript or sitting-summary append into the atomic Mentra snapshot; newly accepted eligible rows queue the shared auto-memorize path |
 | `/integration/atomic/session_start` | POST | Atomic session bootstrap: stripped retrieve snapshot → seeds `chat:atomic-<uuid>` |
 | `/integration/atomic/session_end` | POST | Atomic session close: accepts transcript + `activity_recap`, posts to memU memorize |
 | `/integration/atomic/chat_profile` | GET | Atomic-facing LLM profile (includes API key — do not log) |

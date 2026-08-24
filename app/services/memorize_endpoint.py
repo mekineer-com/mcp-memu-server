@@ -233,11 +233,12 @@ async def run_forced_memorize_from_turn(
     get_memorize_lock: Callable[[str], asyncio.Lock],
     memorize_lock_key: Callable[[str, str], str],
     write_conversation_state: Callable[..., tuple[dict[str, Any], Any]],
-) -> None:
+) -> bool:
     try:
         background_tasks = BackgroundTasks()
         await memorize_handler(payload, background_tasks, True)
         await background_tasks()
+        return True
     except Exception as exc:
         logger.exception("forced memorize from turn failed")
         # Surface the failure on conversation state so operator + soul can see it.
@@ -269,6 +270,7 @@ async def run_forced_memorize_from_turn(
                 "check logs for both exceptions"
             )
             raise RuntimeError(msg) from state_write_error
+        return False
 
 
 async def run_memorize_segments(

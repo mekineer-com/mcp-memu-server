@@ -339,6 +339,8 @@ def register_mentra_routes(
     get_storage_dir: Callable[[], Path] | None = None,
     get_soul_lock: Callable[[str, str], asyncio.Lock] | None = None,
     write_conversation_state: Callable[..., Any] | None = None,
+    prepare_auto_memorize: Callable[..., tuple[int, dict[str, Any] | None]] | None = None,
+    schedule_auto_memorize: Callable[..., bool] | None = None,
 ) -> None:
     async def require_bearer(authorization: str | None = Header(default=None)) -> None:
         config = get_config().get("mentra") or {}
@@ -552,7 +554,14 @@ def register_mentra_routes(
         dependencies=auth,
     )
     async def mentra_transcripts_append(sitting_id: str, request: Request) -> dict[str, Any]:
-        if get_storage_dir is None or get_soul_lock is None or write_conversation_state is None:
+        if (
+            get_storage_dir is None
+            or get_soul_lock is None
+            or write_conversation_state is None
+            or load_turn_state_and_soul_card is None
+            or prepare_auto_memorize is None
+            or schedule_auto_memorize is None
+        ):
             raise HTTPException(status_code=503, detail="Mentra transcript persistence is not configured")
         try:
             raw = await request.json()
@@ -561,6 +570,7 @@ def register_mentra_routes(
             raise HTTPException(status_code=422, detail="Invalid transcript batch") from None
 
         conversation_id: str
+        memorize_check_queued = False
         async with get_soul_lock(body.user_id, body.soul_id):
             storage_dir = get_storage_dir()
             async with _lease_lock:
@@ -602,6 +612,31 @@ def register_mentra_routes(
                 user_id=body.user_id,
                 updates={"memorize_chat": True},
             )
+            if accepted:
+                conversation_state, _soul_card, _db_path = load_turn_state_and_soul_card(
+                    conversation_id,
+                    user_id=body.user_id,
+                    soul_id=body.soul_id,
+                )
+                safe = {"memorize_chat": True}
+                _tokens, payload = prepare_auto_memorize(
+                    conversation_id,
+                    body.user_id,
+                    body.soul_id,
+                    safe,
+                    conversation_state,
+                    merged,
+                    dry_run=False,
+                )
+                if payload is not None:
+                    memorize_check_queued = schedule_auto_memorize(
+                        payload,
+                        conversation_id,
+                        body.user_id,
+                        body.soul_id,
+                        safe,
+                        merged,
+                    )
 
         return {
             "ok": True,
@@ -609,5 +644,5 @@ def register_mentra_routes(
             "ack_sequence": _next_transcript_sequence(merged) - 1,
             "accepted": accepted,
             "duplicates": duplicates,
-            "memorize_check_queued": False,
+            "memorize_check_queued": memorize_check_queued,
         }

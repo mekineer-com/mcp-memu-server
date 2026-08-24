@@ -208,8 +208,8 @@ _estimate_unmemorized_tokens = _memorize_endpoint.estimate_unmemorized_tokens
 
 # ==== Memorize background orchestration ====
 
-async def _run_forced_memorize_from_turn(payload: dict[str, Any]) -> None:
-    await _memorize_endpoint.run_forced_memorize_from_turn(
+async def _run_forced_memorize_from_turn(payload: dict[str, Any]) -> bool:
+    return await _memorize_endpoint.run_forced_memorize_from_turn(
         payload,
         memorize_handler=memorize,
         logger=logger,
@@ -587,6 +587,7 @@ _SHUTDOWN_TASK: asyncio.Task | None = None
 _APIMW_INFLIGHT: set[str] = set()
 _BACKGROUND_ROLLUP_INFLIGHT: set[str] = set()
 _FORCED_MEMORIZE_INFLIGHT: set[str] = set()
+_FORCED_MEMORIZE_RECHECK: dict[str, dict[str, Any]] = {}
 _FREE_TURN_INFLIGHT: set[str] = set()
 _FREE_TURN_FOLLOW_UP_INFLIGHT: set[str] = set()
 _FREE_TURN_FOLLOW_UP_TASK: asyncio.Task | None = None
@@ -1656,6 +1657,11 @@ _mentra_routes.register_mentra_routes(
         _memorize_lock_key(user_id, soul_id)
     ),
     write_conversation_state=_write_conversation_state,
+    prepare_auto_memorize=lambda *args, **kwargs: _prepare_auto_memorize(*args, **kwargs),
+    schedule_auto_memorize=lambda payload, cid, uid, soul_id, safe, history_full: _schedule_auto_memorize(
+        payload,
+        _auto_memorize_scope(cid, uid, soul_id, safe, history_full),
+    ),
 )
 
 
@@ -3875,6 +3881,147 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
     }
 
 
+def _prepare_auto_memorize(
+    cid: str,
+    uid: str,
+    soul_id: str,
+    safe: dict[str, Any],
+    conversation_state: dict[str, Any],
+    history_full: list[dict[str, Any]],
+    *,
+    dry_run: bool,
+) -> tuple[int, dict[str, Any] | None]:
+    digest_cursor = _effective_digest_cursor_from_row(conversation_state)
+    _, hermes_home_path, _, _ = _resolve_cross_source_paths()
+    resolved_cursor, min_timestamp, trigger_web_source = _resolve_source_cursor(
+        cid,
+        digest_cursor,
+        conversation_state.get("digest_cursor_source_message_id"),
+        conversation_state.get("digest_cursor_ts"),
+        rolling=False,
+        hermes_home_path=hermes_home_path,
+    )
+    primary_history = history_full if bool(conversation_state.get("memorize_chat", True)) else []
+    if min_timestamp is not None:
+        primary_history = [
+            row for row in primary_history
+            if int(row.get("ts_ms") or 0) >= min_timestamp * 1000
+        ]
+    unmemorized_history = _conversation_sources.slice_tail_with_floor(
+        primary_history,
+        since_cursor=resolved_cursor,
+        recent_fallback_messages=0,
+    )
+    unmemorized_tokens = _estimate_unmemorized_tokens(unmemorized_history, -1)
+    if dry_run or not unmemorized_history:
+        return unmemorized_tokens, None
+    if not _unmemorized_sleep_gap_detected(
+        unmemorized_history,
+        -1,
+        safe,
+        min_chunk_tokens=0,
+    ):
+        return unmemorized_tokens, None
+    try:
+        payload = _build_cross_conversation_payload(
+            cid,
+            uid,
+            soul_id,
+            safe,
+            unmemorized_history,
+            digest_cursor,
+            True,
+            trigger_web_source=trigger_web_source,
+        )
+        if payload is None:
+            return unmemorized_tokens, None
+        unmemorized_tokens = _estimate_primary_memorize_tokens(
+            list(payload.get("conversation") or [])
+        )
+        return unmemorized_tokens, payload if unmemorized_tokens >= _MIN_CHUNK_TOKENS else None
+    except Exception as exc:
+        logger.error("forced memorize source assembly failed for conversation_id=%s: %s", cid, exc)
+        _set_background_error(
+            cid,
+            soul_id=soul_id,
+            user_id=uid,
+            code="forced_memorize_source_failed",
+            detail=f"{type(exc).__name__}: {exc}",
+        )
+        return unmemorized_tokens, None
+
+
+def _auto_memorize_scope(
+    cid: str,
+    uid: str,
+    soul_id: str,
+    safe: dict[str, Any],
+    history_full: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "conversation_id": cid,
+        "user_id": uid,
+        "soul_id": soul_id,
+        "safe": safe,
+        "history_full": history_full,
+    }
+
+
+async def _run_auto_memorize(payload: dict[str, Any], marker: str) -> None:
+    success = False
+    try:
+        success = await _run_forced_memorize_from_turn(payload)
+    finally:
+        with _STATE_LOCK:
+            _FORCED_MEMORIZE_INFLIGHT.discard(marker)
+            recheck = _FORCED_MEMORIZE_RECHECK.pop(marker, None)
+    if not success or recheck is None:
+        return
+
+    cid = str(recheck["conversation_id"])
+    uid = str(recheck["user_id"])
+    soul_id = str(recheck["soul_id"])
+    safe = dict(recheck["safe"])
+    history_full = list(recheck["history_full"])
+    async with _get_memorize_lock(marker):
+        conversation_state, _soul_card, _db_path = _load_turn_state_and_soul_card(
+            cid, user_id=uid, soul_id=soul_id
+        )
+        _tokens, next_payload = _prepare_auto_memorize(
+            cid,
+            uid,
+            soul_id,
+            safe,
+            conversation_state,
+            history_full,
+            dry_run=False,
+        )
+    if next_payload is not None:
+        _schedule_auto_memorize(next_payload, recheck)
+
+
+def _schedule_auto_memorize(payload: dict[str, Any], scope: dict[str, Any]) -> bool:
+    marker = _memorize_lock_key(str(scope["user_id"]), str(scope["soul_id"]))
+    with _STATE_LOCK:
+        if marker in _FORCED_MEMORIZE_INFLIGHT:
+            _FORCED_MEMORIZE_RECHECK[marker] = {
+                **scope,
+                "safe": dict(scope["safe"]),
+                "history_full": [dict(row) for row in scope["history_full"]],
+            }
+            return True
+        _FORCED_MEMORIZE_INFLIGHT.add(marker)
+    try:
+        task = asyncio.create_task(_run_auto_memorize(payload, marker))
+    except Exception:
+        with _STATE_LOCK:
+            _FORCED_MEMORIZE_INFLIGHT.discard(marker)
+        raise
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return True
+
+
 def _turn_state_read(
     cid: str,
     uid: str,
@@ -3898,64 +4045,15 @@ def _turn_state_read(
     soul_card = request_soul_card or soul_card
     memory_cache_before = list(state_override_cache)
     intentions_before = _normalize_intentions_stack_impl(state_override_intentions)
-    unmemorized_digest_cursor = _effective_digest_cursor_from_row(conversation_state)
-    _, hermes_home_path, _, _ = _resolve_cross_source_paths()
-    resolved_cursor, min_timestamp, trigger_web_source = _resolve_source_cursor(
+    unmemorized_tokens, queued_memorize_payload = _prepare_auto_memorize(
         cid,
-        unmemorized_digest_cursor,
-        conversation_state.get("digest_cursor_source_message_id"),
-        conversation_state.get("digest_cursor_ts"),
-        rolling=False,
-        hermes_home_path=hermes_home_path,
+        uid,
+        soul_id,
+        safe,
+        conversation_state,
+        history_full,
+        dry_run=dry_run,
     )
-    chat_is_primary = bool(conversation_state.get("memorize_chat", True))
-    primary_history = history_full if chat_is_primary else []
-    if min_timestamp is not None:
-        primary_history = [
-            row for row in primary_history
-            if int(row.get("ts_ms") or 0) >= min_timestamp * 1000
-        ]
-    unmemorized_history = _conversation_sources.slice_tail_with_floor(
-        primary_history,
-        since_cursor=resolved_cursor,
-        recent_fallback_messages=0,
-    )
-    unmemorized_tokens = _estimate_unmemorized_tokens(unmemorized_history, -1)
-    queued_memorize_payload: dict[str, Any] | None = None
-    if (not dry_run) and unmemorized_history:
-        has_sleep_gap = _unmemorized_sleep_gap_detected(
-            unmemorized_history,
-            -1,
-            safe,
-            min_chunk_tokens=0,
-        )
-        if has_sleep_gap:
-            try:
-                candidate_payload = _build_cross_conversation_payload(
-                    cid,
-                    uid,
-                    soul_id,
-                    safe,
-                    unmemorized_history,
-                    unmemorized_digest_cursor,
-                    True,
-                    trigger_web_source=trigger_web_source,
-                )
-                if candidate_payload is not None:
-                    unmemorized_tokens = _estimate_primary_memorize_tokens(
-                        list(candidate_payload.get("conversation") or [])
-                    )
-                    if unmemorized_tokens >= _MIN_CHUNK_TOKENS:
-                        queued_memorize_payload = candidate_payload
-            except Exception as exc:
-                logger.error("forced memorize source assembly failed for conversation_id=%s: %s", cid, exc)
-                _set_background_error(
-                    cid,
-                    soul_id=soul_id,
-                    user_id=uid,
-                    code="forced_memorize_source_failed",
-                    detail=f"{type(exc).__name__}: {exc}",
-                )
     return (
         conversation_state,
         soul_card,
@@ -4349,21 +4447,10 @@ async def conversation_turn(
 
         forced_memorize_scheduled = False
         if queued_memorize_payload is not None:
-            marker = _memorize_lock_key(uid, soul_id)
-            if _mark_inflight(_FORCED_MEMORIZE_INFLIGHT, marker):
-                try:
-                    _t = asyncio.create_task(_run_forced_memorize_from_turn(queued_memorize_payload))
-                except Exception:
-                    _clear_inflight(_FORCED_MEMORIZE_INFLIGHT, marker)
-                    raise
-                _BACKGROUND_TASKS.add(_t)
-                forced_memorize_scheduled = True
-
-                def _on_forced_memorize_done(done_task: asyncio.Task) -> None:
-                    _BACKGROUND_TASKS.discard(done_task)
-                    _clear_inflight(_FORCED_MEMORIZE_INFLIGHT, marker)
-
-                _t.add_done_callback(_on_forced_memorize_done)
+            forced_memorize_scheduled = _schedule_auto_memorize(
+                queued_memorize_payload,
+                _auto_memorize_scope(cid, uid, soul_id, safe, history_full),
+            )
 
         response_payload: dict[str, Any] = {
             "ok": True,

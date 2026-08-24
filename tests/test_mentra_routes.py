@@ -8,7 +8,7 @@ import json
 from concurrent.futures import CancelledError as FutureCancelledError
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 from fastapi import FastAPI
@@ -55,6 +55,8 @@ def _session_app(
     token_results: list[str | BaseException] | None = None,
     state_results: list[Exception | None] | None = None,
     raise_server_exceptions: bool = True,
+    prepare_auto_memorize: Callable[..., tuple[int, dict[str, Any] | None]] | None = None,
+    schedule_auto_memorize: Callable[..., bool] | None = None,
 ) -> tuple[TestClient, dict[str, Any], dict[str, Any]]:
     config = _configured()
     calls: dict[str, Any] = {
@@ -63,6 +65,7 @@ def _session_app(
         "state": [],
         "cross": [],
         "state_writes": [],
+        "memorize_checks": [],
     }
     results = iter(token_results or ["ephemeral-1", "ephemeral-2", "ephemeral-3"])
     writes = iter(state_results or [])
@@ -103,6 +106,13 @@ def _session_app(
         if isinstance(result, Exception):
             raise result
 
+    def prepare(*args: Any, **kwargs: Any) -> tuple[int, dict[str, Any] | None]:
+        calls["memorize_checks"].append((args, kwargs))
+        return (prepare_auto_memorize or (lambda *_a, **_k: (0, None)))(*args, **kwargs)
+
+    def schedule(*args: Any, **kwargs: Any) -> bool:
+        return (schedule_auto_memorize or (lambda *_a, **_k: False))(*args, **kwargs)
+
     monkeypatch.setattr(mentra_routes, "_mint_gemini_token", mint)
     monkeypatch.setattr(mentra_routes.secrets, "token_urlsafe", lambda _length: next(sitting_ids))
     app = FastAPI()
@@ -116,6 +126,8 @@ def _session_app(
         get_storage_dir=lambda: tmp_path,
         get_soul_lock=lambda _user_id, _soul_id: soul_lock,
         write_conversation_state=write_state,
+        prepare_auto_memorize=prepare,
+        schedule_auto_memorize=schedule,
     )
     return TestClient(app, raise_server_exceptions=raise_server_exceptions), calls, config
 
@@ -481,6 +493,46 @@ def test_transcript_append_is_contiguous_idempotent_and_initializes_state(
     assert all(row["received_at"].endswith("Z") for row in history)
     assert len(calls["state_writes"]) == 3
     assert calls["state_writes"][0][1]["updates"] == {"memorize_chat": True}
+
+
+def test_transcript_append_queues_shared_auto_memorize_only_for_new_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    scheduled: list[tuple[Any, ...]] = []
+    payload = {"conversation": [{"content": "fictional", "memorize_chat": True}]}
+    client, calls, _ = _session_app(
+        monkeypatch,
+        tmp_path,
+        prepare_auto_memorize=lambda *_a, **_k: (9000, payload),
+        schedule_auto_memorize=lambda *args: scheduled.append(args) or True,
+    )
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    endpoint = f"/integration/mentra/session/{sitting_id}/transcripts/append"
+    body = {
+        "user_id": START["user_id"],
+        "soul_id": START["soul_id"],
+        "events": [{
+            "event_id": f"{sitting_id}:1",
+            "sequence": 1,
+            "event_kind": "transcript",
+            "role": "user",
+            "content": "A fictional eligible line.",
+            "status": "complete",
+        }],
+    }
+
+    first = client.post(endpoint, json=body, headers=AUTH)
+    replay = client.post(endpoint, json=body, headers=AUTH)
+
+    assert first.json()["memorize_check_queued"] is True
+    assert replay.json()["memorize_check_queued"] is False
+    assert len(calls["memorize_checks"]) == 1
+    assert len(scheduled) == 1
+    assert scheduled[0][0] is payload
+    assert scheduled[0][1:4] == ("mentra:phone-1", START["user_id"], START["soul_id"])
 
 
 def test_sequence_and_duplicate_lookup_tolerate_compacted_prefix() -> None:
