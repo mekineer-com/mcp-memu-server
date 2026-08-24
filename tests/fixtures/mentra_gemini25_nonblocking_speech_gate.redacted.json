@@ -1,0 +1,64 @@
+{
+  "recorded_at": "2026-08-24T18:30:52Z",
+  "purpose": "Redacted live evidence that Gemini 2.5 can continue native-audio speech during a delayed NON_BLOCKING memory call, accept SILENT context without starting an utterance, and use that context later in the same sitting.",
+  "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+  "fictional_protocol": {
+    "instruction": "Speak one required sentence, call recall_memory, continue five fictional lighthouse sentences without waiting, then use the returned phrase only when asked on a later turn.",
+    "tool_delay_ms": 2500,
+    "fact_existed_only_in_tool_result": true
+  },
+  "raw_wire_redacted": {
+    "toolCall": {
+      "functionCalls": [
+        {
+          "name": "recall_memory",
+          "args": {
+            "query": "access phrase"
+          },
+          "id": "<provider-call-id>"
+        }
+      ]
+    },
+    "toolResponse": {
+      "functionResponses": [
+        {
+          "id": "<same-provider-call-id>",
+          "name": "recall_memory",
+          "response": {
+            "result": "The fictional lighthouse access phrase is CEDAR-MOON-47.",
+            "scheduling": "SILENT"
+          }
+        }
+      ]
+    }
+  },
+  "observed": {
+    "tool_call_at_ms": 7887,
+    "tool_response_sent_at_ms": 10389,
+    "initial_turn_complete_at_ms": 33042,
+    "later_turn_complete_at_ms": 37240,
+    "audio_chunks_total": 627,
+    "audio_chunks_during_delay": 148,
+    "audio_chunks_after_half_delay": 118,
+    "interruption_count": 0,
+    "audio_between_initial_complete_and_later_prompt": 0,
+    "later_output": "CEDAR-MOON-47",
+    "same_socket": true
+  },
+  "decision_21_bars": {
+    "speech_continued_while_retrieval_pending": true,
+    "silent_delivery_did_not_clip_or_start_speech": true,
+    "later_speech_used_returned_memory": true
+  },
+  "repeatability_notes": {
+    "mandatory_tool_selection_was_not_deterministic": true,
+    "transient_provider_setup_errors_observed": 2,
+    "setup_error": "WebSocket 1007: CONTENT_TYPE_AUDIO not supported for this model configuration",
+    "interpretation": "Capability gate passed when the requested call occurred. Production still needs the planned fail-loud setup handling, nonfatal temporary recall handling, and operational visibility."
+  },
+  "redactions": [
+    "Gemini API key",
+    "ephemeral token",
+    "provider call ID"
+  ]
+}
