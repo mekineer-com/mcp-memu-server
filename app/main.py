@@ -1617,7 +1617,7 @@ def _load_mentra_cross_chat_context(
         con.row_factory = sqlite3.Row
         _sqlite_ensure_conversation_state_schema(con)
         state = _conversation_state_from_row(_conversation_state_row(con, conversation_id))
-        digest_cursor = int((state or {}).get("digest_cursor") or 0)
+        digest_cursor = _effective_digest_cursor_from_row(state)
         current_tail = _conversation_sources.load_mentra_tail(
             storage_dir=_get_storage_dir(_CONFIG),
             user_id=user_id,
@@ -1625,6 +1625,7 @@ def _load_mentra_cross_chat_context(
             conversation_id=conversation_id,
             since_cursor=digest_cursor,
             recent_fallback_messages=_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
+            include_floor_without_new=True,
         )
         cross_tail = _cross_history._load_cross_tail_with_activities_from_sources(
             con,
@@ -3748,11 +3749,6 @@ def _build_cross_conversation_payload(
     trigger_memorize_raw = safe.get("memorize_chat")
     trigger_memorize = trigger_memorize_raw if isinstance(trigger_memorize_raw, bool) else trigger_memorize_default
     trigger_chat_name = str(safe.get("chat_name") or "").strip()
-    trigger_checkpoint = (
-        _source_cursor_checkpoint(trigger_history, web_source=True)
-        if trigger_web_source
-        else None
-    )
     trigger_tail = _normalize_conversation(trigger_history)
     if not trigger_tail:
         return None
@@ -3760,12 +3756,14 @@ def _build_cross_conversation_payload(
     for i, msg in enumerate(trigger_tail):
         msg["source_label"] = trigger_label
         msg["source_conversation_id"] = cid
-        if trigger_web_source:
-            raw = trigger_history[i]
-            msg["source_conversation_index"] = raw.get("source_conversation_index")
-            msg["source_message_id"] = raw.get("source_message_id")
+        raw = trigger_history[i]
+        raw_index = raw.get("source_conversation_index")
+        if raw_index is not None:
+            msg["source_conversation_index"] = raw_index
         else:
             msg["source_conversation_index"] = digest_cursor + 1 + i
+        if trigger_web_source:
+            msg["source_message_id"] = raw.get("source_message_id")
         msg["memorize_chat"] = trigger_memorize
         if trigger_chat_name and not str(msg.get("chat_name") or "").strip():
             msg["chat_name"] = trigger_chat_name
@@ -3773,8 +3771,7 @@ def _build_cross_conversation_payload(
         if isinstance(ts, (int, float)) and "received_at" not in msg:
             msg["received_at"] = datetime.fromtimestamp(ts / 1000.0, tz=UTC).isoformat()
 
-    if not trigger_web_source:
-        trigger_checkpoint = {"cursor": digest_cursor + len(trigger_tail)}
+    trigger_checkpoint = _source_cursor_checkpoint(trigger_tail, web_source=trigger_web_source)
     if trigger_checkpoint is None:
         raise RuntimeError(
             f"memorize tail has no checkpoint for {cid}; "

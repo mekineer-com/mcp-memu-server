@@ -2186,8 +2186,8 @@ def test_mentra_bootstrap_marks_prior_tail_as_current_smartglasses_chat(
         con.row_factory = sqlite3.Row
         main._sqlite_ensure_conversation_state_schema(con)
         con.execute(
-            "INSERT INTO conversations (conversation_id, digest_cursor) VALUES (?, ?)",
-            ("mentra:test-device", 0),
+            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
+            ("mentra:test-device", 1, "2026-08-23T02:00:00Z"),
         )
         con.commit()
     finally:
@@ -2221,6 +2221,53 @@ def test_mentra_bootstrap_marks_prior_tail_as_current_smartglasses_chat(
     assert "My Smartglasses Conversations:" in rendered
     assert "[dm][Smartglasses] ← current chat" in rendered
     assert "[Codexia] A prior fictional reply." in rendered
+
+
+def test_cross_payload_preserves_projected_mentra_sequence_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+    projected = [
+        {
+            "role": "user",
+            "content": "Fictional retained line.",
+            "source_conversation_index": 500,
+            "received_at": "2026-08-23T08:00:00Z",
+        },
+        {
+            "role": "assistant",
+            "content": "Fictional retained reply.",
+            "source_conversation_index": 501,
+            "received_at": "2026-08-23T12:00:00Z",
+        },
+    ]
+
+    payload = main._build_cross_conversation_payload(
+        "mentra:test-device",
+        "u1",
+        "Echo",
+        {"memorize_chat": True},
+        projected,
+        499,
+    )
+
+    assert payload is not None
+    trigger_rows = [
+        row
+        for row in payload["conversation"]
+        if row["source_conversation_id"] == "mentra:test-device"
+    ]
+    assert [row["source_conversation_index"] for row in trigger_rows] == [500, 501]
+    assert payload["_final_cursors"]["mentra:test-device"]["cursor"] == 501
 
 
 def test_load_tail_for_source_conversation_dispatches_mentra(

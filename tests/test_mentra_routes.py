@@ -365,7 +365,7 @@ def test_replacement_start_rejects_context_that_changed_during_mint(
 
     stale = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
     assert stale.status_code == 409
-    assert stale.json()["detail"] == "Mentra history changed during Start; retry"
+    assert stale.json()["detail"] == {"code": "mentra_history_changed"}
     scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
     assert client.post(
         f"/integration/mentra/session/{healthy_sitting}/heartbeat",

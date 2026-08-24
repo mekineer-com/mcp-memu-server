@@ -26,6 +26,7 @@ from app.services import conversation_sources
 
 _DEVICE_SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LEASE_SECONDS = 90
+_HISTORY_CHANGED_CODE = "mentra_history_changed"
 _TOKEN_SETUP_FIELD_MASK = ",".join(
     (
         "model",
@@ -439,7 +440,7 @@ def register_mentra_routes(
                 conversation_id=conversation_id,
             )
             if _next_transcript_sequence(history_after_context) != context_next_sequence:
-                raise HTTPException(status_code=409, detail="Mentra history changed during Start; retry")
+                raise HTTPException(status_code=409, detail={"code": _HISTORY_CHANGED_CODE})
             instruction = _build_bootstrap_instruction(
                 identity=build_identity_context(body.soul_id),
                 narrative=str(narrative or "").strip(),
@@ -467,9 +468,7 @@ def register_mentra_routes(
                 )
                 next_sequence = _next_transcript_sequence(history)
                 if next_sequence != context_next_sequence:
-                    raise HTTPException(
-                        status_code=409, detail="Mentra history changed during Start; retry"
-                    )
+                    raise HTTPException(status_code=409, detail={"code": _HISTORY_CHANGED_CODE})
                 async with _lease_lock:
                     active = _leases.get(lease_key)
                     if active and active.expires_at <= time.monotonic():
@@ -637,7 +636,7 @@ def register_mentra_routes(
                     dry_run=False,
                 )
                 if payload is not None:
-                    schedule_status = schedule_auto_memorize(
+                    schedule_auto_memorize(
                         payload,
                         conversation_id,
                         body.user_id,
@@ -645,7 +644,7 @@ def register_mentra_routes(
                         safe,
                         projected_history,
                     )
-                    memorize_check_queued = schedule_status in {"launched", "coalesced"}
+                    memorize_check_queued = True
 
         return {
             "ok": True,

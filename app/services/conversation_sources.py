@@ -894,6 +894,7 @@ def load_chat_snapshot_tail(
     since_cursor: int,
     recent_fallback_messages: int,
     source_label: str,
+    include_floor_without_new: bool = False,
 ) -> list[dict[str, Any]]:
     path = _chat_snapshot_path(
         storage_dir=storage_dir,
@@ -965,6 +966,7 @@ def load_chat_snapshot_tail(
         all_rows,
         since_cursor=since_cursor,
         recent_fallback_messages=recent_fallback_messages,
+        include_floor_without_new=include_floor_without_new,
     )
 
 
@@ -1016,6 +1018,7 @@ def load_mentra_tail(
     conversation_id: str,
     since_cursor: int,
     recent_fallback_messages: int,
+    include_floor_without_new: bool = False,
 ) -> list[dict[str, Any]]:
     try:
         return load_chat_snapshot_tail(
@@ -1026,6 +1029,7 @@ def load_mentra_tail(
             since_cursor=since_cursor,
             recent_fallback_messages=recent_fallback_messages,
             source_label="mentra",
+            include_floor_without_new=include_floor_without_new,
         )
     except FileNotFoundError:
         return []
