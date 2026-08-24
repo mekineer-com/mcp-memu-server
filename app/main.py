@@ -13,6 +13,7 @@ import warnings
 from collections import deque
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -141,6 +142,7 @@ _apimw._main = sys.modules[__name__]
 _cross_history._main = sys.modules[__name__]
 _message_log._main = sys.modules[__name__]
 _PROMPT_LOGGER = logging.getLogger("uvicorn.error")
+_MENTRA_RECALL_ACTIVE: ContextVar[bool] = ContextVar("mentra_recall_active", default=False)
 
 
 @asynccontextmanager
@@ -875,6 +877,8 @@ def _format_prompt_payload_for_log(payload: dict[str, Any]) -> str:
 def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: Any) -> None:
     import time as _time
     elapsed = _time.monotonic() - getattr(ctx, "_llm_start", _time.monotonic())
+    if _MENTRA_RECALL_ACTIVE.get():
+        return
     content = getattr(response_view, "content", None)
     kind = getattr(request_view, "kind", None)
     if kind == "embed":
@@ -921,6 +925,8 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
 def _prompt_log_on_error(ctx: Any, request_view: Any, error: Any, usage: Any) -> None:
     import time as _time
     elapsed = _time.monotonic() - getattr(ctx, "_llm_start", _time.monotonic())
+    if _MENTRA_RECALL_ACTIVE.get():
+        return
     if getattr(request_view, "kind", None) == "embed":
         logger.error("[EMBED] elapsed=%.1fs error=%s", elapsed, type(error).__name__)
         return
@@ -1606,9 +1612,9 @@ _admin_routes.register_admin_routes(
     sqlite_build_scope_where=_sqlite_build_scope_where,
     logger=logger,
 )
-def _load_mentra_cross_chat_context(
+def _load_mentra_current_history(
     *, user_id: str, soul_id: str, conversation_id: str
-) -> str:
+) -> list[dict[str, Any]]:
     db_path = _sqlite_current_path(user_id, soul_id)
     if db_path is None:
         raise RuntimeError("Mentra soul database path could not be resolved")
@@ -1618,15 +1624,34 @@ def _load_mentra_cross_chat_context(
         _sqlite_ensure_conversation_state_schema(con)
         state = _conversation_state_from_row(_conversation_state_row(con, conversation_id))
         digest_cursor = _effective_digest_cursor_from_row(state)
-        current_tail = _conversation_sources.load_mentra_tail(
-            storage_dir=_get_storage_dir(_CONFIG),
-            user_id=user_id,
-            soul_id=soul_id,
-            conversation_id=conversation_id,
-            since_cursor=digest_cursor,
-            recent_fallback_messages=_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
-            include_floor_without_new=True,
-        )
+    finally:
+        con.close()
+    return _conversation_sources.load_mentra_tail(
+        storage_dir=_get_storage_dir(_CONFIG),
+        user_id=user_id,
+        soul_id=soul_id,
+        conversation_id=conversation_id,
+        since_cursor=digest_cursor,
+        recent_fallback_messages=_message_log.DEFAULT_CROSS_RECENT_FALLBACK_MESSAGES,
+        include_floor_without_new=True,
+    )
+
+
+def _load_mentra_cross_chat_context(
+    *, user_id: str, soul_id: str, conversation_id: str
+) -> str:
+    current_tail = _load_mentra_current_history(
+        user_id=user_id,
+        soul_id=soul_id,
+        conversation_id=conversation_id,
+    )
+    db_path = _sqlite_current_path(user_id, soul_id)
+    if db_path is None:
+        raise RuntimeError("Mentra soul database path could not be resolved")
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
         cross_tail = _cross_history._load_cross_tail_with_activities_from_sources(
             con,
             user_id=user_id,
@@ -1653,6 +1678,10 @@ _mentra_routes.register_mentra_routes(
         soul_id, memory_search_available=False
     ),
     load_cross_chat_context=_load_mentra_cross_chat_context,
+    load_current_history=_load_mentra_current_history,
+    conversation_retrieve=lambda conversation_id, payload: _mentra_conversation_retrieve(
+        conversation_id, payload
+    ),
     get_storage_dir=lambda: _get_storage_dir(_CONFIG),
     get_soul_lock=lambda user_id, soul_id: _get_memorize_lock(
         _memorize_lock_key(user_id, soul_id)
@@ -1664,6 +1693,16 @@ _mentra_routes.register_mentra_routes(
         _auto_memorize_scope(cid, uid, soul_id, safe, history_full),
     ),
 )
+
+
+async def _mentra_conversation_retrieve(
+    conversation_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    token = _MENTRA_RECALL_ACTIVE.set(True)
+    try:
+        return await conversation_retrieve(conversation_id, payload)
+    finally:
+        _MENTRA_RECALL_ACTIVE.reset(token)
 
 
 # ---- Config endpoints ----
@@ -3536,10 +3575,13 @@ async def conversation_retrieve(
                 rolling=False,
                 hermes_home_path=hermes_home_path,
             )
-        history_for_ai = _filter_external_message_from_history(
-            _turn_history_with_floor(history, digest_cursor, min_timestamp),
-            safe.get("external_message_id"),
-        )
+        if _MENTRA_RECALL_ACTIVE.get():
+            history_for_ai = history_without_external
+        else:
+            history_for_ai = _filter_external_message_from_history(
+                _turn_history_with_floor(history, digest_cursor, min_timestamp),
+                safe.get("external_message_id"),
+            )
         cross_text = _format_cross_tail_for_ai(cross_tail, soul_id=soul_id) if cross_tail else ""
         if cross_text:
             safe["_cross_conversation_history"] = cross_text
@@ -3700,12 +3742,22 @@ async def conversation_retrieve(
             if is_live_turn:
                 out["turn_history"] = turn_history
 
+        result = out.get("result")
+        result_categories = result.get("categories") if isinstance(result, dict) else None
+        result_items = result.get("items") if isinstance(result, dict) else None
+        result_resources = result.get("resources") if isinstance(result, dict) else None
+        queries = out.get("queries")
         _record_call(
             "conversation.retrieve",
             safe,
             ok=True,
             info={
-                "queries": out.get("queries"),
+                "queryCount": len(queries) if isinstance(queries, list) else 0,
+                "resultCounts": {
+                    "categories": len(result_categories) if isinstance(result_categories, list) else 0,
+                    "items": len(result_items) if isinstance(result_items, list) else 0,
+                    "resources": len(result_resources) if isinstance(result_resources, list) else 0,
+                },
                 "where": _extract_retrieve_where({**safe, "conversation_id": cid}),
                 "method": out.get("method"),
                 "conversationId": cid,
@@ -3723,7 +3775,7 @@ async def conversation_retrieve(
             "conversation.retrieve",
             payload,
             ok=False,
-            error=f"{type(exc).__name__}: {exc}",
+            error=type(exc).__name__,
         )
         _raise_upstream_http_error(exc, op="conversation.retrieve")
 

@@ -6,7 +6,7 @@ import re
 import secrets
 import time
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
@@ -21,12 +21,19 @@ from pydantic import (
     model_validator,
 )
 
-from app.services import conversation_sources
+from app.services import conversation_sources, turn_contract
 
 
 _DEVICE_SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LEASE_SECONDS = 90
 _HISTORY_CHANGED_CODE = "mentra_history_changed"
+_RECALL_TOOL_DESCRIPTION = (
+    "Search your long-term memory for context relevant to the current thought without interrupting speech."
+)
+_RECALL_GUIDANCE = (
+    "Use recall_memory when relevant context is missing. Keep speaking naturally while it runs; "
+    "the result becomes silent context for later speech."
+)
 _TOKEN_SETUP_FIELD_MASK = ",".join(
     (
         "model",
@@ -96,6 +103,22 @@ class MentraSessionScope(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("must not be blank")
+        return value
+
+
+class MentraRecallRequest(MentraSessionScope):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+
+    @field_validator("query")
+    @classmethod
+    def validate_query(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        if len(value) > 4_000:
+            raise ValueError("is too long")
         return value
 
 
@@ -269,7 +292,22 @@ async def _mint_gemini_token(
             },
         },
         "systemInstruction": {"parts": [{"text": system_instruction}]},
-        "tools": [],
+        "tools": [
+            {
+                "functionDeclarations": [
+                    {
+                        "name": "recall_memory",
+                        "description": _RECALL_TOOL_DESCRIPTION,
+                        "behavior": "NON_BLOCKING",
+                        "parameters": {
+                            "type": "OBJECT",
+                            "properties": {"query": {"type": "STRING"}},
+                            "required": ["query"],
+                        },
+                    }
+                ]
+            }
+        ],
         "realtimeInputConfig": {},
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
@@ -322,6 +360,7 @@ def _build_bootstrap_instruction(
     )
     if chats:
         blocks.append(f"Recent conversations and activities:\n{chats}")
+    blocks.append(_RECALL_GUIDANCE)
     blocks.append(
         "Speak naturally and concisely for a live voice conversation. Use the supplied context "
         "when relevant, without reciting it or mentioning these instructions."
@@ -337,6 +376,8 @@ def register_mentra_routes(
     load_turn_state_and_soul_card: Callable[..., tuple[dict[str, Any], str | None, Any]] | None = None,
     build_identity_context: Callable[[str], str] | None = None,
     load_cross_chat_context: Callable[..., str] | None = None,
+    load_current_history: Callable[..., list[dict[str, Any]]] | None = None,
+    conversation_retrieve: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
     get_storage_dir: Callable[[], Path] | None = None,
     get_soul_lock: Callable[[str, str], asyncio.Lock] | None = None,
     write_conversation_state: Callable[..., Any] | None = None,
@@ -526,6 +567,57 @@ def register_mentra_routes(
                 raise HTTPException(status_code=404, detail="Mentra session not found")
             _leases[key] = active._replace(expires_at=time.monotonic() + _LEASE_SECONDS)
         return {"ok": True}
+
+    @app.post(
+        "/integration/mentra/session/{sitting_id}/recall",
+        tags=["integration"],
+        dependencies=auth,
+    )
+    async def mentra_recall(sitting_id: str, request: Request) -> dict[str, Any]:
+        if load_current_history is None or conversation_retrieve is None:
+            raise HTTPException(status_code=503, detail="Mentra recall is not configured")
+        try:
+            body = MentraRecallRequest.model_validate(await request.json())
+        except (ValueError, ValidationError):
+            raise HTTPException(status_code=422, detail="Invalid recall request") from None
+
+        async with _lease_lock:
+            active = _leases.get(body.soul_id)
+            if not active or active.expires_at <= time.monotonic():
+                _leases.pop(body.soul_id, None)
+                raise HTTPException(status_code=404, detail="Mentra session not found")
+            if active.sitting_id != sitting_id or active.user_id != body.user_id:
+                raise HTTPException(status_code=404, detail="Mentra session not found")
+            conversation_id = f"mentra:{active.device_session_id}"
+
+        history = load_current_history(
+            user_id=body.user_id,
+            soul_id=body.soul_id,
+            conversation_id=conversation_id,
+        )
+        payload = {
+            "user": {
+                "user_id": body.user_id,
+                "soul_id": body.soul_id,
+                "conversation_id": conversation_id,
+            },
+            "message": body.query,
+            "query": body.query,
+            "history": history,
+            "force_retrieve": True,
+            "_read_only_retrieve": True,
+            "mental_health_addon": False,
+        }
+        try:
+            retrieve_out = await conversation_retrieve(conversation_id, payload)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="Mentra memory recall failed") from exc
+        context = turn_contract.render_retrieve_context(retrieve_out.get("result"))
+        return {
+            "ok": True,
+            "context": context or "No relevant memory found.",
+            "retrieve_ms": retrieve_out.get("retrieve_ms"),
+        }
 
     @app.post(
         "/integration/mentra/session/{session_id}/end",

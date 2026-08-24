@@ -5824,6 +5824,89 @@ async def test_conversation_retrieve_uses_same_payload_history_for_turn_prompt(
 
 
 @pytest.mark.asyncio
+async def test_conversation_retrieve_preserves_history_already_floored_by_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Echo.db"
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {"digest_cursor": 100, "last_memorize_at": "2026-08-24T00:00:00Z"},
+            None,
+            db_path,
+        ),
+    )
+    monkeypatch.setattr(main, "_resolve_source_cursor", lambda *_a, **_k: (100, None, None))
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_run_retrieve(
+        safe: dict[str, object], *, conversation_id: str | None = None
+    ) -> dict[str, object]:
+        captured["safe"] = safe
+        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
+    history = [
+        {
+            "role": "user",
+            "content": f"floored_{idx}",
+            "source_conversation_index": 93 + idx,
+        }
+        for idx in range(8)
+    ]
+
+    main._LAST_CALLS.clear()
+    await main._mentra_conversation_retrieve(
+        "mentra:test-device",
+        {
+            "user": {"user_id": "u1", "soul_id": "Echo"},
+            "message": "remember this",
+            "query": "remember this",
+            "history": history,
+            "_read_only_retrieve": True,
+            "force_retrieve": True,
+        },
+    )
+
+    query_text = str(captured["safe"].get("queries"))
+    assert "floored_0" in query_text
+    assert "floored_7" in query_text
+    telemetry = json.dumps(main._LAST_CALLS[-1])
+    assert "remember this" not in telemetry
+    assert "floored_" not in telemetry
+
+
+@pytest.mark.asyncio
+async def test_mentra_retrieve_suppresses_prompt_body_logging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logged: list[str] = []
+
+    async def _fake_retrieve(_conversation_id: str, _payload: dict[str, Any]) -> dict[str, Any]:
+        assert main._MENTRA_RECALL_ACTIVE.get() is True
+        monkeypatch.setattr(main._PROMPT_LOGGER, "info", lambda value: logged.append(str(value)))
+        main._prompt_log_after(
+            SimpleNamespace(operation="retrieve", step_id="route", trace_id="private"),
+            SimpleNamespace(kind="chat", metadata={"payload": {"messages": [{"content": "private"}]}}),
+            SimpleNamespace(content="private result"),
+            SimpleNamespace(),
+        )
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(main, "conversation_retrieve", _fake_retrieve)
+    out = await main._mentra_conversation_retrieve(
+        "mentra:test", {"query": "private"}
+    )
+
+    assert out["ok"] is True
+    assert logged == []
+    assert main._MENTRA_RECALL_ACTIVE.get() is False
+
+
+@pytest.mark.asyncio
 async def test_conversation_retrieve_uses_sillytavern_floor_after_memorize(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

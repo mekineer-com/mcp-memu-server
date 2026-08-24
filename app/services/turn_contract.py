@@ -486,6 +486,16 @@ def _render_retrieve(
     )
 
 
+def render_retrieve_context(result: Any, *, now: datetime | None = None) -> str:
+    categories, memories, _ = _render_retrieve(result, now=now)
+    blocks: list[str] = []
+    if categories:
+        blocks.append(f"Dossiers:\n{categories}")
+    if memories:
+        blocks.append(f"Memories:\n{memories}")
+    return "\n\n".join(blocks)
+
+
 def format_category_summary_line(category_name: str, category_summary: str) -> str:
     name = _text(category_name) or "category"
     summary = _text(category_summary)

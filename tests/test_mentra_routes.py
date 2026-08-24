@@ -5,9 +5,10 @@ import copy
 import inspect
 import io
 import json
-from concurrent.futures import CancelledError as FutureCancelledError
+from concurrent.futures import CancelledError as FutureCancelledError, ThreadPoolExecutor
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from threading import Event
 from typing import Any, Callable
 
 import pytest
@@ -57,6 +58,8 @@ def _session_app(
     raise_server_exceptions: bool = True,
     prepare_auto_memorize: Callable[..., tuple[int, dict[str, Any] | None]] | None = None,
     schedule_auto_memorize: Callable[..., str] | None = None,
+    retrieve_result: dict[str, Any] | BaseException | None = None,
+    retrieve_hook: Callable[[str, dict[str, Any]], Any] | None = None,
 ) -> tuple[TestClient, dict[str, Any], dict[str, Any]]:
     config = _configured()
     calls: dict[str, Any] = {
@@ -66,6 +69,7 @@ def _session_app(
         "cross": [],
         "state_writes": [],
         "memorize_checks": [],
+        "recalls": [],
     }
     results = iter(token_results or ["ephemeral-1", "ephemeral-2", "ephemeral-3"])
     writes = iter(state_results or [])
@@ -92,6 +96,40 @@ def _session_app(
     def load_cross(**kwargs: str) -> str:
         calls["cross"].append(kwargs)
         return "[dm][Fictional Friend]\nFictional Friend: hello"
+
+    def load_current(**kwargs: str) -> list[dict[str, Any]]:
+        calls["current"] = kwargs
+        return [
+            {
+                "role": "user",
+                "content": "A fictional current-chat line.",
+                "source_conversation_index": 7,
+            }
+        ]
+
+    async def retrieve(conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        calls["recalls"].append((conversation_id, copy.deepcopy(payload)))
+        calls["lease_locked_during_retrieve"] = mentra_routes._lease_lock.locked()
+        calls["soul_locked_during_retrieve"] = soul_lock.locked()
+        if retrieve_hook is not None:
+            return await retrieve_hook(conversation_id, payload)
+        if isinstance(retrieve_result, BaseException):
+            raise retrieve_result
+        return retrieve_result or {
+            "ok": True,
+            "retrieve_ms": 123,
+            "result": {
+                "categories": [{"name": "Fictional Places", "summary": "A remembered coast."}],
+                "items": [
+                    {
+                        "id": "memory-secret-id",
+                        "memory_type": "profile",
+                        "summary": "The lighthouse keeper preferred cedar tea.",
+                    }
+                ],
+                "resources": [],
+            },
+        }
 
     async def mint(**kwargs: str) -> str:
         calls["token"].append(kwargs)
@@ -123,6 +161,8 @@ def _session_app(
         load_turn_state_and_soul_card=load_state,
         build_identity_context=lambda soul_id: f"Today is server time.\nYou are {soul_id}.",
         load_cross_chat_context=load_cross,
+        load_current_history=load_current,
+        conversation_retrieve=retrieve,
         get_storage_dir=lambda: tmp_path,
         get_soul_lock=lambda _user_id, _soul_id: soul_lock,
         write_conversation_state=write_state,
@@ -223,6 +263,7 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
         "My identity and lived experience:",
         "The user's identity and lived experience:",
         "Recent conversations and activities:",
+        "Use recall_memory when relevant context is missing.",
         "Speak naturally and concisely",
     ]
     assert [prompt.index(text) for text in headings] == sorted(prompt.index(text) for text in headings)
@@ -417,7 +458,135 @@ def test_cancelled_start_always_releases_in_progress_claim(
 
 def test_route_registration_has_explicit_transcript_state_seams() -> None:
     parameters = inspect.signature(register_mentra_routes).parameters
-    assert {"get_storage_dir", "get_soul_lock", "write_conversation_state"} <= set(parameters)
+    assert {
+        "get_storage_dir",
+        "get_soul_lock",
+        "write_conversation_state",
+        "load_current_history",
+        "conversation_retrieve",
+    } <= set(parameters)
+
+
+def test_recall_is_sitting_scoped_read_only_compact_and_unlocked(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    endpoint = f"/integration/mentra/session/{sitting_id}/recall"
+    request = {
+        "user_id": START["user_id"],
+        "soul_id": START["soul_id"],
+        "query": "remember the fictional lighthouse",
+    }
+
+    assert client.post(endpoint, json={**request, "query": "private rejected text", "extra": True}, headers=AUTH).json() == {
+        "detail": "Invalid recall request"
+    }
+    assert client.post(endpoint.replace(sitting_id, "wrong"), json=request, headers=AUTH).status_code == 404
+    response = client.post(endpoint, json=request, headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "context": (
+            "Dossiers:\n[Fictional Places] A remembered coast.\n\n"
+            "Memories:\nKey: [profile] what's said or declared\n"
+            "- [profile] The lighthouse keeper preferred cedar tea."
+        ),
+        "retrieve_ms": 123,
+    }
+    conversation_id, payload = calls["recalls"][0]
+    assert conversation_id == "mentra:phone-1"
+    assert payload["history"][0]["content"] == "A fictional current-chat line."
+    assert payload["force_retrieve"] is True
+    assert payload["_read_only_retrieve"] is True
+    assert payload["mental_health_addon"] is False
+    assert "memory-secret-id" not in response.text
+    assert calls["lease_locked_during_retrieve"] is False
+    assert calls["soul_locked_during_retrieve"] is False
+
+
+def test_recall_failure_is_generic(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _, _ = _session_app(
+        monkeypatch,
+        tmp_path,
+        retrieve_result=RuntimeError("private fictional query leaked"),
+    )
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    response = client.post(
+        f"/integration/mentra/session/{sitting_id}/recall",
+        json={
+            "user_id": START["user_id"],
+            "soul_id": START["soul_id"],
+            "query": "private fictional query",
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "Mentra memory recall failed"}
+    assert "private fictional" not in response.text
+
+
+def test_slow_recall_does_not_hold_lease_or_soul_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    started = Event()
+    release = Event()
+
+    async def slow_retrieve(_conversation_id: str, _payload: dict[str, Any]) -> dict[str, Any]:
+        started.set()
+        await asyncio.to_thread(release.wait, 5)
+        return {"ok": True, "retrieve_ms": 1, "result": {}}
+
+    client, _, _ = _session_app(monkeypatch, tmp_path, retrieve_hook=slow_retrieve)
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    recall_path = f"/integration/mentra/session/{sitting_id}/recall"
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            client.post,
+            recall_path,
+            json={**scope, "query": "slow fictional recall"},
+            headers=AUTH,
+        )
+        assert started.wait(2)
+        assert client.post(
+            f"/integration/mentra/session/{sitting_id}/heartbeat",
+            json=scope,
+            headers=AUTH,
+        ).status_code == 200
+        assert client.post(
+            f"/integration/mentra/session/{sitting_id}/transcripts/append",
+            json={
+                **scope,
+                "events": [
+                    {
+                        "event_id": f"{sitting_id}:1",
+                        "sequence": 1,
+                        "event_kind": "transcript",
+                        "role": "user",
+                        "content": "A fictional line while recall runs.",
+                        "status": "complete",
+                    }
+                ],
+            },
+            headers=AUTH,
+        ).status_code == 200
+        release.set()
+        assert future.result(timeout=2).status_code == 200
 
 
 def test_transcript_append_is_contiguous_idempotent_and_initializes_state(
@@ -736,7 +905,22 @@ def test_token_mint_uses_measured_constrained_wire(
         "proactivity,historyConfig"
     )
     assert setup["model"] == "models/gemini-2.5-flash-native-audio-preview-12-2025"
-    assert setup["tools"] == []
+    assert setup["tools"] == [
+        {
+            "functionDeclarations": [
+                {
+                    "name": "recall_memory",
+                    "description": mentra_routes._RECALL_TOOL_DESCRIPTION,
+                    "behavior": "NON_BLOCKING",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {"query": {"type": "STRING"}},
+                        "required": ["query"],
+                    },
+                }
+            ]
+        }
+    ]
     assert setup["realtimeInputConfig"] == {}
     assert setup["generationConfig"]["responseModalities"] == ["AUDIO"]
     assert setup["inputAudioTranscription"] == {}
