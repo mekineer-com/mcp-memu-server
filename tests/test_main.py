@@ -2904,6 +2904,68 @@ def test_turn_state_read_excludes_background_chat_from_segment_trigger(monkeypat
     assert queued is None
 
 
+def test_real_mentra_projection_passes_shared_auto_memorize_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cid = "mentra:fictional-device"
+    conversation_sources.persist_mentra_history_snapshot(
+        storage_dir=tmp_path,
+        user_id="u1",
+        soul_id="Echo",
+        conversation_id=cid,
+        history=[
+            {
+                "event_id": "s1:1",
+                "sequence": 1,
+                "event_kind": "transcript",
+                "role": "user",
+                "content": "A fictional morning line.",
+                "received_at": "2026-08-23T08:00:00.000Z",
+            },
+            {
+                "event_id": "s1:2",
+                "sequence": 2,
+                "event_kind": "transcript",
+                "role": "assistant",
+                "content": "A fictional evening reply.",
+                "received_at": "2026-08-23T12:00:00.000Z",
+            },
+        ],
+    )
+    projected = conversation_sources.load_mentra_tail(
+        storage_dir=tmp_path,
+        user_id="u1",
+        soul_id="Echo",
+        conversation_id=cid,
+        since_cursor=-1,
+        recent_fallback_messages=0,
+    )
+    monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 1)
+    monkeypatch.setattr(
+        main,
+        "_resolve_cross_source_paths",
+        lambda: (tmp_path, tmp_path / "hermes", None, tmp_path / "state.db"),
+    )
+    monkeypatch.setattr(
+        main,
+        "_build_cross_conversation_payload",
+        lambda *_a, **_k: {"conversation": projected},
+    )
+
+    _tokens, payload = main._prepare_auto_memorize(
+        cid,
+        "u1",
+        "Echo",
+        {"memorize_chat": True},
+        {"memorize_chat": True, "digest_cursor": -1, "last_memorize_at": None},
+        projected,
+        dry_run=False,
+    )
+
+    assert payload == {"conversation": projected}
+
+
 @pytest.mark.asyncio
 async def test_auto_memorize_collision_rechecks_latest_scope_after_success(
     monkeypatch: pytest.MonkeyPatch,
@@ -2932,9 +2994,9 @@ async def test_auto_memorize_collision_rechecks_latest_scope_after_success(
     try:
         first_scope = main._auto_memorize_scope("cid", "u1", "Echo", {}, [{"content": "first"}])
         latest_scope = main._auto_memorize_scope("cid", "u1", "Echo", {}, [{"content": "latest"}])
-        assert main._schedule_auto_memorize({"run": "first"}, first_scope) is True
+        assert main._schedule_auto_memorize({"run": "first"}, first_scope) == "launched"
         await asyncio.sleep(0)
-        assert main._schedule_auto_memorize({"run": "ignored"}, latest_scope) is True
+        assert main._schedule_auto_memorize({"run": "ignored"}, latest_scope) == "coalesced"
 
         release.set()
         for _ in range(20):

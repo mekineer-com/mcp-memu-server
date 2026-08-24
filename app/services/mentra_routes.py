@@ -340,7 +340,7 @@ def register_mentra_routes(
     get_soul_lock: Callable[[str, str], asyncio.Lock] | None = None,
     write_conversation_state: Callable[..., Any] | None = None,
     prepare_auto_memorize: Callable[..., tuple[int, dict[str, Any] | None]] | None = None,
-    schedule_auto_memorize: Callable[..., bool] | None = None,
+    schedule_auto_memorize: Callable[..., str] | None = None,
 ) -> None:
     async def require_bearer(authorization: str | None = Header(default=None)) -> None:
         config = get_config().get("mentra") or {}
@@ -613,6 +613,14 @@ def register_mentra_routes(
                 updates={"memorize_chat": True},
             )
             if accepted:
+                projected_history = conversation_sources.load_mentra_tail(
+                    storage_dir=storage_dir,
+                    user_id=body.user_id,
+                    soul_id=body.soul_id,
+                    conversation_id=conversation_id,
+                    since_cursor=-1,
+                    recent_fallback_messages=0,
+                )
                 conversation_state, _soul_card, _db_path = load_turn_state_and_soul_card(
                     conversation_id,
                     user_id=body.user_id,
@@ -625,18 +633,19 @@ def register_mentra_routes(
                     body.soul_id,
                     safe,
                     conversation_state,
-                    merged,
+                    projected_history,
                     dry_run=False,
                 )
                 if payload is not None:
-                    memorize_check_queued = schedule_auto_memorize(
+                    schedule_status = schedule_auto_memorize(
                         payload,
                         conversation_id,
                         body.user_id,
                         body.soul_id,
                         safe,
-                        merged,
+                        projected_history,
                     )
+                    memorize_check_queued = schedule_status in {"launched", "coalesced"}
 
         return {
             "ok": True,

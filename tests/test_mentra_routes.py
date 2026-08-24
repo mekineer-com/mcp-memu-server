@@ -56,7 +56,7 @@ def _session_app(
     state_results: list[Exception | None] | None = None,
     raise_server_exceptions: bool = True,
     prepare_auto_memorize: Callable[..., tuple[int, dict[str, Any] | None]] | None = None,
-    schedule_auto_memorize: Callable[..., bool] | None = None,
+    schedule_auto_memorize: Callable[..., str] | None = None,
 ) -> tuple[TestClient, dict[str, Any], dict[str, Any]]:
     config = _configured()
     calls: dict[str, Any] = {
@@ -110,8 +110,8 @@ def _session_app(
         calls["memorize_checks"].append((args, kwargs))
         return (prepare_auto_memorize or (lambda *_a, **_k: (0, None)))(*args, **kwargs)
 
-    def schedule(*args: Any, **kwargs: Any) -> bool:
-        return (schedule_auto_memorize or (lambda *_a, **_k: False))(*args, **kwargs)
+    def schedule(*args: Any, **kwargs: Any) -> str:
+        return (schedule_auto_memorize or (lambda *_a, **_k: "launched"))(*args, **kwargs)
 
     monkeypatch.setattr(mentra_routes, "_mint_gemini_token", mint)
     monkeypatch.setattr(mentra_routes.secrets, "token_urlsafe", lambda _length: next(sitting_ids))
@@ -505,7 +505,7 @@ def test_transcript_append_queues_shared_auto_memorize_only_for_new_rows(
         monkeypatch,
         tmp_path,
         prepare_auto_memorize=lambda *_a, **_k: (9000, payload),
-        schedule_auto_memorize=lambda *args: scheduled.append(args) or True,
+        schedule_auto_memorize=lambda *args: scheduled.append(args) or "launched",
     )
     sitting_id = client.post(
         "/integration/mentra/session/start", json=START, headers=AUTH
@@ -514,14 +514,23 @@ def test_transcript_append_queues_shared_auto_memorize_only_for_new_rows(
     body = {
         "user_id": START["user_id"],
         "soul_id": START["soul_id"],
-        "events": [{
-            "event_id": f"{sitting_id}:1",
-            "sequence": 1,
-            "event_kind": "transcript",
-            "role": "user",
-            "content": "A fictional eligible line.",
-            "status": "complete",
-        }],
+        "events": [
+            {
+                "event_id": f"{sitting_id}:1",
+                "sequence": 1,
+                "event_kind": "transcript",
+                "role": "user",
+                "content": "A fictional partial line.",
+                "status": "interrupted",
+            },
+            {
+                "event_id": f"{sitting_id}:2",
+                "sequence": 2,
+                "event_kind": "sitting_summary",
+                "role": "assistant",
+                "content": "I noticed a fictional shift.",
+            },
+        ],
     }
 
     first = client.post(endpoint, json=body, headers=AUTH)
@@ -533,6 +542,12 @@ def test_transcript_append_queues_shared_auto_memorize_only_for_new_rows(
     assert len(scheduled) == 1
     assert scheduled[0][0] is payload
     assert scheduled[0][1:4] == ("mentra:phone-1", START["user_id"], START["soul_id"])
+    projected = calls["memorize_checks"][0][0][5]
+    assert [row["source_conversation_index"] for row in projected] == [1, 2]
+    assert all(isinstance(row["ts_ms"], int) for row in projected)
+    assert [row["speaker"] for row in projected] == [START["user_id"], START["soul_id"]]
+    assert projected[0]["content"].endswith("[interrupted]")
+    assert projected[1]["content"].startswith("[End-of-sitting reflection]")
 
 
 def test_sequence_and_duplicate_lookup_tolerate_compacted_prefix() -> None:

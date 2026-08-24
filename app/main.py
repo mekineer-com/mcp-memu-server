@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -4000,7 +4000,9 @@ async def _run_auto_memorize(payload: dict[str, Any], marker: str) -> None:
         _schedule_auto_memorize(next_payload, recheck)
 
 
-def _schedule_auto_memorize(payload: dict[str, Any], scope: dict[str, Any]) -> bool:
+def _schedule_auto_memorize(
+    payload: dict[str, Any], scope: dict[str, Any]
+) -> Literal["launched", "coalesced"]:
     marker = _memorize_lock_key(str(scope["user_id"]), str(scope["soul_id"]))
     with _STATE_LOCK:
         if marker in _FORCED_MEMORIZE_INFLIGHT:
@@ -4009,7 +4011,7 @@ def _schedule_auto_memorize(payload: dict[str, Any], scope: dict[str, Any]) -> b
                 "safe": dict(scope["safe"]),
                 "history_full": [dict(row) for row in scope["history_full"]],
             }
-            return True
+            return "coalesced"
         _FORCED_MEMORIZE_INFLIGHT.add(marker)
     try:
         task = asyncio.create_task(_run_auto_memorize(payload, marker))
@@ -4019,7 +4021,7 @@ def _schedule_auto_memorize(payload: dict[str, Any], scope: dict[str, Any]) -> b
         raise
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
-    return True
+    return "launched"
 
 
 def _turn_state_read(
@@ -4447,9 +4449,12 @@ async def conversation_turn(
 
         forced_memorize_scheduled = False
         if queued_memorize_payload is not None:
-            forced_memorize_scheduled = _schedule_auto_memorize(
-                queued_memorize_payload,
-                _auto_memorize_scope(cid, uid, soul_id, safe, history_full),
+            forced_memorize_scheduled = (
+                _schedule_auto_memorize(
+                    queued_memorize_payload,
+                    _auto_memorize_scope(cid, uid, soul_id, safe, history_full),
+                )
+                == "launched"
             )
 
         response_payload: dict[str, Any] = {
