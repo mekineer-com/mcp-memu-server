@@ -978,7 +978,9 @@ def test_token_mint_uses_measured_constrained_wire(
             ]
         }
     ]
-    assert setup["realtimeInputConfig"] == {}
+    assert setup["realtimeInputConfig"] == {
+        "automaticActivityDetection": {"silenceDurationMs": 1_500},
+    }
     assert setup["generationConfig"]["responseModalities"] == ["AUDIO"]
     assert setup["inputAudioTranscription"] == {}
     assert setup["outputAudioTranscription"] == {}

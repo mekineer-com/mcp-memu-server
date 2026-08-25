@@ -1,6 +1,6 @@
 {
   "recorded_at": "2026-08-24T18:30:52Z",
-  "purpose": "Redacted live evidence that Gemini 2.5 can continue native-audio speech during a delayed NON_BLOCKING memory call, accept SILENT context without starting an utterance, and use that context later in the same sitting.",
+  "purpose": "Redacted live evidence that Gemini 2.5 can continue native-audio speech during a delayed NON_BLOCKING memory call and use returned context later in the same sitting.",
   "model": "gemini-2.5-flash-native-audio-preview-12-2025",
   "fictional_protocol": {
     "instruction": "Speak one required sentence, call recall_memory, continue five fictional lighthouse sentences without waiting, then use the returned phrase only when asked on a later turn.",
@@ -31,6 +31,11 @@
         }
       ]
     }
+  },
+  "wire_correction_2026_08_25": {
+    "finding": "This historical probe nested scheduling inside response, so it did not prove SILENT scheduling even though no unsolicited audio followed in that run.",
+    "production_shape": "FunctionResponse.scheduling is a sibling of FunctionResponse.response.",
+    "phone_acceptance": "The corrected sibling shape produced no separate unsolicited assistant turn, and the recalled fact was available on the next turn."
   },
   "observed": {
     "tool_call_at_ms": 7887,

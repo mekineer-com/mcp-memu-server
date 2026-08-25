@@ -308,7 +308,9 @@ async def _mint_gemini_token(
                 ]
             }
         ],
-        "realtimeInputConfig": {},
+        "realtimeInputConfig": {
+            "automaticActivityDetection": {"silenceDurationMs": 1_500},
+        },
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
         "contextWindowCompression": {"slidingWindow": {}},
