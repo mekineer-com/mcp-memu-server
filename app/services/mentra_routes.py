@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -27,6 +28,7 @@ from app.services import conversation_sources, turn_contract
 _DEVICE_SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LEASE_SECONDS = 90
 _RECALL_TIMEOUT_SECONDS = 25
+_EARCON_DIR = Path(__file__).resolve().parent.parent / "assets" / "mentra"
 _HISTORY_CHANGED_CODE = "mentra_history_changed"
 _RECALL_TOOL_DESCRIPTION = (
     "Search your long-term memory for context relevant to the current thought without interrupting speech."
@@ -408,6 +410,12 @@ def register_mentra_routes(
             )
 
     auth = [Depends(require_bearer)]
+
+    @app.get("/integration/mentra/earcons/{name}.wav", tags=["integration"])
+    async def mentra_earcon(
+        name: Literal["listen-start", "listen-stop", "disconnected"],
+    ) -> FileResponse:
+        return FileResponse(_EARCON_DIR / f"{name}.wav", media_type="audio/wav")
 
     @app.get("/integration/mentra/health", tags=["integration"], dependencies=auth)
     async def mentra_health() -> dict[str, bool]:

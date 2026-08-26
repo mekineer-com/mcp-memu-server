@@ -198,6 +198,11 @@ def test_mentra_health_requires_enabled_configured_bearer() -> None:
     assert accepted.status_code == 200
     assert accepted.json() == {"ok": True}
 
+    earcon = client.get("/integration/mentra/earcons/listen-start.wav")
+    assert earcon.status_code == 200
+    assert earcon.headers["content-type"] == "audio/wav"
+    assert earcon.content.startswith(b"RIFF")
+
 
 def test_start_auth_and_validation_precede_bootstrap(
     monkeypatch: pytest.MonkeyPatch,
