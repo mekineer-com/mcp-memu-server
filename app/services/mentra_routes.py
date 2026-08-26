@@ -459,48 +459,58 @@ def register_mentra_routes(
             if lease_key in _start_claims:
                 raise HTTPException(status_code=409, detail="Mentra session start is already in progress")
             _start_claims[lease_key] = sitting_id
+        timings["setupMs"] = int((time.monotonic() - phase_started) * 1000)
 
         try:
+            phase_started = time.monotonic()
             try:
                 service = get_service_from_scope(scope)
                 anchors = await service.ensure_dossier_anchors(scope)
-                timings["anchorsMs"] = int((time.monotonic() - phase_started) * 1000)
-                phase_started = time.monotonic()
             except ValueError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
-            _, narrative, _ = load_turn_state_and_soul_card(
-                conversation_id, user_id=body.user_id, soul_id=body.soul_id
-            )
-            timings["stateMs"] = int((time.monotonic() - phase_started) * 1000)
+            finally:
+                timings["anchorsMs"] = int((time.monotonic() - phase_started) * 1000)
+
             phase_started = time.monotonic()
-            history_before_context = conversation_sources.load_mentra_history_snapshot(
-                storage_dir=storage_dir,
-                user_id=body.user_id,
-                soul_id=body.soul_id,
-                conversation_id=conversation_id,
-            )
-            context_next_sequence = _next_transcript_sequence(history_before_context)
-            chats = load_cross_chat_context(
-                user_id=body.user_id,
-                soul_id=body.soul_id,
-                conversation_id=conversation_id,
-            )
-            history_after_context = conversation_sources.load_mentra_history_snapshot(
-                storage_dir=storage_dir,
-                user_id=body.user_id,
-                soul_id=body.soul_id,
-                conversation_id=conversation_id,
-            )
-            if _next_transcript_sequence(history_after_context) != context_next_sequence:
-                raise HTTPException(status_code=409, detail={"code": _HISTORY_CHANGED_CODE})
-            instruction = _build_bootstrap_instruction(
-                identity=build_identity_context(body.soul_id),
-                narrative=str(narrative or "").strip(),
-                soul_anchor=_anchor_prose(anchors["soul"]),
-                user_anchor=_anchor_prose(anchors["user"]),
-                chats=str(chats or "").strip(),
-            )
-            timings["contextMs"] = int((time.monotonic() - phase_started) * 1000)
+            try:
+                _, narrative, _ = load_turn_state_and_soul_card(
+                    conversation_id, user_id=body.user_id, soul_id=body.soul_id
+                )
+            finally:
+                timings["stateMs"] = int((time.monotonic() - phase_started) * 1000)
+
+            phase_started = time.monotonic()
+            try:
+                history_before_context = conversation_sources.load_mentra_history_snapshot(
+                    storage_dir=storage_dir,
+                    user_id=body.user_id,
+                    soul_id=body.soul_id,
+                    conversation_id=conversation_id,
+                )
+                context_next_sequence = _next_transcript_sequence(history_before_context)
+                chats = load_cross_chat_context(
+                    user_id=body.user_id,
+                    soul_id=body.soul_id,
+                    conversation_id=conversation_id,
+                )
+                history_after_context = conversation_sources.load_mentra_history_snapshot(
+                    storage_dir=storage_dir,
+                    user_id=body.user_id,
+                    soul_id=body.soul_id,
+                    conversation_id=conversation_id,
+                )
+                if _next_transcript_sequence(history_after_context) != context_next_sequence:
+                    raise HTTPException(status_code=409, detail={"code": _HISTORY_CHANGED_CODE})
+                instruction = _build_bootstrap_instruction(
+                    identity=build_identity_context(body.soul_id),
+                    narrative=str(narrative or "").strip(),
+                    soul_anchor=_anchor_prose(anchors["soul"]),
+                    user_anchor=_anchor_prose(anchors["user"]),
+                    chats=str(chats or "").strip(),
+                )
+            finally:
+                timings["contextMs"] = int((time.monotonic() - phase_started) * 1000)
+
             phase_started = time.monotonic()
             try:
                 token = await _mint_gemini_token(
@@ -509,11 +519,12 @@ def register_mentra_routes(
                     voice=voice,
                     system_instruction=instruction,
                 )
-                timings["tokenMs"] = int((time.monotonic() - phase_started) * 1000)
             except Exception as exc:
                 raise HTTPException(
                     status_code=502, detail="Gemini session token request failed"
                 ) from exc
+            finally:
+                timings["tokenMs"] = int((time.monotonic() - phase_started) * 1000)
             async with get_soul_lock(body.user_id, body.soul_id):
                 history = conversation_sources.load_mentra_history_snapshot(
                     storage_dir=storage_dir,
@@ -543,6 +554,16 @@ def register_mentra_routes(
                         time.monotonic() + _LEASE_SECONDS,
                     )
                     _start_claims.pop(lease_key, None)
+        except Exception as exc:
+            if record_call is not None:
+                record_call(
+                    "mentra.start",
+                    {"user": scope},
+                    ok=False,
+                    info={**timings, "totalMs": int((time.monotonic() - started_at) * 1000)},
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            raise
         finally:
             await _release_start_claim_if_owned(lease_key, sitting_id)
 

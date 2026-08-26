@@ -282,6 +282,7 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
         {"user": {"user_id": "Fictional User", "soul_id": "Codexia"}},
     )
     assert set(start_call[1]["info"]) == {
+        "setupMs",
         "anchorsMs",
         "stateMs",
         "contextMs",
@@ -366,6 +367,17 @@ def test_failed_replacement_start_preserves_healthy_sitting(
 
     failed = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
     assert failed.status_code == 502
+    failed_call = calls["route_telemetry"][-1]
+    assert failed_call[1]["ok"] is False
+    assert set(failed_call[1]["info"]) == {
+        "setupMs",
+        "anchorsMs",
+        "stateMs",
+        "contextMs",
+        "tokenMs",
+        "totalMs",
+    }
+    assert failed_call[1]["error"].startswith("HTTPException:")
     competing = {**START, "device_session_id": "phone-2"}
     healthy = client.post(
         "/integration/mentra/session/start", json=competing, headers=AUTH
