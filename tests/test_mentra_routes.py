@@ -593,6 +593,43 @@ def test_recall_timeout_is_temporary_and_config_failure_is_preserved(
     assert config.json() == {"detail": "Mentra memory recall failed"}
 
 
+def test_recall_enforces_server_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    async def stalled_retrieve(
+        _conversation_id: str, _payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(mentra_routes, "_RECALL_TIMEOUT_SECONDS", 0.01)
+    client, calls, _ = _session_app(
+        monkeypatch,
+        tmp_path,
+        retrieve_hook=stalled_retrieve,
+    )
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    response = client.post(
+        f"/integration/mentra/session/{sitting_id}/recall",
+        json={
+            "user_id": START["user_id"],
+            "soul_id": START["soul_id"],
+            "query": "private fictional query",
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "Mentra memory recall failed"}
+    assert calls["route_telemetry"][-1][1] == {
+        "ok": False,
+        "error": "TimeoutError",
+    }
+
+
 def test_slow_recall_does_not_hold_lease_or_soul_lock(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

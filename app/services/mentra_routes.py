@@ -26,6 +26,7 @@ from app.services import conversation_sources, turn_contract
 
 _DEVICE_SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LEASE_SECONDS = 90
+_RECALL_TIMEOUT_SECONDS = 25
 _HISTORY_CHANGED_CODE = "mentra_history_changed"
 _RECALL_TOOL_DESCRIPTION = (
     "Search your long-term memory for context relevant to the current thought without interrupting speech."
@@ -614,7 +615,19 @@ def register_mentra_routes(
                 "_read_only_retrieve": True,
                 "mental_health_addon": False,
             }
-            retrieve_out = await conversation_retrieve(conversation_id, payload)
+            async with asyncio.timeout(_RECALL_TIMEOUT_SECONDS):
+                retrieve_out = await conversation_retrieve(conversation_id, payload)
+        except TimeoutError as exc:
+            if record_call is not None:
+                record_call(
+                    "mentra.recall",
+                    {"user": scope},
+                    ok=False,
+                    error="TimeoutError",
+                )
+            raise HTTPException(
+                status_code=502, detail="Mentra memory recall failed"
+            ) from exc
         except HTTPException as exc:
             status = 502 if exc.status_code == 504 else exc.status_code
             if record_call is not None:
