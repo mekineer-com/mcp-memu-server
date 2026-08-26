@@ -877,8 +877,6 @@ def _format_prompt_payload_for_log(payload: dict[str, Any]) -> str:
 def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: Any) -> None:
     import time as _time
     elapsed = _time.monotonic() - getattr(ctx, "_llm_start", _time.monotonic())
-    if _MENTRA_RECALL_ACTIVE.get():
-        return
     content = getattr(response_view, "content", None)
     kind = getattr(request_view, "kind", None)
     if kind == "embed":
@@ -925,8 +923,6 @@ def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: An
 def _prompt_log_on_error(ctx: Any, request_view: Any, error: Any, usage: Any) -> None:
     import time as _time
     elapsed = _time.monotonic() - getattr(ctx, "_llm_start", _time.monotonic())
-    if _MENTRA_RECALL_ACTIVE.get():
-        return
     if getattr(request_view, "kind", None) == "embed":
         logger.error("[EMBED] elapsed=%.1fs error=%s", elapsed, type(error).__name__)
         return
@@ -3786,11 +3782,7 @@ async def conversation_retrieve(
             "conversation.retrieve",
             payload,
             ok=False,
-            error=(
-                type(exc).__name__
-                if _MENTRA_RECALL_ACTIVE.get()
-                else f"{type(exc).__name__}: {exc}"
-            ),
+            error=f"{type(exc).__name__}: {exc}",
         )
         _raise_upstream_http_error(exc, op="conversation.retrieve")
 

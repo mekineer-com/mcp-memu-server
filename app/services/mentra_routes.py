@@ -415,6 +415,9 @@ def register_mentra_routes(
 
     @app.post("/integration/mentra/session/start", tags=["integration"], dependencies=auth)
     async def mentra_session_start(body: MentraSessionStart) -> dict[str, Any]:
+        started_at = time.monotonic()
+        phase_started = started_at
+        timings: dict[str, int] = {}
         if body.user_id.casefold() == body.soul_id.casefold():
             raise HTTPException(status_code=409, detail="Mentra user and soul identities must differ")
         if (
@@ -461,11 +464,15 @@ def register_mentra_routes(
             try:
                 service = get_service_from_scope(scope)
                 anchors = await service.ensure_dossier_anchors(scope)
+                timings["anchorsMs"] = int((time.monotonic() - phase_started) * 1000)
+                phase_started = time.monotonic()
             except ValueError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             _, narrative, _ = load_turn_state_and_soul_card(
                 conversation_id, user_id=body.user_id, soul_id=body.soul_id
             )
+            timings["stateMs"] = int((time.monotonic() - phase_started) * 1000)
+            phase_started = time.monotonic()
             history_before_context = conversation_sources.load_mentra_history_snapshot(
                 storage_dir=storage_dir,
                 user_id=body.user_id,
@@ -493,6 +500,8 @@ def register_mentra_routes(
                 user_anchor=_anchor_prose(anchors["user"]),
                 chats=str(chats or "").strip(),
             )
+            timings["contextMs"] = int((time.monotonic() - phase_started) * 1000)
+            phase_started = time.monotonic()
             try:
                 token = await _mint_gemini_token(
                     api_key=api_key,
@@ -500,6 +509,7 @@ def register_mentra_routes(
                     voice=voice,
                     system_instruction=instruction,
                 )
+                timings["tokenMs"] = int((time.monotonic() - phase_started) * 1000)
             except Exception as exc:
                 raise HTTPException(
                     status_code=502, detail="Gemini session token request failed"
@@ -535,6 +545,14 @@ def register_mentra_routes(
                     _start_claims.pop(lease_key, None)
         finally:
             await _release_start_claim_if_owned(lease_key, sitting_id)
+
+        if record_call is not None:
+            record_call(
+                "mentra.start",
+                {"user": scope},
+                ok=True,
+                info={**timings, "totalMs": int((time.monotonic() - started_at) * 1000)},
+            )
 
         return {
             "ok": True,
@@ -577,13 +595,11 @@ def register_mentra_routes(
         tags=["integration"],
         dependencies=auth,
     )
-    async def mentra_recall(sitting_id: str, request: Request) -> dict[str, Any]:
+    async def mentra_recall(
+        sitting_id: str, body: MentraRecallRequest
+    ) -> dict[str, Any]:
         if load_current_history is None or conversation_retrieve is None:
             raise HTTPException(status_code=503, detail="Mentra recall is not configured")
-        try:
-            body = MentraRecallRequest.model_validate(await request.json())
-        except (ValueError, ValidationError):
-            raise HTTPException(status_code=422, detail="Invalid recall request") from None
 
         async with _lease_lock:
             active = _leases.get(body.soul_id)
@@ -635,7 +651,7 @@ def register_mentra_routes(
                     "mentra.recall",
                     {"user": scope},
                     ok=False,
-                    error=f"HTTP {status}",
+                    error=f"HTTP {status}: {exc.detail}",
                 )
             raise HTTPException(status_code=status, detail="Mentra memory recall failed") from exc
         except Exception as exc:
@@ -644,7 +660,7 @@ def register_mentra_routes(
                     "mentra.recall",
                     {"user": scope},
                     ok=False,
-                    error=type(exc).__name__,
+                    error=f"{type(exc).__name__}: {exc}",
                 )
             raise HTTPException(status_code=500, detail="Mentra memory recall failed") from exc
         result = retrieve_out.get("result")

@@ -276,6 +276,18 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
     assert "permanent-secret" not in serialized
     assert "I am Codexia" not in serialized
     assert "Fictional Friend" not in serialized
+    start_call = calls["route_telemetry"][-1]
+    assert start_call[0] == (
+        "mentra.start",
+        {"user": {"user_id": "Fictional User", "soul_id": "Codexia"}},
+    )
+    assert set(start_call[1]["info"]) == {
+        "anchorsMs",
+        "stateMs",
+        "contextMs",
+        "tokenMs",
+        "totalMs",
+    }
 
 
 def test_lease_resume_heartbeat_and_end_are_scoped(
@@ -488,9 +500,13 @@ def test_recall_is_sitting_scoped_read_only_compact_and_unlocked(
         "query": "remember the fictional lighthouse",
     }
 
-    assert client.post(endpoint, json={**request, "query": "private rejected text", "extra": True}, headers=AUTH).json() == {
-        "detail": "Invalid recall request"
-    }
+    invalid = client.post(
+        endpoint,
+        json={**request, "query": "rejected text", "extra": True},
+        headers=AUTH,
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"][0]["type"] == "extra_forbidden"
     assert client.post(endpoint.replace(sitting_id, "wrong"), json=request, headers=AUTH).status_code == 404
     response = client.post(endpoint, json=request, headers=AUTH)
 
@@ -551,7 +567,10 @@ def test_recall_failure_is_generic(
     assert response.status_code == 500
     assert response.json() == {"detail": "Mentra memory recall failed"}
     assert "private fictional" not in response.text
-    assert calls["route_telemetry"][-1][1] == {"ok": False, "error": "RuntimeError"}
+    assert calls["route_telemetry"][-1][1] == {
+        "ok": False,
+        "error": "RuntimeError: private fictional query leaked",
+    }
 
 
 def test_recall_timeout_is_temporary_and_config_failure_is_preserved(

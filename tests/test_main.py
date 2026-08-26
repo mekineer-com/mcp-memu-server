@@ -5882,7 +5882,7 @@ async def test_conversation_retrieve_preserves_history_already_floored_by_source
 
 
 @pytest.mark.asyncio
-async def test_mentra_retrieve_suppresses_prompt_body_logging(
+async def test_mentra_retrieve_keeps_prompt_body_logging(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     logged: list[str] = []
@@ -5904,7 +5904,8 @@ async def test_mentra_retrieve_suppresses_prompt_body_logging(
     )
 
     assert out["ok"] is True
-    assert logged == []
+    assert len(logged) == 1
+    assert "private" in logged[0]
     assert main._MENTRA_RECALL_ACTIVE.get() is False
 
 
