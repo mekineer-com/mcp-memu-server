@@ -418,8 +418,25 @@ def register_mentra_routes(
         started_at = time.monotonic()
         phase_started = started_at
         timings: dict[str, int] = {}
+        scope = {"user_id": body.user_id, "soul_id": body.soul_id}
+
+        def record_failure(exc: Exception) -> None:
+            if record_call is not None:
+                record_call(
+                    "mentra.start",
+                    {"user": scope},
+                    ok=False,
+                    info={**timings, "totalMs": int((time.monotonic() - started_at) * 1000)},
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+
+        def reject_start(status_code: int, detail: str) -> None:
+            exc = HTTPException(status_code=status_code, detail=detail)
+            record_failure(exc)
+            raise exc
+
         if body.user_id.casefold() == body.soul_id.casefold():
-            raise HTTPException(status_code=409, detail="Mentra user and soul identities must differ")
+            reject_start(409, "Mentra user and soul identities must differ")
         if (
             get_service_from_scope is None
             or load_turn_state_and_soul_card is None
@@ -428,19 +445,18 @@ def register_mentra_routes(
             or get_storage_dir is None
             or get_soul_lock is None
         ):
-            raise HTTPException(status_code=503, detail="Mentra session bootstrap is not configured")
+            reject_start(503, "Mentra session bootstrap is not configured")
 
         config = get_config().get("mentra") or {}
         api_key = str(config.get("gemini_api_key") or "").strip()
         if not api_key:
-            raise HTTPException(status_code=503, detail="Mentra Gemini credential is not configured")
+            reject_start(503, "Mentra Gemini credential is not configured")
         model = str(config.get("model") or "").strip()
         voice = str(config.get("voice") or "").strip()
         if not model:
-            raise HTTPException(status_code=503, detail="Mentra Gemini model is not configured")
+            reject_start(503, "Mentra Gemini model is not configured")
         if not voice:
-            raise HTTPException(status_code=503, detail="Mentra Gemini voice is not configured")
-        scope = {"user_id": body.user_id, "soul_id": body.soul_id}
+            reject_start(503, "Mentra Gemini voice is not configured")
         lease_key = body.soul_id
         conversation_id = f"mentra:{body.device_session_id}"
         sitting_id = secrets.token_urlsafe(18)
@@ -455,9 +471,9 @@ def register_mentra_routes(
                 active.device_session_id != body.device_session_id
                 or active.user_id != body.user_id
             ):
-                raise HTTPException(status_code=409, detail="Another Mentra session is active")
+                reject_start(409, "Another Mentra session is active")
             if lease_key in _start_claims:
-                raise HTTPException(status_code=409, detail="Mentra session start is already in progress")
+                reject_start(409, "Mentra session start is already in progress")
             _start_claims[lease_key] = sitting_id
         timings["setupMs"] = int((time.monotonic() - phase_started) * 1000)
 
@@ -555,14 +571,7 @@ def register_mentra_routes(
                     )
                     _start_claims.pop(lease_key, None)
         except Exception as exc:
-            if record_call is not None:
-                record_call(
-                    "mentra.start",
-                    {"user": scope},
-                    ok=False,
-                    info={**timings, "totalMs": int((time.monotonic() - started_at) * 1000)},
-                    error=f"{type(exc).__name__}: {exc}",
-                )
+            record_failure(exc)
             raise
         finally:
             await _release_start_claim_if_owned(lease_key, sitting_id)

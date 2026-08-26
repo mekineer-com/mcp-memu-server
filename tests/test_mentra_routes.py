@@ -211,6 +211,9 @@ def test_start_auth_and_validation_precede_bootstrap(
     assert client.post(
         "/integration/mentra/session/start", json=same_identity, headers=AUTH
     ).status_code == 409
+    rejected_call = calls["route_telemetry"][-1]
+    assert rejected_call[1]["ok"] is False
+    assert set(rejected_call[1]["info"]) == {"totalMs"}
     invalid_device = {**START, "device_session_id": "bad/id"}
     assert client.post(
         "/integration/mentra/session/start", json=invalid_device, headers=AUTH
