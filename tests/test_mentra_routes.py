@@ -998,8 +998,17 @@ def test_transcript_retry_repairs_state_after_snapshot_was_written(
     assert len(calls["state_writes"]) == 2
 
 
+@pytest.mark.parametrize(
+    ("mode", "activity_detection"),
+    [
+        ("continuous", {"silenceDurationMs": 1_500}),
+        ("manual", {"disabled": True}),
+    ],
+)
 def test_token_mint_uses_measured_constrained_wire(
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    activity_detection: dict[str, Any],
 ) -> None:
     captured: dict[str, Any] = {}
 
@@ -1022,6 +1031,7 @@ def test_token_mint_uses_measured_constrained_wire(
             model="gemini-2.5-flash-native-audio-preview-12-2025",
             voice="Kore",
             system_instruction="fictional context",
+            mode=mode,
         )
     )
 
@@ -1055,7 +1065,7 @@ def test_token_mint_uses_measured_constrained_wire(
         }
     ]
     assert setup["realtimeInputConfig"] == {
-        "automaticActivityDetection": {"silenceDurationMs": 1_500},
+        "automaticActivityDetection": activity_detection,
     }
     assert setup["generationConfig"]["responseModalities"] == ["AUDIO"]
     assert setup["inputAudioTranscription"] == {}

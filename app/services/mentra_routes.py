@@ -283,7 +283,7 @@ def _rfc3339(value: datetime) -> str:
 
 
 async def _mint_gemini_token(
-    *, api_key: str, model: str, voice: str, system_instruction: str
+    *, api_key: str, model: str, voice: str, system_instruction: str, mode: str
 ) -> str:
     now = datetime.now(UTC)
     setup = {
@@ -312,7 +312,11 @@ async def _mint_gemini_token(
             }
         ],
         "realtimeInputConfig": {
-            "automaticActivityDetection": {"silenceDurationMs": 1_500},
+            "automaticActivityDetection": (
+                {"disabled": True}
+                if mode == "manual"
+                else {"silenceDurationMs": 1_500}
+            ),
         },
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
@@ -542,6 +546,7 @@ def register_mentra_routes(
                     model=model,
                     voice=voice,
                     system_instruction=instruction,
+                    mode=body.mode,
                 )
             except Exception as exc:
                 raise HTTPException(
