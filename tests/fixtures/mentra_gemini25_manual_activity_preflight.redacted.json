@@ -1,0 +1,28 @@
+{
+  "recorded_at": "2026-08-26",
+  "purpose": "Redacted live evidence for one buffered Manual activity; not a production token template.",
+  "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+  "input": "Public MentraOS what-time-is-it-16khz.wav; no personal prompt, voice, soul, or database",
+  "token_setup": {
+    "realtimeInputConfig": {
+      "automaticActivityDetection": {
+        "disabled": true
+      }
+    },
+    "field_masked": true
+  },
+  "client_sequence": [
+    "realtimeInput.activityStart",
+    "31 realtimeInput.audio chunks",
+    "realtimeInput.activityEnd"
+  ],
+  "observed": {
+    "setup_complete": true,
+    "input_transcription_events": 5,
+    "input_transcription_chars": 17,
+    "output_transcription_events": 3,
+    "model_audio_chunks": 49,
+    "turn_complete": true
+  },
+  "decision": "Buffered record-review-send may use one synchronous activityStart -> PCM burst -> activityEnd write. No live-stream fallback is needed."
+}
