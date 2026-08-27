@@ -241,6 +241,24 @@ def test_start_requires_model_and_voice_before_bootstrap(
     assert calls["service"] == 0
 
 
+@pytest.mark.parametrize("mode", ["continuous", "manual"])
+def test_start_threads_speech_mode_to_token_mint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/integration/mentra/session/start",
+        json={**START, "mode": mode},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    assert calls["token"][0]["mode"] == mode
+
+
 def test_start_builds_bounded_instruction_and_returns_only_client_contract(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
