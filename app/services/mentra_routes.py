@@ -325,9 +325,9 @@ async def _mint_gemini_token(
     }
     body = json.dumps(
         {
-            "uses": 1,
+            "uses": 8,
             "expireTime": _rfc3339(now + timedelta(minutes=30)),
-            "newSessionExpireTime": _rfc3339(now + timedelta(seconds=60)),
+            "newSessionExpireTime": _rfc3339(now + timedelta(minutes=30)),
             "fieldMask": _TOKEN_SETUP_FIELD_MASK,
             "bidiGenerateContentSetup": setup,
         }
@@ -464,10 +464,13 @@ def register_mentra_routes(
             reject_start(503, "Mentra Gemini credential is not configured")
         model = str(config.get("model") or "").strip()
         voice = str(config.get("voice") or "").strip()
+        warning_seconds = config.get("session_warning_seconds", 0)
         if not model:
             reject_start(503, "Mentra Gemini model is not configured")
         if not voice:
             reject_start(503, "Mentra Gemini voice is not configured")
+        if isinstance(warning_seconds, bool) or not isinstance(warning_seconds, int) or warning_seconds < 0:
+            reject_start(503, "Mentra session warning must be a non-negative integer")
         lease_key = body.soul_id
         conversation_id = f"mentra:{body.device_session_id}"
         sitting_id = secrets.token_urlsafe(18)
@@ -611,6 +614,7 @@ def register_mentra_routes(
                 "output_audio_rate_hz": 24000,
             },
             "lease_seconds": _LEASE_SECONDS,
+            "session_warning_seconds": warning_seconds,
         }
 
     @app.post(

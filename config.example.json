@@ -52,7 +52,8 @@
     "gemini_api_key": "",
     "model": "gemini-2.5-flash-native-audio-preview-12-2025",
     "voice": "Kore",
-    "integration_bearer_token": ""
+    "integration_bearer_token": "",
+    "session_warning_seconds": 0
   },
   "mcp": {
     "http_path": "/mcp",

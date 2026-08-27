@@ -97,6 +97,7 @@ def default_config() -> dict[str, Any]:
             "model": "gemini-2.5-flash-native-audio-preview-12-2025",
             "voice": "Kore",
             "integration_bearer_token": "",
+            "session_warning_seconds": 0,
         },
         "categories": {
             "dynamic_category_cluster_size": 10,

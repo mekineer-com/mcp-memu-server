@@ -1,0 +1,391 @@
+{
+  "canary": "<fictional-redacted>",
+  "cells": {
+    "control_second_session": {
+      "first": {
+        "message_keys": [
+          "serverContent",
+          "sessionResumptionUpdate",
+          "usageMetadata"
+        ],
+        "output_text": "READY",
+        "provider_error": null,
+        "resumption_updates": [
+          {
+            "keys": [],
+            "new_handle_present": false,
+            "resumable": null
+          },
+          {
+            "keys": [
+              "newHandle",
+              "resumable"
+            ],
+            "new_handle_present": true,
+            "resumable": true
+          }
+        ],
+        "setup_complete": false,
+        "turn_complete": true,
+        "usage_keys": [
+          "promptTokenCount",
+          "promptTokensDetails",
+          "responseTokenCount",
+          "responseTokensDetails",
+          "thoughtsTokenCount",
+          "totalTokenCount"
+        ]
+      },
+      "second_no_handle": {
+        "message_keys": [
+          "setupComplete"
+        ],
+        "output_text": "",
+        "provider_error": null,
+        "resumption_updates": [],
+        "setup_complete": true,
+        "turn_complete": false,
+        "usage_keys": []
+      }
+    },
+    "fresh_token_with_model": {
+      "first": {
+        "message_keys": [
+          "serverContent",
+          "sessionResumptionUpdate",
+          "usageMetadata"
+        ],
+        "output_text": "READY.",
+        "provider_error": null,
+        "resumption_updates": [
+          {
+            "keys": [],
+            "new_handle_present": false,
+            "resumable": null
+          },
+          {
+            "keys": [
+              "newHandle",
+              "resumable"
+            ],
+            "new_handle_present": true,
+            "resumable": true
+          }
+        ],
+        "setup_complete": false,
+        "turn_complete": true,
+        "usage_keys": [
+          "promptTokenCount",
+          "promptTokensDetails",
+          "responseTokenCount",
+          "responseTokensDetails",
+          "thoughtsTokenCount",
+          "totalTokenCount"
+        ]
+      },
+      "resume": {
+        "canary_recalled": true,
+        "setup": {
+          "message_keys": [
+            "setupComplete"
+          ],
+          "output_text": "",
+          "provider_error": null,
+          "resumption_updates": [],
+          "setup_complete": true,
+          "turn_complete": false,
+          "usage_keys": []
+        },
+        "turn": {
+          "message_keys": [
+            "serverContent",
+            "sessionResumptionUpdate",
+            "usageMetadata"
+          ],
+          "output_text": "CEDAR-MOON-47",
+          "provider_error": null,
+          "resumption_updates": [
+            {
+              "keys": [],
+              "new_handle_present": false,
+              "resumable": null
+            },
+            {
+              "keys": [
+                "newHandle",
+                "resumable"
+              ],
+              "new_handle_present": true,
+              "resumable": true
+            }
+          ],
+          "setup_complete": false,
+          "turn_complete": true,
+          "usage_keys": [
+            "promptTokenCount",
+            "promptTokensDetails",
+            "responseTokenCount",
+            "responseTokensDetails",
+            "thoughtsTokenCount",
+            "totalTokenCount"
+          ]
+        }
+      }
+    },
+    "same_token_locked_resumption": {
+      "first": {
+        "message_keys": [
+          "serverContent",
+          "sessionResumptionUpdate",
+          "usageMetadata"
+        ],
+        "output_text": "READY.",
+        "provider_error": null,
+        "resumption_updates": [
+          {
+            "keys": [],
+            "new_handle_present": false,
+            "resumable": null
+          },
+          {
+            "keys": [
+              "newHandle",
+              "resumable"
+            ],
+            "new_handle_present": true,
+            "resumable": true
+          }
+        ],
+        "setup_complete": false,
+        "turn_complete": true,
+        "usage_keys": [
+          "promptTokenCount",
+          "promptTokensDetails",
+          "responseTokenCount",
+          "responseTokensDetails",
+          "thoughtsTokenCount",
+          "totalTokenCount"
+        ]
+      },
+      "resume": {
+        "canary_recalled": false,
+        "setup": {
+          "message_keys": [
+            "setupComplete"
+          ],
+          "output_text": "",
+          "provider_error": null,
+          "resumption_updates": [],
+          "setup_complete": true,
+          "turn_complete": false,
+          "usage_keys": []
+        },
+        "turn": {
+          "message_keys": [
+            "serverContent",
+            "sessionResumptionUpdate",
+            "usageMetadata"
+          ],
+          "output_text": "None.",
+          "provider_error": null,
+          "resumption_updates": [
+            {
+              "keys": [],
+              "new_handle_present": false,
+              "resumable": null
+            },
+            {
+              "keys": [
+                "newHandle",
+                "resumable"
+              ],
+              "new_handle_present": true,
+              "resumable": true
+            }
+          ],
+          "setup_complete": false,
+          "turn_complete": true,
+          "usage_keys": [
+            "promptTokenCount",
+            "promptTokensDetails",
+            "responseTokenCount",
+            "responseTokensDetails",
+            "thoughtsTokenCount",
+            "totalTokenCount"
+          ]
+        }
+      }
+    },
+    "same_token_with_model": {
+      "first": {
+        "message_keys": [
+          "serverContent",
+          "sessionResumptionUpdate",
+          "usageMetadata"
+        ],
+        "output_text": "READY.",
+        "provider_error": null,
+        "resumption_updates": [
+          {
+            "keys": [],
+            "new_handle_present": false,
+            "resumable": null
+          },
+          {
+            "keys": [
+              "newHandle",
+              "resumable"
+            ],
+            "new_handle_present": true,
+            "resumable": true
+          }
+        ],
+        "setup_complete": false,
+        "turn_complete": true,
+        "usage_keys": [
+          "promptTokenCount",
+          "promptTokensDetails",
+          "responseTokenCount",
+          "responseTokensDetails",
+          "thoughtsTokenCount",
+          "totalTokenCount"
+        ]
+      },
+      "resume": {
+        "canary_recalled": true,
+        "setup": {
+          "message_keys": [
+            "setupComplete"
+          ],
+          "output_text": "",
+          "provider_error": null,
+          "resumption_updates": [],
+          "setup_complete": true,
+          "turn_complete": false,
+          "usage_keys": []
+        },
+        "turn": {
+          "message_keys": [
+            "serverContent",
+            "sessionResumptionUpdate",
+            "usageMetadata"
+          ],
+          "output_text": "CEDAR-MOON-47",
+          "provider_error": null,
+          "resumption_updates": [
+            {
+              "keys": [],
+              "new_handle_present": false,
+              "resumable": null
+            },
+            {
+              "keys": [
+                "newHandle",
+                "resumable"
+              ],
+              "new_handle_present": true,
+              "resumable": true
+            }
+          ],
+          "setup_complete": false,
+          "turn_complete": true,
+          "usage_keys": [
+            "promptTokenCount",
+            "promptTokensDetails",
+            "responseTokenCount",
+            "responseTokensDetails",
+            "thoughtsTokenCount",
+            "totalTokenCount"
+          ]
+        }
+      }
+    },
+    "same_token_without_model": {
+      "first": {
+        "message_keys": [
+          "serverContent",
+          "sessionResumptionUpdate",
+          "usageMetadata"
+        ],
+        "output_text": "READY",
+        "provider_error": null,
+        "resumption_updates": [
+          {
+            "keys": [],
+            "new_handle_present": false,
+            "resumable": null
+          },
+          {
+            "keys": [
+              "newHandle",
+              "resumable"
+            ],
+            "new_handle_present": true,
+            "resumable": true
+          }
+        ],
+        "setup_complete": false,
+        "turn_complete": true,
+        "usage_keys": [
+          "promptTokenCount",
+          "promptTokensDetails",
+          "responseTokenCount",
+          "responseTokensDetails",
+          "thoughtsTokenCount",
+          "totalTokenCount"
+        ]
+      },
+      "resume": {
+        "canary_recalled": true,
+        "setup": {
+          "message_keys": [
+            "setupComplete"
+          ],
+          "output_text": "",
+          "provider_error": null,
+          "resumption_updates": [],
+          "setup_complete": true,
+          "turn_complete": false,
+          "usage_keys": []
+        },
+        "turn": {
+          "message_keys": [
+            "serverContent",
+            "sessionResumptionUpdate",
+            "usageMetadata"
+          ],
+          "output_text": "CEDAR-MOON-47",
+          "provider_error": null,
+          "resumption_updates": [
+            {
+              "keys": [],
+              "new_handle_present": false,
+              "resumable": null
+            },
+            {
+              "keys": [
+                "newHandle",
+                "resumable"
+              ],
+              "new_handle_present": true,
+              "resumable": true
+            }
+          ],
+          "setup_complete": false,
+          "turn_complete": true,
+          "usage_keys": [
+            "promptTokenCount",
+            "promptTokensDetails",
+            "responseTokenCount",
+            "responseTokensDetails",
+            "thoughtsTokenCount",
+            "totalTokenCount"
+          ]
+        }
+      }
+    }
+  },
+  "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+  "purpose": "Fictional Slice 9 controlled resumption matrix; all credentials and handles omitted.",
+  "recorded_at": "2026-08-27T17:24:39.113959+00:00"
+}

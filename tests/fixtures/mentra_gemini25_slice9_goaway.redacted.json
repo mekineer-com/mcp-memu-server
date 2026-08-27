@@ -1,0 +1,21 @@
+{
+  "fictional": true,
+  "go_away": {
+    "keys": [
+      "timeLeft"
+    ],
+    "time_left_type": "str",
+    "time_left_value": "50s"
+  },
+  "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+  "recorded_at": "2026-08-27T17:37:12.390032+00:00",
+  "setup_complete": true,
+  "usage_keys": [
+    "promptTokenCount",
+    "promptTokensDetails",
+    "responseTokenCount",
+    "responseTokensDetails",
+    "thoughtsTokenCount",
+    "totalTokenCount"
+  ]
+}

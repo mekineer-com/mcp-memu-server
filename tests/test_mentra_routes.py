@@ -283,6 +283,7 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
             "output_audio_rate_hz": 24000,
         },
         "lease_seconds": 90,
+        "session_warning_seconds": 0,
     }
     assert calls["anchors"] == {"user_id": "Fictional User", "soul_id": "Codexia"}
     assert calls["state"][0][0] == "mentra:phone-1"
@@ -1059,7 +1060,7 @@ def test_token_mint_uses_measured_constrained_wire(
     setup = payload["bidiGenerateContentSetup"]
     assert captured["timeout"] == 10
     assert request.get_header("X-goog-api-key") == "secret"
-    assert payload["uses"] == 1
+    assert payload["uses"] == 8
     assert payload["fieldMask"] == (
         "model,generationConfig,systemInstruction,tools,realtimeInputConfig,"
         "inputAudioTranscription,outputAudioTranscription,contextWindowCompression,"
@@ -1099,7 +1100,7 @@ def test_token_mint_uses_measured_constrained_wire(
     )
     now = datetime.now(UTC)
     assert 29 * 60 < (expires - now).total_seconds() <= 30 * 60
-    assert 50 < (new_session - now).total_seconds() <= 60
+    assert 29 * 60 < (new_session - now).total_seconds() <= 30 * 60
 
 
 def test_partial_mentra_config_update_preserves_omitted_fields(
