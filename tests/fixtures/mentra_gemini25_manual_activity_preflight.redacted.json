@@ -24,5 +24,18 @@
     "model_audio_chunks": 49,
     "turn_complete": true
   },
+  "silent_recall_probe": {
+    "recorded_at": "2026-08-27",
+    "input": "Public MentraOS what-time-is-it-16khz.wav with fictional instructions and tool result; no personal identity, conversation, or database",
+    "observed": {
+      "setup_complete": true,
+      "recall_memory_calls": 1,
+      "silent_tool_results": 1,
+      "followup_turns": 1,
+      "followup_audio_chunks": 17,
+      "followup_transcription_chars": 24
+    },
+    "decision": "Manual submitted remains pending across the recall tool boundary. Gemini 2.5 emits the expected follow-up turn after a SILENT result, so normal turn completion releases Manual without a separate fallback."
+  },
   "decision": "Buffered record-review-send may use one synchronous activityStart -> PCM burst -> activityEnd write. No live-stream fallback is needed."
 }
