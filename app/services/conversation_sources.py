@@ -13,6 +13,7 @@ from typing import Any
 from app.config import sanitize_db_filename
 from app.services import memorize_endpoint
 
+_NUMERIC_LIKE_RE = re.compile(r"^[0-9+\-() .]+$")
 _ST_SNAPSHOT_FILE = "latest_history.json"
 _CHAT_SNAPSHOT_DIRS = {
     "sillytavern": "st_chats",
@@ -328,12 +329,16 @@ def _strip_soul_prefix(body: str, soul_id: str, reply_prefix: str = "") -> tuple
 
 
 def _contact_name(row: sqlite3.Row, prefix: str) -> str:
+    values: list[str] = []
     for suffix in ("short_name", "name", "push_name", "verified_name"):
-        key = f"{prefix}_{suffix}"
+        key = f"{prefix}_{suffix}" if prefix else suffix
         value = row[key] if key in row.keys() else None
         if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
+            values.append(value.strip())
+    return next(
+        (value for value in values if not _NUMERIC_LIKE_RE.fullmatch(value)),
+        values[0] if values else "",
+    )
 
 
 def _web_source_db_path(*, hermes_home: Path | None, web_source_db_path: Path | None) -> Path:
@@ -486,7 +491,8 @@ def _web_source_row_to_tail(
         if not speaker and row["from_id"]:
             speaker = _contact_name(row, "from")
         if not speaker:
-            speaker = _normalize_whatsapp_identifier(str(row["author_id"] or row["from_id"] or ""))
+            sender = _normalize_whatsapp_identifier(str(row["author_id"] or row["from_id"] or ""))
+            speaker = contact_map.get(sender) or sender
     reaction_tag = _render_reactions(row["reactions"], contact_map)
     if reaction_tag:
         content = content + reaction_tag
@@ -653,11 +659,8 @@ def _load_whatsapp_web_source_tail(
         local_id = str(cr["contact_local_id"] or "").strip()
         if not local_id:
             continue
-        for field in ("name", "short_name", "push_name", "verified_name"):
-            value = str(cr[field] or "").strip()
-            if value:
-                contact_map[local_id] = value
-                break
+        if name := _contact_name(cr, ""):
+            contact_map[local_id] = name
     source_ref_map = _load_whatsapp_source_ref_map(db_path)
 
     chat_name = str(conversation_id).split(":", 2)[-1].strip() or "contact"

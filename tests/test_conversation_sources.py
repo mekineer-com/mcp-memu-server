@@ -362,8 +362,8 @@ def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_
             {
                 "contact_id": "140063262396533@lid",
                 "contact_local_id": "140063262396533",
-                "name": "Trusted Contact",
-                "short_name": "Contact A",
+                "name": "+1 (555) 000-1111",
+                "push_name": "Contact A",
             }
         ],
         messages=[
@@ -378,8 +378,8 @@ def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_
                 "msg_key": "inbound",
                 "timestamp": 100,
                 "body": "hi Siri",
-                "author_id": "140063262396533@lid",
-                "from_id": "140063262396533@lid",
+                "author_id": "140063262396533:18@lid",
+                "from_id": "140063262396533:18@lid",
             },
             {
                 "msg_key": "siri",
