@@ -380,6 +380,7 @@ def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_
                 "body": "hi Siri",
                 "author_id": "140063262396533:18@lid",
                 "from_id": "140063262396533:18@lid",
+                "from_me": True,
             },
             {
                 "msg_key": "siri",
@@ -402,7 +403,7 @@ def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_
     )
 
     assert [(row.get("role"), row["speaker"], row["content"]) for row in rows] == [
-        (None, "Contact A", "hi Siri"),
+        ("user", "Contact A", "hi Siri"),
         ("assistant", "Siri", "hi back"),
     ]
     assert {row["chat_name"] for row in rows} == {"Contact A Chat"}
