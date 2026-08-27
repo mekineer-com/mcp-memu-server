@@ -89,7 +89,6 @@ class MentraSessionStart(BaseModel):
     @field_validator("mode")
     @classmethod
     def validate_mode(cls, value: str) -> str:
-        # Slice 7 consumes the mode when manual VAD is implemented.
         value = value.strip()
         if value not in {"continuous", "manual"}:
             raise ValueError("must be continuous or manual")
