@@ -874,6 +874,20 @@ def _format_prompt_payload_for_log(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _log_mentra_prompt(instruction: str, model: str) -> None:
+    if not _LOG_PROMPTS:
+        return
+    payload = _format_prompt_payload_for_log(
+        {"messages": [{"role": "system", "content": instruction}]}
+    )
+    _PROMPT_LOGGER.info(
+        "\n\n\n===== MENTRA START ===================================================\n\n"
+        "[PROMPT] op=mentra.start model=%s\n%s",
+        model,
+        payload,
+    )
+
+
 def _prompt_log_after(ctx: Any, request_view: Any, response_view: Any, usage: Any) -> None:
     import time as _time
     elapsed = _time.monotonic() - getattr(ctx, "_llm_start", _time.monotonic())
@@ -1679,6 +1693,7 @@ _mentra_routes.register_mentra_routes(
         conversation_id, payload
     ),
     record_call=_record_call,
+    log_prompt=_log_mentra_prompt,
     get_storage_dir=lambda: _get_storage_dir(_CONFIG),
     get_soul_lock=lambda user_id, soul_id: _get_memorize_lock(
         _memorize_lock_key(user_id, soul_id)

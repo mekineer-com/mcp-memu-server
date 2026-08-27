@@ -71,6 +71,7 @@ def _session_app(
         "memorize_checks": [],
         "recalls": [],
         "route_telemetry": [],
+        "prompts": [],
     }
     results = iter(token_results or ["ephemeral-1", "ephemeral-2", "ephemeral-3"])
     writes = iter(state_results or [])
@@ -168,6 +169,7 @@ def _session_app(
         load_current_history=load_current,
         conversation_retrieve=retrieve,
         record_call=record_call,
+        log_prompt=lambda instruction, model: calls["prompts"].append((instruction, model)),
         get_storage_dir=lambda: tmp_path,
         get_soul_lock=lambda _user_id, _soul_id: soul_lock,
         write_conversation_state=write_state,
@@ -289,6 +291,7 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
     assert calls["state"][0][0] == "mentra:phone-1"
     assert calls["cross"][0]["conversation_id"] == "mentra:phone-1"
     prompt = calls["token"][0]["system_instruction"]
+    assert calls["prompts"] == [(prompt, body["model"])]
     headings = [
         "Today is server time.",
         "My narrative self:",
@@ -521,6 +524,7 @@ def test_route_registration_has_explicit_transcript_state_seams() -> None:
         "load_current_history",
         "conversation_retrieve",
         "record_call",
+        "log_prompt",
     } <= set(parameters)
 
 

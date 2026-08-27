@@ -387,6 +387,7 @@ def register_mentra_routes(
     load_current_history: Callable[..., list[dict[str, Any]]] | None = None,
     conversation_retrieve: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
     record_call: Callable[..., None] | None = None,
+    log_prompt: Callable[[str, str], None] | None = None,
     get_storage_dir: Callable[[], Path] | None = None,
     get_soul_lock: Callable[[str, str], asyncio.Lock] | None = None,
     write_conversation_state: Callable[..., Any] | None = None,
@@ -538,6 +539,8 @@ def register_mentra_routes(
                     user_anchor=_anchor_prose(anchors["user"]),
                     chats=str(chats or "").strip(),
                 )
+                if log_prompt is not None:
+                    log_prompt(instruction, model)
             finally:
                 timings["contextMs"] = int((time.monotonic() - phase_started) * 1000)
 
