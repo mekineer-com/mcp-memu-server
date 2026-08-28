@@ -118,7 +118,7 @@ mcp-memu-server/
 | `app/services/whatsapp_outbounds.py` | `whatsapp_pending_outbounds` scoped-SQLite queue for WhatsApp replies/attachments |
 | `app/services/mentra_routes.py` | Authenticated Mentra boundary: sitting-scoped lease lifecycle, bootstrap/token mint, non-blocking memory recall, and contiguous transcript append/ack |
 | `app/services/memorize_endpoint.py` | `/memorize` core: segment-file persistence, forced-memorize runner, rolling-summary injection, sleep-gap/token chunking, progress/cancel. Listen-only segments advance source cursors without producing memory, consuming rolling summaries, or retaining segment files. |
-| `app/services/conversation_sources.py` | Source adapters: WhatsApp from `web_source.db`; ST/Atomic from resource snapshots; Mentra from OpenAlma-owned XDG transcript snapshots. Handles atomic writes, cursor slicing, floor backfill, and role normalization. |
+| `app/services/conversation_sources.py` | Source adapters: WhatsApp from `web_source.db`; ST/Atomic from resource snapshots; Mentra from `openalma/mentra/transcripts`. Handles atomic writes, cursor slicing, floor backfill, and role normalization. |
 | `app/services/cross_history.py` | Cross-conversation history: formats AI-facing all-chat history, assembles cross-tail/background memorize feeds, manages display-segment cleanup |
 | `app/services/apimw.py` | APImw background memory-weaving pipeline: retrieve → synthesize prior-context/message-to-self → persist |
 | `app/services/admin_routes.py` | Health/version/shutdown/diag endpoint handlers |

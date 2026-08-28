@@ -28,8 +28,7 @@ _GATEWAY_NOTICE_PREFIXES = (
 
 
 def mentra_storage_dir() -> Path:
-    data_home = Path(os.getenv("XDG_DATA_HOME") or Path.home() / ".local" / "share")
-    return (data_home / "openalma" / "mentra").expanduser().resolve()
+    return Path(__file__).resolve().parents[3] / "openalma" / "mentra"
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:

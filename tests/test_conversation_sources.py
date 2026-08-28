@@ -87,12 +87,8 @@ def test_mentra_snapshot_uses_sequence_cursor_and_honest_record_labels(tmp_path:
     assert envelope["updated_at"].endswith("Z")
 
 
-def test_mentra_storage_dir_uses_xdg_data_home(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-
-    assert conversation_sources.mentra_storage_dir() == tmp_path / "openalma" / "mentra"
+def test_mentra_storage_dir_stays_with_openalma_apps() -> None:
+    assert conversation_sources.mentra_storage_dir() == Path(__file__).resolve().parents[2] / "openalma" / "mentra"
 
 
 def test_mentra_snapshot_replace_failure_keeps_prior_history(
