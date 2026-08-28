@@ -28,7 +28,10 @@ _GATEWAY_NOTICE_PREFIXES = (
 
 
 def mentra_storage_dir() -> Path:
-    return Path(__file__).resolve().parents[3] / "openalma" / "mentra"
+    openalma_dir = Path(__file__).resolve().parents[3] / "openalma"
+    if not openalma_dir.is_dir():
+        raise RuntimeError(f"OpenAlma application directory is missing: {openalma_dir}")
+    return openalma_dir / "mentra"
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:

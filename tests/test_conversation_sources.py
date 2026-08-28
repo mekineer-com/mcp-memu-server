@@ -88,7 +88,20 @@ def test_mentra_snapshot_uses_sequence_cursor_and_honest_record_labels(tmp_path:
 
 
 def test_mentra_storage_dir_stays_with_openalma_apps() -> None:
-    assert conversation_sources.mentra_storage_dir() == Path(__file__).resolve().parents[2] / "openalma" / "mentra"
+    expected = Path(__file__).resolve().parents[2] / "openalma" / "mentra"
+    assert conversation_sources.mentra_storage_dir() == expected
+
+
+def test_mentra_storage_dir_rejects_incomplete_application_layout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_source = (
+        tmp_path / "mcp-memu-server" / "app" / "services" / "conversation_sources.py"
+    )
+    monkeypatch.setattr(conversation_sources, "__file__", str(fake_source))
+
+    with pytest.raises(RuntimeError, match="OpenAlma application directory is missing"):
+        conversation_sources.mentra_storage_dir()
 
 
 def test_mentra_snapshot_replace_failure_keeps_prior_history(
