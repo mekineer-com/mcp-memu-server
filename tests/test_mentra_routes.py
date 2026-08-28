@@ -359,6 +359,13 @@ def test_lease_resume_heartbeat_and_end_are_scoped(
         "system_instruction": calls["token"][-2]["system_instruction"],
         "mode": "continuous",
     }
+    assert calls["route_telemetry"][-1][0][0] == "mentra.token"
+    assert calls["route_telemetry"][-1][1]["ok"] is True
+    assert calls["route_telemetry"][-1][1]["info"]["wallMs"] >= 0
+    assert "permanent-secret" not in json.dumps(calls["route_telemetry"][-1])
+    assert calls["token"][-1]["system_instruction"] not in json.dumps(
+        calls["route_telemetry"][-1]
+    )
     assert client.post(
         "/integration/mentra/session/wrong/heartbeat", json=scope, headers=AUTH
     ).status_code == 404
@@ -403,7 +410,7 @@ def test_token_mint_failure_preserves_current_lease(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    client, _calls, _ = _session_app(
+    client, calls, _ = _session_app(
         monkeypatch,
         tmp_path,
         token_results=["initial-token", RuntimeError("upstream")],
@@ -421,6 +428,8 @@ def test_token_mint_failure_preserves_current_lease(
     assert failed.status_code == 502
     assert failed.json() == {"detail": "Gemini session token request failed"}
     assert mentra_routes._leases[START["soul_id"]] == lease_before
+    assert calls["route_telemetry"][-1][0][0] == "mentra.token"
+    assert calls["route_telemetry"][-1][1]["error"] == "provider_mint_failed"
 
 
 def test_stop_during_token_mint_returns_no_token(

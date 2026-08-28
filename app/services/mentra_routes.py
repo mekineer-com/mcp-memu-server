@@ -636,9 +636,23 @@ def register_mentra_routes(
     async def mentra_session_token(
         session_id: str, body: MentraSessionScope
     ) -> dict[str, str]:
+        started_at = time.monotonic()
+        scope = {"user_id": body.user_id, "soul_id": body.soul_id}
+
+        def record_token(*, ok: bool, error: str | None = None) -> None:
+            if record_call is not None:
+                record_call(
+                    "mentra.token",
+                    {"user": scope},
+                    ok=ok,
+                    info={"wallMs": int((time.monotonic() - started_at) * 1000)},
+                    **({"error": error} if error else {}),
+                )
+
         config = get_config().get("mentra") or {}
         api_key = str(config.get("gemini_api_key") or "").strip()
         if not api_key:
+            record_token(ok=False, error="credential_not_configured")
             raise HTTPException(
                 status_code=503,
                 detail="Mentra Gemini credential is not configured",
@@ -648,8 +662,10 @@ def register_mentra_routes(
             active = _leases.get(body.soul_id)
             if not active or active.expires_at <= time.monotonic():
                 _leases.pop(body.soul_id, None)
+                record_token(ok=False, error="session_not_found")
                 raise HTTPException(status_code=404, detail="Mentra session not found")
             if active.sitting_id != session_id or active.user_id != body.user_id:
+                record_token(ok=False, error="session_not_found")
                 raise HTTPException(status_code=404, detail="Mentra session not found")
             mint_profile = (active.model, active.voice, active.system_instruction, active.mode)
 
@@ -662,6 +678,7 @@ def register_mentra_routes(
                 mode=mint_profile[3],
             )
         except Exception as exc:
+            record_token(ok=False, error="provider_mint_failed")
             raise HTTPException(
                 status_code=502, detail="Gemini session token request failed"
             ) from exc
@@ -676,7 +693,9 @@ def register_mentra_routes(
             ):
                 if current and current.expires_at <= time.monotonic():
                     _leases.pop(body.soul_id, None)
+                record_token(ok=False, error="session_not_found_after_mint")
                 raise HTTPException(status_code=404, detail="Mentra session not found")
+        record_token(ok=True)
         return {"ephemeral_token": token}
 
     @app.post(
