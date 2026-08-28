@@ -57,6 +57,10 @@ class _Lease(NamedTuple):
     user_id: str
     device_session_id: str
     expires_at: float
+    model: str
+    voice: str
+    system_instruction: str
+    mode: str
 
 
 _leases: dict[str, _Lease] = {}
@@ -586,6 +590,10 @@ def register_mentra_routes(
                         body.user_id,
                         body.device_session_id,
                         time.monotonic() + _LEASE_SECONDS,
+                        model,
+                        voice,
+                        instruction,
+                        body.mode,
                     )
                     _start_claims.pop(lease_key, None)
         except Exception as exc:
@@ -619,6 +627,57 @@ def register_mentra_routes(
             "lease_seconds": _LEASE_SECONDS,
             "session_warning_seconds": warning_seconds,
         }
+
+    @app.post(
+        "/integration/mentra/session/{session_id}/token",
+        tags=["integration"],
+        dependencies=auth,
+    )
+    async def mentra_session_token(
+        session_id: str, body: MentraSessionScope
+    ) -> dict[str, str]:
+        config = get_config().get("mentra") or {}
+        api_key = str(config.get("gemini_api_key") or "").strip()
+        if not api_key:
+            raise HTTPException(
+                status_code=503,
+                detail="Mentra Gemini credential is not configured",
+            )
+
+        async with _lease_lock:
+            active = _leases.get(body.soul_id)
+            if not active or active.expires_at <= time.monotonic():
+                _leases.pop(body.soul_id, None)
+                raise HTTPException(status_code=404, detail="Mentra session not found")
+            if active.sitting_id != session_id or active.user_id != body.user_id:
+                raise HTTPException(status_code=404, detail="Mentra session not found")
+            mint_profile = (active.model, active.voice, active.system_instruction, active.mode)
+
+        try:
+            token = await _mint_gemini_token(
+                api_key=api_key,
+                model=mint_profile[0],
+                voice=mint_profile[1],
+                system_instruction=mint_profile[2],
+                mode=mint_profile[3],
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail="Gemini session token request failed"
+            ) from exc
+
+        async with _lease_lock:
+            current = _leases.get(body.soul_id)
+            if (
+                not current
+                or current.expires_at <= time.monotonic()
+                or current.sitting_id != session_id
+                or current.user_id != body.user_id
+            ):
+                if current and current.expires_at <= time.monotonic():
+                    _leases.pop(body.soul_id, None)
+                raise HTTPException(status_code=404, detail="Mentra session not found")
+        return {"ephemeral_token": token}
 
     @app.post(
         "/integration/mentra/session/{session_id}/heartbeat",

@@ -345,6 +345,20 @@ def test_lease_resume_heartbeat_and_end_are_scoped(
     assert calls["service"] == 2
 
     scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    lease_before_refresh = mentra_routes._leases[START["soul_id"]]
+    refreshed = client.post(
+        "/integration/mentra/session/sitting-2/token", json=scope, headers=AUTH
+    )
+    assert refreshed.status_code == 200
+    assert refreshed.json() == {"ephemeral_token": "ephemeral-3"}
+    assert mentra_routes._leases[START["soul_id"]] == lease_before_refresh
+    assert calls["token"][-1] == {
+        "api_key": "permanent-secret",
+        "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+        "voice": "Kore",
+        "system_instruction": calls["token"][-2]["system_instruction"],
+        "mode": "continuous",
+    }
     assert client.post(
         "/integration/mentra/session/wrong/heartbeat", json=scope, headers=AUTH
     ).status_code == 404
@@ -383,6 +397,68 @@ def test_lease_resume_heartbeat_and_end_are_scoped(
     assert client.post(
         "/integration/mentra/session/sitting-2/end", json=scope, headers=AUTH
     ).status_code == 200
+
+
+def test_token_mint_failure_preserves_current_lease(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _calls, _ = _session_app(
+        monkeypatch,
+        tmp_path,
+        token_results=["initial-token", RuntimeError("upstream")],
+    )
+    started = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
+    lease_before = mentra_routes._leases[START["soul_id"]]
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+
+    failed = client.post(
+        f"/integration/mentra/session/{started.json()['session_id']}/token",
+        json=scope,
+        headers=AUTH,
+    )
+
+    assert failed.status_code == 502
+    assert failed.json() == {"detail": "Gemini session token request failed"}
+    assert mentra_routes._leases[START["soul_id"]] == lease_before
+
+
+def test_stop_during_token_mint_returns_no_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _calls, _ = _session_app(monkeypatch, tmp_path)
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    started = Event()
+    release = Event()
+
+    async def slow_mint(**_kwargs: str) -> str:
+        started.set()
+        await asyncio.to_thread(release.wait, 5)
+        return "must-not-return"
+
+    monkeypatch.setattr(mentra_routes, "_mint_gemini_token", slow_mint)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            client.post,
+            f"/integration/mentra/session/{sitting_id}/token",
+            json=scope,
+            headers=AUTH,
+        )
+        assert started.wait(2)
+        assert client.post(
+            f"/integration/mentra/session/{sitting_id}/end",
+            json=scope,
+            headers=AUTH,
+        ).status_code == 200
+        release.set()
+        refreshed = future.result(timeout=5)
+
+    assert refreshed.status_code == 404
+    assert refreshed.json() == {"detail": "Mentra session not found"}
 
 
 def test_failed_replacement_start_preserves_healthy_sitting(
