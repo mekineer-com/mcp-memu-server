@@ -80,11 +80,19 @@ def test_mentra_snapshot_uses_sequence_cursor_and_honest_record_labels(tmp_path:
     assert rows[1]["speaker"] == "Codexia"
     assert all(row["source_label"] == "mentra" for row in rows)
     assert all(isinstance(row["ts_ms"], int) for row in rows)
-    assert (tmp_path / "mentra_chats").exists()
+    assert (tmp_path / "transcripts").exists()
     assert not (tmp_path / "st_chats").exists()
-    snapshot_path = next((tmp_path / "mentra_chats").rglob("latest_history.json"))
+    snapshot_path = next((tmp_path / "transcripts").rglob("latest_history.json"))
     envelope = json.loads(snapshot_path.read_text())
     assert envelope["updated_at"].endswith("Z")
+
+
+def test_mentra_storage_dir_uses_xdg_data_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+
+    assert conversation_sources.mentra_storage_dir() == tmp_path / "openalma" / "mentra"
 
 
 def test_mentra_snapshot_replace_failure_keeps_prior_history(

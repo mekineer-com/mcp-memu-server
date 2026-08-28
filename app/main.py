@@ -1637,7 +1637,7 @@ def _load_mentra_current_history(
     finally:
         con.close()
     return _conversation_sources.load_mentra_tail(
-        storage_dir=_get_storage_dir(_CONFIG),
+        storage_dir=_conversation_sources.mentra_storage_dir(),
         user_id=user_id,
         soul_id=soul_id,
         conversation_id=conversation_id,
@@ -1694,7 +1694,7 @@ _mentra_routes.register_mentra_routes(
     ),
     record_call=_record_call,
     log_prompt=_log_mentra_prompt,
-    get_storage_dir=lambda: _get_storage_dir(_CONFIG),
+    get_storage_dir=_conversation_sources.mentra_storage_dir,
     get_soul_lock=lambda user_id, soul_id: _get_memorize_lock(
         _memorize_lock_key(user_id, soul_id)
     ),

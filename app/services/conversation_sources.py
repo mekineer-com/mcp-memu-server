@@ -18,13 +18,18 @@ _ST_SNAPSHOT_FILE = "latest_history.json"
 _CHAT_SNAPSHOT_DIRS = {
     "sillytavern": "st_chats",
     "atomic": "atomic_chats",
-    "mentra": "mentra_chats",
+    "mentra": "transcripts",
 }
 _GATEWAY_NOTICE_PREFIXES = (
     "⚠️ Gateway shutting down — ",
     "⚠️ Gateway restarting — ",
     "memU turn failed",
 )
+
+
+def mentra_storage_dir() -> Path:
+    data_home = Path(os.getenv("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return (data_home / "openalma" / "mentra").expanduser().resolve()
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:

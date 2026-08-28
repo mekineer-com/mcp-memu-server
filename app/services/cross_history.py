@@ -442,7 +442,7 @@ def _load_tail_for_source_conversation(
         )
     if source_label == "mentra":
         return _conversation_sources.load_mentra_tail(
-            storage_dir=storage_dir,
+            storage_dir=_conversation_sources.mentra_storage_dir(),
             user_id=user_id,
             soul_id=soul_id,
             conversation_id=conversation_id,

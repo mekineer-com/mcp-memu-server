@@ -2181,6 +2181,8 @@ def test_mentra_bootstrap_marks_prior_tail_as_current_smartglasses_chat(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    mentra_storage = tmp_path / "openalma" / "mentra"
     db_path = tmp_path / "Codexia.db"
     con = main._sqlite_connect(db_path)
     try:
@@ -2194,7 +2196,7 @@ def test_mentra_bootstrap_marks_prior_tail_as_current_smartglasses_chat(
     finally:
         con.close()
     conversation_sources.persist_mentra_history_snapshot(
-        storage_dir=tmp_path,
+        storage_dir=mentra_storage,
         user_id="Fictional User",
         soul_id="Codexia",
         conversation_id="mentra:test-device",
@@ -2275,6 +2277,7 @@ def test_load_tail_for_source_conversation_dispatches_mentra(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     captured: dict[str, Any] = {}
 
     def load_mentra(**kwargs: Any) -> list[dict[str, Any]]:
@@ -2296,6 +2299,7 @@ def test_load_tail_for_source_conversation_dispatches_mentra(
     )
 
     assert rows == [{"content": "Fictional smartglasses tail."}]
+    assert captured["storage_dir"] == tmp_path / "xdg" / "openalma" / "mentra"
     assert captured["since_cursor"] == 4
     assert captured["conversation_id"] == "mentra:test-device"
 
