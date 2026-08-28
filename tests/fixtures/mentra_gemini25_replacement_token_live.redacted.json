@@ -1,0 +1,30 @@
+{
+  "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+  "purpose": "Disposable fictional live verification of the session-owned replacement-token route and Gemini resumption after the original token window",
+  "recorded_at": "2026-08-28T04:55:15Z",
+  "results": {
+    "fresh_token_immediate": {
+      "replacement_count": 2,
+      "same_sitting": true,
+      "spoken_canary_recalled_each_time": true
+    },
+    "fresh_token_after_original_expiry": {
+      "seconds_after_initial_turn": 1890,
+      "replacement_count": 1,
+      "same_sitting": true,
+      "spoken_canary_recalled": true
+    },
+    "same_token_control": {
+      "replacement_count": 2,
+      "same_sitting": true,
+      "spoken_canary_recalled_each_time": true
+    }
+  },
+  "shape": {
+    "audio_input": "generated fictional speech, mono signed 16-bit PCM at 16000 Hz through realtimeInput.audio",
+    "bootstrap": "production mcp Mentra route with fictional identity/context and isolated temporary storage",
+    "replacement": "POST session/{id}/token followed by BidiGenerateContentConstrained setup carrying only sessionResumption.handle",
+    "wait": "mcp lease heartbeated every 30 seconds; no Gemini socket or original token used during the 1890-second wait"
+  },
+  "secrets": "API keys, bearer values, ephemeral tokens, resumption handles, and raw audio omitted"
+}
