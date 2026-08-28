@@ -356,14 +356,14 @@ def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_
             {
                 "contact_id": "15133278228@c.us",
                 "contact_local_id": "15133278228",
-                "name": "Contact A Chat",
-                "short_name": "Contact A Chat",
+                "name": "Fictional Friend",
+                "short_name": "Fictional Friend",
             },
             {
                 "contact_id": "140063262396533@lid",
                 "contact_local_id": "140063262396533",
                 "name": "+1 (555) 000-1111",
-                "push_name": "Contact A",
+                "push_name": "Test Owner",
             }
         ],
         messages=[
@@ -403,10 +403,10 @@ def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_
     )
 
     assert [(row.get("role"), row["speaker"], row["content"]) for row in rows] == [
-        ("user", "Contact A", "hi Siri"),
+        ("user", "Test Owner", "hi Siri"),
         ("assistant", "Siri", "hi back"),
     ]
-    assert {row["chat_name"] for row in rows} == {"Contact A Chat"}
+    assert {row["chat_name"] for row in rows} == {"Fictional Friend"}
     assert [row["source_conversation_index"] for row in rows] == [2, 3]
 
 
