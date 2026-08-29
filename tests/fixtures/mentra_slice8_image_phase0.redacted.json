@@ -1,0 +1,74 @@
+{
+  "recorded_at": "2026-08-29T12:02:10-05:00",
+  "purpose": "Redacted Slice 8 capability evidence using generated fictional 640x480 PNGs; no soul database, user transcript, or credential participated.",
+  "live_model": "gemini-2.5-flash-native-audio-preview-12-2025",
+  "vision_profile": {
+    "provider": "openai-compatible Gemini API",
+    "model": "gemini-3.5-flash"
+  },
+  "gemini_live": {
+    "realtime_video_only": {
+      "manual": "setup and turn completed without audio or output transcription",
+      "continuous": "setup completed but no turn began"
+    },
+    "turn_coverage": {
+      "value": "TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO",
+      "token_and_setup_accepted": true,
+      "manual": "turn completed silently",
+      "continuous": "no turn began",
+      "decision": "do not add this field"
+    },
+    "realtime_video_plus_text": {
+      "text": "Describe this image.",
+      "result": "both modes closed with WebSocket 1007 invalid frame payload data"
+    },
+    "client_content": {
+      "shape": "inlineData image/png plus text, turnComplete=true",
+      "text": "Describe this image.",
+      "manual": {
+        "turn_complete": true,
+        "audio_chunks": 178,
+        "output": "The image features large colored regions of red, blue, green, and yellow, with a white square in the center."
+      },
+      "continuous": {
+        "turn_complete": true,
+        "audio_chunks": 189,
+        "output": "The image displays large colored regions of red, blue, green, and yellow arranged in quadrants, centered by a white square."
+      },
+      "during_active_speech": {
+        "first_turn_interrupted": false,
+        "first_turn_completed": true,
+        "image_turn_completed_after_first_turn": true
+      },
+      "one_text_bearing_frame_total_tokens": 1034
+    },
+    "session_signals": {
+      "session_resumption_update_seen_on_color_frame_runs": true,
+      "text_bearing_frame_handle_before_turn_complete": false,
+      "post_turn_handle_probe": "inconclusive after a later provider response timeout",
+      "go_away_seen": false,
+      "new_provider_limit_seen": false
+    }
+  },
+  "memu_vision": {
+    "direct_preprocessor": {
+      "ok": true,
+      "detailed_description_tag": true,
+      "caption_tag": true,
+      "canary_details_correct": true
+    },
+    "full_isolated_memorize": {
+      "first_run": "one Resource, caption, embedding, and extracted items",
+      "same_url_resource_id_stable": true,
+      "resource_count_after_repeat": 1,
+      "image_local_path_after_run": "<temp>/resources/canary.txt",
+      "image_local_path_bug_reproduced": true,
+      "text_bearing_repeat_active_item_count": 2,
+      "same_image_memory_duplicate_reproduced": true
+    },
+    "discarded_profile_probe": {
+      "model": "gemini-2.5-flash",
+      "result": "404 model unavailable on current OpenAI-compatible endpoint"
+    }
+  }
+}
