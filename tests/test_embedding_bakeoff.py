@@ -1,6 +1,7 @@
 import sqlite3
 import struct
 import subprocess
+import urllib.error
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +46,24 @@ CREATE TABLE triples(subject_id TEXT, predicate TEXT, valid_to TEXT);
     }
     with pytest.raises(ValueError, match="returned 1 vectors for 2 inputs"):
         bakeoff.checked_vectors([[0.0] * bakeoff.DIMENSIONS], 2, "Fictional")
+
+    attempts = 0
+
+    def rate_limited_post(*_args: object, **_kwargs: object) -> dict:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise urllib.error.HTTPError(
+                "https://example.invalid", 429, "limited", {}, None
+            )
+        return {"embeddings": [{"values": [0.0] * bakeoff.DIMENSIONS}]}
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fictional")
+    monkeypatch.setattr(bakeoff, "post", rate_limited_post)
+    monkeypatch.setattr(bakeoff.time, "sleep", lambda seconds: seconds == 60)
+    vectors, _elapsed = bakeoff.gemini_embed(["fictional"])
+    assert vectors.shape == (1, bakeoff.DIMENSIONS)
+    assert attempts == 2
 
     def fake_glm(
         command: list[str], **kwargs: object

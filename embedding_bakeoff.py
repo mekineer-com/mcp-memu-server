@@ -13,6 +13,7 @@ import sqlite3
 import struct
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
@@ -302,7 +303,14 @@ def gemini_embed(texts: list[str]) -> tuple[np.ndarray, float]:
             }
             for text in batch
         ]
-        data = post(url, {"requests": requests})
+        for attempt in range(6):
+            try:
+                data = post(url, {"requests": requests})
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code != 429 or attempt == 5:
+                    raise
+                time.sleep(60)
         vectors.extend(row["values"] for row in data["embeddings"])
     return checked_vectors(vectors, len(texts), "Gemini"), time.monotonic() - started
 
