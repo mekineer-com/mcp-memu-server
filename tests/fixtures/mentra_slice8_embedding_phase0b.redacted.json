@@ -1,6 +1,6 @@
 {
   "recorded_at": "2026-08-29T22:27:00-05:00",
-  "purpose": "Redacted Slice 8 Phase 0B sensory evidence using fictional repository images and a synthetic bell; no soul database, transcript, raw vector, or credential participated.",
+  "purpose": "Redacted Slice 8 Phase 0B sensory and private text-retrieval evidence; no private query, memory text, raw vector, database, or credential is included.",
   "provider": "Gemini API",
   "model": "gemini-embedding-2",
   "endpoint": "batchEmbedContents",
@@ -34,9 +34,44 @@
     "audio_to_mismatched_robot_image": 0.328515,
     "audio_image_rank_passed": true
   },
+  "private_text_retrieval": {
+    "documents": 1484,
+    "excluded_low_confidence": 12,
+    "frozen_queries": 200,
+    "baseline": {
+      "model": "text-embedding-3-large",
+      "recall_at_1": 0.95,
+      "recall_at_5": 0.995,
+      "recall_at_10": 0.995,
+      "mean_reciprocal_rank": 0.969024
+    },
+    "candidate": {
+      "model": "gemini-embedding-2",
+      "recall_at_1": 0.955,
+      "recall_at_5": 0.985,
+      "recall_at_10": 0.99,
+      "mean_reciprocal_rank": 0.968399
+    },
+    "paired": {
+      "gemini_better": 5,
+      "equal": 189,
+      "openai_better": 6,
+      "exact_sign_pvalue": 1.0,
+      "mean_rank_delta_gemini_minus_openai": 0.165,
+      "median_rank_delta_gemini_minus_openai": 0.0
+    },
+    "strict_gate": {
+      "recall_at_5_delta": -0.01,
+      "passed": false,
+      "review_required": true
+    },
+    "cross_key_repeat": {
+      "maximum_absolute_delta": 0.0
+    }
+  },
   "status": {
     "sensory_probe": "passed",
-    "private_text_retrieval_bakeoff": "pending",
-    "phase_0b_gate": "open"
+    "private_text_retrieval_bakeoff": "completed_strict_gate_failed",
+    "phase_0b_gate": "review_required"
   }
 }
