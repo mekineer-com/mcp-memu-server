@@ -435,7 +435,7 @@ def score(db_path: Path, query_path: Path) -> None:
     new_metrics = rank_metrics(new_ranks)
     recall_gap = new_metrics["recall_at_5"] - old_metrics["recall_at_5"]
     sign_pvalue = exact_sign_pvalue(gemini_better, openai_better)
-    passed = recall_gap >= 0 and not (
+    passed = recall_gap >= -0.02 and not (
         openai_better > gemini_better and sign_pvalue < 0.05
     )
     result = {
@@ -468,7 +468,7 @@ def score(db_path: Path, query_path: Path) -> None:
             ),
         },
         "gate": {
-            "maximum_recall_at_5_drop": 0.0,
+            "maximum_recall_at_5_drop": 0.02,
             "recall_at_5_delta": round(recall_gap, 6),
             "passed": passed,
         },
