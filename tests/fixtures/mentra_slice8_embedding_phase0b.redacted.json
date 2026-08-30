@@ -1,0 +1,42 @@
+{
+  "recorded_at": "2026-08-29T22:27:00-05:00",
+  "purpose": "Redacted Slice 8 Phase 0B sensory evidence using fictional repository images and a synthetic bell; no soul database, transcript, raw vector, or credential participated.",
+  "provider": "Gemini API",
+  "model": "gemini-embedding-2",
+  "endpoint": "batchEmbedContents",
+  "dimensions": 3072,
+  "request_contract": {
+    "text_query": "task: search result | query: {content}",
+    "image_document": "raw JPEG/PNG inline_data only",
+    "audio_document": "raw WAV inline_data only"
+  },
+  "text_to_image": {
+    "meditating_cat_query": {
+      "intended_image": 0.729844,
+      "mismatched_image": 0.581666,
+      "rank_passed": true
+    },
+    "robot_cat_query": {
+      "intended_image": 0.713917,
+      "mismatched_image": 0.560828,
+      "rank_passed": true
+    }
+  },
+  "repeat_image": {
+    "cosine": 1.0,
+    "maximum_absolute_delta": 0.0,
+    "passed": true
+  },
+  "synthetic_audio": {
+    "description": "Two decaying harmonic bell tones generated with the Python standard library",
+    "text_to_audio_cosine": 0.524976,
+    "audio_to_matching_bell_image": 0.385336,
+    "audio_to_mismatched_robot_image": 0.328515,
+    "audio_image_rank_passed": true
+  },
+  "status": {
+    "sensory_probe": "passed",
+    "private_text_retrieval_bakeoff": "pending",
+    "phase_0b_gate": "open"
+  }
+}
