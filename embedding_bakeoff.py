@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import math
+import mimetypes
 import os
 import re
 import sqlite3
@@ -340,6 +342,39 @@ def gemini_embed(
     return checked_vectors(vectors, len(texts), "Gemini"), time.monotonic() - started
 
 
+def gemini_embed_media(paths: list[Path]) -> tuple[np.ndarray, float]:
+    api_key = gemini_api_key()
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-embedding-2:embedContent?key={api_key}"
+    )
+    vectors: list[list[float]] = []
+    started = time.monotonic()
+    for path in paths:
+        mime_type = mimetypes.guess_type(path.name)[0]
+        if mime_type not in {"image/jpeg", "image/png"}:
+            raise ValueError(f"Mixed-pool fixture must be JPEG or PNG: {path}")
+        data = post(
+            url,
+            {
+                "model": "models/gemini-embedding-2",
+                "content": {
+                    "parts": [
+                        {
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": base64.b64encode(path.read_bytes()).decode("ascii"),
+                            }
+                        }
+                    ]
+                },
+                "outputDimensionality": DIMENSIONS,
+            },
+        )
+        vectors.append(data["embedding"]["values"])
+    return checked_vectors(vectors, len(paths), "Gemini media"), time.monotonic() - started
+
+
 def checked_vectors(
     vectors: list[list[float]], expected: int, provider: str
 ) -> np.ndarray:
@@ -392,26 +427,86 @@ def rank_metrics(values: np.ndarray) -> dict:
     }
 
 
+def mixed_pool_metrics(
+    text_documents: np.ndarray,
+    text_queries: np.ndarray,
+    text_targets: list[set[int]],
+    media_documents: np.ndarray,
+    media_queries: np.ndarray,
+) -> dict:
+    combined = np.vstack((text_documents, media_documents))
+    text_before = ranks(text_documents, text_queries, text_targets)
+    text_after = ranks(combined, text_queries, text_targets)
+    offset = len(text_documents)
+    media_ranks = ranks(
+        combined,
+        media_queries,
+        [{offset + index} for index in range(len(media_documents))],
+    )
+    return {
+        "text_before_mixed_pool": rank_metrics(text_before),
+        "text_after_mixed_pool": rank_metrics(text_after),
+        "text_queries_displaced": int(np.sum(text_after > text_before)),
+        "media": rank_metrics(media_ranks),
+    }
+
+
+def neighborhood_scores(
+    vectors: np.ndarray, summaries: list[str]
+) -> tuple[np.ndarray, np.ndarray]:
+    normalized = vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
+    scores = normalized @ normalized.T
+    labels = np.asarray([" ".join(summary.casefold().split()) for summary in summaries])
+    same = labels[:, None] == labels[None, :]
+    exact_duplicates = scores[np.triu(same, k=1)]
+    scores[same] = -np.inf
+    return exact_duplicates, np.max(scores, axis=1)
+
+
+def distribution(values: np.ndarray) -> dict:
+    finite = values[np.isfinite(values)]
+    if not len(finite):
+        return {"count": 0}
+    return {
+        "count": int(len(finite)),
+        **{
+            f"p{percentile}": round(float(np.percentile(finite, percentile)), 6)
+            for percentile in (1, 5, 50, 95, 99)
+        },
+        "maximum": round(float(np.max(finite)), 6),
+    }
+
+
+def calibration_report(
+    old_vectors: np.ndarray,
+    new_vectors: np.ndarray,
+    summaries: list[str],
+    old_threshold: float,
+) -> dict:
+    old_duplicates, old_neighbors = neighborhood_scores(old_vectors, summaries)
+    new_duplicates, new_neighbors = neighborhood_scores(new_vectors, summaries)
+    exceedance = float(np.mean(old_neighbors >= old_threshold))
+    mapped = float(np.quantile(new_neighbors, 1.0 - exceedance))
+    return {
+        "old_threshold": old_threshold,
+        "old_hard_neighbor_exceedance": round(exceedance, 6),
+        "candidate_same_exceedance_threshold": round(mapped, 6),
+        "openai": {
+            "exact_duplicates": distribution(old_duplicates),
+            "hardest_nonduplicates": distribution(old_neighbors),
+        },
+        "gemini": {
+            "exact_duplicates": distribution(new_duplicates),
+            "hardest_nonduplicates": distribution(new_neighbors),
+        },
+    }
+
+
 def score(db_path: Path, query_path: Path) -> None:
-    memories, excluded_low_confidence = load_memories(require_disposable_db(db_path))
-    frozen = json.loads(query_path.read_text())
-    if frozen.get("corpus_sha256") != corpus_hash(memories):
-        raise ValueError(
-            "Frozen queries do not belong to this disposable database copy"
-        )
-    by_id = {row["id"]: index for index, row in enumerate(memories)}
-    equivalent: dict[str, set[int]] = {}
-    for index, row in enumerate(memories):
-        equivalent.setdefault(" ".join(row["summary"].casefold().split()), set()).add(
-            index
-        )
+    memories, excluded_low_confidence, frozen, target_indices = _frozen_inputs(
+        db_path, query_path
+    )
     query_rows = frozen["queries"]
-    target_indices = [
-        equivalent[
-            " ".join(memories[by_id[row["target_id"]]]["summary"].casefold().split())
-        ]
-        for row in query_rows
-    ]
     query_texts = [row["query"] for row in query_rows]
     config = json.loads(CONFIG.read_text())["llm"]
 
@@ -476,9 +571,96 @@ def score(db_path: Path, query_path: Path) -> None:
     print(json.dumps(result, indent=2))
 
 
+def _frozen_inputs(
+    db_path: Path, query_path: Path
+) -> tuple[list[dict], int, dict, list[set[int]]]:
+    memories, excluded = load_memories(require_disposable_db(db_path))
+    frozen = json.loads(query_path.read_text())
+    if frozen.get("corpus_sha256") != corpus_hash(memories):
+        raise ValueError("Frozen queries do not belong to this disposable database copy")
+    by_id = {row["id"]: index for index, row in enumerate(memories)}
+    equivalent: dict[str, set[int]] = {}
+    for index, row in enumerate(memories):
+        equivalent.setdefault(" ".join(row["summary"].casefold().split()), set()).add(index)
+    targets = [
+        equivalent[
+            " ".join(memories[by_id[row["target_id"]]]["summary"].casefold().split())
+        ]
+        for row in frozen["queries"]
+    ]
+    return memories, excluded, frozen, targets
+
+
+def score_mixed(db_path: Path, query_path: Path, manifest_path: Path) -> None:
+    memories, _excluded, frozen, targets = _frozen_inputs(db_path, query_path)
+    text_documents = checked_vectors(
+        np.load(query_path.with_name("gemini-documents.npy")).tolist(),
+        len(memories),
+        "Cached Gemini documents",
+    )
+    text_queries = checked_vectors(
+        np.load(query_path.with_name("gemini-queries.npy")).tolist(),
+        len(frozen["queries"]),
+        "Cached Gemini queries",
+    )
+    manifest = json.loads(manifest_path.read_text())
+    rows = manifest.get("images")
+    if not isinstance(rows, list) or len(rows) < 3:
+        raise ValueError("Mixed-pool manifest requires at least three fictional images")
+    paths = [(manifest_path.parent / str(row["path"])).resolve() for row in rows]
+    queries = [str(row["query"]).strip() for row in rows]
+    if any(not path.is_file() for path in paths) or any(not query for query in queries):
+        raise ValueError("Mixed-pool image paths and queries must be complete")
+    media_documents, media_seconds = gemini_embed_media(paths)
+    media_queries, query_seconds = gemini_embed(
+        [f"task: search result | query: {query}" for query in queries]
+    )
+    result = mixed_pool_metrics(
+        text_documents,
+        text_queries,
+        targets,
+        media_documents,
+        media_queries,
+    )
+    result.update(
+        {
+            "text_documents": len(memories),
+            "media_documents": len(rows),
+            "media_embedding_seconds": round(media_seconds, 3),
+            "media_query_seconds": round(query_seconds, 3),
+        }
+    )
+    print(json.dumps(result, indent=2))
+
+
+def score_calibration(db_path: Path, query_path: Path) -> None:
+    memories, _excluded, _frozen, _targets = _frozen_inputs(db_path, query_path)
+    old_vectors = np.asarray([row["embedding"] for row in memories], dtype=np.float32)
+    new_vectors = checked_vectors(
+        np.load(query_path.with_name("gemini-documents.npy")).tolist(),
+        len(memories),
+        "Cached Gemini documents",
+    )
+    config = json.loads(CONFIG.read_text())
+    threshold = float(
+        config.get("memorize", {}).get("semantic_dedupe_similarity_threshold", 0.85)
+    )
+    print(
+        json.dumps(
+            calibration_report(
+                old_vectors,
+                new_vectors,
+                [row["summary"] for row in memories],
+                threshold,
+            ),
+            indent=2,
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("freeze", "score"))
+    parser.add_argument("phase", choices=("freeze", "score", "mixed", "calibrate"))
     parser.add_argument(
         "database",
         type=Path,
@@ -487,11 +669,22 @@ def main() -> None:
     parser.add_argument(
         "queries", type=Path, help="Private frozen query JSON outside version control"
     )
+    parser.add_argument(
+        "--media-manifest",
+        type=Path,
+        help="Private fictional image/query manifest required by the mixed phase",
+    )
     args = parser.parse_args()
     if args.phase == "freeze":
         freeze_queries(args.database, args.queries)
-    else:
+    elif args.phase == "score":
         score(args.database, args.queries)
+    elif args.phase == "calibrate":
+        score_calibration(args.database, args.queries)
+    else:
+        if args.media_manifest is None:
+            parser.error("mixed requires --media-manifest")
+        score_mixed(args.database, args.queries, args.media_manifest)
 
 
 if __name__ == "__main__":

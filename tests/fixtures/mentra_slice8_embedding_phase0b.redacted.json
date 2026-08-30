@@ -85,9 +85,24 @@
       "maximum_absolute_delta": 0.0
     }
   },
+  "mixed_text_image_pool": {
+    "text_documents": 1484,
+    "public_fictional_images": 7,
+    "total_candidates": 1491,
+    "image_query_recall_at_1": 1.0,
+    "text_queries_displaced": 0,
+    "passed": true
+  },
+  "score_distribution": {
+    "old_semantic_dedupe_threshold": 0.85,
+    "openai_hard_neighbor_exceedance": 0.014825,
+    "gemini_same_exceedance_candidate": 0.928977,
+    "decision": "Provider cosine scales differ. Treat 0.929 as calibration evidence, not a destructive-merge setting, until known merged/duplicate lineage validates it."
+  },
   "status": {
     "sensory_probe": "passed",
     "private_text_retrieval_bakeoff": "passed_noninferiority_gate",
+    "mixed_pool": "passed",
     "phase_0b_gate": "passed"
   }
 }

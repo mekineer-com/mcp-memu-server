@@ -40,6 +40,23 @@ CREATE TABLE triples(subject_id TEXT, predicate TEXT, valid_to TEXT);
         ("two", "three", "four", "five"),
     }
     assert bakeoff.ranks(np.eye(2), np.eye(2), [{0}, {1}]).tolist() == [1, 1]
+    mixed = bakeoff.mixed_pool_metrics(
+        np.eye(2),
+        np.eye(2),
+        [{0}, {1}],
+        np.asarray([[0.7, 0.7]]),
+        np.asarray([[0.7, 0.7]]),
+    )
+    assert mixed["media"]["recall_at_1"] == 1.0
+    assert mixed["text_queries_displaced"] == 0
+    calibration = bakeoff.calibration_report(
+        np.asarray([[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]]),
+        np.asarray([[1.0, 0.0], [0.8, 0.2], [0.0, 1.0]]),
+        ["same", "same", "different"],
+        0.5,
+    )
+    assert calibration["openai"]["exact_duplicates"]["count"] == 1
+    assert calibration["gemini"]["hardest_nonduplicates"]["count"] == 3
     assert bakeoff.exact_sign_pvalue(0, 3) == 0.25
     assert bakeoff.parse_json_object('```json\n{"target": "query"}\n```') == {
         "target": "query"
