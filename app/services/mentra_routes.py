@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import hashlib
 import json
+import os
 import re
 import secrets
+import tempfile
 import time
 import urllib.request
 from collections.abc import Awaitable, Callable
@@ -26,6 +31,8 @@ from app.services import conversation_sources, turn_contract
 
 
 _DEVICE_SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_IMAGE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_MAX_IMAGE_BYTES = 1024 * 1024
 _LEASE_SECONDS = 90
 _RECALL_TIMEOUT_SECONDS = 25
 _EARCON_DIR = Path(__file__).resolve().parent.parent / "assets" / "mentra"
@@ -66,6 +73,7 @@ class _Lease(NamedTuple):
 _leases: dict[str, _Lease] = {}
 _start_claims: dict[str, str] = {}
 _lease_lock = asyncio.Lock()
+_image_finalize_tasks: dict[tuple[str, str, str], tuple[str, asyncio.Task[Any]]] = {}
 
 
 class MentraSessionStart(BaseModel):
@@ -125,6 +133,37 @@ class MentraRecallRequest(MentraSessionScope):
             raise ValueError("must not be blank")
         if len(value) > 4_000:
             raise ValueError("is too long")
+        return value
+
+
+class MentraImageRequest(MentraSessionScope):
+    model_config = ConfigDict(extra="forbid")
+
+    image_id: str
+
+    @field_validator("image_id")
+    @classmethod
+    def validate_image_id(cls, value: str) -> str:
+        value = value.strip()
+        if not _IMAGE_ID_RE.fullmatch(value):
+            raise ValueError("must be 1-128 letters, numbers, dots, underscores, or hyphens")
+        return value
+
+
+class MentraSnapshotRequest(MentraImageRequest):
+    mime_type: Literal["image/jpeg", "image/png"]
+    data: str
+
+
+class MentraSnapshotFinalizeRequest(MentraImageRequest):
+    caption: str
+
+    @field_validator("caption")
+    @classmethod
+    def validate_caption(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 16_000:
+            raise ValueError("must be 1-16000 characters")
         return value
 
 
@@ -281,6 +320,36 @@ async def _release_start_claim_if_owned(lease_key: str, sitting_id: str) -> None
             _start_claims.pop(lease_key, None)
 
 
+async def _require_active_lease(
+    *, soul_id: str, user_id: str, sitting_id: str, renew: bool = False
+) -> _Lease:
+    async with _lease_lock:
+        active = _leases.get(soul_id)
+        if not active or active.expires_at <= time.monotonic():
+            _leases.pop(soul_id, None)
+            raise HTTPException(status_code=404, detail="Mentra session not found")
+        if active.sitting_id != sitting_id or active.user_id != user_id:
+            raise HTTPException(status_code=404, detail="Mentra session not found")
+        if renew:
+            active = active._replace(expires_at=time.monotonic() + _LEASE_SECONDS)
+            _leases[soul_id] = active
+        return active
+
+
+async def _private_model(request: Request, model: type[BaseModel], detail: str) -> BaseModel:
+    try:
+        return model.model_validate(await request.json())
+    except (ValueError, TypeError, ValidationError, json.JSONDecodeError):
+        raise HTTPException(status_code=422, detail=detail) from None
+
+
+def _media_directory(root: Path, *, user_id: str, soul_id: str, active: _Lease) -> Path:
+    scope_key = hashlib.sha256(
+        f"{user_id}\0{soul_id}\0mentra:{active.device_session_id}".encode()
+    ).hexdigest()[:24]
+    return root / "mentra_media" / scope_key
+
+
 def _rfc3339(value: datetime) -> str:
     return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -397,6 +466,9 @@ def register_mentra_routes(
     write_conversation_state: Callable[..., Any] | None = None,
     prepare_auto_memorize: Callable[..., tuple[int, dict[str, Any] | None]] | None = None,
     schedule_auto_memorize: Callable[..., str] | None = None,
+    get_resource_storage_dir: Callable[[], Path] | None = None,
+    background_tasks: set[asyncio.Task[Any]] | None = None,
+    set_background_error: Callable[..., None] | None = None,
 ) -> None:
     async def require_bearer(authorization: str | None = Header(default=None)) -> None:
         config = get_config().get("mentra") or {}
@@ -658,16 +730,14 @@ def register_mentra_routes(
                 detail="Mentra Gemini credential is not configured",
             )
 
-        async with _lease_lock:
-            active = _leases.get(body.soul_id)
-            if not active or active.expires_at <= time.monotonic():
-                _leases.pop(body.soul_id, None)
-                record_token(ok=False, error="session_not_found")
-                raise HTTPException(status_code=404, detail="Mentra session not found")
-            if active.sitting_id != session_id or active.user_id != body.user_id:
-                record_token(ok=False, error="session_not_found")
-                raise HTTPException(status_code=404, detail="Mentra session not found")
-            mint_profile = (active.model, active.voice, active.system_instruction, active.mode)
+        try:
+            active = await _require_active_lease(
+                soul_id=body.soul_id, user_id=body.user_id, sitting_id=session_id
+            )
+        except HTTPException:
+            record_token(ok=False, error="session_not_found")
+            raise
+        mint_profile = (active.model, active.voice, active.system_instruction, active.mode)
 
         try:
             token = await _mint_gemini_token(
@@ -704,17 +774,9 @@ def register_mentra_routes(
         dependencies=auth,
     )
     async def mentra_session_heartbeat(session_id: str, body: MentraSessionScope) -> dict[str, bool]:
-        key = body.soul_id
-        async with _lease_lock:
-            active = _leases.get(key)
-            if not active:
-                raise HTTPException(status_code=404, detail="Mentra session not found")
-            if active.expires_at <= time.monotonic():
-                _leases.pop(key, None)
-                raise HTTPException(status_code=404, detail="Mentra session not found")
-            if active.sitting_id != session_id or active.user_id != body.user_id:
-                raise HTTPException(status_code=404, detail="Mentra session not found")
-            _leases[key] = active._replace(expires_at=time.monotonic() + _LEASE_SECONDS)
+        await _require_active_lease(
+            soul_id=body.soul_id, user_id=body.user_id, sitting_id=session_id, renew=True
+        )
         return {"ok": True}
 
     @app.post(
@@ -728,14 +790,10 @@ def register_mentra_routes(
         if load_current_history is None or conversation_retrieve is None:
             raise HTTPException(status_code=503, detail="Mentra recall is not configured")
 
-        async with _lease_lock:
-            active = _leases.get(body.soul_id)
-            if not active or active.expires_at <= time.monotonic():
-                _leases.pop(body.soul_id, None)
-                raise HTTPException(status_code=404, detail="Mentra session not found")
-            if active.sitting_id != sitting_id or active.user_id != body.user_id:
-                raise HTTPException(status_code=404, detail="Mentra session not found")
-            conversation_id = f"mentra:{active.device_session_id}"
+        active = await _require_active_lease(
+            soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
+        )
+        conversation_id = f"mentra:{active.device_session_id}"
 
         scope = {
             "user_id": body.user_id,
@@ -816,6 +874,146 @@ def register_mentra_routes(
         }
 
     @app.post(
+        "/integration/mentra/session/{sitting_id}/snapshot",
+        tags=["integration"],
+        dependencies=auth,
+    )
+    async def mentra_snapshot(sitting_id: str, request: Request) -> dict[str, Any]:
+        if get_resource_storage_dir is None:
+            raise HTTPException(status_code=503, detail="Mentra snapshot storage is not configured")
+        body = await _private_model(request, MentraSnapshotRequest, "Invalid snapshot")
+        assert isinstance(body, MentraSnapshotRequest)
+        active = await _require_active_lease(
+            soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
+        )
+        try:
+            image_bytes = base64.b64decode(body.data, validate=True)
+        except (binascii.Error, ValueError):
+            raise HTTPException(status_code=422, detail="Invalid snapshot data") from None
+        if not image_bytes or len(image_bytes) > _MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="Snapshot exceeds 1 MB limit")
+
+        extension = "jpg" if body.mime_type == "image/jpeg" else "png"
+        root = get_resource_storage_dir()
+        target = _media_directory(
+            root, user_id=body.user_id, soul_id=body.soul_id, active=active
+        ) / f"{body.image_id}.{extension}"
+        media_ref = str(target.relative_to(root))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        existing_files = list(target.parent.glob(f"{body.image_id}.*"))
+        if existing_files:
+            if len(existing_files) != 1 or existing_files[0].read_bytes() != image_bytes:
+                raise HTTPException(status_code=409, detail="Snapshot image id conflicts")
+            existing_ref = str(existing_files[0].relative_to(root))
+            return {"ok": True, "media_ref": existing_ref, "duplicate": True}
+
+        temp_name = ""
+        try:
+            with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as temp:
+                temp.write(image_bytes)
+                temp.flush()
+                os.fsync(temp.fileno())
+                temp_name = temp.name
+            os.replace(temp_name, target)
+        except OSError:
+            if temp_name:
+                Path(temp_name).unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail="Mentra snapshot write failed") from None
+        return {"ok": True, "media_ref": media_ref, "duplicate": False}
+
+    @app.post(
+        "/integration/mentra/session/{sitting_id}/snapshot/finalize",
+        tags=["integration"],
+        dependencies=auth,
+    )
+    async def mentra_snapshot_finalize(sitting_id: str, request: Request) -> dict[str, Any]:
+        if (
+            get_service_from_scope is None
+            or get_resource_storage_dir is None
+            or background_tasks is None
+        ):
+            raise HTTPException(status_code=503, detail="Mentra snapshot finalization is not configured")
+        body = await _private_model(
+            request, MentraSnapshotFinalizeRequest, "Invalid snapshot finalization"
+        )
+        assert isinstance(body, MentraSnapshotFinalizeRequest)
+        active = await _require_active_lease(
+            soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
+        )
+        root = get_resource_storage_dir()
+        media_dir = _media_directory(
+            root, user_id=body.user_id, soul_id=body.soul_id, active=active
+        )
+        matches = list(media_dir.glob(f"{body.image_id}.*"))
+        if len(matches) != 1 or matches[0].suffix not in {".jpg", ".png"}:
+            raise HTTPException(status_code=404, detail="Mentra snapshot not found")
+        media_ref = str(matches[0].relative_to(root))
+        scope = {
+            "user_id": body.user_id,
+            "soul_id": body.soul_id,
+            "conversation_id": f"mentra:{active.device_session_id}",
+        }
+        service = get_service_from_scope(scope)
+        resource_scope = {"user_id": body.user_id, "soul_id": body.soul_id}
+        existing = next(
+            (
+                resource
+                for resource in service.database.resource_repo.list_resources(resource_scope).values()
+                if resource.url == media_ref and resource.modality == "image"
+            ),
+            None,
+        )
+        if existing is not None:
+            linked = service.database.memory_item_repo.list_items(
+                {**resource_scope, "resource_id": existing.id},
+                include_superseded=True,
+                include_merged=True,
+                include_embeddings=False,
+            )
+            if linked:
+                if str(existing.caption or "").strip() != body.caption:
+                    raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
+                return {"ok": True, "queued": False, "duplicate": True}
+
+        task_key = (body.user_id, body.soul_id, media_ref)
+        pending = _image_finalize_tasks.get(task_key)
+        if pending is not None and not pending[1].done():
+            if pending[0] != body.caption:
+                raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
+            return {"ok": True, "queued": False, "duplicate": True}
+
+        task = asyncio.create_task(
+            service.memorize(
+                resource_url=media_ref,
+                modality="image",
+                user=scope,
+                caption=body.caption,
+            )
+        )
+        _image_finalize_tasks[task_key] = (body.caption, task)
+        background_tasks.add(task)
+
+        def finish(done: asyncio.Task[Any]) -> None:
+            _image_finalize_tasks.pop(task_key, None)
+            background_tasks.discard(done)
+            try:
+                done.result()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                if set_background_error is not None:
+                    set_background_error(
+                        scope["conversation_id"],
+                        soul_id=body.soul_id,
+                        user_id=body.user_id,
+                        code="mentra_image_finalize_failed",
+                        detail=type(exc).__name__,
+                    )
+
+        task.add_done_callback(finish)
+        return {"ok": True, "queued": True, "duplicate": False}
+
+    @app.post(
         "/integration/mentra/session/{session_id}/end",
         tags=["integration"],
         dependencies=auth,
@@ -856,19 +1054,13 @@ def register_mentra_routes(
         except (ValueError, ValidationError):
             raise HTTPException(status_code=422, detail="Invalid transcript batch") from None
 
-        conversation_id: str
+        active = await _require_active_lease(
+            soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
+        )
+        conversation_id = f"mentra:{active.device_session_id}"
         memorize_check_queued = False
         async with get_soul_lock(body.user_id, body.soul_id):
             storage_dir = get_storage_dir()
-            async with _lease_lock:
-                active = _leases.get(body.soul_id)
-                if not active or active.expires_at <= time.monotonic():
-                    _leases.pop(body.soul_id, None)
-                    raise HTTPException(status_code=404, detail="Mentra session not found")
-                if active.sitting_id != sitting_id or active.user_id != body.user_id:
-                    raise HTTPException(status_code=404, detail="Mentra session not found")
-                conversation_id = f"mentra:{active.device_session_id}"
-
             history = conversation_sources.load_mentra_history_snapshot(
                 storage_dir=storage_dir,
                 user_id=body.user_id,

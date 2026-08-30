@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import inspect
 import io
@@ -32,9 +33,11 @@ START = {
 def clear_leases() -> None:
     mentra_routes._leases.clear()
     mentra_routes._start_claims.clear()
+    mentra_routes._image_finalize_tasks.clear()
     yield
     mentra_routes._leases.clear()
     mentra_routes._start_claims.clear()
+    mentra_routes._image_finalize_tasks.clear()
 
 
 def _configured() -> dict[str, Any]:
@@ -60,6 +63,7 @@ def _session_app(
     schedule_auto_memorize: Callable[..., str] | None = None,
     retrieve_result: dict[str, Any] | BaseException | None = None,
     retrieve_hook: Callable[[str, dict[str, Any]], Any] | None = None,
+    memorize_error: Exception | None = None,
 ) -> tuple[TestClient, dict[str, Any], dict[str, Any]]:
     config = _configured()
     calls: dict[str, Any] = {
@@ -72,19 +76,55 @@ def _session_app(
         "recalls": [],
         "route_telemetry": [],
         "prompts": [],
+        "image_memorize": [],
+        "background_errors": [],
     }
     results = iter(token_results or ["ephemeral-1", "ephemeral-2", "ephemeral-3"])
     writes = iter(state_results or [])
     sitting_ids = iter(("sitting-1", "sitting-2", "sitting-3", "sitting-4"))
     soul_lock = asyncio.Lock()
 
+    resources: dict[str, Any] = {}
+    memory_items: dict[str, Any] = {}
+
+    class ResourceRepo:
+        def list_resources(self, _scope: dict[str, str]) -> dict[str, Any]:
+            return dict(resources)
+
+    class MemoryItemRepo:
+        def list_items(self, where: dict[str, str], **_kwargs: Any) -> dict[str, Any]:
+            return {
+                key: item
+                for key, item in memory_items.items()
+                if item.resource_id == where["resource_id"]
+            }
+
     class Service:
+        database = SimpleNamespace(
+            resource_repo=ResourceRepo(), memory_item_repo=MemoryItemRepo()
+        )
+
         async def ensure_dossier_anchors(self, scope: dict[str, str]) -> dict[str, Any]:
             calls["anchors"] = dict(scope)
             return {
                 "soul": SimpleNamespace(summary="I am Codexia.", description="soul"),
                 "user": SimpleNamespace(summary="The user likes careful work.", description="user"),
             }
+
+        async def memorize(self, **kwargs: Any) -> dict[str, Any]:
+            calls["image_memorize"].append(copy.deepcopy(kwargs))
+            await asyncio.sleep(0)
+            if memorize_error is not None:
+                raise memorize_error
+            resource = SimpleNamespace(
+                id="image-resource",
+                url=kwargs["resource_url"],
+                modality=kwargs["modality"],
+                caption=kwargs["caption"],
+            )
+            resources[resource.id] = resource
+            memory_items["image-item"] = SimpleNamespace(resource_id=resource.id)
+            return {"resources": [resource]}
 
     def get_service(scope: dict[str, str]) -> Service:
         calls["service"] += 1
@@ -175,6 +215,11 @@ def _session_app(
         write_conversation_state=write_state,
         prepare_auto_memorize=prepare,
         schedule_auto_memorize=schedule,
+        get_resource_storage_dir=lambda: tmp_path / "resources",
+        background_tasks=set(),
+        set_background_error=lambda *args, **kwargs: calls["background_errors"].append(
+            (args, kwargs)
+        ),
     )
     return TestClient(app, raise_server_exceptions=raise_server_exceptions), calls, config
 
@@ -1104,6 +1149,134 @@ def test_transcript_retry_repairs_state_after_snapshot_was_written(
     assert repaired.json()["accepted"] == 0
     assert repaired.json()["duplicates"] == 1
     assert len(calls["state_writes"]) == 2
+
+
+def test_snapshot_is_atomic_idempotent_scoped_and_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _, _ = _session_app(monkeypatch, tmp_path)
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    endpoint = f"/integration/mentra/session/{sitting_id}/snapshot"
+    image = b"\xff\xd8fictional-image\xff\xd9"
+    payload = {
+        "user_id": START["user_id"],
+        "soul_id": START["soul_id"],
+        "image_id": "image-1",
+        "mime_type": "image/jpeg",
+        "data": base64.b64encode(image).decode(),
+    }
+
+    stored = client.post(endpoint, json=payload, headers=AUTH)
+    duplicate = client.post(endpoint, json=payload, headers=AUTH)
+    conflict = client.post(
+        endpoint,
+        json={**payload, "data": base64.b64encode(b"different").decode()},
+        headers=AUTH,
+    )
+    private_data = "PRIVATE-FICTIONAL-IMAGE-DATA"
+    invalid = client.post(endpoint, json={**payload, "data": private_data}, headers=AUTH)
+    oversize = client.post(
+        endpoint,
+        json={
+            **payload,
+            "image_id": "large",
+            "data": base64.b64encode(b"x" * (1024 * 1024 + 1)).decode(),
+        },
+        headers=AUTH,
+    )
+
+    assert stored.status_code == duplicate.status_code == 200
+    assert stored.json()["duplicate"] is False
+    assert duplicate.json() == {**stored.json(), "duplicate": True}
+    assert stored.json()["media_ref"].startswith("mentra_media/")
+    assert (tmp_path / "resources" / stored.json()["media_ref"]).read_bytes() == image
+    assert conflict.status_code == 409
+    assert invalid.status_code == 422
+    assert private_data not in invalid.text
+    assert oversize.status_code == 413
+
+
+def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    base = f"/integration/mentra/session/{sitting_id}/snapshot"
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    client.post(
+        base,
+        json={
+            **scope,
+            "image_id": "image-2",
+            "mime_type": "image/png",
+            "data": base64.b64encode(b"fictional-png").decode(),
+        },
+        headers=AUTH,
+    )
+    finalized = client.post(
+        f"{base}/finalize",
+        json={**scope, "image_id": "image-2", "caption": "A fictional magenta square."},
+        headers=AUTH,
+    )
+    retry = client.post(
+        f"{base}/finalize",
+        json={**scope, "image_id": "image-2", "caption": "A fictional magenta square."},
+        headers=AUTH,
+    )
+    conflict = client.post(
+        f"{base}/finalize",
+        json={**scope, "image_id": "image-2", "caption": "A conflicting caption."},
+        headers=AUTH,
+    )
+
+    assert finalized.status_code == retry.status_code == 200
+    assert finalized.json()["queued"] is True
+    assert retry.json()["duplicate"] is True
+    assert conflict.status_code == 409
+    assert len(calls["image_memorize"]) == 1
+    assert calls["image_memorize"][0]["modality"] == "image"
+    assert calls["image_memorize"][0]["caption"] == "A fictional magenta square."
+    assert not mentra_routes._lease_lock.locked()
+
+
+def test_snapshot_finalize_failure_keeps_bytes_and_reports_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, calls, _ = _session_app(
+        monkeypatch, tmp_path, memorize_error=RuntimeError("fictional failure")
+    )
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    base = f"/integration/mentra/session/{sitting_id}/snapshot"
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    stored = client.post(
+        base,
+        json={
+            **scope,
+            "image_id": "image-3",
+            "mime_type": "image/png",
+            "data": base64.b64encode(b"fictional-png").decode(),
+        },
+        headers=AUTH,
+    )
+    finalized = client.post(
+        f"{base}/finalize",
+        json={**scope, "image_id": "image-3", "caption": "A fictional failed image."},
+        headers=AUTH,
+    )
+
+    assert finalized.status_code == 200
+    assert (tmp_path / "resources" / stored.json()["media_ref"]).exists()
+    assert calls["background_errors"]
+    assert calls["background_errors"][0][1]["code"] == "mentra_image_finalize_failed"
 
 
 @pytest.mark.parametrize(

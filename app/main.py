@@ -1704,6 +1704,9 @@ _mentra_routes.register_mentra_routes(
         payload,
         _auto_memorize_scope(cid, uid, soul_id, safe, history_full),
     ),
+    get_resource_storage_dir=lambda: _get_storage_dir(_CONFIG),
+    background_tasks=_BACKGROUND_TASKS,
+    set_background_error=_set_background_error,
 )
 
 
