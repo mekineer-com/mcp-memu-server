@@ -56,7 +56,7 @@ CREATE TABLE triples(subject_id TEXT, predicate TEXT, valid_to TEXT);
             raise urllib.error.HTTPError(
                 "https://example.invalid", 429, "limited", {}, None
             )
-        return {"embeddings": [{"values": [0.0] * bakeoff.DIMENSIONS}]}
+        return {"embedding": {"values": [0.0] * bakeoff.DIMENSIONS}}
 
     monkeypatch.setenv("GEMINI_API_KEY", "fictional")
     monkeypatch.setattr(bakeoff, "post", rate_limited_post)
@@ -66,7 +66,7 @@ CREATE TABLE triples(subject_id TEXT, predicate TEXT, valid_to TEXT);
     vectors, _elapsed = bakeoff.gemini_embed(["fictional"], checkpoint)
     assert vectors.shape == (1, bakeoff.DIMENSIONS)
     assert attempts == 2
-    assert sleeps == [60, 2]
+    assert sleeps == [60, 0.1]
     assert np.load(checkpoint).shape == (1, bakeoff.DIMENSIONS)
 
     monkeypatch.setattr(

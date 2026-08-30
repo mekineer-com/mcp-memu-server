@@ -292,7 +292,7 @@ def gemini_embed(
     api_key = os.environ["GEMINI_API_KEY"]
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-embedding-2:batchEmbedContents?key={api_key}"
+        f"gemini-embedding-2:embedContent?key={api_key}"
     )
     vectors: list[list[float]] = []
     if cache_path is not None and cache_path.exists():
@@ -305,27 +305,23 @@ def gemini_embed(
             raise ValueError(f"Malformed Gemini checkpoint: {cache_path}")
         vectors = cached.tolist()
     started = time.monotonic()
-    for batch in chunks(texts[len(vectors) :], 16):
-        requests = [
-            {
-                "model": "models/gemini-embedding-2",
-                "content": {"parts": [{"text": text}]},
-                "outputDimensionality": DIMENSIONS,
-            }
-            for text in batch
-        ]
+    for text in texts[len(vectors) :]:
+        payload = {
+            "content": {"parts": [{"text": text}]},
+            "outputDimensionality": DIMENSIONS,
+        }
         for attempt in range(6):
             try:
-                data = post(url, {"requests": requests})
+                data = post(url, payload)
                 break
             except urllib.error.HTTPError as exc:
                 if exc.code != 429 or attempt == 5:
                     raise
                 time.sleep(60)
-        vectors.extend(row["values"] for row in data["embeddings"])
+        vectors.append(data["embedding"]["values"])
         if cache_path is not None:
             np.save(cache_path, np.asarray(vectors, dtype=np.float32))
-        time.sleep(2)
+        time.sleep(0.1)
     return checked_vectors(vectors, len(texts), "Gemini"), time.monotonic() - started
 
 
