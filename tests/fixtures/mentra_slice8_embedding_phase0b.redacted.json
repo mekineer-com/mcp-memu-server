@@ -73,13 +73,15 @@
       "recall_at_5": 0.985,
       "recall_at_10": 0.985,
       "mean_reciprocal_rank": 0.958881,
+      "recall_at_5_delta": -0.01,
       "paired": {
         "gemini_better": 5,
         "equal": 185,
         "openai_better": 10,
         "exact_sign_pvalue": 0.301758
       },
-      "decision": "Removing title: {memory_type} | text: did not recover Recall@5 and reduced Recall@1; retain the documented prefix."
+      "passes_owner_noninferiority_gate": true,
+      "decision": "Bare summaries reduce Recall@1 but remain within the owner's 2-point Recall@5 margin without a significant paired OpenAI advantage; this is the runtime-parity cutover measurement."
     },
     "cross_key_repeat": {
       "maximum_absolute_delta": 0.0
