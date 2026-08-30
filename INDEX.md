@@ -168,6 +168,7 @@ from memu.prompts.memory_type import ...  # type prompts
 | Modify DB schema/helpers | `app/db.py` |
 | Change config shape | `config.json` + `app/config.py` |
 | Migrate legacy categories to dossiers | `migrate_category_taxonomy.py` + root `PLAN_category_taxonomy_slice_G_migration.md` |
+| Build Gemini embedding replacement | `migrate_multimodal_embeddings.py` (source read-only; publishes a new DB only after full validation) |
 
 ## Config (`config.json`)
 

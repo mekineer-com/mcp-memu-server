@@ -1,0 +1,29 @@
+{
+  "recorded_at": "2026-08-30T14:55:00-05:00",
+  "purpose": "Redacted disposable-copy migration evidence; no private text, vectors, paths, or credentials.",
+  "source_untouched": true,
+  "replacement_profile": "gemini-embedding-2:3072",
+  "integrity_check": "ok",
+  "tables": {
+    "memory_items": {"rows": 1511, "embedded": 1511, "bytes_per_vector": 12288},
+    "categories": {"rows": 79, "embedded": 79, "bytes_per_vector": 12288},
+    "resources": {"rows": 17, "embedded": 17, "bytes_per_vector": 12288}
+  },
+  "runtime_validation": {
+    "frozen_target_retrieved": true,
+    "retrieved_items": 11,
+    "retrieved_dossiers": 5,
+    "retrieved_resources": 5
+  },
+  "lineage_calibration": {
+    "merged_pairs": 13,
+    "evolved_pairs": 2,
+    "provisional_semantic_dedupe_threshold": 0.929,
+    "threshold_applied_to_runtime": false,
+    "reason": "Two stale historical merged pairs had identical old vectors but materially different current-text Gemini vectors; false-positive merges are destructive, so lineage evidence requires review before runtime calibration."
+  },
+  "tests": {
+    "memu": "328 passed, 1 skipped",
+    "mcp_memu_server": "500 passed"
+  }
+}
