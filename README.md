@@ -40,7 +40,7 @@ The server runs on `http://127.0.0.1:8099` by default.
 
 ## Config (`config.json`)
 
-At minimum, set `llm.api_key`, `llm.chat_model`, `llm.embed_model`, `storage.metadata_store.dsn`, and `memu.path`. See `config.example.json` for the full reference including `step_models`, `step_temperatures`, memorize toggles, and retrieve settings. Relative paths are resolved from the `mcp-memu-server/` directory.
+At minimum, set `llm.api_key`, `llm.chat_model`, `llm.embedding`, `storage.metadata_store.dsn`, and `memu.path`. Set `storage.metadata_store.embedding_profile` only after stamping or migrating the database. See `config.example.json` for the full reference including `step_models`, `step_temperatures`, memorize toggles, and retrieve settings. Relative paths are resolved from the `mcp-memu-server/` directory.
 
 ---
 

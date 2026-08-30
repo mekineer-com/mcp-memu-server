@@ -17,6 +17,13 @@
     "max_tokens": null,
     "client_backend": "httpx",
     "endpoint_overrides": {},
+    "embedding": {
+      "provider": "gemini",
+      "api_key": "YOUR_GEMINI_API_KEY",
+      "base_url": "https://generativelanguage.googleapis.com/",
+      "embed_model": "gemini-embedding-2",
+      "endpoint_overrides": {}
+    },
     "step_models": {
       "preprocess": "",
       "memory_extract": "",
@@ -37,7 +44,8 @@
     "metadata_store": {
       "provider": "sqlite",
       "dsn": "./sqlite/memu.db",
-      "ddl_mode": "create"
+      "ddl_mode": "create",
+      "embedding_profile": "gemini-embedding-2:3072"
     },
     "sqlite_dir": "./sqlite"
   },

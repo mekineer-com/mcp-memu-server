@@ -74,6 +74,7 @@ def default_config() -> dict[str, Any]:
             "base_url": "https://api.openai.com/v1",
             "chat_model": "",
             "embed_model": "",
+            "embedding": {},
             "endpoint_overrides": {},
         },
         "storage": {
@@ -383,13 +384,11 @@ def database_config_from_cfg(cfg: dict[str, Any], scope: dict[str, Any] | None =
 
     ddl_mode = meta.get("ddl_mode") or "create"
 
-    return {
-        "metadata_store": {
-            "provider": provider,
-            "dsn": dsn,
-            "ddl_mode": ddl_mode,
-        }
-    }
+    metadata_store = {"provider": provider, "dsn": dsn, "ddl_mode": ddl_mode}
+    embedding_profile = str(meta.get("embedding_profile") or "").strip()
+    if embedding_profile:
+        metadata_store["embedding_profile"] = embedding_profile
+    return {"metadata_store": metadata_store}
 
 
 def blob_config_from_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -418,9 +417,14 @@ def default_llm_profiles_from_server_config(cfg: dict[str, Any]) -> dict[str, An
     max_tokens = llm.get("max_tokens")
     if max_tokens is not None:
         default_profile["max_tokens"] = int(max_tokens)
+    embedding_cfg = llm.get("embedding") if isinstance(llm.get("embedding"), dict) else {}
+    embedding_profile = {**default_profile}
+    for field in ("provider", "api_key", "base_url", "embed_model", "endpoint_overrides"):
+        if field in embedding_cfg:
+            embedding_profile[field] = embedding_cfg[field]
     profiles = {
         "default": default_profile,
-        "embedding": {**default_profile},
+        "embedding": embedding_profile,
     }
     step_models = llm.get("step_models")
     if isinstance(step_models, dict):

@@ -4,7 +4,47 @@ import pytest
 from fastapi import HTTPException
 from pydantic import BaseModel
 
+from app.config import database_config_from_cfg, default_llm_profiles_from_server_config
 from app.services import service_factory
+
+
+def test_server_config_separates_embedding_provider_and_profile_guard(tmp_path) -> None:
+    cfg = {
+        "llm": {
+            "provider": "openai",
+            "api_key": "chat-key",
+            "base_url": "https://chat.example/v1",
+            "chat_model": "chat-model",
+            "embed_model": "legacy-model",
+            "embedding": {
+                "provider": "gemini",
+                "api_key": "embed-key",
+                "base_url": "https://generativelanguage.googleapis.com/",
+                "embed_model": "gemini-embedding-2",
+            },
+        },
+        "storage": {
+            "sqlite_dir": str(tmp_path),
+            "metadata_store": {
+                "provider": "sqlite",
+                "dsn": f"sqlite:///{tmp_path / 'base.db'}",
+                "embedding_profile": "gemini-embedding-2:3072",
+            },
+        },
+    }
+    profiles = default_llm_profiles_from_server_config(cfg)
+    database = database_config_from_cfg(cfg, {"soul_id": "test"})
+
+    assert profiles["default"]["provider"] == "openai"
+    assert profiles["embedding"] == {
+        "provider": "gemini",
+        "api_key": "embed-key",
+        "base_url": "https://generativelanguage.googleapis.com/",
+        "chat_model": "chat-model",
+        "embed_model": "gemini-embedding-2",
+        "endpoint_overrides": {},
+    }
+    assert database["metadata_store"]["embedding_profile"] == "gemini-embedding-2:3072"
 
 
 def test_validated_step_models_warns_on_unknown_key(caplog: pytest.LogCaptureFixture) -> None:

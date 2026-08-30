@@ -172,8 +172,8 @@ from memu.prompts.memory_type import ...  # type prompts
 ## Config (`config.json`)
 
 ```
-llm:        provider, api_key, base_url, chat_model, embed_model
-storage:    resources_dir, sqlite_dir, metadata_store (provider + dsn)
+llm:        provider, api_key, base_url, chat_model, legacy embed_model, embedding profile
+storage:    resources_dir, sqlite_dir, metadata_store (provider + dsn + optional embedding_profile)
 hermes:     home, state_db_path, sessions_index_path, whatsapp_web_source_db (Channels data paths)
 mentra:     enabled, gemini_api_key, model, voice, integration_bearer_token
 mcp:        http_path, sse_path
