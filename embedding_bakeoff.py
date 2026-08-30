@@ -158,7 +158,7 @@ def parse_json_object(text: str) -> dict[str, str]:
     return parsed
 
 
-def generate_queries(targets: list[dict]) -> dict[str, str]:
+def generate_queries(targets: list[dict], *, retry: bool = False) -> dict[str, str]:
     queries: dict[str, str] = {}
     for batch in chunks(targets, 25):
         prompt_rows = [{"id": row["id"], "memory": row["summary"]} for row in batch]
@@ -166,7 +166,15 @@ def generate_queries(targets: list[dict]) -> dict[str, str]:
             "For each memory, write one concise standalone semantic-retrieval query, as if conversational "
             "framing had already been rewritten for vector search. Paraphrase indirectly and do not copy "
             "any sequence of four words. Return only a JSON object mapping each id to its query. Do not use "
-            "tools.\n" + json.dumps(prompt_rows)
+            "tools."
+            + (
+                " These are retries rejected by a mechanical four-word overlap check; use substantially "
+                "different wording."
+                if retry
+                else ""
+            )
+            + "\n"
+            + json.dumps(prompt_rows)
         )
         completed = subprocess.run(
             ["claude-glm", "-p", "--output-format", "text"],
@@ -199,11 +207,23 @@ def freeze_queries(db_path: Path, query_path: Path) -> None:
         isinstance(value, str) and value.strip() for value in queries.values()
     ):
         raise ValueError("GLM returned missing, extra, or empty queries")
+    by_id = {row["id"]: row for row in targets}
     leaks = [
-        row["id"]
-        for row in targets
-        if four_grams(row["summary"]) & four_grams(queries[row["id"]])
+        item_id
+        for item_id, row in by_id.items()
+        if four_grams(row["summary"]) & four_grams(queries[item_id])
     ]
+    for _attempt in range(3):
+        if not leaks:
+            break
+        queries.update(
+            generate_queries([by_id[item_id] for item_id in leaks], retry=True)
+        )
+        leaks = [
+            item_id
+            for item_id in leaks
+            if four_grams(by_id[item_id]["summary"]) & four_grams(queries[item_id])
+        ]
     if leaks:
         raise ValueError(
             f"GLM queries copied a four-word sequence for target IDs: {', '.join(leaks)}"
