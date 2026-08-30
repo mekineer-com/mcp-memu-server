@@ -1,0 +1,41 @@
+{
+  "recorded_at": "2026-08-30",
+  "purpose": "Redacted Slice 8 Phase 0C evidence using generated fictional 640x480 images, a public MentraOS WAV, and a fictional system instruction; no soul database, personal transcript, or raw image is included.",
+  "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+  "wire": "BidiGenerateContentConstrained",
+  "candidate_1_client_content": {
+    "shape": "clientContent inlineData image/png with turnComplete=false",
+    "idle_quiet": {
+      "audio_chunks": 0,
+      "output_transcription_chars": 0,
+      "interrupted": false
+    },
+    "idle_recall": "Gemini said it had no access to a recent image.",
+    "active_speech": {
+      "image_sent_after_first_audio_chunk": true,
+      "initial_turn_completed": true,
+      "interrupted": false,
+      "expected_center_color": "magenta",
+      "later_answer": "white"
+    },
+    "decision": "failed: silent and non-interrupting, but the image was not reliably retained for the next natural turn"
+  },
+  "candidate_2_silent_tool_response": {
+    "shape": "outstanding NON_BLOCKING recall_memory call followed by FunctionResponse parts.inlineData and scheduling=SILENT",
+    "tool_call_received": true,
+    "socket_remained_open": true,
+    "quiet_window": {
+      "audio_chunks": 0,
+      "output_transcription_chars": 12,
+      "interrupted": false
+    },
+    "expected_center_color": "magenta",
+    "later_answer": "Unknown.",
+    "decision": "failed: the original image bytes were not available to later natural speech"
+  },
+  "status": {
+    "phase_0c_gate": "failed",
+    "later_reseeing": "deferred",
+    "allowed_slice_8_exit": "caption-only recall with no claim that Siri re-saw the image"
+  }
+}
