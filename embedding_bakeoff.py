@@ -14,7 +14,9 @@ import struct
 import subprocess
 import time
 import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
+from typing import TypeVar
 
 import numpy as np
 
@@ -23,6 +25,7 @@ LIVE_DB_DIR = (ROOT.parent / "memu/sqlite").resolve()
 CONFIG = ROOT / "config.json"
 QUERY_COUNT = 200
 DIMENSIONS = 3072
+T = TypeVar("T")
 
 
 def post(url: str, payload: dict, headers: dict[str, str] | None = None) -> dict:
@@ -35,7 +38,7 @@ def post(url: str, payload: dict, headers: dict[str, str] | None = None) -> dict
         return json.load(response)
 
 
-def chunks(values: list[str], size: int):
+def chunks(values: list[T], size: int) -> Iterator[list[T]]:
     for offset in range(0, len(values), size):
         yield values[offset : offset + size]
 
@@ -145,27 +148,42 @@ def four_grams(text: str) -> set[tuple[str, ...]]:
     return {tuple(tokens[i : i + 4]) for i in range(len(tokens) - 3)}
 
 
+def generate_queries(targets: list[dict]) -> dict[str, str]:
+    queries: dict[str, str] = {}
+    for batch in chunks(targets, 25):
+        prompt_rows = [{"id": row["id"], "memory": row["summary"]} for row in batch]
+        prompt = (
+            "For each memory, write one concise standalone semantic-retrieval query, as if conversational "
+            "framing had already been rewritten for vector search. Paraphrase indirectly and do not copy "
+            "any sequence of four words. Return only a JSON object mapping each id to its query. Do not use "
+            "tools.\n" + json.dumps(prompt_rows)
+        )
+        completed = subprocess.run(
+            ["claude-glm", "-p", "--output-format", "text"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            input=prompt,
+            text=True,
+            timeout=1800,
+        )
+        if completed.returncode:
+            raise RuntimeError(
+                f"GLM query batch failed with exit code {completed.returncode}"
+            )
+        try:
+            queries.update(json.loads(completed.stdout.strip()))
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise ValueError("GLM query batch did not return one JSON object") from exc
+    return queries
+
+
 def freeze_queries(db_path: Path, query_path: Path) -> None:
     if query_path.exists():
         raise FileExistsError(f"Refusing to replace frozen query file: {query_path}")
     memories, excluded_low_confidence = load_memories(require_disposable_db(db_path))
     targets = selected_targets(memories)
-    prompt_rows = [{"id": row["id"], "memory": row["summary"]} for row in targets]
-    prompt = (
-        "For each memory, write one concise standalone semantic-retrieval query, as if conversational "
-        "framing had already been rewritten for vector search. Paraphrase indirectly and do not copy any "
-        "sequence of four words. Return only a JSON object mapping each id to its query. Do not use tools.\n"
-        + json.dumps(prompt_rows)
-    )
-    generated = subprocess.run(
-        ["claude-glm", "-p", "--effort", "high", "--tools", "", prompt],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=1800,
-    ).stdout.strip()
-    queries = json.loads(generated)
+    queries = generate_queries(targets)
     expected = {row["id"] for row in targets}
     if set(queries) != expected or not all(
         isinstance(value, str) and value.strip() for value in queries.values()

@@ -1,5 +1,6 @@
 import sqlite3
 import struct
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -41,6 +42,20 @@ CREATE TABLE triples(subject_id TEXT, predicate TEXT, valid_to TEXT);
     assert bakeoff.exact_sign_pvalue(0, 3) == 0.25
     with pytest.raises(ValueError, match="returned 1 vectors for 2 inputs"):
         bakeoff.checked_vectors([[0.0] * bakeoff.DIMENSIONS], 2, "Fictional")
+
+    def fake_glm(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        assert "Private fictional memory" not in command
+        assert "Private fictional memory" in str(kwargs["input"])
+        return subprocess.CompletedProcess(
+            command, 0, '{"target": "fictional query"}', ""
+        )
+
+    monkeypatch.setattr(bakeoff.subprocess, "run", fake_glm)
+    assert bakeoff.generate_queries(
+        [{"id": "target", "summary": "Private fictional memory"}]
+    ) == {"target": "fictional query"}
 
     monkeypatch.setattr(bakeoff, "LIVE_DB_DIR", tmp_path)
     with pytest.raises(ValueError, match="Refusing live memU database path"):
