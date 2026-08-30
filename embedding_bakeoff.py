@@ -294,7 +294,7 @@ def gemini_embed(texts: list[str]) -> tuple[np.ndarray, float]:
     )
     vectors: list[list[float]] = []
     started = time.monotonic()
-    for batch in chunks(texts, 64):
+    for batch in chunks(texts, 16):
         requests = [
             {
                 "model": "models/gemini-embedding-2",
@@ -312,6 +312,7 @@ def gemini_embed(texts: list[str]) -> tuple[np.ndarray, float]:
                     raise
                 time.sleep(60)
         vectors.extend(row["values"] for row in data["embeddings"])
+        time.sleep(2)
     return checked_vectors(vectors, len(texts), "Gemini"), time.monotonic() - started
 
 

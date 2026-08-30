@@ -60,10 +60,12 @@ CREATE TABLE triples(subject_id TEXT, predicate TEXT, valid_to TEXT);
 
     monkeypatch.setenv("GEMINI_API_KEY", "fictional")
     monkeypatch.setattr(bakeoff, "post", rate_limited_post)
-    monkeypatch.setattr(bakeoff.time, "sleep", lambda seconds: seconds == 60)
+    sleeps: list[int] = []
+    monkeypatch.setattr(bakeoff.time, "sleep", sleeps.append)
     vectors, _elapsed = bakeoff.gemini_embed(["fictional"])
     assert vectors.shape == (1, bakeoff.DIMENSIONS)
     assert attempts == 2
+    assert sleeps == [60, 2]
 
     def fake_glm(
         command: list[str], **kwargs: object
