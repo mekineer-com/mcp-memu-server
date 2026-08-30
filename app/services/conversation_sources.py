@@ -968,7 +968,7 @@ def load_chat_snapshot_tail(
                 row["ts_ms"] = int(received.timestamp() * 1000)
             except (ValueError, OverflowError):
                 raise RuntimeError(f"mentra snapshot row has invalid received_at: {path}") from None
-            for key in ("event_id", "sequence", "event_kind", "transcript_status"):
+            for key in ("event_id", "sequence", "event_kind", "transcript_status", "media_ref"):
                 if item.get(key) is not None:
                     row[key] = item[key]
         all_rows.append(row)

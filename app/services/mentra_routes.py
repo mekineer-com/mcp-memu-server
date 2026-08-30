@@ -13,7 +13,7 @@ import time
 import urllib.request
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, NamedTuple
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -172,10 +172,11 @@ class MentraTranscriptEvent(BaseModel):
 
     event_id: str
     sequence: StrictInt
-    event_kind: Literal["transcript", "sitting_summary"]
+    event_kind: Literal["transcript", "sitting_summary", "image"]
     role: Literal["user", "assistant"]
     content: str
     status: Literal["complete", "interrupted"] | None = None
+    media_ref: str | None = None
 
     @field_validator("event_id")
     @classmethod
@@ -204,6 +205,21 @@ class MentraTranscriptEvent(BaseModel):
 
     @model_validator(mode="after")
     def validate_kind(self) -> MentraTranscriptEvent:
+        if self.event_kind == "image":
+            path = PurePosixPath(self.media_ref or "")
+            if (
+                self.role != "user"
+                or self.status is not None
+                or self.content != "Shared a photo."
+                or path.is_absolute()
+                or len(path.parts) != 3
+                or path.parts[0] != "mentra_media"
+                or ".." in path.parts
+            ):
+                raise ValueError("image event is invalid")
+            return self
+        if self.media_ref is not None:
+            raise ValueError("media_ref is only valid for image events")
         if self.event_kind == "transcript" and self.status is None:
             raise ValueError("transcript status is required")
         if self.event_kind == "sitting_summary" and (
@@ -272,6 +288,8 @@ def _stored_event(event: MentraTranscriptEvent, *, received_at: str) -> dict[str
     }
     if event.status is not None:
         row["transcript_status"] = event.status
+    if event.media_ref is not None:
+        row["media_ref"] = event.media_ref
     return row
 
 
@@ -283,6 +301,7 @@ def _same_event(row: dict[str, Any], event: MentraTranscriptEvent) -> bool:
         and row.get("role") == event.role
         and row.get("content") == event.content
         and row.get("transcript_status") == event.status
+        and row.get("media_ref") == event.media_ref
     )
 
 

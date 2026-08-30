@@ -1279,6 +1279,49 @@ def test_snapshot_finalize_failure_keeps_bytes_and_reports_error(
     assert calls["background_errors"][0][1]["code"] == "mentra_image_finalize_failed"
 
 
+def test_image_transcript_event_round_trips_media_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _, _ = _session_app(monkeypatch, tmp_path)
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    endpoint = f"/integration/mentra/session/{sitting_id}/transcripts/append"
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    event = {
+        "event_id": f"{sitting_id}:1",
+        "sequence": 1,
+        "event_kind": "image",
+        "role": "user",
+        "content": "Shared a photo.",
+        "media_ref": "mentra_media/fictional-scope/image-1.jpg",
+    }
+
+    accepted = client.post(endpoint, json={**scope, "events": [event]}, headers=AUTH)
+    duplicate = client.post(endpoint, json={**scope, "events": [event]}, headers=AUTH)
+    invalid = client.post(
+        endpoint,
+        json={**scope, "events": [{**event, "media_ref": "/private/image.jpg"}]},
+        headers=AUTH,
+    )
+    history = mentra_routes.conversation_sources.load_mentra_tail(
+        storage_dir=tmp_path,
+        user_id=START["user_id"],
+        soul_id=START["soul_id"],
+        conversation_id="mentra:phone-1",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+    )
+
+    assert accepted.status_code == duplicate.status_code == 200
+    assert duplicate.json()["duplicates"] == 1
+    assert invalid.status_code == 422
+    assert history[0]["event_kind"] == "image"
+    assert history[0]["media_ref"] == event["media_ref"]
+    assert history[0]["source_conversation_index"] == 1
+
+
 @pytest.mark.parametrize(
     ("mode", "activity_detection"),
     [
