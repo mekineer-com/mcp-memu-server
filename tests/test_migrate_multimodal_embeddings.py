@@ -7,7 +7,14 @@ import migrate_multimodal_embeddings as migration
 
 
 class FakeClient:
+    provider = "gemini"
+    embed_model = migration.SUPPORTED_MODEL
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        self.texts.extend(texts)
         return [[float(index + 1)] * migration.DIMENSIONS for index, _text in enumerate(texts)]
 
     async def embed_media(self, data: bytes, mime_type: str) -> list[float]:
@@ -35,7 +42,8 @@ async def test_migration_builds_atomic_profiled_replacement(tmp_path, monkeypatc
     image = tmp_path / "image.png"
     image.write_bytes(b"image")
     _database(source, image)
-    monkeypatch.setattr(migration, "_load_client", lambda _path: FakeClient())
+    client = FakeClient()
+    monkeypatch.setattr(migration, "_load_client", lambda _path: client)
 
     result = await migration.migrate(source, destination, tmp_path / "config.json")
 
@@ -43,10 +51,11 @@ async def test_migration_builds_atomic_profiled_replacement(tmp_path, monkeypatc
     with sqlite3.connect(source) as conn:
         assert conn.execute("SELECT embedding FROM memory_items").fetchone()[0] == b"\x00"
     with sqlite3.connect(destination) as conn:
-        assert conn.execute("SELECT profile FROM embedding_profile").fetchone()[0] == migration.PROFILE
+        assert conn.execute("SELECT profile FROM embedding_profile").fetchone()[0] == "gemini-embedding-2:3072"
         assert conn.execute("SELECT length(embedding) FROM memory_items").fetchone()[0] == 12288
         assert conn.execute("SELECT length(embedding) FROM categories").fetchone()[0] == 12288
         assert conn.execute("SELECT length(embedding) FROM resources").fetchone()[0] == 12288
+    assert client.texts == ["A memory", "Life: Identity"]
 
 
 @pytest.mark.asyncio
@@ -63,5 +72,21 @@ async def test_migration_failure_publishes_nothing(tmp_path, monkeypatch) -> Non
 
     monkeypatch.setattr(migration, "_load_client", lambda _path: BadClient())
     with pytest.raises(migration.MigrationError, match="expected 3072"):
+        await migration.migrate(source, destination, tmp_path / "config.json")
+    assert not destination.exists()
+
+
+@pytest.mark.asyncio
+async def test_migration_rejects_blank_canonical_text(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "source.db"
+    destination = tmp_path / "replacement.db"
+    image = tmp_path / "image.png"
+    image.write_bytes(b"image")
+    _database(source, image)
+    with sqlite3.connect(source) as conn:
+        conn.execute("UPDATE memory_items SET summary = NULL")
+    monkeypatch.setattr(migration, "_load_client", lambda _path: FakeClient())
+
+    with pytest.raises(migration.MigrationError, match="canonical text"):
         await migration.migrate(source, destination, tmp_path / "config.json")
     assert not destination.exists()

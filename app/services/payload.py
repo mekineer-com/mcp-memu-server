@@ -173,7 +173,13 @@ def _normalize_conversation(conv: Any) -> Any:
                 **(
                     {
                         key: m[key]
-                        for key in ("event_id", "sequence", "event_kind", "transcript_status")
+                        for key in (
+                            "event_id",
+                            "sequence",
+                            "event_kind",
+                            "transcript_status",
+                            "media_ref",
+                        )
                         if m.get(key) is not None
                     }
                 ),
@@ -285,6 +291,7 @@ def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
             "event_id",
             "event_kind",
             "transcript_status",
+            "media_ref",
         ):
             value = _pick_str(item, key)
             if value:

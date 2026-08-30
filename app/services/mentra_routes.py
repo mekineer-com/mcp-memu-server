@@ -369,6 +369,25 @@ def _media_directory(root: Path, *, user_id: str, soul_id: str, active: _Lease) 
     return root / "mentra_media" / scope_key
 
 
+def _image_files(directory: Path, image_id: str) -> list[Path]:
+    return [path for suffix in ("jpg", "png") if (path := directory / f"{image_id}.{suffix}").is_file()]
+
+
+def _require_image_embedding_config(config: dict[str, Any]) -> None:
+    embedding = (config.get("llm") or {}).get("embedding") or {}
+    metadata = (config.get("storage") or {}).get("metadata_store") or {}
+    if (
+        embedding.get("provider") != "gemini"
+        or embedding.get("embed_model") != "gemini-embedding-2"
+        or not str(embedding.get("api_key") or "").strip()
+        or metadata.get("embedding_profile") != "gemini-embedding-2:3072"
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Mentra image embedding is not configured",
+        )
+
+
 def _rfc3339(value: datetime) -> str:
     return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -919,7 +938,7 @@ def register_mentra_routes(
         ) / f"{body.image_id}.{extension}"
         media_ref = str(target.relative_to(root))
         target.parent.mkdir(parents=True, exist_ok=True)
-        existing_files = list(target.parent.glob(f"{body.image_id}.*"))
+        existing_files = _image_files(target.parent, body.image_id)
         if existing_files:
             if len(existing_files) != 1 or existing_files[0].read_bytes() != image_bytes:
                 raise HTTPException(status_code=409, detail="Snapshot image id conflicts")
@@ -927,18 +946,27 @@ def register_mentra_routes(
             return {"ok": True, "media_ref": existing_ref, "duplicate": True}
 
         temp_name = ""
+        duplicate = False
         try:
             with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as temp:
                 temp.write(image_bytes)
                 temp.flush()
                 os.fsync(temp.fileno())
                 temp_name = temp.name
-            os.replace(temp_name, target)
+            try:
+                os.link(temp_name, target)
+            except FileExistsError:
+                if target.read_bytes() != image_bytes:
+                    raise HTTPException(status_code=409, detail="Snapshot image id conflicts") from None
+                duplicate = True
         except OSError:
             if temp_name:
                 Path(temp_name).unlink(missing_ok=True)
             raise HTTPException(status_code=500, detail="Mentra snapshot write failed") from None
-        return {"ok": True, "media_ref": media_ref, "duplicate": False}
+        finally:
+            if temp_name:
+                Path(temp_name).unlink(missing_ok=True)
+        return {"ok": True, "media_ref": media_ref, "duplicate": duplicate}
 
     @app.post(
         "/integration/mentra/session/{sitting_id}/snapshot/finalize",
@@ -950,12 +978,14 @@ def register_mentra_routes(
             get_service_from_scope is None
             or get_resource_storage_dir is None
             or background_tasks is None
+            or get_soul_lock is None
         ):
             raise HTTPException(status_code=503, detail="Mentra snapshot finalization is not configured")
         body = await _private_model(
             request, MentraSnapshotFinalizeRequest, "Invalid snapshot finalization"
         )
         assert isinstance(body, MentraSnapshotFinalizeRequest)
+        _require_image_embedding_config(get_config())
         active = await _require_active_lease(
             soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
         )
@@ -963,8 +993,8 @@ def register_mentra_routes(
         media_dir = _media_directory(
             root, user_id=body.user_id, soul_id=body.soul_id, active=active
         )
-        matches = list(media_dir.glob(f"{body.image_id}.*"))
-        if len(matches) != 1 or matches[0].suffix not in {".jpg", ".png"}:
+        matches = _image_files(media_dir, body.image_id)
+        if len(matches) != 1:
             raise HTTPException(status_code=404, detail="Mentra snapshot not found")
         media_ref = str(matches[0].relative_to(root))
         scope = {
@@ -983,15 +1013,13 @@ def register_mentra_routes(
             None,
         )
         if existing is not None:
+            if str(existing.caption or "").strip() != body.caption:
+                raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
             linked = service.database.memory_item_repo.list_items(
                 {**resource_scope, "resource_id": existing.id},
-                include_superseded=True,
-                include_merged=True,
                 include_embeddings=False,
             )
             if linked:
-                if str(existing.caption or "").strip() != body.caption:
-                    raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
                 return {"ok": True, "queued": False, "duplicate": True}
 
         task_key = (body.user_id, body.soul_id, media_ref)
@@ -1001,14 +1029,16 @@ def register_mentra_routes(
                 raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
             return {"ok": True, "queued": False, "duplicate": True}
 
-        task = asyncio.create_task(
-            service.memorize(
-                resource_url=media_ref,
-                modality="image",
-                user=scope,
-                caption=body.caption,
-            )
-        )
+        async def memorize_image() -> Any:
+            async with get_soul_lock(body.user_id, body.soul_id):
+                return await service.memorize(
+                    resource_url=media_ref,
+                    modality="image",
+                    user=scope,
+                    caption=body.caption,
+                )
+
+        task = asyncio.create_task(memorize_image())
         _image_finalize_tasks[task_key] = (body.caption, task)
         background_tasks.add(task)
 

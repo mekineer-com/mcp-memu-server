@@ -116,7 +116,7 @@ mcp-memu-server/
 | `app/services/graph_edges.py` | Edge normalization + write/invalidate helpers (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`) |
 | `app/services/activity_messages.py` | `activity_messages` scoped-SQLite table for synthetic self-DM activity recaps (`My Activities:`) |
 | `app/services/whatsapp_outbounds.py` | `whatsapp_pending_outbounds` scoped-SQLite queue for WhatsApp replies/attachments |
-| `app/services/mentra_routes.py` | Authenticated Mentra boundary: sitting-scoped lease lifecycle, bootstrap/token mint, non-blocking memory recall, and contiguous transcript append/ack |
+| `app/services/mentra_routes.py` | Authenticated Mentra boundary: sitting-scoped lease lifecycle, bootstrap/token mint, non-blocking recall, transcript append/ack, and durable image snapshot/finalize. Image finalize stays unavailable until Gemini embedding config and DB profile are both active. |
 | `app/services/memorize_endpoint.py` | `/memorize` core: segment-file persistence, forced-memorize runner, rolling-summary injection, sleep-gap/token chunking, progress/cancel. Listen-only segments advance source cursors without producing memory, consuming rolling summaries, or retaining segment files. |
 | `app/services/conversation_sources.py` | Source adapters: WhatsApp from `web_source.db`; ST/Atomic from resource snapshots; Mentra from `openalma/mentra/transcripts`. Handles atomic writes, cursor slicing, floor backfill, and role normalization. |
 | `app/services/cross_history.py` | Cross-conversation history: formats AI-facing all-chat history, assembles cross-tail/background memorize feeds, manages display-segment cleanup |

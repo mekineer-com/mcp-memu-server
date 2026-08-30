@@ -387,6 +387,16 @@ def database_config_from_cfg(cfg: dict[str, Any], scope: dict[str, Any] | None =
     metadata_store = {"provider": provider, "dsn": dsn, "ddl_mode": ddl_mode}
     embedding_profile = str(meta.get("embedding_profile") or "").strip()
     if embedding_profile:
+        embedding_cfg = (cfg.get("llm") or {}).get("embedding") or {}
+        embed_model = str(
+            embedding_cfg.get("embed_model")
+            or (cfg.get("llm") or {}).get("embed_model")
+            or ""
+        ).strip()
+        if embedding_profile != f"{embed_model}:3072":
+            raise RuntimeError(
+                "storage.metadata_store.embedding_profile must match llm.embedding.embed_model"
+            )
         metadata_store["embedding_profile"] = embedding_profile
     return {"metadata_store": metadata_store}
 

@@ -31,6 +31,7 @@ def test_normalize_conversation_preserves_mentra_event_metadata() -> None:
             "sequence": 2,
             "event_kind": "sitting_summary",
             "transcript_status": "complete",
+            "media_ref": "mentra_media/fictional/image.png",
         }
     ])
 
@@ -38,3 +39,4 @@ def test_normalize_conversation_preserves_mentra_event_metadata() -> None:
     assert out[0]["sequence"] == 2
     assert out[0]["event_kind"] == "sitting_summary"
     assert out[0]["transcript_status"] == "complete"
+    assert out[0]["media_ref"] == "mentra_media/fictional/image.png"

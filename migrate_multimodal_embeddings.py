@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 DIMENSIONS = 3072
-PROFILE = "gemini-embedding-2:3072"
+SUPPORTED_MODEL = "gemini-embedding-2"
 
 
 class MigrationError(RuntimeError):
@@ -78,10 +78,16 @@ async def _embeddings(client: Any, rows: dict[str, list[tuple[Any, ...]]]) -> di
             vectors.extend(await client.embed(texts[offset : offset + 64]))
         return vectors
 
-    memory_texts = [f"title: {kind} | text: {summary}" for _id, kind, summary in rows["memory_items"]]
+    def required_text(value: Any, label: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise MigrationError(f"{label} has no canonical text to embed")
+        return text
+
+    memory_texts = [required_text(summary, f"MemoryItem {_id}") for _id, _kind, summary in rows["memory_items"]]
     dossier_texts = [
-        f"title: {name} | text: {' '.join(part for part in (description, summary) if part)}"
-        for _id, name, description, summary in rows["categories"]
+        f"{required_text(name, f'Dossier {_id} name')}: {str(description or '').strip()}".rstrip(": ")
+        for _id, name, description, _summary in rows["categories"]
     ]
     result = {
         "memory_items": await embed_texts(memory_texts),
@@ -116,6 +122,7 @@ def _write_and_validate(
     conn: sqlite3.Connection,
     rows: dict[str, list[tuple[Any, ...]]],
     vectors: dict[str, list[list[float]]],
+    profile: str,
 ) -> None:
     for table, table_rows in rows.items():
         table_vectors = vectors[table]
@@ -130,7 +137,7 @@ def _write_and_validate(
         "(id INTEGER PRIMARY KEY CHECK (id = 1), profile TEXT NOT NULL)"
     )
     conn.execute("DELETE FROM embedding_profile")
-    conn.execute("INSERT INTO embedding_profile (id, profile) VALUES (1, ?)", (PROFILE,))
+    conn.execute("INSERT INTO embedding_profile (id, profile) VALUES (1, ?)", (profile,))
     for table, table_rows in rows.items():
         count, wrong = conn.execute(
             f"SELECT COUNT(*), SUM(typeof(embedding) != 'blob' OR length(embedding) != ?) FROM {table}",
@@ -163,16 +170,22 @@ async def migrate(source: Path, destination: Path, config_path: Path) -> dict[st
         _copy_database(source, temporary)
         with closing(sqlite3.connect(temporary)) as conn:
             rows = _rows(conn)
-        vectors = await _embeddings(_load_client(config_path), rows)
+        client = _load_client(config_path)
+        if client.provider != "gemini" or client.embed_model != SUPPORTED_MODEL:
+            raise MigrationError(
+                f"migration requires gemini/{SUPPORTED_MODEL}, got {client.provider}/{client.embed_model}"
+            )
+        profile = f"{client.embed_model}:{DIMENSIONS}"
+        vectors = await _embeddings(client, rows)
         with closing(sqlite3.connect(temporary)) as conn:
             conn.execute("BEGIN IMMEDIATE")
-            _write_and_validate(conn, rows, vectors)
+            _write_and_validate(conn, rows, vectors, profile)
             conn.commit()
         os.replace(temporary, destination)
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
-    return {"source": str(source), "destination": str(destination), "profile": PROFILE, "counts": {k: len(v) for k, v in rows.items()}}
+    return {"source": str(source), "destination": str(destination), "profile": profile, "counts": {k: len(v) for k, v in rows.items()}}
 
 
 def main() -> int:

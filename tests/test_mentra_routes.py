@@ -42,6 +42,16 @@ def clear_leases() -> None:
 
 def _configured() -> dict[str, Any]:
     return {
+        "llm": {
+            "embedding": {
+                "provider": "gemini",
+                "embed_model": "gemini-embedding-2",
+                "api_key": "fictional-embedding-key",
+            }
+        },
+        "storage": {
+            "metadata_store": {"embedding_profile": "gemini-embedding-2:3072"}
+        },
         "mentra": {
             "enabled": True,
             "integration_bearer_token": "test-secret",
@@ -113,6 +123,7 @@ def _session_app(
 
         async def memorize(self, **kwargs: Any) -> dict[str, Any]:
             calls["image_memorize"].append(copy.deepcopy(kwargs))
+            calls["image_lock_during_memorize"] = soul_lock.locked()
             await asyncio.sleep(0)
             if memorize_error is not None:
                 raise memorize_error
@@ -1171,6 +1182,15 @@ def test_snapshot_is_atomic_idempotent_scoped_and_redacted(
 
     stored = client.post(endpoint, json=payload, headers=AUTH)
     duplicate = client.post(endpoint, json=payload, headers=AUTH)
+    dotted = client.post(
+        endpoint,
+        json={
+            **payload,
+            "image_id": "image-1.v2",
+            "data": base64.b64encode(b"second-fictional-image").decode(),
+        },
+        headers=AUTH,
+    )
     conflict = client.post(
         endpoint,
         json={**payload, "data": base64.b64encode(b"different").decode()},
@@ -1188,7 +1208,7 @@ def test_snapshot_is_atomic_idempotent_scoped_and_redacted(
         headers=AUTH,
     )
 
-    assert stored.status_code == duplicate.status_code == 200
+    assert stored.status_code == duplicate.status_code == dotted.status_code == 200
     assert stored.json()["duplicate"] is False
     assert duplicate.json() == {**stored.json(), "duplicate": True}
     assert stored.json()["media_ref"].startswith("mentra_media/")
@@ -1242,7 +1262,39 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
     assert len(calls["image_memorize"]) == 1
     assert calls["image_memorize"][0]["modality"] == "image"
     assert calls["image_memorize"][0]["caption"] == "A fictional magenta square."
+    assert calls["image_lock_during_memorize"] is True
     assert not mentra_routes._lease_lock.locked()
+
+
+def test_snapshot_finalize_rejects_non_multimodal_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _, config = _session_app(monkeypatch, tmp_path)
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    base = f"/integration/mentra/session/{sitting_id}/snapshot"
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    client.post(
+        base,
+        json={
+            **scope,
+            "image_id": "image-disabled",
+            "mime_type": "image/png",
+            "data": base64.b64encode(b"fictional-png").decode(),
+        },
+        headers=AUTH,
+    )
+    config["llm"]["embedding"] = {}
+
+    response = client.post(
+        f"{base}/finalize",
+        json={**scope, "image_id": "image-disabled", "caption": "A fictional image."},
+        headers=AUTH,
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Mentra image embedding is not configured"
 
 
 def test_snapshot_finalize_failure_keeps_bytes_and_reports_error(

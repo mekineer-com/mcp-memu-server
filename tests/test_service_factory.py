@@ -47,6 +47,21 @@ def test_server_config_separates_embedding_provider_and_profile_guard(tmp_path) 
     assert database["metadata_store"]["embedding_profile"] == "gemini-embedding-2:3072"
 
 
+def test_embedding_profile_must_match_configured_model(tmp_path) -> None:
+    cfg = {
+        "llm": {"embedding": {"embed_model": "different-model"}},
+        "storage": {
+            "metadata_store": {
+                "provider": "sqlite",
+                "dsn": f"sqlite:///{tmp_path / 'base.db'}",
+                "embedding_profile": "gemini-embedding-2:3072",
+            }
+        },
+    }
+    with pytest.raises(RuntimeError, match="must match"):
+        database_config_from_cfg(cfg, {"soul_id": "test"})
+
+
 def test_validated_step_models_warns_on_unknown_key(caplog: pytest.LogCaptureFixture) -> None:
     llm_profiles = {
         "default": {},
