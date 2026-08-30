@@ -40,6 +40,9 @@ CREATE TABLE triples(subject_id TEXT, predicate TEXT, valid_to TEXT);
     }
     assert bakeoff.ranks(np.eye(2), np.eye(2), [{0}, {1}]).tolist() == [1, 1]
     assert bakeoff.exact_sign_pvalue(0, 3) == 0.25
+    assert bakeoff.parse_json_object('```json\n{"target": "query"}\n```') == {
+        "target": "query"
+    }
     with pytest.raises(ValueError, match="returned 1 vectors for 2 inputs"):
         bakeoff.checked_vectors([[0.0] * bakeoff.DIMENSIONS], 2, "Fictional")
 

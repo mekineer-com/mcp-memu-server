@@ -148,6 +148,16 @@ def four_grams(text: str) -> set[tuple[str, ...]]:
     return {tuple(tokens[i : i + 4]) for i in range(len(tokens) - 3)}
 
 
+def parse_json_object(text: str) -> dict[str, str]:
+    value = text.strip()
+    if value.startswith("```json\n") and value.endswith("\n```"):
+        value = value[8:-4]
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise ValueError("expected one JSON object")
+    return parsed
+
+
 def generate_queries(targets: list[dict]) -> dict[str, str]:
     queries: dict[str, str] = {}
     for batch in chunks(targets, 25):
@@ -172,7 +182,7 @@ def generate_queries(targets: list[dict]) -> dict[str, str]:
                 f"GLM query batch failed with exit code {completed.returncode}"
             )
         try:
-            queries.update(json.loads(completed.stdout.strip()))
+            queries.update(parse_json_object(completed.stdout))
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise ValueError("GLM query batch did not return one JSON object") from exc
     return queries
