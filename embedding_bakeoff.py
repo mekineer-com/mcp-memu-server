@@ -58,7 +58,7 @@ def unpack_embedding(blob: bytes, item_id: str) -> list[float]:
     return values
 
 
-def load_memories(path: Path) -> list[dict]:
+def load_memories(path: Path) -> tuple[list[dict], int]:
     uri = f"file:{path}?mode=ro&immutable=1"
     with sqlite3.connect(uri, uri=True) as con:
         rows = con.execute(
@@ -67,6 +67,7 @@ SELECT id, memory_type, summary, embedding
 FROM memory_items
 WHERE embedding IS NOT NULL
   AND TRIM(summary) <> ''
+  AND (confidence IS NULL OR confidence >= 0.6)
   AND (merged_into IS NULL OR TRIM(merged_into) = '')
   AND NOT EXISTS (
     SELECT 1 FROM triples t
@@ -77,11 +78,26 @@ WHERE embedding IS NOT NULL
 ORDER BY id
 """
         ).fetchall()
+        excluded_low_confidence = con.execute(
+            """
+SELECT COUNT(*) FROM memory_items
+WHERE embedding IS NOT NULL
+  AND TRIM(summary) <> ''
+  AND confidence < 0.6
+  AND (merged_into IS NULL OR TRIM(merged_into) = '')
+  AND NOT EXISTS (
+    SELECT 1 FROM triples t
+    WHERE t.subject_id = memory_items.id
+      AND t.predicate = 'evolved_into'
+      AND t.valid_to IS NULL
+  )
+"""
+        ).fetchone()[0]
     if len(rows) < QUERY_COUNT:
         raise ValueError(
             f"Need at least {QUERY_COUNT} active embedded MemoryItems, found {len(rows)}"
         )
-    return [
+    memories = [
         {
             "id": str(item_id),
             "memory_type": str(memory_type),
@@ -90,6 +106,7 @@ ORDER BY id
         }
         for item_id, memory_type, summary, blob in rows
     ]
+    return memories, int(excluded_low_confidence)
 
 
 def corpus_hash(memories: list[dict]) -> str:
@@ -131,13 +148,14 @@ def four_grams(text: str) -> set[tuple[str, ...]]:
 def freeze_queries(db_path: Path, query_path: Path) -> None:
     if query_path.exists():
         raise FileExistsError(f"Refusing to replace frozen query file: {query_path}")
-    memories = load_memories(require_disposable_db(db_path))
+    memories, excluded_low_confidence = load_memories(require_disposable_db(db_path))
     targets = selected_targets(memories)
     prompt_rows = [{"id": row["id"], "memory": row["summary"]} for row in targets]
     prompt = (
-        "For each memory, write one short natural-language search query someone might use to recall it. "
-        "Paraphrase indirectly and do not copy any sequence of four words. Return only a JSON object "
-        "mapping each id to its query. Do not use tools.\n" + json.dumps(prompt_rows)
+        "For each memory, write one concise standalone semantic-retrieval query, as if conversational "
+        "framing had already been rewritten for vector search. Paraphrase indirectly and do not copy any "
+        "sequence of four words. Return only a JSON object mapping each id to its query. Do not use tools.\n"
+        + json.dumps(prompt_rows)
     )
     generated = subprocess.run(
         ["claude-glm", "-p", "--effort", "high", "--tools", "", prompt],
@@ -164,7 +182,9 @@ def freeze_queries(db_path: Path, query_path: Path) -> None:
         )
     payload = {
         "generator": "glm-5.3",
+        "query_contract": "standalone retrieval-ready query",
         "corpus_sha256": corpus_hash(memories),
+        "excluded_low_confidence": excluded_low_confidence,
         "queries": [
             {"target_id": row["id"], "query": queries[row["id"]]} for row in targets
         ],
@@ -196,7 +216,7 @@ def openai_embed(config: dict, texts: list[str]) -> tuple[np.ndarray, float]:
             row["embedding"]
             for row in sorted(data["data"], key=lambda row: row["index"])
         )
-    return np.asarray(vectors, dtype=np.float32), time.monotonic() - started
+    return checked_vectors(vectors, len(texts), "OpenAI"), time.monotonic() - started
 
 
 def gemini_embed(texts: list[str]) -> tuple[np.ndarray, float]:
@@ -218,7 +238,22 @@ def gemini_embed(texts: list[str]) -> tuple[np.ndarray, float]:
         ]
         data = post(url, {"requests": requests})
         vectors.extend(row["values"] for row in data["embeddings"])
-    return np.asarray(vectors, dtype=np.float32), time.monotonic() - started
+    return checked_vectors(vectors, len(texts), "Gemini"), time.monotonic() - started
+
+
+def checked_vectors(
+    vectors: list[list[float]], expected: int, provider: str
+) -> np.ndarray:
+    if len(vectors) != expected:
+        raise ValueError(
+            f"{provider} returned {len(vectors)} vectors for {expected} inputs"
+        )
+    result = np.asarray(vectors, dtype=np.float32)
+    if result.shape != (expected, DIMENSIONS) or not np.isfinite(result).all():
+        raise ValueError(
+            f"{provider} returned malformed embeddings with shape {result.shape}"
+        )
+    return result
 
 
 def ranks(
@@ -259,7 +294,7 @@ def rank_metrics(values: np.ndarray) -> dict:
 
 
 def score(db_path: Path, query_path: Path) -> None:
-    memories = load_memories(require_disposable_db(db_path))
+    memories, excluded_low_confidence = load_memories(require_disposable_db(db_path))
     frozen = json.loads(query_path.read_text())
     if frozen.get("corpus_sha256") != corpus_hash(memories):
         raise ValueError(
@@ -299,11 +334,12 @@ def score(db_path: Path, query_path: Path) -> None:
     new_metrics = rank_metrics(new_ranks)
     recall_gap = new_metrics["recall_at_5"] - old_metrics["recall_at_5"]
     sign_pvalue = exact_sign_pvalue(gemini_better, openai_better)
-    passed = recall_gap >= -0.05 and not (
+    passed = recall_gap >= 0 and not (
         openai_better > gemini_better and sign_pvalue < 0.05
     )
     result = {
         "documents": len(memories),
+        "excluded_low_confidence": excluded_low_confidence,
         "queries": len(query_rows),
         "dimensions": DIMENSIONS,
         "baseline": {
@@ -323,9 +359,15 @@ def score(db_path: Path, query_path: Path) -> None:
             "equal": int(np.sum(new_ranks == old_ranks)),
             "openai_better": openai_better,
             "exact_sign_pvalue": round(sign_pvalue, 6),
+            "mean_rank_delta_gemini_minus_openai": round(
+                float(np.mean(new_ranks - old_ranks)), 6
+            ),
+            "median_rank_delta_gemini_minus_openai": round(
+                float(np.median(new_ranks - old_ranks)), 6
+            ),
         },
         "gate": {
-            "maximum_recall_at_5_drop": 0.05,
+            "maximum_recall_at_5_drop": 0.0,
             "recall_at_5_delta": round(recall_gap, 6),
             "passed": passed,
         },
