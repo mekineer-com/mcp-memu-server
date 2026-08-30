@@ -203,11 +203,29 @@ def freeze_queries(db_path: Path, query_path: Path) -> None:
     targets = selected_targets(memories)
     queries = generate_queries(targets)
     expected = {row["id"] for row in targets}
-    if set(queries) != expected or not all(
-        isinstance(value, str) and value.strip() for value in queries.values()
-    ):
-        raise ValueError("GLM returned missing, extra, or empty queries")
     by_id = {row["id"]: row for row in targets}
+    queries = {
+        item_id: value.strip()
+        for item_id, value in queries.items()
+        if item_id in expected and isinstance(value, str) and value.strip()
+    }
+    for _attempt in range(3):
+        missing = expected - set(queries)
+        if not missing:
+            break
+        queries.update(
+            generate_queries(
+                [by_id[item_id] for item_id in sorted(missing)], retry=True
+            )
+        )
+        queries = {
+            item_id: value.strip()
+            for item_id, value in queries.items()
+            if item_id in expected and isinstance(value, str) and value.strip()
+        }
+    missing = expected - set(queries)
+    if missing:
+        raise ValueError(f"GLM omitted {len(missing)} query IDs after retries")
     leaks = [
         item_id
         for item_id, row in by_id.items()
