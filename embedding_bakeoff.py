@@ -286,15 +286,26 @@ def openai_embed(config: dict, texts: list[str]) -> tuple[np.ndarray, float]:
     return checked_vectors(vectors, len(texts), "OpenAI"), time.monotonic() - started
 
 
-def gemini_embed(texts: list[str]) -> tuple[np.ndarray, float]:
+def gemini_embed(
+    texts: list[str], cache_path: Path | None = None
+) -> tuple[np.ndarray, float]:
     api_key = os.environ["GEMINI_API_KEY"]
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"gemini-embedding-2:batchEmbedContents?key={api_key}"
     )
     vectors: list[list[float]] = []
+    if cache_path is not None and cache_path.exists():
+        cached = np.load(cache_path)
+        if (
+            cached.ndim != 2
+            or cached.shape[1] != DIMENSIONS
+            or len(cached) > len(texts)
+        ):
+            raise ValueError(f"Malformed Gemini checkpoint: {cache_path}")
+        vectors = cached.tolist()
     started = time.monotonic()
-    for batch in chunks(texts, 16):
+    for batch in chunks(texts[len(vectors) :], 16):
         requests = [
             {
                 "model": "models/gemini-embedding-2",
@@ -312,6 +323,8 @@ def gemini_embed(texts: list[str]) -> tuple[np.ndarray, float]:
                     raise
                 time.sleep(60)
         vectors.extend(row["values"] for row in data["embeddings"])
+        if cache_path is not None:
+            np.save(cache_path, np.asarray(vectors, dtype=np.float32))
         time.sleep(2)
     return checked_vectors(vectors, len(texts), "Gemini"), time.monotonic() - started
 
@@ -396,10 +409,12 @@ def score(db_path: Path, query_path: Path) -> None:
         [row["embedding"] for row in memories], dtype=np.float32
     )
     gemini_documents, gemini_doc_seconds = gemini_embed(
-        [f"title: {row['memory_type']} | text: {row['summary']}" for row in memories]
+        [f"title: {row['memory_type']} | text: {row['summary']}" for row in memories],
+        query_path.with_name("gemini-documents.npy"),
     )
     gemini_queries, gemini_query_seconds = gemini_embed(
-        [f"task: search result | query: {query}" for query in query_texts]
+        [f"task: search result | query: {query}" for query in query_texts],
+        query_path.with_name("gemini-queries.npy"),
     )
     old_ranks = ranks(openai_documents, openai_queries, target_indices)
     new_ranks = ranks(gemini_documents, gemini_queries, target_indices)

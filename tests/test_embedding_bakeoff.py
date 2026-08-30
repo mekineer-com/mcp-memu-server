@@ -62,10 +62,20 @@ CREATE TABLE triples(subject_id TEXT, predicate TEXT, valid_to TEXT);
     monkeypatch.setattr(bakeoff, "post", rate_limited_post)
     sleeps: list[int] = []
     monkeypatch.setattr(bakeoff.time, "sleep", sleeps.append)
-    vectors, _elapsed = bakeoff.gemini_embed(["fictional"])
+    checkpoint = tmp_path / "gemini.npy"
+    vectors, _elapsed = bakeoff.gemini_embed(["fictional"], checkpoint)
     assert vectors.shape == (1, bakeoff.DIMENSIONS)
     assert attempts == 2
     assert sleeps == [60, 2]
+    assert np.load(checkpoint).shape == (1, bakeoff.DIMENSIONS)
+
+    monkeypatch.setattr(
+        bakeoff,
+        "post",
+        lambda *_args, **_kwargs: pytest.fail("checkpoint should avoid API call"),
+    )
+    resumed, _elapsed = bakeoff.gemini_embed(["fictional"], checkpoint)
+    assert resumed.shape == (1, bakeoff.DIMENSIONS)
 
     def fake_glm(
         command: list[str], **kwargs: object
