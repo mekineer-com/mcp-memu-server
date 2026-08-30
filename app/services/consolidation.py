@@ -430,6 +430,7 @@ def _select_interval_segment_window(
     *,
     interval_days: int,
     force: bool,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     if not segment_inputs:
         return {"selected_segment_ids": [], "remaining_segment_ids": [], "reason": "no_pending_segments"}
@@ -468,6 +469,9 @@ def _select_interval_segment_window(
                 "remaining_segment_ids": all_ids[idx + 1 :],
                 "reason": None,
             }
+
+    if (now or datetime.now(UTC)) >= due_at:
+        return {"selected_segment_ids": all_ids, "remaining_segment_ids": [], "reason": None}
 
     return {
         "selected_segment_ids": [],

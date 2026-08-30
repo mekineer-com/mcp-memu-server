@@ -463,7 +463,9 @@ def test_select_interval_segment_window_leaves_short_tail_pending() -> None:
         {"segment_id": "cid:4-7", "start_idx": 4, "end_idx": 7, "happened_at": datetime(2026, 1, 4, tzinfo=UTC)},
     ]
 
-    out = _select_interval_segment_window(rows, interval_days=7, force=False)
+    out = _select_interval_segment_window(
+        rows, interval_days=7, force=False, now=datetime(2026, 1, 5, tzinfo=UTC)
+    )
 
     assert out["selected_segment_ids"] == []
     assert out["remaining_segment_ids"] == ["cid:0-3", "cid:4-7"]
@@ -479,6 +481,20 @@ def test_select_interval_segment_window_force_consumes_all_pending() -> None:
     out = _select_interval_segment_window(rows, interval_days=7, force=True)
 
     assert out["selected_segment_ids"] == ["cid:0-3", "cid:4-7"]
+    assert out["remaining_segment_ids"] == []
+    assert out["reason"] is None
+
+
+def test_select_interval_segment_window_releases_quiet_conversation_when_due() -> None:
+    rows = [
+        {"segment_id": "cid:0-3", "start_idx": 0, "end_idx": 3, "happened_at": datetime(2026, 1, 1, tzinfo=UTC)},
+    ]
+
+    out = _select_interval_segment_window(
+        rows, interval_days=7, force=False, now=datetime(2026, 1, 8, tzinfo=UTC)
+    )
+
+    assert out["selected_segment_ids"] == ["cid:0-3"]
     assert out["remaining_segment_ids"] == []
     assert out["reason"] is None
 
