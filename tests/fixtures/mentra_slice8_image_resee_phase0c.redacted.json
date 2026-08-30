@@ -18,7 +18,7 @@
       "expected_center_color": "magenta",
       "later_answer": "white"
     },
-    "decision": "failed: silent and non-interrupting, but the image was not reliably retained for the next natural turn"
+    "decision": "did not pass: the idle miss was clean, while the active white answer was confounded by the prior white image in the same sitting"
   },
   "candidate_2_silent_tool_response": {
     "shape": "outstanding NON_BLOCKING recall_memory call followed by FunctionResponse parts.inlineData and scheduling=SILENT",

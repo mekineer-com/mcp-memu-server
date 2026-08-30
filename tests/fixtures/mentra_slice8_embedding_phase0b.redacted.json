@@ -65,6 +65,20 @@
       "passed": false,
       "review_required": true
     },
+    "document_prefix_ablation": {
+      "contract": "raw MemoryItem summary with the Gemini query prefix retained",
+      "recall_at_1": 0.94,
+      "recall_at_5": 0.985,
+      "recall_at_10": 0.985,
+      "mean_reciprocal_rank": 0.958881,
+      "paired": {
+        "gemini_better": 5,
+        "equal": 185,
+        "openai_better": 10,
+        "exact_sign_pvalue": 0.301758
+      },
+      "decision": "Removing title: {memory_type} | text: did not recover Recall@5 and reduced Recall@1; the document prefix was not the strict-gate failure cause."
+    },
     "cross_key_repeat": {
       "maximum_absolute_delta": 0.0
     }
