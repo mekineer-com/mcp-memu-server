@@ -286,13 +286,22 @@ def openai_embed(config: dict, texts: list[str]) -> tuple[np.ndarray, float]:
     return checked_vectors(vectors, len(texts), "OpenAI"), time.monotonic() - started
 
 
+def gemini_api_key() -> str:
+    key = str(
+        json.loads(CONFIG.read_text()).get("mentra", {}).get("gemini_api_key", "")
+    ).strip()
+    if not key:
+        raise ValueError("config.json mentra.gemini_api_key is required")
+    return key
+
+
 def gemini_embed(
     texts: list[str], cache_path: Path | None = None
 ) -> tuple[np.ndarray, float]:
-    api_key = os.environ["GEMINI_API_KEY"]
+    api_key = gemini_api_key()
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-embedding-2:embedContent?key={api_key}"
+        f"gemini-embedding-2:batchEmbedContents?key={api_key}"
     )
     vectors: list[list[float]] = []
     if cache_path is not None and cache_path.exists():
@@ -305,10 +314,16 @@ def gemini_embed(
             raise ValueError(f"Malformed Gemini checkpoint: {cache_path}")
         vectors = cached.tolist()
     started = time.monotonic()
-    for text in texts[len(vectors) :]:
+    for batch in chunks(texts[len(vectors) :], 64):
         payload = {
-            "content": {"parts": [{"text": text}]},
-            "outputDimensionality": DIMENSIONS,
+            "requests": [
+                {
+                    "model": "models/gemini-embedding-2",
+                    "content": {"parts": [{"text": text}]},
+                    "outputDimensionality": DIMENSIONS,
+                }
+                for text in batch
+            ]
         }
         for attempt in range(6):
             try:
@@ -318,7 +333,7 @@ def gemini_embed(
                 if exc.code != 429 or attempt == 5:
                     raise
                 time.sleep(60)
-        vectors.append(data["embedding"]["values"])
+        vectors.extend(row["values"] for row in data["embeddings"])
         if cache_path is not None:
             np.save(cache_path, np.asarray(vectors, dtype=np.float32))
         time.sleep(0.1)

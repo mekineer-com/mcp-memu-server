@@ -56,9 +56,9 @@ CREATE TABLE triples(subject_id TEXT, predicate TEXT, valid_to TEXT);
             raise urllib.error.HTTPError(
                 "https://example.invalid", 429, "limited", {}, None
             )
-        return {"embedding": {"values": [0.0] * bakeoff.DIMENSIONS}}
+        return {"embeddings": [{"values": [0.0] * bakeoff.DIMENSIONS}]}
 
-    monkeypatch.setenv("GEMINI_API_KEY", "fictional")
+    monkeypatch.setattr(bakeoff, "gemini_api_key", lambda: "fictional")
     monkeypatch.setattr(bakeoff, "post", rate_limited_post)
     sleeps: list[int] = []
     monkeypatch.setattr(bakeoff.time, "sleep", sleeps.append)
