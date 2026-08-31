@@ -56,6 +56,7 @@ mcp-memu-server/
 | `/conversation/{id}/turn` | POST | Soul turn loop: runs LLM with turn contract, persists intentions + cache, fires APImw in background on cadence, manages free-turn continuations and attachments. |
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn (single-step, `undo_snapshot`) |
 | `/integration/memu/turn` | POST | MCP single-call turn wrapper: retrieve then turn |
+| `/integration/memu/sensory-search` | POST | Scoped explicit visual-memory candidate search over separate media and caption lanes |
 | `/integration/mentra/health` | GET | Bearer-authenticated Mentra ingress health check; disabled by default |
 | `/integration/mentra/session/start` | POST | Authenticated soul bootstrap plus constrained Gemini Live token; returns a fresh sitting ID and next device-conversation transcript sequence |
 | `/integration/mentra/session/{id}/token` | POST | Mint a fresh constrained Gemini token for the unchanged active sitting before a replacement socket |
@@ -167,7 +168,7 @@ from memu.prompts.memory_type import ...  # type prompts
 | Modify life goals (long-term) | `app/services/consolidation.py` — `intentions_life_goals` table |
 | Modify DB schema/helpers | `app/db.py` |
 | Change config shape | `config.json` + `app/config.py` |
-| Migrate legacy categories to dossiers | `migrate_category_taxonomy.py` + root `PLAN_category_taxonomy_slice_G_migration.md` |
+| Migrate legacy categories to dossiers | `migrate_category_taxonomy.py` + archived `_archive/_discourse/260813 nomi-fication/PLAN_category_taxonomy_slice_G_migration.md` |
 | Build Gemini embedding replacement | `migrate_multimodal_embeddings.py` (source read-only; publishes a new DB only after full validation) |
 
 ## Config (`config.json`)

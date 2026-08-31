@@ -900,7 +900,6 @@ LIMIT 24
             "status": "ready",
             "db_path": db_path,
             "state": state,
-            "segment_ids": selected_segment_ids,
             "active_life_goals": active_goals,
             "removed_life_goals": removed_goals,
             "intention_activity": intention_activity,
