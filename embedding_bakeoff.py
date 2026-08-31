@@ -451,6 +451,54 @@ def mixed_pool_metrics(
     }
 
 
+def resource_smoke_metrics(
+    media_documents: np.ndarray,
+    caption_documents: np.ndarray,
+    query_vectors: np.ndarray,
+    resource_ids: list[str],
+    query_rows: list[dict],
+) -> dict:
+    def scores(documents: np.ndarray) -> np.ndarray:
+        docs = documents / np.linalg.norm(documents, axis=1, keepdims=True)
+        queries = query_vectors / np.linalg.norm(query_vectors, axis=1, keepdims=True)
+        return queries @ docs.T
+
+    def report(matrix: np.ndarray) -> dict:
+        matching: list[float] = []
+        distractors: list[float] = []
+        target_ranks: list[int] = []
+        ambiguous_max: list[float] = []
+        unrelated_max: list[float] = []
+        by_id = {resource_id: index for index, resource_id in enumerate(resource_ids)}
+        for row, row_scores in zip(query_rows, matrix, strict=True):
+            group = row["group"]
+            if group == "matching":
+                target = by_id[row["target"]]
+                matching.append(float(row_scores[target]))
+                target_ranks.append(int(np.sum(row_scores > row_scores[target])) + 1)
+                distractors.extend(float(score) for index, score in enumerate(row_scores) if index != target)
+            elif group == "ambiguous":
+                ambiguous_max.append(float(np.max(row_scores)))
+            elif group == "unrelated":
+                unrelated_max.append(float(np.max(row_scores)))
+            else:
+                raise ValueError(f"Unknown Resource smoke query group: {group}")
+        return {
+            "matching_targets": distribution(np.asarray(matching)),
+            "matching_target_ranks": rank_metrics(np.asarray(target_ranks)),
+            "matching_distractors": distribution(np.asarray(distractors)),
+            "ambiguous_query_maxima": distribution(np.asarray(ambiguous_max)),
+            "unrelated_query_maxima": distribution(np.asarray(unrelated_max)),
+        }
+
+    return {
+        "resources": len(resource_ids),
+        "queries": len(query_rows),
+        "media": report(scores(media_documents)),
+        "caption": report(scores(caption_documents)),
+    }
+
+
 def neighborhood_scores(
     vectors: np.ndarray, summaries: list[str]
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -469,6 +517,7 @@ def distribution(values: np.ndarray) -> dict:
         return {"count": 0}
     return {
         "count": int(len(finite)),
+        "minimum": round(float(np.min(finite)), 6),
         **{
             f"p{percentile}": round(float(np.percentile(finite, percentile)), 6)
             for percentile in (1, 5, 50, 95, 99)
@@ -658,16 +707,58 @@ def score_calibration(db_path: Path, query_path: Path) -> None:
     )
 
 
+def score_resource_smoke(manifest_path: Path) -> None:
+    manifest = json.loads(manifest_path.read_text())
+    resources = manifest.get("resources")
+    query_rows = manifest.get("queries")
+    if not isinstance(resources, list) or not isinstance(query_rows, list):
+        raise ValueError("Resource smoke manifest requires resources and queries lists")
+    resource_ids = [str(row["id"]).strip() for row in resources]
+    paths = [(manifest_path.parent / str(row["path"])).resolve() for row in resources]
+    captions = [str(row["caption"]).strip() for row in resources]
+    query_texts = [str(row["text"]).strip() for row in query_rows]
+    if (
+        len(resource_ids) < 3
+        or len(set(resource_ids)) != len(resource_ids)
+        or any(not path.is_file() for path in paths)
+        or any(not value for value in captions + query_texts)
+    ):
+        raise ValueError("Resource smoke manifest is incomplete")
+    media_documents, media_seconds = gemini_embed_media(paths)
+    caption_documents, caption_seconds = gemini_embed(captions)
+    query_vectors, query_seconds = gemini_embed(query_texts)
+    result = resource_smoke_metrics(
+        media_documents,
+        caption_documents,
+        query_vectors,
+        resource_ids,
+        query_rows,
+    )
+    result.update({
+        "model": "gemini-embedding-2",
+        "dimensions": DIMENSIONS,
+        "query_contract": "bare active_query",
+        "media_embedding_seconds": round(media_seconds, 3),
+        "caption_embedding_seconds": round(caption_seconds, 3),
+        "query_embedding_seconds": round(query_seconds, 3),
+        "purpose": "smoke evidence only; not production threshold calibration",
+    })
+    print(json.dumps(result, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("freeze", "score", "mixed", "calibrate"))
+    parser.add_argument(
+        "phase", choices=("freeze", "score", "mixed", "calibrate", "resource-smoke")
+    )
     parser.add_argument(
         "database",
         type=Path,
+        nargs="?",
         help="Stopped disposable SQLite backup, never live Siri.db",
     )
     parser.add_argument(
-        "queries", type=Path, help="Private frozen query JSON outside version control"
+        "queries", type=Path, nargs="?", help="Private frozen query JSON outside version control"
     )
     parser.add_argument(
         "--media-manifest",
@@ -675,6 +766,13 @@ def main() -> None:
         help="Private fictional image/query manifest required by the mixed phase",
     )
     args = parser.parse_args()
+    if args.phase == "resource-smoke":
+        if args.media_manifest is None:
+            parser.error("resource-smoke requires --media-manifest")
+        score_resource_smoke(args.media_manifest)
+        return
+    if args.database is None or args.queries is None:
+        parser.error(f"{args.phase} requires database and queries")
     if args.phase == "freeze":
         freeze_queries(args.database, args.queries)
     elif args.phase == "score":

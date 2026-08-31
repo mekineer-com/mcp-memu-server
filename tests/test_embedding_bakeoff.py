@@ -49,6 +49,19 @@ CREATE TABLE triples(subject_id TEXT, predicate TEXT, valid_to TEXT);
     )
     assert mixed["media"]["recall_at_1"] == 1.0
     assert mixed["text_queries_displaced"] == 0
+    smoke = bakeoff.resource_smoke_metrics(
+        np.eye(2),
+        np.eye(2),
+        np.eye(2),
+        ["first", "second"],
+        [
+            {"group": "matching", "target": "first"},
+            {"group": "unrelated"},
+        ],
+    )
+    assert smoke["media"]["matching_targets"]["minimum"] == 1.0
+    assert smoke["media"]["matching_target_ranks"]["recall_at_1"] == 1.0
+    assert smoke["caption"]["unrelated_query_maxima"]["maximum"] == 1.0
     calibration = bakeoff.calibration_report(
         np.asarray([[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]]),
         np.asarray([[1.0, 0.0], [0.8, 0.2], [0.0, 1.0]]),

@@ -1,0 +1,113 @@
+{
+  "resources": 7,
+  "queries": 42,
+  "media": {
+    "matching_targets": {
+      "count": 21,
+      "minimum": 0.394529,
+      "p1": 0.399356,
+      "p5": 0.418662,
+      "p50": 0.457923,
+      "p95": 0.517796,
+      "p99": 0.523465,
+      "maximum": 0.524882
+    },
+    "matching_target_ranks": {
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mean_reciprocal_rank": 1.0,
+      "median_rank": 1,
+      "maximum_rank": 1
+    },
+    "matching_distractors": {
+      "count": 126,
+      "minimum": 0.166661,
+      "p1": 0.178377,
+      "p5": 0.230094,
+      "p50": 0.317256,
+      "p95": 0.389225,
+      "p99": 0.42233,
+      "maximum": 0.43527
+    },
+    "ambiguous_query_maxima": {
+      "count": 7,
+      "minimum": 0.338502,
+      "p1": 0.341446,
+      "p5": 0.353222,
+      "p50": 0.407655,
+      "p95": 0.45179,
+      "p99": 0.452426,
+      "maximum": 0.452585
+    },
+    "unrelated_query_maxima": {
+      "count": 14,
+      "minimum": 0.18488,
+      "p1": 0.186692,
+      "p5": 0.19394,
+      "p50": 0.247784,
+      "p95": 0.302106,
+      "p99": 0.310117,
+      "maximum": 0.31212
+    }
+  },
+  "caption": {
+    "matching_targets": {
+      "count": 21,
+      "minimum": 0.374691,
+      "p1": 0.381647,
+      "p5": 0.409473,
+      "p50": 0.639095,
+      "p95": 0.823871,
+      "p99": 0.827225,
+      "maximum": 0.828063
+    },
+    "matching_target_ranks": {
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mean_reciprocal_rank": 1.0,
+      "median_rank": 1,
+      "maximum_rank": 1
+    },
+    "matching_distractors": {
+      "count": 126,
+      "minimum": 0.040685,
+      "p1": 0.069408,
+      "p5": 0.098915,
+      "p50": 0.261526,
+      "p95": 0.403478,
+      "p99": 0.452106,
+      "maximum": 0.486396
+    },
+    "ambiguous_query_maxima": {
+      "count": 7,
+      "minimum": 0.280654,
+      "p1": 0.284499,
+      "p5": 0.299878,
+      "p50": 0.440392,
+      "p95": 0.514497,
+      "p99": 0.521948,
+      "maximum": 0.523811
+    },
+    "unrelated_query_maxima": {
+      "count": 14,
+      "minimum": 0.111118,
+      "p1": 0.112101,
+      "p5": 0.116036,
+      "p50": 0.154148,
+      "p95": 0.202808,
+      "p99": 0.216487,
+      "maximum": 0.219906
+    }
+  },
+  "model": "gemini-embedding-2",
+  "dimensions": 3072,
+  "query_contract": "bare active_query",
+  "media_embedding_seconds": 12.197,
+  "caption_embedding_seconds": 1.949,
+  "query_embedding_seconds": 2.541,
+  "purpose": "smoke evidence only; not production threshold calibration",
+  "recorded_at": "2026-08-31T02:55:00-05:00",
+  "decision": "Both separate lanes achieved Recall@1=1.0 on 21 matching queries. Matching/distractor score overlap means this is candidate-search smoke evidence, not production threshold calibration."
+}
