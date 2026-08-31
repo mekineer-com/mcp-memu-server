@@ -1182,6 +1182,21 @@ def test_snapshot_is_atomic_idempotent_scoped_and_redacted(
 
     stored = client.post(endpoint, json=payload, headers=AUTH)
     duplicate = client.post(endpoint, json=payload, headers=AUTH)
+    replay = client.post(
+        f"{endpoint}/replay",
+        json={"user_id": START["user_id"], "soul_id": START["soul_id"], "image_id": "image-1"},
+        headers=AUTH,
+    )
+    missing_replay = client.post(
+        f"{endpoint}/replay",
+        json={"user_id": START["user_id"], "soul_id": START["soul_id"], "image_id": "missing"},
+        headers=AUTH,
+    )
+    no_lease_replay = client.post(
+        "/integration/mentra/session/missing-sitting/snapshot/replay",
+        json={"user_id": START["user_id"], "soul_id": START["soul_id"], "image_id": "image-1"},
+        headers=AUTH,
+    )
     dotted = client.post(
         endpoint,
         json={
@@ -1211,6 +1226,9 @@ def test_snapshot_is_atomic_idempotent_scoped_and_redacted(
     assert stored.status_code == duplicate.status_code == dotted.status_code == 200
     assert stored.json()["duplicate"] is False
     assert duplicate.json() == {**stored.json(), "duplicate": True}
+    assert replay.json() == {"mime_type": "image/jpeg", "data": base64.b64encode(image).decode()}
+    assert missing_replay.status_code == 404
+    assert no_lease_replay.status_code == 404
     assert stored.json()["media_ref"].startswith("mentra_media/")
     assert (tmp_path / "resources" / stored.json()["media_ref"]).read_bytes() == image
     assert conflict.status_code == 409

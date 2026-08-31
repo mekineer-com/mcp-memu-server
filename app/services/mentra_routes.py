@@ -969,6 +969,31 @@ def register_mentra_routes(
         return {"ok": True, "media_ref": media_ref, "duplicate": duplicate}
 
     @app.post(
+        "/integration/mentra/session/{sitting_id}/snapshot/replay",
+        tags=["integration"],
+        dependencies=auth,
+    )
+    async def mentra_snapshot_replay(sitting_id: str, request: Request) -> dict[str, Any]:
+        if get_resource_storage_dir is None:
+            raise HTTPException(status_code=503, detail="Mentra snapshot storage is not configured")
+        body = await _private_model(request, MentraImageRequest, "Invalid snapshot replay")
+        assert isinstance(body, MentraImageRequest)
+        active = await _require_active_lease(
+            soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
+        )
+        directory = _media_directory(
+            get_resource_storage_dir(), user_id=body.user_id, soul_id=body.soul_id, active=active
+        )
+        matches = _image_files(directory, body.image_id)
+        if len(matches) != 1:
+            raise HTTPException(status_code=404, detail="Mentra snapshot not found")
+        path = matches[0]
+        return {
+            "mime_type": "image/jpeg" if path.suffix == ".jpg" else "image/png",
+            "data": base64.b64encode(path.read_bytes()).decode(),
+        }
+
+    @app.post(
         "/integration/mentra/session/{sitting_id}/snapshot/finalize",
         tags=["integration"],
         dependencies=auth,
