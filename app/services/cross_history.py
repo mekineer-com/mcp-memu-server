@@ -786,7 +786,7 @@ def _load_cross_memorize_tails_from_sources(
                 if tail:
                     tails[cid] = tail
                 continue
-            memorize_chat = _memorize_chat_from_row(row)
+            memorize_chat = cid.startswith("mentra:") or _memorize_chat_from_row(row)
             if memorize_chat:
                 cursor = _effective_digest_cursor_from_row(row)
                 cursor, min_timestamp, _ = _resolve_source_cursor(

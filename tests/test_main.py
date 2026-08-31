@@ -2295,6 +2295,31 @@ def test_cross_payload_preserves_projected_mentra_sequence_cursor(
     assert payload["_final_cursors"]["mentra:test-device"]["cursor"] == 501
 
 
+def test_cross_memorize_keeps_mentra_full_memory_when_state_is_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    con = main._sqlite_connect(tmp_path / "Echo.db")
+    con.row_factory = sqlite3.Row
+    main._sqlite_ensure_conversation_state_schema(con)
+    con.execute(
+        "INSERT INTO conversations (conversation_id, memorize_chat, digest_cursor) VALUES (?, ?, ?)",
+        ("mentra:test-device", 0, -1),
+    )
+    con.commit()
+    monkeypatch.setattr(main, "_load_tail_for_source_conversation", lambda **_kwargs: [{"content": "Fictional line."}])
+    try:
+        tails = main._cross_history._load_cross_memorize_tails_from_sources(
+            con,
+            user_id="u1",
+            soul_id="Echo",
+        )
+    finally:
+        con.close()
+
+    assert tails["mentra:test-device"][0]["memorize_chat"] is True
+
+
 def test_load_tail_for_source_conversation_dispatches_mentra(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
