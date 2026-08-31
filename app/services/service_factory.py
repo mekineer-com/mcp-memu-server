@@ -73,7 +73,7 @@ def _service_storage_fingerprint(
     if not isinstance(ms, dict):
         return {"provider": None}
 
-    provider = str(ms.get("provider") or "").strip().lower() or None
+    provider = str(ms.get("provider") or "sqlite").strip().lower()
     if provider != "sqlite":
         return {"provider": provider}
 

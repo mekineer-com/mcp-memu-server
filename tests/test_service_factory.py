@@ -8,6 +8,20 @@ from app.config import database_config_from_cfg, default_llm_profiles_from_serve
 from app.services import service_factory
 
 
+def test_storage_fingerprint_treats_omitted_provider_as_sqlite(tmp_path) -> None:
+    database = tmp_path / "soul.db"
+    database.touch()
+
+    fingerprint = service_factory._service_storage_fingerprint(
+        {"metadata_store": {"dsn": f"sqlite:///{database}"}},
+        sqlite_file_from_dsn=lambda _dsn: database,
+        logger=logging.getLogger("test.service_factory"),
+    )
+
+    assert fingerprint["provider"] == "sqlite"
+    assert fingerprint["ino"] == database.stat().st_ino
+
+
 def test_server_config_separates_embedding_provider_and_profile_guard(tmp_path) -> None:
     cfg = {
         "llm": {
