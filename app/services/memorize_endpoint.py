@@ -1337,7 +1337,6 @@ async def memorize_endpoint(
                     progress_key = ctx.memorize_lock_key(uid, soul_id)
                     if (
                         conversation_id
-                        and _auto_consolidation_enabled(force=force, cross_memorize=is_cross)
                         and has_pending_segments
                         and ctx.consolidation_due(state_out)
                     ):

@@ -77,13 +77,10 @@ def test_memorize_background_task_runs(client: TestClient, monkeypatch: pytest.M
     assert recorded[0]["segment_count"] == body.get("segment_count")
 
 
-@pytest.mark.parametrize(("force", "should_consolidate"), [(False, True), (True, False)])
 def test_memorize_tail_retries_consolidation_when_pending_segments_exist(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
-    force: bool,
-    should_consolidate: bool,
 ) -> None:
     recorded: list[dict] = []
 
@@ -130,14 +127,11 @@ def test_memorize_tail_retries_consolidation_when_pending_segments_exist(
         "llm_profiles": {"default": {"provider": "openai", "api_key": "x", "base_url": "x", "chat_model": "x", "embed_model": "x"}},
     }
 
-    resp = client.post(f"/memorize?tail=true&force={str(force).lower()}", json=payload)
-    assert resp.status_code == (202 if should_consolidate else 200), (
-        f"unexpected status: {resp.status_code} body={resp.text[:300]}"
-    )
+    resp = client.post("/memorize?tail=true", json=payload)
+    assert resp.status_code == 202, f"unexpected status: {resp.status_code} body={resp.text[:300]}"
     body = resp.json()
-    assert body.get("pending_segment_retry") is (True if should_consolidate else None)
-    expected = [{"conversation_id": "cid-2", "soul_id": "test_soul", "uid": "test_user"}]
-    assert recorded == (expected if should_consolidate else [])
+    assert body.get("pending_segment_retry") is True
+    assert recorded == [{"conversation_id": "cid-2", "soul_id": "test_soul", "uid": "test_user"}]
 
 
 def test_memorize_tail_nothing_to_memorize_sets_terminal_progress(
