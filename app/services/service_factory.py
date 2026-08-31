@@ -275,7 +275,7 @@ def _get_service_from_payload(
 
     if isinstance(database_config, dict):
         ms = database_config.get("metadata_store")
-        if isinstance(ms, dict) and str(ms.get("provider") or "").lower() == "sqlite":
+        if isinstance(ms, dict) and str(ms.get("provider") or "sqlite").lower() == "sqlite":
             embedding_model = str((llm_profiles.get("embedding") or {}).get("embed_model") or "").strip()
             if not embedding_model:
                 raise HTTPException(status_code=500, detail="embedding profile is unavailable")
