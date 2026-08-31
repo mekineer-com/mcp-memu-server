@@ -148,7 +148,10 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     }
 
     out = service_factory._get_service_from_payload(
-        {"user": {"user_id": "u", "soul_id": "echo"}},
+        {
+            "user": {"user_id": "u", "soul_id": "echo"},
+            "database_config": {"metadata_store": {"provider": "sqlite", "dsn": "sqlite:///:memory:"}},
+        },
         config=cfg,
         default_llm_profiles_from_server_config=lambda _cfg: {
             "default": {
@@ -196,6 +199,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert captured["memorize_config"]["dynamic_category_cluster_size"] == 10
     assert captured["memorize_config"]["category_summary_target_words"] == 275
     assert captured["cutover_scope"] == {"user_id": "u", "soul_id": "echo"}
+    assert captured["database_config"]["metadata_store"]["embedding_profile"] == "e:3072"
 
 
 def test_client_llm_profiles_suppress_server_step_model_routing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -231,7 +235,7 @@ def test_client_llm_profiles_suppress_server_step_model_routing(monkeypatch: pyt
         config={"llm": {"step_models": {"memory_extract": "server-heavy", "reflection": "server-reflect"}}},
         default_llm_profiles_from_server_config=lambda _cfg: {
             "default": {"chat_model": "server-default"},
-            "embedding": {"chat_model": "server-default"},
+            "embedding": {"chat_model": "server-default", "embed_model": "server-embed"},
             "memory_extract": {"chat_model": "server-heavy"},
             "reflection": {"chat_model": "server-reflect"},
         },
@@ -282,7 +286,7 @@ def test_server_step_models_inject_when_client_profiles_absent(monkeypatch: pyte
         config={"llm": {"step_models": {"memory_extract": "server-heavy", "reflection": "server-reflect"}}},
         default_llm_profiles_from_server_config=lambda _cfg: {
             "default": {"chat_model": "server-default"},
-            "embedding": {"chat_model": "server-embed"},
+            "embedding": {"chat_model": "server-embed", "embed_model": "server-embed"},
             "memory_extract": {"chat_model": "server-heavy"},
             "reflection": {"chat_model": "server-reflect"},
         },

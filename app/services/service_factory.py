@@ -276,6 +276,14 @@ def _get_service_from_payload(
     if isinstance(database_config, dict):
         ms = database_config.get("metadata_store")
         if isinstance(ms, dict) and str(ms.get("provider") or "").lower() == "sqlite":
+            embedding_model = str((llm_profiles.get("embedding") or {}).get("embed_model") or "").strip()
+            if not embedding_model:
+                raise HTTPException(status_code=500, detail="embedding profile is unavailable")
+            expected_profile = f"{embedding_model}:3072"
+            supplied_profile = str(ms.get("embedding_profile") or expected_profile).strip()
+            if supplied_profile != expected_profile:
+                raise HTTPException(status_code=400, detail="database_config embedding profile mismatch")
+            ms["embedding_profile"] = expected_profile
             scope_hint2 = extract_scope(payload)
             soul_id2 = str((scope_hint2 or {}).get("soul_id") or "").strip()
             if not soul_id2:
