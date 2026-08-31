@@ -551,7 +551,7 @@ def calibration_report(
     }
 
 
-def score(db_path: Path, query_path: Path) -> None:
+def score(db_path: Path, query_path: Path, *, runtime_contract: bool = False) -> None:
     memories, excluded_low_confidence, frozen, target_indices = _frozen_inputs(
         db_path, query_path
     )
@@ -563,14 +563,18 @@ def score(db_path: Path, query_path: Path) -> None:
     openai_documents = np.asarray(
         [row["embedding"] for row in memories], dtype=np.float32
     )
-    gemini_documents, gemini_doc_seconds = gemini_embed(
-        [f"title: {row['memory_type']} | text: {row['summary']}" for row in memories],
-        query_path.with_name("gemini-documents.npy"),
-    )
-    gemini_queries, gemini_query_seconds = gemini_embed(
-        [f"task: search result | query: {query}" for query in query_texts],
-        query_path.with_name("gemini-queries.npy"),
-    )
+    if runtime_contract:
+        document_texts = [row["summary"] for row in memories]
+        gemini_query_texts = query_texts
+        document_checkpoint = query_path.with_name("gemini-documents-raw.npy")
+        query_checkpoint = query_path.with_name("gemini-queries-raw.npy")
+    else:
+        document_texts = [f"title: {row['memory_type']} | text: {row['summary']}" for row in memories]
+        gemini_query_texts = [f"task: search result | query: {query}" for query in query_texts]
+        document_checkpoint = query_path.with_name("gemini-documents.npy")
+        query_checkpoint = query_path.with_name("gemini-queries.npy")
+    gemini_documents, gemini_doc_seconds = gemini_embed(document_texts, document_checkpoint)
+    gemini_queries, gemini_query_seconds = gemini_embed(gemini_query_texts, query_checkpoint)
     old_ranks = ranks(openai_documents, openai_queries, target_indices)
     new_ranks = ranks(gemini_documents, gemini_queries, target_indices)
     gemini_better = int(np.sum(new_ranks < old_ranks))
@@ -587,6 +591,7 @@ def score(db_path: Path, query_path: Path) -> None:
         "excluded_low_confidence": excluded_low_confidence,
         "queries": len(query_rows),
         "dimensions": DIMENSIONS,
+        "gemini_text_contract": "bare runtime text" if runtime_contract else "prefixed diagnostic text",
         "baseline": {
             "model": "text-embedding-3-large",
             "documents": "stored production vectors",
@@ -749,7 +754,7 @@ def score_resource_smoke(manifest_path: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "phase", choices=("freeze", "score", "mixed", "calibrate", "resource-smoke")
+        "phase", choices=("freeze", "score", "runtime", "mixed", "calibrate", "resource-smoke")
     )
     parser.add_argument(
         "database",
@@ -777,6 +782,8 @@ def main() -> None:
         freeze_queries(args.database, args.queries)
     elif args.phase == "score":
         score(args.database, args.queries)
+    elif args.phase == "runtime":
+        score(args.database, args.queries, runtime_contract=True)
     elif args.phase == "calibrate":
         score_calibration(args.database, args.queries)
     else:

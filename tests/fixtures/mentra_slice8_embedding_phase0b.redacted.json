@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-08-29T22:27:00-05:00",
+  "recorded_at": "2026-08-31T03:12:00-05:00",
   "purpose": "Redacted Slice 8 Phase 0B sensory and private text-retrieval evidence; no private query, memory text, raw vector, database, or credential is included.",
   "provider": "Gemini API",
   "model": "gemini-embedding-2",
@@ -81,10 +81,52 @@
         "exact_sign_pvalue": 0.301758
       },
       "passes_owner_noninferiority_gate": true,
-      "decision": "Bare summaries reduce Recall@1 but remain within the owner's 2-point Recall@5 margin without a significant paired OpenAI advantage; this is the runtime-parity cutover measurement."
+      "decision": "Bare documents with prefixed queries were diagnostic only; superseded for production parity by runtime_bare_contract."
     },
     "cross_key_repeat": {
       "maximum_absolute_delta": 0.0
+    },
+    "runtime_bare_contract": {
+      "documents": 1484,
+      "excluded_low_confidence": 12,
+      "queries": 200,
+      "dimensions": 3072,
+      "gemini_text_contract": "bare runtime text",
+      "baseline": {
+        "model": "text-embedding-3-large",
+        "documents": "stored production vectors",
+        "recall_at_1": 0.95,
+        "recall_at_5": 0.995,
+        "recall_at_10": 0.995,
+        "mean_reciprocal_rank": 0.969024,
+        "median_rank": 1,
+        "maximum_rank": 14,
+        "query_seconds": 10.916
+      },
+      "candidate": {
+        "model": "gemini-embedding-2",
+        "recall_at_1": 0.925,
+        "recall_at_5": 0.985,
+        "recall_at_10": 0.99,
+        "mean_reciprocal_rank": 0.952278,
+        "median_rank": 1,
+        "maximum_rank": 58,
+        "document_seconds": 0.288,
+        "query_seconds": 10.396
+      },
+      "paired": {
+        "gemini_better": 7,
+        "equal": 180,
+        "openai_better": 13,
+        "exact_sign_pvalue": 0.263176,
+        "mean_rank_delta_gemini_minus_openai": 0.36,
+        "median_rank_delta_gemini_minus_openai": 0.0
+      },
+      "gate": {
+        "maximum_recall_at_5_drop": 0.02,
+        "recall_at_5_delta": -0.01,
+        "passed": true
+      }
     }
   },
   "mixed_text_image_pool": {
