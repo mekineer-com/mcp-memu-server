@@ -112,7 +112,7 @@ mcp-memu-server/
 |--------|---------|
 | `app/config.py` | `load_config()`, `save_config()`, `mask_config()`, storage path normalization, sqlite DSN scoping |
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
-| `app/services/consolidation.py` | Consolidation pipeline: segment queue → holistic due-dossier revision → anchor reflection → narrative_self + life-goals + companion memory + graph edges |
+| `app/services/consolidation.py` | Consolidation pipeline: 7-day clock on last success, then next memorize consumes all pending conversations → dossier revision → reflection |
 | `app/services/graph_edges.py` | Edge normalization + write/invalidate helpers (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`) |
 | `app/services/activity_messages.py` | `activity_messages` scoped-SQLite table for synthetic self-DM activity recaps (`My Activities:`) |
 | `app/services/whatsapp_outbounds.py` | `whatsapp_pending_outbounds` scoped-SQLite queue for WhatsApp replies/attachments |
@@ -187,7 +187,7 @@ retrieve:   apimw_enabled, apimw_cadence, apimw_memory_count, apimw_random_count
 claude_code*: top-level keys, not a block — claude_code, claude_code_model, claude_code_effort, claude_code_permission_mode, claude_code_settings, claude_code_workspace, claude_code_timeout_seconds
 memorize:   min_chunk_tokens, episodes_per_segment, background_summary_tokens, background_extra_messages_tokens, enable_confidence_normalization, semantic_dedupe_enabled, semantic_dedupe_similarity_threshold
 procedural: yaml_dir, db_path
-consolidation_interval_days: pending segment window (default 7)
+consolidation_interval_days: days since last successful run (default 7); next memorize then consolidates all pending conversations
 turn_response_sentences: soul reply length target
 debug:      log_prompts (bool)
 ```

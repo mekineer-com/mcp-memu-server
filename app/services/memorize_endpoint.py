@@ -143,6 +143,7 @@ class MemorizeContext:
     logger: Any
     min_chunk_tokens: int
     sleep_split_min_lull_seconds: int
+    consolidation_due: Callable[[dict[str, Any]], bool]
 
 
 @dataclass(slots=True)
@@ -681,7 +682,15 @@ async def run_memorize_segments(
                     )
 
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
+            should_consolidate = False
             if conversation_id and (has_memory_results or had_existing_pending):
+                fresh_state, _, _ = run_ctx.load_turn_state_and_soul_card(
+                    conversation_id,
+                    user_id=uid,
+                    soul_id=soul_id,
+                )
+                should_consolidate = ctx.consolidation_due(fresh_state)
+            if should_consolidate:
                 consolidation_started = True
                 _set_memorize_progress(
                     ctx.memorize_progress,
@@ -1318,7 +1327,11 @@ async def memorize_endpoint(
                     raw_memorize_segments = [(resource_url, merged[tail_start:], tail_start, len(merged) - 1)]
                 if not raw_memorize_segments:
                     progress_key = ctx.memorize_lock_key(uid, soul_id)
-                    if conversation_id and has_pending_segments:
+                    if (
+                        conversation_id
+                        and has_pending_segments
+                        and ctx.consolidation_due(state_out)
+                    ):
                         _set_memorize_progress(
                             ctx.memorize_progress,
                             progress_key,

@@ -1126,17 +1126,13 @@ def test_conversation_state_schema_migrates_pending_segment_ids_from_old_name(
 
 
 @pytest.mark.asyncio
-async def test_run_consolidation_task_repeats_until_pending_span_is_short(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[int] = []
     state_writes: list[dict[str, Any]] = []
 
     async def fake_pipeline_once(**_kwargs):
         calls.append(len(calls) + 1)
-        if len(calls) == 1:
-            return {"status": "ok", "result": {"remaining_segment_ids": ["seg-2", "seg-3"]}}
-        if len(calls) == 2:
-            return {"status": "ok", "result": {"remaining_segment_ids": ["seg-3"]}}
-        return {"status": "skipped", "reason": "pending_span_too_short"}
+        return {"status": "ok", "result": {}}
 
     def fake_write_state(_cid, *, soul_id, user_id, updates):
         state_writes.append({"soul_id": soul_id, "user_id": user_id, "updates": updates})
@@ -1153,11 +1149,26 @@ async def test_run_consolidation_task_repeats_until_pending_span_is_short(monkey
     )
 
     assert out == {"ok": True, "status": "ok"}
-    assert len(calls) == 3
+    assert len(calls) == 1
     assert state_writes[-1]["updates"] == {
         "last_consolidation_error": None,
         "last_consolidation_error_at": None,
     }
+
+
+def test_should_run_consolidation_uses_soul_clock() -> None:
+    now = datetime.now(UTC)
+    assert main._should_run_consolidation({}) is True
+    assert main._should_run_consolidation({"last_consolidation_at": now.isoformat()}) is False
+    assert (
+        main._should_run_consolidation(
+            {
+                "consolidation_in_progress": True,
+                "consolidation_started_at": now.isoformat(),
+            }
+        )
+        is False
+    )
 
 
 @pytest.mark.asyncio

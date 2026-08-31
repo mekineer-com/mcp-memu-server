@@ -1,5 +1,7 @@
+import json
 import sqlite3
 import tempfile
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +18,7 @@ from app.services.consolidation import _is_first_reflection
 from app.services.consolidation import _parse_reflection_xml
 from app.services.consolidation import _remap_edges_with_memory_ids
 from app.services.consolidation import _select_prompt_objective
-from app.services.consolidation import _select_interval_segment_window
+from app.services.consolidation import consolidation_due
 from app.services.consolidation import gather_consolidation_inputs
 from app.services.consolidation import prepare_dossier_consolidation_context
 from app.services.consolidation import preflight_consolidation_profiles
@@ -442,61 +444,12 @@ def test_build_segment_inputs_dates_received_at_only_rows() -> None:
     assert rows[0]["happened_at"] == datetime(2026, 4, 16, 12, 0, tzinfo=UTC)
 
 
-def test_select_interval_segment_window_uses_oldest_pending_baseline() -> None:
-    rows = [
-        {"segment_id": "cid:0-3", "start_idx": 0, "end_idx": 3, "happened_at": datetime(2026, 1, 1, tzinfo=UTC)},
-        {"segment_id": "cid:4-7", "start_idx": 4, "end_idx": 7, "happened_at": datetime(2026, 1, 4, tzinfo=UTC)},
-        {"segment_id": "cid:8-9", "start_idx": 8, "end_idx": 9, "happened_at": datetime(2026, 1, 8, tzinfo=UTC)},
-        {"segment_id": "cid:10-11", "start_idx": 10, "end_idx": 11, "happened_at": datetime(2026, 1, 12, tzinfo=UTC)},
-    ]
+def test_consolidation_due_uses_last_success_clock() -> None:
+    now = datetime(2026, 1, 8, tzinfo=UTC)
 
-    out = _select_interval_segment_window(rows, interval_days=7, force=False)
-
-    assert out["selected_segment_ids"] == ["cid:0-3", "cid:4-7", "cid:8-9"]
-    assert out["remaining_segment_ids"] == ["cid:10-11"]
-    assert out["reason"] is None
-
-
-def test_select_interval_segment_window_leaves_short_tail_pending() -> None:
-    rows = [
-        {"segment_id": "cid:0-3", "start_idx": 0, "end_idx": 3, "happened_at": datetime(2026, 1, 1, tzinfo=UTC)},
-        {"segment_id": "cid:4-7", "start_idx": 4, "end_idx": 7, "happened_at": datetime(2026, 1, 4, tzinfo=UTC)},
-    ]
-
-    out = _select_interval_segment_window(
-        rows, interval_days=7, force=False, now=datetime(2026, 1, 5, tzinfo=UTC)
-    )
-
-    assert out["selected_segment_ids"] == []
-    assert out["remaining_segment_ids"] == ["cid:0-3", "cid:4-7"]
-    assert out["reason"] == "pending_span_too_short"
-
-
-def test_select_interval_segment_window_force_consumes_all_pending() -> None:
-    rows = [
-        {"segment_id": "cid:0-3", "start_idx": 0, "end_idx": 3, "happened_at": datetime(2026, 1, 1, tzinfo=UTC)},
-        {"segment_id": "cid:4-7", "start_idx": 4, "end_idx": 7, "happened_at": datetime(2026, 1, 4, tzinfo=UTC)},
-    ]
-
-    out = _select_interval_segment_window(rows, interval_days=7, force=True)
-
-    assert out["selected_segment_ids"] == ["cid:0-3", "cid:4-7"]
-    assert out["remaining_segment_ids"] == []
-    assert out["reason"] is None
-
-
-def test_select_interval_segment_window_releases_quiet_conversation_when_due() -> None:
-    rows = [
-        {"segment_id": "cid:0-3", "start_idx": 0, "end_idx": 3, "happened_at": datetime(2026, 1, 1, tzinfo=UTC)},
-    ]
-
-    out = _select_interval_segment_window(
-        rows, interval_days=7, force=False, now=datetime(2026, 1, 8, tzinfo=UTC)
-    )
-
-    assert out["selected_segment_ids"] == ["cid:0-3"]
-    assert out["remaining_segment_ids"] == []
-    assert out["reason"] is None
+    assert consolidation_due(None, interval_days=7, now=now)
+    assert not consolidation_due("2026-01-01T00:00:01+00:00", interval_days=7, now=now)
+    assert consolidation_due("2026-01-01T00:00:00+00:00", interval_days=7, now=now)
 
 
 def test_remap_edges_with_memory_ids_accepts_numbered_and_bracketed_refs() -> None:
@@ -530,7 +483,7 @@ def test_write_memory_edges_ignores_invalid_confidence() -> None:
     ) == 0
 
 
-def test_write_consolidation_outputs_preserves_remaining_pending_segment_ids() -> None:
+def test_write_consolidation_outputs_consumes_each_conversation_snapshot() -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp_dir = Path(td)
         db_path = tmp_dir / "soul.db"
@@ -542,6 +495,7 @@ def test_write_consolidation_outputs_preserves_remaining_pending_segment_ids() -
             con.close()
 
         cid = "conv-clear"
+        other_cid = "conv-other"
         soul_id = "SoulX"
         user_id = "UserX"
 
@@ -551,6 +505,13 @@ def test_write_consolidation_outputs_preserves_remaining_pending_segment_ids() -
             soul_id=soul_id,
             user_id=user_id,
             updates={"pending_segment_ids": ["ep:1-2", "ep:3-4"], "intentions_active": []},
+        )
+        write_conversation_state(
+            other_cid,
+            sqlite_current_path=lambda _user, _soul: db_path,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={"pending_segment_ids": ["other:1-2", "other:new"]},
         )
 
         deps = ConsolidationDeps(
@@ -591,8 +552,11 @@ def test_write_consolidation_outputs_preserves_remaining_pending_segment_ids() -
             _SvcStub(),
             inputs={
                 "db_path": db_path,
-                "selected_segment_ids": ["ep:1-2"],
-                "remaining_segment_ids": ["ep:3-4"],
+                "selected_segment_ids": ["ep:1-2", "other:1-2"],
+                "selected_segment_ids_by_conversation": {
+                    cid: ["ep:1-2"],
+                    other_cid: ["other:1-2"],
+                },
             },
             llm_results={
                 "narrative_self": None,
@@ -611,9 +575,16 @@ def test_write_consolidation_outputs_preserves_remaining_pending_segment_ids() -
             user_id=user_id,
         )
 
-        assert result["consumed_segment_ids"] == ["ep:1-2"]
-        assert result["remaining_segment_ids"] == ["ep:3-4"]
+        assert result["consumed_segment_ids"] == ["ep:1-2", "other:1-2"]
         assert result["state"]["pending_segment_ids"] == ["ep:3-4"]
+        other_state, _ = write_conversation_state(
+            other_cid,
+            sqlite_current_path=lambda _user, _soul: db_path,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={},
+        )
+        assert other_state["pending_segment_ids"] == ["other:new"]
 
 
 def test_gather_consolidation_inputs_skips_when_no_pending_segments() -> None:
@@ -666,8 +637,6 @@ def test_gather_consolidation_inputs_skips_when_no_pending_segments() -> None:
             conversation_id=cid,
             soul_id=soul_id,
             user_id=user_id,
-            force=False,
-            interval_days=7,
             stale_after=timedelta(seconds=3600),
         )
         assert out == {"status": "skip", "reason": "no_pending_segments"}
@@ -681,6 +650,80 @@ def test_gather_consolidation_inputs_skips_when_no_pending_segments() -> None:
         assert state is not None
         assert bool(state.get("consolidation_in_progress")) is False
         assert state.get("consolidation_started_at") is None
+
+
+def test_gather_consolidation_inputs_collects_all_pending_conversations(tmp_path: Path) -> None:
+    db_path = tmp_path / "soul.db"
+    con = sqlite3.connect(db_path)
+    try:
+        sqlite_ensure_conversation_state_schema(con)
+        con.executescript(
+            """
+CREATE TABLE memory_items (
+    id TEXT, memory_ref INTEGER, summary TEXT, memory_type TEXT,
+    happened_at DATETIME, created_at DATETIME, soul_id TEXT, user_id TEXT,
+    conversation_id TEXT, segment_id TEXT, merged_into TEXT
+);
+CREATE TABLE triples (
+    subject_id TEXT, predicate TEXT, object_id TEXT, valid_to DATETIME
+);
+CREATE TABLE resources (
+    soul_id TEXT, user_id TEXT, created_at DATETIME, memory_prior_context TEXT
+);
+"""
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    soul_id = "SoulX"
+    user_id = "UserX"
+    chat_dirs: dict[str, Path] = {}
+    expected: dict[str, list[str]] = {}
+    for index, cid in enumerate(("conv-a", "conv-b")):
+        segment_id = f"{cid}:0-0"
+        expected[cid] = [segment_id]
+        write_conversation_state(
+            cid,
+            sqlite_current_path=lambda _user, _soul: db_path,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={"pending_segment_ids": [segment_id]},
+        )
+        chat_dir = tmp_path / cid
+        segments_dir = chat_dir / "segments"
+        segments_dir.mkdir(parents=True)
+        (chat_dir / "manifest.json").write_text(
+            json.dumps({"segments": [{"start": 0, "end": 0}]}),
+            encoding="utf-8",
+        )
+        (segments_dir / "segment_0.json").write_text(
+            json.dumps([{
+                "role": "user",
+                "content": f"message {index}",
+                "ts_ms": 1_767_225_600_000 + index,
+                "source_conversation_id": cid,
+            }]),
+            encoding="utf-8",
+        )
+        chat_dirs[cid] = chat_dir
+
+    deps = _make_consolidation_deps(db_path, tmp_path)
+    deps = replace(
+        deps,
+        find_chat_dir_for_conversation=lambda _a, _b, _c, cid: chat_dirs.get(cid),
+    )
+    out = gather_consolidation_inputs(
+        deps,
+        conversation_id="conv-a",
+        soul_id=soul_id,
+        user_id=user_id,
+        stale_after=timedelta(seconds=3600),
+    )
+
+    assert out["selected_segment_ids_by_conversation"] == expected
+    assert [row["conversation_id"] for row in out["segment_inputs"]] == ["conv-a", "conv-b"]
+    assert [row["content"] for row in out["current_chat_messages"]] == ["message 0", "message 1"]
 
 
 def _make_consolidation_deps(db_path: Path, tmp_dir: Path) -> ConsolidationDeps:

@@ -425,59 +425,14 @@ def _format_intention_activity_for_prompt(rows: list[dict[str, str]]) -> str:
     return "\n".join(lines) if lines else "Your intentions have been steady."
 
 
-def _select_interval_segment_window(
-    segment_inputs: list[dict[str, Any]],
+def consolidation_due(
+    last_consolidation_at: Any,
     *,
     interval_days: int,
-    force: bool,
     now: datetime | None = None,
-) -> dict[str, Any]:
-    if not segment_inputs:
-        return {"selected_segment_ids": [], "remaining_segment_ids": [], "reason": "no_pending_segments"}
-
-    ordered = sorted(
-        segment_inputs,
-        key=lambda row: (
-            row.get("happened_at") or datetime.max.replace(tzinfo=UTC),
-            int(row.get("start_idx") or 0),
-            int(row.get("end_idx") or 0),
-            str(row.get("segment_id") or ""),
-        ),
-    )
-    all_ids = [str(row.get("segment_id") or "").strip() for row in ordered if str(row.get("segment_id") or "").strip()]
-    if force:
-        return {"selected_segment_ids": all_ids, "remaining_segment_ids": [], "reason": None}
-
-    missing = [str(row.get("segment_id") or "") for row in ordered if not isinstance(row.get("happened_at"), datetime)]
-    if missing:
-        raise HTTPException(
-            status_code=400,
-            detail=f"pending consolidation segment has no timestamp: {missing[0]}",
-        )
-
-    baseline = ordered[0]["happened_at"]
-    due_at = baseline + timedelta(days=max(1, int(interval_days)))
-    selected: list[str] = []
-    for idx, row in enumerate(ordered):
-        segment_id = str(row.get("segment_id") or "").strip()
-        if not segment_id:
-            continue
-        selected.append(segment_id)
-        if row["happened_at"] >= due_at:
-            return {
-                "selected_segment_ids": selected,
-                "remaining_segment_ids": all_ids[idx + 1 :],
-                "reason": None,
-            }
-
-    if (now or datetime.now(UTC)) >= due_at:
-        return {"selected_segment_ids": all_ids, "remaining_segment_ids": [], "reason": None}
-
-    return {
-        "selected_segment_ids": [],
-        "remaining_segment_ids": all_ids,
-        "reason": "pending_span_too_short",
-    }
+) -> bool:
+    last = parse_iso_datetime(last_consolidation_at)
+    return last is None or (now or datetime.now(UTC)) >= last + timedelta(days=max(1, int(interval_days)))
 
 
 def _messages_for_segment_inputs(
@@ -683,8 +638,6 @@ def gather_consolidation_inputs(
     conversation_id: str,
     soul_id: str,
     user_id: str,
-    force: bool,
-    interval_days: int,
     stale_after: timedelta,
 ) -> dict[str, Any]:
     db_path = deps.sqlite_current_path(user_id, soul_id)
@@ -718,8 +671,16 @@ def gather_consolidation_inputs(
                 raise HTTPException(404, "conversation state not found after stale-lock reset")
             state = reread
 
-        pending_segment_ids = deps.normalize_text_list(state.get("pending_segment_ids"))
-        if not pending_segment_ids:
+        pending_by_conversation = {
+            str(row["conversation_id"]): deps.normalize_text_list(row["pending_segment_ids"])
+            for row in con.execute(
+                "SELECT conversation_id, pending_segment_ids FROM conversations "
+                "WHERE soul_id = ? AND user_id = ? ORDER BY conversation_id",
+                (soul_id, user_id),
+            ).fetchall()
+            if deps.normalize_text_list(row["pending_segment_ids"])
+        }
+        if not pending_by_conversation:
             return {"status": "skip", "reason": "no_pending_segments"}
 
         life_goal_rows = con.execute(
@@ -767,25 +728,39 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
         narrative_self = str(state.get("narrative_self") or "").strip() or None
 
         segment_inputs: list[dict[str, Any]] = []
-        selected_segment_ids: list[str] = []
-        remaining_segment_ids: list[str] = []
-        messages: list[dict[str, Any]] = []
-        if pending_segment_ids:
-            storage_dir = deps.get_storage_dir(deps.config)
-            chats_dir = (storage_dir / "st_chats").resolve()
-            chat_dir = deps.find_chat_dir_for_conversation(chats_dir, user_id, soul_id, conversation_id)
+        current_chat_messages: list[dict[str, Any]] = []
+        selected_by_conversation: dict[str, list[str]] = {}
+        storage_dir = deps.get_storage_dir(deps.config)
+        chats_dir = (storage_dir / "st_chats").resolve()
+        for pending_conversation_id, pending_segment_ids in pending_by_conversation.items():
+            chat_dir = deps.find_chat_dir_for_conversation(
+                chats_dir, user_id, soul_id, pending_conversation_id
+            )
             if chat_dir is None:
-                raise HTTPException(status_code=404, detail="conversation resource not found")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"conversation resource not found: {pending_conversation_id}",
+                )
             manifest_path = (chat_dir / "manifest.json").resolve()
             if not manifest_path.exists():
-                raise HTTPException(status_code=404, detail="conversation manifest not found")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"conversation manifest not found: {pending_conversation_id}",
+                )
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                raise HTTPException(status_code=400, detail="conversation manifest unreadable") from exc
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"conversation manifest unreadable: {pending_conversation_id}",
+                ) from exc
             raw_segments = manifest.get("segments") if isinstance(manifest, dict) else None
             if not isinstance(raw_segments, list) or not raw_segments:
-                raise HTTPException(status_code=400, detail="conversation manifest has no segments")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"conversation manifest has no segments: {pending_conversation_id}",
+                )
+            messages: list[dict[str, Any]] = []
             segments_dir = (chat_dir / "segments").resolve()
             if segments_dir.is_dir():
                 for ep_file in sorted(segments_dir.glob("*.json"), key=_segment_file_sort_key):
@@ -795,26 +770,17 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
                         continue
                     if isinstance(parsed, list):
                         messages.extend(m for m in parsed if isinstance(m, dict))
-            segment_inputs = build_segment_inputs(messages, pending_segment_ids)
-            if len(segment_inputs) != len(pending_segment_ids):
-                raise HTTPException(status_code=400, detail="queued segments are not present in conversation history")
-            window = _select_interval_segment_window(
-                segment_inputs,
-                interval_days=interval_days,
-                force=force,
-            )
-            selected_segment_ids = list(window["selected_segment_ids"])
-            remaining_segment_ids = list(window["remaining_segment_ids"])
-            if not selected_segment_ids:
-                return {"status": "skip", "reason": window.get("reason") or "pending_span_too_short"}
-            selected_segment_id_set = set(selected_segment_ids)
-            segment_inputs = [
-                row for row in segment_inputs
-                if str(row.get("segment_id") or "").strip() in selected_segment_id_set
-            ]
-
-            for entry in segment_inputs:
+            conversation_segments = build_segment_inputs(messages, pending_segment_ids)
+            if len(conversation_segments) != len(pending_segment_ids):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"queued segments are not present in conversation history: {pending_conversation_id}",
+                )
+            selected_by_conversation[pending_conversation_id] = list(pending_segment_ids)
+            current_chat_messages.extend(_messages_for_segment_inputs(messages, conversation_segments))
+            for entry in conversation_segments:
                 segment_id = str(entry["segment_id"])
+                entry["conversation_id"] = pending_conversation_id
                 rows = con.execute(
                     """
 SELECT id, memory_ref, summary, memory_type, happened_at, created_at
@@ -830,7 +796,7 @@ WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND segment_id = ? AND
 ORDER BY created_at ASC, id ASC
 LIMIT 24
 """,
-                    (soul_id, user_id, conversation_id, segment_id),
+                    (soul_id, user_id, pending_conversation_id, segment_id),
                 ).fetchall()
                 entry["memory_summaries"] = [
                     {
@@ -843,6 +809,13 @@ LIMIT 24
                     for row in rows
                     if str(row["id"] or "").strip() and str(row["summary"] or "").strip()
                 ]
+            segment_inputs.extend(conversation_segments)
+
+        selected_segment_ids = [
+            segment_id
+            for pending_ids in selected_by_conversation.values()
+            for segment_id in pending_ids
+        ]
 
         prior_context_memory_items: list[dict[str, Any]] = []
         all_prior_context_ids: list[str] = []
@@ -927,18 +900,18 @@ LIMIT 24
             "status": "ready",
             "db_path": db_path,
             "state": state,
-            "segment_ids": pending_segment_ids,
+            "segment_ids": selected_segment_ids,
             "active_life_goals": active_goals,
             "removed_life_goals": removed_goals,
             "intention_activity": intention_activity,
             "segment_inputs": segment_inputs,
-            "current_chat_messages": _messages_for_segment_inputs(messages, segment_inputs),
+            "current_chat_messages": current_chat_messages,
             "narrative_self": narrative_self,
             "last_consolidation_at": state.get("last_consolidation_at"),
             "started_at": now.isoformat(),
             "prior_context_memory_items": prior_context_memory_items,
             "selected_segment_ids": selected_segment_ids,
-            "remaining_segment_ids": remaining_segment_ids,
+            "selected_segment_ids_by_conversation": selected_by_conversation,
         }
     finally:
         con.close()
@@ -1281,13 +1254,25 @@ INSERT INTO life_goals (
             if aid and aid.lower() != "relax":
                 current_intentions = remove_intentions(current_intentions, [aid])
 
-    # Preflight the state writer before companion and graph side effects.
-    deps.write_conversation_state(
-        conversation_id,
-        soul_id=soul_id,
-        user_id=user_id,
-        updates={},
-    )
+    selected_by_conversation = {
+        str(cid): [str(segment_id) for segment_id in segment_ids]
+        for cid, segment_ids in (inputs.get("selected_segment_ids_by_conversation") or {}).items()
+    }
+    if not selected_by_conversation:
+        selected_by_conversation = {
+            conversation_id: [
+                str(segment_id)
+                for segment_id in (inputs.get("selected_segment_ids") or [])
+            ]
+        }
+    # Preflight every state row before companion and graph side effects.
+    for pending_conversation_id in selected_by_conversation:
+        deps.write_conversation_state(
+            pending_conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={},
+        )
 
     if old_narrative_text:
         snapshot_previous_narrative_self(
@@ -1311,22 +1296,26 @@ INSERT INTO life_goals (
     scope = {"user_id": user_id, "soul_id": soul_id}
     wrote = write_memory_edges(svc.database.triple_repo, llm_results["edges"], scope=scope)
     invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results["edge_invalidations"], scope=scope)
-    remaining_segment_ids = [
-        str(segment_id).strip()
-        for segment_id in (inputs.get("remaining_segment_ids") or [])
-        if str(segment_id).strip()
-    ]
-
     consumed_segment_ids = [
         str(segment_id).strip()
         for segment_id in (inputs.get("selected_segment_ids") or [])
         if str(segment_id).strip()
     ]
+    for pending_conversation_id, pending_ids in selected_by_conversation.items():
+        if pending_conversation_id == conversation_id:
+            continue
+        deps.write_conversation_state(
+            pending_conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={"remove_pending_segment_ids": pending_ids},
+        )
+
     state_updates: dict[str, Any] = {
         # Subtract only what this run consumed: a memorize that finished during
         # the LLM phase may have appended new pending ids, and an absolute
         # overwrite with the launch-time snapshot would silently drop them.
-        "remove_pending_segment_ids": consumed_segment_ids,
+        "remove_pending_segment_ids": selected_by_conversation.get(conversation_id, []),
         "last_consolidation_at": now_iso,
         "consolidation_in_progress": False,
         "consolidation_started_at": None,
@@ -1347,7 +1336,6 @@ INSERT INTO life_goals (
         "companion_memory_id": companion_memory_id,
         "edges_written": wrote,
         "edges_invalidated": invalidated,
-        "consumed_segment_ids": inputs.get("selected_segment_ids") or [],
-        "remaining_segment_ids": remaining_segment_ids,
+        "consumed_segment_ids": consumed_segment_ids,
         "state": state_after,
     }

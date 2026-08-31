@@ -73,6 +73,7 @@ from app.services import mentra_routes as _mentra_routes
 from app.services import whatsapp_outbounds as _whatsapp_outbounds
 from app.services.consolidation import (
     ConsolidationDeps,
+    consolidation_due as _consolidation_due,
     gather_consolidation_inputs as _gather_consolidation_inputs,
     prepare_dossier_consolidation_context as _prepare_dossier_consolidation_context,
     preflight_consolidation_profiles as _preflight_consolidation_profiles,
@@ -1955,7 +1956,6 @@ async def _run_consolidation_pipeline_once(
     soul_id: str,
     user_id: str,
     marker_acquired: asyncio.Event,
-    force: bool = False,
 ) -> dict[str, Any]:
     consolidation_profile = _resolve_profile_if_configured(svc, "consolidation")
     _preflight_consolidation_profiles(svc, consolidation_profile)
@@ -1965,8 +1965,6 @@ async def _run_consolidation_pipeline_once(
             conversation_id=conversation_id,
             soul_id=soul_id,
             user_id=user_id,
-            force=force,
-            interval_days=_consolidation_interval_days_from_cfg(_CONFIG),
             stale_after=timedelta(seconds=3600),
         )
     if prep.get("status") == "skip":
@@ -2036,34 +2034,24 @@ async def _run_consolidation_task(
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
     marker_acquired = asyncio.Event()
     try:
-        completed = 0
-        while True:
-            marker_acquired.clear()
-            out = await _run_consolidation_pipeline_once(
-                svc=svc,
-                deps=deps,
-                state_lock=state_lock,
-                conversation_id=conversation_id,
-                soul_id=soul_id,
-                user_id=uid,
-                marker_acquired=marker_acquired,
-                force=False,
-            )
-            if out.get("status") == "skipped":
-                if completed:
-                    break
-                if progress_key and memorize_progress is not None:
-                    _memorize_endpoint._set_memorize_progress(
-                        memorize_progress,
-                        progress_key,
-                        active=False,
-                        last_result="success",
-                    )
-                return {"ok": True, "status": "skipped"}
-            completed += 1
-            result = out.get("result") or {}
-            if not result.get("remaining_segment_ids"):
-                break
+        out = await _run_consolidation_pipeline_once(
+            svc=svc,
+            deps=deps,
+            state_lock=state_lock,
+            conversation_id=conversation_id,
+            soul_id=soul_id,
+            user_id=uid,
+            marker_acquired=marker_acquired,
+        )
+        if out.get("status") == "skipped":
+            if progress_key and memorize_progress is not None:
+                _memorize_endpoint._set_memorize_progress(
+                    memorize_progress,
+                    progress_key,
+                    active=False,
+                    last_result="success",
+                )
+            return {"ok": True, "status": "skipped"}
         _write_conversation_state(
             conversation_id,
             soul_id=soul_id,
@@ -2113,6 +2101,22 @@ async def _run_consolidation_task(
         return {"ok": False, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
 
+def _should_run_consolidation(state: dict[str, Any]) -> bool:
+    now = datetime.now(UTC)
+    started_at = parse_iso_datetime(state.get("consolidation_started_at"))
+    if (
+        state.get("consolidation_in_progress")
+        and started_at is not None
+        and now - started_at <= timedelta(seconds=3600)
+    ):
+        return False
+    return _consolidation_due(
+        state.get("last_consolidation_at"),
+        interval_days=_consolidation_interval_days_from_cfg(_CONFIG),
+        now=now,
+    )
+
+
 def _make_memorize_context() -> _memorize_endpoint.MemorizeContext:
     return _memorize_endpoint.MemorizeContext(
         get_memorize_lock=_get_memorize_lock,
@@ -2124,6 +2128,7 @@ def _make_memorize_context() -> _memorize_endpoint.MemorizeContext:
         logger=logger,
         min_chunk_tokens=_MIN_CHUNK_TOKENS,
         sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
+        consolidation_due=_should_run_consolidation,
     )
 
 
@@ -2285,7 +2290,6 @@ async def force_consolidation(
             soul_id=soul_id,
             user_id=uid,
             marker_acquired=marker_acquired,
-            force=True,
         )
         if out.get("status") == "skipped":
             reason = str(out.get("reason") or "")
