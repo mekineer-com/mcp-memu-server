@@ -843,6 +843,38 @@ def test_retrieve_renders_all_items_selected_by_memu() -> None:
     assert "memory 13" in prompt
 
 
+def test_retrieve_renders_safe_visual_memory_candidates() -> None:
+    prompt = build_turn_prompt(
+        user_message="Do you remember that doorway?",
+        history=[],
+        prior_context=None,
+        retrieve_rag={
+            "resource_candidates": {
+                "media": [
+                    {
+                        "id": "photo-1",
+                        "modality": "image",
+                        "caption": "A red doorway beside a bicycle.",
+                        "evidence": "media",
+                        "score": 0.99,
+                        "local_path": "/private/photo.jpg",
+                    }
+                ],
+                "caption": [],
+            }
+        },
+        all_categories_summary=None,
+        memory_cache=[],
+        intentions_active={},
+    )
+
+    assert "Visual memory candidates:" in prompt
+    assert "Media evidence:" in prompt
+    assert "[resource:photo-1] [image] A red doorway beside a bicycle." in prompt
+    assert "0.99" not in prompt
+    assert "/private/photo.jpg" not in prompt
+
+
 # --- attachment gate ---
 
 def test_parse_attachment_accepts_path_inside_workspace(tmp_path: Path) -> None:

@@ -3765,6 +3765,7 @@ async def conversation_retrieve(
         result_categories = result.get("categories") if isinstance(result, dict) else None
         result_items = result.get("items") if isinstance(result, dict) else None
         result_resources = result.get("resources") if isinstance(result, dict) else None
+        result_resource_candidates = result.get("resource_candidates") if isinstance(result, dict) else None
         queries = out.get("queries")
         fallback_queries = safe.get("queries")
         query_count = (
@@ -3786,6 +3787,9 @@ async def conversation_retrieve(
                     "categories": len(result_categories) if isinstance(result_categories, list) else 0,
                     "items": len(result_items) if isinstance(result_items, list) else 0,
                     "resources": len(result_resources) if isinstance(result_resources, list) else 0,
+                    "visualCandidates": sum(
+                        len(rows) for rows in result_resource_candidates.values() if isinstance(rows, list)
+                    ) if isinstance(result_resource_candidates, dict) else 0,
                 },
                 "where": _extract_retrieve_where({**safe, "conversation_id": cid}),
                 "method": out.get("method"),

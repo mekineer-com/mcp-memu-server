@@ -486,6 +486,32 @@ def _render_retrieve(
     )
 
 
+def _render_visual_memory_candidates(result: Any) -> str:
+    if not isinstance(result, dict):
+        return ""
+    lanes = result.get("resource_candidates")
+    if not isinstance(lanes, dict):
+        return ""
+
+    lines = [
+        "Visual memory candidates:",
+        "Candidates may be wrong. Captions are descriptions, not visual perception.",
+    ]
+    for lane in ("media", "caption"):
+        candidates = lanes.get(lane)
+        if not isinstance(candidates, list) or not candidates:
+            continue
+        lines.append(f"{lane.capitalize()} evidence:")
+        for rank, candidate in enumerate(candidates[:5], 1):
+            if not isinstance(candidate, dict):
+                continue
+            resource_id = _text(candidate.get("id"))
+            modality = _text(candidate.get("modality")) or "media"
+            caption = _text(candidate.get("caption")) or "(no caption)"
+            lines.append(f"{rank}. [resource:{resource_id}] [{modality}] {caption}")
+    return "\n".join(lines) if len(lines) > 2 else ""
+
+
 def render_retrieve_context(result: Any, *, now: datetime | None = None) -> str:
     categories, memories, _ = _render_retrieve(result, now=now)
     blocks: list[str] = []
@@ -493,6 +519,9 @@ def render_retrieve_context(result: Any, *, now: datetime | None = None) -> str:
         blocks.append(f"Dossiers:\n{categories}")
     if memories:
         blocks.append(f"Memories:\n{memories}")
+    visual_candidates = _render_visual_memory_candidates(result)
+    if visual_candidates:
+        blocks.append(visual_candidates)
     return "\n\n".join(blocks)
 
 
@@ -758,6 +787,9 @@ def build_turn_context_block(
         context_blocks.extend([category_paragraph, ""])
     if rendered_memories_block:
         context_blocks.extend(["My Memories:", rendered_memories_block, ""])
+    visual_candidates = _render_visual_memory_candidates(retrieve_rag)
+    if visual_candidates:
+        context_blocks.extend([visual_candidates, ""])
     if has_prior:
         context_blocks.extend(["Prior Context:", prior_text, ""])
 
