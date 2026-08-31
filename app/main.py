@@ -4920,6 +4920,15 @@ async def mcp_memu_retrieve(req: _mcp_tools.MemuRetrieveRequest):
     )
 
 
+@app.post("/integration/memu/sensory-search", operation_id="memu_sensory_search", tags=["mcp_tools"])
+async def mcp_memu_sensory_search(req: _mcp_tools.MemuSensorySearchRequest):
+    async def _search(query: str, scope: dict[str, str]) -> dict[str, Any]:
+        svc = _get_service_from_payload({"user": scope})
+        return await svc.sensory_search(query, where=scope)
+
+    return await _mcp_tools.memu_sensory_search_endpoint(req, search=_search)
+
+
 @app.post("/integration/memu/memorize", operation_id="memu_memorize", tags=["mcp_tools"])
 async def mcp_memu_memorize(req: _mcp_tools.MemuMemorizeRequest):
     async def _memorize_call(payload: dict[str, Any], force: bool) -> dict[str, Any]:
@@ -5012,6 +5021,7 @@ try:
         include_operations=[
             "memu_turn",
             "memu_retrieve",
+            "memu_sensory_search",
             "memu_memorize",
             "memu_consolidate",
         ],

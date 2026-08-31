@@ -18,8 +18,33 @@ def test_mcp_tool_registration_exposes_expected_operations() -> None:
     assert operation_ids == {
         "memu_turn",
         "memu_retrieve",
+        "memu_sensory_search",
         "memu_memorize",
         "memu_consolidate",
+    }
+
+
+@pytest.mark.asyncio
+async def test_memu_sensory_search_is_scoped() -> None:
+    captured: dict[str, Any] = {}
+
+    async def search(query: str, scope: dict[str, str]) -> dict[str, Any]:
+        captured.update(query=query, scope=scope)
+        return {"visual_memory_query": query, "resource_candidates": {}}
+
+    result = await mcp_tools.memu_sensory_search_endpoint(
+        mcp_tools.MemuSensorySearchRequest(user_id="person", soul_id="soul", query=" red doorway "),
+        search=search,
+    )
+
+    assert captured == {
+        "query": "red doorway",
+        "scope": {"user_id": "person", "soul_id": "soul"},
+    }
+    assert result == {
+        "ok": True,
+        "visual_memory_query": "red doorway",
+        "resource_candidates": {},
     }
 
 

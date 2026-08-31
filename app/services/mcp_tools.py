@@ -46,6 +46,12 @@ class MemuRetrieveRequest(BaseModel):
         return self
 
 
+class MemuSensorySearchRequest(BaseModel):
+    user_id: str
+    soul_id: str
+    query: str
+
+
 class MemuMemorizeRequest(BaseModel):
     user_id: str
     soul_id: str
@@ -225,6 +231,18 @@ async def memu_retrieve_endpoint(
     if isinstance(req.mental_health_addon, bool):
         payload["mental_health_addon"] = req.mental_health_addon
     return await retrieve(payload)
+
+
+async def memu_sensory_search_endpoint(
+    req: MemuSensorySearchRequest,
+    *,
+    search: Callable[[str, dict[str, str]], Awaitable[dict[str, Any]]],
+) -> dict[str, Any]:
+    query = str(req.query or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    scope = _scope(user_id=req.user_id, soul_id=req.soul_id)
+    return {"ok": True, **await search(query, scope)}
 
 
 async def memu_memorize_endpoint(
