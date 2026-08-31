@@ -902,12 +902,16 @@ async def test_run_retrieve_read_only_skips_state_write_and_procedural_ingest(tm
             return [[0.0]]
 
     class FakeProcedural:
+        expected_embedding_model: str | None = None
+
         async def ingest(self, *_args: Any, **_kwargs: Any) -> None:
             raise AssertionError("procedural ingest must be suppressed")
 
-        def lookup(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+        def lookup(self, *_args: Any, **kwargs: Any) -> list[Any]:
+            self.expected_embedding_model = kwargs.get("expected_embedding_model")
             return []
 
+    procedural = FakeProcedural()
     out = await retrieve_orchestration._run_retrieve(
         {
             "user": {"user_id": "u", "soul_id": "s"},
@@ -925,15 +929,22 @@ async def test_run_retrieve_read_only_skips_state_write_and_procedural_ingest(tm
         conversation_state_from_row=lambda *_a, **_k: None,
         conversation_state_row=lambda *_a, **_k: None,
         write_conversation_state=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("state write must be suppressed")),
-        procedural_module=FakeProcedural(),
+        procedural_module=procedural,
         procedural_yaml_dir=lambda _cfg: tmp_path,
         procedural_db_path=lambda _cfg: tmp_path / "procedural.db",
         procedural_should_ingest=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("ingest check must be suppressed")),
-        config={"retrieve": {"mental_health_query": True}},
+        config={
+            "llm": {
+                "embed_model": "text-embedding-3-large",
+                "embedding": {"embed_model": "gemini-embedding-2"},
+            },
+            "retrieve": {"mental_health_query": True},
+        },
         logger=SimpleNamespace(exception=lambda *_a, **_k: None),
     )
 
     assert out["ok"] is True
+    assert procedural.expected_embedding_model == "gemini-embedding-2"
 
 
 def test_format_all_chat_history_for_ai_merges_current_and_cross_chats() -> None:

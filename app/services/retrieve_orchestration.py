@@ -257,7 +257,11 @@ async def _run_retrieve(
             try:
                 embeds = await svc.embed([mh_query], profile="embedding")
                 qvec = list(embeds[0]) if embeds else []
-                expected_embedding_model = str((config.get("llm") or {}).get("embed_model") or "").strip() or None
+                llm_config = config.get("llm") or {}
+                embedding_config = llm_config.get("embedding") or {}
+                expected_embedding_model = str(
+                    embedding_config.get("embed_model") or llm_config.get("embed_model") or ""
+                ).strip() or None
                 hits = procedural_module.lookup(
                     procedural_db,
                     domain="mental_health",
