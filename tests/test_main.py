@@ -3455,6 +3455,13 @@ async def test_run_memorize_segments_batches_one_job_per_persisted_segment(tmp_p
         assert json.loads(segment_job["raw_text"]) == messages
 
 
+def test_auto_consolidation_policy() -> None:
+    policy = main._memorize_endpoint._auto_consolidation_enabled
+    assert policy(force=False, cross_memorize=False)
+    assert policy(force=True, cross_memorize=True)
+    assert not policy(force=True, cross_memorize=False)
+
+
 @pytest.mark.asyncio
 async def test_run_memorize_segments_preserves_pending_ids_on_extraction_failure(monkeypatch: pytest.MonkeyPatch, tmp_path):
     segments_dir = tmp_path / "segments"

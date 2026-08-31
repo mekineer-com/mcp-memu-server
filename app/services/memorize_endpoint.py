@@ -132,6 +132,10 @@ def _cursor_updates_for_unit(
     return updates
 
 
+def _auto_consolidation_enabled(*, force: bool, cross_memorize: bool) -> bool:
+    return not force or cross_memorize
+
+
 @dataclass(slots=True)
 class MemorizeContext:
     get_memorize_lock: Callable[[str], asyncio.Lock]
@@ -683,7 +687,11 @@ async def run_memorize_segments(
 
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
             should_consolidate = False
-            if conversation_id and (has_memory_results or had_existing_pending):
+            if (
+                conversation_id
+                and _auto_consolidation_enabled(force=force, cross_memorize=cross_memorize)
+                and (has_memory_results or had_existing_pending)
+            ):
                 fresh_state, _, _ = run_ctx.load_turn_state_and_soul_card(
                     conversation_id,
                     user_id=uid,
