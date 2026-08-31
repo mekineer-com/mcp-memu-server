@@ -903,7 +903,7 @@ def _read_background_rolling_summaries_from_conversations(
         cid = str(row["conversation_id"] or "").strip()
         if not cid or cid == excluded_id:
             continue
-        memorize_chat = _memorize_chat_from_row(row)
+        memorize_chat = cid.startswith("mentra:") or _memorize_chat_from_row(row)
         if memorize_chat:
             continue
         summary = str(row["rolling_summary"] or "").strip()

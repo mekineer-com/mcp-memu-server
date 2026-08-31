@@ -1966,6 +1966,10 @@ def test_build_cross_conversation_payload_includes_background_rolling_summaries(
             "INSERT INTO conversations (conversation_id, memorize_chat, rolling_summary) VALUES (?, ?, ?)",
             ("bg-chat", 0, "rolled summary"),
         )
+        con.execute(
+            "INSERT INTO conversations (conversation_id, memorize_chat, rolling_summary) VALUES (?, ?, ?)",
+            ("mentra:stale", 0, "must not become a background summary"),
+        )
         con.commit()
     finally:
         con.close()
@@ -1983,6 +1987,7 @@ def test_build_cross_conversation_payload_includes_background_rolling_summaries(
     rs = out.get("_background_rolling_summaries")
     assert isinstance(rs, dict)
     assert rs.get("bg-chat", {}).get("summary") == "rolled summary"
+    assert "mentra:stale" not in rs
 
 
 def test_build_cross_conversation_payload_preserves_background_cursor_semantics(

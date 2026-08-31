@@ -391,6 +391,8 @@ def database_config_from_cfg(cfg: dict[str, Any], scope: dict[str, Any] | None =
         or (cfg.get("llm") or {}).get("embed_model")
         or ""
     ).strip()
+    if not embed_model:
+        raise RuntimeError("llm.embedding.embed_model is required")
     expected_profile = f"{embed_model}:3072"
     embedding_profile = str(meta.get("embedding_profile") or expected_profile).strip()
     if embedding_profile != expected_profile:
