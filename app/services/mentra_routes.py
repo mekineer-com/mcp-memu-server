@@ -73,6 +73,7 @@ _leases: dict[str, _Lease] = {}
 _start_claims: dict[str, str] = {}
 _lease_lock = asyncio.Lock()
 _image_finalize_tasks: dict[tuple[str, str, str], tuple[str, asyncio.Task[Any]]] = {}
+_image_finalize_errors: dict[tuple[str, str, str], str] = {}
 
 
 class MentraSessionStart(BaseModel):
@@ -813,11 +814,12 @@ def register_mentra_routes(
         tags=["integration"],
         dependencies=auth,
     )
-    async def mentra_session_heartbeat(session_id: str, body: MentraSessionScope) -> dict[str, bool]:
+    async def mentra_session_heartbeat(session_id: str, body: MentraSessionScope) -> dict[str, Any]:
         await _require_active_lease(
             soul_id=body.soul_id, user_id=body.user_id, sitting_id=session_id, renew=True
         )
-        return {"ok": True}
+        error = _image_finalize_errors.get((body.user_id, body.soul_id, session_id))
+        return {"ok": True, **({"background_error": error} if error else {})}
 
     @app.post(
         "/integration/mentra/session/{sitting_id}/recall",
@@ -1077,6 +1079,9 @@ def register_mentra_routes(
             except asyncio.CancelledError:
                 return
             except Exception as exc:
+                _image_finalize_errors[(body.user_id, body.soul_id, sitting_id)] = (
+                    "Photo memory processing failed; the original remains saved."
+                )
                 if set_background_error is not None:
                     set_background_error(
                         scope["conversation_id"],
@@ -1085,6 +1090,8 @@ def register_mentra_routes(
                         code="mentra_image_finalize_failed",
                         detail=type(exc).__name__,
                     )
+            else:
+                _image_finalize_errors.pop((body.user_id, body.soul_id, sitting_id), None)
 
         task.add_done_callback(finish)
         return {"ok": True, "queued": True, "duplicate": False}
@@ -1100,10 +1107,12 @@ def register_mentra_routes(
             active = _leases.get(key)
             if not active or active.expires_at <= time.monotonic():
                 _leases.pop(key, None)
+                _image_finalize_errors.pop((body.user_id, body.soul_id, session_id), None)
                 return {"ok": True}
             if active.sitting_id != session_id or active.user_id != body.user_id:
                 raise HTTPException(status_code=409, detail="Another Mentra session is active")
             _leases.pop(key, None)
+            _image_finalize_errors.pop((body.user_id, body.soul_id, session_id), None)
         return {"ok": True}
 
     @app.post(

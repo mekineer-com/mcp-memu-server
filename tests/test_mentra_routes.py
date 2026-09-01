@@ -1283,6 +1283,9 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
         },
         headers=AUTH,
     )
+    mentra_routes._image_finalize_errors[
+        (scope["user_id"], scope["soul_id"], sitting_id)
+    ] = "stale"
     finalized = client.post(
         f"{base}/finalize",
         json={**scope, "image_id": "image-2", "caption": "A fictional magenta square."},
@@ -1308,6 +1311,9 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
     assert calls["image_memorize"][0]["caption"] == "A fictional magenta square."
     assert calls["image_lock_during_memorize"] is True
     assert not mentra_routes._lease_lock.locked()
+    assert client.post(
+        f"/integration/mentra/session/{sitting_id}/heartbeat", json=scope, headers=AUTH
+    ).json() == {"ok": True}
 
 
 def test_snapshot_finalize_rejects_non_multimodal_runtime(
@@ -1374,6 +1380,16 @@ def test_snapshot_finalize_failure_keeps_bytes_and_reports_error(
     assert list(calls["image_resources"]) == ["image-resource"]
     assert calls["background_errors"]
     assert calls["background_errors"][0][1]["code"] == "mentra_image_finalize_failed"
+    heartbeat = client.post(
+        f"/integration/mentra/session/{sitting_id}/heartbeat", json=scope, headers=AUTH
+    )
+    assert heartbeat.json() == {
+        "ok": True,
+        "background_error": "Photo memory processing failed; the original remains saved.",
+    }
+    assert client.post(
+        f"/integration/mentra/session/{sitting_id}/heartbeat", json=scope, headers=AUTH
+    ).json() == heartbeat.json()
 
 
 def test_image_transcript_event_round_trips_media_reference(
