@@ -96,6 +96,7 @@ def _session_app(
 
     resources: dict[str, Any] = {}
     memory_items: dict[str, Any] = {}
+    calls["image_resources"] = resources
 
     class ResourceRepo:
         def list_resources(self, _scope: dict[str, str]) -> dict[str, Any]:
@@ -125,8 +126,6 @@ def _session_app(
             calls["image_memorize"].append(copy.deepcopy(kwargs))
             calls["image_lock_during_memorize"] = soul_lock.locked()
             await asyncio.sleep(0)
-            if memorize_error is not None:
-                raise memorize_error
             resource = SimpleNamespace(
                 id="image-resource",
                 url=kwargs["resource_url"],
@@ -134,6 +133,8 @@ def _session_app(
                 caption=kwargs["caption"],
             )
             resources[resource.id] = resource
+            if memorize_error is not None:
+                raise memorize_error
             memory_items["image-item"] = SimpleNamespace(resource_id=resource.id)
             return {"resources": [resource]}
 
@@ -207,6 +208,11 @@ def _session_app(
     def record_call(*args: Any, **kwargs: Any) -> None:
         calls["route_telemetry"].append((args, copy.deepcopy(kwargs)))
 
+    def test_soul_lock(_user_id: str, _soul_id: str) -> asyncio.Lock:
+        if calls.get("reject_soul_lock"):
+            raise AssertionError("session end must not wait for soul work")
+        return soul_lock
+
     monkeypatch.setattr(mentra_routes, "_mint_gemini_token", mint)
     monkeypatch.setattr(mentra_routes.secrets, "token_urlsafe", lambda _length: next(sitting_ids))
     app = FastAPI()
@@ -222,7 +228,7 @@ def _session_app(
         record_call=record_call,
         log_prompt=lambda instruction, model: calls["prompts"].append((instruction, model)),
         get_storage_dir=lambda: tmp_path,
-        get_soul_lock=lambda _user_id, _soul_id: soul_lock,
+        get_soul_lock=test_soul_lock,
         write_conversation_state=write_state,
         prepare_auto_memorize=prepare,
         schedule_auto_memorize=schedule,
@@ -460,6 +466,25 @@ def test_lease_resume_heartbeat_and_end_are_scoped(
     assert client.post(
         "/integration/mentra/session/sitting-2/end", json=scope, headers=AUTH
     ).status_code == 200
+
+
+def test_session_end_does_not_wait_for_soul_work(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    calls["reject_soul_lock"] = True
+
+    response = client.post(
+        f"/integration/mentra/session/{sitting_id}/end",
+        json={"user_id": START["user_id"], "soul_id": START["soul_id"]},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
 
 
 def test_token_mint_failure_preserves_current_lease(
@@ -1345,6 +1370,7 @@ def test_snapshot_finalize_failure_keeps_bytes_and_reports_error(
 
     assert finalized.status_code == 200
     assert (tmp_path / "resources" / stored.json()["media_ref"]).exists()
+    assert list(calls["image_resources"]) == ["image-resource"]
     assert calls["background_errors"]
     assert calls["background_errors"][0][1]["code"] == "mentra_image_finalize_failed"
 

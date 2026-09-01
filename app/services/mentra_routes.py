@@ -1093,18 +1093,15 @@ def register_mentra_routes(
         dependencies=auth,
     )
     async def mentra_session_end(session_id: str, body: MentraSessionScope) -> dict[str, bool]:
-        if get_soul_lock is None:
-            raise HTTPException(status_code=503, detail="Mentra session teardown is not configured")
         key = body.soul_id
-        async with get_soul_lock(body.user_id, body.soul_id):
-            async with _lease_lock:
-                active = _leases.get(key)
-                if not active or active.expires_at <= time.monotonic():
-                    _leases.pop(key, None)
-                    return {"ok": True}
-                if active.sitting_id != session_id or active.user_id != body.user_id:
-                    raise HTTPException(status_code=409, detail="Another Mentra session is active")
+        async with _lease_lock:
+            active = _leases.get(key)
+            if not active or active.expires_at <= time.monotonic():
                 _leases.pop(key, None)
+                return {"ok": True}
+            if active.sitting_id != session_id or active.user_id != body.user_id:
+                raise HTTPException(status_code=409, detail="Another Mentra session is active")
+            _leases.pop(key, None)
         return {"ok": True}
 
     @app.post(
