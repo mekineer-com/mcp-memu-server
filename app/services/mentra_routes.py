@@ -36,6 +36,7 @@ _LEASE_SECONDS = 90
 _RECALL_TIMEOUT_SECONDS = 25
 _EARCON_DIR = Path(__file__).resolve().parent.parent / "assets" / "mentra"
 _HISTORY_CHANGED_CODE = "mentra_history_changed"
+_TRANSCRIPT_GAP_CONTENT = "Transcript unavailable."
 _RECALL_TOOL_DESCRIPTION = (
     "Search your long-term memory for context relevant to the current thought without interrupting speech."
 )
@@ -74,6 +75,7 @@ _start_claims: dict[str, str] = {}
 _lease_lock = asyncio.Lock()
 _image_finalize_tasks: dict[tuple[str, str, str], tuple[str, asyncio.Task[Any]]] = {}
 _image_finalize_errors: dict[tuple[str, str, str], set[str]] = {}
+_transcript_conflicts: dict[tuple[str, str, str], int] = {}
 
 
 class MentraSessionStart(BaseModel):
@@ -172,7 +174,7 @@ class MentraTranscriptEvent(BaseModel):
 
     event_id: str
     sequence: StrictInt
-    event_kind: Literal["transcript", "sitting_summary", "image"]
+    event_kind: Literal["transcript", "sitting_summary", "image", "transcript_gap"]
     role: Literal["user", "assistant"]
     content: str
     status: Literal["complete", "interrupted"] | None = None
@@ -220,6 +222,10 @@ class MentraTranscriptEvent(BaseModel):
             return self
         if self.media_ref is not None:
             raise ValueError("media_ref is only valid for image events")
+        if self.event_kind == "transcript_gap":
+            if self.status is not None or self.content != _TRANSCRIPT_GAP_CONTENT:
+                raise ValueError("transcript_gap event is invalid")
+            return self
         if self.event_kind == "transcript" and self.status is None:
             raise ValueError("transcript status is required")
         if self.event_kind == "sitting_summary" and (
@@ -531,6 +537,80 @@ def register_mentra_routes(
             )
 
     auth = [Depends(require_bearer)]
+
+    @app.get("/integration/mentra/status", tags=["integration"])
+    async def mentra_status(user_id: str = "", soul_id: str = "") -> dict[str, Any]:
+        config = get_config().get("mentra") or {}
+        if not config.get("enabled"):
+            return {
+                "state": "disabled",
+                "detail": "Mentra disabled",
+                "active": False,
+                "transcript_gap": False,
+            }
+
+        missing = [
+            field
+            for field in ("integration_bearer_token", "gemini_api_key", "model", "voice")
+            if not str(config.get(field) or "").strip()
+        ]
+        now = time.monotonic()
+        async with _lease_lock:
+            for key, lease in list(_leases.items()):
+                if lease.expires_at <= now:
+                    _leases.pop(key, None)
+                    _transcript_conflicts.pop((lease.user_id, key, lease.sitting_id), None)
+                    _image_finalize_errors.pop((lease.user_id, key, lease.sitting_id), None)
+            active_pair = next(
+                (
+                    (key, lease)
+                    for key, lease in _leases.items()
+                    if (not soul_id or key == soul_id) and (not user_id or lease.user_id == user_id)
+                ),
+                None,
+            )
+
+        active_soul, active = active_pair if active_pair else ("", None)
+        transcript_gap = False
+        status_error = ""
+        if active is not None:
+            conflict_key = (active.user_id, active_soul, active.sitting_id)
+            transcript_gap = conflict_key in _transcript_conflicts
+            if get_storage_dir is not None:
+                try:
+                    history = conversation_sources.load_mentra_history_snapshot(
+                        storage_dir=get_storage_dir(),
+                        user_id=active.user_id,
+                        soul_id=active_soul,
+                        conversation_id=f"mentra:{active.device_session_id}",
+                    )
+                    transcript_gap = transcript_gap or any(
+                        row.get("event_kind") == "transcript_gap" for row in history
+                    )
+                except (OSError, RuntimeError, ValueError):
+                    status_error = "Transcript status unavailable"
+            if _image_finalize_errors.get(conflict_key):
+                status_error = "Photo memory processing failed"
+
+        if transcript_gap:
+            state, detail = "transcript_gap", "Transcript durability gap"
+        elif missing or status_error:
+            state, detail = "degraded", status_error or "Mentra configuration incomplete"
+        elif active is not None:
+            state, detail = "active", "mcp lease active"
+        else:
+            state, detail = "ready", "Ready for phone connection"
+        return {
+            "state": state,
+            "detail": detail,
+            "active": active is not None,
+            "transcript_gap": transcript_gap,
+            **(
+                {"mode": active.mode, "expires_in": max(0, int(active.expires_at - now))}
+                if active
+                else {}
+            ),
+        }
 
     @app.get("/integration/mentra/earcons/{name}.wav", tags=["integration"])
     async def mentra_earcon(
@@ -1125,11 +1205,13 @@ def register_mentra_routes(
             if not active or active.expires_at <= time.monotonic():
                 _leases.pop(key, None)
                 _image_finalize_errors.pop((body.user_id, body.soul_id, session_id), None)
+                _transcript_conflicts.pop((body.user_id, body.soul_id, session_id), None)
                 return {"ok": True}
             if active.sitting_id != session_id or active.user_id != body.user_id:
                 raise HTTPException(status_code=409, detail="Another Mentra session is active")
             _leases.pop(key, None)
             _image_finalize_errors.pop((body.user_id, body.soul_id, session_id), None)
+            _transcript_conflicts.pop((body.user_id, body.soul_id, session_id), None)
         return {"ok": True}
 
     @app.post(
@@ -1173,6 +1255,11 @@ def register_mentra_routes(
                     sitting_id=sitting_id,
                 )
             except _SequenceConflict as exc:
+                conflict_key = (body.user_id, body.soul_id, sitting_id)
+                _transcript_conflicts[conflict_key] = max(
+                    _transcript_conflicts.get(conflict_key, 0),
+                    max(event.sequence for event in body.events),
+                )
                 raise HTTPException(
                     status_code=409,
                     detail={"expected_sequence": exc.expected_sequence},
@@ -1184,13 +1271,18 @@ def register_mentra_routes(
                 conversation_id=conversation_id,
                 history=merged,
             )
+            conflict_key = (body.user_id, body.soul_id, sitting_id)
+            if _next_transcript_sequence(merged) - 1 >= _transcript_conflicts.get(conflict_key, 0):
+                _transcript_conflicts.pop(conflict_key, None)
             write_conversation_state(
                 conversation_id,
                 soul_id=body.soul_id,
                 user_id=body.user_id,
                 updates={"memorize_chat": True},
             )
-            if accepted:
+            if accepted and any(
+                row.get("event_kind") != "transcript_gap" for row in merged[len(history) :]
+            ):
                 projected_history = conversation_sources.load_mentra_tail(
                     storage_dir=storage_dir,
                     user_id=body.user_id,

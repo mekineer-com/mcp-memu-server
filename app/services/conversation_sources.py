@@ -926,6 +926,8 @@ def load_chat_snapshot_tail(
     for idx, item in enumerate(history):
         if not isinstance(item, dict):
             continue
+        if source_label == "mentra" and item.get("event_kind") == "transcript_gap":
+            continue
         content = str(item.get("content") or "").strip()
         if not content:
             continue

@@ -35,11 +35,13 @@ def clear_leases() -> None:
     mentra_routes._start_claims.clear()
     mentra_routes._image_finalize_tasks.clear()
     mentra_routes._image_finalize_errors.clear()
+    mentra_routes._transcript_conflicts.clear()
     yield
     mentra_routes._leases.clear()
     mentra_routes._start_claims.clear()
     mentra_routes._image_finalize_tasks.clear()
     mentra_routes._image_finalize_errors.clear()
+    mentra_routes._transcript_conflicts.clear()
 
 
 def _configured() -> dict[str, Any]:
@@ -268,6 +270,95 @@ def test_mentra_health_requires_enabled_configured_bearer() -> None:
     assert earcon.status_code == 200
     assert earcon.headers["content-type"] == "audio/wav"
     assert earcon.content.startswith(b"RIFF")
+
+
+def test_mentra_status_reports_configuration_and_lease_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _, config = _session_app(monkeypatch, tmp_path)
+    path = "/integration/mentra/status?user_id=Fictional%20User&soul_id=Codexia"
+
+    config["mentra"]["enabled"] = False
+    assert client.get(path).json()["state"] == "disabled"
+    config["mentra"]["enabled"] = True
+    config["mentra"]["model"] = ""
+    assert client.get(path).json()["state"] == "degraded"
+    config["mentra"]["model"] = "gemini-2.5-flash-native-audio-preview-12-2025"
+    assert client.get(path).json()["state"] == "ready"
+
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    active = client.get(path).json()
+    assert active["state"] == "active"
+    assert active["active"] is True
+    assert active["mode"] == "continuous"
+    assert 0 < active["expires_in"] <= 90
+
+    mentra_routes._image_finalize_errors[(START["user_id"], START["soul_id"], sitting_id)] = {
+        "mentra_media/phone-1/fictional.png"
+    }
+    assert client.get(path).json()["state"] == "degraded"
+    mentra_routes._leases[START["soul_id"]] = mentra_routes._leases[START["soul_id"]]._replace(
+        expires_at=0
+    )
+    assert client.get(path).json()["state"] == "ready"
+
+
+def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _, _ = _session_app(monkeypatch, tmp_path)
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    append = f"/integration/mentra/session/{sitting_id}/transcripts/append"
+    status = "/integration/mentra/status?user_id=Fictional%20User&soul_id=Codexia"
+
+    interrupted = {
+        "event_id": f"{sitting_id}:1",
+        "sequence": 1,
+        "event_kind": "transcript",
+        "role": "user",
+        "content": "A fictional interrupted sentence.",
+        "status": "interrupted",
+    }
+    assert client.post(append, json={**scope, "events": [interrupted]}, headers=AUTH).status_code == 200
+    assert client.get(status).json()["state"] == "active"
+
+    skipped = {**interrupted, "event_id": f"{sitting_id}:3", "sequence": 3}
+    assert client.post(append, json={**scope, "events": [skipped]}, headers=AUTH).status_code == 409
+    assert client.get(status).json()["state"] == "transcript_gap"
+
+    second = {**interrupted, "event_id": f"{sitting_id}:2", "sequence": 2}
+    assert client.post(append, json={**scope, "events": [second]}, headers=AUTH).status_code == 200
+    assert client.get(status).json()["state"] == "transcript_gap"
+
+    third = {**interrupted, "event_id": f"{sitting_id}:3", "sequence": 3}
+    assert client.post(append, json={**scope, "events": [third]}, headers=AUTH).status_code == 200
+    assert client.get(status).json()["state"] == "active"
+
+    gap = {
+        "event_id": f"{sitting_id}:4",
+        "sequence": 4,
+        "event_kind": "transcript_gap",
+        "role": "assistant",
+        "content": "Transcript unavailable.",
+    }
+    assert client.post(append, json={**scope, "events": [gap]}, headers=AUTH).status_code == 200
+    assert client.get(status).json()["state"] == "transcript_gap"
+    tail = mentra_routes.conversation_sources.load_mentra_tail(
+        storage_dir=tmp_path,
+        user_id=START["user_id"],
+        soul_id=START["soul_id"],
+        conversation_id="mentra:phone-1",
+        since_cursor=-1,
+        recent_fallback_messages=0,
+    )
+    assert all(row.get("event_kind") != "transcript_gap" for row in tail)
 
 
 def test_start_auth_and_validation_precede_bootstrap(

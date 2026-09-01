@@ -58,11 +58,12 @@ mcp-memu-server/
 | `/integration/memu/turn` | POST | MCP single-call turn wrapper: retrieve then turn |
 | `/integration/memu/sensory-search` | POST | Scoped explicit visual-memory candidate search over separate media and caption lanes |
 | `/integration/mentra/health` | GET | Bearer-authenticated Mentra ingress health check; disabled by default |
+| `/integration/mentra/status` | GET | Safe operational state for the selected scope: disabled, ready, active, degraded, or transcript gap; never returns identities or transcript content |
 | `/integration/mentra/session/start` | POST | Authenticated soul bootstrap plus constrained Gemini Live token; returns a fresh sitting ID and next device-conversation transcript sequence |
 | `/integration/mentra/session/{id}/token` | POST | Mint a fresh constrained Gemini token for the unchanged active sitting before a replacement socket |
 | `/integration/mentra/session/{id}/heartbeat` / `end` | POST | Renew or release one sitting-scoped Mentra lease; heartbeat repeats each image-processing failure until that image succeeds or the sitting ends |
 | `/integration/mentra/session/{id}/recall` | POST | Sitting-scoped, read-only forced retrieve over the cursor-bounded Mentra tail; returns compact ID-free context for Gemini `SILENT` delivery |
-| `/integration/mentra/session/{id}/transcripts/append` | POST | Redacted-validation, contiguous/idempotent transcript or sitting-summary append into the atomic Mentra snapshot; newly accepted eligible rows queue the shared auto-memorize path |
+| `/integration/mentra/session/{id}/transcripts/append` | POST | Redacted-validation, contiguous/idempotent transcript, gap, or sitting-summary append into the atomic Mentra snapshot; conversational rows queue shared auto-memorize while gap markers never enter AI history |
 | `/integration/atomic/session_start` | POST | Atomic session bootstrap: stripped retrieve snapshot → seeds `chat:atomic-<uuid>` |
 | `/integration/atomic/session_end` | POST | Atomic session close: accepts transcript + `activity_recap`, posts to memU memorize |
 | `/integration/atomic/chat_profile` | GET | Atomic-facing LLM profile (includes API key — do not log) |
