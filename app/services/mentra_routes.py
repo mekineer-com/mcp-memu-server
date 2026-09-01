@@ -364,7 +364,7 @@ async def _require_active_lease(
 async def _private_model(request: Request, model: type[BaseModel], detail: str) -> BaseModel:
     try:
         return model.model_validate(await request.json())
-    except (ValueError, TypeError, ValidationError, json.JSONDecodeError):
+    except (ValueError, TypeError):
         raise HTTPException(status_code=422, detail=detail) from None
 
 
@@ -858,15 +858,13 @@ def register_mentra_routes(
         except HTTPException:
             record_token(ok=False, error="session_not_found")
             raise
-        mint_profile = (active.model, active.voice, active.system_instruction, active.mode)
-
         try:
             token = await _mint_gemini_token(
                 api_key=api_key,
-                model=mint_profile[0],
-                voice=mint_profile[1],
-                system_instruction=mint_profile[2],
-                mode=mint_profile[3],
+                model=active.model,
+                voice=active.voice,
+                system_instruction=active.system_instruction,
+                mode=active.mode,
             )
         except Exception as exc:
             record_token(ok=False, error="provider_mint_failed")
