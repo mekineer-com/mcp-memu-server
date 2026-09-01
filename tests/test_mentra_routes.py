@@ -1421,7 +1421,13 @@ def test_image_transcript_event_round_trips_media_reference(
 @pytest.mark.parametrize(
     ("mode", "activity_detection"),
     [
-        ("continuous", {"silenceDurationMs": 1_500}),
+        (
+            "continuous",
+            {
+                "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
+                "silenceDurationMs": 1_500,
+            },
+        ),
         ("manual", {"disabled": True}),
     ],
 )

@@ -425,7 +425,10 @@ async def _mint_gemini_token(
             "automaticActivityDetection": (
                 {"disabled": True}
                 if mode == "manual"
-                else {"silenceDurationMs": 1_500}
+                else {
+                    "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
+                    "silenceDurationMs": 1_500,
+                }
             ),
         },
         "inputAudioTranscription": {},
