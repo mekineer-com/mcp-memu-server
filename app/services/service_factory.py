@@ -372,7 +372,7 @@ def _get_service_from_payload(
         if len(_SERVICES) >= 50:
             oldest_key = next(iter(_SERVICES), None)
             if oldest_key is not None:
-                _SERVICES.pop(oldest_key, None)
+                _close_service_quiet(_SERVICES.pop(oldest_key, None))
                 _SERVICE_STORAGE_FP.pop(oldest_key, None)
 
         _SERVICES[service_key] = svc
