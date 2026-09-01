@@ -32,7 +32,6 @@ from app.services import conversation_sources, turn_contract
 
 _DEVICE_SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _IMAGE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
-_MAX_IMAGE_BYTES = 1024 * 1024
 _LEASE_SECONDS = 90
 _RECALL_TIMEOUT_SECONDS = 25
 _EARCON_DIR = Path(__file__).resolve().parent.parent / "assets" / "mentra"
@@ -931,8 +930,8 @@ def register_mentra_routes(
             image_bytes = base64.b64decode(body.data, validate=True)
         except (binascii.Error, ValueError):
             raise HTTPException(status_code=422, detail="Invalid snapshot data") from None
-        if not image_bytes or len(image_bytes) > _MAX_IMAGE_BYTES:
-            raise HTTPException(status_code=413, detail="Snapshot exceeds 1 MB limit")
+        if not image_bytes:
+            raise HTTPException(status_code=422, detail="Snapshot is empty")
 
         extension = "jpg" if body.mime_type == "image/jpeg" else "png"
         root = get_resource_storage_dir()

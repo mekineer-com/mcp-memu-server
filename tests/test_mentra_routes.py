@@ -1238,7 +1238,7 @@ def test_snapshot_is_atomic_idempotent_scoped_and_redacted(
     )
     private_data = "PRIVATE-FICTIONAL-IMAGE-DATA"
     invalid = client.post(endpoint, json={**payload, "data": private_data}, headers=AUTH)
-    oversize = client.post(
+    large = client.post(
         endpoint,
         json={
             **payload,
@@ -1259,7 +1259,8 @@ def test_snapshot_is_atomic_idempotent_scoped_and_redacted(
     assert conflict.status_code == 409
     assert invalid.status_code == 422
     assert private_data not in invalid.text
-    assert oversize.status_code == 413
+    assert large.status_code == 200
+    assert (tmp_path / "resources" / large.json()["media_ref"]).stat().st_size == 1024 * 1024 + 1
 
 
 def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
