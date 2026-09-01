@@ -164,7 +164,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     out = service_factory._get_service_from_payload(
         {
             "user": {"user_id": "u", "soul_id": "echo"},
-            "database_config": {"metadata_store": {"dsn": "sqlite:///:memory:"}},
+            "database_config": {},
         },
         config=cfg,
         default_llm_profiles_from_server_config=lambda _cfg: {

@@ -264,7 +264,7 @@ def _get_service_from_payload(
     database_config = payload.get("database_config")
     blob_config = payload.get("blob_config")
 
-    if not isinstance(database_config, dict):
+    if not isinstance(database_config, dict) or not isinstance(database_config.get("metadata_store"), dict):
         scope_hint = extract_scope(payload) if isinstance(payload, dict) else None
         database_config = database_config_from_cfg(config, scope=scope_hint)
         payload["database_config"] = database_config
@@ -343,6 +343,7 @@ def _get_service_from_payload(
                 return svc
             _SERVICES.pop(service_key, None)
             _SERVICE_STORAGE_FP.pop(service_key, None)
+            _close_service_quiet(svc)
 
         user_config = {**(user_config if isinstance(user_config, dict) else {}), "model": st_user_model}
 
