@@ -73,7 +73,7 @@ _leases: dict[str, _Lease] = {}
 _start_claims: dict[str, str] = {}
 _lease_lock = asyncio.Lock()
 _image_finalize_tasks: dict[tuple[str, str, str], tuple[str, asyncio.Task[Any]]] = {}
-_image_finalize_errors: dict[tuple[str, str, str], str] = {}
+_image_finalize_errors: dict[tuple[str, str, str], set[str]] = {}
 
 
 class MentraSessionStart(BaseModel):
@@ -818,8 +818,15 @@ def register_mentra_routes(
         await _require_active_lease(
             soul_id=body.soul_id, user_id=body.user_id, sitting_id=session_id, renew=True
         )
-        error = _image_finalize_errors.get((body.user_id, body.soul_id, session_id))
-        return {"ok": True, **({"background_error": error} if error else {})}
+        errors = _image_finalize_errors.get((body.user_id, body.soul_id, session_id))
+        return {
+            "ok": True,
+            **(
+                {"background_error": "Photo memory processing failed; the original remains saved."}
+                if errors
+                else {}
+            ),
+        }
 
     @app.post(
         "/integration/mentra/session/{sitting_id}/recall",
@@ -1074,14 +1081,20 @@ def register_mentra_routes(
         def finish(done: asyncio.Task[Any]) -> None:
             _image_finalize_tasks.pop(task_key, None)
             background_tasks.discard(done)
+            error_key = (body.user_id, body.soul_id, sitting_id)
             try:
                 done.result()
             except asyncio.CancelledError:
                 return
             except Exception as exc:
-                _image_finalize_errors[(body.user_id, body.soul_id, sitting_id)] = (
-                    "Photo memory processing failed; the original remains saved."
-                )
+                active = _leases.get(body.soul_id)
+                if (
+                    active
+                    and active.sitting_id == sitting_id
+                    and active.user_id == body.user_id
+                    and active.expires_at > time.monotonic()
+                ):
+                    _image_finalize_errors.setdefault(error_key, set()).add(media_ref)
                 if set_background_error is not None:
                     set_background_error(
                         scope["conversation_id"],
@@ -1091,7 +1104,11 @@ def register_mentra_routes(
                         detail=type(exc).__name__,
                     )
             else:
-                _image_finalize_errors.pop((body.user_id, body.soul_id, sitting_id), None)
+                errors = _image_finalize_errors.get(error_key)
+                if errors is not None:
+                    errors.discard(media_ref)
+                    if not errors:
+                        _image_finalize_errors.pop(error_key, None)
 
         task.add_done_callback(finish)
         return {"ok": True, "queued": True, "duplicate": False}

@@ -34,10 +34,12 @@ def clear_leases() -> None:
     mentra_routes._leases.clear()
     mentra_routes._start_claims.clear()
     mentra_routes._image_finalize_tasks.clear()
+    mentra_routes._image_finalize_errors.clear()
     yield
     mentra_routes._leases.clear()
     mentra_routes._start_claims.clear()
     mentra_routes._image_finalize_tasks.clear()
+    mentra_routes._image_finalize_errors.clear()
 
 
 def _configured() -> dict[str, Any]:
@@ -1285,7 +1287,7 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
     )
     mentra_routes._image_finalize_errors[
         (scope["user_id"], scope["soul_id"], sitting_id)
-    ] = "stale"
+    ] = {"mentra_media/phone-1/older.png"}
     finalized = client.post(
         f"{base}/finalize",
         json={**scope, "image_id": "image-2", "caption": "A fictional magenta square."},
@@ -1313,7 +1315,10 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
     assert not mentra_routes._lease_lock.locked()
     assert client.post(
         f"/integration/mentra/session/{sitting_id}/heartbeat", json=scope, headers=AUTH
-    ).json() == {"ok": True}
+    ).json() == {
+        "ok": True,
+        "background_error": "Photo memory processing failed; the original remains saved.",
+    }
 
 
 def test_snapshot_finalize_rejects_non_multimodal_runtime(
