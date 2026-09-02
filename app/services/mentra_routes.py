@@ -540,6 +540,8 @@ def register_mentra_routes(
 
     @app.get("/integration/mentra/status", tags=["integration"])
     async def mentra_status(user_id: str = "", soul_id: str = "") -> dict[str, Any]:
+        if not user_id.strip() or not soul_id.strip():
+            raise HTTPException(status_code=422, detail="Mentra status scope is required")
         config = get_config().get("mentra") or {}
         if not config.get("enabled"):
             return {
@@ -585,7 +587,9 @@ def register_mentra_routes(
                         conversation_id=f"mentra:{active.device_session_id}",
                     )
                     transcript_gap = transcript_gap or any(
-                        row.get("event_kind") == "transcript_gap" for row in history
+                        row.get("event_kind") == "transcript_gap"
+                        and str(row.get("event_id") or "").startswith(f"{active.sitting_id}:")
+                        for row in history
                     )
                 except (OSError, RuntimeError, ValueError):
                     status_error = "Transcript status unavailable"

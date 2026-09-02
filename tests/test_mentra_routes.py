@@ -360,6 +360,21 @@ def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcrip
     )
     assert all(row.get("event_kind") != "transcript_gap" for row in tail)
 
+    assert client.post(
+        f"/integration/mentra/session/{sitting_id}/end", json=scope, headers=AUTH
+    ).status_code == 200
+    next_sitting = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH
+    ).json()["session_id"]
+    assert next_sitting != sitting_id
+    assert client.get(status).json()["state"] == "active"
+
+
+def test_mentra_status_requires_scope(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client, _, _ = _session_app(monkeypatch, tmp_path)
+
+    assert client.get("/integration/mentra/status").status_code == 422
+
 
 def test_start_auth_and_validation_precede_bootstrap(
     monkeypatch: pytest.MonkeyPatch,
