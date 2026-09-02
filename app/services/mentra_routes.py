@@ -22,7 +22,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     StrictInt,
-    ValidationError,
     field_validator,
     model_validator,
 )
@@ -1234,7 +1233,7 @@ def register_mentra_routes(
         try:
             raw = await request.json()
             body = MentraTranscriptBatch.model_validate(raw)
-        except (ValueError, ValidationError):
+        except ValueError:
             raise HTTPException(status_code=422, detail="Invalid transcript batch") from None
 
         active = await _require_active_lease(
