@@ -567,7 +567,7 @@ def register_mentra_routes(
                 (
                     (key, lease)
                     for key, lease in _leases.items()
-                    if (not soul_id or key == soul_id) and (not user_id or lease.user_id == user_id)
+                    if key == soul_id and lease.user_id == user_id
                 ),
                 None,
             )
