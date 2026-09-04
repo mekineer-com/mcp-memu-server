@@ -31,6 +31,8 @@ from app.services import conversation_sources, turn_contract
 
 _DEVICE_SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _IMAGE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_IRIS_PACKAGE = "com.openalma.mentra"
+_INSTALLATIONS_FILE = "installations.json"
 _LEASE_SECONDS = 90
 _RECALL_TIMEOUT_SECONDS = 25
 _EARCON_DIR = Path(__file__).resolve().parent.parent / "assets" / "mentra"
@@ -75,6 +77,7 @@ _lease_lock = asyncio.Lock()
 _image_finalize_tasks: dict[tuple[str, str, str], tuple[str, asyncio.Task[Any]]] = {}
 _image_finalize_errors: dict[tuple[str, str, str], set[str]] = {}
 _transcript_conflicts: dict[tuple[str, str, str], int] = {}
+_installation_lock = asyncio.Lock()
 
 
 class MentraSessionStart(BaseModel):
@@ -105,6 +108,45 @@ class MentraSessionStart(BaseModel):
         value = value.strip()
         if value not in {"continuous", "manual"}:
             raise ValueError("must be continuous or manual")
+        return value
+
+
+class MentraInstallationSeen(BaseModel):
+    user_id: str
+    soul_id: str
+    device_session_id: str
+    package_name: str
+    version: str
+
+    @field_validator("user_id", "soul_id")
+    @classmethod
+    def validate_identity(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 128 or not value.isprintable():
+            raise ValueError("must be 1-128 printable characters")
+        return value
+
+    @field_validator("device_session_id")
+    @classmethod
+    def validate_device_session_id(cls, value: str) -> str:
+        value = value.strip()
+        if not _DEVICE_SESSION_RE.fullmatch(value):
+            raise ValueError("must be 1-128 letters, numbers, dots, underscores, or hyphens")
+        return value
+
+    @field_validator("package_name")
+    @classmethod
+    def validate_package_name(cls, value: str) -> str:
+        if value != _IRIS_PACKAGE:
+            raise ValueError("unsupported Mentra package")
+        return value
+
+    @field_validator("version")
+    @classmethod
+    def validate_version(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 64 or not value.isprintable():
+            raise ValueError("must be 1-64 printable characters")
         return value
 
 
@@ -495,6 +537,57 @@ def _build_bootstrap_instruction(
     return "\n\n".join(blocks)
 
 
+def _load_installations(storage_dir: Path) -> dict[str, dict[str, dict[str, Any]]]:
+    path = storage_dir / _INSTALLATIONS_FILE
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not all(
+        isinstance(value, dict) for value in data.values()
+    ):
+        raise RuntimeError(f"Mentra installation registry is invalid: {path}")
+    return data
+
+
+def _write_installations(
+    storage_dir: Path, installations: dict[str, dict[str, dict[str, Any]]]
+) -> None:
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    path = storage_dir / _INSTALLATIONS_FILE
+    tmp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=storage_dir,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_name = tmp.name
+            json.dump(installations, tmp, ensure_ascii=False)
+        os.replace(tmp_name, path)
+    finally:
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
+
+
+def _installation_status(storage_dir: Path, device_session_id: str) -> dict[str, Any]:
+    records = _load_installations(storage_dir).get(_IRIS_PACKAGE, {})
+    record = records.get(device_session_id) if device_session_id else None
+    if record is None and not device_session_id and records:
+        record = max(records.values(), key=lambda value: float(value["seen_at"]))
+    return {
+        "installed_package": record.get("package_name") if record else None,
+        "installed_version": record.get("version") if record else None,
+        "installed_seen_at": record.get("seen_at") if record else None,
+        "installed_soul": record.get("soul_id") if record else None,
+    }
+
+
 def register_mentra_routes(
     app: FastAPI,
     *,
@@ -537,10 +630,43 @@ def register_mentra_routes(
 
     auth = [Depends(require_bearer)]
 
+    @app.post(
+        "/integration/mentra/installation/seen", tags=["integration"], dependencies=auth
+    )
+    async def mentra_installation_seen(body: MentraInstallationSeen) -> dict[str, str]:
+        if get_storage_dir is None:
+            raise HTTPException(
+                status_code=503, detail="Mentra installation storage is not configured"
+            )
+        async with _installation_lock:
+            storage_dir = get_storage_dir()
+            installations = _load_installations(storage_dir)
+            installations.setdefault(_IRIS_PACKAGE, {})[body.device_session_id] = {
+                **body.model_dump(),
+                "seen_at": time.time(),
+            }
+            _write_installations(storage_dir, installations)
+        return {"package_name": body.package_name, "version": body.version}
+
     @app.get("/integration/mentra/status", tags=["integration"])
-    async def mentra_status(user_id: str = "", soul_id: str = "") -> dict[str, Any]:
+    async def mentra_status(
+        user_id: str = "", soul_id: str = "", device_session_id: str = ""
+    ) -> dict[str, Any]:
         if not user_id.strip() or not soul_id.strip():
             raise HTTPException(status_code=422, detail="Mentra status scope is required")
+        device_session_id = device_session_id.strip()
+        if device_session_id and not _DEVICE_SESSION_RE.fullmatch(device_session_id):
+            raise HTTPException(status_code=422, detail="Invalid Mentra device scope")
+        installation = (
+            _installation_status(get_storage_dir(), device_session_id)
+            if get_storage_dir is not None
+            else {
+                "installed_package": None,
+                "installed_version": None,
+                "installed_seen_at": None,
+                "installed_soul": None,
+            }
+        )
         config = get_config().get("mentra") or {}
         if not config.get("enabled"):
             return {
@@ -548,6 +674,7 @@ def register_mentra_routes(
                 "detail": "Mentra disabled",
                 "active": False,
                 "transcript_gap": False,
+                **installation,
             }
 
         missing = [
@@ -608,6 +735,7 @@ def register_mentra_routes(
             "detail": detail,
             "active": active is not None,
             "transcript_gap": transcript_gap,
+            **installation,
             **(
                 {"mode": active.mode, "expires_in": max(0, int(active.expires_at - now))}
                 if active

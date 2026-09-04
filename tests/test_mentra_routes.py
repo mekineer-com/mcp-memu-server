@@ -306,6 +306,49 @@ def test_mentra_status_reports_configuration_and_lease_state(
     assert client.get(path).json()["state"] == "ready"
 
 
+def test_mentra_installation_report_persists_and_status_selects_device(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _, _ = _session_app(monkeypatch, tmp_path)
+    first = {
+        "user_id": "Fictional User",
+        "soul_id": "Codexia",
+        "device_session_id": "fictional-phone",
+        "package_name": "com.openalma.mentra",
+        "version": "0.1.0",
+    }
+    assert client.post("/integration/mentra/installation/seen", json=first).status_code == 401
+    assert client.post(
+        "/integration/mentra/installation/seen",
+        json={**first, "package_name": "example.wrong"},
+        headers=AUTH,
+    ).status_code == 422
+    assert client.post(
+        "/integration/mentra/installation/seen", json=first, headers=AUTH
+    ).json() == {"package_name": "com.openalma.mentra", "version": "0.1.0"}
+    client.post("/integration/mentra/installation/seen", json=first, headers=AUTH).raise_for_status()
+
+    records = json.loads((tmp_path / "installations.json").read_text())
+    assert list(records["com.openalma.mentra"]) == ["fictional-phone"]
+
+    restarted, _, _ = _session_app(monkeypatch, tmp_path)
+    status = restarted.get(
+        "/integration/mentra/status",
+        params={
+            "user_id": "Different User",
+            "soul_id": "Different Soul",
+            "device_session_id": "fictional-phone",
+        },
+    ).json()
+    assert status["installed_package"] == "com.openalma.mentra"
+    assert status["installed_version"] == "0.1.0"
+    assert status["installed_soul"] == "Codexia"
+    assert isinstance(status["installed_seen_at"], float)
+    assert "device_session_id" not in status
+    assert "user_id" not in status
+
+
 def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcript(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
