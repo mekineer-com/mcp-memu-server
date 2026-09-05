@@ -58,7 +58,7 @@ mcp-memu-server/
 | `/integration/memu/turn` | POST | MCP single-call turn wrapper: retrieve then turn |
 | `/integration/memu/sensory-search` | POST | Scoped explicit visual-memory candidate search over separate media and caption lanes |
 | `/integration/mentra/health` | GET | Bearer-authenticated Mentra ingress health check; disabled by default |
-| `/integration/mentra/status` | GET | Bearer-authenticated installation discovery (newest or explicit device), scoped active lease, global busy/start claims, and latest-sitting transcript-gap status; disabled returns 404. Static earcons remain public. |
+| `/integration/mentra/status` | GET | Bearer-authenticated installation discovery, scoped active lease, global busy/start claims, and latest-sitting transcript gap. Remains readable when Mentra is disabled so existing leases cannot disappear from Stop protection; new starts still return 404. Static earcons remain public. |
 | `/integration/mentra/session/start` | POST | Authenticated soul bootstrap plus constrained Gemini Live token; returns a fresh sitting ID and next device-conversation transcript sequence |
 | `/integration/mentra/session/{id}/token` | POST | Mint a fresh constrained Gemini token for the unchanged active sitting before a replacement socket |
 | `/integration/mentra/session/{id}/heartbeat` / `end` | POST | Renew or release one sitting-scoped Mentra lease; heartbeat repeats each image-processing failure until that image succeeds or the sitting ends |

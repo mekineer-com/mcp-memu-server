@@ -611,11 +611,12 @@ def register_mentra_routes(
     background_tasks: set[asyncio.Task[Any]] | None = None,
     set_background_error: Callable[..., None] | None = None,
 ) -> None:
-    async def require_bearer(authorization: str | None = Header(default=None)) -> None:
-        config = get_config().get("mentra") or {}
-        if not config.get("enabled"):
+    async def require_enabled() -> None:
+        if not (get_config().get("mentra") or {}).get("enabled"):
             raise HTTPException(status_code=404, detail="Not Found")
 
+    async def require_bearer(authorization: str | None = Header(default=None)) -> None:
+        config = get_config().get("mentra") or {}
         expected = str(config.get("integration_bearer_token") or "")
         if not expected:
             raise HTTPException(status_code=503, detail="Mentra bearer credential is not configured")
@@ -630,7 +631,7 @@ def register_mentra_routes(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-    auth = [Depends(require_bearer)]
+    auth = [Depends(require_enabled), Depends(require_bearer)]
 
     @app.post(
         "/integration/mentra/installation/seen", tags=["integration"], dependencies=auth
@@ -650,7 +651,7 @@ def register_mentra_routes(
             _write_installations(storage_dir, installations)
         return {"package_name": body.package_name, "version": body.version}
 
-    @app.get("/integration/mentra/status", tags=["integration"], dependencies=auth)
+    @app.get("/integration/mentra/status", tags=["integration"], dependencies=[Depends(require_bearer)])
     async def mentra_status(
         user_id: str = "", soul_id: str = "", device_session_id: str = ""
     ) -> dict[str, Any]:
@@ -714,7 +715,8 @@ def register_mentra_routes(
         history_device = active.device_session_id if active else device_session_id
         if get_storage_dir is not None and user_id and soul_id and history_device:
             try:
-                history = conversation_sources.load_mentra_history_snapshot(
+                history = await asyncio.to_thread(
+                    conversation_sources.load_mentra_history_snapshot,
                     storage_dir=get_storage_dir(),
                     user_id=user_id,
                     soul_id=active_soul if active else soul_id,
@@ -737,6 +739,8 @@ def register_mentra_routes(
             state, detail = "degraded", status_error or "Mentra configuration incomplete"
         elif active is not None:
             state, detail = "active", "mcp lease active"
+        elif not config.get("enabled"):
+            state, detail = "disabled", "Mentra disabled"
         else:
             state, detail = "ready", "Ready for phone connection"
         return {

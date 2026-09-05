@@ -280,7 +280,9 @@ def test_mentra_status_reports_configuration_and_lease_state(
     path = "/integration/mentra/status?user_id=Fictional%20User&soul_id=Codexia"
 
     config["mentra"]["enabled"] = False
-    assert client.get(path, headers=AUTH).status_code == 404
+    assert client.get(path, headers=AUTH).json()["state"] == "disabled"
+    assert client.get(path).status_code == 401
+    assert client.post("/integration/mentra/session/start", json=START, headers=AUTH).status_code == 404
     config["mentra"]["enabled"] = True
     config["mentra"]["model"] = ""
     assert client.get(path, headers=AUTH).json()["state"] == "degraded"
@@ -295,6 +297,24 @@ def test_mentra_status_reports_configuration_and_lease_state(
     assert active["active"] is True
     assert active["mode"] == "continuous"
     assert 0 < active["expires_in"] <= 90
+    snapshot_threads = []
+
+    def read_snapshot(**_kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            snapshot_threads.append("worker")
+        else:
+            snapshot_threads.append("event-loop")
+        return []
+
+    monkeypatch.setattr(mentra_routes.conversation_sources, "load_mentra_history_snapshot", read_snapshot)
+    config["mentra"]["enabled"] = False
+    disabled_live = client.get(path, headers=AUTH).json()
+    assert disabled_live["active"] is True and disabled_live["busy"] is True
+    assert snapshot_threads == ["worker"]
+    assert client.get("/integration/mentra/status", headers=AUTH).json()["busy"] is True
+    config["mentra"]["enabled"] = True
 
     mentra_routes._image_finalize_errors[(START["user_id"], START["soul_id"], sitting_id)] = {
         "mentra_media/phone-1/fictional.png"
