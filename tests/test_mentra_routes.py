@@ -280,17 +280,17 @@ def test_mentra_status_reports_configuration_and_lease_state(
     path = "/integration/mentra/status?user_id=Fictional%20User&soul_id=Codexia"
 
     config["mentra"]["enabled"] = False
-    assert client.get(path).json()["state"] == "disabled"
+    assert client.get(path, headers=AUTH).status_code == 404
     config["mentra"]["enabled"] = True
     config["mentra"]["model"] = ""
-    assert client.get(path).json()["state"] == "degraded"
+    assert client.get(path, headers=AUTH).json()["state"] == "degraded"
     config["mentra"]["model"] = "gemini-2.5-flash-native-audio-preview-12-2025"
-    assert client.get(path).json()["state"] == "ready"
+    assert client.get(path, headers=AUTH).json()["state"] == "ready"
 
     sitting_id = client.post(
         "/integration/mentra/session/start", json=START, headers=AUTH
     ).json()["session_id"]
-    active = client.get(path).json()
+    active = client.get(path, headers=AUTH).json()
     assert active["state"] == "active"
     assert active["active"] is True
     assert active["mode"] == "continuous"
@@ -299,11 +299,11 @@ def test_mentra_status_reports_configuration_and_lease_state(
     mentra_routes._image_finalize_errors[(START["user_id"], START["soul_id"], sitting_id)] = {
         "mentra_media/phone-1/fictional.png"
     }
-    assert client.get(path).json()["state"] == "degraded"
+    assert client.get(path, headers=AUTH).json()["state"] == "degraded"
     mentra_routes._leases[START["soul_id"]] = mentra_routes._leases[START["soul_id"]]._replace(
         expires_at=0
     )
-    assert client.get(path).json()["state"] == "ready"
+    assert client.get(path, headers=AUTH).json()["state"] == "ready"
 
 
 def test_mentra_installation_report_persists_and_status_selects_device(
@@ -335,6 +335,7 @@ def test_mentra_installation_report_persists_and_status_selects_device(
     restarted, _, _ = _session_app(monkeypatch, tmp_path)
     status = restarted.get(
         "/integration/mentra/status",
+        headers=AUTH,
         params={
             "user_id": "Different User",
             "soul_id": "Different Soul",
@@ -370,19 +371,19 @@ def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcrip
         "status": "interrupted",
     }
     assert client.post(append, json={**scope, "events": [interrupted]}, headers=AUTH).status_code == 200
-    assert client.get(status).json()["state"] == "active"
+    assert client.get(status, headers=AUTH).json()["state"] == "active"
 
     skipped = {**interrupted, "event_id": f"{sitting_id}:3", "sequence": 3}
     assert client.post(append, json={**scope, "events": [skipped]}, headers=AUTH).status_code == 409
-    assert client.get(status).json()["state"] == "transcript_gap"
+    assert client.get(status, headers=AUTH).json()["state"] == "transcript_gap"
 
     second = {**interrupted, "event_id": f"{sitting_id}:2", "sequence": 2}
     assert client.post(append, json={**scope, "events": [second]}, headers=AUTH).status_code == 200
-    assert client.get(status).json()["state"] == "transcript_gap"
+    assert client.get(status, headers=AUTH).json()["state"] == "transcript_gap"
 
     third = {**interrupted, "event_id": f"{sitting_id}:3", "sequence": 3}
     assert client.post(append, json={**scope, "events": [third]}, headers=AUTH).status_code == 200
-    assert client.get(status).json()["state"] == "active"
+    assert client.get(status, headers=AUTH).json()["state"] == "active"
 
     gap = {
         "event_id": f"{sitting_id}:4",
@@ -392,7 +393,7 @@ def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcrip
         "content": "Transcript unavailable.",
     }
     assert client.post(append, json={**scope, "events": [gap]}, headers=AUTH).status_code == 200
-    assert client.get(status).json()["state"] == "transcript_gap"
+    assert client.get(status, headers=AUTH).json()["state"] == "transcript_gap"
     tail = mentra_routes.conversation_sources.load_mentra_tail(
         storage_dir=tmp_path,
         user_id=START["user_id"],
@@ -406,17 +407,44 @@ def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcrip
     assert client.post(
         f"/integration/mentra/session/{sitting_id}/end", json=scope, headers=AUTH
     ).status_code == 200
+    assert client.get(status + "&device_session_id=phone-1", headers=AUTH).json()["state"] == "transcript_gap"
     next_sitting = client.post(
         "/integration/mentra/session/start", json=START, headers=AUTH
     ).json()["session_id"]
     assert next_sitting != sitting_id
-    assert client.get(status).json()["state"] == "active"
+    assert client.get(status, headers=AUTH).json()["state"] == "active"
+    clean = {**interrupted, "event_id": f"{next_sitting}:5", "sequence": 5}
+    client.post(
+        f"/integration/mentra/session/{next_sitting}/transcripts/append",
+        json={**scope, "events": [clean]}, headers=AUTH,
+    ).raise_for_status()
+    client.post(f"/integration/mentra/session/{next_sitting}/end", json=scope, headers=AUTH).raise_for_status()
+    assert client.get(status + "&device_session_id=phone-1", headers=AUTH).json()["state"] == "ready"
 
 
-def test_mentra_status_requires_scope(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_mentra_status_discovery_auth_and_global_busy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     client, _, _ = _session_app(monkeypatch, tmp_path)
-
-    assert client.get("/integration/mentra/status").status_code == 422
+    path = "/integration/mentra/status"
+    assert client.get(path).status_code == 401
+    assert client.get(path, headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert client.get(path + "?user_id=Fictional", headers=AUTH).status_code == 422
+    empty = client.get(path, headers=AUTH).json()
+    assert empty["installed_package"] is None
+    assert empty["active"] is False and empty["busy"] is False
+    mentra_routes._start_claims["Other Soul"] = "pending-sitting"
+    assert client.get(path, headers=AUTH).json()["busy"] is True
+    mentra_routes._start_claims.clear()
+    client.post("/integration/mentra/installation/seen", headers=AUTH, json={
+        **{key: START[key] for key in ("user_id", "soul_id", "device_session_id")},
+        "package_name": "com.openalma.mentra", "version": "0.1.0",
+    }).raise_for_status()
+    client.post("/integration/mentra/session/start", json=START, headers=AUTH).raise_for_status()
+    discovered = client.get(path, headers=AUTH).json()
+    assert discovered["installed_user"] == START["user_id"]
+    assert discovered["installed_device"] == START["device_session_id"]
+    assert discovered["active"] is True and discovered["busy"] is True
+    other = client.get(path + "?device_session_id=other-phone", headers=AUTH).json()
+    assert other["active"] is False and other["busy"] is True
 
 
 def test_start_auth_and_validation_precede_bootstrap(

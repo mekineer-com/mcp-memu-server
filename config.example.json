@@ -54,6 +54,7 @@
     "whatsapp_web_source_db": "../hermes-channels/data/whatsapp/web_source.db"
   },
   "mentra": {
+    "public_base_url": "",
     "enabled": false,
     "gemini_api_key": "",
     "model": "gemini-2.5-flash-native-audio-preview-12-2025",

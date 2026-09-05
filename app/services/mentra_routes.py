@@ -585,6 +585,8 @@ def _installation_status(storage_dir: Path, device_session_id: str) -> dict[str,
         "installed_version": record.get("version") if record else None,
         "installed_seen_at": record.get("seen_at") if record else None,
         "installed_soul": record.get("soul_id") if record else None,
+        "installed_user": record.get("user_id") if record else None,
+        "installed_device": record.get("device_session_id") if record else None,
     }
 
 
@@ -648,12 +650,13 @@ def register_mentra_routes(
             _write_installations(storage_dir, installations)
         return {"package_name": body.package_name, "version": body.version}
 
-    @app.get("/integration/mentra/status", tags=["integration"])
+    @app.get("/integration/mentra/status", tags=["integration"], dependencies=auth)
     async def mentra_status(
         user_id: str = "", soul_id: str = "", device_session_id: str = ""
     ) -> dict[str, Any]:
-        if not user_id.strip() or not soul_id.strip():
-            raise HTTPException(status_code=422, detail="Mentra status scope is required")
+        user_id, soul_id = user_id.strip(), soul_id.strip()
+        if bool(user_id) != bool(soul_id):
+            raise HTTPException(status_code=422, detail="Provide both user and soul, or neither")
         device_session_id = device_session_id.strip()
         if device_session_id and not _DEVICE_SESSION_RE.fullmatch(device_session_id):
             raise HTTPException(status_code=422, detail="Invalid Mentra device scope")
@@ -665,17 +668,16 @@ def register_mentra_routes(
                 "installed_version": None,
                 "installed_seen_at": None,
                 "installed_soul": None,
+                "installed_user": None,
+                "installed_device": None,
             }
         )
         config = get_config().get("mentra") or {}
-        if not config.get("enabled"):
-            return {
-                "state": "disabled",
-                "detail": "Mentra disabled",
-                "active": False,
-                "transcript_gap": False,
-                **installation,
-            }
+        unscoped = not user_id
+        if unscoped:
+            user_id = installation["installed_user"] or ""
+            soul_id = installation["installed_soul"] or ""
+            device_session_id = installation["installed_device"] or device_session_id
 
         missing = [
             field
@@ -693,10 +695,13 @@ def register_mentra_routes(
                 (
                     (key, lease)
                     for key, lease in _leases.items()
-                    if key == soul_id and lease.user_id == user_id
+                    if lease.user_id == user_id
+                    and (unscoped or key == soul_id)
+                    and (not device_session_id or lease.device_session_id == device_session_id)
                 ),
                 None,
             )
+            busy = bool(_leases or _start_claims)
 
         active_soul, active = active_pair if active_pair else ("", None)
         transcript_gap = False
@@ -704,23 +709,27 @@ def register_mentra_routes(
         if active is not None:
             conflict_key = (active.user_id, active_soul, active.sitting_id)
             transcript_gap = conflict_key in _transcript_conflicts
-            if get_storage_dir is not None:
-                try:
-                    history = conversation_sources.load_mentra_history_snapshot(
-                        storage_dir=get_storage_dir(),
-                        user_id=active.user_id,
-                        soul_id=active_soul,
-                        conversation_id=f"mentra:{active.device_session_id}",
-                    )
-                    transcript_gap = transcript_gap or any(
-                        row.get("event_kind") == "transcript_gap"
-                        and str(row.get("event_id") or "").startswith(f"{active.sitting_id}:")
-                        for row in history
-                    )
-                except (OSError, RuntimeError, ValueError):
-                    status_error = "Transcript status unavailable"
             if _image_finalize_errors.get(conflict_key):
                 status_error = "Photo memory processing failed"
+        history_device = active.device_session_id if active else device_session_id
+        if get_storage_dir is not None and user_id and soul_id and history_device:
+            try:
+                history = conversation_sources.load_mentra_history_snapshot(
+                    storage_dir=get_storage_dir(),
+                    user_id=user_id,
+                    soul_id=active_soul if active else soul_id,
+                    conversation_id=f"mentra:{history_device}",
+                )
+                sitting_id = active.sitting_id if active else (
+                    str(history[-1].get("event_id") or "").rsplit(":", 1)[0] if history else ""
+                )
+                transcript_gap = transcript_gap or any(
+                    row.get("event_kind") == "transcript_gap"
+                    and str(row.get("event_id") or "").startswith(f"{sitting_id}:")
+                    for row in history
+                )
+            except (OSError, RuntimeError, ValueError):
+                status_error = "Transcript status unavailable"
 
         if transcript_gap:
             state, detail = "transcript_gap", "Transcript durability gap"
@@ -734,6 +743,7 @@ def register_mentra_routes(
             "state": state,
             "detail": detail,
             "active": active is not None,
+            "busy": busy,
             "transcript_gap": transcript_gap,
             **installation,
             **(

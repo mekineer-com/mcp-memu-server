@@ -94,6 +94,7 @@ def default_config() -> dict[str, Any]:
         },
         "mentra": {
             "enabled": False,
+            "public_base_url": "",
             "gemini_api_key": "",
             "model": "gemini-2.5-flash-native-audio-preview-12-2025",
             "voice": "Kore",
