@@ -27,6 +27,7 @@ from pydantic import (
 )
 
 from app.services import conversation_sources, turn_contract
+from app.services.souls import register_soul_routes
 
 
 _DEVICE_SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
@@ -632,6 +633,12 @@ def register_mentra_routes(
             )
 
     auth = [Depends(require_enabled), Depends(require_bearer)]
+    register_soul_routes(
+        app,
+        get_config=get_config,
+        prefix="/integration/mentra",
+        dependencies=[Depends(require_bearer)],
+    )
 
     @app.post(
         "/integration/mentra/installation/seen", tags=["integration"], dependencies=auth

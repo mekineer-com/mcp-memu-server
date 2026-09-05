@@ -70,6 +70,7 @@ from app.services import apimw as _apimw
 from app.services import cross_history as _cross_history
 from app.services import free_turn as _free_turn
 from app.services import mentra_routes as _mentra_routes
+from app.services import souls as _souls
 from app.services import whatsapp_outbounds as _whatsapp_outbounds
 from app.services.consolidation import (
     ConsolidationDeps,
@@ -1679,6 +1680,8 @@ def _load_mentra_cross_chat_context(
         mark_current_chat=True,
     )
 
+
+_souls.register_soul_routes(app, get_config=lambda: _CONFIG)
 
 _mentra_routes.register_mentra_routes(
     app,

@@ -22,6 +22,7 @@ mcp-memu-server/
 ├── app/services/conversation_id.py
 ├── app/services/apimw.py
 ├── app/services/sqlite_scope.py
+├── app/services/souls.py
 ├── app/services/crud_endpoints.py
 ├── app/services/state.py
 ├── app/services/soul_summaries.py
@@ -103,10 +104,38 @@ mcp-memu-server/
 | `/categories` | GET | List all categories |
 | `/categories/search` | POST | Search categories |
 | `/clear` | POST | Delete memories in scope |
+| `/souls` | GET/POST | Discover or create canonical scoped soul databases; Mentra bearer alias at `/integration/mentra/souls` |
 | `/config` | GET/POST | Read or update runtime config |
 | `/reload` | POST | Reload config from disk |
 | `/diag`, `/diag/calls`, `/diag/http`, `/diag/sqlite/*` | GET | Diagnostic pages. Read-only — never use for DB bootstrap. |
 | `/diag/memorize/pending` | GET | Global memorize pressure: unmemorized tokens vs threshold + sleep-gap status |
+
+### Soul Setup Contract
+
+`GET /souls?user_id=...` returns `{souls: [string]}`. `POST /souls` accepts
+`{user_id, soul_id, use_existing: bool}` and returns `{soul_id, created: bool}`.
+Both methods share their implementation with `/integration/mentra/souls`, whose
+only dependency is the configured bearer credential (independent of enabled).
+Local routes follow the trusted-local API convention.
+
+Exact existing names require consent: 409 `detail.reason=existing_exact` plus
+`detail.message`; consent returns `created: false`. Different identities or unknown
+occupied targets produce non-bypassable 409 `sanitized_collision`. Creation uses
+an exclusive file claim and writes only `soul_identity(id=1, user_id, soul_id)`.
+No provider calls or fake categories/conversations are required. Normal scoped
+service initialization creates the engine schema afterward; the embedding profile
+is stamped by the engine on the first vector write.
+
+Discovery opens SQLite with URI `mode=ro`, reads exact identity/scoped metadata,
+and validates its canonical filename through the shared path resolver. Filenames
+never supply identities. Valid non-soul SQLite artifacts are excluded; unreadable
+or corrupt candidates return an error rather than an empty list.
+
+Picker integration: keep installation records unchanged. Call scoped Mentra status
+with the selected user/soul/device to retain gap visibility after the lease ends.
+Unscoped status still falls back to the original installed soul after lease release;
+host-wide latest-gap discovery would need to select from existing transcript
+snapshot metadata, not introduce another registry.
 
 ## Extracted Modules
 
@@ -128,6 +157,7 @@ mcp-memu-server/
 | `app/services/service_factory.py` | `MemoryService` cache + construction, llm profile merge, config readers |
 | `app/services/retrieve_orchestration.py` | Retrieve domain helpers: query/where extraction, identity-context builder, `_run_retrieve` implementation |
 | `app/services/sqlite_scope.py` | Scoped db-path resolution, scope `WHERE` builder, state-db lookup/write wrappers |
+| `app/services/souls.py` | Canonical per-soul SQLite identity metadata and shared local/Mentra discovery-create routes |
 | `app/services/crud_endpoints.py` | CRUD endpoint logic: categories, intentions, relationships, narrative suggestion, conversation state, clear |
 | `app/services/conversation_id.py` | WhatsApp group ID canonicalization to `whatsapp:group:<group@g.us>`. Called at all entrypoints — do not bypass or per-sender aliases will split state. |
 | `app/services/mcp_tools.py` | MCP-facing wrapper contracts (`memu_*`) |

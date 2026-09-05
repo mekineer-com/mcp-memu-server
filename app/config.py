@@ -349,20 +349,22 @@ def load_soul_gen_config(cfg: dict[str, Any], user_id: str, soul_id: str, logger
     return parsed
 
 
-def sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, Any] | None) -> str:
+def sqlite_path_for_scope(
+    cfg: dict[str, Any], base_dsn: str, scope: dict[str, Any] | None
+) -> Path | None:
     if not isinstance(scope, dict):
         scope = {}
-
     soul_id = str(scope.get("soul_id") or "").strip()
-
-    sqlite_dir = sqlite_dir_from_cfg(cfg, fallback_dsn=base_dsn)
-    sqlite_dir.mkdir(parents=True, exist_ok=True)
-
     if not soul_id:
-        return base_dsn
+        return None
+    return (sqlite_dir_from_cfg(cfg, fallback_dsn=base_dsn) / f"{sanitize_db_filename(soul_id)}.db").resolve()
 
-    basename = sanitize_db_filename(soul_id)
-    db_path = (sqlite_dir / f"{basename}.db").resolve()
+
+def sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, Any] | None) -> str:
+    db_path = sqlite_path_for_scope(cfg, base_dsn, scope)
+    if db_path is None:
+        return base_dsn
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     _sqlite_ensure_nonempty(db_path)
     return f"sqlite:////{db_path.as_posix().lstrip('/')}"
 
