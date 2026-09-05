@@ -375,6 +375,11 @@ def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcrip
     tmp_path: Path,
 ) -> None:
     client, _, _ = _session_app(monkeypatch, tmp_path)
+    client.post("/integration/mentra/installation/seen", headers=AUTH, json={
+        "user_id": START["user_id"], "soul_id": "Original Installed Soul",
+        "device_session_id": START["device_session_id"],
+        "package_name": "com.openalma.mentra", "version": "0.1.1",
+    }).raise_for_status()
     sitting_id = client.post(
         "/integration/mentra/session/start", json=START, headers=AUTH
     ).json()["session_id"]
@@ -428,6 +433,9 @@ def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcrip
         f"/integration/mentra/session/{sitting_id}/end", json=scope, headers=AUTH
     ).status_code == 200
     assert client.get(status + "&device_session_id=phone-1", headers=AUTH).json()["state"] == "transcript_gap"
+    unscoped = client.get("/integration/mentra/status", headers=AUTH).json()
+    assert unscoped["state"] == "transcript_gap"
+    assert unscoped["installed_soul"] == "Original Installed Soul"
     next_sitting = client.post(
         "/integration/mentra/session/start", json=START, headers=AUTH
     ).json()["session_id"]
@@ -440,6 +448,7 @@ def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcrip
     ).raise_for_status()
     client.post(f"/integration/mentra/session/{next_sitting}/end", json=scope, headers=AUTH).raise_for_status()
     assert client.get(status + "&device_session_id=phone-1", headers=AUTH).json()["state"] == "ready"
+    assert client.get("/integration/mentra/status", headers=AUTH).json()["state"] == "ready"
 
 
 def test_mentra_status_discovery_auth_and_global_busy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
