@@ -123,6 +123,7 @@ Exact existing names require consent: 409 `detail.reason=existing_exact` plus
 `detail.message`; consent returns `created: false`. New names are published atomically.
 Soul IDs are trimmed exact names: case and spaces remain identity-significant.
 Discovery never opens database contents; an unreadable directory remains an error.
+Exact-name chat directories intentionally replace old sanitized-name directories; no compatibility lookup is performed.
 
 Picker integration: keep installation records unchanged. Call scoped Mentra status
 with the selected user/soul/device to retain gap visibility after the lease ends.

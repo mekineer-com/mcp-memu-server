@@ -14,18 +14,20 @@ import urllib.request
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, NamedTuple
+from typing import Annotated, Any, Literal, NamedTuple
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     StrictInt,
     field_validator,
     model_validator,
 )
 
+from app.config import validate_soul_id
 from app.services import conversation_sources, turn_contract
 from app.services.souls import register_soul_routes
 
@@ -46,6 +48,7 @@ _RECALL_GUIDANCE = (
     "Use recall_memory when relevant context is missing. Keep speaking naturally while it runs; "
     "the result becomes silent context for later speech."
 )
+SoulId = Annotated[str, BeforeValidator(validate_soul_id)]
 _TOKEN_SETUP_FIELD_MASK = ",".join(
     (
         "model",
@@ -83,7 +86,7 @@ _installation_lock = asyncio.Lock()
 
 class MentraSessionStart(BaseModel):
     user_id: str
-    soul_id: str
+    soul_id: SoulId
     device_session_id: str
     mode: str
 
@@ -114,7 +117,7 @@ class MentraSessionStart(BaseModel):
 
 class MentraInstallationSeen(BaseModel):
     user_id: str
-    soul_id: str
+    soul_id: SoulId
     device_session_id: str
     package_name: str
     version: str
@@ -153,7 +156,7 @@ class MentraInstallationSeen(BaseModel):
 
 class MentraSessionScope(BaseModel):
     user_id: str
-    soul_id: str
+    soul_id: SoulId
 
     @field_validator("user_id", "soul_id")
     @classmethod
@@ -281,7 +284,7 @@ class MentraTranscriptBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     user_id: str
-    soul_id: str
+    soul_id: SoulId
     events: list[MentraTranscriptEvent]
 
     @field_validator("user_id", "soul_id")
@@ -796,8 +799,6 @@ def register_mentra_routes(
             record_failure(exc)
             raise exc
 
-        if body.user_id.casefold() == body.soul_id.casefold():
-            reject_start(409, "Mentra user and soul identities must differ")
         if (
             get_service_from_scope is None
             or load_turn_state_and_soul_card is None

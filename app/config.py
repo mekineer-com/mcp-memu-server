@@ -20,6 +20,10 @@ STORAGE_STATUS: dict[str, Any] = {
 }
 
 
+class SoulIdError(ValueError):
+    pass
+
+
 def _set_storage_status(values: dict[str, Any]) -> None:
     STORAGE_STATUS.clear()
     STORAGE_STATUS.update(values)
@@ -329,7 +333,7 @@ def validate_soul_id(name: Any) -> str:
         or len(soul_id.encode("utf-8")) > 80
         or any(ord(c) < 32 or ord(c) == 127 or c in "/\\*?[]" for c in soul_id)
     ):
-        raise ValueError("Invalid soul name")
+        raise SoulIdError("Invalid soul name")
     return soul_id
 
 
@@ -374,8 +378,12 @@ def sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, An
     db_path = sqlite_path_for_scope(cfg, base_dsn, scope)
     if db_path is None:
         return base_dsn
+    configured_dsn = str((((cfg.get("storage") or {}).get("metadata_store") or {}).get("dsn") or ""))
+    configured_path = sqlite_file_from_dsn(configured_dsn) if configured_dsn else None
+    if configured_path is not None and db_path.resolve() == configured_path.resolve():
+        raise SoulIdError("Soul name is reserved by the base database")
     if db_path.is_symlink():
-        raise ValueError("Soul database must not be a symlink")
+        raise SoulIdError("Soul database must not be a symlink")
     if not db_path.exists():
         from app.services.souls import publish_soul_db
 

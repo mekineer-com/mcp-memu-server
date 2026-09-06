@@ -4,13 +4,14 @@ import os
 import sqlite3
 import tempfile
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, StrictBool
 
-from app.config import normalize_sqlite_dsn, sqlite_dir_from_cfg, sqlite_file_from_dsn, sqlite_path_for_scope, validate_soul_id
+from app.config import SoulIdError, normalize_sqlite_dsn, sqlite_dir_from_cfg, sqlite_file_from_dsn, sqlite_path_for_scope, validate_soul_id
 
 
 class SoulCreate(BaseModel):
@@ -33,6 +34,9 @@ def _path(config: dict[str, Any], soul_id: str) -> Path:
     path = sqlite_path_for_scope(config, _base_dsn(config), {"soul_id": soul_id})
     if path is None:
         raise RuntimeError("soul_id is required")
+    base_path = sqlite_file_from_dsn(_base_dsn(config))
+    if base_path is not None and path.resolve() == base_path.resolve():
+        raise HTTPException(status_code=409, detail="Soul name is reserved by the base database")
     if path.is_symlink():
         raise HTTPException(status_code=409, detail="A symlink occupies this soul name")
     return path
@@ -42,7 +46,7 @@ def publish_soul_db(path: Path) -> bool:
     """Atomically publish a minimal SQLite file; return whether this call won."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp") as staged:
-        with sqlite3.connect(staged.name) as con:
+        with closing(sqlite3.connect(staged.name)) as con:
             con.execute("PRAGMA user_version=1")
         try:
             os.link(staged.name, path)

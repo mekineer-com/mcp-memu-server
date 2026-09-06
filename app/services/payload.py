@@ -10,6 +10,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.config import SoulIdError, validate_soul_id
+
 
 def _pick_str(payload: dict[str, Any], *keys: str) -> str | None:
     for k in keys:
@@ -37,7 +39,10 @@ def _extract_scope(payload: dict[str, Any]) -> dict[str, Any]:
     if user_id:
         scope["user_id"] = user_id
     if soul_id:
-        scope["soul_id"] = soul_id
+        try:
+            scope["soul_id"] = validate_soul_id(soul_id)
+        except SoulIdError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     return scope
 
 

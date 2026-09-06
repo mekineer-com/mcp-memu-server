@@ -492,19 +492,21 @@ def test_start_auth_and_validation_precede_bootstrap(
 
     assert client.post("/integration/mentra/session/start", json={}, headers=AUTH).status_code == 422
     assert client.post("/integration/mentra/session/start", json={}).status_code == 401
-    same_identity = {**START, "user_id": " CODEXIA "}
-    assert client.post(
-        "/integration/mentra/session/start", json=same_identity, headers=AUTH
-    ).status_code == 409
-    rejected_call = calls["route_telemetry"][-1]
-    assert rejected_call[1]["ok"] is False
-    assert set(rejected_call[1]["info"]) == {"totalMs"}
     invalid_device = {**START, "device_session_id": "bad/id"}
     assert client.post(
         "/integration/mentra/session/start", json=invalid_device, headers=AUTH
     ).status_code == 422
     assert calls["service"] == 0
     assert calls["token"] == []
+
+
+def test_start_allows_same_user_and_soul_name(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client, _, _ = _session_app(monkeypatch, tmp_path)
+    assert client.post(
+        "/integration/mentra/session/start",
+        json={**START, "user_id": " Codexia "},
+        headers=AUTH,
+    ).status_code == 200
 
 
 def test_start_requires_model_and_voice_before_bootstrap(

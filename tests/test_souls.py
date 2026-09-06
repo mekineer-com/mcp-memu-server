@@ -2,11 +2,11 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app import config
-from app.services import memorize_endpoint, souls
+from app.services import free_turn, memorize_endpoint, payload, souls
 from app.services.mentra_routes import register_mentra_routes
 
 
@@ -35,6 +35,7 @@ def test_exact_names_discovery_and_confirmation(tmp_path, monkeypatch):
         assert post(client, name, True).json() == {"soul_id": name, "created": False}
 
     (tmp_path / "memu.db").write_bytes(b"base")
+    assert post(client, "memu", True).status_code == 409
     (tmp_path / "Linked.db").symlink_to(tmp_path / "Siri.db")
     (tmp_path / "Unreadable.db").write_bytes(b"not sqlite")
     monkeypatch.setattr(sqlite3, "connect", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("discovery opened a DB")))
@@ -76,9 +77,28 @@ def test_first_scoped_use_creates_exact_database_without_picker_policy(tmp_path,
     dsn = config.sqlite_dsn_for_scope(cfg, base, {"user_id": "Marcos", "soul_id": "First Soul"})
     assert config.sqlite_file_from_dsn(dsn) == tmp_path / "First Soul.db"
     assert "Created soul 'First Soul'" in caplog.text
+    with pytest.raises(config.SoulIdError, match="reserved"):
+        config.sqlite_dsn_for_scope(cfg, base, {"user_id": "Marcos", "soul_id": "memu"})
 
 
 def test_discovery_reports_unreadable_directory(tmp_path, monkeypatch):
     client, _ = client_for(tmp_path)
     monkeypatch.setattr(type(tmp_path), "iterdir", lambda *_: (_ for _ in ()).throw(PermissionError("no access")))
     assert client.get("/souls").status_code == 503
+
+
+def test_invalid_scope_is_a_client_error_and_free_turn_skips_base_db(tmp_path):
+    with pytest.raises(HTTPException) as invalid:
+        payload._extract_scope({"soul_id": "bad/name"})
+    assert invalid.value.status_code == 422
+
+    base = tmp_path / "memu.db"
+    soul = tmp_path / "Siri.db"
+    base.touch()
+    soul.touch()
+    assert free_turn._free_turn_followup_db_paths(
+        storage_status={"dsn": f"sqlite:///{base}"},
+        config={"storage": {"sqlite_dir": str(tmp_path)}},
+        sqlite_dir_from_cfg=lambda *_a, **_k: tmp_path,
+        logger=None,
+    ) == [soul]

@@ -8,6 +8,8 @@ from typing import Any
 from fastapi import HTTPException
 from memu.app import MemoryService
 
+from app.config import SoulIdError
+
 
 _SERVICES: dict[str, MemoryService] = {}
 _SERVICE_STORAGE_FP: dict[str, dict[str, Any]] = {}
@@ -291,7 +293,10 @@ def _get_service_from_payload(
             base = normalize_sqlite_dsn(str(ms.get("dsn") or ""))
             scope_for_dsn = dict(scope_hint2 or {})
             scope_for_dsn["soul_id"] = soul_id2
-            ms["dsn"] = sqlite_dsn_for_scope(config, base, scope_for_dsn)
+            try:
+                ms["dsn"] = sqlite_dsn_for_scope(config, base, scope_for_dsn)
+            except SoulIdError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     blob_config = payload.get("blob_config") or {}
     memorize_config = payload.get("memorize_config") or {}

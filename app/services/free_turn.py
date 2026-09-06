@@ -11,6 +11,8 @@ from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
+from app.config import sqlite_file_from_dsn
+
 from app.services.conversation_id import canonical_conversation_id
 from app.services.turn_contract import _conversation_heading_from_conversation_id
 
@@ -413,8 +415,12 @@ def _free_turn_followup_db_paths(
 ) -> list[Path]:
     base_dsn = str(storage_status.get("dsn") or "")
     sqlite_dir = sqlite_dir_from_cfg(config, fallback_dsn=base_dsn)
+    base_path = sqlite_file_from_dsn(base_dsn)
     try:
-        return sorted(path for path in sqlite_dir.glob("*.db") if path.is_file())
+        return sorted(
+            path for path in sqlite_dir.glob("*.db")
+            if path.is_file() and (base_path is None or path.resolve() != base_path.resolve())
+        )
     except OSError:
         logger.exception("free_turn: failed to scan follow_up sqlite dir %s", sqlite_dir)
         return []
