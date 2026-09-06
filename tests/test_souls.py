@@ -131,12 +131,22 @@ def test_identity_only_database_initializes_real_scoped_service(tmp_path, monkey
     assert client.get("/souls", params={"user_id": USER}).json() == {"souls": ["Fresh Fictional Soul"]}
 
 
-def test_unknown_empty_and_symlink_targets_are_never_reused(tmp_path):
-    client, _ = client_for(tmp_path)
+def test_empty_placeholder_requires_consent_and_populated_unknown_is_protected(tmp_path):
+    client, cfg = client_for(tmp_path)
     target = tmp_path / "Empty.db"
     target.touch()
-    assert post(client, "Empty", True).status_code == 409
+    assert post(client, "Empty").status_code == 409
     assert target.read_bytes() == b""
+    assert post(client, "Empty", True).json()["created"] is False
+    assert "Empty" in client.get("/souls", params={"user_id": USER}).json()["souls"]
+    with sqlite3.connect(tmp_path / "Unclaimed.db") as con:
+        con.execute("CREATE TABLE unknown_content (text TEXT)")
+        con.execute("INSERT INTO unknown_content VALUES ('Preserve me')")
+    assert post(client, "Unclaimed", True).status_code == 409
+    base = cfg["storage"]["metadata_store"]["dsn"]
+    config.sqlite_dsn_for_scope(cfg, base, {"user_id": USER, "soul_id": "Bootstrap Soul"})
+    assert "Bootstrap Soul" in client.get("/souls", params={"user_id": USER}).json()["souls"]
+    assert post(client, "Bootstrap_Soul", True).status_code == 409
     (tmp_path / "Linked.db").symlink_to(tmp_path / "Missing.db")
     assert post(client, "Linked", True).status_code == 409
     assert not (tmp_path / "Missing.db").exists()

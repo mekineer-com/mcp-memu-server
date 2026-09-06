@@ -77,11 +77,31 @@ def _identities(path: Path) -> set[tuple[str, str]]:
         con.close()
 
 
+def _write_identity(con: sqlite3.Connection, user_id: str, soul_id: str) -> None:
+    con.execute("CREATE TABLE IF NOT EXISTS soul_identity (id INTEGER PRIMARY KEY CHECK (id = 1), user_id TEXT NOT NULL, soul_id TEXT NOT NULL)")
+    con.execute("INSERT INTO soul_identity VALUES (1, ?, ?)", (user_id, soul_id))
+
+
 def _reuse(path: Path, user_id: str, soul_id: str, consent: bool) -> dict[str, Any]:
     try:
         identities = _identities(path)
     except HTTPException:
         _collision()
+    if not identities:
+        with closing(sqlite3.connect(path)) as con:
+            con.execute("BEGIN IMMEDIATE")
+            identities = _identities(path)
+            if not identities:
+                tables = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
+                if any(con.execute('SELECT 1 FROM "' + name.replace('"', '""') + '" LIMIT 1').fetchone() for (name,) in tables):
+                    _collision()
+                if not consent:
+                    raise HTTPException(status_code=409, detail={
+                        "reason": "existing_exact", "message": "An empty database exists. Assign it to this soul?",
+                    })
+                _write_identity(con, user_id, soul_id)
+                con.commit()
+                identities = {(user_id, soul_id)}
     if (user_id, soul_id) not in identities or {sid for _, sid in identities} != {soul_id}:
         _collision()
     if not consent:
@@ -139,8 +159,7 @@ def create_soul(config: dict[str, Any], body: SoulCreate) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp") as staged:
         with closing(sqlite3.connect(staged.name)) as con:
-            con.execute("CREATE TABLE soul_identity (id INTEGER PRIMARY KEY CHECK (id = 1), user_id TEXT NOT NULL, soul_id TEXT NOT NULL)")
-            con.execute("INSERT INTO soul_identity VALUES (1, ?, ?)", (user_id, soul_id))
+            _write_identity(con, user_id, soul_id)
             con.commit()
         try:
             os.link(staged.name, path)  # Publish only a complete DB; never replace an occupied name.

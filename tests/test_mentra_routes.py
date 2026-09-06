@@ -434,8 +434,16 @@ def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcrip
     ).status_code == 200
     assert client.get(status + "&device_session_id=phone-1", headers=AUTH).json()["state"] == "transcript_gap"
     unscoped = client.get("/integration/mentra/status", headers=AUTH).json()
-    assert unscoped["state"] == "transcript_gap"
+    assert unscoped["state"] == "ready"
     assert unscoped["installed_soul"] == "Original Installed Soul"
+    client.post("/integration/mentra/installation/seen", headers=AUTH, json={
+        "user_id": START["user_id"], "soul_id": START["soul_id"],
+        "device_session_id": START["device_session_id"],
+        "package_name": "com.openalma.mentra", "version": "0.1.1",
+    }).raise_for_status()
+    unscoped = client.get("/integration/mentra/status", headers=AUTH).json()
+    assert unscoped["state"] == "transcript_gap"
+    assert unscoped["installed_soul"] == START["soul_id"]
     next_sitting = client.post(
         "/integration/mentra/session/start", json=START, headers=AUTH
     ).json()["session_id"]

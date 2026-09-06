@@ -871,25 +871,6 @@ def persist_mentra_history_snapshot(
     )
 
 
-def load_latest_mentra_history_snapshot(
-    *, storage_dir: Path, user_id: str, conversation_id: str,
-) -> list[dict[str, Any]] | None:
-    latest: dict[str, Any] | None = None
-    for path in (storage_dir / _CHAT_SNAPSHOT_DIRS["mentra"]).glob(f"*/{_ST_SNAPSHOT_FILE}"):
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict):
-            raise RuntimeError(f"mentra snapshot is invalid: {path}")
-        if raw.get("user_id") != user_id or raw.get("conversation_id") != conversation_id:
-            continue
-        if (raw.get("source_label") != "mentra" or not isinstance(raw.get("history"), list)
-                or not all(isinstance(row, dict) for row in raw["history"])
-                or not isinstance(raw.get("updated_at"), str)):
-            raise RuntimeError(f"mentra snapshot is invalid: {path}")
-        if latest is None or raw["updated_at"] > latest["updated_at"]:
-            latest = raw
-    return latest["history"] if latest is not None else None
-
-
 def load_mentra_history_snapshot(
     *,
     storage_dir: Path,

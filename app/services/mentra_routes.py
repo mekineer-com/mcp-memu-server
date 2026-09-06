@@ -722,21 +722,13 @@ def register_mentra_routes(
         history_device = active.device_session_id if active else device_session_id
         if get_storage_dir is not None and user_id and soul_id and history_device:
             try:
-                history = None
-                if unscoped and active is None:
-                    history = await asyncio.to_thread(
-                        conversation_sources.load_latest_mentra_history_snapshot,
-                        storage_dir=get_storage_dir(), user_id=user_id,
-                        conversation_id=f"mentra:{history_device}",
-                    )
-                if history is None:
-                    history = await asyncio.to_thread(
-                        conversation_sources.load_mentra_history_snapshot,
-                        storage_dir=get_storage_dir(),
-                        user_id=user_id,
-                        soul_id=active_soul if active else soul_id,
-                        conversation_id=f"mentra:{history_device}",
-                    )
+                history = await asyncio.to_thread(
+                    conversation_sources.load_mentra_history_snapshot,
+                    storage_dir=get_storage_dir(),
+                    user_id=user_id,
+                    soul_id=active_soul if active else soul_id,
+                    conversation_id=f"mentra:{history_device}",
+                )
                 sitting_id = active.sitting_id if active else (
                     str(history[-1].get("event_id") or "").rsplit(":", 1)[0] if history else ""
                 )
