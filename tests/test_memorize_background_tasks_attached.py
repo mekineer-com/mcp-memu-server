@@ -292,7 +292,6 @@ def test_cross_memorize_endpoint_marks_manifest_range(
         "u1",
         "TestSoul",
         "cid-cross",
-        main_module._sanitize_db_filename,
     )
     chat_dir.mkdir(parents=True)
     (chat_dir / "manifest.json").write_text(

@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.config import sanitize_db_filename
 from app.services import memorize_endpoint
 
 _NUMERIC_LIKE_RE = re.compile(r"^[0-9+\-() .]+$")
@@ -757,7 +756,6 @@ def _chat_snapshot_path(
         user_id,
         soul_id,
         conversation_id,
-        sanitize_db_filename,
     )
     chat_dir.mkdir(parents=True, exist_ok=True)
     return (chat_dir / _ST_SNAPSHOT_FILE).resolve()

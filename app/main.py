@@ -48,7 +48,6 @@ from app.config import (
     procedural_db_path as _procedural_db_path,
     procedural_should_ingest as _procedural_should_ingest,
     procedural_yaml_dir as _procedural_yaml_dir,
-    sanitize_db_filename as _sanitize_db_filename,
     save_config as _save_config,
     sqlite_dir_from_cfg as _sqlite_dir_from_cfg,
     sqlite_dsn_for_scope as _sqlite_dsn_for_scope,
@@ -1808,7 +1807,6 @@ def _find_chat_dir_for_conversation(chats_dir: Path, uid: str, soul_id: str, con
         uid,
         soul_id,
         conversation_id,
-        _sanitize_db_filename,
     )
 
 
@@ -2176,7 +2174,6 @@ def _make_memorize_endpoint_context() -> _memorize_endpoint.MemorizeEndpointCont
         run_memorize_segments=_run_memorize_segments,
         run_consolidation_task=_run_consolidation_task,
         get_config=lambda: _CONFIG,
-        sanitize_db_filename=_sanitize_db_filename,
     )
 
 

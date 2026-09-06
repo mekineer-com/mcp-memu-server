@@ -112,26 +112,17 @@ mcp-memu-server/
 
 ### Soul Setup Contract
 
-`GET /souls?user_id=...` returns `{souls: [string]}`. `POST /souls` accepts
-`{user_id, soul_id, use_existing: bool}` and returns `{soul_id, created: bool}`.
+`GET /souls` returns exact `*.db` filename stems except the configured base DB and
+symlinks. `POST /souls` accepts `{soul_id, use_existing: bool}` and returns
+`{soul_id, created: bool}`.
 Both methods share their implementation with `/integration/mentra/souls`, whose
 only dependency is the configured bearer credential (independent of enabled).
 Local routes follow the trusted-local API convention.
 
 Exact existing names require consent: 409 `detail.reason=existing_exact` plus
-`detail.message`; consent returns `created: false`. Different identities or unknown
-populated occupied targets produce non-bypassable 409 `sanitized_collision`. Empty
-placeholders can be assigned an identity only after consent, under a SQLite write lock. Creation uses
-an exclusive file claim and writes only `soul_identity(id=1, user_id, soul_id)`.
-First scoped initialization reuses this creation path for new DBs with user/soul scope.
-No provider calls or fake categories/conversations are required. Normal scoped
-service initialization creates the engine schema afterward; the embedding profile
-is stamped by the engine on the first vector write.
-
-Discovery opens SQLite with URI `mode=ro`, reads exact identity/scoped metadata,
-and validates its canonical filename through the shared path resolver. Filenames
-never supply identities. Valid non-soul SQLite artifacts are excluded; unreadable
-or corrupt candidates are logged and skipped; an unreadable directory remains an error.
+`detail.message`; consent returns `created: false`. New names are published atomically.
+Soul IDs are trimmed exact names: case and spaces remain identity-significant.
+Discovery never opens database contents; an unreadable directory remains an error.
 
 Picker integration: keep installation records unchanged. Call scoped Mentra status
 with the selected user/soul/device to retain gap visibility after the lease ends.

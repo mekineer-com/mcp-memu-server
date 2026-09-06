@@ -12,6 +12,7 @@ from typing import Any, TypedDict
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 
+from app.config import validate_soul_id
 from app.services.conversation_id import canonical_conversation_id
 from app.services.payload import message_ts_ms
 from app.services.state import effective_digest_cursor_from_row
@@ -176,7 +177,6 @@ class MemorizeEndpointContext:
     run_memorize_segments: Callable[..., Awaitable[None]]
     run_consolidation_task: Callable[..., Awaitable[dict[str, Any]]]
     get_config: Callable[[], dict[str, Any]]
-    sanitize_db_filename: Callable[[str], str]
 
 
 def _segment_display_ranges(
@@ -791,26 +791,25 @@ async def run_memorize_segments(
         ctx.memorize_cancel.discard(progress_key)
 
 
-def chat_storage_hash(uid: str, aid: str, key: str) -> str:
-    raw = f"{uid}|{aid}|{key}".encode("utf-8", "ignore")
+def chat_storage_hash(uid: str, soul_id: str, key: str) -> str:
+    raw = f"{uid}|{soul_id}|{key}".encode("utf-8", "ignore")
     return hashlib.sha1(raw).hexdigest()[:16]
 
 
 def resolve_chat_storage_dir(
     chats_dir: Path,
     uid: str,
-    aid: str,
+    soul_id: str,
     conversation_id: str | None,
-    sanitize_db_filename: Callable[[str], str],
 ) -> tuple[Path, str, str]:
-    agent_slug = sanitize_db_filename(aid)
+    agent_slug = validate_soul_id(soul_id)
     primary_value = str(conversation_id or "").strip()
     if conversation_id:
         primary_source = "conversation_id"
     else:
         primary_source = "empty"
 
-    primary_key = chat_storage_hash(uid, aid, primary_value)
+    primary_key = chat_storage_hash(uid, soul_id, primary_value)
     primary_path = (chats_dir / f"{agent_slug}_{primary_key}").resolve()
 
     return primary_path, primary_key, primary_source
@@ -1068,19 +1067,17 @@ def find_chat_dir_for_conversation(
     uid: str,
     soul_id: str,
     conversation_id: str,
-    sanitize_db_filename: Callable[[str], str],
 ) -> Path | None:
     primary_dir, _chat_key, _chat_key_source = resolve_chat_storage_dir(
         chats_dir,
         uid,
         soul_id,
         conversation_id,
-        sanitize_db_filename,
     )
     if (primary_dir / "manifest.json").exists():
         return primary_dir
 
-    agent_slug = sanitize_db_filename(soul_id)
+    agent_slug = validate_soul_id(soul_id)
     for manifest_path in sorted(chats_dir.glob(f"{agent_slug}_*/manifest.json")):
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1109,7 +1106,6 @@ def slice_history_after_last_memorized_segment(
     uid: str,
     soul_id: str,
     conversation_id: str,
-    sanitize_db_filename: Callable[[str], str],
 ) -> list[dict[str, Any]]:
     if not isinstance(history, list) or not history:
         return history
@@ -1119,7 +1115,6 @@ def slice_history_after_last_memorized_segment(
         uid,
         soul_id,
         conversation_id,
-        sanitize_db_filename,
     )
     if chat_dir is None:
         return history[min_recent_start:]
@@ -1243,7 +1238,6 @@ async def memorize_endpoint(
                 uid,
                 soul_id,
                 conversation_id,
-                endpoint_ctx.sanitize_db_filename,
             )
             segments_dir = (chat_dir / "segments").resolve()
             chat_dir.mkdir(parents=True, exist_ok=True)

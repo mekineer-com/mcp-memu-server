@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.config import validate_soul_id
 from app.services import conversation_sources as _conversation_sources
 from app.services import memorize_endpoint as _memorize_endpoint
 from app.services import message_log as _message_log
@@ -457,7 +458,7 @@ def _latest_saved_segment_display_ranges(
     soul_id: str,
 ) -> dict[str, tuple[int, int]]:
     chats_dir = (_m()._get_storage_dir(_m()._CONFIG) / "st_chats").resolve()
-    agent_slug = _m()._sanitize_db_filename(soul_id)
+    agent_slug = validate_soul_id(soul_id)
     if not chats_dir.exists() or not agent_slug:
         return {}
     segment_paths = sorted(

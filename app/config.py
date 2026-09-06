@@ -1,12 +1,10 @@
 import json
+import logging
 import os
 import re
 import traceback
 from pathlib import Path
 from typing import Any
-
-from app.db import sqlite_ensure_nonempty as _sqlite_ensure_nonempty
-
 
 STARTUP_WARNINGS: list[str] = []
 STORAGE_STATUS: dict[str, Any] = {
@@ -323,9 +321,21 @@ def sanitize_db_filename(name: str) -> str:
     return s[:80]
 
 
+def validate_soul_id(name: Any) -> str:
+    soul_id = str(name or "").strip()
+    if (
+        not soul_id
+        or soul_id in {".", ".."}
+        or len(soul_id.encode("utf-8")) > 80
+        or any(ord(c) < 32 or ord(c) == 127 or c in "/\\*?[]" for c in soul_id)
+    ):
+        raise ValueError("Invalid soul name")
+    return soul_id
+
+
 def soul_gen_config_path(cfg: dict[str, Any], user_id: str, soul_id: str) -> Path:
     user_part = sanitize_db_filename(user_id)
-    soul_part = sanitize_db_filename(soul_id)
+    soul_part = validate_soul_id(soul_id)
     return sqlite_dir_from_cfg(cfg) / f"{user_part}__{soul_part}.gen.json"
 
 
@@ -357,20 +367,22 @@ def sqlite_path_for_scope(
     soul_id = str(scope.get("soul_id") or "").strip()
     if not soul_id:
         return None
-    return (sqlite_dir_from_cfg(cfg, fallback_dsn=base_dsn) / f"{sanitize_db_filename(soul_id)}.db").resolve()
+    return sqlite_dir_from_cfg(cfg, fallback_dsn=base_dsn) / f"{validate_soul_id(soul_id)}.db"
 
 
 def sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, Any] | None) -> str:
     db_path = sqlite_path_for_scope(cfg, base_dsn, scope)
     if db_path is None:
         return base_dsn
-    if scope and scope.get("user_id"):
-        from app.services.souls import SoulCreate, create_soul
+    if db_path.is_symlink():
+        raise ValueError("Soul database must not be a symlink")
+    if not db_path.exists():
+        from app.services.souls import publish_soul_db
 
-        scoped_cfg = {**cfg, "storage": {**(cfg.get("storage") or {}), "sqlite_dir": str(db_path.parent)}}
-        create_soul(scoped_cfg, SoulCreate(user_id=str(scope["user_id"]), soul_id=str(scope["soul_id"]), use_existing=True))
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    _sqlite_ensure_nonempty(db_path)
+        if publish_soul_db(db_path):
+            logging.getLogger(__name__).warning(
+                "Created soul %r at %s on first use", validate_soul_id(scope["soul_id"]), db_path
+            )
     return f"sqlite:////{db_path.as_posix().lstrip('/')}"
 
 
