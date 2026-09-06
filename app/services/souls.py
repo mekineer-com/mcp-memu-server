@@ -28,7 +28,7 @@ def _scope(body: SoulCreate) -> tuple[str, str]:
     if user_id.casefold() == soul_id.casefold():
         raise HTTPException(status_code=422, detail="user_id and soul_id must differ")
     if sanitize_db_filename(soul_id) == "unknown" and soul_id.casefold() != "unknown":
-        raise HTTPException(status_code=422, detail="Invalid soul_id")
+        raise HTTPException(status_code=422, detail="Soul name must contain an ASCII letter or digit for its database filename")
     return user_id, soul_id
 
 

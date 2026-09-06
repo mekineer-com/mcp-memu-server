@@ -364,7 +364,7 @@ def sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, An
     db_path = sqlite_path_for_scope(cfg, base_dsn, scope)
     if db_path is None:
         return base_dsn
-    if not db_path.exists() and scope and scope.get("user_id"):
+    if scope and scope.get("user_id"):
         from app.services.souls import SoulCreate, create_soul
 
         scoped_cfg = {**cfg, "storage": {**(cfg.get("storage") or {}), "sqlite_dir": str(db_path.parent)}}

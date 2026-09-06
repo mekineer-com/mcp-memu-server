@@ -147,6 +147,12 @@ def test_empty_placeholder_requires_consent_and_populated_unknown_is_protected(t
     config.sqlite_dsn_for_scope(cfg, base, {"user_id": USER, "soul_id": "Bootstrap Soul"})
     assert "Bootstrap Soul" in client.get("/souls", params={"user_id": USER}).json()["souls"]
     assert post(client, "Bootstrap_Soul", True).status_code == 409
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as refused:
+        config.sqlite_dsn_for_scope(cfg, base, {"user_id": USER, "soul_id": "Bootstrap_Soul"})
+    assert refused.value.status_code == 409
+    config.sqlite_dsn_for_scope(cfg, base, {"user_id": USER, "soul_id": "Other Soul"})
+    assert (tmp_path / "Other_Soul.db").exists()
     (tmp_path / "Linked.db").symlink_to(tmp_path / "Missing.db")
     assert post(client, "Linked", True).status_code == 409
     assert not (tmp_path / "Missing.db").exists()
