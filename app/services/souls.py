@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import sqlite3
 import tempfile
 from collections.abc import Callable
@@ -105,7 +106,11 @@ def list_souls(config: dict[str, Any], user_id: str) -> list[str]:
     for path in candidates:
         if path.suffix != ".db" or path.is_symlink() or not path.is_file():
             continue
-        identities = _identities(path)
+        try:
+            identities = _identities(path)
+        except HTTPException:
+            logging.getLogger(__name__).warning("Skipping unreadable soul database %s", path)
+            continue
         for stored_user, soul_id in identities:
             if stored_user == user_id and path == _canonical_path(config, soul_id):
                 souls.add(soul_id)

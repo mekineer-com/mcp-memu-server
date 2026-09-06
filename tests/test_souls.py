@@ -79,7 +79,7 @@ def test_collisions_artifacts_and_legacy_metadata(tmp_path):
     assert post(client, "A" * 80 + "y", True).status_code == 409
     unknown = tmp_path / "UnknownTarget.db"
     unknown.write_bytes(b"corrupt database")
-    assert client.get("/souls", params={"user_id": USER}).status_code == 503
+    assert "Legacy One" in client.get("/souls", params={"user_id": USER}).json()["souls"]
     assert post(client, "UnknownTarget", True).json()["detail"]["reason"] == "sanitized_collision"
     assert unknown.read_bytes() == b"corrupt database"
 
