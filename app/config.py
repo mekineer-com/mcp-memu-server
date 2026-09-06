@@ -379,7 +379,7 @@ def sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, An
     if db_path is None:
         return base_dsn
     configured_dsn = str((((cfg.get("storage") or {}).get("metadata_store") or {}).get("dsn") or ""))
-    configured_path = sqlite_file_from_dsn(configured_dsn) if configured_dsn else None
+    configured_path = sqlite_file_from_dsn(normalize_sqlite_dsn(configured_dsn)) if configured_dsn else None
     if configured_path is not None and db_path.resolve() == configured_path.resolve():
         raise SoulIdError("Soul name is reserved by the base database")
     if db_path.is_symlink():

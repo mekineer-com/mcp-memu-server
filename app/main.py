@@ -34,6 +34,7 @@ from app import procedural as _procedural
 from app.config import (
     STARTUP_WARNINGS as _STARTUP_WARNINGS,
     STORAGE_STATUS as _STORAGE_STATUS,
+    SoulIdError as _SoulIdError,
     blob_config_from_cfg as _blob_config_from_cfg,
     config_path as _config_path,
     database_config_from_cfg as _database_config_from_cfg,
@@ -1077,14 +1078,17 @@ def _sqlite_current_path(
     user_id: str | None = None,
     soul_id: str | None = None,
 ) -> Path | None:
-    return _sqlite_scope.sqlite_current_path(
-        user_id=user_id,
-        soul_id=soul_id,
-        storage_status=_STORAGE_STATUS,
-        config=_CONFIG,
-        sqlite_dsn_for_scope=_sqlite_dsn_for_scope,
-        sqlite_file_from_dsn=_sqlite_file_from_dsn,
-    )
+    try:
+        return _sqlite_scope.sqlite_current_path(
+            user_id=user_id,
+            soul_id=soul_id,
+            storage_status=_STORAGE_STATUS,
+            config=_CONFIG,
+            sqlite_dsn_for_scope=_sqlite_dsn_for_scope,
+            sqlite_file_from_dsn=_sqlite_file_from_dsn,
+        )
+    except _SoulIdError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _sqlite_build_scope_where(

@@ -26,7 +26,7 @@ def _base_dsn(config: dict[str, Any]) -> str:
 def _soul_id(value: Any) -> str:
     try:
         return validate_soul_id(value)
-    except ValueError as exc:
+    except SoulIdError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
@@ -48,6 +48,7 @@ def publish_soul_db(path: Path) -> bool:
     with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp") as staged:
         with closing(sqlite3.connect(staged.name)) as con:
             con.execute("PRAGMA user_version=1")
+            con.commit()
         try:
             os.link(staged.name, path)
         except FileExistsError:
@@ -63,8 +64,8 @@ def list_souls(config: dict[str, Any]) -> list[str]:
             path.stem
             for path in directory.iterdir()
             if path.suffix == ".db"
-            and path.is_file()
             and not path.is_symlink()
+            and path.is_file()
             and (base_path is None or path.resolve() != base_path.resolve())
         )
     except FileNotFoundError:

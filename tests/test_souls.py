@@ -5,7 +5,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app import config
+from app import config, main
 from app.services import free_turn, memorize_endpoint, payload, souls
 from app.services.mentra_routes import register_mentra_routes
 
@@ -33,10 +33,14 @@ def test_exact_names_discovery_and_confirmation(tmp_path, monkeypatch):
         assert (tmp_path / f"{name}.db").exists()
         assert post(client, name).json()["detail"]["reason"] == "existing_exact"
         assert post(client, name, True).json() == {"soul_id": name, "created": False}
+    siri_bytes = (tmp_path / "Siri.db").read_bytes()
+    assert post(client, "Siri", True).json()["created"] is False
+    assert (tmp_path / "Siri.db").read_bytes() == siri_bytes
 
     (tmp_path / "memu.db").write_bytes(b"base")
     assert post(client, "memu", True).status_code == 409
     (tmp_path / "Linked.db").symlink_to(tmp_path / "Siri.db")
+    assert post(client, "Linked", True).status_code == 409
     (tmp_path / "Unreadable.db").write_bytes(b"not sqlite")
     monkeypatch.setattr(sqlite3, "connect", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("discovery opened a DB")))
     assert client.get("/souls").json() == {"souls": sorted(names + ["Unreadable"])}
@@ -69,6 +73,18 @@ def test_concurrent_creation_never_overwrites(tmp_path):
     assert sorted(response.json()["created"] for response in responses) == [False, True]
     with sqlite3.connect(tmp_path / "Parallel Soul.db") as con:
         assert con.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert con.execute("PRAGMA user_version").fetchone() == (1,)
+
+
+def test_failed_creation_publishes_nothing_and_can_retry(tmp_path, monkeypatch):
+    client, cfg = client_for(tmp_path)
+    before = set(tmp_path.iterdir())
+    with monkeypatch.context() as patch:
+        patch.setattr(sqlite3, "connect", lambda *_a, **_k: (_ for _ in ()).throw(sqlite3.OperationalError("failed")))
+        with pytest.raises(sqlite3.OperationalError):
+            souls.create_soul(cfg, souls.SoulCreate(soul_id="Retry Soul", use_existing=False))
+    assert set(tmp_path.iterdir()) == before
+    assert post(client, "Retry Soul").json()["created"] is True
 
 
 def test_first_scoped_use_creates_exact_database_without_picker_policy(tmp_path, caplog):
@@ -79,6 +95,9 @@ def test_first_scoped_use_creates_exact_database_without_picker_policy(tmp_path,
     assert "Created soul 'First Soul'" in caplog.text
     with pytest.raises(config.SoulIdError, match="reserved"):
         config.sqlite_dsn_for_scope(cfg, base, {"user_id": "Marcos", "soul_id": "memu"})
+    with pytest.raises(HTTPException) as reserved:
+        main._get_service_from_payload({"user": {"user_id": "Marcos", "soul_id": "memu"}})
+    assert reserved.value.status_code == 422
 
 
 def test_discovery_reports_unreadable_directory(tmp_path, monkeypatch):
