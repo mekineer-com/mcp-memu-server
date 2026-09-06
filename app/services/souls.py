@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import threading
+import tempfile
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -11,11 +12,6 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, StrictBool
 
 from app.config import normalize_sqlite_dsn, sanitize_db_filename, sqlite_dir_from_cfg, sqlite_path_for_scope
-
-
-_IDENTITY_TABLE = "soul_identity"
-# ponytail: serialize short setup writes; per-target locks if setup throughput matters.
-_CREATE_LOCK = threading.Lock()
 
 
 class SoulCreate(BaseModel):
@@ -58,7 +54,7 @@ def _identities(path: Path) -> set[tuple[str, str]]:
     try:
         tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         identities: set[tuple[str, str]] = set()
-        if _IDENTITY_TABLE in tables:
+        if "soul_identity" in tables:
             row = con.execute(
                 "SELECT user_id, soul_id FROM soul_identity WHERE id = 1"
             ).fetchone()
@@ -80,12 +76,18 @@ def _identities(path: Path) -> set[tuple[str, str]]:
         con.close()
 
 
-def _known_at_path(config: dict[str, Any], path: Path, user_id: str, soul_id: str) -> bool:
+def _reuse(path: Path, user_id: str, soul_id: str, consent: bool) -> dict[str, Any]:
     try:
         identities = _identities(path)
-        return (user_id, soul_id) in identities and {sid for _, sid in identities} == {soul_id}
     except HTTPException:
         _collision()
+    if (user_id, soul_id) not in identities or {sid for _, sid in identities} != {soul_id}:
+        _collision()
+    if not consent:
+        raise HTTPException(status_code=409, detail={
+            "reason": "existing_exact", "message": "Soul already exists. Use its existing database?",
+        })
+    return {"soul_id": soul_id, "created": False}
 
 
 def list_souls(config: dict[str, Any], user_id: str) -> list[str]:
@@ -101,9 +103,7 @@ def list_souls(config: dict[str, Any], user_id: str) -> list[str]:
     except OSError as exc:
         raise HTTPException(status_code=503, detail="Soul database directory is unavailable") from exc
     for path in candidates:
-        if path.suffix != ".db":
-            continue
-        if path.is_symlink() or not path.is_file():
+        if path.suffix != ".db" or path.is_symlink() or not path.is_file():
             continue
         identities = _identities(path)
         for stored_user, soul_id in identities:
@@ -129,40 +129,18 @@ def create_soul(config: dict[str, Any], body: SoulCreate) -> dict[str, Any]:
     target = directory / f"{sanitize_db_filename(soul_id)}.db"
     if target.is_symlink() or path.parent != directory:
         _collision()
-    with _CREATE_LOCK:
-        if path.exists():
-            if _known_at_path(config, path, user_id, soul_id):
-                if body.use_existing:
-                    return {"soul_id": soul_id, "created": False}
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "reason": "existing_exact",
-                        "message": "Soul already exists; set use_existing to true to reuse it.",
-                    },
-                )
-            _collision()
-        path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return _reuse(path, user_id, soul_id, body.use_existing)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp") as staged:
+        with closing(sqlite3.connect(staged.name)) as con:
+            con.execute("CREATE TABLE soul_identity (id INTEGER PRIMARY KEY CHECK (id = 1), user_id TEXT NOT NULL, soul_id TEXT NOT NULL)")
+            con.execute("INSERT INTO soul_identity VALUES (1, ?, ?)", (user_id, soul_id))
+            con.commit()
         try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+            os.link(staged.name, path)  # Publish only a complete DB; never replace an occupied name.
         except FileExistsError:
-            _collision()
-        os.close(fd)
-        try:
-            con = sqlite3.connect(path)
-            try:
-                con.execute(
-                    "CREATE TABLE soul_identity (id INTEGER PRIMARY KEY CHECK (id = 1), user_id TEXT NOT NULL, soul_id TEXT NOT NULL)"
-                )
-                con.execute(
-                    "INSERT INTO soul_identity (id, user_id, soul_id) VALUES (1, ?, ?)",
-                    (user_id, soul_id),
-                )
-                con.commit()
-            finally:
-                con.close()
-        except sqlite3.Error as exc:
-            raise HTTPException(status_code=500, detail="Could not initialize soul identity") from exc
+            return _reuse(path, user_id, soul_id, body.use_existing)
     return {"soul_id": soul_id, "created": True}
 
 
@@ -173,12 +151,10 @@ def register_soul_routes(
     prefix: str = "",
     dependencies: list[Any] | None = None,
 ) -> None:
-    route_dependencies = dependencies or []
-
-    @app.get(f"{prefix}/souls", dependencies=route_dependencies)
+    @app.get(f"{prefix}/souls", dependencies=dependencies)
     def souls(user_id: str) -> dict[str, list[str]]:
         return {"souls": list_souls(get_config(), user_id)}
 
-    @app.post(f"{prefix}/souls", dependencies=route_dependencies)
+    @app.post(f"{prefix}/souls", dependencies=dependencies)
     def souls_create(body: SoulCreate) -> dict[str, Any]:
         return create_soul(get_config(), body)

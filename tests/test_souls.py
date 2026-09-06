@@ -92,6 +92,19 @@ def test_concurrent_collision_cannot_overwrite(tmp_path):
     assert len(client.get("/souls", params={"user_id": USER}).json()["souls"]) == 1
 
 
+def test_failed_creation_publishes_nothing_and_can_retry(tmp_path, monkeypatch):
+    client, _ = client_for(tmp_path)
+    client = TestClient(client.app, raise_server_exceptions=False)
+    before = set(tmp_path.iterdir())
+    with monkeypatch.context() as patch:
+        def fail(*args, **kwargs):
+            raise sqlite3.OperationalError("fictional initialization failure")
+        patch.setattr(sqlite3, "connect", fail)
+        assert post(client, "Retry Soul").status_code == 500
+    assert set(tmp_path.iterdir()) == before
+    assert post(client, "Retry Soul").json()["created"] is True
+
+
 def test_identity_only_database_initializes_real_scoped_service(tmp_path, monkeypatch):
     client, cfg = client_for(tmp_path)
     cfg["llm"] = {"provider": "openai", "api_key": "fictional", "chat_model": "fictional-chat", "embed_model": "text-embedding-3-large"}
