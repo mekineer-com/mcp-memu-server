@@ -28,6 +28,9 @@ mcp-memu-server/
 ├── app/services/soul_summaries.py
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
 ├── migrate_category_taxonomy.py # Offline inventory/discover/apply/validate migration; explicit DB only
+├── migrate_multimodal_embeddings.py # Offline Gemini embedding rebuild; publishes a new DB only after validation
+├── stamp_embedding_profile.py   # Stamps an embedding profile onto an existing soul database
+├── embedding_bakeoff.py         # Offline embedding-quality comparison runner
 ├── config.json              # Runtime config (llm, storage, listen, dossier policy, memu path)
 ├── config.example.json      # Template
 ├── tests/                   # pytest suite (`./.venv/bin/python -m pytest -q tests/`)
@@ -59,11 +62,16 @@ mcp-memu-server/
 | `/integration/memu/turn` | POST | MCP single-call turn wrapper: retrieve then turn |
 | `/integration/memu/sensory-search` | POST | Scoped explicit visual-memory candidate search over separate media and caption lanes |
 | `/integration/mentra/health` | GET | Bearer-authenticated Mentra ingress health check; disabled by default |
+| `/integration/mentra/installation/seen` | POST | Record an installed Iris build's package, version, and device session |
+| `/integration/mentra/earcons/{name}.wav` | GET | Serve a bundled audio cue; public, unauthenticated |
 | `/integration/mentra/status` | GET | Bearer-authenticated installation discovery, scoped active lease, global busy/start claims, and latest-sitting transcript gap. Remains readable when Mentra is disabled so existing leases cannot disappear from Stop protection; new starts still return 404. Static earcons remain public. |
 | `/integration/mentra/session/start` | POST | Authenticated soul bootstrap plus constrained Gemini Live token; returns a fresh sitting ID and next device-conversation transcript sequence |
 | `/integration/mentra/session/{id}/token` | POST | Mint a fresh constrained Gemini token for the unchanged active sitting before a replacement socket |
 | `/integration/mentra/session/{id}/heartbeat` / `end` | POST | Renew or release one sitting-scoped Mentra lease; heartbeat repeats each image-processing failure until that image succeeds or the sitting ends |
 | `/integration/mentra/session/{id}/recall` | POST | Sitting-scoped, read-only forced retrieve over the cursor-bounded Mentra tail; returns compact ID-free context for Gemini `SILENT` delivery |
+| `/integration/mentra/session/{id}/snapshot` | POST | Accept one durable image snapshot for background processing |
+| `/integration/mentra/session/{id}/snapshot/replay` | POST | Replay a stored snapshot that failed its first processing attempt |
+| `/integration/mentra/session/{id}/snapshot/finalize` | POST | Finalize a snapshot into memory; unavailable unless Gemini embedding config and DB profile are both active |
 | `/integration/mentra/session/{id}/transcripts/append` | POST | Redacted-validation, contiguous/idempotent transcript, gap, or sitting-summary append into the atomic Mentra snapshot; conversational rows queue shared auto-memorize while gap markers never enter AI history |
 | `/integration/atomic/session_start` | POST | Atomic session bootstrap: stripped retrieve snapshot → seeds `chat:atomic-<uuid>` |
 | `/integration/atomic/session_end` | POST | Atomic session close: accepts transcript + `activity_recap`, posts to memU memorize |
@@ -199,7 +207,8 @@ from memu.prompts.memory_type import ...  # type prompts
 ## Config (`config.json`)
 
 ```
-llm:        provider, api_key, base_url, chat_model, legacy embed_model, embedding profile
+llm:        provider, api_key, base_url, chat_model, legacy top-level embed_model (unused)
+llm.embedding: nested block - provider, api_key, base_url, embed_model
 storage:    resources_dir, sqlite_dir, metadata_store (provider + dsn + optional embedding_profile)
 hermes:     home, state_db_path, sessions_index_path, whatsapp_web_source_db (Channels data paths)
 mentra:     enabled, gemini_api_key, model, voice, integration_bearer_token
