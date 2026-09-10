@@ -11,7 +11,15 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, StrictBool
 
-from app.config import SoulIdError, normalize_sqlite_dsn, sqlite_dir_from_cfg, sqlite_file_from_dsn, sqlite_path_for_scope, validate_soul_id
+from app.config import (
+    SoulIdError,
+    SoulNameConflictError,
+    normalize_sqlite_dsn,
+    sqlite_dir_from_cfg,
+    sqlite_file_from_dsn,
+    sqlite_path_for_scope,
+    validate_soul_id,
+)
 
 
 class SoulCreate(BaseModel):
@@ -31,7 +39,10 @@ def _soul_id(value: Any) -> str:
 
 
 def _path(config: dict[str, Any], soul_id: str) -> Path:
-    path = sqlite_path_for_scope(config, _base_dsn(config), {"soul_id": soul_id})
+    try:
+        path = sqlite_path_for_scope(config, _base_dsn(config), {"soul_id": soul_id})
+    except SoulNameConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if path is None:
         raise RuntimeError("soul_id is required")
     base_path = sqlite_file_from_dsn(_base_dsn(config))

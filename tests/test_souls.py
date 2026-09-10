@@ -1,5 +1,6 @@
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import PureWindowsPath
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -27,7 +28,7 @@ def post(client, name, consent=False, path="/souls", headers=None):
 
 def test_exact_names_discovery_and_confirmation(tmp_path, monkeypatch):
     client, _ = client_for(tmp_path)
-    names = ["Siri", "siri", "Henrietta Jones", "Henrietta_Jones", "Écho!"]
+    names = ["Siri", "Henrietta Jones", "Henrietta_Jones", "Écho!"]
     for name in names:
         assert post(client, f" {name} ").json() == {"soul_id": name, "created": True}
         assert (tmp_path / f"{name}.db").exists()
@@ -49,7 +50,33 @@ def test_exact_names_discovery_and_confirmation(tmp_path, monkeypatch):
     assert config.soul_gen_config_path({}, "Marcos", "Henrietta Jones").name == "Marcos__Henrietta Jones.gen.json"
 
 
-@pytest.mark.parametrize("name", ["", " ", ".", "..", "bad/name", "bad\\name", "bad*name", "bad?name", "bad[name", "bad\x00name", "é" * 41])
+def test_soul_names_are_unique_ignoring_case(tmp_path):
+    client, cfg = client_for(tmp_path)
+    assert post(client, "Siri").status_code == 200
+
+    conflict = post(client, "siri")
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == "Soul name is already taken as 'Siri'"
+    with pytest.raises(config.SoulNameConflictError, match="taken as 'Siri'"):
+        config.sqlite_dsn_for_scope(
+            cfg,
+            cfg["storage"]["metadata_store"]["dsn"],
+            {"soul_id": "siri"},
+        )
+    assert not (tmp_path / "siri.db").exists()
+
+
+def test_windows_sqlite_dsn_keeps_drive_path_shape():
+    assert config.sqlite_dsn_from_path(PureWindowsPath("C:/Users/Test/Siri.db")) == (
+        "sqlite:///C:/Users/Test/Siri.db"
+    )
+
+
+@pytest.mark.parametrize("name", [
+    "", " ", ".", "..", "bad/name", "bad\\name", "bad*name", "bad?name", "bad[name",
+    'bad:name', 'bad"name', "bad<name", "bad>name", "bad|name", "bad.", "CON", "com1.txt",
+    "bad\x00name", "é" * 41,
+])
 def test_invalid_names_fail_without_creating_a_database(tmp_path, name):
     client, _ = client_for(tmp_path)
     assert post(client, name).status_code == 422

@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import traceback
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 STARTUP_WARNINGS: list[str] = []
@@ -22,6 +22,17 @@ STORAGE_STATUS: dict[str, Any] = {
 
 class SoulIdError(ValueError):
     pass
+
+
+class SoulNameConflictError(SoulIdError):
+    pass
+
+
+_WINDOWS_RESERVED_FILENAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 
 
 def _set_storage_status(values: dict[str, Any]) -> None:
@@ -162,6 +173,10 @@ def sqlite_file_from_dsn(dsn: str) -> Path | None:
     return None
 
 
+def sqlite_dsn_from_path(path: PurePath) -> str:
+    return f"sqlite:///{path.as_posix()}"
+
+
 def normalize_sqlite_dsn(dsn_or_path: str) -> str:
     """Accept either a sqlite DSN or a plain filesystem path.
 
@@ -182,10 +197,10 @@ def normalize_sqlite_dsn(dsn_or_path: str) -> str:
             p = (config_dir() / p).resolve()
         else:
             p = p.resolve()
-        return f"sqlite:////{p.as_posix().lstrip('/')}"
+        return sqlite_dsn_from_path(p)
 
     p = resolve_cfg_path(raw)
-    return f"sqlite:////{p.as_posix().lstrip('/')}"
+    return sqlite_dsn_from_path(p)
 
 
 def sqlite_dir_from_cfg(cfg: dict[str, Any], fallback_dsn: str | None = None) -> Path:
@@ -331,7 +346,9 @@ def validate_soul_id(name: Any) -> str:
         not soul_id
         or soul_id in {".", ".."}
         or len(soul_id.encode("utf-8")) > 80
-        or any(ord(c) < 32 or ord(c) == 127 or c in "/\\*?[]" for c in soul_id)
+        or soul_id.endswith(".")
+        or soul_id.split(".", 1)[0].upper() in _WINDOWS_RESERVED_FILENAMES
+        or any(ord(c) < 32 or ord(c) == 127 or c in '/\\*?[]:"<>|' for c in soul_id)
     ):
         raise SoulIdError("Invalid soul name")
     return soul_id
@@ -371,7 +388,20 @@ def sqlite_path_for_scope(
     soul_id = str(scope.get("soul_id") or "").strip()
     if not soul_id:
         return None
-    return sqlite_dir_from_cfg(cfg, fallback_dsn=base_dsn) / f"{validate_soul_id(soul_id)}.db"
+    db_path = sqlite_dir_from_cfg(cfg, fallback_dsn=base_dsn) / f"{validate_soul_id(soul_id)}.db"
+    try:
+        conflict = next(
+            (
+                path for path in db_path.parent.iterdir()
+                if path.name.casefold() == db_path.name.casefold() and path.name != db_path.name
+            ),
+            None,
+        )
+    except FileNotFoundError:
+        conflict = None
+    if conflict is not None:
+        raise SoulNameConflictError(f"Soul name is already taken as {conflict.stem!r}")
+    return db_path
 
 
 def sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, Any] | None) -> str:
@@ -391,7 +421,7 @@ def sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, An
             logging.getLogger(__name__).warning(
                 "Created soul %r at %s on first use", validate_soul_id(scope["soul_id"]), db_path
             )
-    return f"sqlite:////{db_path.as_posix().lstrip('/')}"
+    return sqlite_dsn_from_path(db_path)
 
 
 def database_config_from_cfg(cfg: dict[str, Any], scope: dict[str, Any] | None = None) -> dict[str, Any]:
