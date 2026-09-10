@@ -19,6 +19,8 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 
+import psutil
+
 ROOT = Path(__file__).resolve().parent
 
 
@@ -89,43 +91,33 @@ def _parse_pid(text: str) -> int | None:
 
 def _is_pid_alive(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        process = psutil.Process(pid)
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
         return False
-    except PermissionError:
+    except (psutil.AccessDenied, OSError):
         return True
-    except Exception:
-        return False
-    return True
 
 
 def _proc_cmdline(pid: int) -> str:
     try:
-        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except Exception:
+        return " ".join(psutil.Process(pid).cmdline())
+    except (psutil.Error, OSError):
         return ""
-    if not raw:
-        return ""
-    return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
 
 
 def _proc_cwd(pid: int) -> Path | None:
     try:
-        return Path(f"/proc/{pid}/cwd").resolve()
-    except Exception:
+        return Path(psutil.Process(pid).cwd()).resolve()
+    except (psutil.Error, OSError):
         return None
 
 
 def _is_our_server_process(pid: int) -> bool:
     cmd = _proc_cmdline(pid).lower()
-    root_s = str(ROOT).lower()
-    if cmd and f"{root_s}/run.py" in cmd:
-        return True
-    if cmd and "uvicorn" in cmd and "app.main:app" in cmd:
-        cwd = _proc_cwd(pid)
-        if cwd is not None and cwd == ROOT:
-            return True
-    return False
+    if _proc_cwd(pid) != ROOT:
+        return False
+    return bool(cmd) and ("run.py" in cmd or ("uvicorn" in cmd and "app.main:app" in cmd))
 
 
 def _enforce_single_instance(cfg: dict) -> None:
@@ -238,10 +230,12 @@ def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
         "datefmt": "%Y-%m-%d %H:%M:%S",
     }
     handlers["memu_file"] = {
-        "class": "logging.handlers.WatchedFileHandler",
+        "class": "logging.handlers.RotatingFileHandler",
         "formatter": "default",
         "filename": str(log_path),
         "encoding": "utf-8",
+        "maxBytes": 5_000_000,
+        "backupCount": 2,
     }
     handlers["memu_errors"] = {
         "class": "logging.handlers.RotatingFileHandler",

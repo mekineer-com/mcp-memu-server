@@ -37,6 +37,7 @@ def test_error_handler_wired_to_root_logger(tmp_path: Path) -> None:
 
     handlers = log_cfg.get("handlers", {})
     assert "memu_errors" in handlers, "memu_errors handler must be defined"
+    assert "RotatingFileHandler" in handlers["memu_file"]["class"]
 
     err_handler_cfg = handlers["memu_errors"]
     assert "RotatingFileHandler" in err_handler_cfg.get("class", ""), "must be RotatingFileHandler"

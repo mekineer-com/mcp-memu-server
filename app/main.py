@@ -749,10 +749,7 @@ async def _shutdown_when_idle(max_wait_sec: int) -> None:
         _SHUTDOWN_STATE["timedOut"] = timed_out
 
     await asyncio.sleep(0.05)
-    try:
-        os.kill(os.getpid(), signal.SIGTERM)
-    except OSError:
-        os._exit(0)
+    signal.raise_signal(signal.SIGINT)
 
     _SHUTDOWN_TASK = None
 

@@ -1256,23 +1256,23 @@ def test_turn_launch_apimw_clears_inflight_when_state_load_fails(monkeypatch: py
 @pytest.mark.asyncio
 async def test_shutdown_waits_for_tracked_background_tasks(monkeypatch: pytest.MonkeyPatch) -> None:
     release = asyncio.Event()
-    kill_calls: list[tuple[int, int]] = []
+    signals: list[int] = []
 
     async def slow_background() -> None:
         await release.wait()
 
     task = asyncio.create_task(slow_background())
     main._BACKGROUND_TASKS.add(task)
-    monkeypatch.setattr(main.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+    monkeypatch.setattr(main.signal, "raise_signal", signals.append)
 
     shutdown_task = asyncio.create_task(main._shutdown_when_idle(max_wait_sec=1))
     await asyncio.sleep(0.05)
-    assert kill_calls == []
+    assert signals == []
 
     release.set()
     await asyncio.wait_for(shutdown_task, timeout=2)
     await asyncio.sleep(0)
-    assert kill_calls
+    assert signals == [main.signal.SIGINT]
     main._BACKGROUND_TASKS.discard(task)
 
 

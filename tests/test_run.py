@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -36,6 +39,30 @@ def test_enforce_single_instance_clears_live_foreign_pid(tmp_path: Path, monkeyp
 
     server_run._enforce_single_instance(_cfg_with_pid_file(pid_file))
     assert not pid_file.exists()
+
+
+def test_server_process_identity_accepts_relative_runner(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(server_run, "_proc_cmdline", lambda _pid: "python run.py")
+    monkeypatch.setattr(server_run, "_proc_cwd", lambda _pid: server_run.ROOT)
+
+    assert server_run._is_our_server_process(2222) is True
+
+
+def test_single_instance_rejects_real_relative_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    runner = tmp_path / "run.py"
+    runner.write_text("import time; time.sleep(10)\n", encoding="utf-8")
+    process = subprocess.Popen([sys.executable, "run.py"], cwd=tmp_path)
+    try:
+        time.sleep(0.1)
+        pid_file = tmp_path / "server.pid"
+        pid_file.write_text(str(process.pid), encoding="utf-8")
+        monkeypatch.setattr(server_run, "ROOT", tmp_path)
+
+        with pytest.raises(SystemExit):
+            server_run._enforce_single_instance(_cfg_with_pid_file(pid_file))
+    finally:
+        process.terminate()
+        process.wait(timeout=2)
 
 
 def test_quiet_access_filter_suppresses_successful_request() -> None:
