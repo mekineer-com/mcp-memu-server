@@ -16,7 +16,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app.services import mentra_routes
+from app.services import mentra_routes, owner
 from app.services.mentra_routes import register_mentra_routes
 
 
@@ -80,6 +80,8 @@ def _session_app(
     memorize_error: Exception | None = None,
 ) -> tuple[TestClient, dict[str, Any], dict[str, Any]]:
     config = _configured()
+    config["storage"]["metadata_store"]["dsn"] = f"sqlite:///{tmp_path / 'memu.db'}"
+    owner.create_owner(config, START["user_id"])
     calls: dict[str, Any] = {
         "service": 0,
         "token": [],
@@ -344,6 +346,12 @@ def test_mentra_installation_report_persists_and_status_selects_device(
         json={**first, "package_name": "example.wrong"},
         headers=AUTH,
     ).status_code == 422
+    with pytest.raises(owner.OwnerMismatchError):
+        client.post(
+            "/integration/mentra/installation/seen",
+            json={**first, "user_id": "Different User"},
+            headers=AUTH,
+        )
     assert client.post(
         "/integration/mentra/installation/seen", json=first, headers=AUTH
     ).json() == {"package_name": "com.openalma.mentra", "version": "0.1.0"}

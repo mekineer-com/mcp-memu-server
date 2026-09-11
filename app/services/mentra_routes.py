@@ -29,7 +29,7 @@ from pydantic import (
 
 from app.config import validate_soul_id
 from app.services import conversation_sources, turn_contract
-from app.services.owner import register_owner_routes
+from app.services.owner import register_owner_routes, require_owner
 from app.services.souls import register_soul_routes
 
 
@@ -658,6 +658,7 @@ def register_mentra_routes(
             raise HTTPException(
                 status_code=503, detail="Mentra installation storage is not configured"
             )
+        require_owner(get_config(), body.user_id)
         async with _installation_lock:
             storage_dir = get_storage_dir()
             installations = _load_installations(storage_dir)
