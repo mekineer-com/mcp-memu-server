@@ -221,7 +221,12 @@ async def _run_retrieve(
             try:
                 con.row_factory = sqlite3.Row
                 sqlite_ensure_conversation_state_schema(con)
-                pre_row = conversation_state_from_row(conversation_state_row(con, scoped_conversation_id), con=con)
+                pre_row = conversation_state_from_row(
+                    conversation_state_row(
+                        con, scoped_conversation_id, user_id=user_id, soul_id=soul_id
+                    ),
+                    con=con,
+                )
                 if pre_row:
                     retrieve_rewrite_angle = int(pre_row.get("retrieve_rewrite_angle") or 0)
             finally:
@@ -301,7 +306,12 @@ async def _run_retrieve(
                 try:
                     con.row_factory = sqlite3.Row
                     sqlite_ensure_conversation_state_schema(con)
-                    state_out = conversation_state_from_row(conversation_state_row(con, scoped_conversation_id), con=con)
+                    state_out = conversation_state_from_row(
+                        conversation_state_row(
+                            con, scoped_conversation_id, user_id=user_id, soul_id=soul_id
+                        ),
+                        con=con,
+                    )
                 finally:
                     con.close()
         if state_out:

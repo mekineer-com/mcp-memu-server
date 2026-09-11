@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app import config, main
-from app.services import free_turn, memorize_endpoint, payload, souls
+from app.services import free_turn, memorize_endpoint, owner, payload, souls
 from app.services.mentra_routes import register_mentra_routes
 
 
@@ -18,6 +18,7 @@ def client_for(tmp_path):
     }
     app = FastAPI()
     souls.register_soul_routes(app, get_config=lambda: cfg)
+    owner.register_owner_routes(app, get_config=lambda: cfg)
     register_mentra_routes(app, get_config=lambda: cfg)
     return TestClient(app), cfg
 
@@ -92,6 +93,16 @@ def test_mentra_alias_is_authenticated_and_uses_same_contract(tmp_path):
     assert post(client, "Echo", path=alias, headers=auth).json()["created"] is True
     assert client.get(alias, headers=auth).json() == {"souls": ["Echo"]}
 
+    assert client.get("/owner").json() == {"user_id": None}
+    assert client.post("/owner", json={"user_id": " Marcos "}).json() == {
+        "user_id": "Marcos",
+        "created": True,
+    }
+    owner_alias = "/integration/mentra/owner"
+    assert client.get(owner_alias).status_code == 401
+    assert client.get(owner_alias, headers=auth).json() == {"user_id": "Marcos"}
+    assert client.post(owner_alias, json={"user_id": "Other"}, headers=auth).status_code == 409
+
 
 def test_concurrent_creation_never_overwrites(tmp_path):
     client, _ = client_for(tmp_path)
@@ -116,6 +127,7 @@ def test_failed_creation_publishes_nothing_and_can_retry(tmp_path, monkeypatch):
 
 def test_first_scoped_use_creates_exact_database_without_picker_policy(tmp_path, caplog):
     _, cfg = client_for(tmp_path)
+    owner.create_owner(cfg, "Marcos")
     base = cfg["storage"]["metadata_store"]["dsn"]
     dsn = config.sqlite_dsn_for_scope(cfg, base, {"user_id": "Marcos", "soul_id": "First Soul"})
     assert config.sqlite_file_from_dsn(dsn) == tmp_path / "First Soul.db"

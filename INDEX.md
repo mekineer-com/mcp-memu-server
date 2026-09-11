@@ -23,6 +23,7 @@ mcp-memu-server/
 ├── app/services/apimw.py
 ├── app/services/sqlite_scope.py
 ├── app/services/souls.py
+├── app/services/owner.py          # One create-once OpenAlma user identity
 ├── app/services/crud_endpoints.py
 ├── app/services/state.py
 ├── app/services/soul_summaries.py
@@ -99,6 +100,8 @@ mcp-memu-server/
 | `/souls/{soul_id}/relationships` | GET/POST | User-declared relationship entities; POST may promote an exact entity ID |
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or remove Relationship properties from one stable `entity:<entities.id>` reference |
 | `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot |
+| `/owner` | GET/POST | Loopback-only read/create contract for the one OpenAlma user identity |
+| `/integration/mentra/owner` | GET/POST | Bearer-authenticated Iris alias of the same owner contract |
 | `/pending` | GET | Review queue: unapproved memories/dossiers and persistent narrative self |
 | `/soul-summary/{kind}` | PATCH | Journal and approve an Atomic manual correction with snapshot guard |
 | `/soul-summary/{kind}/approve` | POST | Approve the displayed soul-summary value with snapshot guard |

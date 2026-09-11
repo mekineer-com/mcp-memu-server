@@ -2216,8 +2216,16 @@ def test_mentra_bootstrap_marks_prior_tail_as_current_smartglasses_chat(
         con.row_factory = sqlite3.Row
         main._sqlite_ensure_conversation_state_schema(con)
         con.execute(
-            "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
-            ("mentra:test-device", 1, "2026-08-23T02:00:00Z"),
+            "INSERT INTO conversations "
+            "(conversation_id, user_id, soul_id, digest_cursor, last_memorize_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "mentra:test-device",
+                "Fictional User",
+                "Codexia",
+                1,
+                "2026-08-23T02:00:00Z",
+            ),
         )
         con.commit()
     finally:
@@ -7846,6 +7854,7 @@ async def test_due_free_turn_follow_up_runs_fresh_turn_and_queues_outbound(
     db_path = tmp_path / "SiriTest.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
     monkeypatch.setattr(main, "_free_turn_followup_db_paths", lambda: [db_path])
+    monkeypatch.setattr(main._owner, "read_owner", lambda _config: "u1")
 
     followup_id = main._schedule_free_turn_follow_up(
         user_id="u1",
@@ -7926,6 +7935,7 @@ async def test_due_free_turn_follow_up_from_sillytavern_queues_private_whatsapp(
     db_path = tmp_path / "SiriTest.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
     monkeypatch.setattr(main, "_free_turn_followup_db_paths", lambda: [db_path])
+    monkeypatch.setattr(main._owner, "read_owner", lambda _config: "u1")
 
     followup_id = main._schedule_free_turn_follow_up(
         user_id="u1",
@@ -7980,6 +7990,7 @@ async def test_due_free_turn_follow_up_enqueue_failure_marks_failed(
     db_path = tmp_path / "SiriTest.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
     monkeypatch.setattr(main, "_free_turn_followup_db_paths", lambda: [db_path])
+    monkeypatch.setattr(main._owner, "read_owner", lambda _config: "u1")
 
     followup_id = main._schedule_free_turn_follow_up(
         user_id="u1",

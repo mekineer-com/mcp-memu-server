@@ -545,6 +545,7 @@ async def _run_free_turn_followup(
     insert_whatsapp_outbound: Callable[..., str],
     mark_free_turn_followup: Callable[..., None],
     clear_inflight: Callable[[set[str], str], None],
+    require_owner: Callable[[str], str],
     logger: Any,
 ) -> None:
     followup_id = str(row.get("id") or "").strip()
@@ -554,6 +555,7 @@ async def _run_free_turn_followup(
     try:
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
         user_id = str(row.get("user_id") or "").strip()
+        require_owner(user_id)
         soul_id = str(row.get("soul_id") or "").strip()
         conversation_id = str(row.get("conversation_id") or "").strip()
         user_scope = {"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id}

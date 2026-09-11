@@ -47,6 +47,7 @@ def _isolate_memu_sqlite_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     in memu/sqlite/Siri.db.
     """
     from app import main
+    from app.services import owner
 
     sqlite_dir = tmp_path / "sqlite"
     resources_dir = tmp_path / "resources"
@@ -88,3 +89,11 @@ def _isolate_memu_sqlite_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(main, "_STORAGE_STATUS", status)
     monkeypatch.setattr(main, "_sqlite_connect", _guarded_connect)
     monkeypatch.setattr(main, "_sqlite_ensure_nonempty", _guarded_ensure_nonempty)
+    real_require_owner = owner.require_owner
+
+    def _require_test_owner(config, user_id):
+        if owner.owner_path(config).parent == sqlite_dir:
+            return str(user_id or "").strip()
+        return real_require_owner(config, user_id)
+
+    monkeypatch.setattr(owner, "require_owner", _require_test_owner)

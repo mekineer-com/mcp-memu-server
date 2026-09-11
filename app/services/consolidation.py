@@ -651,7 +651,12 @@ def gather_consolidation_inputs(
     try:
         con.row_factory = sqlite3.Row
         deps.sqlite_ensure_conversation_state_schema(con)
-        state = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id), con=con)
+        state = deps.conversation_state_from_row(
+            deps.conversation_state_row(
+                con, conversation_id, user_id=user_id, soul_id=soul_id
+            ),
+            con=con,
+        )
         if state is None:
             raise HTTPException(status_code=404, detail="conversation state not found")
 
@@ -666,7 +671,12 @@ def gather_consolidation_inputs(
                 user_id=user_id,
                 updates={"consolidation_in_progress": False, "consolidation_started_at": None},
             )
-            reread = deps.conversation_state_from_row(deps.conversation_state_row(con, conversation_id), con=con)
+            reread = deps.conversation_state_from_row(
+                deps.conversation_state_row(
+                    con, conversation_id, user_id=user_id, soul_id=soul_id
+                ),
+                con=con,
+            )
             if reread is None:
                 raise HTTPException(404, "conversation state not found after stale-lock reset")
             state = reread

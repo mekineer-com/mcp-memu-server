@@ -29,6 +29,7 @@ from pydantic import (
 
 from app.config import validate_soul_id
 from app.services import conversation_sources, turn_contract
+from app.services.owner import register_owner_routes
 from app.services.souls import register_soul_routes
 
 
@@ -637,6 +638,12 @@ def register_mentra_routes(
 
     auth = [Depends(require_enabled), Depends(require_bearer)]
     register_soul_routes(
+        app,
+        get_config=get_config,
+        prefix="/integration/mentra",
+        dependencies=[Depends(require_bearer)],
+    )
+    register_owner_routes(
         app,
         get_config=get_config,
         prefix="/integration/mentra",

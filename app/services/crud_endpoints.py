@@ -678,7 +678,9 @@ async def get_conversation_state_endpoint(
         try:
             con.row_factory = sqlite3.Row
             sqlite_ensure_conversation_state_schema(con)
-            state_out = conversation_state_from_row(conversation_state_row(con, cid), con=con)
+            state_out = conversation_state_from_row(
+                conversation_state_row(con, cid, user_id=uid, soul_id=sid), con=con
+            )
         finally:
             con.close()
     else:

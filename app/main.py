@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from memu.app import MemoryService
@@ -70,6 +70,7 @@ from app.services import apimw as _apimw
 from app.services import cross_history as _cross_history
 from app.services import free_turn as _free_turn
 from app.services import mentra_routes as _mentra_routes
+from app.services import owner as _owner
 from app.services import souls as _souls
 from app.services import whatsapp_outbounds as _whatsapp_outbounds
 from app.services.consolidation import (
@@ -166,6 +167,12 @@ async def _app_lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="mcp-memu-server", version="0.4.0", lifespan=_app_lifespan)
+
+
+@app.exception_handler(_owner.OwnerIdentityError)
+async def _owner_identity_error(_request: Request, exc: _owner.OwnerIdentityError):
+    status = 503 if isinstance(exc, _owner.OwnerStorageError) else 409
+    return JSONResponse(status_code=status, content={"detail": str(exc)})
 
 
 class AtomicSessionStartRequest(BaseModel):
@@ -1389,11 +1396,14 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
         insert_whatsapp_outbound=_insert_whatsapp_outbound,
         mark_free_turn_followup=_mark_free_turn_followup,
         clear_inflight=_clear_inflight,
+        require_owner=lambda user_id: _owner.require_owner(_CONFIG, user_id),
         logger=logger,
     )
 
 
 async def _run_due_free_turn_followups_once() -> int:
+    if _owner.read_owner(_CONFIG) is None:
+        return 0
     return await _free_turn._run_due_free_turn_followups_once(
         free_turn_followup_db_paths=_free_turn_followup_db_paths,
         claim_due_free_turn_followups=_claim_due_free_turn_followups,
@@ -1434,7 +1444,11 @@ def _load_turn_state_and_soul_card(
         try:
             con.row_factory = sqlite3.Row
             _sqlite_ensure_conversation_state_schema(con)
-            state_row = _conversation_state_from_row(_conversation_state_row(con, conversation_id))
+            state_row = _conversation_state_from_row(
+                _conversation_state_row(
+                    con, conversation_id, user_id=user_id, soul_id=soul_id
+                )
+            )
             soul = _soul_state.read(con)
         finally:
             con.close()
@@ -1634,7 +1648,11 @@ def _load_mentra_current_history(
     try:
         con.row_factory = sqlite3.Row
         _sqlite_ensure_conversation_state_schema(con)
-        state = _conversation_state_from_row(_conversation_state_row(con, conversation_id))
+        state = _conversation_state_from_row(
+            _conversation_state_row(
+                con, conversation_id, user_id=user_id, soul_id=soul_id
+            )
+        )
         digest_cursor = _effective_digest_cursor_from_row(state)
     finally:
         con.close()
@@ -1681,7 +1699,18 @@ def _load_mentra_cross_chat_context(
     )
 
 
+async def _require_local_owner_access(request: Request) -> None:
+    host = request.client.host if request.client is not None else ""
+    if host not in {"127.0.0.1", "::1"}:
+        raise HTTPException(status_code=403, detail="Owner setup is available only on this computer")
+
+
 _souls.register_soul_routes(app, get_config=lambda: _CONFIG)
+_owner.register_owner_routes(
+    app,
+    get_config=lambda: _CONFIG,
+    dependencies=[Depends(_require_local_owner_access)],
+)
 
 _mentra_routes.register_mentra_routes(
     app,

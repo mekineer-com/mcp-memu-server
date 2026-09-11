@@ -18,7 +18,7 @@ def sqlite_current_path(
     sid = str(soul_id or "").strip()
     if not sid:
         return None
-    scope = {"soul_id": sid}
+    scope = {"user_id": str(user_id or "").strip(), "soul_id": sid}
     dsn = sqlite_dsn_for_scope(dict(config), base_dsn, scope)
     f = sqlite_file_from_dsn(dsn)
     return f.expanduser().resolve() if f is not None else None

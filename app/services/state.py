@@ -115,9 +115,15 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
     }
 
 
-def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
+def conversation_state_row(
+    con: sqlite3.Connection,
+    conversation_id: str,
+    *,
+    user_id: str | None = None,
+    soul_id: str | None = None,
+) -> sqlite3.Row | None:
     cid = canonical_conversation_id(conversation_id)
-    return con.execute(
+    row = con.execute(
         "SELECT conversation_id, soul_id, user_id, memorize_chat, digest_cursor, "
         "digest_cursor_source_message_id, digest_cursor_ts, "
         "rolling_summary, rolling_summary_cursor_id, "
@@ -132,6 +138,16 @@ def conversation_state_row(con: sqlite3.Connection, conversation_id: str) -> sql
         "FROM conversations WHERE conversation_id = ? LIMIT 1",
         (cid,),
     ).fetchone()
+    if row is not None:
+        actual_user = str(row["user_id"] or "").strip() or None
+        actual_soul = str(row["soul_id"] or "").strip() or None
+        if (
+            user_id is not None and actual_user != (str(user_id).strip() or None)
+        ) or (
+            soul_id is not None and actual_soul != (str(soul_id).strip() or None)
+        ):
+            raise HTTPException(status_code=409, detail="Conversation belongs to another owner")
+    return row
 
 
 def conversation_state_empty(
@@ -197,7 +213,9 @@ def write_conversation_state(
         sqlite_ensure_conversation_state_schema(con)
 
         if existing_state is None:
-            existing_state = conversation_state_from_row(conversation_state_row(con, cid))
+            existing_state = conversation_state_from_row(
+                conversation_state_row(con, cid, user_id=scoped_user, soul_id=scoped_soul)
+            )
 
         if existing_state is None:
             if scoped_soul is None:
@@ -230,7 +248,9 @@ INSERT OR IGNORE INTO conversations (
                 ),
             )
             con.commit()
-            existing_state = conversation_state_from_row(conversation_state_row(con, cid)) or seed
+            existing_state = conversation_state_from_row(
+                conversation_state_row(con, cid, user_id=scoped_user, soul_id=scoped_soul)
+            ) or seed
 
         raw_updates = dict(updates) if updates else {}
         soul_updates = {k: raw_updates.pop(k) for k in list(raw_updates) if k in _soul_state._VALID_FIELDS}
@@ -382,11 +402,6 @@ INSERT OR IGNORE INTO conversations (
         if "pending_segment_ids" in field_updates:
             field_updates["pending_segment_ids"] = normalize_text_list(field_updates["pending_segment_ids"])
 
-        if scoped_soul is not None:
-            field_updates["soul_id"] = scoped_soul
-        if scoped_user is not None:
-            field_updates["user_id"] = scoped_user
-
         if field_updates:
             field_updates["updated_at"] = datetime.now(UTC).isoformat()
             assignments: list[str] = []
@@ -411,7 +426,9 @@ INSERT OR IGNORE INTO conversations (
         if soul_updates or field_updates:
             con.commit()
 
-        state_out = conversation_state_from_row(conversation_state_row(con, cid))
+        state_out = conversation_state_from_row(
+            conversation_state_row(con, cid, user_id=scoped_user, soul_id=scoped_soul)
+        )
         if state_out is None:
             state_out = conversation_state_empty(cid, scoped_soul, scoped_user)
         state_out.update(_soul_state.read(con))
