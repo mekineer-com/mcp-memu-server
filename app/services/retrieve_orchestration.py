@@ -211,7 +211,7 @@ async def _run_retrieve(
     read_only_retrieve = bool(safe.get("_read_only_retrieve", False))
 
     soul_id = str((scope or {}).get("soul_id") or "").strip()
-    user_id = str((scope or {}).get("user_id") or "user").strip() or "user"
+    user_id = str(scope["user_id"])
 
     retrieve_rewrite_angle = 0
     if scoped_conversation_id and soul_id:

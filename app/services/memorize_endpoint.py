@@ -1214,7 +1214,7 @@ async def memorize_endpoint(
         conv_norm = endpoint_ctx.normalize_conversation(conversation)
 
         # scope is validated dict with non-empty soul_id above; no need to re-guard.
-        uid = str(scope.get("user_id") or "user")
+        uid = str(scope["user_id"])
         async with ctx.get_memorize_lock(ctx.memorize_lock_key(uid, soul_id)):
             if rebuild:
                 db_path = endpoint_ctx.sqlite_current_path(uid, soul_id)

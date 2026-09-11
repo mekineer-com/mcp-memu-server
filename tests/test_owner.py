@@ -55,6 +55,20 @@ def test_scoped_database_requires_forwarded_owner(tmp_path, monkeypatch) -> None
     assert seen == ["Marcos"]
 
 
+def test_scoped_database_rejects_missing_user_before_creation(tmp_path) -> None:
+    cfg = _config(tmp_path)
+    owner.create_owner(cfg, "user")
+
+    with pytest.raises(owner.OwnerMismatchError, match="valid OpenAlma owner"):
+        config.sqlite_dsn_for_scope(
+            cfg,
+            cfg["storage"]["metadata_store"]["dsn"],
+            {"soul_id": "Codexia"},
+        )
+
+    assert not (tmp_path / "Codexia.db").exists()
+
+
 def test_conversation_owner_cannot_be_replaced(tmp_path) -> None:
     db_path = tmp_path / "Codexia.db"
     with sqlite3.connect(db_path) as con:

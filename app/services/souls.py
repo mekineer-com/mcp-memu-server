@@ -20,6 +20,7 @@ from app.config import (
     sqlite_path_for_scope,
     validate_soul_id,
 )
+from app.services.owner import read_owner
 
 
 class SoulCreate(BaseModel):
@@ -87,6 +88,8 @@ def list_souls(config: dict[str, Any]) -> list[str]:
 
 def create_soul(config: dict[str, Any], body: SoulCreate) -> dict[str, Any]:
     soul_id = _soul_id(body.soul_id)
+    if read_owner(config) is None:
+        raise HTTPException(status_code=409, detail="OpenAlma owner has not been created")
     path = _path(config, soul_id)
     created = publish_soul_db(path) if not path.exists() else False
     if not created and not body.use_existing:

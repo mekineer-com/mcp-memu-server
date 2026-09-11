@@ -11,7 +11,7 @@ from app.services import free_turn, memorize_endpoint, owner, payload, souls
 from app.services.mentra_routes import register_mentra_routes
 
 
-def client_for(tmp_path):
+def client_for(tmp_path, *, with_owner=True):
     cfg = {
         "storage": {"metadata_store": {"dsn": f"sqlite:///{tmp_path / 'memu.db'}"}},
         "mentra": {"enabled": False, "integration_bearer_token": "test-secret"},
@@ -20,6 +20,8 @@ def client_for(tmp_path):
     souls.register_soul_routes(app, get_config=lambda: cfg)
     owner.register_owner_routes(app, get_config=lambda: cfg)
     register_mentra_routes(app, get_config=lambda: cfg)
+    if with_owner:
+        owner.create_owner(cfg, "Marcos")
     return TestClient(app), cfg
 
 
@@ -85,19 +87,20 @@ def test_invalid_names_fail_without_creating_a_database(tmp_path, name):
 
 
 def test_mentra_alias_is_authenticated_and_uses_same_contract(tmp_path):
-    client, _ = client_for(tmp_path)
+    client, _ = client_for(tmp_path, with_owner=False)
     alias = "/integration/mentra/souls"
     assert client.get(alias).status_code == 401
     assert post(client, "Echo", path=alias).status_code == 401
     auth = {"Authorization": "Bearer test-secret"}
-    assert post(client, "Echo", path=alias, headers=auth).json()["created"] is True
-    assert client.get(alias, headers=auth).json() == {"souls": ["Echo"]}
+    assert post(client, "Echo", path=alias, headers=auth).status_code == 409
 
     assert client.get("/owner").json() == {"user_id": None}
     assert client.post("/owner", json={"user_id": " Marcos "}).json() == {
         "user_id": "Marcos",
         "created": True,
     }
+    assert post(client, "Echo", path=alias, headers=auth).json()["created"] is True
+    assert client.get(alias, headers=auth).json() == {"souls": ["Echo"]}
     owner_alias = "/integration/mentra/owner"
     assert client.get(owner_alias).status_code == 401
     assert client.get(owner_alias, headers=auth).json() == {"user_id": "Marcos"}
