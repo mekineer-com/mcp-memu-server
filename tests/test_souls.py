@@ -65,7 +65,7 @@ def test_soul_names_are_unique_ignoring_case(tmp_path):
         config.sqlite_dsn_for_scope(
             cfg,
             cfg["storage"]["metadata_store"]["dsn"],
-            {"soul_id": "siri"},
+            {"user_id": "Marcos", "soul_id": "siri"},
         )
     assert not (tmp_path / "siri.db").exists()
 

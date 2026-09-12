@@ -92,9 +92,11 @@ def _isolate_memu_sqlite_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     real_scoped_dsn = app_config.sqlite_dsn_for_scope
 
     def _test_scoped_dsn(config, base_dsn, scope):
-        path = app_config.sqlite_path_for_scope(config, base_dsn, scope)
-        if path is not None and path.parent == sqlite_dir and not path.exists():
-            souls.publish_soul_db(path)
+        configured_dir = app_config.sqlite_dir_from_cfg(config, fallback_dsn=base_dsn).resolve()
+        if configured_dir == sqlite_dir:
+            path = app_config.sqlite_path_for_scope(config, base_dsn, scope)
+            if path is not None and not path.exists():
+                souls.publish_soul_db(path)
         return real_scoped_dsn(config, base_dsn, scope)
 
     monkeypatch.setattr(app_config, "sqlite_dsn_for_scope", _test_scoped_dsn)

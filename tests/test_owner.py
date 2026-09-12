@@ -71,6 +71,22 @@ def test_scoped_database_rejects_missing_user_before_creation(tmp_path) -> None:
     assert not (tmp_path / "Codexia.db").exists()
 
 
+def test_owner_mismatch_precedes_case_variant_soul_disclosure(tmp_path) -> None:
+    cfg = _config(tmp_path)
+    base = cfg["storage"]["metadata_store"]["dsn"]
+    owner.create_owner(cfg, "Fictional Owner")
+    souls.publish_soul_db(tmp_path / "Fictional Soul.db")
+
+    with pytest.raises(owner.OwnerMismatchError, match="not 'Other Fictional Owner'"):
+        config.sqlite_dsn_for_scope(
+            cfg,
+            base,
+            {"user_id": "Other Fictional Owner", "soul_id": "fictional soul"},
+        )
+
+    assert config.sqlite_dsn_for_scope(cfg, base, None) == base
+
+
 def test_main_service_construction_enforces_real_owner_gate(tmp_path, monkeypatch) -> None:
     sqlite_dir = tmp_path / "real-owner-service"
     sqlite_dir.mkdir()

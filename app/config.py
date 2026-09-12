@@ -404,12 +404,14 @@ def sqlite_path_for_scope(
 
 
 def sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, Any] | None) -> str:
-    db_path = sqlite_path_for_scope(cfg, base_dsn, scope)
-    if db_path is None:
+    if not scope or not scope.get("soul_id"):
         return base_dsn
     from app.services.owner import require_owner
 
-    require_owner(cfg, scope.get("user_id") if isinstance(scope, dict) else None)
+    require_owner(cfg, scope.get("user_id"))
+    db_path = sqlite_path_for_scope(cfg, base_dsn, scope)
+    if db_path is None:
+        return base_dsn
     configured_dsn = str((((cfg.get("storage") or {}).get("metadata_store") or {}).get("dsn") or ""))
     configured_path = sqlite_file_from_dsn(normalize_sqlite_dsn(configured_dsn)) if configured_dsn else None
     if configured_path is not None and db_path.resolve() == configured_path.resolve():
