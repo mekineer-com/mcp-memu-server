@@ -404,7 +404,7 @@ def sqlite_path_for_scope(
 
 
 def sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, Any] | None) -> str:
-    if not scope or not scope.get("soul_id"):
+    if not isinstance(scope, dict) or not scope.get("soul_id"):
         return base_dsn
     from app.services.owner import require_owner
 

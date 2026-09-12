@@ -70,6 +70,15 @@ def test_soul_names_are_unique_ignoring_case(tmp_path):
     assert not (tmp_path / "siri.db").exists()
 
 
+@pytest.mark.parametrize("name", ["Marcos", "marcos"])
+def test_soul_name_must_differ_from_owner(tmp_path, name):
+    client, _ = client_for(tmp_path)
+    response = post(client, name)
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Soul name must differ from the owner name"
+    assert not list(tmp_path.glob("*.db"))
+
+
 def test_windows_sqlite_dsn_keeps_drive_path_shape():
     assert config.sqlite_dsn_from_path(PureWindowsPath("C:/Users/Test/Siri.db")) == (
         "sqlite:///C:/Users/Test/Siri.db"

@@ -92,8 +92,11 @@ def list_souls(config: dict[str, Any]) -> list[str]:
 
 def create_soul(config: dict[str, Any], body: SoulCreate) -> dict[str, Any]:
     soul_id = _soul_id(body.soul_id)
-    if read_owner(config) is None:
+    owner_id = read_owner(config)
+    if owner_id is None:
         raise HTTPException(status_code=409, detail="OpenAlma owner has not been created")
+    if owner_id.casefold() == soul_id.casefold():
+        raise HTTPException(status_code=422, detail="Soul name must differ from the owner name")
     with _CREATE_LOCK:
         path = _path(config, soul_id)
         created = publish_soul_db(path) if not path.exists() else False
