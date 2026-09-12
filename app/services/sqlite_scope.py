@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,7 @@ def write_conversation_state(
     updates: Mapping[str, Any] | None,
     write_conversation_state_impl: Callable[..., tuple[dict[str, Any], Path]],
     sqlite_current_path: Callable[[str | None, str | None], Path | None],
+    connection: sqlite3.Connection | None = None,
 ) -> tuple[dict[str, Any], Path]:
     return write_conversation_state_impl(
         conversation_id,
@@ -78,4 +80,5 @@ def write_conversation_state(
         soul_id=soul_id,
         user_id=user_id,
         updates=updates,
+        connection=connection,
     )

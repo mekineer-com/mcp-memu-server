@@ -117,6 +117,7 @@ def record_activity_message(
     logger: logging.Logger,
     platform_name: str = "Claude Code",
     happened_at: datetime | None = None,
+    connection: sqlite3.Connection | None = None,
 ) -> bool:
     text = str(recap or "").strip()
     uid = str(user_id or "").strip()
@@ -131,11 +132,13 @@ def record_activity_message(
     activity_cid = activity_conversation_id(sid)
     message_cid = f"activity:dm:{str(platform_name or '').strip() or 'Claude Code'}"
     now_iso = (happened_at or datetime.now(UTC)).astimezone(UTC).isoformat()
-    con = sqlite_connect(db_path)
+    owns_connection = connection is None
+    con = connection or sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        sqlite_ensure_conversation_state_schema(con)
-        ensure_activity_messages_schema(con)
+        if owns_connection:
+            sqlite_ensure_conversation_state_schema(con)
+            ensure_activity_messages_schema(con)
         con.execute(
             """
 INSERT OR IGNORE INTO conversations (
@@ -152,10 +155,12 @@ INSERT INTO activity_messages (
 """,
             (uid, sid, message_cid, sid, text, now_iso),
         )
-        con.commit()
+        if owns_connection:
+            con.commit()
         return True
     finally:
-        con.close()
+        if owns_connection:
+            con.close()
 
 
 def activity_recap_from_contract(contract: dict[str, Any]) -> str:

@@ -819,6 +819,56 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
 
 
 @pytest.mark.asyncio
+async def test_atomic_session_end_rolls_back_recap_when_end_marker_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Fictional Soul.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
+    monkeypatch.setattr(main, "_get_storage_dir", lambda *_a, **_k: tmp_path / "resources")
+    write_state = main._write_conversation_state
+    req = main.AtomicSessionEndRequest(
+        user_id="Fictional User",
+        soul_id="Fictional Soul",
+        conversation_id="chat:atomic-rollback",
+        activity_recap="I reviewed a fictional memory.",
+        transcript=[
+            {"role": "user", "content": "hello", "created_at": "2026-07-03T00:00:00+00:00"},
+            {"role": "assistant", "content": "hi", "created_at": "2026-07-03T00:00:01+00:00"},
+        ],
+    )
+
+    monkeypatch.setattr(
+        main,
+        "_write_conversation_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("marker failed")),
+    )
+    with pytest.raises(RuntimeError, match="marker failed"):
+        await main.atomic_session_end(req)
+
+    con = main._sqlite_connect(db_path)
+    try:
+        assert con.execute("SELECT content FROM activity_messages").fetchall() == []
+    finally:
+        con.close()
+
+    monkeypatch.setattr(main, "_write_conversation_state", write_state)
+    assert (await main.atomic_session_end(req))["status"] == "ended"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        activity_rows = con.execute("SELECT content FROM activity_messages").fetchall()
+        state = main._conversation_state_from_row(
+            main._conversation_state_row(con, "chat:atomic-rollback")
+        )
+    finally:
+        con.close()
+    assert [row["content"] for row in activity_rows] == ["I reviewed a fictional memory."]
+    assert state is not None
+    assert state["atomic_session_ended_at"]
+
+
+@pytest.mark.asyncio
 async def test_atomic_session_end_skips_recap_for_empty_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

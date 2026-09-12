@@ -193,6 +193,7 @@ def write_conversation_state(
     soul_id: str | None = None,
     user_id: str | None = None,
     updates: Mapping[str, Any] | None = None,
+    connection: sqlite3.Connection | None = None,
 ) -> tuple[dict[str, Any], Path]:
     cid = canonical_conversation_id(conversation_id)
     if not cid:
@@ -207,10 +208,12 @@ def write_conversation_state(
         raise HTTPException(status_code=400, detail="soul_id is required")
 
     sqlite_ensure_nonempty(db_path)
-    con = sqlite_connect(db_path)
+    owns_connection = connection is None
+    con = connection or sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        sqlite_ensure_conversation_state_schema(con)
+        if owns_connection:
+            sqlite_ensure_conversation_state_schema(con)
 
         if existing_state is None:
             existing_state = conversation_state_from_row(
@@ -247,7 +250,8 @@ INSERT OR IGNORE INTO conversations (
                     seed.get("updated_at"),
                 ),
             )
-            con.commit()
+            if owns_connection:
+                con.commit()
             existing_state = conversation_state_from_row(
                 conversation_state_row(con, cid, user_id=scoped_user, soul_id=scoped_soul)
             ) or seed
@@ -423,7 +427,7 @@ INSERT OR IGNORE INTO conversations (
                 f"UPDATE conversations SET {', '.join(assignments)} WHERE conversation_id = ?",
                 tuple(params),
             )
-        if soul_updates or field_updates:
+        if owns_connection and (soul_updates or field_updates):
             con.commit()
 
         state_out = conversation_state_from_row(
@@ -434,4 +438,5 @@ INSERT OR IGNORE INTO conversations (
         state_out.update(_soul_state.read(con))
         return state_out, db_path
     finally:
-        con.close()
+        if owns_connection:
+            con.close()

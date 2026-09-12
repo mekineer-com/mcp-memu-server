@@ -1136,6 +1136,7 @@ def _write_conversation_state(
     soul_id: str | None = None,
     user_id: str | None = None,
     updates: Mapping[str, Any] | None = None,
+    connection: sqlite3.Connection | None = None,
 ) -> tuple[dict[str, Any], Path]:
     return _sqlite_scope.write_conversation_state(
         conversation_id,
@@ -1144,6 +1145,7 @@ def _write_conversation_state(
         updates=updates,
         write_conversation_state_impl=_write_conversation_state_impl,
         sqlite_current_path=_sqlite_current_path,
+        connection=connection,
     )
 
 
@@ -1246,6 +1248,7 @@ def _record_activity_message(
     recap: str,
     platform_name: str = "Claude Code",
     happened_at: datetime | None = None,
+    connection: sqlite3.Connection | None = None,
 ) -> bool:
     return _activity_messages.record_activity_message(
         user_id=user_id,
@@ -1255,6 +1258,7 @@ def _record_activity_message(
         happened_at=happened_at,
         sqlite_current_path=_sqlite_current_path,
         logger=logger,
+        connection=connection,
     )
 
 
@@ -4850,22 +4854,40 @@ async def atomic_session_end(req: AtomicSessionEndRequest):
         history=rows,
         chat_name="Atomic",
     )
-    if recap:
-        _record_activity_message(user_id=uid, soul_id=soul_id, recap=recap, platform_name="Atomic")
-
     ended_dt = datetime.now(UTC)
     if latest_created_at and latest_created_at > ended_dt:
         ended_dt = latest_created_at
     ended_at = ended_dt.isoformat()
-    _write_conversation_state(
-        conversation_id,
-        soul_id=soul_id,
-        user_id=uid,
-        updates={
-            "memorize_chat": True,
-            "atomic_session_ended_at": ended_at,
-        },
-    )
+    db_path = _sqlite_current_path(uid, soul_id)
+    if db_path is None:
+        raise HTTPException(status_code=400, detail="soul_id is required")
+    _sqlite_ensure_nonempty(db_path)
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
+        _activity_messages.ensure_activity_messages_schema(con)
+        with con:
+            if recap:
+                _record_activity_message(
+                    user_id=uid,
+                    soul_id=soul_id,
+                    recap=recap,
+                    platform_name="Atomic",
+                    connection=con,
+                )
+            _write_conversation_state(
+                conversation_id,
+                soul_id=soul_id,
+                user_id=uid,
+                updates={
+                    "memorize_chat": True,
+                    "atomic_session_ended_at": ended_at,
+                },
+                connection=con,
+            )
+    finally:
+        con.close()
     return {
         "ok": True,
         "status": "ended",

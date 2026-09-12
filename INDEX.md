@@ -75,7 +75,7 @@ mcp-memu-server/
 | `/integration/mentra/session/{id}/snapshot/finalize` | POST | Finalize a snapshot into memory; unavailable unless Gemini embedding config and DB profile are both active |
 | `/integration/mentra/session/{id}/transcripts/append` | POST | Redacted-validation, contiguous/idempotent transcript, gap, or sitting-summary append into the atomic Mentra snapshot; conversational rows queue shared auto-memorize while gap markers never enter AI history |
 | `/integration/atomic/session_start` | POST | Atomic session bootstrap: stripped retrieve snapshot → seeds `chat:atomic-<uuid>` |
-| `/integration/atomic/session_end` | POST | Atomic session close: accepts transcript + `activity_recap`, posts to memU memorize |
+| `/integration/atomic/session_end` | POST | Atomic session close: persists transcript, then atomically records the activity recap and End marker |
 | `/integration/atomic/chat_profile` | GET | Atomic-facing LLM profile (includes API key — do not log) |
 | `/integration/atomic/prompt_log` | POST | Atomic prompt-log sink (writes to `mcp-memu-server.log` when `debug.log_prompts` enabled) |
 | `/integration/atomic/atoms` | GET | Paginated atom list with canonical dossier metadata; `category_id`/`tag_id` filter, `cursor` pagination |
@@ -131,7 +131,7 @@ Both methods share their implementation with `/integration/mentra/souls`, whose
 only dependency is the configured bearer credential (independent of enabled).
 Local routes follow the trusted-local API convention.
 
-Only `POST /souls` publishes a soul database. Any scoped request for an unknown
+Only `POST /souls` publishes a regular-file soul database. Any scoped request for an unknown
 soul fails; read/turn/outbound paths never create identity as a side effect.
 
 Exact existing names require consent: 409 `detail.reason=existing_exact` plus
@@ -154,7 +154,7 @@ snapshot metadata, not introduce another registry.
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
 | `app/services/consolidation.py` | Consolidation pipeline: 7-day clock on last success, then next memorize consumes all pending conversations → dossier revision → reflection |
 | `app/services/graph_edges.py` | Edge normalization + write/invalidate helpers (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`) |
-| `app/services/activity_messages.py` | `activity_messages` scoped-SQLite table for synthetic self-DM activity recaps (`My Activities:`) |
+| `app/services/activity_messages.py` | `activity_messages` scoped-SQLite table for synthetic self-DM activity recaps (`My Activities:`); accepts a caller-owned transaction for Atomic End |
 | `app/services/whatsapp_outbounds.py` | `whatsapp_pending_outbounds` scoped-SQLite queue for WhatsApp replies/attachments |
 | `app/services/mentra_routes.py` | Authenticated Mentra boundary: sitting-scoped lease lifecycle, bootstrap/token mint, non-blocking recall, transcript append/ack, and durable image snapshot/finalize. Image finalize stays unavailable until Gemini embedding config and DB profile are both active. |
 | `app/services/memorize_endpoint.py` | `/memorize` core: segment-file persistence, forced-memorize runner, rolling-summary injection, sleep-gap/token chunking, progress/cancel. Listen-only segments advance source cursors without producing memory, consuming rolling summaries, or retaining segment files. |
@@ -171,7 +171,7 @@ snapshot metadata, not introduce another registry.
 | `app/services/conversation_id.py` | WhatsApp group ID canonicalization to `whatsapp:group:<group@g.us>`. Called at all entrypoints — do not bypass or per-sender aliases will split state. |
 | `app/services/mcp_tools.py` | MCP-facing wrapper contracts (`memu_*`) |
 | `app/services/free_turn.py` | Free-turn continuation chain and `free_turn_followups` scoped-SQLite table for scheduled wakes |
-| `app/services/state.py` | `write_conversation_state()`, `conversation_state_from_row()`, cross-DB state search, queue management. Canonicalizes WhatsApp group IDs before all reads/writes. |
+| `app/services/state.py` | `write_conversation_state()` with optional caller-owned transaction, `conversation_state_from_row()`, cross-DB state search, queue management. Canonicalizes WhatsApp group IDs before all reads/writes. |
 | `app/services/turn_contract.py` | `make_turn_system_prompt()`, `build_turn_prompt()`, `parse_turn_contract()`, `build_conversations_block()`, `build_turn_context_block()` — soul turn prompt construction and JSON contract parsing. Single entry point for all AI-facing chat display. |
 | `app/services/intention_state.py` | Intentions normalization and prompt formatting. Owns memory cache entry caps (`MAX_MEMORY_CACHE_ENTRIES`, `MAX_MEMORY_CACHE_ENTRY_CHARS`). |
 | `app/services/soul_state.py` | Soul-level singleton state: `narrative_self`, `memory_cache`, `intentions_active`; the dossier index is projected from memU, never stored |

@@ -420,6 +420,8 @@ def sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, An
         raise SoulIdError("Soul database must not be a symlink")
     if not db_path.exists():
         raise SoulIdError(f"Soul database does not exist: {db_path.stem!r}")
+    if not db_path.is_file():
+        raise SoulIdError("Soul database must be a file")
     return sqlite_dsn_from_path(db_path)
 
 

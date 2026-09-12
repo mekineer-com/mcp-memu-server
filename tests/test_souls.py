@@ -127,6 +127,39 @@ def test_concurrent_creation_never_overwrites(tmp_path):
         assert con.execute("PRAGMA user_version").fetchone() == (1,)
 
 
+def test_publication_uses_reopenable_temporary_file_and_cleans_it(tmp_path, monkeypatch):
+    named_temporary_file = souls.tempfile.NamedTemporaryFile
+    options = {}
+
+    def tracked_temporary_file(*args, **kwargs):
+        options.update(kwargs)
+        return named_temporary_file(*args, **kwargs)
+
+    monkeypatch.setattr(souls.tempfile, "NamedTemporaryFile", tracked_temporary_file)
+    path = tmp_path / "Portable Soul.db"
+
+    assert souls.publish_soul_db(path) is True
+    assert options["delete_on_close"] is False
+    assert path.is_file()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_non_file_soul_occupant_is_rejected(tmp_path):
+    client, cfg = client_for(tmp_path)
+    occupant = tmp_path / "Occupied Soul.db"
+    occupant.mkdir()
+
+    assert post(client, "Occupied Soul").status_code == 409
+    assert post(client, "Occupied Soul", True).status_code == 409
+    with pytest.raises(config.SoulIdError, match="must be a file"):
+        config.sqlite_dsn_for_scope(
+            cfg,
+            cfg["storage"]["metadata_store"]["dsn"],
+            {"user_id": "Marcos", "soul_id": "Occupied Soul"},
+        )
+    assert occupant.is_dir()
+
+
 def test_concurrent_case_variants_publish_only_one_soul(tmp_path, monkeypatch):
     client, cfg = client_for(tmp_path)
     publish = souls.publish_soul_db

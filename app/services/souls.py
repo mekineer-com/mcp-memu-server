@@ -55,13 +55,19 @@ def _path(config: dict[str, Any], soul_id: str) -> Path:
         raise HTTPException(status_code=409, detail="Soul name is reserved by the base database")
     if path.is_symlink():
         raise HTTPException(status_code=409, detail="A symlink occupies this soul name")
+    if path.exists() and not path.is_file():
+        raise HTTPException(status_code=409, detail="A non-file occupies this soul name")
     return path
 
 
 def publish_soul_db(path: Path) -> bool:
     """Atomically publish a minimal SQLite file; return whether this call won."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp") as staged:
+    with tempfile.NamedTemporaryFile(
+        dir=path.parent,
+        suffix=".tmp",
+        delete_on_close=False,
+    ) as staged:
         with closing(sqlite3.connect(staged.name)) as con:
             con.execute("PRAGMA user_version=1")
             con.commit()
