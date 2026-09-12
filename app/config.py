@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import re
 import traceback
@@ -418,12 +417,7 @@ def sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, An
     if db_path.is_symlink():
         raise SoulIdError("Soul database must not be a symlink")
     if not db_path.exists():
-        from app.services.souls import publish_soul_db
-
-        if publish_soul_db(db_path):
-            logging.getLogger(__name__).warning(
-                "Created soul %r at %s on first use", validate_soul_id(scope["soul_id"]), db_path
-            )
+        raise SoulIdError(f"Soul database does not exist: {db_path.stem!r}")
     return sqlite_dsn_from_path(db_path)
 
 

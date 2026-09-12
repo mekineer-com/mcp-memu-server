@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 
 import pytest
 from fastapi import HTTPException
 
 from app import config, main
 from app.db import sqlite_ensure_conversation_state_schema
-from app.services import free_turn, owner
+from app.services import free_turn, owner, souls
 from app.services.state import write_conversation_state
 
 
@@ -43,6 +44,7 @@ def test_owner_is_create_once_and_persists(tmp_path) -> None:
 
 def test_scoped_database_requires_forwarded_owner(tmp_path, monkeypatch) -> None:
     cfg = _config(tmp_path)
+    souls.publish_soul_db(tmp_path / "Codexia.db")
     seen: list[str] = []
     monkeypatch.setattr(owner, "require_owner", lambda _cfg, user_id: seen.append(user_id))
 
@@ -67,6 +69,40 @@ def test_scoped_database_rejects_missing_user_before_creation(tmp_path) -> None:
         )
 
     assert not (tmp_path / "Codexia.db").exists()
+
+
+def test_main_service_construction_enforces_real_owner_gate(tmp_path, monkeypatch) -> None:
+    sqlite_dir = tmp_path / "real-owner-service"
+    sqlite_dir.mkdir()
+    cfg = deepcopy(main._CONFIG)
+    cfg["storage"]["sqlite_dir"] = str(sqlite_dir)
+    cfg["storage"]["metadata_store"]["dsn"] = f"sqlite:///{sqlite_dir / 'memu.db'}"
+    monkeypatch.setattr(main, "_CONFIG", cfg)
+    monkeypatch.setattr(main, "_LOG_PROMPTS", False)
+    captured: dict = {}
+
+    class FakeService:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def require_dossier_cutover_ready(self, _scope):
+            pass
+
+    monkeypatch.setattr(main._service_factory, "MemoryService", FakeService)
+    main._clear_cached_services()
+    payload = {"user": {"user_id": "Test Owner", "soul_id": "Test Soul"}}
+
+    with pytest.raises(owner.OwnerMissingError, match="has not been created"):
+        main._get_service_from_payload(payload)
+
+    owner.create_owner(cfg, "Test Owner")
+    souls.create_soul(cfg, souls.SoulCreate(soul_id="Test Soul", use_existing=False))
+    with pytest.raises(owner.OwnerMismatchError, match="not 'test owner'"):
+        main._get_service_from_payload({"user": {"user_id": "test owner", "soul_id": "Test Soul"}})
+
+    assert isinstance(main._get_service_from_payload(payload), FakeService)
+    assert captured["database_config"]["metadata_store"]["dsn"].endswith("/Test Soul.db")
+    main._clear_cached_services()
 
 
 def test_conversation_owner_cannot_be_replaced(tmp_path) -> None:

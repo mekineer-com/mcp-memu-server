@@ -192,6 +192,12 @@ class AtomicSessionEndRequest(BaseModel):
     transcript: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class AtomicManualMemoryRequest(BaseModel):
+    user_id: str
+    soul_id: str
+    text: str
+
+
 class AtomicPromptLogRequest(BaseModel):
     conversation_id: str | None = None
     model: str | None = None
@@ -2739,6 +2745,20 @@ async def atomic_memory_atoms(
     )
 
 
+@app.post("/integration/atomic/memories", operation_id="atomic_create_memory", tags=["integration"])
+async def atomic_create_memory(payload: AtomicManualMemoryRequest):
+    uid = payload.user_id.strip()
+    sid = payload.soul_id.strip()
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = _get_service_from_payload({"user": scope})
+    try:
+        return await svc.graph_create_manual_memory(payload.text, where=scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/integration/atomic/tags", operation_id="atomic_memory_tags", tags=["integration"])
 async def atomic_memory_tags(
     user_id: str,
@@ -3964,14 +3984,6 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
     try:
         con.row_factory = sqlite3.Row
         _sqlite_ensure_conversation_state_schema(con)
-        if not uid:
-            rows = con.execute(
-                "SELECT DISTINCT user_id FROM conversations WHERE user_id IS NOT NULL AND user_id != ''"
-            ).fetchall()
-            if len(rows) > 1:
-                return {"ok": False, "reason": "user_id_ambiguous"}
-            if rows:
-                uid = str(rows[0]["user_id"])
         tails = _load_cross_memorize_tails_from_sources(con, user_id=uid, soul_id=sid)
     finally:
         con.close()

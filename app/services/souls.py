@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import tempfile
+import threading
 from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
@@ -21,6 +22,9 @@ from app.config import (
     validate_soul_id,
 )
 from app.services.owner import read_owner
+
+
+_CREATE_LOCK = threading.Lock()
 
 
 class SoulCreate(BaseModel):
@@ -90,14 +94,15 @@ def create_soul(config: dict[str, Any], body: SoulCreate) -> dict[str, Any]:
     soul_id = _soul_id(body.soul_id)
     if read_owner(config) is None:
         raise HTTPException(status_code=409, detail="OpenAlma owner has not been created")
-    path = _path(config, soul_id)
-    created = publish_soul_db(path) if not path.exists() else False
-    if not created and not body.use_existing:
-        raise HTTPException(
-            status_code=409,
-            detail={"reason": "existing_exact", "message": "Soul already exists. Use its existing database?"},
-        )
-    return {"soul_id": soul_id, "created": created}
+    with _CREATE_LOCK:
+        path = _path(config, soul_id)
+        created = publish_soul_db(path) if not path.exists() else False
+        if not created and not body.use_existing:
+            raise HTTPException(
+                status_code=409,
+                detail={"reason": "existing_exact", "message": "Soul already exists. Use its existing database?"},
+            )
+        return {"soul_id": soul_id, "created": created}
 
 
 def register_soul_routes(

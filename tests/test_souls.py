@@ -1,6 +1,7 @@
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import PureWindowsPath
+from time import sleep
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -117,6 +118,30 @@ def test_concurrent_creation_never_overwrites(tmp_path):
         assert con.execute("PRAGMA user_version").fetchone() == (1,)
 
 
+def test_concurrent_case_variants_publish_only_one_soul(tmp_path, monkeypatch):
+    client, cfg = client_for(tmp_path)
+    publish = souls.publish_soul_db
+
+    def delayed_publish(path):
+        sleep(0.05)
+        return publish(path)
+
+    monkeypatch.setattr(souls, "publish_soul_db", delayed_publish)
+    names = ["AuditSoul", "auditsoul"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda name: post(client, name, True), names))
+
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    winner = names[next(i for i, response in enumerate(responses) if response.status_code == 200)]
+    assert [path.name for path in tmp_path.glob("*.db")] == [f"{winner}.db"]
+    dsn = config.sqlite_dsn_for_scope(
+        cfg,
+        cfg["storage"]["metadata_store"]["dsn"],
+        {"user_id": "Marcos", "soul_id": winner},
+    )
+    assert config.sqlite_file_from_dsn(dsn) == tmp_path / f"{winner}.db"
+
+
 def test_failed_creation_publishes_nothing_and_can_retry(tmp_path, monkeypatch):
     client, cfg = client_for(tmp_path)
     before = set(tmp_path.iterdir())
@@ -128,13 +153,12 @@ def test_failed_creation_publishes_nothing_and_can_retry(tmp_path, monkeypatch):
     assert post(client, "Retry Soul").json()["created"] is True
 
 
-def test_first_scoped_use_creates_exact_database_without_picker_policy(tmp_path, caplog):
+def test_unknown_scoped_soul_is_rejected_without_publication(tmp_path):
     _, cfg = client_for(tmp_path)
-    owner.create_owner(cfg, "Marcos")
     base = cfg["storage"]["metadata_store"]["dsn"]
-    dsn = config.sqlite_dsn_for_scope(cfg, base, {"user_id": "Marcos", "soul_id": "First Soul"})
-    assert config.sqlite_file_from_dsn(dsn) == tmp_path / "First Soul.db"
-    assert "Created soul 'First Soul'" in caplog.text
+    with pytest.raises(config.SoulIdError, match="does not exist"):
+        config.sqlite_dsn_for_scope(cfg, base, {"user_id": "Marcos", "soul_id": "First Soul"})
+    assert not (tmp_path / "First Soul.db").exists()
     with pytest.raises(config.SoulIdError, match="reserved"):
         config.sqlite_dsn_for_scope(cfg, base, {"user_id": "Marcos", "soul_id": "memu"})
     with pytest.raises(HTTPException) as reserved:

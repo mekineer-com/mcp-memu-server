@@ -4313,6 +4313,54 @@ def test_memory_graph_item_endpoint_uses_scoped_service(monkeypatch: pytest.Monk
     assert calls["where"] == {"user_id": "u", "soul_id": "s"}
 
 
+def test_atomic_create_memory_endpoint_preserves_text_and_scope(monkeypatch: pytest.MonkeyPatch):
+    calls: dict[str, object] = {}
+
+    class _Svc:
+        async def graph_create_manual_memory(self, text, *, where):
+            calls["text"] = text
+            calls["where"] = where
+            return {"id": "memory:m1", "summary": text}
+
+    def _fake_service(payload):
+        calls["payload"] = payload
+        return _Svc()
+
+    monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
+    exact_text = "  Human-authored memory.\n"
+
+    out = asyncio.run(
+        main.atomic_create_memory(
+            main.AtomicManualMemoryRequest(user_id=" user ", soul_id=" soul ", text=exact_text)
+        )
+    )
+
+    assert out == {"id": "memory:m1", "summary": exact_text}
+    assert calls == {
+        "payload": {"user": {"user_id": "user", "soul_id": "soul"}},
+        "text": exact_text,
+        "where": {"user_id": "user", "soul_id": "soul"},
+    }
+
+
+def test_atomic_create_memory_endpoint_rejects_empty_text(monkeypatch: pytest.MonkeyPatch):
+    class _Svc:
+        async def graph_create_manual_memory(self, _text, *, where):
+            raise ValueError("text is required")
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            main.atomic_create_memory(
+                main.AtomicManualMemoryRequest(user_id="u", soul_id="s", text="   ")
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "text is required"
+
+
 def test_memory_graph_category_detail_includes_summary_revision(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     path = tmp_path / "soul.db"
     con = main._sqlite_connect(path)

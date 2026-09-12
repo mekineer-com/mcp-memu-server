@@ -46,8 +46,8 @@ def _isolate_memu_sqlite_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     one background path, it must still land in this test-local directory, never
     in memu/sqlite/Siri.db.
     """
-    from app import main
-    from app.services import owner
+    from app import config as app_config, main
+    from app.services import owner, souls
 
     sqlite_dir = tmp_path / "sqlite"
     resources_dir = tmp_path / "resources"
@@ -89,6 +89,16 @@ def _isolate_memu_sqlite_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(main, "_STORAGE_STATUS", status)
     monkeypatch.setattr(main, "_sqlite_connect", _guarded_connect)
     monkeypatch.setattr(main, "_sqlite_ensure_nonempty", _guarded_ensure_nonempty)
+    real_scoped_dsn = app_config.sqlite_dsn_for_scope
+
+    def _test_scoped_dsn(config, base_dsn, scope):
+        path = app_config.sqlite_path_for_scope(config, base_dsn, scope)
+        if path is not None and path.parent == sqlite_dir and not path.exists():
+            souls.publish_soul_db(path)
+        return real_scoped_dsn(config, base_dsn, scope)
+
+    monkeypatch.setattr(app_config, "sqlite_dsn_for_scope", _test_scoped_dsn)
+    monkeypatch.setattr(main, "_sqlite_dsn_for_scope", _test_scoped_dsn)
     real_require_owner = owner.require_owner
 
     def _require_test_owner(config, user_id):

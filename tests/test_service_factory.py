@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 
 from app.config import database_config_from_cfg, default_llm_profiles_from_server_config
-from app.services import owner, service_factory
+from app.services import owner, service_factory, souls
 
 
 def test_storage_fingerprint_treats_omitted_provider_as_sqlite(tmp_path) -> None:
@@ -47,6 +47,7 @@ def test_server_config_separates_embedding_provider_and_profile_guard(tmp_path) 
         },
     }
     owner.create_owner(cfg, "test-user")
+    souls.publish_soul_db(tmp_path / "test.db")
     profiles = default_llm_profiles_from_server_config(cfg)
     database = database_config_from_cfg(cfg, {"user_id": "test-user", "soul_id": "test"})
 
@@ -74,6 +75,7 @@ def test_embedding_profile_must_match_configured_model(tmp_path) -> None:
         },
     }
     owner.create_owner(cfg, "test-user")
+    souls.publish_soul_db(tmp_path / "test.db")
     with pytest.raises(RuntimeError, match="must match"):
         database_config_from_cfg(cfg, {"user_id": "test-user", "soul_id": "test"})
 
@@ -89,6 +91,7 @@ def test_embedding_profile_defaults_to_configured_model(tmp_path) -> None:
         },
     }
     owner.create_owner(cfg, "test-user")
+    souls.publish_soul_db(tmp_path / "test.db")
 
     database = database_config_from_cfg(cfg, {"user_id": "test-user", "soul_id": "test"})
 
@@ -98,6 +101,7 @@ def test_embedding_profile_defaults_to_configured_model(tmp_path) -> None:
 def test_embedding_profile_requires_a_model(tmp_path) -> None:
     cfg = {"storage": {"metadata_store": {"dsn": f"sqlite:///{tmp_path / 'base.db'}"}}}
     owner.create_owner(cfg, "test-user")
+    souls.publish_soul_db(tmp_path / "test.db")
 
     with pytest.raises(RuntimeError, match="embed_model is required"):
         database_config_from_cfg(cfg, {"user_id": "test-user", "soul_id": "test"})
