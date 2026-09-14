@@ -27,6 +27,7 @@ from memu.app.graph import (
     DossierMembershipConflictError,
     EntityActionConflictError,
     EntityMergeConflictError,
+    MemoryCitationConflictError,
 )
 from pydantic import BaseModel, Field
 
@@ -3391,6 +3392,11 @@ async def memory_graph_item_delete(
     svc = _get_service_from_payload({"user": scope})
     try:
         item = svc.graph_delete_memory(item_id, where=scope)
+    except MemoryCitationConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "dossiers": exc.usages},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if item is None:
@@ -4689,11 +4695,16 @@ async def conversation_turn_undo(
         ]
         if annulment_memory_ids:
             svc = _get_service_from_payload({"user": {"user_id": uid, "soul_id": soul_id}})
-            for item_id in annulment_memory_ids:
-                svc.graph_delete_memory(
-                    item_id,
+            try:
+                svc.graph_delete_memories(
+                    annulment_memory_ids,
                     where={"user_id": uid, "soul_id": soul_id},
                 )
+            except MemoryCitationConflictError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"message": str(exc), "dossiers": exc.usages},
+                ) from exc
         _write_conversation_state(
             cid,
             soul_id=soul_id,

@@ -120,7 +120,7 @@ async def test_annulment_memories_are_dated_historical_events() -> None:
 async def test_turn_undo_deletes_reflections_before_restoring_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    deleted: list[tuple[str, dict[str, str]]] = []
+    deleted: list[tuple[list[str], dict[str, str]]] = []
     writes: list[dict[str, Any]] = []
     snapshot = {
         "memory_cache": ["before"],
@@ -128,7 +128,7 @@ async def test_turn_undo_deletes_reflections_before_restoring_state(
         "annulment_memory_ids": ["memory-1", "memory-2"],
     }
     svc = SimpleNamespace(
-        graph_delete_memory=lambda item_id, *, where: deleted.append((item_id, where))
+        graph_delete_memories=lambda item_ids, *, where: deleted.append((item_ids, where))
     )
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: svc)
     monkeypatch.setattr(
@@ -144,14 +144,14 @@ async def test_turn_undo_deletes_reflections_before_restoring_state(
 
     out = await main.conversation_turn_undo(
         "chat",
-        {"user": {"user_id": "Marcos", "soul_id": "Siri"}},
+        {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
     )
 
     assert out == {"status": "restored"}
-    assert deleted == [
-        ("memory-1", {"user_id": "Marcos", "soul_id": "Siri"}),
-        ("memory-2", {"user_id": "Marcos", "soul_id": "Siri"}),
-    ]
+    assert deleted == [(
+        ["memory-1", "memory-2"],
+        {"user_id": "Fictional User", "soul_id": "Fictional Soul"},
+    )]
     assert writes == [{
         "memory_cache": ["before"],
         "intentions_active": {"items": [{"id": "a"}]},
@@ -159,11 +159,11 @@ async def test_turn_undo_deletes_reflections_before_restoring_state(
     }]
 
     writes.clear()
-    svc.graph_delete_memory = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("delete failed"))
+    svc.graph_delete_memories = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("delete failed"))
     with pytest.raises(RuntimeError, match="delete failed"):
         await main.conversation_turn_undo(
             "chat",
-            {"user": {"user_id": "Marcos", "soul_id": "Siri"}},
+            {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
         )
     assert writes == []
 
@@ -175,7 +175,7 @@ async def test_turn_undo_deletes_reflections_before_restoring_state(
     )
     assert await main.conversation_turn_undo(
         "chat",
-        {"user": {"user_id": "Marcos", "soul_id": "Siri"}},
+        {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
     ) == {"status": "restored"}
 
 
@@ -4532,6 +4532,25 @@ def test_memory_graph_item_delete_endpoint_uses_scoped_service(monkeypatch: pyte
     assert out == {"id": "memory:m1"}
     assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}
     assert calls["where"] == {"user_id": "u", "soul_id": "s"}
+
+
+def test_memory_graph_item_delete_returns_citation_conflict(monkeypatch: pytest.MonkeyPatch):
+    usage = {"id": "category:fictional", "name": "Fictional dossier", "cited": True}
+
+    class _Svc:
+        def graph_delete_memory(self, _item_id, *, where):
+            assert where == {"user_id": "u", "soul_id": "s"}
+            raise main.MemoryCitationConflictError([usage])
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
+
+    with pytest.raises(main.HTTPException) as exc_info:
+        asyncio.run(main.memory_graph_item_delete(item_id="memory:fictional", user_id="u", soul_id="s"))
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == {
+        "message": "Review current dossier citations before deleting this memory",
+        "dossiers": [usage],
+    }
 
 
 def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPatch):
