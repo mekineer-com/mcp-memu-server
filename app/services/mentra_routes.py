@@ -155,6 +155,50 @@ class MentraInstallationSeen(BaseModel):
         return value
 
 
+class MentraHostSeen(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
+    device_session_id: str
+    host_package: Literal["com.mentra.mentra.openalma"]
+    host_version: str
+    protocol_version: Literal[1]
+    capabilities: list[
+        Literal["automatic_iris_install", "iris_profile_handoff", "iris_install_ack"]
+    ]
+
+    @field_validator("user_id")
+    @classmethod
+    def validate_user_id(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 128 or not value.isprintable():
+            raise ValueError("must be 1-128 printable characters")
+        return value
+
+    @field_validator("host_version")
+    @classmethod
+    def validate_host_version(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 64 or not value.isprintable():
+            raise ValueError("must be 1-64 printable characters")
+        return value
+
+    @field_validator("device_session_id")
+    @classmethod
+    def validate_device_session_id(cls, value: str) -> str:
+        value = value.strip()
+        if not _DEVICE_SESSION_RE.fullmatch(value):
+            raise ValueError("must be 1-128 letters, numbers, dots, underscores, or hyphens")
+        return value
+
+    @field_validator("capabilities")
+    @classmethod
+    def validate_capabilities(cls, value: list[str]) -> list[str]:
+        if len(value) > 3 or len(set(value)) != len(value):
+            raise ValueError("must contain at most three unique capabilities")
+        return value
+
+
 class MentraSessionScope(BaseModel):
     user_id: str
     soul_id: SoulId
@@ -584,7 +628,8 @@ def _installation_status(storage_dir: Path, device_session_id: str) -> dict[str,
     records = _load_installations(storage_dir).get(_IRIS_PACKAGE, {})
     record = records.get(device_session_id) if device_session_id else None
     if record is None and not device_session_id and records:
-        record = max(records.values(), key=lambda value: float(value["seen_at"]))
+        installed = [value for value in records.values() if value.get("seen_at") is not None]
+        record = max(installed, key=lambda value: float(value["seen_at"]), default=None)
     return {
         "installed_package": record.get("package_name") if record else None,
         "installed_version": record.get("version") if record else None,
@@ -592,6 +637,7 @@ def _installation_status(storage_dir: Path, device_session_id: str) -> dict[str,
         "installed_soul": record.get("soul_id") if record else None,
         "installed_user": record.get("user_id") if record else None,
         "installed_device": record.get("device_session_id") if record else None,
+        "host": record.get("host") if record else None,
     }
 
 
@@ -662,12 +708,39 @@ def register_mentra_routes(
         async with _installation_lock:
             storage_dir = get_storage_dir()
             installations = _load_installations(storage_dir)
-            installations.setdefault(_IRIS_PACKAGE, {})[body.device_session_id] = {
+            record = installations.setdefault(_IRIS_PACKAGE, {}).setdefault(
+                body.device_session_id, {}
+            )
+            record.update({
                 **body.model_dump(),
                 "seen_at": time.time(),
-            }
+            })
             _write_installations(storage_dir, installations)
         return {"package_name": body.package_name, "version": body.version}
+
+    @app.post("/integration/mentra/host/seen", tags=["integration"], dependencies=auth)
+    async def mentra_host_seen(body: MentraHostSeen) -> dict[str, Any]:
+        if get_storage_dir is None:
+            raise HTTPException(
+                status_code=503, detail="Mentra installation storage is not configured"
+            )
+        require_owner(get_config(), body.user_id)
+        host = {
+            "host_package": body.host_package,
+            "host_version": body.host_version,
+            "protocol_version": body.protocol_version,
+            "capabilities": body.capabilities,
+            "seen_at": time.time(),
+        }
+        async with _installation_lock:
+            storage_dir = get_storage_dir()
+            installations = _load_installations(storage_dir)
+            record = installations.setdefault(_IRIS_PACKAGE, {}).setdefault(
+                body.device_session_id, {}
+            )
+            record["host"] = host
+            _write_installations(storage_dir, installations)
+        return host
 
     @app.get("/integration/mentra/status", tags=["integration"], dependencies=[Depends(require_bearer)])
     async def mentra_status(
@@ -689,6 +762,7 @@ def register_mentra_routes(
                 "installed_soul": None,
                 "installed_user": None,
                 "installed_device": None,
+                "host": None,
             }
         )
         config = get_config().get("mentra") or {}

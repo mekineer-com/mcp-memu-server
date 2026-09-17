@@ -378,6 +378,78 @@ def test_mentra_installation_report_persists_and_status_selects_device(
     assert "user_id" not in status
 
 
+def test_mentra_host_capability_merges_with_installation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _, _ = _session_app(monkeypatch, tmp_path)
+    host = {
+        "user_id": START["user_id"],
+        "device_session_id": START["device_session_id"],
+        "host_package": "com.mentra.mentra.openalma",
+        "host_version": "3.2.0",
+        "protocol_version": 1,
+        "capabilities": [
+            "automatic_iris_install",
+            "iris_profile_handoff",
+            "iris_install_ack",
+        ],
+    }
+    endpoint = "/integration/mentra/host/seen"
+    assert client.post(endpoint, json=host).status_code == 401
+    assert client.post(
+        endpoint,
+        headers=AUTH,
+        json={**host, "capabilities": ["unknown"]},
+    ).status_code == 422
+    assert client.post(
+        endpoint,
+        headers=AUTH,
+        json={**host, "host_package": "com.mentra.mentra"},
+    ).status_code == 422
+    with pytest.raises(owner.OwnerMismatchError):
+        client.post(endpoint, headers=AUTH, json={**host, "user_id": "Different User"})
+
+    response = client.post(endpoint, headers=AUTH, json=host)
+    response.raise_for_status()
+    assert response.json()["host_package"] == host["host_package"]
+    assert isinstance(response.json()["seen_at"], float)
+
+    scoped = client.get(
+        "/integration/mentra/status",
+        headers=AUTH,
+        params={"device_session_id": START["device_session_id"]},
+    ).json()
+    assert scoped["installed_package"] is None
+    assert scoped["host"]["capabilities"] == host["capabilities"]
+    assert client.get("/integration/mentra/status", headers=AUTH).json()["host"] is None
+
+    installation = {
+        **{key: START[key] for key in ("user_id", "soul_id", "device_session_id")},
+        "package_name": "com.openalma.mentra",
+        "version": "0.1.0",
+    }
+    client.post(
+        "/integration/mentra/installation/seen", headers=AUTH, json=installation
+    ).raise_for_status()
+    merged = client.get(
+        "/integration/mentra/status",
+        headers=AUTH,
+        params={"device_session_id": START["device_session_id"]},
+    ).json()
+    assert merged["installed_version"] == "0.1.0"
+    assert merged["host"]["host_package"] == host["host_package"]
+
+    client.post(endpoint, headers=AUTH, json={**host, "host_version": "3.2.1"}).raise_for_status()
+    merged = client.get(
+        "/integration/mentra/status",
+        headers=AUTH,
+        params={"device_session_id": START["device_session_id"]},
+    ).json()
+    assert merged["installed_version"] == "0.1.0"
+    assert merged["host"]["host_version"] == "3.2.1"
+
+
 def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcript(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
