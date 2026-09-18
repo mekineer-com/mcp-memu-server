@@ -1510,25 +1510,30 @@ async def _persist_annulment_memories(
         return []
 
     embeddings = await svc.embed(summaries, profile="embedding")
+    if len(embeddings) != len(summaries):
+        raise ValueError("Annulment embedding count does not match summaries")
     soul_label = str(scope.get("soul_id") or "").strip()
     soul_slug = re.sub(r"[^a-z0-9]+", "_", soul_label.lower()).strip("_") or "soul"
     created_ids: list[str] = []
-    for idx, summary in enumerate(summaries):
-        if idx >= len(embeddings):
-            break
-        item = svc.database.memory_item_repo.create_item(
-            resource_id=None,
-            memory_type="reflection",
-            summary=summary,
-            embedding=embeddings[idx],
-            user_data=scope,
-            source_role="soul",
-            speaker_id=f"soul:{soul_slug}",
-            speaker_label=soul_label or "soul",
-            happened_at=event_at,
-            conversation_id=conversation_id,
-        )
-        created_ids.append(str(item.id))
+    try:
+        for summary, embedding in zip(summaries, embeddings, strict=True):
+            item = svc.database.memory_item_repo.create_item(
+                resource_id=None,
+                memory_type="reflection",
+                summary=summary,
+                embedding=embedding,
+                user_data=scope,
+                source_role="soul",
+                speaker_id=f"soul:{soul_slug}",
+                speaker_label=soul_label or "soul",
+                happened_at=event_at,
+                conversation_id=conversation_id,
+            )
+            created_ids.append(str(item.id))
+    except Exception:
+        if created_ids:
+            svc.graph_delete_memories(created_ids, where=scope)
+        raise
     return created_ids
 
 
@@ -4464,21 +4469,27 @@ async def conversation_turn(
 
         if not dry_run:
             retrieved_item_ids = _extract_result_item_ids(override_retrieve_rag)
-            annulment_memory_ids = await _persist_annulment_memories(
-                svc=memory_service,
-                scope={"user_id": uid, "soul_id": soul_id},
-                conversation_id=cid,
-                intentions_before=intentions_before,
-                annulments=normalized_annulments,
-            )
             async with state_lock:
-                conversation_state_after, conversation_state_path = _turn_state_write(
-                    cid, uid, soul_id,
-                    turn_cache_entry, turn_annulment_ids,
-                    retrieved_item_ids,
-                    memorize_chat=memorize_chat,
-                    annulment_memory_ids=annulment_memory_ids,
+                scope = {"user_id": uid, "soul_id": soul_id}
+                annulment_memory_ids = await _persist_annulment_memories(
+                    svc=memory_service,
+                    scope=scope,
+                    conversation_id=cid,
+                    intentions_before=intentions_before,
+                    annulments=normalized_annulments,
                 )
+                try:
+                    conversation_state_after, conversation_state_path = _turn_state_write(
+                        cid, uid, soul_id,
+                        turn_cache_entry, turn_annulment_ids,
+                        retrieved_item_ids,
+                        memorize_chat=memorize_chat,
+                        annulment_memory_ids=annulment_memory_ids,
+                    )
+                except Exception:
+                    if annulment_memory_ids:
+                        memory_service.graph_delete_memories(annulment_memory_ids, where=scope)
+                    raise
             if not bool(conversation_state_after.get("memorize_chat", True)):
                 _queue_background_rollup_task(
                     conversation_id=cid,
@@ -4696,15 +4707,21 @@ async def conversation_turn_undo(
         if annulment_memory_ids:
             svc = _get_service_from_payload({"user": {"user_id": uid, "soul_id": soul_id}})
             try:
-                svc.graph_delete_memories(
+                deleted = svc.graph_delete_memories(
                     annulment_memory_ids,
                     where={"user_id": uid, "soul_id": soul_id},
+                    require_all=True,
                 )
+                deleted_ids = {str(item.get("memory_id") or "") for item in deleted}
+                if deleted_ids != set(annulment_memory_ids):
+                    raise KeyError("Annulment memory group is incomplete")
             except MemoryCitationConflictError as exc:
                 raise HTTPException(
                     status_code=409,
                     detail={"message": str(exc), "dossiers": exc.usages},
                 ) from exc
+            except KeyError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         _write_conversation_state(
             cid,
             soul_id=soul_id,

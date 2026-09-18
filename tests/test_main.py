@@ -115,6 +115,23 @@ async def test_annulment_memories_are_dated_historical_events() -> None:
         f'On {event_at.date()}, I marked "Check the weather" as deleted. Note: No longer needed'
     )
 
+    async def _short_embed(_texts: list[str], **_kwargs: Any) -> list[list[float]]:
+        return [[1.0]]
+
+    svc.embed = _short_embed
+    with pytest.raises(ValueError, match="embedding count"):
+        await main._persist_annulment_memories(
+            svc=svc,
+            scope={"user_id": "Fictional User", "soul_id": "Fictional Soul"},
+            conversation_id="chat",
+            intentions_before={"items": [{"id": "a"}, {"id": "b"}]},
+            annulments=[
+                {"intention_id": "a", "status": "completed"},
+                {"intention_id": "b", "status": "deleted"},
+            ],
+        )
+    assert len(created) == 2
+
 
 @pytest.mark.asyncio
 async def test_turn_undo_deletes_reflections_before_restoring_state(
@@ -127,9 +144,12 @@ async def test_turn_undo_deletes_reflections_before_restoring_state(
         "intentions_active": {"items": [{"id": "a"}]},
         "annulment_memory_ids": ["memory-1", "memory-2"],
     }
-    svc = SimpleNamespace(
-        graph_delete_memories=lambda item_ids, *, where: deleted.append((item_ids, where))
-    )
+    def _delete_memories(item_ids, *, where, require_all=False):
+        assert require_all is True
+        deleted.append((item_ids, where))
+        return [{"memory_id": item_id} for item_id in item_ids]
+
+    svc = SimpleNamespace(graph_delete_memories=_delete_memories)
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: svc)
     monkeypatch.setattr(
         main,
@@ -165,6 +185,15 @@ async def test_turn_undo_deletes_reflections_before_restoring_state(
             "chat",
             {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
         )
+    assert writes == []
+
+    svc.graph_delete_memories = lambda *_a, **_k: (_ for _ in ()).throw(KeyError("missing group member"))
+    with pytest.raises(HTTPException) as exc_info:
+        await main.conversation_turn_undo(
+            "chat",
+            {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
+        )
+    assert exc_info.value.status_code == 409
     assert writes == []
 
     snapshot.pop("annulment_memory_ids")
