@@ -215,7 +215,7 @@ from memu.prompts.memory_type import ...  # type prompts
 ## Config (`config.json`)
 
 ```
-llm:        provider, api_key, base_url, chat_model, temperature, endpoint_overrides, step_models (per-step overrides), legacy top-level embed_model (unused)
+llm:        provider, api_key, base_url, chat_model, temperature, max_tokens, endpoint_overrides, step_models (valid steps: preprocess, memory_extract, category_update, reflection, consolidation), step_temperatures, legacy top-level embed_model (unused)
 llm.embedding: nested block - provider, api_key, base_url, embed_model
 storage:    resources_dir, sqlite_dir, metadata_store (provider + dsn + optional embedding_profile)
 hermes:     home, state_db_path, sessions_index_path, whatsapp_web_source_db (Channels data paths)
