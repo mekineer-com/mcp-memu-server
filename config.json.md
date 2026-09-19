@@ -89,10 +89,12 @@ use `llm.temperature` or the provider default.
 | `background_summary_tokens` | `1000` | Target size of the rolling background summary. |
 | `background_extra_messages_tokens` | `100` | Recent-message allowance added around background summarization. |
 | `enable_confidence_normalization` | `false` | Normalize extracted confidence values within a batch. |
-| `semantic_dedupe_enabled` | `true` in memU; production currently overrides to `false` | Run post-persist semantic soft-merging. Keep disabled until the active embedding profile has a reviewed threshold. |
-| `semantic_dedupe_similarity_threshold` | `0.85` | Current cosine threshold override. A planned change will accept `"default"` for a calibrated profile-specific value. |
+| `semantic_dedupe_enabled` | `true` | Run post-persist semantic soft-merging. This is an operator recovery switch, not a normal user setting. |
+| `semantic_dedupe_similarity_threshold` | `"default"` | Use the active embedding profile's internal threshold: `0.89` for `text-embedding-3-large:3072`, `0.90` for `gemini-embedding-2:3072`. A numeric operator override is accepted for recovery or recalibration. |
 
 Semantic dedupe writes `merged_into` on the redundant memory; it does not hard-delete the row.
+The Gemini default is a conservative bootstrap from 11 reviewed historical duplicate pairs, not a
+completed calibration on new Gemini-era `memorize()` output; no such output existed when it was set.
 
 ## `categories`
 

@@ -25,6 +25,10 @@ _STEP_MODEL_TO_RETRIEVE_PROFILE_FIELD: dict[str, str] = {
 _VALID_STEP_MODEL_KEYS: set[str] = set(_STEP_MODEL_TO_MEMORIZE_PROFILE_FIELD) | set(_STEP_MODEL_TO_RETRIEVE_PROFILE_FIELD) | {
     "consolidation"
 }
+_SEMANTIC_DEDUPE_THRESHOLDS = {
+    "text-embedding-3-large:3072": 0.89,
+    "gemini-embedding-2:3072": 0.90,
+}
 
 
 def _services_cached() -> int:
@@ -142,6 +146,21 @@ def _apimw_random_count_from_cfg(cfg: Mapping[str, Any] | None) -> int:
 
 def _consolidation_interval_days_from_cfg(cfg: Mapping[str, Any] | None) -> int:
     return _cfg_int(cfg, "consolidation_interval_days", 7, minimum=1)
+
+
+def _semantic_dedupe_threshold(profile: str, configured: Any = "default") -> float:
+    if configured is None or str(configured).strip().lower() == "default":
+        try:
+            return _SEMANTIC_DEDUPE_THRESHOLDS[profile]
+        except KeyError as exc:
+            raise RuntimeError(f"No semantic dedupe threshold is calibrated for {profile!r}") from exc
+    try:
+        threshold = float(configured)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("memorize.semantic_dedupe_similarity_threshold must be 'default' or a number") from exc
+    if not 0.0 <= threshold <= 1.0:
+        raise RuntimeError("memorize.semantic_dedupe_similarity_threshold must be between 0 and 1")
+    return threshold
 
 
 def _merge_llm_profiles(
@@ -313,10 +332,16 @@ def _get_service_from_payload(
         memorize_config["episodes_per_segment"] = episodes_per_segment
         memorize_config["min_chunk_tokens"] = min_chunk_tokens
         mem_cfg = config.get("memorize") if isinstance(config.get("memorize"), dict) else {}
+        embedding_profile = str(
+            ((database_config or {}).get("metadata_store") or {}).get("embedding_profile") or ""
+        ).strip()
+        memorize_config["semantic_dedupe_enabled"] = mem_cfg.get("semantic_dedupe_enabled", True)
+        memorize_config["semantic_dedupe_similarity_threshold"] = _semantic_dedupe_threshold(
+            embedding_profile,
+            mem_cfg.get("semantic_dedupe_similarity_threshold", "default"),
+        )
         for passthrough_key in (
             "enable_confidence_normalization",
-            "semantic_dedupe_enabled",
-            "semantic_dedupe_similarity_threshold",
             "background_extra_messages_tokens",
         ):
             if passthrough_key in mem_cfg and passthrough_key not in memorize_config:

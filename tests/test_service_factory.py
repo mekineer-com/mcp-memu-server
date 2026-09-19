@@ -107,6 +107,14 @@ def test_embedding_profile_requires_a_model(tmp_path) -> None:
         database_config_from_cfg(cfg, {"user_id": "test-user", "soul_id": "test"})
 
 
+def test_semantic_dedupe_threshold_uses_profile_default_or_operator_override() -> None:
+    assert service_factory._semantic_dedupe_threshold("text-embedding-3-large:3072") == 0.89
+    assert service_factory._semantic_dedupe_threshold("gemini-embedding-2:3072") == 0.90
+    assert service_factory._semantic_dedupe_threshold("gemini-embedding-2:3072", 0.95) == 0.95
+    with pytest.raises(RuntimeError, match="No semantic dedupe threshold"):
+        service_factory._semantic_dedupe_threshold("unknown:3072")
+
+
 def test_validated_step_models_warns_on_unknown_key(caplog: pytest.LogCaptureFixture) -> None:
     llm_profiles = {
         "default": {},
@@ -181,14 +189,14 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
                 "api_key": "k",
                 "base_url": "https://example.com/v1",
                 "chat_model": "m",
-                "embed_model": "e",
+                "embed_model": "gemini-embedding-2",
             },
             "embedding": {
                 "provider": "openai",
                 "api_key": "k",
                 "base_url": "https://example.com/v1",
                 "chat_model": "m",
-                "embed_model": "e",
+                "embed_model": "gemini-embedding-2",
             },
         },
         database_config_from_cfg=lambda _cfg, scope=None: {"metadata_store": {"provider": "sqlite", "dsn": "sqlite:///:memory:"}},
@@ -220,8 +228,10 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert captured["memorize_config"]["background_extra_messages_tokens"] == 321
     assert captured["memorize_config"]["dynamic_category_cluster_size"] == 10
     assert captured["memorize_config"]["category_summary_target_words"] == 275
+    assert captured["memorize_config"]["semantic_dedupe_enabled"] is True
+    assert captured["memorize_config"]["semantic_dedupe_similarity_threshold"] == 0.90
     assert captured["cutover_scope"] == {"user_id": "u", "soul_id": "echo"}
-    assert captured["database_config"]["metadata_store"]["embedding_profile"] == "e:3072"
+    assert captured["database_config"]["metadata_store"]["embedding_profile"] == "gemini-embedding-2:3072"
 
 
 def test_client_llm_profiles_suppress_server_step_model_routing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -257,7 +267,7 @@ def test_client_llm_profiles_suppress_server_step_model_routing(monkeypatch: pyt
         config={"llm": {"step_models": {"memory_extract": "server-heavy", "reflection": "server-reflect"}}},
         default_llm_profiles_from_server_config=lambda _cfg: {
             "default": {"chat_model": "server-default"},
-            "embedding": {"chat_model": "server-default", "embed_model": "server-embed"},
+            "embedding": {"chat_model": "server-default", "embed_model": "gemini-embedding-2"},
             "memory_extract": {"chat_model": "server-heavy"},
             "reflection": {"chat_model": "server-reflect"},
         },
@@ -308,7 +318,7 @@ def test_server_step_models_inject_when_client_profiles_absent(monkeypatch: pyte
         config={"llm": {"step_models": {"memory_extract": "server-heavy", "reflection": "server-reflect"}}},
         default_llm_profiles_from_server_config=lambda _cfg: {
             "default": {"chat_model": "server-default"},
-            "embedding": {"chat_model": "server-embed", "embed_model": "server-embed"},
+            "embedding": {"chat_model": "server-embed", "embed_model": "gemini-embedding-2"},
             "memory_extract": {"chat_model": "server-heavy"},
             "reflection": {"chat_model": "server-reflect"},
         },
