@@ -1,110 +1,29 @@
 {
-  "claude_code": false,
-  "claude_code_model": "claude-opus-4-7",
-  "claude_code_effort": "medium",
-  "claude_code_permission_mode": "default",
-  "claude_code_settings": "",
-  "claude_code_workspace": "~/.cache/memu-claude-workspace",
-  "claude_code_timeout_seconds": 3600,
   "llm": {
     "provider": "openai",
     "api_key": "YOUR_API_KEY_HERE",
     "base_url": "https://api.openai.com/v1",
     "chat_model": "YOUR_CHAT_MODEL",
-    "embed_model": "YOUR_EMBED_MODEL",
-    "temperature": null,
-    "max_tokens": null,
-    "client_backend": "httpx",
-    "endpoint_overrides": {},
     "embedding": {
       "provider": "gemini",
       "api_key": "YOUR_GEMINI_API_KEY",
       "base_url": "https://generativelanguage.googleapis.com/",
       "embed_model": "gemini-embedding-2"
-    },
-    "step_models": {
-      "preprocess": "",
-      "memory_extract": "",
-      "category_update": "",
-      "reflection": "",
-      "consolidation": ""
-    },
-    "step_temperatures": {
-      "preprocess": "",
-      "memory_extract": "",
-      "category_update": "",
-      "reflection": "",
-      "consolidation": ""
     }
   },
   "storage": {
-    "resources_dir": "./resources",
+    "resources_dir": "../memu/resources",
     "metadata_store": {
       "provider": "sqlite",
-      "dsn": "./sqlite/memu.db",
-      "ddl_mode": "create",
-      "embedding_profile": "gemini-embedding-2:3072"
+      "dsn": "../memu/sqlite/memu.db"
     },
-    "sqlite_dir": "./sqlite"
-  },
-  "hermes": {
-    "home": "../hermes-channels/data",
-    "state_db_path": "../hermes-channels/data/state.db",
-    "sessions_index_path": "../hermes-channels/data/sessions/sessions.json",
-    "whatsapp_web_source_db": "../hermes-channels/data/whatsapp/web_source.db"
-  },
-  "mentra": {
-    "public_base_url": "",
-    "enabled": false,
-    "gemini_api_key": "",
-    "model": "gemini-2.5-flash-native-audio-preview-12-2025",
-    "voice": "Kore",
-    "integration_bearer_token": "",
-    "session_warning_seconds": 0
-  },
-  "mcp": {
-    "http_path": "/mcp",
-    "sse_path": "/sse"
+    "sqlite_dir": "../memu/sqlite"
   },
   "listen": {
     "host": "127.0.0.1",
     "port": 8099
   },
   "memu": {
-    "path": "/path/to/memU/src"
-  },
-  "python": {
-    "executable": "",
-    "force_venv": false
-  },
-  "pid_file": "./.memu-server.pid",
-  "categories": {
-    "dynamic_category_cluster_size": 10,
-    "category_summary_target_words": 300
-  },
-  "memorize": {
-    "min_chunk_tokens": 8000,
-    "episodes_per_segment": 3,
-    "background_summary_tokens": 1000,
-    "background_extra_messages_tokens": 100,
-    "enable_confidence_normalization": false,
-    "semantic_dedupe_enabled": true,
-    "semantic_dedupe_similarity_threshold": 0.85
-  },
-  "retrieve": {
-    "apimw_enabled": true,
-    "apimw_cadence": 5,
-    "apimw_memory_count": 20,
-    "apimw_random_count": 5,
-    "mental_health_query": true
-  },
-  "consolidation_interval_days": 7,
-  "procedural": {
-    "yaml_dir": "../memu/procedural",
-    "db_path": "../memu/sqlite/procedural.db"
-  },
-  "turn_response_sentences": 4,
-  "debug": {
-    "log_prompts": false
+    "path": "../memu/src"
   }
 }

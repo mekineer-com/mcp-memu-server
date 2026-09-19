@@ -20,7 +20,7 @@ Part of the memU local stack — private fork based on [memU v1.4.0](https://git
 ## Quick start
 
 ```bash
-# 1. Copy the example config (config.example.json has default values)
+# 1. Copy the minimal example config
 cp config.example.json config.json
 
 # 2. Edit config.json — at minimum:
@@ -40,7 +40,7 @@ The server runs on `http://127.0.0.1:8099` by default.
 
 ## Config (`config.json`)
 
-At minimum, set `llm.api_key`, `llm.chat_model`, `llm.embedding`, `storage.metadata_store.dsn`, and `memu.path`. Set `storage.metadata_store.embedding_profile` only after stamping or migrating the database. See `config.example.json` for the full reference including `step_models`, `step_temperatures`, memorize toggles, and retrieve settings. Relative paths are resolved from the `mcp-memu-server/` directory.
+At minimum, set `llm.api_key`, `llm.chat_model`, `llm.embedding`, the storage paths, and `memu.path`. `config.example.json` is an installable minimal configuration; [`config.json.md`](config.json.md) documents every setting and default. Relative paths are resolved from the `mcp-memu-server/` directory.
 
 ---
 

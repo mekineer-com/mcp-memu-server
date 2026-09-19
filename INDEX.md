@@ -33,7 +33,8 @@ mcp-memu-server/
 ├── stamp_embedding_profile.py   # Stamps an embedding profile onto an existing soul database
 ├── embedding_bakeoff.py         # Offline embedding-quality comparison runner
 ├── config.json              # Runtime config (llm, storage, listen, dossier policy, memu path)
-├── config.example.json      # Template
+├── config.example.json      # Minimal installable template
+├── config.json.md           # Complete setting reference
 ├── tests/                   # pytest suite (`./.venv/bin/python -m pytest -q tests/`)
 ├── alembic/                 # DB migration scripts
 ├── storage/                 # Default SQLite DB + resource dir
@@ -214,26 +215,8 @@ from memu.prompts.memory_type import ...  # type prompts
 
 ## Config (`config.json`)
 
-```
-llm:        provider, api_key, base_url, chat_model, temperature, max_tokens, endpoint_overrides, step_models (valid steps: preprocess, memory_extract, category_update, reflection, consolidation), step_temperatures, legacy top-level embed_model (unused)
-llm.embedding: nested block - provider, api_key, base_url, embed_model
-storage:    resources_dir, sqlite_dir, metadata_store (provider + dsn + optional embedding_profile)
-hermes:     home, state_db_path, sessions_index_path, whatsapp_web_source_db (Channels data paths)
-mentra:     enabled, gemini_api_key, model, voice, integration_bearer_token
-mcp:        http_path, sse_path
-listen:     host, port
-memu:       path (to memu/src)
-python:     executable, force_venv
-pid_file:   server pid path
-categories: dynamic dossier cluster size and revision target words
-retrieve:   apimw_enabled, apimw_cadence, apimw_memory_count, apimw_random_count, mental_health_query
-claude_code*: top-level keys, not a block — claude_code, claude_code_model, claude_code_effort, claude_code_permission_mode, claude_code_settings, claude_code_workspace, claude_code_timeout_seconds
-memorize:   min_chunk_tokens, episodes_per_segment, background_summary_tokens, background_extra_messages_tokens, enable_confidence_normalization, semantic_dedupe_enabled, semantic_dedupe_similarity_threshold
-procedural: yaml_dir, db_path
-consolidation_interval_days: days since last successful run (default 7); next memorize then consolidates all pending conversations
-turn_response_sentences: soul reply length target
-debug:      log_prompts (bool)
-```
+`config.example.json` is the minimal installable shape. `config.json.md` is the complete reference
+for defaults, advanced settings, embedding compatibility, and privacy-sensitive diagnostics.
 
 ## Config-Only Runtime
 
