@@ -111,8 +111,8 @@ Semantic dedupe writes `merged_into` on the redundant memory; it does not hard-d
 | `apimw_random_count` | `5` | Additional random memories offered to APImw. |
 | `mental_health_query` | `true` | Include the configured mental-health retrieval angle. |
 
-The engine currently ranks memory items with fixed weights `0.5` similarity, `0.2` recency,
-and `0.3` importance. `recency_decay_days` and lower-level retrieval settings are memU request
+The engine currently ranks memory items with fixed weights `0.5` similarity, `0.3` recency,
+and `0.2` importance. `recency_decay_days` and lower-level retrieval settings are memU request
 settings, not top-level `config.json` settings today.
 
 ## `hermes`
