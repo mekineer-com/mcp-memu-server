@@ -25,5 +25,8 @@
   },
   "memu": {
     "path": "../memu/src"
+  },
+  "memorize": {
+    "semantic_dedupe_enabled": false
   }
 }

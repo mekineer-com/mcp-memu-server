@@ -20,6 +20,7 @@ def test_example_is_valid_json_and_non_empty() -> None:
         assert required in example, f"config.example.json missing top-level '{required}'"
     assert example["llm"]["embedding"]["embed_model"]
     assert example["storage"]["metadata_store"]["dsn"]
+    assert example["memorize"]["semantic_dedupe_enabled"] is False
 
 
 def test_default_whatsapp_paths_point_at_channels_data() -> None:
