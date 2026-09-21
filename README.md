@@ -2,7 +2,9 @@
 
 Local FastAPI server that wraps the `memu` memory engine and exposes it as an HTTP API. Handles conversation state, consolidation, the soul turn loop, and orchestration between clients and the engine.
 
-Part of the memU local stack — private fork based on [memU v1.4.0](https://github.com/NevaMind-AI/memU/blob/v1.4.0/README.md), not affiliated with NevaMind-AI.
+Part of [OpenAlma](https://github.com/mekineer-com/OpenAlma). For project-wide questions and ideas, use [OpenAlma Discussions](https://github.com/mekineer-com/OpenAlma/discussions).
+
+Part of the memU local stack — unofficial fork based on [memU v1.4.0](https://github.com/NevaMind-AI/memU/blob/v1.4.0/README.md), not affiliated with NevaMind-AI.
 
 > **One soul, many chats.** Each `soul_id` has its own memory database. Multiple conversations can share one soul — each has its own cursor and manifest, and retrieval pulls from all of them. Consolidation is soul-scoped (weekly). Use different `soul_id` values for separate personalities.
 
