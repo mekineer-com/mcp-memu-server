@@ -153,7 +153,12 @@ def _semantic_dedupe_threshold(profile: str, configured: Any = "default") -> flo
         try:
             return _SEMANTIC_DEDUPE_THRESHOLDS[profile]
         except KeyError as exc:
-            raise RuntimeError(f"No semantic dedupe threshold is calibrated for {profile!r}") from exc
+            raise HTTPException(
+                status_code=503,
+                detail=f"No semantic dedupe threshold is calibrated for embedding profile {profile!r}",
+            ) from exc
+    if isinstance(configured, bool):
+        raise RuntimeError("memorize.semantic_dedupe_similarity_threshold must be 'default' or a number")
     try:
         threshold = float(configured)
     except (TypeError, ValueError) as exc:
@@ -161,6 +166,18 @@ def _semantic_dedupe_threshold(profile: str, configured: Any = "default") -> flo
     if not 0.0 <= threshold <= 1.0:
         raise RuntimeError("memorize.semantic_dedupe_similarity_threshold must be between 0 and 1")
     return threshold
+
+
+def _semantic_dedupe_settings(profile: str, config: Mapping[str, Any]) -> tuple[bool, float | None]:
+    if profile not in _SEMANTIC_DEDUPE_THRESHOLDS:
+        _semantic_dedupe_threshold(profile)
+    enabled = bool(config.get("semantic_dedupe_enabled", True))
+    if not enabled:
+        return False, None
+    return True, _semantic_dedupe_threshold(
+        profile,
+        config.get("semantic_dedupe_similarity_threshold", "default"),
+    )
 
 
 def _merge_llm_profiles(
@@ -335,11 +352,10 @@ def _get_service_from_payload(
         embedding_profile = str(
             ((database_config or {}).get("metadata_store") or {}).get("embedding_profile") or ""
         ).strip()
-        memorize_config["semantic_dedupe_enabled"] = mem_cfg.get("semantic_dedupe_enabled", True)
-        memorize_config["semantic_dedupe_similarity_threshold"] = _semantic_dedupe_threshold(
-            embedding_profile,
-            mem_cfg.get("semantic_dedupe_similarity_threshold", "default"),
-        )
+        dedupe_enabled, dedupe_threshold = _semantic_dedupe_settings(embedding_profile, mem_cfg)
+        memorize_config["semantic_dedupe_enabled"] = dedupe_enabled
+        if dedupe_threshold is not None:
+            memorize_config["semantic_dedupe_similarity_threshold"] = dedupe_threshold
         for passthrough_key in (
             "enable_confidence_normalization",
             "background_extra_messages_tokens",

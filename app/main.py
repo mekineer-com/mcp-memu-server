@@ -1473,15 +1473,12 @@ def _load_turn_state_and_soul_card(
 
 # ==== Memorize execution helpers ====
 
-async def _persist_annulment_memories(
+async def _prepare_annulment_memories(
     *,
     svc: MemoryService,
-    scope: dict[str, Any],
-    conversation_id: str,
     intentions_before: Any,
     annulments: list[dict[str, str]],
-) -> list[str]:
-    conversation_id = _canonical_conversation_id(conversation_id)
+) -> list[dict[str, Any]]:
     if not annulments:
         return []
 
@@ -1512,21 +1509,37 @@ async def _persist_annulment_memories(
     embeddings = await svc.embed(summaries, profile="embedding")
     if len(embeddings) != len(summaries):
         raise ValueError("Annulment embedding count does not match summaries")
+    return [
+        {"summary": summary, "embedding": embedding, "happened_at": event_at}
+        for summary, embedding in zip(summaries, embeddings, strict=True)
+    ]
+
+
+def _persist_annulment_memories(
+    *,
+    svc: MemoryService,
+    scope: dict[str, Any],
+    conversation_id: str,
+    prepared: list[dict[str, Any]],
+) -> list[str]:
+    conversation_id = _canonical_conversation_id(conversation_id)
+    if not prepared:
+        return []
     soul_label = str(scope.get("soul_id") or "").strip()
     soul_slug = re.sub(r"[^a-z0-9]+", "_", soul_label.lower()).strip("_") or "soul"
     created_ids: list[str] = []
     try:
-        for summary, embedding in zip(summaries, embeddings, strict=True):
+        for row in prepared:
             item = svc.database.memory_item_repo.create_item(
                 resource_id=None,
                 memory_type="reflection",
-                summary=summary,
-                embedding=embedding,
+                summary=row["summary"],
+                embedding=row["embedding"],
                 user_data=scope,
                 source_role="soul",
                 speaker_id=f"soul:{soul_slug}",
                 speaker_label=soul_label or "soul",
-                happened_at=event_at,
+                happened_at=row["happened_at"],
                 conversation_id=conversation_id,
             )
             created_ids.append(str(item.id))
@@ -4469,14 +4482,18 @@ async def conversation_turn(
 
         if not dry_run:
             retrieved_item_ids = _extract_result_item_ids(override_retrieve_rag)
+            scope = {"user_id": uid, "soul_id": soul_id}
+            prepared_annulments = await _prepare_annulment_memories(
+                svc=memory_service,
+                intentions_before=intentions_before,
+                annulments=normalized_annulments,
+            )
             async with state_lock:
-                scope = {"user_id": uid, "soul_id": soul_id}
-                annulment_memory_ids = await _persist_annulment_memories(
+                annulment_memory_ids = _persist_annulment_memories(
                     svc=memory_service,
                     scope=scope,
                     conversation_id=cid,
-                    intentions_before=intentions_before,
-                    annulments=normalized_annulments,
+                    prepared=prepared_annulments,
                 )
                 try:
                     conversation_state_after, conversation_state_path = _turn_state_write(
@@ -4704,24 +4721,6 @@ async def conversation_turn_undo(
             for value in undo_snapshot.get("annulment_memory_ids") or []
             if str(value or "").strip()
         ]
-        if annulment_memory_ids:
-            svc = _get_service_from_payload({"user": {"user_id": uid, "soul_id": soul_id}})
-            try:
-                deleted = svc.graph_delete_memories(
-                    annulment_memory_ids,
-                    where={"user_id": uid, "soul_id": soul_id},
-                    require_all=True,
-                )
-                deleted_ids = {str(item.get("memory_id") or "") for item in deleted}
-                if deleted_ids != set(annulment_memory_ids):
-                    raise KeyError("Annulment memory group is incomplete")
-            except MemoryCitationConflictError as exc:
-                raise HTTPException(
-                    status_code=409,
-                    detail={"message": str(exc), "dossiers": exc.usages},
-                ) from exc
-            except KeyError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
         _write_conversation_state(
             cid,
             soul_id=soul_id,
@@ -4732,7 +4731,22 @@ async def conversation_turn_undo(
                 "undo_snapshot": None,
             },
         )
-    return {"status": "restored"}
+        cleanup_warning = None
+        if annulment_memory_ids:
+            try:
+                svc = _get_service_from_payload({"user": {"user_id": uid, "soul_id": soul_id}})
+                svc.graph_delete_memories(
+                    annulment_memory_ids,
+                    where={"user_id": uid, "soul_id": soul_id},
+                    require_all=False,
+                )
+            except Exception as exc:
+                cleanup_warning = f"annulment reflection cleanup failed: {exc}"
+                logger.warning("conversation_turn_undo: %s", cleanup_warning, exc_info=True)
+    result = {"status": "restored"}
+    if cleanup_warning:
+        result["cleanup_warning"] = cleanup_warning
+    return result
 
 
 @app.post("/integration/memu/turn", operation_id="memu_turn", tags=["mcp_tools"])

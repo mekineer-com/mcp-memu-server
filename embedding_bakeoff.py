@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import numpy as np
 
@@ -687,6 +687,18 @@ def score_mixed(db_path: Path, query_path: Path, manifest_path: Path) -> None:
     print(json.dumps(result, indent=2))
 
 
+def configured_openai_dedupe_threshold(config: dict[str, Any]) -> float:
+    configured = config.get("memorize", {}).get("semantic_dedupe_similarity_threshold", "default")
+    if configured is None or str(configured).strip().lower() == "default":
+        return 0.89
+    if isinstance(configured, bool):
+        raise ValueError("semantic dedupe threshold must be 'default' or a number")
+    threshold = float(configured)
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("semantic dedupe threshold must be between 0 and 1")
+    return threshold
+
+
 def score_calibration(db_path: Path, query_path: Path) -> None:
     memories, _excluded, _frozen, _targets = _frozen_inputs(db_path, query_path)
     old_vectors = np.asarray([row["embedding"] for row in memories], dtype=np.float32)
@@ -696,9 +708,7 @@ def score_calibration(db_path: Path, query_path: Path) -> None:
         "Cached Gemini documents",
     )
     config = json.loads(CONFIG.read_text())
-    threshold = float(
-        config.get("memorize", {}).get("semantic_dedupe_similarity_threshold", 0.85)
-    )
+    threshold = configured_openai_dedupe_threshold(config)
     print(
         json.dumps(
             calibration_report(

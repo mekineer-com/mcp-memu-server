@@ -111,8 +111,19 @@ def test_semantic_dedupe_threshold_uses_profile_default_or_operator_override() -
     assert service_factory._semantic_dedupe_threshold("text-embedding-3-large:3072") == 0.89
     assert service_factory._semantic_dedupe_threshold("gemini-embedding-2:3072") == 0.90
     assert service_factory._semantic_dedupe_threshold("gemini-embedding-2:3072", 0.95) == 0.95
-    with pytest.raises(RuntimeError, match="No semantic dedupe threshold"):
+    with pytest.raises(HTTPException, match="No semantic dedupe threshold") as exc_info:
         service_factory._semantic_dedupe_threshold("unknown:3072")
+    assert exc_info.value.status_code == 503
+    with pytest.raises(RuntimeError, match="default.*number"):
+        service_factory._semantic_dedupe_threshold("gemini-embedding-2:3072", True)
+    assert service_factory._semantic_dedupe_settings(
+        "gemini-embedding-2:3072",
+        {"semantic_dedupe_enabled": False, "semantic_dedupe_similarity_threshold": True},
+    ) == (False, None)
+    with pytest.raises(HTTPException, match="No semantic dedupe threshold"):
+        service_factory._semantic_dedupe_settings(
+            "unknown:3072", {"semantic_dedupe_enabled": False}
+        )
 
 
 def test_validated_step_models_warns_on_unknown_key(caplog: pytest.LogCaptureFixture) -> None:

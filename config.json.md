@@ -93,7 +93,7 @@ use `llm.temperature` or the provider default.
 | `semantic_dedupe_similarity_threshold` | `"default"` | Use the active embedding profile's internal threshold: `0.89` for `text-embedding-3-large:3072`, `0.90` for `gemini-embedding-2:3072`. A numeric operator override is accepted for recovery or recalibration. |
 
 Semantic dedupe writes `merged_into` on the redundant memory; it does not hard-delete the row.
-The Gemini default is a conservative bootstrap from 11 reviewed historical duplicate pairs, not a
+The Gemini default is a bootstrap from 11 reviewed historical duplicate pairs, not a
 completed calibration on new Gemini-era `memorize()` output; no such output existed when it was set.
 
 ## `categories`

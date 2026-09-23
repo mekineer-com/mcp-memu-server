@@ -71,6 +71,14 @@ CREATE TABLE triples(subject_id TEXT, predicate TEXT, valid_to TEXT);
     assert calibration["openai"]["exact_duplicates"]["count"] == 1
     assert calibration["gemini"]["hardest_nonduplicates"]["count"] == 3
     assert bakeoff.exact_sign_pvalue(0, 3) == 0.25
+    assert bakeoff.configured_openai_dedupe_threshold({"memorize": {}}) == 0.89
+    assert bakeoff.configured_openai_dedupe_threshold({
+        "memorize": {"semantic_dedupe_similarity_threshold": "default"}
+    }) == 0.89
+    with pytest.raises(ValueError, match="default.*number"):
+        bakeoff.configured_openai_dedupe_threshold({
+            "memorize": {"semantic_dedupe_similarity_threshold": True}
+        })
     assert bakeoff.parse_json_object('```json\n{"target": "query"}\n```') == {
         "target": "query"
     }

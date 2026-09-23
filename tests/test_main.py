@@ -91,10 +91,8 @@ async def test_annulment_memories_are_dated_historical_events() -> None:
         return [[1.0] for _ in texts]
 
     svc.embed = _embed
-    ids = await main._persist_annulment_memories(
+    prepared = await main._prepare_annulment_memories(
         svc=svc,
-        scope={"user_id": "Marcos", "soul_id": "Siri"},
-        conversation_id="chat",
         intentions_before={
             "items": [
                 {"id": "a", "text": "Ask about sleep"},
@@ -105,6 +103,12 @@ async def test_annulment_memories_are_dated_historical_events() -> None:
             {"intention_id": "a", "status": "completed"},
             {"intention_id": "b", "status": "deleted", "note": "No longer needed"},
         ],
+    )
+    ids = main._persist_annulment_memories(
+        svc=svc,
+        scope={"user_id": "Marcos", "soul_id": "Siri"},
+        conversation_id="chat",
+        prepared=prepared,
     )
 
     event_at = created[0]["happened_at"]
@@ -120,10 +124,8 @@ async def test_annulment_memories_are_dated_historical_events() -> None:
 
     svc.embed = _short_embed
     with pytest.raises(ValueError, match="embedding count"):
-        await main._persist_annulment_memories(
+        await main._prepare_annulment_memories(
             svc=svc,
-            scope={"user_id": "Fictional User", "soul_id": "Fictional Soul"},
-            conversation_id="chat",
             intentions_before={"items": [{"id": "a"}, {"id": "b"}]},
             annulments=[
                 {"intention_id": "a", "status": "completed"},
@@ -134,9 +136,10 @@ async def test_annulment_memories_are_dated_historical_events() -> None:
 
 
 @pytest.mark.asyncio
-async def test_turn_undo_deletes_reflections_before_restoring_state(
+async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    operations: list[str] = []
     deleted: list[tuple[list[str], dict[str, str]]] = []
     writes: list[dict[str, Any]] = []
     snapshot = {
@@ -145,9 +148,10 @@ async def test_turn_undo_deletes_reflections_before_restoring_state(
         "annulment_memory_ids": ["memory-1", "memory-2"],
     }
     def _delete_memories(item_ids, *, where, require_all=False):
-        assert require_all is True
+        assert require_all is False
+        operations.append("delete")
         deleted.append((item_ids, where))
-        return [{"memory_id": item_id} for item_id in item_ids]
+        return [{"memory_id": item_ids[0]}]
 
     svc = SimpleNamespace(graph_delete_memories=_delete_memories)
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: svc)
@@ -159,7 +163,7 @@ async def test_turn_undo_deletes_reflections_before_restoring_state(
     monkeypatch.setattr(
         main,
         "_write_conversation_state",
-        lambda *_a, **kwargs: (writes.append(kwargs["updates"]) or ({}, None)),
+        lambda *_a, **kwargs: (operations.append("restore") or writes.append(kwargs["updates"]) or ({}, None)),
     )
 
     out = await main.conversation_turn_undo(
@@ -168,6 +172,7 @@ async def test_turn_undo_deletes_reflections_before_restoring_state(
     )
 
     assert out == {"status": "restored"}
+    assert operations == ["restore", "delete"]
     assert deleted == [(
         ["memory-1", "memory-2"],
         {"user_id": "Fictional User", "soul_id": "Fictional Soul"},
@@ -179,22 +184,25 @@ async def test_turn_undo_deletes_reflections_before_restoring_state(
     }]
 
     writes.clear()
+    operations.clear()
     svc.graph_delete_memories = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("delete failed"))
-    with pytest.raises(RuntimeError, match="delete failed"):
-        await main.conversation_turn_undo(
-            "chat",
-            {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
-        )
-    assert writes == []
+    out = await main.conversation_turn_undo(
+        "chat",
+        {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
+    )
+    assert out["status"] == "restored"
+    assert "delete failed" in out["cleanup_warning"]
+    assert len(writes) == 1
 
+    writes.clear()
     svc.graph_delete_memories = lambda *_a, **_k: (_ for _ in ()).throw(KeyError("missing group member"))
-    with pytest.raises(HTTPException) as exc_info:
-        await main.conversation_turn_undo(
-            "chat",
-            {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
-        )
-    assert exc_info.value.status_code == 409
-    assert writes == []
+    out = await main.conversation_turn_undo(
+        "chat",
+        {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
+    )
+    assert out["status"] == "restored"
+    assert "missing group member" in out["cleanup_warning"]
+    assert len(writes) == 1
 
     snapshot.pop("annulment_memory_ids")
     monkeypatch.setattr(
@@ -5810,7 +5818,7 @@ def _patch_turn_dependencies(
                 '"response_target":"respond","response":"ok"}'
             )
 
-    async def _fake_persist_annulment_memories(**_kwargs):
+    def _fake_persist_annulment_memories(**_kwargs):
         return []
 
     def _fake_turn_state_read(
@@ -5945,7 +5953,7 @@ async def test_conversation_turn_accepts_generated_prompt_with_matching_cutoff(
                 '"response_target":"respond","response":"after intro"}'
             )
 
-    async def _fake_persist_annulment_memories(**_kwargs):
+    def _fake_persist_annulment_memories(**_kwargs):
         return []
 
     monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
@@ -7015,7 +7023,7 @@ async def test_conversation_turn_does_not_persist_messages_to_table(
                 '"response_target":"respond","response":"assistant says hi"}'
             )
 
-    async def _fake_persist_annulment_memories(**_kwargs):
+    def _fake_persist_annulment_memories(**_kwargs):
         return []
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
@@ -7090,7 +7098,7 @@ async def test_conversation_turn_persists_completed_sillytavern_snapshot(
                 '"response_target":"respond","response":"current soul"}'
             )
 
-    async def _fake_persist_annulment_memories(**_kwargs):
+    def _fake_persist_annulment_memories(**_kwargs):
         return []
 
     captured: dict[str, object] = {}
@@ -7176,7 +7184,7 @@ async def test_conversation_turn_keeps_response_when_chat_name_differs(
                 '"response_target":"respond","response":"hi Alice"}'
             )
 
-    async def _fake_persist_annulment_memories(**_kwargs):
+    def _fake_persist_annulment_memories(**_kwargs):
         return []
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
@@ -7250,7 +7258,7 @@ async def test_conversation_turn_private_response_not_persisted_in_origin_chat(
                 '"response_target":"private","response":"private note to Marcos"}'
             )
 
-    async def _fake_persist_annulment_memories(**_kwargs):
+    def _fake_persist_annulment_memories(**_kwargs):
         return []
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
@@ -7329,7 +7337,7 @@ async def test_conversation_turn_observe_mode_forbids_public_response(
                 '"response_target":null,"response":""}'
             )
 
-    async def _fake_persist_annulment_memories(**_kwargs):
+    def _fake_persist_annulment_memories(**_kwargs):
         return []
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
@@ -7409,7 +7417,7 @@ async def test_conversation_turn_retries_once_on_parse_failure(
 
     svc = _FakeSvc()
 
-    async def _fake_persist_annulment_memories(**_kwargs):
+    def _fake_persist_annulment_memories(**_kwargs):
         return []
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: svc)
@@ -7485,7 +7493,7 @@ async def test_conversation_turn_uses_fresh_session_id_for_retry(
 
     svc = _FakeSvc()
 
-    async def _fake_persist_annulment_memories(**_kwargs):
+    def _fake_persist_annulment_memories(**_kwargs):
         return []
 
     monkeypatch.setattr(main, "_CONFIG", {**main._CONFIG, "claude_code": True})
@@ -8204,7 +8212,7 @@ async def test_conversation_turn_allows_respond_when_chat_name_missing_and_logs_
                 '"response_target":"respond","response":"hi Bob"}'
             )
 
-    async def _fake_persist_annulment_memories(**_kwargs):
+    def _fake_persist_annulment_memories(**_kwargs):
         return []
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
@@ -8414,7 +8422,7 @@ def _make_turn_monkeypatches(
         async def chat(self, *_args, **_kwargs) -> str:
             return chat_response
 
-    async def _fake_persist_annulment_memories(**_kwargs):
+    def _fake_persist_annulment_memories(**_kwargs):
         return []
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
