@@ -4755,6 +4755,12 @@ async def conversation_turn_undo(
                 for memory_id in annulment_memory_ids:
                     try:
                         svc.graph_delete_memory(memory_id, where={"user_id": uid, "soul_id": soul_id})
+                    except MemoryCitationConflictError as exc:
+                        cleanup_failures.append(f"{memory_id}: {exc}")
+                        logger.warning(
+                            "conversation_turn_undo: cited annulment reflection retained: %s",
+                            memory_id,
+                        )
                     except Exception as exc:
                         cleanup_failures.append(f"{memory_id}: {exc}")
                         logger.error(

@@ -186,23 +186,29 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
 
     writes.clear()
     deleted.clear()
+
     def _delete_uncited(item_id, *, where):
         if item_id == "memory-1":
             raise main.MemoryCitationConflictError([{"id": "category:fictional"}])
         deleted.append(([item_id], where))
         return {"memory_id": item_id}
     svc.graph_delete_memory = _delete_uncited
-    out = await main.conversation_turn_undo(
-        "chat",
-        {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
-    )
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        out = await main.conversation_turn_undo(
+            "chat",
+            {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
+        )
     assert deleted == [
         (["memory-2"], {"user_id": "Fictional User", "soul_id": "Fictional Soul"}),
     ]
     assert "memory-1" in out["cleanup_warning"]
+    assert "cited annulment reflection retained" in caplog.text
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)
 
     writes.clear()
     operations.clear()
+    caplog.clear()
     svc.graph_delete_memory = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("delete failed"))
     with caplog.at_level(logging.ERROR):
         out = await main.conversation_turn_undo(
