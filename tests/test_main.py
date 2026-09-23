@@ -192,6 +192,7 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     )
     assert out["status"] == "restored"
     assert "delete failed" in out["cleanup_warning"]
+    assert "memory-1" in out["cleanup_warning"]
     assert len(writes) == 1
 
     writes.clear()

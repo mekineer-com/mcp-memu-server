@@ -4741,7 +4741,9 @@ async def conversation_turn_undo(
                     require_all=False,
                 )
             except Exception as exc:
-                cleanup_warning = f"annulment reflection cleanup failed: {exc}"
+                cleanup_warning = (
+                    f"annulment reflection cleanup failed for {annulment_memory_ids}: {exc}"
+                )
                 logger.warning("conversation_turn_undo: %s", cleanup_warning, exc_info=True)
     result = {"status": "restored"}
     if cleanup_warning:
