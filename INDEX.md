@@ -108,9 +108,9 @@ mcp-memu-server/
 | `/soul-summary/{kind}` | PATCH | Journal and approve an Atomic manual correction with snapshot guard |
 | `/soul-summary/{kind}/approve` | POST | Approve the displayed soul-summary value with snapshot guard |
 | `/memory/{item_id}` | GET | Single memory detail with graph context |
-| `/memory/{item_id}` | PATCH | Edit memory value (write-live, approve-later) |
-| `/memory/{item_id}/approve` | POST | Bless current memory value |
-| `/memory/{item_id}` | DELETE | Hard-delete with dependent cleanup (fts, edit_history, triples) |
+| `/memory/{item_id}` | PATCH | Snapshot-guarded memory edit (write-live, approve-later) |
+| `/memory/{item_id}/approve` | POST | Snapshot-guarded approval of the displayed memory value |
+| `/memory/{item_id}` | DELETE | Snapshot-guarded hard-delete with dependent cleanup (fts, edit_history, triples) |
 | `/category/{category_id}` | PATCH | Edit dossier title/description/prose with snapshot guard |
 | `/category/{category_id}/memory/{memory_id}` | PUT/DELETE | Snapshot-guarded dossier membership attach/detach |
 | `/category/{category_id}/approve` | POST | Bless current category summary |

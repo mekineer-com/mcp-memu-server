@@ -4472,12 +4472,15 @@ def test_memory_graph_item_update_endpoint_uses_scoped_service(monkeypatch: pyte
     calls: dict[str, object] = {}
 
     class _Svc:
-        async def graph_update_memory_summary(self, item_id, *, summary, where, edited_by, approved):
+        async def graph_update_memory_summary(
+            self, item_id, *, summary, where, edited_by, approved, expected_summary
+        ):
             calls["item_id"] = item_id
             calls["summary"] = summary
             calls["where"] = where
             calls["edited_by"] = edited_by
             calls["approved"] = approved
+            calls["expected_summary"] = expected_summary
             return {"id": item_id, "summary": summary}
 
     def _fake_service(payload):
@@ -4491,7 +4494,12 @@ def test_memory_graph_item_update_endpoint_uses_scoped_service(monkeypatch: pyte
             item_id="memory:m1",
             user_id="u",
             soul_id="s",
-            payload={"summary": "new", "edited_by": "surfer", "approved": True},
+            payload={
+                "summary": "new",
+                "displayed_summary": "old",
+                "edited_by": "surfer",
+                "approved": True,
+            },
         )
     )
 
@@ -4500,6 +4508,7 @@ def test_memory_graph_item_update_endpoint_uses_scoped_service(monkeypatch: pyte
     assert calls["where"] == {"user_id": "u", "soul_id": "s"}
     assert calls["edited_by"] == "surfer"
     assert calls["approved"] is True
+    assert calls["expected_summary"] == "old"
 
 
 def test_memory_graph_pending_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPatch):
@@ -4532,9 +4541,10 @@ def test_memory_graph_item_approve_endpoint_uses_scoped_service(monkeypatch: pyt
     calls: dict[str, object] = {}
 
     class _Svc:
-        def graph_approve_memory(self, item_id, *, where):
+        def graph_approve_memory(self, item_id, *, where, expected_summary):
             calls["item_id"] = item_id
             calls["where"] = where
+            calls["expected_summary"] = expected_summary
             return {"id": item_id}
 
     def _fake_service(payload):
@@ -4543,20 +4553,29 @@ def test_memory_graph_item_approve_endpoint_uses_scoped_service(monkeypatch: pyt
 
     monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
 
-    out = asyncio.run(main.memory_graph_item_approve(item_id="memory:m1", user_id="u", soul_id="s"))
+    out = asyncio.run(
+        main.memory_graph_item_approve(
+            item_id="memory:m1",
+            user_id="u",
+            soul_id="s",
+            payload={"displayed_summary": "shown"},
+        )
+    )
 
     assert out == {"id": "memory:m1"}
     assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}
     assert calls["where"] == {"user_id": "u", "soul_id": "s"}
+    assert calls["expected_summary"] == "shown"
 
 
 def test_memory_graph_item_delete_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPatch):
     calls: dict[str, object] = {}
 
     class _Svc:
-        def graph_delete_memory(self, item_id, *, where):
+        def graph_delete_memory(self, item_id, *, where, expected_summary):
             calls["item_id"] = item_id
             calls["where"] = where
+            calls["expected_summary"] = expected_summary
             return {"id": item_id}
 
     def _fake_service(payload):
@@ -4565,30 +4584,106 @@ def test_memory_graph_item_delete_endpoint_uses_scoped_service(monkeypatch: pyte
 
     monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
 
-    out = asyncio.run(main.memory_graph_item_delete(item_id="memory:m1", user_id="u", soul_id="s"))
+    out = asyncio.run(
+        main.memory_graph_item_delete(
+            item_id="memory:m1",
+            user_id="u",
+            soul_id="s",
+            displayed_summary="shown",
+        )
+    )
 
     assert out == {"id": "memory:m1"}
     assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}
     assert calls["where"] == {"user_id": "u", "soul_id": "s"}
+    assert calls["expected_summary"] == "shown"
 
 
 def test_memory_graph_item_delete_returns_citation_conflict(monkeypatch: pytest.MonkeyPatch):
     usage = {"id": "category:fictional", "name": "Fictional dossier", "cited": True}
 
     class _Svc:
-        def graph_delete_memory(self, _item_id, *, where):
+        def graph_delete_memory(self, _item_id, *, where, expected_summary):
             assert where == {"user_id": "u", "soul_id": "s"}
+            assert expected_summary == "shown"
             raise main.MemoryCitationConflictError([usage])
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
 
     with pytest.raises(main.HTTPException) as exc_info:
-        asyncio.run(main.memory_graph_item_delete(item_id="memory:fictional", user_id="u", soul_id="s"))
+        asyncio.run(
+            main.memory_graph_item_delete(
+                item_id="memory:fictional",
+                user_id="u",
+                soul_id="s",
+                displayed_summary="shown",
+            )
+        )
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == {
         "message": "Review current dossier citations before deleting this memory",
         "dossiers": [usage],
     }
+
+
+def test_memory_graph_item_mutations_map_stale_summary_to_conflict(monkeypatch: pytest.MonkeyPatch):
+    class _Svc:
+        async def graph_update_memory_summary(self, *_args, **_kwargs):
+            raise ValueError("summary_snapshot_stale")
+
+        def graph_approve_memory(self, *_args, **_kwargs):
+            raise ValueError("summary_snapshot_stale")
+
+        def graph_delete_memory(self, *_args, **_kwargs):
+            raise ValueError("summary_snapshot_stale")
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
+    calls = [
+        main.memory_graph_item_update(
+            item_id="memory:m1",
+            user_id="u",
+            soul_id="s",
+            payload={"summary": "new", "displayed_summary": "old"},
+        ),
+        main.memory_graph_item_approve(
+            item_id="memory:m1",
+            user_id="u",
+            soul_id="s",
+            payload={"displayed_summary": "old"},
+        ),
+        main.memory_graph_item_delete(
+            item_id="memory:m1",
+            user_id="u",
+            soul_id="s",
+            displayed_summary="old",
+        ),
+    ]
+    for call in calls:
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(call)
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == "summary_snapshot_stale"
+
+
+def test_memory_graph_item_mutations_require_displayed_summary():
+    with pytest.raises(HTTPException, match="displayed_summary is required"):
+        asyncio.run(
+            main.memory_graph_item_update(
+                item_id="memory:m1",
+                user_id="u",
+                soul_id="s",
+                payload={"summary": "new"},
+            )
+        )
+    with pytest.raises(HTTPException, match="displayed_summary is required"):
+        asyncio.run(
+            main.memory_graph_item_approve(
+                item_id="memory:m1",
+                user_id="u",
+                soul_id="s",
+                payload={},
+            )
+        )
 
 
 def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPatch):

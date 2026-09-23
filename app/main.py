@@ -3356,6 +3356,9 @@ async def memory_graph_item_update(
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
     if not isinstance(summary, str) or not summary.strip():
         raise HTTPException(status_code=400, detail="summary is required")
+    displayed_summary = payload.get("displayed_summary")
+    if not isinstance(displayed_summary, str):
+        raise HTTPException(status_code=400, detail="displayed_summary is required")
     scope = {"user_id": uid, "soul_id": sid}
     svc = _get_service_from_payload({"user": scope})
     try:
@@ -3365,9 +3368,11 @@ async def memory_graph_item_update(
             where=scope,
             edited_by=payload.get("edited_by") if isinstance(payload.get("edited_by"), str) else None,
             approved=payload.get("approved") is True,
+            expected_summary=displayed_summary,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status = 409 if str(exc) == "summary_snapshot_stale" else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     except KeyError:
         item = None
     if item is None:
@@ -3380,17 +3385,22 @@ async def memory_graph_item_approve(
     item_id: str,
     user_id: str,
     soul_id: str,
+    payload: dict[str, Any] = Body(...),
 ):
     uid = str(user_id or "").strip()
     sid = str(soul_id or "").strip()
     if not uid or not sid:
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    displayed_summary = payload.get("displayed_summary")
+    if not isinstance(displayed_summary, str):
+        raise HTTPException(status_code=400, detail="displayed_summary is required")
     scope = {"user_id": uid, "soul_id": sid}
     svc = _get_service_from_payload({"user": scope})
     try:
-        item = svc.graph_approve_memory(item_id, where=scope)
+        item = svc.graph_approve_memory(item_id, where=scope, expected_summary=displayed_summary)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status = 409 if str(exc) == "summary_snapshot_stale" else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     if item is None:
         raise HTTPException(status_code=404, detail="memory not found")
     return item
@@ -3401,6 +3411,7 @@ async def memory_graph_item_delete(
     item_id: str,
     user_id: str,
     soul_id: str,
+    displayed_summary: str,
 ):
     uid = str(user_id or "").strip()
     sid = str(soul_id or "").strip()
@@ -3409,14 +3420,15 @@ async def memory_graph_item_delete(
     scope = {"user_id": uid, "soul_id": sid}
     svc = _get_service_from_payload({"user": scope})
     try:
-        item = svc.graph_delete_memory(item_id, where=scope)
+        item = svc.graph_delete_memory(item_id, where=scope, expected_summary=displayed_summary)
     except MemoryCitationConflictError as exc:
         raise HTTPException(
             status_code=409,
             detail={"message": str(exc), "dossiers": exc.usages},
         ) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status = 409 if str(exc) == "summary_snapshot_stale" else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     if item is None:
         raise HTTPException(status_code=404, detail="memory not found")
     return item
