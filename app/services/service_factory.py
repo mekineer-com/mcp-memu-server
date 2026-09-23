@@ -356,6 +356,8 @@ def _get_service_from_payload(
         memorize_config["semantic_dedupe_enabled"] = dedupe_enabled
         if dedupe_threshold is not None:
             memorize_config["semantic_dedupe_similarity_threshold"] = dedupe_threshold
+        else:
+            memorize_config.pop("semantic_dedupe_similarity_threshold", None)
         for passthrough_key in (
             "enable_confidence_normalization",
             "background_extra_messages_tokens",

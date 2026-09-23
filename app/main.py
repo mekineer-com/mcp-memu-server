@@ -4745,18 +4745,25 @@ async def conversation_turn_undo(
         )
         cleanup_warning = None
         if annulment_memory_ids:
+            cleanup_failures = []
             try:
                 svc = _get_service_from_payload({"user": {"user_id": uid, "soul_id": soul_id}})
-                svc.graph_delete_memories(
-                    annulment_memory_ids,
-                    where={"user_id": uid, "soul_id": soul_id},
-                    require_all=False,
-                )
             except Exception as exc:
-                cleanup_warning = (
-                    f"annulment reflection cleanup failed for {annulment_memory_ids}: {exc}"
-                )
-                logger.warning("conversation_turn_undo: %s", cleanup_warning, exc_info=True)
+                cleanup_failures.extend(f"{memory_id}: {exc}" for memory_id in annulment_memory_ids)
+                logger.error("conversation_turn_undo: cleanup service unavailable", exc_info=True)
+            else:
+                for memory_id in annulment_memory_ids:
+                    try:
+                        svc.graph_delete_memory(memory_id, where={"user_id": uid, "soul_id": soul_id})
+                    except Exception as exc:
+                        cleanup_failures.append(f"{memory_id}: {exc}")
+                        logger.error(
+                            "conversation_turn_undo: annulment reflection cleanup failed for %s",
+                            memory_id,
+                            exc_info=True,
+                        )
+            if cleanup_failures:
+                cleanup_warning = "annulment reflection cleanup failed: " + "; ".join(cleanup_failures)
     result = {"status": "restored"}
     if cleanup_warning:
         result["cleanup_warning"] = cleanup_warning

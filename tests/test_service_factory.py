@@ -178,7 +178,10 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     cfg = {
         "llm": {"step_models": {}},
         "categories": {"category_summary_target_words": 275},
-        "memorize": {"background_extra_messages_tokens": 321},
+        "memorize": {
+            "background_extra_messages_tokens": 321,
+            "semantic_dedupe_enabled": False,
+        },
         "claude_code": True,
         "claude_code_model": "claude-opus-4-7",
         "claude_code_effort": "medium",
@@ -192,6 +195,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         {
             "user": {"user_id": "u", "soul_id": "echo"},
             "database_config": {},
+            "memorize_config": {"semantic_dedupe_similarity_threshold": "banana"},
         },
         config=cfg,
         default_llm_profiles_from_server_config=lambda _cfg: {
@@ -239,8 +243,8 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert captured["memorize_config"]["background_extra_messages_tokens"] == 321
     assert captured["memorize_config"]["dynamic_category_cluster_size"] == 10
     assert captured["memorize_config"]["category_summary_target_words"] == 275
-    assert captured["memorize_config"]["semantic_dedupe_enabled"] is True
-    assert captured["memorize_config"]["semantic_dedupe_similarity_threshold"] == 0.90
+    assert captured["memorize_config"]["semantic_dedupe_enabled"] is False
+    assert "semantic_dedupe_similarity_threshold" not in captured["memorize_config"]
     assert captured["cutover_scope"] == {"user_id": "u", "soul_id": "echo"}
     assert captured["database_config"]["metadata_store"]["embedding_profile"] == "gemini-embedding-2:3072"
 

@@ -138,6 +138,7 @@ async def test_annulment_memories_are_dated_historical_events() -> None:
 @pytest.mark.asyncio
 async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     operations: list[str] = []
     deleted: list[tuple[list[str], dict[str, str]]] = []
@@ -147,13 +148,13 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
         "intentions_active": {"items": [{"id": "a"}]},
         "annulment_memory_ids": ["memory-1", "memory-2"],
     }
-    def _delete_memories(item_ids, *, where, require_all=False):
-        assert require_all is False
-        operations.append("delete")
-        deleted.append((item_ids, where))
-        return [{"memory_id": item_ids[0]}]
 
-    svc = SimpleNamespace(graph_delete_memories=_delete_memories)
+    def _delete_memory(item_id, *, where):
+        operations.append("delete")
+        deleted.append(([item_id], where))
+        return {"memory_id": item_id}
+
+    svc = SimpleNamespace(graph_delete_memory=_delete_memory)
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: svc)
     monkeypatch.setattr(
         main,
@@ -172,11 +173,11 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     )
 
     assert out == {"status": "restored"}
-    assert operations == ["restore", "delete"]
-    assert deleted == [(
-        ["memory-1", "memory-2"],
-        {"user_id": "Fictional User", "soul_id": "Fictional Soul"},
-    )]
+    assert operations == ["restore", "delete", "delete"]
+    assert deleted == [
+        (["memory-1"], {"user_id": "Fictional User", "soul_id": "Fictional Soul"}),
+        (["memory-2"], {"user_id": "Fictional User", "soul_id": "Fictional Soul"}),
+    ]
     assert writes == [{
         "memory_cache": ["before"],
         "intentions_active": {"items": [{"id": "a"}]},
@@ -184,19 +185,38 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     }]
 
     writes.clear()
-    operations.clear()
-    svc.graph_delete_memories = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("delete failed"))
+    deleted.clear()
+    def _delete_uncited(item_id, *, where):
+        if item_id == "memory-1":
+            raise main.MemoryCitationConflictError([{"id": "category:fictional"}])
+        deleted.append(([item_id], where))
+        return {"memory_id": item_id}
+    svc.graph_delete_memory = _delete_uncited
     out = await main.conversation_turn_undo(
         "chat",
         {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
     )
+    assert deleted == [
+        (["memory-2"], {"user_id": "Fictional User", "soul_id": "Fictional Soul"}),
+    ]
+    assert "memory-1" in out["cleanup_warning"]
+
+    writes.clear()
+    operations.clear()
+    svc.graph_delete_memory = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("delete failed"))
+    with caplog.at_level(logging.ERROR):
+        out = await main.conversation_turn_undo(
+            "chat",
+            {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
+        )
     assert out["status"] == "restored"
     assert "delete failed" in out["cleanup_warning"]
     assert "memory-1" in out["cleanup_warning"]
     assert len(writes) == 1
+    assert "memory-1" in caplog.text
 
     writes.clear()
-    svc.graph_delete_memories = lambda *_a, **_k: (_ for _ in ()).throw(KeyError("missing group member"))
+    svc.graph_delete_memory = lambda *_a, **_k: (_ for _ in ()).throw(KeyError("missing group member"))
     out = await main.conversation_turn_undo(
         "chat",
         {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
