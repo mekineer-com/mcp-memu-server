@@ -166,7 +166,7 @@ snapshot metadata, not introduce another registry.
 | `app/services/apimw.py` | APImw background memory-weaving pipeline: retrieve → synthesize prior-context/message-to-self → persist |
 | `app/services/admin_routes.py` | Health/version/shutdown/diag endpoint handlers |
 | `app/services/payload.py` | Shared payload/scope/normalization helpers (scope extraction, turn history normalization, signature helpers) |
-| `app/services/service_factory.py` | `MemoryService` cache + construction, llm profile merge, config readers |
+| `app/services/service_factory.py` | `MemoryService` cache + construction, llm profile merge, config readers, profile-aware semantic-dedupe defaults (per embedding profile; numeric config values are operator recovery overrides only) |
 | `app/services/retrieve_orchestration.py` | Retrieve domain helpers: query/where extraction, identity-context builder, `_run_retrieve` implementation |
 | `app/services/sqlite_scope.py` | Scoped db-path resolution, scope `WHERE` builder, state-db lookup/write wrappers |
 | `app/services/souls.py` | Canonical per-soul SQLite identity metadata and shared local/Mentra discovery-create routes |
