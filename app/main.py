@@ -3198,7 +3198,9 @@ async def memory_graph_pending(
         con = _sqlite_connect(db_path)
         try:
             con.row_factory = sqlite3.Row
-            pending["soul_summaries"] = _soul_summaries.list_for_review(con)
+            pending["soul_summaries"] = [
+                row for row in _soul_summaries.list_for_review(con) if row["pending"]
+            ]
             pending["summaries_revision"] = _soul_summaries.current_revision(con)
         finally:
             con.close()

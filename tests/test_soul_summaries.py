@@ -129,6 +129,32 @@ def test_soul_summary_write_approve_and_journal(monkeypatch, tmp_path) -> None:
     assert soul_summaries.list_for_review(con)[0]["pending"] is False
 
 
+def test_pending_endpoint_omits_approved_soul_summary(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "soul.db"
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    soul_state.ensure_schema(con)
+    con.execute(
+        "UPDATE soul_state SET narrative_self = 'approved self', "
+        "narrative_self_approved = 'approved self' WHERE id = 1"
+    )
+    con.commit()
+    con.close()
+
+    class Service:
+        @staticmethod
+        def graph_list_pending(*, where):
+            assert where == {"user_id": "u", "soul_id": "s"}
+            return {"items": [], "categories": []}
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: Service())
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
+
+    pending = asyncio.run(main.memory_graph_pending(user_id="u", soul_id="s"))
+
+    assert pending["soul_summaries"] == []
+
+
 def test_soul_summary_route_rejects_stale_snapshot(monkeypatch, tmp_path) -> None:
     path = tmp_path / "soul.db"
     con = sqlite3.connect(path)
