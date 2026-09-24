@@ -8,7 +8,13 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from app.config import load_config, sqlite_dir_from_cfg, sqlite_dsn_from_path
+from app.config import (
+    database_config_from_cfg,
+    load_config,
+    sqlite_dir_from_cfg,
+    sqlite_dsn_from_path,
+    sqlite_file_from_dsn,
+)
 from memu.database.sqlite.sqlite import SQLiteStore
 
 
@@ -46,28 +52,46 @@ def migrate_database(
                 "SELECT migration_id FROM openalma_release_migrations"
             )
         }
+        connection.commit()
         for migration_id, migration in migrations:
             if migration_id in applied:
                 continue
-            migration(connection)
-            connection.execute(
-                "INSERT INTO openalma_release_migrations (migration_id) VALUES (?)",
-                (migration_id,),
-            )
+            try:
+                connection.execute("BEGIN")
+                migration(connection)
+                connection.execute(
+                    "INSERT INTO openalma_release_migrations (migration_id) VALUES (?)",
+                    (migration_id,),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+
+
+def soul_databases(config: dict) -> list[Path]:
+    metadata = database_config_from_cfg(config)["metadata_store"]
+    sqlite_dir = sqlite_dir_from_cfg(config, metadata["dsn"])
+    base = sqlite_file_from_dsn(metadata["dsn"])
+    return sorted(
+        path for path in sqlite_dir.glob("*.db")
+        if not path.name.startswith(".")
+        and not path.is_symlink()
+        and path.is_file()
+        and (base is None or path.resolve() != base.resolve())
+    )
 
 
 def main() -> None:
     config = load_config()
-    metadata = (config.get("storage") or {}).get("metadata_store") or {}
-    embedding_profile = str(metadata.get("embedding_profile") or "").strip()
-    if not embedding_profile:
-        raise RuntimeError("storage.metadata_store.embedding_profile is required for release migration")
-    sqlite_dir = sqlite_dir_from_cfg(config, str(metadata.get("dsn") or ""))
-    databases = sorted(sqlite_dir.glob("*.db"))
-    if not databases:
-        raise RuntimeError(f"No soul databases found in {sqlite_dir}")
+    metadata = database_config_from_cfg(config)["metadata_store"]
+    embedding_profile = metadata["embedding_profile"]
+    databases = soul_databases(config)
     for database in databases:
-        migrate_database(database, embedding_profile)
+        try:
+            migrate_database(database, embedding_profile)
+        except Exception:
+            raise RuntimeError("Soul database migration failed") from None
     print(f"Migrated {len(databases)} soul database(s)")
 
 
