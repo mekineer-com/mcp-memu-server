@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from app.config import (
     database_config_from_cfg,
     load_config,
+    procedural_db_path,
     sqlite_dir_from_cfg,
     sqlite_dsn_from_path,
     sqlite_file_from_dsn,
@@ -73,12 +74,14 @@ def soul_databases(config: dict) -> list[Path]:
     metadata = database_config_from_cfg(config)["metadata_store"]
     sqlite_dir = sqlite_dir_from_cfg(config, metadata["dsn"])
     base = sqlite_file_from_dsn(metadata["dsn"])
+    procedural = procedural_db_path(config)
     return sorted(
         path for path in sqlite_dir.glob("*.db")
         if not path.name.startswith(".")
         and not path.is_symlink()
         and path.is_file()
         and (base is None or path.resolve() != base.resolve())
+        and path.resolve() != procedural.resolve()
     )
 
 

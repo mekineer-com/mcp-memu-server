@@ -49,7 +49,8 @@ def test_soul_databases_excludes_base_hidden_and_symlink(tmp_path):
     base = tmp_path / "memu.db"
     soul = tmp_path / "Fictional Soul.db"
     hidden = tmp_path / ".replacement.db"
-    for path in (base, soul, hidden):
+    procedural = tmp_path / "procedural.db"
+    for path in (base, soul, hidden, procedural):
         path.touch()
     (tmp_path / "Linked.db").symlink_to(soul)
     config = {
@@ -58,6 +59,7 @@ def test_soul_databases_excludes_base_hidden_and_symlink(tmp_path):
             "sqlite_dir": str(tmp_path),
             "metadata_store": {"dsn": f"sqlite:///{base}"},
         },
+        "procedural": {"db_path": str(procedural)},
     }
 
     assert migrate_release.soul_databases(config) == [soul]
