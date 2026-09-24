@@ -68,7 +68,7 @@ def main() -> None:
         raise RuntimeError(f"No soul databases found in {sqlite_dir}")
     for database in databases:
         migrate_database(database, embedding_profile)
-        print(f"Migrated {database.name}")
+    print(f"Migrated {len(databases)} soul database(s)")
 
 
 if __name__ == "__main__":
