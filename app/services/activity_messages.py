@@ -50,6 +50,7 @@ def activity_message_rows(
     soul_id: str,
     since_cursor: int,
     recent_fallback_messages: int,
+    include_floor_without_new: bool = False,
 ) -> list[dict[str, Any]]:
     ensure_activity_messages_schema(con)
     activity_cid = activity_conversation_id(soul_id)
@@ -82,6 +83,7 @@ ORDER BY source_conversation_index ASC
         messages,
         since_cursor=since_cursor,
         recent_fallback_messages=recent_fallback_messages,
+        include_floor_without_new=include_floor_without_new,
     )
 
 
@@ -95,16 +97,25 @@ def load_activity_tail_for_ai(
     sqlite_ensure_conversation_state_schema(con)
     activity_cid = activity_conversation_id(soul_id)
     row = con.execute(
-        "SELECT digest_cursor, last_memorize_at FROM conversations WHERE conversation_id = ?",
+        "SELECT digest_cursor, last_memorize_at, last_display_segment_start_index, "
+        "last_display_segment_end_index, last_display_segment_at "
+        "FROM conversations WHERE conversation_id = ?",
         (activity_cid,),
     ).fetchone()
     cursor = effective_digest_cursor_from_row(row)
+    include_floor_without_new = bool(
+        row
+        and row["last_display_segment_start_index"] is not None
+        and row["last_display_segment_end_index"] is not None
+        and str(row["last_display_segment_at"] or "").strip()
+    )
     return activity_message_rows(
         con,
         user_id=user_id,
         soul_id=soul_id,
         since_cursor=cursor,
         recent_fallback_messages=recent_fallback_messages,
+        include_floor_without_new=include_floor_without_new,
     )
 
 
