@@ -3615,7 +3615,10 @@ async def conversation_retrieve(
         self_turn_label = _pick_str(safe, "self_turn_label") or ""
         retrieve_focus = self_turn_directive or message
         if build_atomic_snapshot and not retrieve_focus:
-            retrieve_focus = "Atomic memory workspace"
+            retrieve_focus = (
+                f"{uid}: From your recent conversations above, choose a salient thread and "
+                "retrieve memory background that would help you understand it."
+            )
             if safe.get("queries") is None:
                 safe["query"] = retrieve_focus
         display_current_user_text = message if build_atomic_snapshot else retrieve_focus

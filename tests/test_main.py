@@ -322,7 +322,7 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: (state_row, "Siri card", None),
+        lambda *_a, **_k: (state_row, "Fictional Soul card", None),
     )
     state_writes: list[dict[str, Any]] = []
     monkeypatch.setattr(
@@ -359,7 +359,11 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
     out = await main.atomic_session_start(
-        main.AtomicSessionStartRequest(user_id="Marcos", soul_id="Siri", conversation_id="atomic-uuid")
+        main.AtomicSessionStartRequest(
+            user_id="Fictional User",
+            soul_id="Fictional Soul",
+            conversation_id="atomic-uuid",
+        )
     )
 
     assert out["conversation_id"] == "chat:atomic-atomic-uuid"
@@ -368,7 +372,7 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
     assert state_writes[0]["atomic_session_started_at"]
     assert state_writes[0]["atomic_session_ended_at"] is None
     snapshot = str(out["snapshot_text"])
-    assert "Siri card" in snapshot
+    assert "Fictional Soul card" in snapshot
     assert "retrieved category summary" in snapshot
     assert "My Memories:" not in snapshot
     assert "stale retrieved item" not in snapshot
@@ -380,8 +384,15 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
     assert "Return STRICT JSON only" not in snapshot
     assert "response_target" not in snapshot
     assert "**remember maximum lengths and response schema**" not in snapshot
-    assert "[user] Atomic memory workspace" not in snapshot
-    assert captured["safe"]["chat_name"] == "Marcos"
+    assert "From your recent conversations above" not in snapshot
+    assert captured["safe"]["queries"][-1] == {
+        "role": "user",
+        "content": {
+            "text": "Fictional User: From your recent conversations above, choose a salient "
+            "thread and retrieve memory background that would help you understand it."
+        },
+    }
+    assert captured["safe"]["chat_name"] == "Fictional User"
     assert captured["safe"]["chat_type"] == "dm"
 
 
