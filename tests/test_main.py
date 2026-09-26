@@ -1535,6 +1535,7 @@ def test_record_consolidation_failure_never_creates_missing_soul_db(
 
     with pytest.raises(FileNotFoundError, match="soul database not found"):
         main._record_consolidation_failure(
+            conversation_id="missing-conversation",
             soul_id="MissingSoul",
             user_id="User",
             exc=RuntimeError("failed"),
@@ -1543,7 +1544,7 @@ def test_record_consolidation_failure_never_creates_missing_soul_db(
     assert not missing.exists()
 
 
-def test_record_consolidation_failure_updates_only_existing_soul_state(
+def test_record_consolidation_failure_updates_only_existing_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1556,8 +1557,28 @@ def test_record_consolidation_failure_updates_only_existing_soul_state(
     finally:
         con.close()
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user, _soul: db_path)
+    main._record_consolidation_failure(
+        conversation_id="missing-conversation",
+        soul_id="Soul",
+        user_id="User",
+        exc=RuntimeError("invalid request"),
+    )
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        assert main._soul_state.read(con)["last_consolidation_error"] is None
+    finally:
+        con.close()
+
+    main._write_conversation_state(
+        "cid-owner",
+        soul_id="Soul",
+        user_id="User",
+        updates={},
+    )
 
     main._record_consolidation_failure(
+        conversation_id="cid-owner",
         soul_id="Soul",
         user_id="User",
         exc=RuntimeError("reflection failed"),
@@ -1571,9 +1592,10 @@ def test_record_consolidation_failure_updates_only_existing_soul_state(
     finally:
         con.close()
     assert soul["last_consolidation_error"] == "RuntimeError: reflection failed"
-    assert conversation_count == 0
+    assert conversation_count == 1
 
     main._record_consolidation_failure(
+        conversation_id="cid-owner",
         soul_id="Soul",
         user_id="User",
         exc=RuntimeError("profile invalid"),

@@ -1991,6 +1991,7 @@ def _source_cursor_checkpoint(*args: Any, **kwargs: Any) -> Any:
 
 def _record_consolidation_failure(
     *,
+    conversation_id: str,
     soul_id: str,
     user_id: str,
     exc: Exception,
@@ -2003,6 +2004,12 @@ def _record_consolidation_failure(
     con = _sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
+        if con.execute(
+            "SELECT 1 FROM conversations "
+            "WHERE conversation_id = ? AND soul_id = ? AND user_id = ?",
+            (conversation_id, soul_id, user_id),
+        ).fetchone() is None:
+            return
         _soul_state.ensure_schema(con)
         _soul_state.write(
             con,
@@ -2089,6 +2096,7 @@ async def _run_consolidation_pipeline_once(
             try:
                 async with state_lock:
                     _record_consolidation_failure(
+                        conversation_id=conversation_id,
                         soul_id=soul_id,
                         user_id=user_id,
                         exc=exc,
