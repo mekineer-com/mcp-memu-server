@@ -1145,20 +1145,6 @@ def write_consolidation_outputs(
         con.row_factory = sqlite3.Row
         deps.sqlite_ensure_conversation_state_schema(con)
 
-        if narrative_self:
-            con.execute(
-                "INSERT INTO narrative_history (id, narrative_self, related_memory_ids, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (narrative_id, narrative_self, deps.json_to_db([]), now_iso),
-            )
-            _soul_summaries.write_live(
-                con,
-                kind="narrative_self",
-                summary=narrative_self,
-                scope={"user_id": user_id, "soul_id": soul_id},
-                edited_by="consolidation",
-            )
-
         life_goal_rows = con.execute(
             """
 SELECT id, description, status
@@ -1205,23 +1191,6 @@ ORDER BY updated_at ASC, id ASC
             active_ids[text] = goal_id
             active_goal_count += 1
 
-        for goal_id in goals_to_mark_removed:
-            con.execute(
-                "UPDATE life_goals SET status = 'removed', updated_at = ? WHERE id = ?",
-                (now_iso, goal_id),
-            )
-        for goal_id in goals_to_delete:
-            con.execute("DELETE FROM life_goals WHERE id = ?", (goal_id,))
-        for goal_id, text in goals_to_add:
-            con.execute(
-                """
-INSERT INTO life_goals (
-    id, soul_id, user_id, description, status, updated_at
-) VALUES (?, ?, ?, ?, 'active', ?)
-""",
-                (goal_id, soul_id, user_id, text, now_iso),
-            )
-        con.commit()
     finally:
         con.close()
 
@@ -1346,34 +1315,92 @@ INSERT INTO life_goals (
         for segment_id in (inputs.get("selected_segment_ids") or [])
         if str(segment_id).strip()
     ]
-    for pending_conversation_id, pending_ids in selected_by_conversation.items():
-        if pending_conversation_id == conversation_id:
-            continue
-        deps.write_conversation_state(
-            pending_conversation_id,
+    con = deps.sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        con.execute("BEGIN IMMEDIATE")
+        if narrative_self:
+            con.execute(
+                "INSERT INTO narrative_history (id, narrative_self, related_memory_ids, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (narrative_id, narrative_self, deps.json_to_db([]), now_iso),
+            )
+            _soul_summaries.write_live(
+                con,
+                kind="narrative_self",
+                summary=narrative_self,
+                scope=scope,
+                edited_by="consolidation",
+                journal=False,
+            )
+
+        for goal_id in goals_to_mark_removed:
+            con.execute(
+                "UPDATE life_goals SET status = 'removed', updated_at = ? WHERE id = ?",
+                (now_iso, goal_id),
+            )
+        for goal_id in goals_to_delete:
+            con.execute("DELETE FROM life_goals WHERE id = ?", (goal_id,))
+        for goal_id, text in goals_to_add:
+            con.execute(
+                """
+INSERT INTO life_goals (
+    id, soul_id, user_id, description, status, updated_at
+) VALUES (?, ?, ?, ?, 'active', ?)
+""",
+                (goal_id, soul_id, user_id, text, now_iso),
+            )
+
+        for pending_conversation_id, pending_ids in selected_by_conversation.items():
+            if pending_conversation_id == conversation_id:
+                continue
+            deps.write_conversation_state(
+                pending_conversation_id,
+                soul_id=soul_id,
+                user_id=user_id,
+                updates={"remove_pending_segment_ids": pending_ids},
+                connection=con,
+            )
+
+        state_after, _ = deps.write_conversation_state(
+            conversation_id,
             soul_id=soul_id,
             user_id=user_id,
-            updates={"remove_pending_segment_ids": pending_ids},
+            updates={
+                # Subtract only what this run consumed: a memorize that finished
+                # during the LLM phase may have appended new pending ids.
+                "remove_pending_segment_ids": selected_by_conversation.get(
+                    conversation_id, []
+                ),
+                "last_consolidation_at": now_iso,
+                "last_consolidation_error": None,
+                "last_consolidation_error_at": None,
+                "intentions_active": current_intentions,
+                "retrieval_ids_since_consolidation": [],
+                "prior_context_ids_since_consolidation": [],
+            },
+            connection=con,
         )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
 
-    state_updates: dict[str, Any] = {
-        # Subtract only what this run consumed: a memorize that finished during
-        # the LLM phase may have appended new pending ids, and an absolute
-        # overwrite with the launch-time snapshot would silently drop them.
-        "remove_pending_segment_ids": selected_by_conversation.get(conversation_id, []),
-        "last_consolidation_at": now_iso,
-        "last_consolidation_error": None,
-        "last_consolidation_error_at": None,
-        "intentions_active": current_intentions,
-        "retrieval_ids_since_consolidation": [],
-        "prior_context_ids_since_consolidation": [],
-    }
-    state_after, _ = deps.write_conversation_state(
-        conversation_id,
-        soul_id=soul_id,
-        user_id=user_id,
-        updates=state_updates,
-    )
+    previous_narrative = str(inputs.get("narrative_self") or "")
+    if narrative_self and narrative_self != previous_narrative:
+        try:
+            _soul_summaries.append_summary_journal(
+                kind="narrative_self",
+                summary_id="soul-summary:narrative_self",
+                summary_before=previous_narrative,
+                summary_after=narrative_self,
+                scope=scope,
+                edited_by="consolidation",
+            )
+        except Exception:
+            log.exception("Failed to journal committed consolidation narrative")
 
     return {
         "conversation_id": conversation_id,

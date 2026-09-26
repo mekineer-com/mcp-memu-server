@@ -531,12 +531,13 @@ def test_write_consolidation_outputs_consumes_each_conversation_snapshot() -> No
             sqlite_ensure_conversation_state_schema=sqlite_ensure_conversation_state_schema,
             conversation_state_row=conversation_state_row,
             conversation_state_from_row=lambda row, **kw: conversation_state_from_row(row),
-            write_conversation_state=lambda conversation_id, *, soul_id, user_id, updates: write_conversation_state(
+            write_conversation_state=lambda conversation_id, *, soul_id, user_id, updates, connection=None: write_conversation_state(
                 conversation_id,
                 sqlite_current_path=lambda _user, _soul: db_path,
                 soul_id=soul_id,
                 user_id=user_id,
                 updates=updates,
+                connection=connection,
             ),
             get_storage_dir=lambda _cfg: tmp_dir,
             config={},
@@ -627,12 +628,13 @@ def test_gather_consolidation_inputs_skips_when_no_pending_segments() -> None:
             sqlite_ensure_conversation_state_schema=sqlite_ensure_conversation_state_schema,
             conversation_state_row=conversation_state_row,
             conversation_state_from_row=lambda row, **kw: conversation_state_from_row(row),
-            write_conversation_state=lambda conversation_id, *, soul_id, user_id, updates: write_conversation_state(
+            write_conversation_state=lambda conversation_id, *, soul_id, user_id, updates, connection=None: write_conversation_state(
                 conversation_id,
                 sqlite_current_path=lambda _user, _soul: db_path,
                 soul_id=soul_id,
                 user_id=user_id,
                 updates=updates,
+                connection=connection,
             ),
             get_storage_dir=lambda _cfg: tmp_dir,
             config={},
@@ -912,12 +914,13 @@ def _make_consolidation_deps(db_path: Path, tmp_dir: Path) -> ConsolidationDeps:
         sqlite_ensure_conversation_state_schema=sqlite_ensure_conversation_state_schema,
         conversation_state_row=conversation_state_row,
         conversation_state_from_row=lambda row, **kw: conversation_state_from_row(row),
-        write_conversation_state=lambda cid, *, soul_id, user_id, updates: write_conversation_state(
+        write_conversation_state=lambda cid, *, soul_id, user_id, updates, connection=None: write_conversation_state(
             cid,
             sqlite_current_path=lambda _u, _s: db_path,
             soul_id=soul_id,
             user_id=user_id,
             updates=updates,
+            connection=connection,
         ),
         get_storage_dir=lambda _cfg: tmp_dir,
         config={},
@@ -1211,7 +1214,7 @@ def test_write_consolidation_outputs_db_failure_produces_no_companion_memory() -
 
         companion_calls: list[str] = []
 
-        def _fake_write_state(cid, *, soul_id, user_id, updates):
+        def _fake_write_state(cid, *, soul_id, user_id, updates, connection=None):
             raise RuntimeError("simulated DB failure")
 
         failing_deps = ConsolidationDeps(
@@ -1319,3 +1322,89 @@ def test_write_consolidation_outputs_late_failure_keeps_pending_segment_ids() ->
 
         assert state is not None
         assert state["pending_segment_ids"] == pending
+
+
+def test_write_consolidation_outputs_rolls_back_final_transaction() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        db_path = tmp_dir / "soul.db"
+        con = sqlite_connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            sqlite_ensure_conversation_state_schema(con)
+            _soul_state.ensure_schema(con)
+            con.commit()
+        finally:
+            con.close()
+
+        cid = "conv-final"
+        other_cid = "conv-other"
+        soul_id = "SoulFinal"
+        user_id = "UserFinal"
+        for owner, pending in ((cid, ["final:0-1"]), (other_cid, ["other:0-1"])):
+            write_conversation_state(
+                owner,
+                sqlite_current_path=lambda _u, _s: db_path,
+                soul_id=soul_id,
+                user_id=user_id,
+                updates={"pending_segment_ids": pending, "intentions_active": []},
+            )
+
+        deps = _make_consolidation_deps(db_path, tmp_dir)
+        real_write = deps.write_conversation_state
+
+        def fail_after_owner_write(
+            owner,
+            *,
+            soul_id,
+            user_id,
+            updates,
+            connection=None,
+        ):
+            result = real_write(
+                owner,
+                soul_id=soul_id,
+                user_id=user_id,
+                updates=updates,
+                connection=connection,
+            )
+            if owner == cid and connection is not None:
+                raise RuntimeError("simulated finalization failure")
+            return result
+
+        failing_deps = replace(deps, write_conversation_state=fail_after_owner_write)
+        with pytest.raises(RuntimeError, match="simulated finalization failure"):
+            write_consolidation_outputs(
+                failing_deps,
+                _make_svc_stub(),
+                inputs={
+                    "db_path": db_path,
+                    "selected_segment_ids": ["final:0-1", "other:0-1"],
+                    "selected_segment_ids_by_conversation": {
+                        cid: ["final:0-1"],
+                        other_cid: ["other:0-1"],
+                    },
+                },
+                llm_results=_base_llm_results(narrative_self="A new self."),
+                conversation_id=cid,
+                soul_id=soul_id,
+                user_id=user_id,
+            )
+
+        con = sqlite_connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            states = {
+                owner: conversation_state_from_row(conversation_state_row(con, owner))
+                for owner in (cid, other_cid)
+            }
+            soul = _soul_state.read(con)
+            narrative_count = con.execute("SELECT COUNT(*) FROM narrative_history").fetchone()[0]
+        finally:
+            con.close()
+
+        assert states[cid]["pending_segment_ids"] == ["final:0-1"]
+        assert states[other_cid]["pending_segment_ids"] == ["other:0-1"]
+        assert soul["narrative_self"] is None
+        assert soul["last_consolidation_at"] is None
+        assert narrative_count == 0
