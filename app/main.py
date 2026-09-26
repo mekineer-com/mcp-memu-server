@@ -4098,7 +4098,7 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         consolidation_error = None
         consolidation_error_at = None
     consolidation_running = (uid, sid) in _CONSOLIDATION_RUNNING
-    consolidation_stalled = (
+    consolidation_overdue = (
         pending_consolidation_segments > 0
         and not consolidation_running
         and (
@@ -4115,7 +4115,7 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         else "error"
         if pending_consolidation_segments and consolidation_error
         else "overdue"
-        if consolidation_stalled
+        if consolidation_overdue
         else "ok"
     )
     return {
@@ -4130,7 +4130,6 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         "consolidation_age_days": (
             round(consolidation_age_days, 1) if consolidation_age_days is not None else None
         ),
-        "consolidation_stalled": consolidation_stalled,
         "consolidation_state": consolidation_state,
         "consolidation_in_progress": consolidation_running,
         "retry_conversation_id": retry_conversation_id,

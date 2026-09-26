@@ -141,7 +141,6 @@ async def test_diag_pending_reports_stalled_consolidation(
     out = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
 
     assert out["pending_consolidation_segments"] == 1
-    assert out["consolidation_stalled"] is True
     assert out["consolidation_state"] == "error"
     assert out["retry_conversation_id"] == "cid-stalled"
     assert out["consolidation_age_days"] > 7
@@ -154,7 +153,6 @@ async def test_diag_pending_reports_stalled_consolidation(
     finally:
         main._CONSOLIDATION_RUNNING.discard(run_key)
     assert in_progress["consolidation_in_progress"] is True
-    assert in_progress["consolidation_stalled"] is False
     assert in_progress["consolidation_state"] == "running"
 
     con = main._sqlite_connect(db_path)
@@ -199,7 +197,6 @@ async def test_diag_pending_allows_one_interval_before_calling_consolidation_sta
     finally:
         con.close()
     waiting = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
-    assert waiting["consolidation_stalled"] is False
     assert waiting["consolidation_state"] == "ok"
 
     con = main._sqlite_connect(db_path)
@@ -213,7 +210,6 @@ async def test_diag_pending_allows_one_interval_before_calling_consolidation_sta
     finally:
         con.close()
     overdue = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
-    assert overdue["consolidation_stalled"] is True
     assert overdue["consolidation_state"] == "overdue"
 
 
@@ -233,7 +229,6 @@ async def test_diag_pending_does_not_warn_before_first_consolidation_attempt(
     out = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
 
     assert out["pending_consolidation_segments"] == 1
-    assert out["consolidation_stalled"] is False
     assert out["consolidation_state"] == "ok"
 
 
