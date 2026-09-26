@@ -75,10 +75,8 @@ from app.services import owner as _owner
 from app.services import souls as _souls
 from app.services import whatsapp_outbounds as _whatsapp_outbounds
 from app.services.consolidation import (
-    CONSOLIDATION_STALE_AFTER as _CONSOLIDATION_STALE_AFTER,
     ConsolidationDeps,
     consolidation_due as _consolidation_due,
-    consolidation_running as _consolidation_running,
     gather_consolidation_inputs as _gather_consolidation_inputs,
     prepare_dossier_consolidation_context as _prepare_dossier_consolidation_context,
     preflight_consolidation_profiles as _preflight_consolidation_profiles,
@@ -217,6 +215,7 @@ _EPISODES_PER_SEGMENT: int = _DEFAULT_EPISODES_PER_SEGMENT
 _BACKGROUND_SUMMARY_TOKENS: int = _DEFAULT_BACKGROUND_SUMMARY_TOKENS
 # Uniform runaway-protection caps for LLM calls. Not business logic —
 _BACKGROUND_TASKS: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
+_CONSOLIDATION_RUNNING: set[tuple[str, str]] = set()
 _LOG_PROMPTS: bool = False
 
 
@@ -1994,9 +1993,7 @@ def _record_consolidation_failure(
     *,
     soul_id: str,
     user_id: str,
-    pending_fingerprint: str | None,
     exc: Exception,
-    clear_in_progress: bool,
 ) -> None:
     now_iso = datetime.now(UTC).isoformat()
     error = f"{type(exc).__name__}: {str(exc)[:260]}"
@@ -2007,18 +2004,13 @@ def _record_consolidation_failure(
     try:
         con.row_factory = sqlite3.Row
         _soul_state.ensure_schema(con)
-        updates: dict[str, Any] = {
-            "last_consolidation_error": error,
-            "last_consolidation_error_at": now_iso,
-        }
-        if pending_fingerprint:
-            updates["consolidation_failed_pending_fingerprint"] = pending_fingerprint
-        if clear_in_progress:
-            updates.update({
-                "consolidation_in_progress": False,
-                "consolidation_started_at": None,
-            })
-        _soul_state.write(con, updates)
+        _soul_state.write(
+            con,
+            {
+                "last_consolidation_error": error,
+                "last_consolidation_error_at": now_iso,
+            },
+        )
         con.commit()
     finally:
         con.close()
@@ -2034,30 +2026,23 @@ async def _run_consolidation_pipeline_once(
     user_id: str,
     force: bool = False,
 ) -> dict[str, Any]:
-    attempt: dict[str, str] = {}
-    marker_acquired = False
-    retry_fingerprint: str | None = None
+    run_key = (user_id, soul_id)
+    if run_key in _CONSOLIDATION_RUNNING:
+        return {"status": "skipped", "reason": "in_progress"}
+    _CONSOLIDATION_RUNNING.add(run_key)
     try:
-        try:
-            async with state_lock:
-                prep = _gather_consolidation_inputs(
-                    deps,
-                    conversation_id=conversation_id,
-                    soul_id=soul_id,
-                    user_id=user_id,
-                    stale_after=_CONSOLIDATION_STALE_AFTER,
-                    force=force,
-                    attempt=attempt,
-                )
-        except Exception:
-            retry_fingerprint = attempt.get("pending_fingerprint")
-            raise
+        async with state_lock:
+            prep = _gather_consolidation_inputs(
+                deps,
+                conversation_id=conversation_id,
+                soul_id=soul_id,
+                user_id=user_id,
+                force=force,
+            )
         if prep.get("status") == "skip":
             return {"status": "skipped", "reason": prep.get("reason")}
-        marker_acquired = True
         consolidation_profile = _resolve_profile_if_configured(svc, "consolidation")
         _preflight_consolidation_profiles(svc, consolidation_profile)
-        retry_fingerprint = str(prep["pending_fingerprint"]).strip()
         current_chat_messages = [
             row for row in (prep.get("current_chat_messages") or [])
             if isinstance(row, dict)
@@ -2099,15 +2084,14 @@ async def _run_consolidation_pipeline_once(
             )
         return {"status": "ok", "result": result}
     except Exception as exc:
-        if marker_acquired or retry_fingerprint or not isinstance(exc, HTTPException):
+        db_path = _sqlite_current_path(user_id, soul_id)
+        if db_path is not None and db_path.exists():
             try:
                 async with state_lock:
                     _record_consolidation_failure(
                         soul_id=soul_id,
                         user_id=user_id,
-                        pending_fingerprint=retry_fingerprint,
                         exc=exc,
-                        clear_in_progress=marker_acquired,
                     )
             except Exception:
                 logger.exception(
@@ -2115,6 +2099,8 @@ async def _run_consolidation_pipeline_once(
                     conversation_id,
                 )
         raise
+    finally:
+        _CONSOLIDATION_RUNNING.discard(run_key)
 
 
 async def _run_consolidation_task(
@@ -2178,8 +2164,6 @@ async def _run_consolidation_task(
 
 def _should_run_consolidation(state: dict[str, Any]) -> bool:
     now = datetime.now(UTC)
-    if _consolidation_running(state, now=now):
-        return False
     return _consolidation_due(
         state.get("last_consolidation_at"),
         interval_days=_consolidation_interval_days_from_cfg(_CONFIG),
@@ -4035,13 +4019,6 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
             ).fetchall()
         )
         soul_status = _soul_state.read(con)
-        legacy_error = con.execute(
-            "SELECT last_consolidation_error, last_consolidation_error_at "
-            f"FROM conversations WHERE {scope_sql} "
-            "AND last_consolidation_error IS NOT NULL "
-            "ORDER BY last_consolidation_error_at DESC LIMIT 1",
-            scope_params,
-        ).fetchone()
     finally:
         con.close()
     merged = [msg for tail in tails.values() for msg in tail]
@@ -4067,14 +4044,7 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
     ):
         consolidation_error = None
         consolidation_error_at = None
-    if not consolidation_error and legacy_error is not None:
-        legacy_error_at = parse_iso_datetime(legacy_error["last_consolidation_error_at"])
-        if legacy_error_at is not None and (
-            last_consolidation_at is None or legacy_error_at > last_consolidation_at
-        ):
-            consolidation_error = legacy_error["last_consolidation_error"]
-            consolidation_error_at = legacy_error_at
-    consolidation_running = _consolidation_running(soul_status, now=now)
+    consolidation_running = (uid, sid) in _CONSOLIDATION_RUNNING
     consolidation_stalled = (
         pending_consolidation_segments > 0
         and not consolidation_running

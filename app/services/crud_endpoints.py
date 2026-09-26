@@ -740,11 +740,6 @@ async def patch_conversation_state_endpoint(
         updates["last_memorize_at"] = body.get("last_memorize_at")
     if "last_consolidation_at" in body:
         updates["last_consolidation_at"] = body.get("last_consolidation_at")
-    if "consolidation_in_progress" in body:
-        updates["consolidation_in_progress"] = body.get("consolidation_in_progress")
-    if "consolidation_started_at" in body:
-        updates["consolidation_started_at"] = body.get("consolidation_started_at")
-
     state_out, db_path = write_conversation_state(
         cid,
         soul_id=sid,

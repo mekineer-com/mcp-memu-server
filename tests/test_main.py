@@ -1286,28 +1286,16 @@ def test_should_run_consolidation_uses_soul_clock() -> None:
     now = datetime.now(UTC)
     assert main._should_run_consolidation({}) is True
     assert main._should_run_consolidation({"last_consolidation_at": now.isoformat()}) is False
-    assert (
-        main._should_run_consolidation(
-            {
-                "consolidation_in_progress": True,
-                "consolidation_started_at": now.isoformat(),
-            }
-        )
-        is False
-    )
 
 
 @pytest.mark.asyncio
-async def test_consolidation_pipeline_records_preflight_error_without_retry_fingerprint(
+async def test_consolidation_pipeline_records_preflight_error_and_releases_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorded = []
 
     def gather(*_args, **_kwargs):
-        return {
-            "status": "ready",
-            "pending_fingerprint": "selected-work",
-        }
+        return {"status": "ready"}
 
     def fail_preflight(*_args, **_kwargs):
         raise HTTPException(status_code=500, detail="preflight failed")
@@ -1320,6 +1308,7 @@ async def test_consolidation_pipeline_records_preflight_error_without_retry_fing
         "_record_consolidation_failure",
         lambda **kwargs: recorded.append(kwargs),
     )
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: Path("/"))
 
     with pytest.raises(HTTPException, match="preflight failed"):
         await main._run_consolidation_pipeline_once(
@@ -1331,23 +1320,18 @@ async def test_consolidation_pipeline_records_preflight_error_without_retry_fing
             user_id="UserOwner",
         )
 
-    assert recorded[0]["pending_fingerprint"] is None
-    assert recorded[0]["clear_in_progress"] is True
+    assert isinstance(recorded[0]["exc"], HTTPException)
+    assert ("UserOwner", "SoulOwner") not in main._CONSOLIDATION_RUNNING
 
 
 @pytest.mark.asyncio
-async def test_consolidation_pipeline_records_selected_work_and_clears_marker(
+async def test_consolidation_pipeline_records_failure_and_releases_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorded = []
 
-    def gather(*_args, attempt, **_kwargs):
-        attempt["pending_fingerprint"] = "pending-fingerprint"
-        return {
-            "status": "ready",
-            "current_chat_messages": [],
-            "pending_fingerprint": "pending-fingerprint",
-        }
+    def gather(*_args, **_kwargs):
+        return {"status": "ready", "current_chat_messages": []}
 
     def fail_after_gather(**_kwargs):
         raise RuntimeError("reflection failed")
@@ -1355,12 +1339,14 @@ async def test_consolidation_pipeline_records_selected_work_and_clears_marker(
     monkeypatch.setattr(main, "_resolve_profile_if_configured", lambda *_args: "profile")
     monkeypatch.setattr(main, "_preflight_consolidation_profiles", lambda *_args: None)
     monkeypatch.setattr(main, "_gather_consolidation_inputs", gather)
+    monkeypatch.setattr(main, "_load_cross_tail_for_ai", lambda **_kwargs: [])
     monkeypatch.setattr(main, "_format_all_chat_history_for_ai", fail_after_gather)
     monkeypatch.setattr(
         main,
         "_record_consolidation_failure",
         lambda **kwargs: recorded.append(kwargs),
     )
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: Path("/"))
 
     with pytest.raises(RuntimeError, match="reflection failed"):
         await main._run_consolidation_pipeline_once(
@@ -1372,18 +1358,17 @@ async def test_consolidation_pipeline_records_selected_work_and_clears_marker(
             user_id="UserOwner",
         )
 
-    assert recorded[0]["pending_fingerprint"] == "pending-fingerprint"
-    assert recorded[0]["clear_in_progress"] is True
+    assert isinstance(recorded[0]["exc"], RuntimeError)
+    assert ("UserOwner", "SoulOwner") not in main._CONSOLIDATION_RUNNING
 
 
 @pytest.mark.asyncio
-async def test_consolidation_pipeline_backoffs_failed_gathered_work(
+async def test_consolidation_pipeline_records_gather_failure_and_releases_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorded = []
 
-    def gather(*_args, attempt, **_kwargs):
-        attempt["pending_fingerprint"] = "damaged-work"
+    def gather(*_args, **_kwargs):
         raise HTTPException(status_code=400, detail="segment history is damaged")
 
     monkeypatch.setattr(main, "_gather_consolidation_inputs", gather)
@@ -1392,6 +1377,7 @@ async def test_consolidation_pipeline_backoffs_failed_gathered_work(
         "_record_consolidation_failure",
         lambda **kwargs: recorded.append(kwargs),
     )
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: Path("/"))
 
     with pytest.raises(HTTPException, match="segment history is damaged"):
         await main._run_consolidation_pipeline_once(
@@ -1403,8 +1389,115 @@ async def test_consolidation_pipeline_backoffs_failed_gathered_work(
             user_id="UserOwner",
         )
 
-    assert recorded[0]["pending_fingerprint"] == "damaged-work"
-    assert recorded[0]["clear_in_progress"] is False
+    assert isinstance(recorded[0]["exc"], HTTPException)
+    assert ("UserOwner", "SoulOwner") not in main._CONSOLIDATION_RUNNING
+
+
+@pytest.mark.asyncio
+async def test_consolidation_pipeline_busy_caller_cannot_release_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = ("UserOwner", "SoulOwner")
+    main._CONSOLIDATION_RUNNING.add(key)
+    try:
+        out = await main._run_consolidation_pipeline_once(
+            svc=object(),
+            deps=object(),
+            state_lock=asyncio.Lock(),
+            conversation_id="cid-owner",
+            soul_id="SoulOwner",
+            user_id="UserOwner",
+        )
+        assert out == {"status": "skipped", "reason": "in_progress"}
+        assert key in main._CONSOLIDATION_RUNNING
+    finally:
+        main._CONSOLIDATION_RUNNING.discard(key)
+
+
+@pytest.mark.asyncio
+async def test_consolidation_pipeline_runs_once_for_concurrent_same_soul(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    monkeypatch.setattr(
+        main,
+        "_gather_consolidation_inputs",
+        lambda *_args, **_kwargs: {"status": "ready", "current_chat_messages": []},
+    )
+    monkeypatch.setattr(main, "_resolve_profile_if_configured", lambda *_args: "profile")
+    monkeypatch.setattr(main, "_preflight_consolidation_profiles", lambda *_args: None)
+    monkeypatch.setattr(main, "_load_cross_tail_for_ai", lambda **_kwargs: [])
+    monkeypatch.setattr(main, "_format_all_chat_history_for_ai", lambda **_kwargs: "")
+
+    async def wait_in_prepare(*_args, **_kwargs):
+        entered.set()
+        await release.wait()
+
+    async def fake_llm(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(main, "_prepare_dossier_consolidation_context", wait_in_prepare)
+    monkeypatch.setattr(main, "_run_consolidation_llm", fake_llm)
+    monkeypatch.setattr(main, "_write_consolidation_outputs", lambda *_args, **_kwargs: {})
+
+    first = asyncio.create_task(
+        main._run_consolidation_pipeline_once(
+            svc=object(),
+            deps=object(),
+            state_lock=asyncio.Lock(),
+            conversation_id="cid-owner",
+            soul_id="SoulOwner",
+            user_id="UserOwner",
+        )
+    )
+    await entered.wait()
+    second = await main._run_consolidation_pipeline_once(
+        svc=object(),
+        deps=object(),
+        state_lock=asyncio.Lock(),
+        conversation_id="cid-owner",
+        soul_id="SoulOwner",
+        user_id="UserOwner",
+    )
+    release.set()
+
+    assert second == {"status": "skipped", "reason": "in_progress"}
+    assert (await first)["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_consolidation_pipeline_cancel_releases_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def cancel(**_kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        main,
+        "_gather_consolidation_inputs",
+        lambda *_args, **_kwargs: {"status": "ready", "current_chat_messages": []},
+    )
+    monkeypatch.setattr(main, "_resolve_profile_if_configured", lambda *_args: "profile")
+    monkeypatch.setattr(main, "_preflight_consolidation_profiles", lambda *_args: None)
+    monkeypatch.setattr(
+        main,
+        "_format_all_chat_history_for_ai",
+        cancel,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await main._run_consolidation_pipeline_once(
+            svc=object(),
+            deps=object(),
+            state_lock=asyncio.Lock(),
+            conversation_id="cid-owner",
+            soul_id="SoulOwner",
+            user_id="UserOwner",
+        )
+
+    assert ("UserOwner", "SoulOwner") not in main._CONSOLIDATION_RUNNING
 
 
 @pytest.mark.asyncio
@@ -1444,9 +1537,7 @@ def test_record_consolidation_failure_never_creates_missing_soul_db(
         main._record_consolidation_failure(
             soul_id="MissingSoul",
             user_id="User",
-            pending_fingerprint="fingerprint",
             exc=RuntimeError("failed"),
-            clear_in_progress=True,
         )
 
     assert not missing.exists()
@@ -1461,13 +1552,6 @@ def test_record_consolidation_failure_updates_only_existing_soul_state(
     try:
         con.row_factory = sqlite3.Row
         main._sqlite_ensure_conversation_state_schema(con)
-        main._soul_state.write(
-            con,
-            {
-                "consolidation_in_progress": True,
-                "consolidation_started_at": datetime.now(UTC).isoformat(),
-            },
-        )
         con.commit()
     finally:
         con.close()
@@ -1476,9 +1560,7 @@ def test_record_consolidation_failure_updates_only_existing_soul_state(
     main._record_consolidation_failure(
         soul_id="Soul",
         user_id="User",
-        pending_fingerprint="fingerprint",
         exc=RuntimeError("reflection failed"),
-        clear_in_progress=True,
     )
 
     con = main._sqlite_connect(db_path)
@@ -1488,18 +1570,13 @@ def test_record_consolidation_failure_updates_only_existing_soul_state(
         conversation_count = con.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
     finally:
         con.close()
-    assert soul["consolidation_failed_pending_fingerprint"] == "fingerprint"
     assert soul["last_consolidation_error"] == "RuntimeError: reflection failed"
-    assert soul["consolidation_in_progress"] is False
-    assert soul["consolidation_started_at"] is None
     assert conversation_count == 0
 
     main._record_consolidation_failure(
         soul_id="Soul",
         user_id="User",
-        pending_fingerprint=None,
         exc=RuntimeError("profile invalid"),
-        clear_in_progress=False,
     )
     con = main._sqlite_connect(db_path)
     try:
@@ -1507,7 +1584,6 @@ def test_record_consolidation_failure_updates_only_existing_soul_state(
         soul = main._soul_state.read(con)
     finally:
         con.close()
-    assert soul["consolidation_failed_pending_fingerprint"] == "fingerprint"
     assert soul["last_consolidation_error"] == "RuntimeError: profile invalid"
 
 

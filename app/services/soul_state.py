@@ -88,9 +88,6 @@ def read(con: sqlite3.Connection) -> dict[str, Any]:
         "prior_context_ids_since_consolidation": normalize_text_list(row["prior_context_ids_since_consolidation"]),
         "apimw_message_to_self": (str(row["apimw_message_to_self"] or "").strip() or None),
         "last_consolidation_at": row["last_consolidation_at"],
-        "consolidation_in_progress": bool(row["consolidation_in_progress"]),
-        "consolidation_started_at": row["consolidation_started_at"],
-        "consolidation_failed_pending_fingerprint": row["consolidation_failed_pending_fingerprint"],
         "last_consolidation_error": row["last_consolidation_error"],
         "last_consolidation_error_at": row["last_consolidation_error_at"],
         "updated_at": row["updated_at"],
@@ -110,9 +107,6 @@ def defaults() -> dict[str, Any]:
         "prior_context_ids_since_consolidation": [],
         "apimw_message_to_self": None,
         "last_consolidation_at": None,
-        "consolidation_in_progress": False,
-        "consolidation_started_at": None,
-        "consolidation_failed_pending_fingerprint": None,
         "last_consolidation_error": None,
         "last_consolidation_error_at": None,
         "updated_at": None,
@@ -128,8 +122,7 @@ _VALID_FIELDS = {
     "memory_cache", "intentions_active",
     "retrieve_rewrite_angle", "retrieval_ids_since_consolidation",
     "prior_context_ids_since_consolidation", "apimw_message_to_self",
-    "last_consolidation_at", "consolidation_in_progress", "consolidation_started_at",
-    "consolidation_failed_pending_fingerprint", "last_consolidation_error",
+    "last_consolidation_at", "last_consolidation_error",
     "last_consolidation_error_at",
 }
 
@@ -148,8 +141,6 @@ def write(con: sqlite3.Connection, updates: dict[str, Any]) -> None:
         fields["retrieval_ids_since_consolidation"] = normalize_text_list(fields["retrieval_ids_since_consolidation"])
     if "prior_context_ids_since_consolidation" in fields:
         fields["prior_context_ids_since_consolidation"] = normalize_text_list(fields["prior_context_ids_since_consolidation"])
-    if "consolidation_in_progress" in fields:
-        fields["consolidation_in_progress"] = bool(fields["consolidation_in_progress"])
     if "apimw_message_to_self" in fields:
         raw_message = fields["apimw_message_to_self"]
         fields["apimw_message_to_self"] = None if raw_message is None else (str(raw_message).strip() or None)
@@ -163,8 +154,6 @@ def write(con: sqlite3.Connection, updates: dict[str, Any]) -> None:
             params.append(json_to_db(value))
         elif key == "retrieve_rewrite_angle":
             params.append(int(value or 0))
-        elif key == "consolidation_in_progress":
-            params.append(1 if value else 0)
         else:
             params.append(value)
     con.execute(f"UPDATE soul_state SET {', '.join(assignments)} WHERE id = 1", tuple(params))

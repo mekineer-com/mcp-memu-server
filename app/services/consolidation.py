@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -14,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 log = logging.getLogger(__name__)
-CONSOLIDATION_STALE_AFTER = timedelta(hours=1)
+FAILURE_COOLDOWN = timedelta(hours=1)
 
 from fastapi import HTTPException
 from memu.app.dossier import label_sections, render_memory_records, revision_status_items
@@ -437,31 +436,6 @@ def consolidation_due(
     return last is None or (now or datetime.now(UTC)) >= last + timedelta(days=max(1, int(interval_days)))
 
 
-def consolidation_running(
-    state: dict[str, Any],
-    *,
-    now: datetime | None = None,
-    stale_after: timedelta = CONSOLIDATION_STALE_AFTER,
-) -> bool:
-    started_at = parse_iso_datetime(state.get("consolidation_started_at"))
-    return bool(
-        state.get("consolidation_in_progress")
-        and started_at is not None
-        and (now or datetime.now(UTC)) - started_at <= stale_after
-    )
-
-
-def pending_segment_fingerprint(pending_by_conversation: dict[str, list[str]]) -> str:
-    pairs = sorted(
-        (str(conversation_id), str(segment_id))
-        for conversation_id, segment_ids in pending_by_conversation.items()
-        for segment_id in segment_ids
-    )
-    return hashlib.sha256(
-        json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-
-
 def _messages_for_segment_inputs(
     messages: list[dict[str, Any]],
     segment_inputs: list[dict[str, Any]],
@@ -665,9 +639,7 @@ def gather_consolidation_inputs(
     conversation_id: str,
     soul_id: str,
     user_id: str,
-    stale_after: timedelta,
     force: bool = False,
-    attempt: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     db_path = deps.sqlite_current_path(user_id, soul_id)
     if db_path is None:
@@ -689,26 +661,6 @@ def gather_consolidation_inputs(
         if state is None:
             raise HTTPException(status_code=404, detail="conversation state not found")
 
-        now = datetime.now(UTC)
-        if bool(state.get("consolidation_in_progress")):
-            if consolidation_running(state, now=now, stale_after=stale_after):
-                return {"status": "skip", "reason": "in_progress"}
-            deps.write_conversation_state(
-                conversation_id,
-                soul_id=soul_id,
-                user_id=user_id,
-                updates={"consolidation_in_progress": False, "consolidation_started_at": None},
-            )
-            reread = deps.conversation_state_from_row(
-                deps.conversation_state_row(
-                    con, conversation_id, user_id=user_id, soul_id=soul_id
-                ),
-                con=con,
-            )
-            if reread is None:
-                raise HTTPException(404, "conversation state not found after stale-lock reset")
-            state = reread
-
         pending_by_conversation = {
             str(row["conversation_id"]): deps.normalize_text_list(row["pending_segment_ids"])
             for row in con.execute(
@@ -720,15 +672,17 @@ def gather_consolidation_inputs(
         }
         if not pending_by_conversation:
             return {"status": "skip", "reason": "no_pending_segments"}
-        pending_fingerprint = pending_segment_fingerprint(pending_by_conversation)
+        now = datetime.now(UTC)
         soul_state = _soul_state.read(con)
+        last_error_at = parse_iso_datetime(soul_state.get("last_consolidation_error_at"))
+        last_success_at = parse_iso_datetime(soul_state.get("last_consolidation_at"))
         if (
             not force
-            and soul_state.get("consolidation_failed_pending_fingerprint") == pending_fingerprint
+            and last_error_at is not None
+            and (last_success_at is None or last_error_at > last_success_at)
+            and now < last_error_at + FAILURE_COOLDOWN
         ):
-            return {"status": "skip", "reason": "unchanged_after_failure"}
-        if attempt is not None:
-            attempt["pending_fingerprint"] = pending_fingerprint
+            return {"status": "skip", "reason": "failure_cooldown"}
 
         life_goal_rows = con.execute(
             """
@@ -948,15 +902,6 @@ ORDER BY created_at ASC, id ASC
                         "happened_at": obj_item.get("happened_at"),
                     }
 
-        deps.write_conversation_state(
-            conversation_id,
-            soul_id=soul_id,
-            user_id=user_id,
-            updates={
-                "consolidation_in_progress": True,
-                "consolidation_started_at": now.isoformat(),
-            },
-        )
         return {
             "status": "ready",
             "db_path": db_path,
@@ -972,7 +917,6 @@ ORDER BY created_at ASC, id ASC
             "prior_context_memory_items": prior_context_memory_items,
             "selected_segment_ids": selected_segment_ids,
             "selected_segment_ids_by_conversation": selected_by_conversation,
-            "pending_fingerprint": pending_fingerprint,
         }
     finally:
         con.close()
@@ -1378,9 +1322,6 @@ INSERT INTO life_goals (
         # overwrite with the launch-time snapshot would silently drop them.
         "remove_pending_segment_ids": selected_by_conversation.get(conversation_id, []),
         "last_consolidation_at": now_iso,
-        "consolidation_in_progress": False,
-        "consolidation_started_at": None,
-        "consolidation_failed_pending_fingerprint": None,
         "last_consolidation_error": None,
         "last_consolidation_error_at": None,
         "intentions_active": current_intentions,

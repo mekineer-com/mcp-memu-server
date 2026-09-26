@@ -120,20 +120,12 @@ async def test_diag_pending_reports_stalled_consolidation(
     assert out["consolidation_age_days"] > 7
     assert out["last_consolidation_error"] == "RuntimeError: reflection failed"
 
-    con = main._sqlite_connect(db_path)
+    run_key = ("u1", "Echo")
+    main._CONSOLIDATION_RUNNING.add(run_key)
     try:
-        con.row_factory = sqlite3.Row
-        main._soul_state.write(
-            con,
-            {
-                "consolidation_in_progress": True,
-                "consolidation_started_at": datetime.now(UTC).isoformat(),
-            },
-        )
-        con.commit()
+        in_progress = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
     finally:
-        con.close()
-    in_progress = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
+        main._CONSOLIDATION_RUNNING.discard(run_key)
     assert in_progress["consolidation_in_progress"] is True
     assert in_progress["consolidation_stalled"] is False
 
@@ -142,27 +134,7 @@ async def test_diag_pending_reports_stalled_consolidation(
         con.row_factory = sqlite3.Row
         main._soul_state.write(
             con,
-            {
-                "consolidation_in_progress": True,
-                "consolidation_started_at": (datetime.now(UTC) - timedelta(hours=2)).isoformat(),
-            },
-        )
-        con.commit()
-    finally:
-        con.close()
-    expired = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
-    assert expired["consolidation_in_progress"] is False
-    assert expired["consolidation_stalled"] is True
-
-    con = main._sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        main._soul_state.write(
-            con,
-            {
-                "consolidation_in_progress": False,
-                "last_consolidation_at": _iso(2026, 1, 10, 0),
-            },
+            {"last_consolidation_at": _iso(2026, 1, 10, 0)},
         )
         con.commit()
     finally:

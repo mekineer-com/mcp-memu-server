@@ -643,19 +643,8 @@ def test_gather_consolidation_inputs_skips_when_no_pending_segments() -> None:
             conversation_id=cid,
             soul_id=soul_id,
             user_id=user_id,
-            stale_after=timedelta(seconds=3600),
         )
         assert out == {"status": "skip", "reason": "no_pending_segments"}
-
-        check_con = sqlite_connect(db_path)
-        try:
-            check_con.row_factory = sqlite3.Row
-            state = conversation_state_from_row(conversation_state_row(check_con, cid))
-        finally:
-            check_con.close()
-        assert state is not None
-        assert bool(state.get("consolidation_in_progress")) is False
-        assert state.get("consolidation_started_at") is None
 
 
 def test_gather_consolidation_inputs_collects_all_pending_conversations(tmp_path: Path) -> None:
@@ -750,7 +739,6 @@ INSERT INTO memory_items (
         conversation_id="conv-a",
         soul_id=soul_id,
         user_id=user_id,
-        stale_after=timedelta(seconds=3600),
     )
 
     assert out["selected_segment_ids_by_conversation"] == expected
@@ -764,9 +752,8 @@ INSERT INTO memory_items (
         _soul_state.write(
             con,
             {
-                "consolidation_in_progress": False,
-                "consolidation_started_at": None,
-                "consolidation_failed_pending_fingerprint": out["pending_fingerprint"],
+                "last_consolidation_error": "RuntimeError: failed",
+                "last_consolidation_error_at": datetime.now(UTC).isoformat(),
             },
         )
         con.commit()
@@ -778,19 +765,64 @@ INSERT INTO memory_items (
         conversation_id="conv-a",
         soul_id=soul_id,
         user_id=user_id,
-        stale_after=timedelta(seconds=3600),
     )
-    assert blocked == {"status": "skip", "reason": "unchanged_after_failure"}
+    assert blocked == {"status": "skip", "reason": "failure_cooldown"}
 
     forced = gather_consolidation_inputs(
         deps,
         conversation_id="conv-a",
         soul_id=soul_id,
         user_id=user_id,
-        stale_after=timedelta(seconds=3600),
         force=True,
     )
-    assert forced["pending_fingerprint"] == out["pending_fingerprint"]
+    assert forced["status"] == "ready"
+
+    con = sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _soul_state.write(
+            con,
+            {
+                "last_consolidation_error_at": (
+                    datetime.now(UTC) - timedelta(hours=2)
+                ).isoformat(),
+            },
+        )
+        con.commit()
+    finally:
+        con.close()
+    after_cooldown = gather_consolidation_inputs(
+        deps,
+        conversation_id="conv-a",
+        soul_id=soul_id,
+        user_id=user_id,
+    )
+    assert after_cooldown["status"] == "ready"
+
+    con = sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _soul_state.write(
+            con,
+            {"last_consolidation_error_at": datetime.now(UTC).isoformat()},
+        )
+        con.commit()
+    finally:
+        con.close()
+    write_conversation_state(
+        "conv-a",
+        sqlite_current_path=lambda _user, _soul: db_path,
+        soul_id=soul_id,
+        user_id=user_id,
+        updates={"append_pending_segment_ids": ["conv-a:1-1"]},
+    )
+    changed_pending = gather_consolidation_inputs(
+        deps,
+        conversation_id="conv-a",
+        soul_id=soul_id,
+        user_id=user_id,
+    )
+    assert changed_pending == {"status": "skip", "reason": "failure_cooldown"}
 
 
 @pytest.mark.parametrize(
@@ -856,13 +888,12 @@ CREATE TABLE resources (
         find_chat_dir_for_conversation=lambda _a, _b, _c, _d: chat_dir,
     )
     with pytest.raises(HTTPException, match=error_text) as exc_info:
-        gather_consolidation_inputs(
-            deps,
-            conversation_id=cid,
-            soul_id=soul_id,
-            user_id=user_id,
-            stale_after=timedelta(seconds=3600),
-        )
+            gather_consolidation_inputs(
+                deps,
+                conversation_id=cid,
+                soul_id=soul_id,
+                user_id=user_id,
+            )
 
     expected_identifier = segment_id if "range exceeds" in error_text else str(bad_file)
     assert expected_identifier in str(exc_info.value.detail)
@@ -960,7 +991,6 @@ def test_write_consolidation_outputs_clears_accumulators() -> None:
         _soul_state.write(
             check_con,
             {
-                "consolidation_failed_pending_fingerprint": "failed-set",
                 "last_consolidation_error": "RuntimeError: failed",
                 "last_consolidation_error_at": "2026-01-01T00:00:00+00:00",
             },
@@ -987,7 +1017,6 @@ def test_write_consolidation_outputs_clears_accumulators() -> None:
         check_con2.close()
         assert ss_after["retrieval_ids_since_consolidation"] == []
         assert ss_after["prior_context_ids_since_consolidation"] == []
-        assert ss_after["consolidation_failed_pending_fingerprint"] is None
         assert ss_after["last_consolidation_error"] is None
         assert ss_after["last_consolidation_error_at"] is None
 
