@@ -1526,6 +1526,52 @@ async def test_force_consolidation_validation_failure_does_not_record_or_seed_st
     assert recorded == []
 
 
+@pytest.mark.asyncio
+async def test_retry_consolidation_schedules_forced_background_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    monkeypatch.setattr(
+        main,
+        "_consolidation_request_context",
+        lambda _cid, _payload: ("cid", {}, "User", "Soul", object()),
+    )
+
+    async def fake_run(*_args, **kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "status": "ok"}
+
+    monkeypatch.setattr(main, "_run_consolidation_task", fake_run)
+    response = await main.retry_consolidation(
+        "cid", {"user": {"user_id": "User", "soul_id": "Soul"}}
+    )
+    await asyncio.sleep(0)
+
+    assert response.status_code == 202
+    assert calls[0]["force"] is True
+
+
+@pytest.mark.asyncio
+async def test_retry_consolidation_rejects_running_soul(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        main,
+        "_consolidation_request_context",
+        lambda _cid, _payload: ("cid", {}, "User", "Soul", object()),
+    )
+    key = ("User", "Soul")
+    main._CONSOLIDATION_RUNNING.add(key)
+    try:
+        with pytest.raises(HTTPException, match="already in progress"):
+            await main.retry_consolidation(
+                "cid", {"user": {"user_id": "User", "soul_id": "Soul"}}
+            )
+    finally:
+        main._CONSOLIDATION_RUNNING.discard(key)
+
+
 def test_record_consolidation_failure_never_creates_missing_soul_db(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

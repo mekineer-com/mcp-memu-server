@@ -85,6 +85,31 @@ async def test_diag_pending_threshold_tracks_min_chunk_tokens(
 
 
 @pytest.mark.asyncio
+async def test_diag_pending_chooses_oldest_pending_owner_for_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_sources(tmp_path, monkeypatch, {})
+    for cid, memorized_at in (
+        ("cid-newer", _iso(2026, 1, 2, 0)),
+        ("cid-older", _iso(2026, 1, 1, 0)),
+    ):
+        main._write_conversation_state(
+            cid,
+            soul_id="Echo",
+            user_id="u1",
+            updates={
+                "pending_segment_ids": [f"{cid}:0-1"],
+                "last_memorize_at": memorized_at,
+            },
+        )
+
+    out = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
+
+    assert out["retry_conversation_id"] == "cid-older"
+
+
+@pytest.mark.asyncio
 async def test_diag_pending_reports_stalled_consolidation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -117,6 +142,8 @@ async def test_diag_pending_reports_stalled_consolidation(
 
     assert out["pending_consolidation_segments"] == 1
     assert out["consolidation_stalled"] is True
+    assert out["consolidation_state"] == "error"
+    assert out["retry_conversation_id"] == "cid-stalled"
     assert out["consolidation_age_days"] > 7
     assert out["last_consolidation_error"] == "RuntimeError: reflection failed"
 
@@ -128,6 +155,7 @@ async def test_diag_pending_reports_stalled_consolidation(
         main._CONSOLIDATION_RUNNING.discard(run_key)
     assert in_progress["consolidation_in_progress"] is True
     assert in_progress["consolidation_stalled"] is False
+    assert in_progress["consolidation_state"] == "running"
 
     con = main._sqlite_connect(db_path)
     try:
@@ -172,6 +200,7 @@ async def test_diag_pending_allows_one_interval_before_calling_consolidation_sta
         con.close()
     waiting = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
     assert waiting["consolidation_stalled"] is False
+    assert waiting["consolidation_state"] == "ok"
 
     con = main._sqlite_connect(db_path)
     try:
@@ -185,6 +214,7 @@ async def test_diag_pending_allows_one_interval_before_calling_consolidation_sta
         con.close()
     overdue = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
     assert overdue["consolidation_stalled"] is True
+    assert overdue["consolidation_state"] == "overdue"
 
 
 @pytest.mark.asyncio
@@ -204,6 +234,7 @@ async def test_diag_pending_does_not_warn_before_first_consolidation_attempt(
 
     assert out["pending_consolidation_segments"] == 1
     assert out["consolidation_stalled"] is False
+    assert out["consolidation_state"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -264,7 +295,8 @@ async def test_diag_pending_ensures_state_schema_with_supplied_user_id(
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
     con.execute(
-        "CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY, soul_id TEXT, user_id TEXT, digest_cursor INTEGER)"
+        "CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY, soul_id TEXT, user_id TEXT, "
+        "digest_cursor INTEGER, last_memorize_at DATETIME)"
     )
     con.execute(
         "INSERT INTO conversations (conversation_id, soul_id, user_id, digest_cursor) VALUES ('c1', 'Echo', 'u1', 0)"

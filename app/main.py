@@ -2117,6 +2117,7 @@ async def _run_consolidation_task(
     conversation_id: str,
     soul_id: str,
     uid: str,
+    force: bool = False,
     progress_key: str | None = None,
     memorize_progress: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -2139,6 +2140,7 @@ async def _run_consolidation_task(
             conversation_id=conversation_id,
             soul_id=soul_id,
             user_id=uid,
+            force=force,
         )
         if out.get("status") == "skipped":
             if progress_key and memorize_progress is not None:
@@ -2316,31 +2318,34 @@ async def memorize_cancel(payload: dict[str, Any] = Body(...)):
 
 # ---- Consolidation endpoint ----
 
+
+def _consolidation_request_context(
+    conversation_id: str,
+    payload: dict[str, Any],
+) -> tuple[str, dict[str, Any], str, str, Any]:
+    cid = _canonical_conversation_id(conversation_id)
+    if not cid:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+    safe = _safe_payload(payload)
+    scope = _extract_scope(safe)
+    uid = str(scope.get("user_id") or "").strip()
+    soul_id = str(scope.get("soul_id") or "").strip()
+    if not uid or not soul_id:
+        raise HTTPException(status_code=400, detail="user_id and soul_id required")
+    safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
+    safe["conversation_id"] = cid
+    return cid, safe, uid, soul_id, _get_service_from_payload(safe)
+
+
 @app.post("/conversation/{conversation_id}/consolidation/force", operation_id="force_consolidation")
 async def force_consolidation(
     conversation_id: str,
     payload: dict[str, Any] = Body(...),
 ):
-    cid = _canonical_conversation_id(conversation_id)
-    if not cid:
-        raise HTTPException(status_code=400, detail="conversation_id is required")
-
-    uid = ""
-    soul_id = ""
-    state_lock: asyncio.Lock | None = None
     try:
-        safe = _safe_payload(payload)
-        scope = _extract_scope(safe)
-
-        uid = str(scope.get("user_id") or "").strip()
-        soul_id = str(scope.get("soul_id") or "").strip()
-        if not uid or not soul_id:
-            raise HTTPException(status_code=400, detail="user_id and soul_id required")
-
-        safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
-        safe["conversation_id"] = cid
-        svc = _get_service_from_payload(safe)
-
+        cid, safe, uid, soul_id, svc = _consolidation_request_context(
+            conversation_id, payload
+        )
         state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
         out = await _run_consolidation_pipeline_once(
             svc=svc,
@@ -2381,6 +2386,36 @@ async def force_consolidation(
             error=f"{type(exc).__name__}: {exc}",
         )
         raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
+
+
+@app.post(
+    "/conversation/{conversation_id}/consolidation/retry",
+    operation_id="retry_consolidation",
+)
+async def retry_consolidation(
+    conversation_id: str,
+    payload: dict[str, Any] = Body(...),
+):
+    cid, _safe, uid, soul_id, svc = _consolidation_request_context(
+        conversation_id, payload
+    )
+    if (uid, soul_id) in _CONSOLIDATION_RUNNING:
+        raise HTTPException(status_code=409, detail="consolidation already in progress")
+    task = asyncio.create_task(
+        _run_consolidation_task(
+            svc,
+            conversation_id=cid,
+            soul_id=soul_id,
+            uid=uid,
+            force=True,
+        )
+    )
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return JSONResponse(
+        status_code=202,
+        content={"ok": True, "status": "accepted", "conversation_id": cid},
+    )
 
 
 # ---- Categories endpoints ----
@@ -4019,12 +4054,22 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         tails = _load_cross_memorize_tails_from_sources(con, user_id=uid, soul_id=sid)
         scope_sql = "soul_id = ?" + (" AND user_id = ?" if uid else "")
         scope_params = (sid, uid) if uid else (sid,)
-        pending_consolidation_segments = sum(
-            len(_normalize_text_list(row["pending_segment_ids"]))
+        pending_rows = [
+            row
             for row in con.execute(
-                f"SELECT pending_segment_ids FROM conversations WHERE {scope_sql}",
+                "SELECT conversation_id, pending_segment_ids, last_memorize_at "
+                f"FROM conversations WHERE {scope_sql} "
+                "ORDER BY last_memorize_at, conversation_id",
                 scope_params,
             ).fetchall()
+            if _normalize_text_list(row["pending_segment_ids"])
+        ]
+        pending_consolidation_segments = sum(
+            len(_normalize_text_list(row["pending_segment_ids"]))
+            for row in pending_rows
+        )
+        retry_conversation_id = (
+            str(pending_rows[0]["conversation_id"]) if pending_rows else None
         )
         soul_status = _soul_state.read(con)
     finally:
@@ -4064,6 +4109,15 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
             )
         )
     )
+    consolidation_state = (
+        "running"
+        if consolidation_running
+        else "error"
+        if pending_consolidation_segments and consolidation_error
+        else "overdue"
+        if consolidation_stalled
+        else "ok"
+    )
     return {
         "summed_unmemorized_tokens": summed,
         "threshold": threshold,
@@ -4077,7 +4131,9 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
             round(consolidation_age_days, 1) if consolidation_age_days is not None else None
         ),
         "consolidation_stalled": consolidation_stalled,
+        "consolidation_state": consolidation_state,
         "consolidation_in_progress": consolidation_running,
+        "retry_conversation_id": retry_conversation_id,
         "last_consolidation_error": consolidation_error,
         "last_consolidation_error_at": (
             consolidation_error_at.isoformat() if consolidation_error_at is not None else None
