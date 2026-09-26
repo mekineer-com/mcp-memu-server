@@ -1309,18 +1309,12 @@ def test_should_run_consolidation_uses_soul_clock() -> None:
 
 @pytest.mark.asyncio
 async def test_consolidation_task_does_not_clear_unacquired_marker(monkeypatch: pytest.MonkeyPatch) -> None:
-    cleared = False
     recorded = []
 
     async def fail_before_acquire(**_kwargs):
         raise RuntimeError("preflight failed")
 
-    async def fake_clear(**_kwargs):
-        nonlocal cleared
-        cleared = True
-
     monkeypatch.setattr(main, "_run_consolidation_pipeline_once", fail_before_acquire)
-    monkeypatch.setattr(main, "_clear_consolidation_in_progress", fake_clear)
     monkeypatch.setattr(
         main,
         "_record_consolidation_failure",
@@ -1332,8 +1326,8 @@ async def test_consolidation_task_does_not_clear_unacquired_marker(monkeypatch: 
     )
 
     assert out["status"] == "error"
-    assert cleared is False
     assert recorded[0]["pending_fingerprint"] is None
+    assert recorded[0]["clear_in_progress"] is False
 
 
 @pytest.mark.asyncio
@@ -1347,11 +1341,7 @@ async def test_consolidation_task_records_failed_attempt_fingerprint(
         marker_acquired.set()
         raise RuntimeError("reflection failed")
 
-    async def fake_clear(**_kwargs):
-        return None
-
     monkeypatch.setattr(main, "_run_consolidation_pipeline_once", fail_after_gather)
-    monkeypatch.setattr(main, "_clear_consolidation_in_progress", fake_clear)
     monkeypatch.setattr(
         main,
         "_record_consolidation_failure",
@@ -1364,6 +1354,7 @@ async def test_consolidation_task_records_failed_attempt_fingerprint(
 
     assert out["status"] == "error"
     assert recorded[0]["pending_fingerprint"] == "pending-fingerprint"
+    assert recorded[0]["clear_in_progress"] is True
 
 
 @pytest.mark.asyncio
@@ -1405,6 +1396,7 @@ def test_record_consolidation_failure_never_creates_missing_soul_db(
             user_id="User",
             pending_fingerprint="fingerprint",
             exc=RuntimeError("failed"),
+            clear_in_progress=True,
         )
 
     assert not missing.exists()
@@ -1419,6 +1411,13 @@ def test_record_consolidation_failure_updates_only_existing_soul_state(
     try:
         con.row_factory = sqlite3.Row
         main._sqlite_ensure_conversation_state_schema(con)
+        main._soul_state.write(
+            con,
+            {
+                "consolidation_in_progress": True,
+                "consolidation_started_at": datetime.now(UTC).isoformat(),
+            },
+        )
         con.commit()
     finally:
         con.close()
@@ -1429,6 +1428,7 @@ def test_record_consolidation_failure_updates_only_existing_soul_state(
         user_id="User",
         pending_fingerprint="fingerprint",
         exc=RuntimeError("reflection failed"),
+        clear_in_progress=True,
     )
 
     con = main._sqlite_connect(db_path)
@@ -1440,6 +1440,8 @@ def test_record_consolidation_failure_updates_only_existing_soul_state(
         con.close()
     assert soul["consolidation_failed_pending_fingerprint"] == "fingerprint"
     assert soul["last_consolidation_error"] == "RuntimeError: reflection failed"
+    assert soul["consolidation_in_progress"] is False
+    assert soul["consolidation_started_at"] is None
     assert conversation_count == 0
 
 
