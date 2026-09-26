@@ -1308,7 +1308,9 @@ def test_should_run_consolidation_uses_soul_clock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_consolidation_task_does_not_clear_unacquired_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_consolidation_task_does_not_record_before_pending_set_is_selected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     recorded = []
 
     async def fail_before_acquire(**_kwargs):
@@ -1326,8 +1328,7 @@ async def test_consolidation_task_does_not_clear_unacquired_marker(monkeypatch: 
     )
 
     assert out["status"] == "error"
-    assert recorded[0]["pending_fingerprint"] is None
-    assert recorded[0]["clear_in_progress"] is False
+    assert recorded == []
 
 
 @pytest.mark.asyncio
@@ -1355,6 +1356,40 @@ async def test_consolidation_task_records_failed_attempt_fingerprint(
     assert out["status"] == "error"
     assert recorded[0]["pending_fingerprint"] == "pending-fingerprint"
     assert recorded[0]["clear_in_progress"] is True
+
+
+@pytest.mark.asyncio
+async def test_consolidation_task_clears_marker_when_failure_recording_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleared = []
+
+    async def fail_after_gather(*, attempt, marker_acquired, **_kwargs):
+        attempt["pending_fingerprint"] = "pending-fingerprint"
+        marker_acquired.set()
+        raise RuntimeError("reflection failed")
+
+    def fail_to_record(**_kwargs):
+        raise OSError("write failed")
+
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", fail_after_gather)
+    monkeypatch.setattr(
+        main,
+        "_record_consolidation_failure",
+        fail_to_record,
+    )
+    monkeypatch.setattr(
+        main,
+        "_clear_consolidation_marker",
+        lambda **kwargs: cleared.append(kwargs),
+    )
+
+    out = await main._run_consolidation_task(
+        object(), conversation_id="cid-owner", soul_id="SoulOwner", uid="UserOwner"
+    )
+
+    assert out["status"] == "error"
+    assert cleared == [{"soul_id": "SoulOwner", "user_id": "UserOwner"}]
 
 
 @pytest.mark.asyncio

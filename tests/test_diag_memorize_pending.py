@@ -123,13 +123,36 @@ async def test_diag_pending_reports_stalled_consolidation(
     con = main._sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        main._soul_state.write(con, {"consolidation_in_progress": True})
+        main._soul_state.write(
+            con,
+            {
+                "consolidation_in_progress": True,
+                "consolidation_started_at": datetime.now(UTC).isoformat(),
+            },
+        )
         con.commit()
     finally:
         con.close()
     in_progress = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
     assert in_progress["consolidation_in_progress"] is True
     assert in_progress["consolidation_stalled"] is False
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._soul_state.write(
+            con,
+            {
+                "consolidation_in_progress": True,
+                "consolidation_started_at": (datetime.now(UTC) - timedelta(hours=2)).isoformat(),
+            },
+        )
+        con.commit()
+    finally:
+        con.close()
+    expired = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
+    assert expired["consolidation_in_progress"] is False
+    assert expired["consolidation_stalled"] is True
 
     con = main._sqlite_connect(db_path)
     try:
@@ -190,6 +213,25 @@ async def test_diag_pending_allows_one_interval_before_calling_consolidation_sta
         con.close()
     overdue = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
     assert overdue["consolidation_stalled"] is True
+
+
+@pytest.mark.asyncio
+async def test_diag_pending_does_not_warn_before_first_consolidation_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_sources(tmp_path, monkeypatch, {})
+    main._write_conversation_state(
+        "cid-new",
+        soul_id="Echo",
+        user_id="u1",
+        updates={"pending_segment_ids": ["cid-new:0-1"]},
+    )
+
+    out = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
+
+    assert out["pending_consolidation_segments"] == 1
+    assert out["consolidation_stalled"] is False
 
 
 @pytest.mark.asyncio
