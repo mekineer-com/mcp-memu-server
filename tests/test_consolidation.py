@@ -793,7 +793,20 @@ INSERT INTO memory_items (
     assert forced["pending_fingerprint"] == out["pending_fingerprint"]
 
 
-def test_gather_consolidation_inputs_rejects_unreadable_segment_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("bad_content", "segment_end", "error_text"),
+    [
+        ("{not json", 0, "segment history unreadable"),
+        (json.dumps([{"role": "user", "content": "valid"}, 7]), 0, "non-message row"),
+        (json.dumps([{"role": "user", "content": "only row"}]), 1, "range exceeds stored history"),
+    ],
+)
+def test_gather_consolidation_inputs_rejects_invalid_segment_file(
+    tmp_path: Path,
+    bad_content: str,
+    segment_end: int,
+    error_text: str,
+) -> None:
     db_path = tmp_path / "soul.db"
     con = sqlite3.connect(db_path)
     try:
@@ -820,7 +833,7 @@ CREATE TABLE resources (
     cid = "conv-bad-file"
     soul_id = "SoulX"
     user_id = "UserX"
-    segment_id = f"{cid}:0-0"
+    segment_id = f"{cid}:0-{segment_end}"
     write_conversation_state(
         cid,
         sqlite_current_path=lambda _user, _soul: db_path,
@@ -832,17 +845,17 @@ CREATE TABLE resources (
     segments_dir = chat_dir / "segments"
     segments_dir.mkdir(parents=True)
     (chat_dir / "manifest.json").write_text(
-        json.dumps({"segments": [{"start": 0, "end": 0}]}),
+        json.dumps({"segments": [{"start": 0, "end": segment_end}]}),
         encoding="utf-8",
     )
     bad_file = segments_dir / "segment_0.json"
-    bad_file.write_text("{not json", encoding="utf-8")
+    bad_file.write_text(bad_content, encoding="utf-8")
 
     deps = replace(
         _make_consolidation_deps(db_path, tmp_path),
         find_chat_dir_for_conversation=lambda _a, _b, _c, _d: chat_dir,
     )
-    with pytest.raises(HTTPException, match="segment history unreadable") as exc_info:
+    with pytest.raises(HTTPException, match=error_text) as exc_info:
         gather_consolidation_inputs(
             deps,
             conversation_id=cid,
@@ -851,7 +864,8 @@ CREATE TABLE resources (
             stale_after=timedelta(seconds=3600),
         )
 
-    assert str(bad_file) in str(exc_info.value.detail)
+    expected_identifier = segment_id if "range exceeds" in error_text else str(bad_file)
+    assert expected_identifier in str(exc_info.value.detail)
 
 
 def _make_consolidation_deps(db_path: Path, tmp_dir: Path) -> ConsolidationDeps:

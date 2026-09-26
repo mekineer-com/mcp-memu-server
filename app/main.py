@@ -2032,7 +2032,6 @@ def _current_pending_segment_fingerprint(user_id: str, soul_id: str) -> str | No
 
 def _record_consolidation_failure(
     *,
-    conversation_id: str,
     soul_id: str,
     user_id: str,
     pending_fingerprint: str | None,
@@ -2041,16 +2040,21 @@ def _record_consolidation_failure(
     now_iso = datetime.now(UTC).isoformat()
     error = f"{type(exc).__name__}: {str(exc)[:260]}"
     fingerprint = pending_fingerprint or _current_pending_segment_fingerprint(user_id, soul_id)
-    _write_conversation_state(
-        conversation_id,
-        soul_id=soul_id,
-        user_id=user_id,
-        updates={
+    db_path = _sqlite_current_path(user_id, soul_id)
+    if db_path is None or not db_path.exists():
+        raise FileNotFoundError(f"soul database not found: {soul_id}")
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _soul_state.ensure_schema(con)
+        _soul_state.write(con, {
             "consolidation_failed_pending_fingerprint": fingerprint,
             "last_consolidation_error": error,
             "last_consolidation_error_at": now_iso,
-        },
-    )
+        })
+        con.commit()
+    finally:
+        con.close()
 
 
 async def _run_consolidation_pipeline_once(
@@ -2075,11 +2079,10 @@ async def _run_consolidation_pipeline_once(
             user_id=user_id,
             stale_after=timedelta(seconds=3600),
             force=force,
+            attempt=attempt,
         )
     if prep.get("status") == "skip":
         return {"status": "skipped", "reason": prep.get("reason")}
-    if attempt is not None:
-        attempt["pending_fingerprint"] = str(prep.get("pending_fingerprint") or "")
     marker_acquired.set()
     current_chat_messages = [
         row for row in (prep.get("current_chat_messages") or [])
@@ -2193,7 +2196,6 @@ async def _run_consolidation_task(
             )
         try:
             _record_consolidation_failure(
-                conversation_id=conversation_id,
                 soul_id=soul_id,
                 user_id=uid,
                 pending_fingerprint=attempt.get("pending_fingerprint"),
@@ -2431,10 +2433,9 @@ async def force_consolidation(
         _record_call(
             "consolidation.force", payload, ok=False, error="HTTPException"
         )
-        if uid and soul_id and exc.status_code != 409:
+        if uid and soul_id and attempt.get("pending_fingerprint") and exc.status_code != 409:
             try:
                 _record_consolidation_failure(
-                    conversation_id=cid,
                     soul_id=soul_id,
                     user_id=uid,
                     pending_fingerprint=attempt.get("pending_fingerprint"),
@@ -2458,10 +2459,9 @@ async def force_consolidation(
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
         )
-        if uid and soul_id:
+        if uid and soul_id and attempt.get("pending_fingerprint"):
             try:
                 _record_consolidation_failure(
-                    conversation_id=cid,
                     soul_id=soul_id,
                     user_id=uid,
                     pending_fingerprint=attempt.get("pending_fingerprint"),
@@ -4141,10 +4141,6 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         if last_consolidation_at is not None
         else None
     )
-    consolidation_stalled = pending_consolidation_segments > 0 and (
-        consolidation_age_days is None
-        or consolidation_age_days >= _consolidation_interval_days_from_cfg(_CONFIG)
-    )
     consolidation_error = soul_status.get("last_consolidation_error")
     consolidation_error_at = parse_iso_datetime(soul_status.get("last_consolidation_error_at"))
     if consolidation_error_at is None or (
@@ -4159,6 +4155,15 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         ):
             consolidation_error = legacy_error["last_consolidation_error"]
             consolidation_error_at = legacy_error_at
+    consolidation_stalled = (
+        pending_consolidation_segments > 0
+        and not bool(soul_status.get("consolidation_in_progress"))
+        and (
+            bool(consolidation_error)
+            or consolidation_age_days is None
+            or consolidation_age_days >= 2 * _consolidation_interval_days_from_cfg(_CONFIG)
+        )
+    )
     return {
         "summed_unmemorized_tokens": summed,
         "threshold": threshold,
@@ -4172,6 +4177,7 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
             round(consolidation_age_days, 1) if consolidation_age_days is not None else None
         ),
         "consolidation_stalled": consolidation_stalled,
+        "consolidation_in_progress": bool(soul_status.get("consolidation_in_progress")),
         "last_consolidation_error": consolidation_error,
         "last_consolidation_error_at": (
             consolidation_error_at.isoformat() if consolidation_error_at is not None else None

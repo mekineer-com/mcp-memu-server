@@ -1367,6 +1367,83 @@ async def test_consolidation_task_records_failed_attempt_fingerprint(
 
 
 @pytest.mark.asyncio
+async def test_force_consolidation_validation_failure_does_not_record_or_seed_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = []
+
+    async def invalid_request(**_kwargs):
+        raise HTTPException(status_code=404, detail="conversation state not found")
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: object())
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", invalid_request)
+    monkeypatch.setattr(
+        main,
+        "_record_consolidation_failure",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+
+    with pytest.raises(HTTPException, match="conversation state not found"):
+        await main.force_consolidation(
+            "mistyped-conversation",
+            {"user": {"user_id": "User", "soul_id": "MissingSoul"}},
+        )
+
+    assert recorded == []
+
+
+def test_record_consolidation_failure_never_creates_missing_soul_db(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = tmp_path / "MissingSoul.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _user, _soul: missing)
+
+    with pytest.raises(FileNotFoundError, match="soul database not found"):
+        main._record_consolidation_failure(
+            soul_id="MissingSoul",
+            user_id="User",
+            pending_fingerprint="fingerprint",
+            exc=RuntimeError("failed"),
+        )
+
+    assert not missing.exists()
+
+
+def test_record_consolidation_failure_updates_only_existing_soul_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Soul.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
+        con.commit()
+    finally:
+        con.close()
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _user, _soul: db_path)
+
+    main._record_consolidation_failure(
+        soul_id="Soul",
+        user_id="User",
+        pending_fingerprint="fingerprint",
+        exc=RuntimeError("reflection failed"),
+    )
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        soul = main._soul_state.read(con)
+        conversation_count = con.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+    finally:
+        con.close()
+    assert soul["consolidation_failed_pending_fingerprint"] == "fingerprint"
+    assert soul["last_consolidation_error"] == "RuntimeError: reflection failed"
+    assert conversation_count == 0
+
+
+@pytest.mark.asyncio
 async def test_turn_launch_apimw_tracks_background_task(monkeypatch: pytest.MonkeyPatch) -> None:
     release = asyncio.Event()
 

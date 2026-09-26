@@ -1,7 +1,7 @@
 """Tests for the read-only /diag/memorize/pending endpoint."""
 
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -123,7 +123,24 @@ async def test_diag_pending_reports_stalled_consolidation(
     con = main._sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        main._soul_state.write(con, {"last_consolidation_at": _iso(2026, 1, 10, 0)})
+        main._soul_state.write(con, {"consolidation_in_progress": True})
+        con.commit()
+    finally:
+        con.close()
+    in_progress = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
+    assert in_progress["consolidation_in_progress"] is True
+    assert in_progress["consolidation_stalled"] is False
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._soul_state.write(
+            con,
+            {
+                "consolidation_in_progress": False,
+                "last_consolidation_at": _iso(2026, 1, 10, 0),
+            },
+        )
         con.commit()
     finally:
         con.close()
@@ -131,6 +148,48 @@ async def test_diag_pending_reports_stalled_consolidation(
     after_success = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
     assert after_success["last_consolidation_error"] is None
     assert after_success["last_consolidation_error_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_diag_pending_allows_one_interval_before_calling_consolidation_stalled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_sources(tmp_path, monkeypatch, {})
+    main._write_conversation_state(
+        "cid-waiting",
+        soul_id="Echo",
+        user_id="u1",
+        updates={"pending_segment_ids": ["cid-waiting:0-1"]},
+    )
+    db_path = tmp_path / "Echo.db"
+    monkeypatch.setattr(main, "_consolidation_interval_days_from_cfg", lambda _cfg: 7)
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._soul_state.write(
+            con,
+            {"last_consolidation_at": (datetime.now(UTC) - timedelta(days=8)).isoformat()},
+        )
+        con.commit()
+    finally:
+        con.close()
+    waiting = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
+    assert waiting["consolidation_stalled"] is False
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._soul_state.write(
+            con,
+            {"last_consolidation_at": (datetime.now(UTC) - timedelta(days=15)).isoformat()},
+        )
+        con.commit()
+    finally:
+        con.close()
+    overdue = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
+    assert overdue["consolidation_stalled"] is True
 
 
 @pytest.mark.asyncio

@@ -652,6 +652,7 @@ def gather_consolidation_inputs(
     user_id: str,
     stale_after: timedelta,
     force: bool = False,
+    attempt: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     db_path = deps.sqlite_current_path(user_id, soul_id)
     if db_path is None:
@@ -712,6 +713,8 @@ def gather_consolidation_inputs(
             and soul_state.get("consolidation_failed_pending_fingerprint") == pending_fingerprint
         ):
             return {"status": "skip", "reason": "unchanged_after_failure"}
+        if attempt is not None:
+            attempt["pending_fingerprint"] = pending_fingerprint
 
         life_goal_rows = con.execute(
             """
@@ -806,8 +809,16 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
                             status_code=400,
                             detail=f"segment history is not a message list: {ep_file}",
                         )
-                    messages.extend(m for m in parsed if isinstance(m, dict))
-            conversation_segments = build_segment_inputs(messages, pending_segment_ids)
+                    if any(not isinstance(message, dict) for message in parsed):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"segment history contains a non-message row: {ep_file}",
+                        )
+                    messages.extend(parsed)
+            try:
+                conversation_segments = build_segment_inputs(messages, pending_segment_ids)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
             if len(conversation_segments) != len(pending_segment_ids):
                 raise HTTPException(
                     status_code=400,
