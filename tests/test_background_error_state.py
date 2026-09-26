@@ -272,6 +272,8 @@ def test_consolidation_error_fields_round_trip_through_state() -> None:
             row = conversation_state_row(con, cid)
             assert row is not None
             loaded = conversation_state_from_row(row)
+            assert loaded is not None
+            loaded.update(_soul_state.read(con))
         finally:
             con.close()
 

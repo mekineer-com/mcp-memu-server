@@ -44,10 +44,13 @@ def build_segment_inputs(
         start_idx, end_idx = parse_segment_range(segment_id)
         if not messages:
             continue
-        start = max(0, start_idx)
-        end = min(len(messages) - 1, end_idx)
-        if start > end:
-            continue
+        if start_idx < 0 or end_idx >= len(messages):
+            raise ValueError(
+                f"segment range exceeds stored history: {segment_id} "
+                f"for {len(messages)} messages"
+            )
+        start = start_idx
+        end = end_idx
         msg = messages[start]
         happened_at = _message_happened_at(msg) if isinstance(msg, dict) else None
         out.append(

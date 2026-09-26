@@ -78,6 +78,7 @@ from app.services.consolidation import (
     ConsolidationDeps,
     consolidation_due as _consolidation_due,
     gather_consolidation_inputs as _gather_consolidation_inputs,
+    pending_segment_fingerprint as _pending_segment_fingerprint,
     prepare_dossier_consolidation_context as _prepare_dossier_consolidation_context,
     preflight_consolidation_profiles as _preflight_consolidation_profiles,
     run_consolidation_llm as _run_consolidation_llm,
@@ -2007,6 +2008,51 @@ async def _clear_consolidation_in_progress(
         )
 
 
+def _current_pending_segment_fingerprint(user_id: str, soul_id: str) -> str | None:
+    db_path = _sqlite_current_path(user_id, soul_id)
+    if db_path is None or not db_path.exists():
+        return None
+    con = _sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
+        pending = {
+            str(row["conversation_id"]): _normalize_text_list(row["pending_segment_ids"])
+            for row in con.execute(
+                "SELECT conversation_id, pending_segment_ids FROM conversations "
+                "WHERE soul_id = ? AND user_id = ? ORDER BY conversation_id",
+                (soul_id, user_id),
+            ).fetchall()
+            if _normalize_text_list(row["pending_segment_ids"])
+        }
+    finally:
+        con.close()
+    return _pending_segment_fingerprint(pending) if pending else None
+
+
+def _record_consolidation_failure(
+    *,
+    conversation_id: str,
+    soul_id: str,
+    user_id: str,
+    pending_fingerprint: str | None,
+    exc: Exception,
+) -> None:
+    now_iso = datetime.now(UTC).isoformat()
+    error = f"{type(exc).__name__}: {str(exc)[:260]}"
+    fingerprint = pending_fingerprint or _current_pending_segment_fingerprint(user_id, soul_id)
+    _write_conversation_state(
+        conversation_id,
+        soul_id=soul_id,
+        user_id=user_id,
+        updates={
+            "consolidation_failed_pending_fingerprint": fingerprint,
+            "last_consolidation_error": error,
+            "last_consolidation_error_at": now_iso,
+        },
+    )
+
+
 async def _run_consolidation_pipeline_once(
     *,
     svc: Any,
@@ -2016,6 +2062,8 @@ async def _run_consolidation_pipeline_once(
     soul_id: str,
     user_id: str,
     marker_acquired: asyncio.Event,
+    force: bool = False,
+    attempt: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     consolidation_profile = _resolve_profile_if_configured(svc, "consolidation")
     _preflight_consolidation_profiles(svc, consolidation_profile)
@@ -2026,9 +2074,12 @@ async def _run_consolidation_pipeline_once(
             soul_id=soul_id,
             user_id=user_id,
             stale_after=timedelta(seconds=3600),
+            force=force,
         )
     if prep.get("status") == "skip":
         return {"status": "skipped", "reason": prep.get("reason")}
+    if attempt is not None:
+        attempt["pending_fingerprint"] = str(prep.get("pending_fingerprint") or "")
     marker_acquired.set()
     current_chat_messages = [
         row for row in (prep.get("current_chat_messages") or [])
@@ -2093,6 +2144,7 @@ async def _run_consolidation_task(
     deps = _make_consolidation_deps()
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
     marker_acquired = asyncio.Event()
+    attempt: dict[str, str] = {}
     try:
         out = await _run_consolidation_pipeline_once(
             svc=svc,
@@ -2102,6 +2154,7 @@ async def _run_consolidation_task(
             soul_id=soul_id,
             user_id=uid,
             marker_acquired=marker_acquired,
+            attempt=attempt,
         )
         if out.get("status") == "skipped":
             if progress_key and memorize_progress is not None:
@@ -2139,14 +2192,12 @@ async def _run_consolidation_task(
                 user_id=uid,
             )
         try:
-            _write_conversation_state(
-                conversation_id,
+            _record_consolidation_failure(
+                conversation_id=conversation_id,
                 soul_id=soul_id,
                 user_id=uid,
-                updates={
-                    "last_consolidation_error": f"{type(exc).__name__}: {str(exc)[:260]}",
-                    "last_consolidation_error_at": datetime.now(UTC).isoformat(),
-                },
+                pending_fingerprint=attempt.get("pending_fingerprint"),
+                exc=exc,
             )
         except Exception:
             logger.exception("failed to record consolidation error state for %s", conversation_id)
@@ -2327,6 +2378,7 @@ async def force_consolidation(
     soul_id = ""
     state_lock: asyncio.Lock | None = None
     marker_acquired = asyncio.Event()
+    attempt: dict[str, str] = {}
     try:
         safe = _safe_payload(payload)
         scope = _extract_scope(safe)
@@ -2349,6 +2401,8 @@ async def force_consolidation(
             soul_id=soul_id,
             user_id=uid,
             marker_acquired=marker_acquired,
+            force=True,
+            attempt=attempt,
         )
         if out.get("status") == "skipped":
             reason = str(out.get("reason") or "")
@@ -2377,6 +2431,17 @@ async def force_consolidation(
         _record_call(
             "consolidation.force", payload, ok=False, error="HTTPException"
         )
+        if uid and soul_id and exc.status_code != 409:
+            try:
+                _record_consolidation_failure(
+                    conversation_id=cid,
+                    soul_id=soul_id,
+                    user_id=uid,
+                    pending_fingerprint=attempt.get("pending_fingerprint"),
+                    exc=exc,
+                )
+            except Exception:
+                logger.exception("failed to record forced consolidation error")
         raise
     except Exception as exc:
         logger.exception("consolidation.force failed: %s", exc)
@@ -2393,6 +2458,17 @@ async def force_consolidation(
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
         )
+        if uid and soul_id:
+            try:
+                _record_consolidation_failure(
+                    conversation_id=cid,
+                    soul_id=soul_id,
+                    user_id=uid,
+                    pending_fingerprint=attempt.get("pending_fingerprint"),
+                    exc=exc,
+                )
+            except Exception:
+                logger.exception("failed to record forced consolidation error")
         raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
@@ -4030,6 +4106,23 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         con.row_factory = sqlite3.Row
         _sqlite_ensure_conversation_state_schema(con)
         tails = _load_cross_memorize_tails_from_sources(con, user_id=uid, soul_id=sid)
+        scope_sql = "soul_id = ?" + (" AND user_id = ?" if uid else "")
+        scope_params = (sid, uid) if uid else (sid,)
+        pending_consolidation_segments = sum(
+            len(_normalize_text_list(row["pending_segment_ids"]))
+            for row in con.execute(
+                f"SELECT pending_segment_ids FROM conversations WHERE {scope_sql}",
+                scope_params,
+            ).fetchall()
+        )
+        soul_status = _soul_state.read(con)
+        legacy_error = con.execute(
+            "SELECT last_consolidation_error, last_consolidation_error_at "
+            f"FROM conversations WHERE {scope_sql} "
+            "AND last_consolidation_error IS NOT NULL "
+            "ORDER BY last_consolidation_error_at DESC LIMIT 1",
+            scope_params,
+        ).fetchone()
     finally:
         con.close()
     merged = [msg for tail in tails.values() for msg in tail]
@@ -4041,11 +4134,48 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
                 msg["ts_ms"] = ts_ms
     summed = _estimate_primary_memorize_tokens(merged)
     threshold = _MIN_CHUNK_TOKENS
+    now = datetime.now(UTC)
+    last_consolidation_at = parse_iso_datetime(soul_status.get("last_consolidation_at"))
+    consolidation_age_days = (
+        max(0.0, (now - last_consolidation_at).total_seconds() / 86400.0)
+        if last_consolidation_at is not None
+        else None
+    )
+    consolidation_stalled = pending_consolidation_segments > 0 and (
+        consolidation_age_days is None
+        or consolidation_age_days >= _consolidation_interval_days_from_cfg(_CONFIG)
+    )
+    consolidation_error = soul_status.get("last_consolidation_error")
+    consolidation_error_at = parse_iso_datetime(soul_status.get("last_consolidation_error_at"))
+    if consolidation_error_at is None or (
+        last_consolidation_at is not None and consolidation_error_at <= last_consolidation_at
+    ):
+        consolidation_error = None
+        consolidation_error_at = None
+    if not consolidation_error and legacy_error is not None:
+        legacy_error_at = parse_iso_datetime(legacy_error["last_consolidation_error_at"])
+        if legacy_error_at is not None and (
+            last_consolidation_at is None or legacy_error_at > last_consolidation_at
+        ):
+            consolidation_error = legacy_error["last_consolidation_error"]
+            consolidation_error_at = legacy_error_at
     return {
         "summed_unmemorized_tokens": summed,
         "threshold": threshold,
         "pct": round(summed * 100 / threshold) if threshold else 0,
         "sleep_gap_ready": _unmemorized_sleep_gap_detected(merged, -1, {}, min_chunk_tokens=0),
+        "pending_consolidation_segments": pending_consolidation_segments,
+        "last_consolidation_at": (
+            last_consolidation_at.isoformat() if last_consolidation_at is not None else None
+        ),
+        "consolidation_age_days": (
+            round(consolidation_age_days, 1) if consolidation_age_days is not None else None
+        ),
+        "consolidation_stalled": consolidation_stalled,
+        "last_consolidation_error": consolidation_error,
+        "last_consolidation_error_at": (
+            consolidation_error_at.isoformat() if consolidation_error_at is not None else None
+        ),
         "computed_at": datetime.now(UTC).isoformat(),
     }
 

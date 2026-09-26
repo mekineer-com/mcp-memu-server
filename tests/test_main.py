@@ -1310,6 +1310,7 @@ def test_should_run_consolidation_uses_soul_clock() -> None:
 @pytest.mark.asyncio
 async def test_consolidation_task_does_not_clear_unacquired_marker(monkeypatch: pytest.MonkeyPatch) -> None:
     cleared = False
+    recorded = []
 
     async def fail_before_acquire(**_kwargs):
         raise RuntimeError("preflight failed")
@@ -1320,6 +1321,11 @@ async def test_consolidation_task_does_not_clear_unacquired_marker(monkeypatch: 
 
     monkeypatch.setattr(main, "_run_consolidation_pipeline_once", fail_before_acquire)
     monkeypatch.setattr(main, "_clear_consolidation_in_progress", fake_clear)
+    monkeypatch.setattr(
+        main,
+        "_record_consolidation_failure",
+        lambda **kwargs: recorded.append(kwargs),
+    )
 
     out = await main._run_consolidation_task(
         object(), conversation_id="cid-owner", soul_id="SoulOwner", uid="UserOwner"
@@ -1327,6 +1333,37 @@ async def test_consolidation_task_does_not_clear_unacquired_marker(monkeypatch: 
 
     assert out["status"] == "error"
     assert cleared is False
+    assert recorded[0]["pending_fingerprint"] is None
+
+
+@pytest.mark.asyncio
+async def test_consolidation_task_records_failed_attempt_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = []
+
+    async def fail_after_gather(*, attempt, marker_acquired, **_kwargs):
+        attempt["pending_fingerprint"] = "pending-fingerprint"
+        marker_acquired.set()
+        raise RuntimeError("reflection failed")
+
+    async def fake_clear(**_kwargs):
+        return None
+
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", fail_after_gather)
+    monkeypatch.setattr(main, "_clear_consolidation_in_progress", fake_clear)
+    monkeypatch.setattr(
+        main,
+        "_record_consolidation_failure",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+
+    out = await main._run_consolidation_task(
+        object(), conversation_id="cid-owner", soul_id="SoulOwner", uid="UserOwner"
+    )
+
+    assert out["status"] == "error"
+    assert recorded[0]["pending_fingerprint"] == "pending-fingerprint"
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from memu.app.dossier import DossierRevisionStaleError
 
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
@@ -444,6 +445,11 @@ def test_build_segment_inputs_dates_received_at_only_rows() -> None:
     assert rows[0]["happened_at"] == datetime(2026, 4, 16, 12, 0, tzinfo=UTC)
 
 
+def test_build_segment_inputs_rejects_range_past_stored_history() -> None:
+    with pytest.raises(ValueError, match="segment range exceeds stored history"):
+        segment.build_segment_inputs([{"content": "only row"}], ["cid:0-1"])
+
+
 def test_consolidation_due_uses_last_success_clock() -> None:
     now = datetime(2026, 1, 8, tzinfo=UTC)
 
@@ -708,6 +714,32 @@ CREATE TABLE resources (
         )
         chat_dirs[cid] = chat_dir
 
+    con = sqlite3.connect(db_path)
+    try:
+        con.executemany(
+            """
+INSERT INTO memory_items (
+    id, memory_ref, summary, memory_type, happened_at, created_at,
+    soul_id, user_id, conversation_id, segment_id, merged_into
+) VALUES (?, ?, ?, 'knowledge', ?, ?, ?, ?, 'conv-a', 'conv-a:0-0', NULL)
+""",
+            [
+                (
+                    f"mem-{index}",
+                    index + 1,
+                    f"memory {index}",
+                    "2026-01-01T00:00:00+00:00",
+                    f"2026-01-01T00:00:{index:02d}+00:00",
+                    soul_id,
+                    user_id,
+                )
+                for index in range(30)
+            ],
+        )
+        con.commit()
+    finally:
+        con.close()
+
     deps = _make_consolidation_deps(db_path, tmp_path)
     deps = replace(
         deps,
@@ -724,6 +756,102 @@ CREATE TABLE resources (
     assert out["selected_segment_ids_by_conversation"] == expected
     assert [row["conversation_id"] for row in out["segment_inputs"]] == ["conv-a", "conv-b"]
     assert [row["content"] for row in out["current_chat_messages"]] == ["message 0", "message 1"]
+    assert len(out["segment_inputs"][0]["memory_summaries"]) == 30
+
+    con = sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _soul_state.write(
+            con,
+            {
+                "consolidation_in_progress": False,
+                "consolidation_started_at": None,
+                "consolidation_failed_pending_fingerprint": out["pending_fingerprint"],
+            },
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    blocked = gather_consolidation_inputs(
+        deps,
+        conversation_id="conv-a",
+        soul_id=soul_id,
+        user_id=user_id,
+        stale_after=timedelta(seconds=3600),
+    )
+    assert blocked == {"status": "skip", "reason": "unchanged_after_failure"}
+
+    forced = gather_consolidation_inputs(
+        deps,
+        conversation_id="conv-a",
+        soul_id=soul_id,
+        user_id=user_id,
+        stale_after=timedelta(seconds=3600),
+        force=True,
+    )
+    assert forced["pending_fingerprint"] == out["pending_fingerprint"]
+
+
+def test_gather_consolidation_inputs_rejects_unreadable_segment_file(tmp_path: Path) -> None:
+    db_path = tmp_path / "soul.db"
+    con = sqlite3.connect(db_path)
+    try:
+        sqlite_ensure_conversation_state_schema(con)
+        con.executescript(
+            """
+CREATE TABLE memory_items (
+    id TEXT, memory_ref INTEGER, summary TEXT, memory_type TEXT,
+    happened_at DATETIME, created_at DATETIME, soul_id TEXT, user_id TEXT,
+    conversation_id TEXT, segment_id TEXT, merged_into TEXT
+);
+CREATE TABLE triples (
+    subject_id TEXT, predicate TEXT, object_id TEXT, valid_to DATETIME
+);
+CREATE TABLE resources (
+    soul_id TEXT, user_id TEXT, created_at DATETIME, memory_prior_context TEXT
+);
+"""
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    cid = "conv-bad-file"
+    soul_id = "SoulX"
+    user_id = "UserX"
+    segment_id = f"{cid}:0-0"
+    write_conversation_state(
+        cid,
+        sqlite_current_path=lambda _user, _soul: db_path,
+        soul_id=soul_id,
+        user_id=user_id,
+        updates={"pending_segment_ids": [segment_id]},
+    )
+    chat_dir = tmp_path / cid
+    segments_dir = chat_dir / "segments"
+    segments_dir.mkdir(parents=True)
+    (chat_dir / "manifest.json").write_text(
+        json.dumps({"segments": [{"start": 0, "end": 0}]}),
+        encoding="utf-8",
+    )
+    bad_file = segments_dir / "segment_0.json"
+    bad_file.write_text("{not json", encoding="utf-8")
+
+    deps = replace(
+        _make_consolidation_deps(db_path, tmp_path),
+        find_chat_dir_for_conversation=lambda _a, _b, _c, _d: chat_dir,
+    )
+    with pytest.raises(HTTPException, match="segment history unreadable") as exc_info:
+        gather_consolidation_inputs(
+            deps,
+            conversation_id=cid,
+            soul_id=soul_id,
+            user_id=user_id,
+            stale_after=timedelta(seconds=3600),
+        )
+
+    assert str(bad_file) in str(exc_info.value.detail)
 
 
 def _make_consolidation_deps(db_path: Path, tmp_dir: Path) -> ConsolidationDeps:
@@ -815,6 +943,15 @@ def test_write_consolidation_outputs_clears_accumulators() -> None:
         # Verify they were stored
         check_con = sqlite_connect(db_path)
         check_con.row_factory = sqlite3.Row
+        _soul_state.write(
+            check_con,
+            {
+                "consolidation_failed_pending_fingerprint": "failed-set",
+                "last_consolidation_error": "RuntimeError: failed",
+                "last_consolidation_error_at": "2026-01-01T00:00:00+00:00",
+            },
+        )
+        check_con.commit()
         ss_before = _soul_state.read(check_con)
         check_con.close()
         assert ss_before["retrieval_ids_since_consolidation"] == ["mem-r1", "mem-r2"]
@@ -836,6 +973,9 @@ def test_write_consolidation_outputs_clears_accumulators() -> None:
         check_con2.close()
         assert ss_after["retrieval_ids_since_consolidation"] == []
         assert ss_after["prior_context_ids_since_consolidation"] == []
+        assert ss_after["consolidation_failed_pending_fingerprint"] is None
+        assert ss_after["last_consolidation_error"] is None
+        assert ss_after["last_consolidation_error_at"] is None
 
 
 def test_write_consolidation_outputs_uses_life_goals_table() -> None:

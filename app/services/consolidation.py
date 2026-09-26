@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -435,6 +436,17 @@ def consolidation_due(
     return last is None or (now or datetime.now(UTC)) >= last + timedelta(days=max(1, int(interval_days)))
 
 
+def pending_segment_fingerprint(pending_by_conversation: dict[str, list[str]]) -> str:
+    pairs = sorted(
+        (str(conversation_id), str(segment_id))
+        for conversation_id, segment_ids in pending_by_conversation.items()
+        for segment_id in segment_ids
+    )
+    return hashlib.sha256(
+        json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def _messages_for_segment_inputs(
     messages: list[dict[str, Any]],
     segment_inputs: list[dict[str, Any]],
@@ -639,6 +651,7 @@ def gather_consolidation_inputs(
     soul_id: str,
     user_id: str,
     stale_after: timedelta,
+    force: bool = False,
 ) -> dict[str, Any]:
     db_path = deps.sqlite_current_path(user_id, soul_id)
     if db_path is None:
@@ -692,6 +705,13 @@ def gather_consolidation_inputs(
         }
         if not pending_by_conversation:
             return {"status": "skip", "reason": "no_pending_segments"}
+        pending_fingerprint = pending_segment_fingerprint(pending_by_conversation)
+        soul_state = _soul_state.read(con)
+        if (
+            not force
+            and soul_state.get("consolidation_failed_pending_fingerprint") == pending_fingerprint
+        ):
+            return {"status": "skip", "reason": "unchanged_after_failure"}
 
         life_goal_rows = con.execute(
             """
@@ -776,10 +796,17 @@ WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
                 for ep_file in sorted(segments_dir.glob("*.json"), key=_segment_file_sort_key):
                     try:
                         parsed = json.loads(ep_file.read_text(encoding="utf-8"))
-                    except (OSError, json.JSONDecodeError):
-                        continue
-                    if isinstance(parsed, list):
-                        messages.extend(m for m in parsed if isinstance(m, dict))
+                    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"segment history unreadable: {ep_file}",
+                        ) from exc
+                    if not isinstance(parsed, list):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"segment history is not a message list: {ep_file}",
+                        )
+                    messages.extend(m for m in parsed if isinstance(m, dict))
             conversation_segments = build_segment_inputs(messages, pending_segment_ids)
             if len(conversation_segments) != len(pending_segment_ids):
                 raise HTTPException(
@@ -804,7 +831,6 @@ WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND segment_id = ? AND
       AND t.valid_to IS NULL
   )
 ORDER BY created_at ASC, id ASC
-LIMIT 24
 """,
                     (soul_id, user_id, pending_conversation_id, segment_id),
                 ).fetchall()
@@ -921,6 +947,7 @@ LIMIT 24
             "prior_context_memory_items": prior_context_memory_items,
             "selected_segment_ids": selected_segment_ids,
             "selected_segment_ids_by_conversation": selected_by_conversation,
+            "pending_fingerprint": pending_fingerprint,
         }
     finally:
         con.close()
@@ -1328,6 +1355,9 @@ INSERT INTO life_goals (
         "last_consolidation_at": now_iso,
         "consolidation_in_progress": False,
         "consolidation_started_at": None,
+        "consolidation_failed_pending_fingerprint": None,
+        "last_consolidation_error": None,
+        "last_consolidation_error_at": None,
         "intentions_active": current_intentions,
         "retrieval_ids_since_consolidation": [],
         "prior_context_ids_since_consolidation": [],

@@ -85,6 +85,55 @@ async def test_diag_pending_threshold_tracks_min_chunk_tokens(
 
 
 @pytest.mark.asyncio
+async def test_diag_pending_reports_stalled_consolidation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_sources(tmp_path, monkeypatch, {})
+    main._write_conversation_state(
+        "cid-stalled",
+        soul_id="Echo",
+        user_id="u1",
+        updates={"pending_segment_ids": ["cid-stalled:0-1"]},
+    )
+    db_path = tmp_path / "Echo.db"
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._soul_state.write(
+            con,
+            {
+                "last_consolidation_at": _iso(2026, 1, 1, 0),
+                "last_consolidation_error": "RuntimeError: reflection failed",
+                "last_consolidation_error_at": _iso(2026, 1, 9, 0),
+            },
+        )
+        con.commit()
+    finally:
+        con.close()
+    monkeypatch.setattr(main, "_consolidation_interval_days_from_cfg", lambda _cfg: 7)
+
+    out = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
+
+    assert out["pending_consolidation_segments"] == 1
+    assert out["consolidation_stalled"] is True
+    assert out["consolidation_age_days"] > 7
+    assert out["last_consolidation_error"] == "RuntimeError: reflection failed"
+
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        main._soul_state.write(con, {"last_consolidation_at": _iso(2026, 1, 10, 0)})
+        con.commit()
+    finally:
+        con.close()
+
+    after_success = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
+    assert after_success["last_consolidation_error"] is None
+    assert after_success["last_consolidation_error_at"] is None
+
+
+@pytest.mark.asyncio
 async def test_diag_pending_sleep_gap_matches_detector(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

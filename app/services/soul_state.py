@@ -24,6 +24,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         "narrative_self_previous": "TEXT",
         "narrative_self_approved": "TEXT",
         "summaries_revision": "INTEGER NOT NULL DEFAULT 0",
+        "consolidation_failed_pending_fingerprint": "TEXT",
+        "last_consolidation_error": "TEXT",
+        "last_consolidation_error_at": "DATETIME",
     }
     missing_row = table_exists and con.execute("SELECT COUNT(*) FROM soul_state").fetchone()[0] == 0
     needs_migration = (
@@ -50,6 +53,9 @@ CREATE TABLE IF NOT EXISTS soul_state (
     last_consolidation_at DATETIME,
     consolidation_in_progress BOOLEAN DEFAULT 0,
     consolidation_started_at DATETIME,
+    consolidation_failed_pending_fingerprint TEXT,
+    last_consolidation_error TEXT,
+    last_consolidation_error_at DATETIME,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )""")
     cols = {row[1] for row in con.execute("PRAGMA table_info(soul_state)").fetchall()}
@@ -84,6 +90,9 @@ def read(con: sqlite3.Connection) -> dict[str, Any]:
         "last_consolidation_at": row["last_consolidation_at"],
         "consolidation_in_progress": bool(row["consolidation_in_progress"]),
         "consolidation_started_at": row["consolidation_started_at"],
+        "consolidation_failed_pending_fingerprint": row["consolidation_failed_pending_fingerprint"],
+        "last_consolidation_error": row["last_consolidation_error"],
+        "last_consolidation_error_at": row["last_consolidation_error_at"],
         "updated_at": row["updated_at"],
     }
 
@@ -103,6 +112,9 @@ def defaults() -> dict[str, Any]:
         "last_consolidation_at": None,
         "consolidation_in_progress": False,
         "consolidation_started_at": None,
+        "consolidation_failed_pending_fingerprint": None,
+        "last_consolidation_error": None,
+        "last_consolidation_error_at": None,
         "updated_at": None,
     }
 
@@ -117,6 +129,8 @@ _VALID_FIELDS = {
     "retrieve_rewrite_angle", "retrieval_ids_since_consolidation",
     "prior_context_ids_since_consolidation", "apimw_message_to_self",
     "last_consolidation_at", "consolidation_in_progress", "consolidation_started_at",
+    "consolidation_failed_pending_fingerprint", "last_consolidation_error",
+    "last_consolidation_error_at",
 }
 
 
