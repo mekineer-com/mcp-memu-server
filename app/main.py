@@ -75,8 +75,10 @@ from app.services import owner as _owner
 from app.services import souls as _souls
 from app.services import whatsapp_outbounds as _whatsapp_outbounds
 from app.services.consolidation import (
+    CONSOLIDATION_STALE_AFTER as _CONSOLIDATION_STALE_AFTER,
     ConsolidationDeps,
     consolidation_due as _consolidation_due,
+    consolidation_running as _consolidation_running,
     gather_consolidation_inputs as _gather_consolidation_inputs,
     prepare_dossier_consolidation_context as _prepare_dossier_consolidation_context,
     preflight_consolidation_profiles as _preflight_consolidation_profiles,
@@ -210,7 +212,6 @@ _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 8000
 _DEFAULT_EPISODES_PER_SEGMENT: int = 3
 _DEFAULT_BACKGROUND_SUMMARY_TOKENS: int = 1000
-_CONSOLIDATION_STALE_AFTER = timedelta(hours=1)
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
 _EPISODES_PER_SEGMENT: int = _DEFAULT_EPISODES_PER_SEGMENT
 _BACKGROUND_SUMMARY_TOKENS: int = _DEFAULT_BACKGROUND_SUMMARY_TOKENS
@@ -1993,7 +1994,7 @@ def _record_consolidation_failure(
     *,
     soul_id: str,
     user_id: str,
-    pending_fingerprint: str,
+    pending_fingerprint: str | None,
     exc: Exception,
     clear_in_progress: bool,
 ) -> None:
@@ -2006,11 +2007,12 @@ def _record_consolidation_failure(
     try:
         con.row_factory = sqlite3.Row
         _soul_state.ensure_schema(con)
-        updates = {
-            "consolidation_failed_pending_fingerprint": pending_fingerprint,
+        updates: dict[str, Any] = {
             "last_consolidation_error": error,
             "last_consolidation_error_at": now_iso,
         }
+        if pending_fingerprint:
+            updates["consolidation_failed_pending_fingerprint"] = pending_fingerprint
         if clear_in_progress:
             updates.update({
                 "consolidation_in_progress": False,
@@ -2022,48 +2024,6 @@ def _record_consolidation_failure(
         con.close()
 
 
-def _clear_consolidation_marker(*, soul_id: str, user_id: str) -> None:
-    db_path = _sqlite_current_path(user_id, soul_id)
-    if db_path is None or not db_path.exists():
-        raise FileNotFoundError(f"soul database not found: {soul_id}")
-    con = _sqlite_connect(db_path)
-    try:
-        _soul_state.ensure_schema(con)
-        _soul_state.write(
-            con,
-            {"consolidation_in_progress": False, "consolidation_started_at": None},
-        )
-        con.commit()
-    finally:
-        con.close()
-
-
-def _record_consolidation_failure_or_clear_marker(
-    *,
-    soul_id: str,
-    user_id: str,
-    pending_fingerprint: str,
-    exc: Exception,
-    clear_in_progress: bool,
-    log_context: str,
-) -> None:
-    try:
-        _record_consolidation_failure(
-            soul_id=soul_id,
-            user_id=user_id,
-            pending_fingerprint=pending_fingerprint,
-            exc=exc,
-            clear_in_progress=clear_in_progress,
-        )
-    except Exception:
-        logger.exception("failed to record consolidation error state for %s", log_context)
-        if clear_in_progress:
-            try:
-                _clear_consolidation_marker(soul_id=soul_id, user_id=user_id)
-            except Exception:
-                logger.exception("failed to clear consolidation marker for %s", log_context)
-
-
 async def _run_consolidation_pipeline_once(
     *,
     svc: Any,
@@ -2072,65 +2032,89 @@ async def _run_consolidation_pipeline_once(
     conversation_id: str,
     soul_id: str,
     user_id: str,
-    marker_acquired: asyncio.Event,
     force: bool = False,
-    attempt: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    consolidation_profile = _resolve_profile_if_configured(svc, "consolidation")
-    _preflight_consolidation_profiles(svc, consolidation_profile)
-    async with state_lock:
-        prep = _gather_consolidation_inputs(
-            deps,
+    attempt: dict[str, str] = {}
+    marker_acquired = False
+    retry_fingerprint: str | None = None
+    try:
+        try:
+            async with state_lock:
+                prep = _gather_consolidation_inputs(
+                    deps,
+                    conversation_id=conversation_id,
+                    soul_id=soul_id,
+                    user_id=user_id,
+                    stale_after=_CONSOLIDATION_STALE_AFTER,
+                    force=force,
+                    attempt=attempt,
+                )
+        except Exception:
+            retry_fingerprint = attempt.get("pending_fingerprint")
+            raise
+        if prep.get("status") == "skip":
+            return {"status": "skipped", "reason": prep.get("reason")}
+        marker_acquired = True
+        consolidation_profile = _resolve_profile_if_configured(svc, "consolidation")
+        _preflight_consolidation_profiles(svc, consolidation_profile)
+        retry_fingerprint = str(prep["pending_fingerprint"]).strip()
+        current_chat_messages = [
+            row for row in (prep.get("current_chat_messages") or [])
+            if isinstance(row, dict)
+        ]
+        prep["all_chat_history"] = _format_all_chat_history_for_ai(
+            current_history=current_chat_messages,
+            cross_tail=_load_cross_tail_for_ai(
+                user_id=user_id,
+                soul_id=soul_id,
+                conversation_id=conversation_id,
+            ),
             conversation_id=conversation_id,
             soul_id=soul_id,
-            user_id=user_id,
-            stale_after=_CONSOLIDATION_STALE_AFTER,
-            force=force,
-            attempt=attempt,
+            mark_current_chat=False,
         )
-    if prep.get("status") == "skip":
-        return {"status": "skipped", "reason": prep.get("reason")}
-    marker_acquired.set()
-    current_chat_messages = [
-        row for row in (prep.get("current_chat_messages") or [])
-        if isinstance(row, dict)
-    ]
-    prep["all_chat_history"] = _format_all_chat_history_for_ai(
-        current_history=current_chat_messages,
-        cross_tail=_load_cross_tail_for_ai(
-            user_id=user_id,
-            soul_id=soul_id,
-            conversation_id=conversation_id,
-        ),
-        conversation_id=conversation_id,
-        soul_id=soul_id,
-        mark_current_chat=False,
-    )
-    await _prepare_dossier_consolidation_context(
-        svc,
-        inputs=prep,
-        soul_id=soul_id,
-        user_id=user_id,
-    )
-
-    consolidation_llm = await _run_consolidation_llm(
-        svc,
-        inputs=prep,
-        soul_id=soul_id,
-        user_id=user_id,
-        llm_profile=consolidation_profile,
-    )
-    async with state_lock:
-        result = _write_consolidation_outputs(
-            deps,
+        await _prepare_dossier_consolidation_context(
             svc,
             inputs=prep,
-            llm_results=consolidation_llm,
-            conversation_id=conversation_id,
             soul_id=soul_id,
             user_id=user_id,
         )
-    return {"status": "ok", "result": result}
+
+        consolidation_llm = await _run_consolidation_llm(
+            svc,
+            inputs=prep,
+            soul_id=soul_id,
+            user_id=user_id,
+            llm_profile=consolidation_profile,
+        )
+        async with state_lock:
+            result = _write_consolidation_outputs(
+                deps,
+                svc,
+                inputs=prep,
+                llm_results=consolidation_llm,
+                conversation_id=conversation_id,
+                soul_id=soul_id,
+                user_id=user_id,
+            )
+        return {"status": "ok", "result": result}
+    except Exception as exc:
+        if marker_acquired or retry_fingerprint or not isinstance(exc, HTTPException):
+            try:
+                async with state_lock:
+                    _record_consolidation_failure(
+                        soul_id=soul_id,
+                        user_id=user_id,
+                        pending_fingerprint=retry_fingerprint,
+                        exc=exc,
+                        clear_in_progress=marker_acquired,
+                    )
+            except Exception:
+                logger.exception(
+                    "failed to record consolidation error state for %s",
+                    conversation_id,
+                )
+        raise
 
 
 async def _run_consolidation_task(
@@ -2153,8 +2137,6 @@ async def _run_consolidation_task(
         )
     deps = _make_consolidation_deps()
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
-    marker_acquired = asyncio.Event()
-    attempt: dict[str, str] = {}
     try:
         out = await _run_consolidation_pipeline_once(
             svc=svc,
@@ -2163,8 +2145,6 @@ async def _run_consolidation_task(
             conversation_id=conversation_id,
             soul_id=soul_id,
             user_id=uid,
-            marker_acquired=marker_acquired,
-            attempt=attempt,
         )
         if out.get("status") == "skipped":
             if progress_key and memorize_progress is not None:
@@ -2175,15 +2155,6 @@ async def _run_consolidation_task(
                     last_result="success",
                 )
             return {"ok": True, "status": "skipped"}
-        _write_conversation_state(
-            conversation_id,
-            soul_id=soul_id,
-            user_id=uid,
-            updates={
-                "last_consolidation_error": None,
-                "last_consolidation_error_at": None,
-            },
-        )
         if progress_key and memorize_progress is not None:
             _memorize_endpoint._set_memorize_progress(
                 memorize_progress,
@@ -2194,17 +2165,6 @@ async def _run_consolidation_task(
         return {"ok": True, "status": "ok"}
     except Exception as exc:
         logger.exception("consolidation failed (non-fatal)")
-        pending_fingerprint = attempt.get("pending_fingerprint")
-        if pending_fingerprint:
-            async with state_lock:
-                _record_consolidation_failure_or_clear_marker(
-                    soul_id=soul_id,
-                    user_id=uid,
-                    pending_fingerprint=pending_fingerprint,
-                    exc=exc,
-                    clear_in_progress=marker_acquired.is_set(),
-                    log_context=conversation_id,
-                )
         if progress_key and memorize_progress is not None:
             _memorize_endpoint._set_memorize_progress(
                 memorize_progress,
@@ -2218,12 +2178,7 @@ async def _run_consolidation_task(
 
 def _should_run_consolidation(state: dict[str, Any]) -> bool:
     now = datetime.now(UTC)
-    started_at = parse_iso_datetime(state.get("consolidation_started_at"))
-    if (
-        state.get("consolidation_in_progress")
-        and started_at is not None
-        and now - started_at <= _CONSOLIDATION_STALE_AFTER
-    ):
+    if _consolidation_running(state, now=now):
         return False
     return _consolidation_due(
         state.get("last_consolidation_at"),
@@ -2381,8 +2336,6 @@ async def force_consolidation(
     uid = ""
     soul_id = ""
     state_lock: asyncio.Lock | None = None
-    marker_acquired = asyncio.Event()
-    attempt: dict[str, str] = {}
     try:
         safe = _safe_payload(payload)
         scope = _extract_scope(safe)
@@ -2404,9 +2357,7 @@ async def force_consolidation(
             conversation_id=cid,
             soul_id=soul_id,
             user_id=uid,
-            marker_acquired=marker_acquired,
             force=True,
-            attempt=attempt,
         )
         if out.get("status") == "skipped":
             reason = str(out.get("reason") or "")
@@ -2428,16 +2379,6 @@ async def force_consolidation(
         _record_call(
             "consolidation.force", payload, ok=False, error="HTTPException"
         )
-        if uid and soul_id and attempt.get("pending_fingerprint") and exc.status_code != 409:
-            async with state_lock:
-                _record_consolidation_failure_or_clear_marker(
-                    soul_id=soul_id,
-                    user_id=uid,
-                    pending_fingerprint=attempt["pending_fingerprint"],
-                    exc=exc,
-                    clear_in_progress=marker_acquired.is_set(),
-                    log_context="forced consolidation",
-                )
         raise
     except Exception as exc:
         logger.exception("consolidation.force failed: %s", exc)
@@ -2447,16 +2388,6 @@ async def force_consolidation(
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
         )
-        if uid and soul_id and attempt.get("pending_fingerprint"):
-            async with state_lock:
-                _record_consolidation_failure_or_clear_marker(
-                    soul_id=soul_id,
-                    user_id=uid,
-                    pending_fingerprint=attempt["pending_fingerprint"],
-                    exc=exc,
-                    clear_in_progress=marker_acquired.is_set(),
-                    log_context="forced consolidation",
-                )
         raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
@@ -4143,12 +4074,7 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         ):
             consolidation_error = legacy_error["last_consolidation_error"]
             consolidation_error_at = legacy_error_at
-    consolidation_started_at = parse_iso_datetime(soul_status.get("consolidation_started_at"))
-    consolidation_running = bool(
-        soul_status.get("consolidation_in_progress")
-        and consolidation_started_at is not None
-        and now - consolidation_started_at <= _CONSOLIDATION_STALE_AFTER
-    )
+    consolidation_running = _consolidation_running(soul_status, now=now)
     consolidation_stalled = (
         pending_consolidation_segments > 0
         and not consolidation_running

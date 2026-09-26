@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 log = logging.getLogger(__name__)
+CONSOLIDATION_STALE_AFTER = timedelta(hours=1)
 
 from fastapi import HTTPException
 from memu.app.dossier import label_sections, render_memory_records, revision_status_items
@@ -436,6 +437,20 @@ def consolidation_due(
     return last is None or (now or datetime.now(UTC)) >= last + timedelta(days=max(1, int(interval_days)))
 
 
+def consolidation_running(
+    state: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    stale_after: timedelta = CONSOLIDATION_STALE_AFTER,
+) -> bool:
+    started_at = parse_iso_datetime(state.get("consolidation_started_at"))
+    return bool(
+        state.get("consolidation_in_progress")
+        and started_at is not None
+        and (now or datetime.now(UTC)) - started_at <= stale_after
+    )
+
+
 def pending_segment_fingerprint(pending_by_conversation: dict[str, list[str]]) -> str:
     pairs = sorted(
         (str(conversation_id), str(segment_id))
@@ -675,9 +690,8 @@ def gather_consolidation_inputs(
             raise HTTPException(status_code=404, detail="conversation state not found")
 
         now = datetime.now(UTC)
-        started_at = parse_iso_datetime(state.get("consolidation_started_at"))
         if bool(state.get("consolidation_in_progress")):
-            if started_at is not None and now - started_at <= stale_after:
+            if consolidation_running(state, now=now, stale_after=stale_after):
                 return {"status": "skip", "reason": "in_progress"}
             deps.write_conversation_state(
                 conversation_id,

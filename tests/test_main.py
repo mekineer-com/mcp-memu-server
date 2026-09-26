@@ -1264,18 +1264,12 @@ def test_conversation_state_schema_migrates_pending_segment_ids_from_old_name(
 @pytest.mark.asyncio
 async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[int] = []
-    state_writes: list[dict[str, Any]] = []
 
     async def fake_pipeline_once(**_kwargs):
         calls.append(len(calls) + 1)
         return {"status": "ok", "result": {}}
 
-    def fake_write_state(_cid, *, soul_id, user_id, updates):
-        state_writes.append({"soul_id": soul_id, "user_id": user_id, "updates": updates})
-        return ({}, Path("/tmp/unused.db"))
-
     monkeypatch.setattr(main, "_run_consolidation_pipeline_once", fake_pipeline_once)
-    monkeypatch.setattr(main, "_write_conversation_state", fake_write_state)
 
     out = await main._run_consolidation_task(
         object(),
@@ -1286,10 +1280,6 @@ async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.Mon
 
     assert out == {"ok": True, "status": "ok"}
     assert len(calls) == 1
-    assert state_writes[-1]["updates"] == {
-        "last_consolidation_error": None,
-        "last_consolidation_error_at": None,
-    }
 
 
 def test_should_run_consolidation_uses_soul_clock() -> None:
@@ -1308,88 +1298,113 @@ def test_should_run_consolidation_uses_soul_clock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_consolidation_task_does_not_record_before_pending_set_is_selected(
+async def test_consolidation_pipeline_records_preflight_error_without_retry_fingerprint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorded = []
 
-    async def fail_before_acquire(**_kwargs):
-        raise RuntimeError("preflight failed")
+    def gather(*_args, **_kwargs):
+        return {
+            "status": "ready",
+            "pending_fingerprint": "selected-work",
+        }
 
-    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", fail_before_acquire)
+    def fail_preflight(*_args, **_kwargs):
+        raise HTTPException(status_code=500, detail="preflight failed")
+
+    monkeypatch.setattr(main, "_gather_consolidation_inputs", gather)
+    monkeypatch.setattr(main, "_resolve_profile_if_configured", lambda *_args: "broken")
+    monkeypatch.setattr(main, "_preflight_consolidation_profiles", fail_preflight)
     monkeypatch.setattr(
         main,
         "_record_consolidation_failure",
         lambda **kwargs: recorded.append(kwargs),
     )
 
-    out = await main._run_consolidation_task(
-        object(), conversation_id="cid-owner", soul_id="SoulOwner", uid="UserOwner"
-    )
+    with pytest.raises(HTTPException, match="preflight failed"):
+        await main._run_consolidation_pipeline_once(
+            svc=object(),
+            deps=object(),
+            state_lock=asyncio.Lock(),
+            conversation_id="cid-owner",
+            soul_id="SoulOwner",
+            user_id="UserOwner",
+        )
 
-    assert out["status"] == "error"
-    assert recorded == []
+    assert recorded[0]["pending_fingerprint"] is None
+    assert recorded[0]["clear_in_progress"] is True
 
 
 @pytest.mark.asyncio
-async def test_consolidation_task_records_failed_attempt_fingerprint(
+async def test_consolidation_pipeline_records_selected_work_and_clears_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorded = []
 
-    async def fail_after_gather(*, attempt, marker_acquired, **_kwargs):
+    def gather(*_args, attempt, **_kwargs):
         attempt["pending_fingerprint"] = "pending-fingerprint"
-        marker_acquired.set()
+        return {
+            "status": "ready",
+            "current_chat_messages": [],
+            "pending_fingerprint": "pending-fingerprint",
+        }
+
+    def fail_after_gather(**_kwargs):
         raise RuntimeError("reflection failed")
 
-    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", fail_after_gather)
+    monkeypatch.setattr(main, "_resolve_profile_if_configured", lambda *_args: "profile")
+    monkeypatch.setattr(main, "_preflight_consolidation_profiles", lambda *_args: None)
+    monkeypatch.setattr(main, "_gather_consolidation_inputs", gather)
+    monkeypatch.setattr(main, "_format_all_chat_history_for_ai", fail_after_gather)
     monkeypatch.setattr(
         main,
         "_record_consolidation_failure",
         lambda **kwargs: recorded.append(kwargs),
     )
 
-    out = await main._run_consolidation_task(
-        object(), conversation_id="cid-owner", soul_id="SoulOwner", uid="UserOwner"
-    )
+    with pytest.raises(RuntimeError, match="reflection failed"):
+        await main._run_consolidation_pipeline_once(
+            svc=object(),
+            deps=object(),
+            state_lock=asyncio.Lock(),
+            conversation_id="cid-owner",
+            soul_id="SoulOwner",
+            user_id="UserOwner",
+        )
 
-    assert out["status"] == "error"
     assert recorded[0]["pending_fingerprint"] == "pending-fingerprint"
     assert recorded[0]["clear_in_progress"] is True
 
 
 @pytest.mark.asyncio
-async def test_consolidation_task_clears_marker_when_failure_recording_fails(
+async def test_consolidation_pipeline_backoffs_failed_gathered_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cleared = []
+    recorded = []
 
-    async def fail_after_gather(*, attempt, marker_acquired, **_kwargs):
-        attempt["pending_fingerprint"] = "pending-fingerprint"
-        marker_acquired.set()
-        raise RuntimeError("reflection failed")
+    def gather(*_args, attempt, **_kwargs):
+        attempt["pending_fingerprint"] = "damaged-work"
+        raise HTTPException(status_code=400, detail="segment history is damaged")
 
-    def fail_to_record(**_kwargs):
-        raise OSError("write failed")
-
-    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", fail_after_gather)
+    monkeypatch.setattr(main, "_gather_consolidation_inputs", gather)
     monkeypatch.setattr(
         main,
         "_record_consolidation_failure",
-        fail_to_record,
-    )
-    monkeypatch.setattr(
-        main,
-        "_clear_consolidation_marker",
-        lambda **kwargs: cleared.append(kwargs),
+        lambda **kwargs: recorded.append(kwargs),
     )
 
-    out = await main._run_consolidation_task(
-        object(), conversation_id="cid-owner", soul_id="SoulOwner", uid="UserOwner"
-    )
+    with pytest.raises(HTTPException, match="segment history is damaged"):
+        await main._run_consolidation_pipeline_once(
+            svc=object(),
+            deps=object(),
+            state_lock=asyncio.Lock(),
+            conversation_id="cid-owner",
+            soul_id="SoulOwner",
+            user_id="UserOwner",
+        )
 
-    assert out["status"] == "error"
-    assert cleared == [{"soul_id": "SoulOwner", "user_id": "UserOwner"}]
+    assert recorded[0]["pending_fingerprint"] == "damaged-work"
+    assert recorded[0]["clear_in_progress"] is False
 
 
 @pytest.mark.asyncio
@@ -1478,6 +1493,22 @@ def test_record_consolidation_failure_updates_only_existing_soul_state(
     assert soul["consolidation_in_progress"] is False
     assert soul["consolidation_started_at"] is None
     assert conversation_count == 0
+
+    main._record_consolidation_failure(
+        soul_id="Soul",
+        user_id="User",
+        pending_fingerprint=None,
+        exc=RuntimeError("profile invalid"),
+        clear_in_progress=False,
+    )
+    con = main._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        soul = main._soul_state.read(con)
+    finally:
+        con.close()
+    assert soul["consolidation_failed_pending_fingerprint"] == "fingerprint"
+    assert soul["last_consolidation_error"] == "RuntimeError: profile invalid"
 
 
 @pytest.mark.asyncio
