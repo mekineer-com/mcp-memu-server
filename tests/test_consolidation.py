@@ -31,7 +31,9 @@ from app.services.state import conversation_state_from_row, conversation_state_r
 class _DossierContextService:
     def __init__(self, *, due_ids=(), profiles=("default", "revision"), stale_id=None) -> None:
         self.memorize_config = SimpleNamespace(category_update_llm_profile="revision")
-        self.llm_profiles = SimpleNamespace(profiles={name: object() for name in profiles})
+        self.llm_profiles = SimpleNamespace(
+            profiles={name: SimpleNamespace(max_tokens=8000) for name in profiles}
+        )
         self.due = [SimpleNamespace(id=dossier_id) for dossier_id in due_ids]
         self.stale_id = stale_id
         self.calls: list[tuple] = []
@@ -200,7 +202,7 @@ async def test_dossier_context_keeps_first_apply_when_second_is_stale() -> None:
         )
     assert [call[1] for call in svc.calls if call[0] == "apply"] == ["first", "second"]
     assert len([call for call in svc.calls if call[0] == "index"]) == 1
-    assert not any(call[0] == "relevant" for call in svc.calls)
+    assert len([call for call in svc.calls if call[0] == "relevant"]) == 1
 
 
 @pytest.mark.asyncio
@@ -245,13 +247,15 @@ async def test_consolidation_preflights_no_whitespace_prompts() -> None:
             "all_chat_history": "x" * 400_001,
         }
 
-    with pytest.raises(ValueError, match="Dossier consolidation prompt exceeds"):
+    dossier_svc = _DossierContextService(due_ids=("first",))
+    with pytest.raises(ValueError, match="Anchor reflection prompt may exceed"):
         await prepare_dossier_consolidation_context(
-            _DossierContextService(due_ids=("first",)),
+            dossier_svc,
             inputs=inputs(),
             soul_id="TestSoul",
             user_id="TestUser",
         )
+    assert not [call for call in dossier_svc.calls if call[0] in {"chat", "apply"}]
 
     svc = _DossierContextService()
     anchor_inputs = inputs()

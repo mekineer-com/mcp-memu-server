@@ -297,6 +297,70 @@ def _format_dossier_revision_blocks(bundles: Sequence[dict[str, Any]]) -> str:
     return "\n\n".join(blocks)
 
 
+def _render_reflection_prompt(
+    inputs: dict[str, Any],
+    *,
+    soul_id: str,
+    user_id: str,
+    reserve_text: str = "",
+) -> tuple[str, str]:
+    first_time = _is_first_reflection(inputs)
+    system_prompt = _select_prompt_objective(
+        anchors_prompt.SYSTEM_PROMPT,
+        first_time=first_time,
+    ).format(soul_name=soul_id, user_name=user_id)
+    context = inputs["reflection_prompt_context"]
+    anchor_bundles = inputs["anchor_bundles"]
+
+    def anchor_prose(role: str) -> str:
+        prose = str(anchor_bundles[role]["dossier"].summary or "") or "## unlabeled"
+        sectioned = label_sections(prose)
+        return sectioned[0] if sectioned is not None else prose
+
+    relevant_parts: list[str] = []
+    for dossier in inputs["relevant_dossiers"]:
+        relevant_parts.extend(
+            [
+                f"## {dossier.name}",
+                f"Description: {_read_only_citations(dossier.description)}",
+                _read_only_citations(str(dossier.summary or "")),
+                "",
+            ]
+        )
+    if reserve_text:
+        relevant_parts.append(reserve_text)
+    relevant_dossiers = "\n".join(relevant_parts).strip() or "(none)"
+    anchor_statuses = {
+        role: revision_status_items(bundle) for role, bundle in anchor_bundles.items()
+    }
+    user_prompt = anchors_prompt.USER_PROMPT.format(
+        narrative_self=context["narrative_self"],
+        soul_anchor=anchor_prose("soul"),
+        soul_anchor_cited_memory_items=render_memory_records(
+            anchor_statuses["soul"]["cited"]
+        ),
+        soul_anchor_inactive_cited_memory_items=render_memory_records(
+            anchor_statuses["soul"]["purged"]
+        ),
+        user_anchor=anchor_prose("user"),
+        user_anchor_cited_memory_items=render_memory_records(
+            anchor_statuses["user"]["cited"]
+        ),
+        user_anchor_inactive_cited_memory_items=render_memory_records(
+            anchor_statuses["user"]["purged"]
+        ),
+        dossier_index=_read_only_citations(inputs["dossier_index"]) or "(none)",
+        relevant_dossiers=relevant_dossiers,
+        life_goals=context["life_goals"],
+        current_intentions=context["current_intentions"],
+        intention_activity=context["intention_activity"],
+        prior_context_memory_items=context["prior_context_memory_items"],
+        conversation_history=context["conversation_history"],
+        segment_memory_items=context["segment_memory_items"],
+    )
+    return system_prompt, user_prompt
+
+
 # Marcos' reminder: a category is a dossier.
 async def prepare_dossier_consolidation_context(
     svc: MemoryService,
@@ -329,7 +393,26 @@ async def prepare_dossier_consolidation_context(
             segment_ids=inputs["selected_segment_ids"],
         )
     ]
+    inputs["dossier_index"] = svc.build_dossier_index(scope)
+    inputs["relevant_dossiers"] = svc.list_dossiers_for_segments(
+        scope,
+        segment_ids=inputs["selected_segment_ids"],
+    )
     if bundles:
+        profile = svc.llm_profiles.profiles[revision_profile]
+        max_tokens = int(profile.max_tokens or 0)
+        if max_tokens <= 0:
+            raise ValueError("Dossier consolidation profile requires max_tokens")
+        reserve_text = "reserve " * max_tokens
+        reflection_system, reflection_user = _render_reflection_prompt(
+            inputs,
+            soul_id=soul_id,
+            user_id=user_id,
+            reserve_text=reserve_text,
+        )
+        if estimate_prompt_tokens(reflection_system + "\n" + reflection_user) > 100_000:
+            raise ValueError("Anchor reflection prompt may exceed 100000 tokens")
+
         anchors = inputs["anchor_bundles"]
         first_time = _is_first_reflection(inputs)
         system_prompt = _select_prompt_objective(
@@ -355,7 +438,7 @@ async def prepare_dossier_consolidation_context(
             narrative_self=prompt_context["narrative_self"],
             soul_anchor=_read_only_citations(str(anchors["soul"]["dossier"].summary or "## unlabeled")),
             user_anchor=_read_only_citations(str(anchors["user"]["dossier"].summary or "## unlabeled")),
-            dossier_index=_read_only_citations(svc.build_dossier_index(scope)) or "(none)",
+            dossier_index=_read_only_citations(inputs["dossier_index"]) or "(none)",
             life_goals=prompt_context["life_goals"],
             current_intentions=prompt_context["current_intentions"],
             intention_activity=prompt_context["intention_activity"],
@@ -931,10 +1014,6 @@ async def run_consolidation_llm(
     llm_profile: str | None = None,
 ) -> dict[str, Any]:
     first_time = _is_first_reflection(inputs)
-    system_prompt = _select_prompt_objective(
-        anchors_prompt.SYSTEM_PROMPT,
-        first_time=first_time,
-    ).format(soul_name=soul_id, user_name=user_id)
     context = inputs["reflection_prompt_context"]
     id_map = context["id_map"]
     anchor_bundles = inputs["anchor_bundles"]
@@ -945,49 +1024,10 @@ async def run_consolidation_llm(
                 raise ValueError(f"Consolidation memory lacks stable reference: {item.id}")
             id_map[f"M{memory_ref}"] = str(item.id)
 
-    def anchor_prose(role: str) -> str:
-        prose = str(anchor_bundles[role]["dossier"].summary or "") or "## unlabeled"
-        sectioned = label_sections(prose)
-        return sectioned[0] if sectioned is not None else prose
-
-    relevant_parts: list[str] = []
-    for dossier in inputs["relevant_dossiers"]:
-        relevant_parts.extend(
-            [
-                f"## {dossier.name}",
-                f"Description: {_read_only_citations(dossier.description)}",
-                _read_only_citations(str(dossier.summary or "")),
-                "",
-            ]
-        )
-    relevant_dossiers = "\n".join(relevant_parts).strip() or "(none)"
-    anchor_statuses = {
-        role: revision_status_items(bundle) for role, bundle in anchor_bundles.items()
-    }
-    user_prompt = anchors_prompt.USER_PROMPT.format(
-        narrative_self=context["narrative_self"],
-        soul_anchor=anchor_prose("soul"),
-        soul_anchor_cited_memory_items=render_memory_records(
-            anchor_statuses["soul"]["cited"]
-        ),
-        soul_anchor_inactive_cited_memory_items=render_memory_records(
-            anchor_statuses["soul"]["purged"]
-        ),
-        user_anchor=anchor_prose("user"),
-        user_anchor_cited_memory_items=render_memory_records(
-            anchor_statuses["user"]["cited"]
-        ),
-        user_anchor_inactive_cited_memory_items=render_memory_records(
-            anchor_statuses["user"]["purged"]
-        ),
-        dossier_index=_read_only_citations(inputs["dossier_index"]) or "(none)",
-        relevant_dossiers=relevant_dossiers,
-        life_goals=context["life_goals"],
-        current_intentions=context["current_intentions"],
-        intention_activity=context["intention_activity"],
-        prior_context_memory_items=context["prior_context_memory_items"],
-        conversation_history=context["conversation_history"],
-        segment_memory_items=context["segment_memory_items"],
+    system_prompt, user_prompt = _render_reflection_prompt(
+        inputs,
+        soul_id=soul_id,
+        user_id=user_id,
     )
     if estimate_prompt_tokens(system_prompt + "\n" + user_prompt) > 100_000:
         raise ValueError("Anchor reflection prompt exceeds 100000 tokens")
