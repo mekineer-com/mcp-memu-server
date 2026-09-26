@@ -731,6 +731,50 @@ INSERT INTO memory_items (
                 for index in range(30)
             ],
         )
+        con.executemany(
+            """
+INSERT INTO memory_items (
+    id, memory_ref, summary, memory_type, happened_at, created_at,
+    soul_id, user_id, conversation_id, segment_id, merged_into
+) VALUES (?, ?, ?, 'knowledge', ?, ?, ?, ?, 'conv-a', 'conv-a:0-0', ?)
+""",
+            [
+                (
+                    "prior-merged",
+                    101,
+                    "merged prior",
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:01:01+00:00",
+                    soul_id,
+                    user_id,
+                    "mem-0",
+                ),
+                (
+                    "prior-evolved",
+                    102,
+                    "evolved prior",
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:01:02+00:00",
+                    soul_id,
+                    user_id,
+                    None,
+                ),
+            ],
+        )
+        con.execute(
+            "INSERT INTO triples (subject_id, predicate, object_id, valid_to) "
+            "VALUES ('prior-evolved', 'evolved_into', 'mem-0', NULL)"
+        )
+        con.execute(
+            "INSERT INTO resources (soul_id, user_id, created_at, memory_prior_context) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                soul_id,
+                user_id,
+                "2026-01-01T00:02:00+00:00",
+                json.dumps(["mem-0", "prior-merged", "prior-evolved"]),
+            ),
+        )
         con.commit()
     finally:
         con.close()
@@ -751,6 +795,7 @@ INSERT INTO memory_items (
     assert [row["conversation_id"] for row in out["segment_inputs"]] == ["conv-a", "conv-b"]
     assert [row["content"] for row in out["current_chat_messages"]] == ["message 0", "message 1"]
     assert len(out["segment_inputs"][0]["memory_summaries"]) == 30
+    assert [item["id"] for item in out["prior_context_memory_items"]] == ["mem-0"]
 
     con = sqlite_connect(db_path)
     try:
@@ -829,6 +874,42 @@ INSERT INTO memory_items (
         user_id=user_id,
     )
     assert changed_pending == {"status": "skip", "reason": "failure_cooldown"}
+
+
+def test_gather_rejects_noncanonical_pending_owner(tmp_path: Path) -> None:
+    db_path = tmp_path / "soul.db"
+    con = sqlite_connect(db_path)
+    try:
+        sqlite_ensure_conversation_state_schema(con)
+        con.execute(
+            "INSERT INTO conversations "
+            "(conversation_id, soul_id, user_id, pending_segment_ids) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                "whatsapp:group:123@g.us:sender",
+                "SoulX",
+                "UserX",
+                json.dumps(["whatsapp:group:123@g.us:sender:0-1"]),
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+    write_conversation_state(
+        "trigger",
+        sqlite_current_path=lambda _user, _soul: db_path,
+        soul_id="SoulX",
+        user_id="UserX",
+        updates={},
+    )
+
+    with pytest.raises(HTTPException, match="pending consolidation owner is not canonical"):
+        gather_consolidation_inputs(
+            _make_consolidation_deps(db_path, tmp_path),
+            conversation_id="trigger",
+            soul_id="SoulX",
+            user_id="UserX",
+        )
 
 
 @pytest.mark.parametrize(
@@ -960,8 +1041,7 @@ def _base_llm_results(**overrides) -> dict:
     return base
 
 
-def test_write_consolidation_outputs_clears_accumulators() -> None:
-    """After a successful run the retrieval and prior-context accumulators are reset to []."""
+def test_write_consolidation_outputs_subtracts_gathered_accumulators() -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp_dir = Path(td)
         db_path = tmp_dir / "soul.db"
@@ -1008,10 +1088,29 @@ def test_write_consolidation_outputs_clears_accumulators() -> None:
         assert ss_before["retrieval_ids_since_consolidation"] == ["mem-r1", "mem-r2"]
         assert ss_before["prior_context_ids_since_consolidation"] == ["mem-p1"]
 
+        write_conversation_state(
+            cid,
+            sqlite_current_path=lambda _u, _s: db_path,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={
+                "append_retrieval_ids_since_consolidation": ["mem-r3"],
+                "append_prior_context_ids_since_consolidation": ["mem-p2"],
+            },
+        )
+        started_at = "2026-01-02T00:00:00+00:00"
+
         write_consolidation_outputs(
             _make_consolidation_deps(db_path, tmp_dir),
             _make_svc_stub(),
-            inputs={"db_path": db_path},
+            inputs={
+                "db_path": db_path,
+                "started_at": started_at,
+                "state": {
+                    "retrieval_ids_since_consolidation": ["mem-r1", "mem-r2"],
+                    "prior_context_ids_since_consolidation": ["mem-p1"],
+                },
+            },
             llm_results=_base_llm_results(),
             conversation_id=cid,
             soul_id=soul_id,
@@ -1022,8 +1121,9 @@ def test_write_consolidation_outputs_clears_accumulators() -> None:
         check_con2.row_factory = sqlite3.Row
         ss_after = _soul_state.read(check_con2)
         check_con2.close()
-        assert ss_after["retrieval_ids_since_consolidation"] == []
-        assert ss_after["prior_context_ids_since_consolidation"] == []
+        assert ss_after["retrieval_ids_since_consolidation"] == ["mem-r3"]
+        assert ss_after["prior_context_ids_since_consolidation"] == ["mem-p2"]
+        assert ss_after["last_consolidation_at"] == started_at
         assert ss_after["last_consolidation_error"] is None
         assert ss_after["last_consolidation_error_at"] is None
 

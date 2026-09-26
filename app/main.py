@@ -4131,7 +4131,6 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
             round(consolidation_age_days, 1) if consolidation_age_days is not None else None
         ),
         "consolidation_state": consolidation_state,
-        "consolidation_in_progress": consolidation_running,
         "retry_conversation_id": retry_conversation_id,
         "last_consolidation_error": consolidation_error,
         "last_consolidation_error_at": (

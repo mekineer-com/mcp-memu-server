@@ -24,7 +24,6 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         "narrative_self_previous": "TEXT",
         "narrative_self_approved": "TEXT",
         "summaries_revision": "INTEGER NOT NULL DEFAULT 0",
-        "consolidation_failed_pending_fingerprint": "TEXT",
         "last_consolidation_error": "TEXT",
         "last_consolidation_error_at": "DATETIME",
     }
@@ -53,7 +52,6 @@ CREATE TABLE IF NOT EXISTS soul_state (
     last_consolidation_at DATETIME,
     consolidation_in_progress BOOLEAN DEFAULT 0,
     consolidation_started_at DATETIME,
-    consolidation_failed_pending_fingerprint TEXT,
     last_consolidation_error TEXT,
     last_consolidation_error_at DATETIME,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP

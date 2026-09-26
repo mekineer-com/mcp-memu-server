@@ -128,9 +128,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     updated_at DATETIME,
     undo_snapshot JSON,
     last_background_error TEXT,
-    last_background_error_at DATETIME,
-    last_consolidation_error TEXT,
-    last_consolidation_error_at DATETIME
+    last_background_error_at DATETIME
 )
 """
     )
@@ -163,10 +161,6 @@ CREATE TABLE IF NOT EXISTS conversations (
         con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary_cursor_ts INTEGER")
     if "rolling_summary_updated_at" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary_updated_at DATETIME")
-    if "last_consolidation_error" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN last_consolidation_error TEXT")
-    if "last_consolidation_error_at" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN last_consolidation_error_at DATETIME")
     if "last_display_segment_start_index" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN last_display_segment_start_index INTEGER")
     if "last_display_segment_end_index" not in conversation_cols:

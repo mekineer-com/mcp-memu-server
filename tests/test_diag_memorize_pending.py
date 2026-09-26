@@ -152,7 +152,6 @@ async def test_diag_pending_reports_stalled_consolidation(
         in_progress = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
     finally:
         main._CONSOLIDATION_RUNNING.discard(run_key)
-    assert in_progress["consolidation_in_progress"] is True
     assert in_progress["consolidation_state"] == "running"
 
     con = main._sqlite_connect(db_path)

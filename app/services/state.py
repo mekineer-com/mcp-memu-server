@@ -108,8 +108,6 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "undo_snapshot": json_from_db(row["undo_snapshot"]),
         "last_background_error": row["last_background_error"] if "last_background_error" in row.keys() else None,
         "last_background_error_at": row["last_background_error_at"] if "last_background_error_at" in row.keys() else None,
-        "last_consolidation_error": row["last_consolidation_error"] if "last_consolidation_error" in row.keys() else None,
-        "last_consolidation_error_at": row["last_consolidation_error_at"] if "last_consolidation_error_at" in row.keys() else None,
         "atomic_session_started_at": row["atomic_session_started_at"] if "atomic_session_started_at" in row.keys() else None,
         "atomic_session_ended_at": row["atomic_session_ended_at"] if "atomic_session_ended_at" in row.keys() else None,
     }
@@ -133,7 +131,6 @@ def conversation_state_row(
         "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at, "
         "updated_at, undo_snapshot, "
         "last_background_error, last_background_error_at, "
-        "last_consolidation_error, last_consolidation_error_at, "
         "atomic_session_started_at, atomic_session_ended_at "
         "FROM conversations WHERE conversation_id = ? LIMIT 1",
         (cid,),
@@ -179,8 +176,6 @@ def conversation_state_empty(
         "undo_snapshot": None,
         "last_background_error": None,
         "last_background_error_at": None,
-        "last_consolidation_error": None,
-        "last_consolidation_error_at": None,
         "atomic_session_started_at": None,
         "atomic_session_ended_at": None,
     }
@@ -266,6 +261,16 @@ INSERT OR IGNORE INTO conversations (
             if appended is not None:
                 current = _soul_state.read(con)
                 soul_updates[field] = merge_unique_text_lists(current.get(field), appended)
+        for remove_key, field in (
+            ("remove_retrieval_ids_since_consolidation", "retrieval_ids_since_consolidation"),
+            ("remove_prior_context_ids_since_consolidation", "prior_context_ids_since_consolidation"),
+        ):
+            removed = set(normalize_text_list(raw_updates.pop(remove_key, None)))
+            if removed:
+                current = _soul_state.read(con)
+                soul_updates[field] = [
+                    item for item in normalize_text_list(current.get(field)) if item not in removed
+                ]
         if soul_updates:
             _soul_state.write(con, soul_updates)
         append_pending_segment_ids = raw_updates.pop("append_pending_segment_ids", None)
@@ -312,8 +317,6 @@ INSERT OR IGNORE INTO conversations (
                 "undo_snapshot",
                 "last_background_error",
                 "last_background_error_at",
-                "last_consolidation_error",
-                "last_consolidation_error_at",
                 "atomic_session_started_at",
                 "atomic_session_ended_at",
             }:

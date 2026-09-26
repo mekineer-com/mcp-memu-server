@@ -40,6 +40,7 @@ from app.services.intention_state import (
 )
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import soul_summaries as _soul_summaries
+from app.services.conversation_id import canonical_conversation_id
 from app.services.payload import parse_iso_datetime
 from app.services import soul_state as _soul_state
 from app.services.turn_contract import DEFAULT_SOUL_CARD, format_memory_legend, format_memory_line, format_shaped_by_line, format_relative_time_label
@@ -744,15 +745,22 @@ def gather_consolidation_inputs(
         if state is None:
             raise HTTPException(status_code=404, detail="conversation state not found")
 
-        pending_by_conversation = {
-            str(row["conversation_id"]): deps.normalize_text_list(row["pending_segment_ids"])
-            for row in con.execute(
-                "SELECT conversation_id, pending_segment_ids FROM conversations "
-                "WHERE soul_id = ? AND user_id = ? ORDER BY conversation_id",
-                (soul_id, user_id),
-            ).fetchall()
-            if deps.normalize_text_list(row["pending_segment_ids"])
-        }
+        pending_by_conversation: dict[str, list[str]] = {}
+        for row in con.execute(
+            "SELECT conversation_id, pending_segment_ids FROM conversations "
+            "WHERE soul_id = ? AND user_id = ? ORDER BY conversation_id",
+            (soul_id, user_id),
+        ).fetchall():
+            pending_ids = deps.normalize_text_list(row["pending_segment_ids"])
+            if not pending_ids:
+                continue
+            owner = str(row["conversation_id"] or "").strip()
+            if canonical_conversation_id(owner) != owner:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"pending consolidation owner is not canonical: {owner}",
+                )
+            pending_by_conversation[owner] = pending_ids
         if not pending_by_conversation:
             return {"status": "skip", "reason": "no_pending_segments"}
         now = datetime.now(UTC)
@@ -942,8 +950,19 @@ ORDER BY created_at ASC, id ASC
         if clean_ids:
             placeholders = ",".join("?" for _ in clean_ids)
             ret_rows = con.execute(
-                f"SELECT id, memory_ref, memory_type, summary, happened_at, created_at FROM memory_items WHERE id IN ({placeholders})",
-                tuple(clean_ids),
+                f"""
+SELECT id, memory_ref, memory_type, summary, happened_at, created_at
+FROM memory_items
+WHERE id IN ({placeholders}) AND soul_id = ? AND user_id = ?
+  AND (merged_into IS NULL OR TRIM(merged_into) = '')
+  AND NOT EXISTS (
+    SELECT 1 FROM triples t
+    WHERE t.subject_id = memory_items.id
+      AND t.predicate = 'evolved_into'
+      AND t.valid_to IS NULL
+  )
+""",
+                tuple(clean_ids) + (soul_id, user_id),
             ).fetchall()
             items_by_id: dict[str, dict[str, Any]] = {}
             prior_context_memory_items = []
@@ -1128,6 +1147,7 @@ def write_consolidation_outputs(
     # ponytail: rare partial-write retries may duplicate outputs; add idempotency if observed.
     db_path: Path = inputs["db_path"]
     now_iso = datetime.now(UTC).isoformat()
+    started_at = str(inputs.get("started_at") or "").strip() or now_iso
 
     narrative_id = str(uuid.uuid4())
     narrative_self = str(llm_results.get("narrative_self") or "").strip() or None
@@ -1372,12 +1392,16 @@ INSERT INTO life_goals (
                 "remove_pending_segment_ids": selected_by_conversation.get(
                     conversation_id, []
                 ),
-                "last_consolidation_at": now_iso,
+                "last_consolidation_at": started_at,
                 "last_consolidation_error": None,
                 "last_consolidation_error_at": None,
                 "intentions_active": current_intentions,
-                "retrieval_ids_since_consolidation": [],
-                "prior_context_ids_since_consolidation": [],
+                "remove_retrieval_ids_since_consolidation": inputs.get("state", {}).get(
+                    "retrieval_ids_since_consolidation", []
+                ),
+                "remove_prior_context_ids_since_consolidation": inputs.get("state", {}).get(
+                    "prior_context_ids_since_consolidation", []
+                ),
             },
             connection=con,
         )
