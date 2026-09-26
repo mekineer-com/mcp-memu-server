@@ -34,8 +34,6 @@ CREATE TABLE soul_state (
     retrieval_ids_since_consolidation JSON DEFAULT '[]',
     prior_context_ids_since_consolidation JSON DEFAULT '[]',
     last_consolidation_at DATETIME,
-    consolidation_in_progress BOOLEAN DEFAULT 0,
-    consolidation_started_at DATETIME,
     updated_at DATETIME
 )
 """

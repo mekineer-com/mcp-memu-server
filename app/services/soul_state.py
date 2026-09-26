@@ -50,8 +50,6 @@ CREATE TABLE IF NOT EXISTS soul_state (
     retrieval_ids_since_consolidation JSON DEFAULT '[]',
     prior_context_ids_since_consolidation JSON DEFAULT '[]',
     last_consolidation_at DATETIME,
-    consolidation_in_progress BOOLEAN DEFAULT 0,
-    consolidation_started_at DATETIME,
     last_consolidation_error TEXT,
     last_consolidation_error_at DATETIME,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
