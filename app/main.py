@@ -3470,13 +3470,16 @@ async def memory_graph_category_update(
     summary = payload.get("summary")
     title = payload.get("title")
     description = payload.get("description")
+    category_kind = payload.get("kind")
     if not uid or not sid:
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
-    supplied = (summary, title, description)
+    supplied = (summary, title, description, category_kind)
     if not any(value is not None for value in supplied):
-        raise HTTPException(status_code=400, detail="title, description, or summary is required")
-    if any(value is not None and (not isinstance(value, str) or not value.strip()) for value in supplied):
+        raise HTTPException(status_code=400, detail="title, description, summary, or kind is required")
+    if any(value is not None and (not isinstance(value, str) or not value.strip()) for value in (summary, title, description)):
         raise HTTPException(status_code=400, detail="dossier text fields must be non-empty strings")
+    if category_kind is not None and category_kind not in {"lore", "topic", "goal"}:
+        raise HTTPException(status_code=400, detail="kind must be lore, topic, or goal")
     scope = {"user_id": uid, "soul_id": sid}
     svc = _get_service_from_payload({"user": scope})
     snapshot = _summary_snapshot(payload)
@@ -3491,6 +3494,7 @@ async def memory_graph_category_update(
             summary=summary,
             title=title,
             description=description,
+            category_kind=category_kind,
             where=scope,
             edited_by=payload.get("edited_by") if isinstance(payload.get("edited_by"), str) else None,
             approved=payload.get("approved") is True,

@@ -5054,12 +5054,13 @@ def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: 
 
     class _Svc:
         async def graph_update_category_summary(
-            self, item_id, *, summary, title, description, where, edited_by, approved
+            self, item_id, *, summary, title, description, category_kind, where, edited_by, approved
         ):
             calls["item_id"] = item_id
             calls["summary"] = summary
             calls["title"] = title
             calls["description"] = description
+            calls["category_kind"] = category_kind
             calls["where"] = where
             calls["edited_by"] = edited_by
             calls["approved"] = approved
@@ -5076,13 +5077,14 @@ def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: 
             category_id="c1",
             user_id="u",
             soul_id="s",
-            payload={"summary": "new", "edited_by": "surfer", "approved": True},
+            payload={"summary": "new", "kind": "topic", "edited_by": "surfer", "approved": True},
         )
     )
 
     assert out == {"id": "category:c1", "summary": "new"}
     assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}
     assert calls["where"] == {"user_id": "u", "soul_id": "s"}
+    assert calls["category_kind"] == "topic"
     assert calls["edited_by"] == "surfer"
     assert calls["approved"] is True
 
