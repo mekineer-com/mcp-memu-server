@@ -2080,7 +2080,6 @@ def _source_cursor_checkpoint(*args: Any, **kwargs: Any) -> Any:
 
 def _record_consolidation_failure(
     *,
-    conversation_id: str,
     soul_id: str,
     user_id: str,
     exc: Exception,
@@ -2093,12 +2092,6 @@ def _record_consolidation_failure(
     con = _sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        if con.execute(
-            "SELECT 1 FROM conversations "
-            "WHERE conversation_id = ? AND soul_id = ? AND user_id = ?",
-            (conversation_id, soul_id, user_id),
-        ).fetchone() is None:
-            return
         _soul_state.ensure_schema(con)
         _soul_state.write(
             con,
@@ -2186,7 +2179,6 @@ async def _run_consolidation_pipeline_once(
             try:
                 async with state_lock:
                     _record_consolidation_failure(
-                        conversation_id=conversation_id,
                         soul_id=soul_id,
                         user_id=user_id,
                         exc=exc,
@@ -2269,6 +2261,19 @@ def _should_run_consolidation(state: dict[str, Any]) -> bool:
         interval_days=_consolidation_interval_days_from_cfg(_CONFIG),
         now=now,
     )
+
+
+def _active_consolidation_failure(
+    state: dict[str, Any],
+) -> tuple[str | None, datetime | None]:
+    error = str(state.get("last_consolidation_error") or "").strip() or None
+    error_at = parse_iso_datetime(state.get("last_consolidation_error_at"))
+    last_success_at = parse_iso_datetime(state.get("last_consolidation_at"))
+    if error is None or error_at is None or (
+        last_success_at is not None and error_at <= last_success_at
+    ):
+        return None, None
+    return error, error_at
 
 
 def _make_memorize_context() -> _memorize_endpoint.MemorizeContext:
@@ -2491,6 +2496,13 @@ async def retry_consolidation(
     )
     if (uid, soul_id) in _CONSOLIDATION_RUNNING:
         raise HTTPException(status_code=409, detail="consolidation already in progress")
+    state, _card, db_path = _load_turn_state_and_soul_card(
+        cid, user_id=uid, soul_id=soul_id
+    )
+    if db_path is None or not db_path.exists():
+        raise HTTPException(status_code=404, detail="conversation database not found")
+    if _active_consolidation_failure(state)[0] is None:
+        raise HTTPException(status_code=409, detail="no failed consolidation to retry")
     task = asyncio.create_task(
         _run_consolidation_task(
             svc,
@@ -2502,6 +2514,8 @@ async def retry_consolidation(
     )
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
+    # Let the task claim this soul before another Retry request can be accepted.
+    await asyncio.sleep(0)
     return JSONResponse(
         status_code=202,
         content={"ok": True, "status": "accepted", "conversation_id": cid},
@@ -4165,13 +4179,9 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         if last_consolidation_at is not None
         else None
     )
-    consolidation_error = soul_status.get("last_consolidation_error")
-    consolidation_error_at = parse_iso_datetime(soul_status.get("last_consolidation_error_at"))
-    if consolidation_error_at is None or (
-        last_consolidation_at is not None and consolidation_error_at <= last_consolidation_at
-    ):
-        consolidation_error = None
-        consolidation_error_at = None
+    consolidation_error, consolidation_error_at = _active_consolidation_failure(
+        soul_status
+    )
     consolidation_running = (uid, sid) in _CONSOLIDATION_RUNNING
     consolidation_overdue = (
         pending_consolidation_segments > 0

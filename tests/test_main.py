@@ -1664,28 +1664,56 @@ async def test_force_consolidation_validation_failure_does_not_record_or_seed_st
 
 @pytest.mark.asyncio
 async def test_retry_consolidation_schedules_forced_background_run(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = []
+    release = asyncio.Event()
+    key = ("User", "Soul")
+    db_path = tmp_path / "Soul.db"
+    db_path.touch()
 
     monkeypatch.setattr(
         main,
         "_consolidation_request_context",
         lambda _cid, _payload: ("cid", {}, "User", "Soul", object()),
     )
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: (
+            {
+                "last_consolidation_error": "RuntimeError: failed",
+                "last_consolidation_error_at": datetime.now(UTC).isoformat(),
+                "last_consolidation_at": None,
+            },
+            None,
+            db_path,
+        ),
+    )
 
     async def fake_run(*_args, **kwargs):
         calls.append(kwargs)
-        return {"ok": True, "status": "ok"}
+        main._CONSOLIDATION_RUNNING.add(key)
+        try:
+            await release.wait()
+            return {"ok": True, "status": "ok"}
+        finally:
+            main._CONSOLIDATION_RUNNING.discard(key)
 
     monkeypatch.setattr(main, "_run_consolidation_task", fake_run)
     response = await main.retry_consolidation(
         "cid", {"user": {"user_id": "User", "soul_id": "Soul"}}
     )
-    await asyncio.sleep(0)
 
     assert response.status_code == 202
     assert calls[0]["force"] is True
+    with pytest.raises(HTTPException, match="already in progress"):
+        await main.retry_consolidation(
+            "cid", {"user": {"user_id": "User", "soul_id": "Soul"}}
+        )
+    release.set()
+    await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
@@ -1708,6 +1736,30 @@ async def test_retry_consolidation_rejects_running_soul(
         main._CONSOLIDATION_RUNNING.discard(key)
 
 
+@pytest.mark.asyncio
+async def test_retry_consolidation_requires_active_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "Soul.db"
+    db_path.touch()
+    monkeypatch.setattr(
+        main,
+        "_consolidation_request_context",
+        lambda _cid, _payload: ("cid", {}, "User", "Soul", object()),
+    )
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({}, None, db_path),
+    )
+
+    with pytest.raises(HTTPException, match="no failed consolidation"):
+        await main.retry_consolidation(
+            "cid", {"user": {"user_id": "User", "soul_id": "Soul"}}
+        )
+
+
 def test_record_consolidation_failure_never_creates_missing_soul_db(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1717,7 +1769,6 @@ def test_record_consolidation_failure_never_creates_missing_soul_db(
 
     with pytest.raises(FileNotFoundError, match="soul database not found"):
         main._record_consolidation_failure(
-            conversation_id="missing-conversation",
             soul_id="MissingSoul",
             user_id="User",
             exc=RuntimeError("failed"),
@@ -1726,7 +1777,7 @@ def test_record_consolidation_failure_never_creates_missing_soul_db(
     assert not missing.exists()
 
 
-def test_record_consolidation_failure_updates_only_existing_target(
+def test_record_consolidation_failure_is_soul_level(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1740,7 +1791,6 @@ def test_record_consolidation_failure_updates_only_existing_target(
         con.close()
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user, _soul: db_path)
     main._record_consolidation_failure(
-        conversation_id="missing-conversation",
         soul_id="Soul",
         user_id="User",
         exc=RuntimeError("invalid request"),
@@ -1748,7 +1798,10 @@ def test_record_consolidation_failure_updates_only_existing_target(
     con = main._sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        assert main._soul_state.read(con)["last_consolidation_error"] is None
+        assert (
+            main._soul_state.read(con)["last_consolidation_error"]
+            == "RuntimeError: invalid request"
+        )
     finally:
         con.close()
 
@@ -1760,7 +1813,6 @@ def test_record_consolidation_failure_updates_only_existing_target(
     )
 
     main._record_consolidation_failure(
-        conversation_id="cid-owner",
         soul_id="Soul",
         user_id="User",
         exc=RuntimeError("reflection failed"),
@@ -1777,7 +1829,6 @@ def test_record_consolidation_failure_updates_only_existing_target(
     assert conversation_count == 1
 
     main._record_consolidation_failure(
-        conversation_id="cid-owner",
         soul_id="Soul",
         user_id="User",
         exc=RuntimeError("profile invalid"),
