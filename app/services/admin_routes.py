@@ -318,7 +318,6 @@ def register_admin_routes(
                 "happened_at",
                 "digest_cursor",
                 "prior_context",
-                "intentions_active",
                 "memory_cache",
                 "pending_segment_ids",
                 "last_memorize_at",

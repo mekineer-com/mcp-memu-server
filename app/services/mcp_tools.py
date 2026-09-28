@@ -86,7 +86,6 @@ def build_prompt_override_payload(retrieve_out: dict[str, Any]) -> dict[str, Any
         "system_prompt": str(retrieve_out.get("turn_system_prompt") or "").strip(),
         "user_prompt": str(retrieve_out.get("turn_user_prompt") or "").strip(),
         "memory_cache": retrieve_out.get("memory_cache") or [],
-        "intentions_active": retrieve_out.get("intentions_active") or {"items": []},
         "retrieve_rag": retrieve_out.get("result") or {"categories": [], "items": [], "resources": []},
         "generated_by": retrieve_out.get("turn_prompt_source") or "conversation_retrieve",
     }

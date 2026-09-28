@@ -60,7 +60,7 @@ mcp-memu-server/
 | `/graph` | GET | Recent memory graph (items + edges) for graph clients |
 | `/timeline` | GET | Entity relationship timeline |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt: enriches query with identity, categories, memory cache, intentions, and current-chat history before calling memu. |
-| `/conversation/{id}/turn` | POST | Soul turn loop: runs LLM with turn contract, persists intentions + cache, fires APImw in background on cadence, manages free-turn continuations and attachments. |
+| `/conversation/{id}/turn` | POST | Soul turn loop: runs LLM with turn contract, may annul current intentions, persists cache, fires APImw in background on cadence, and manages continuations/attachments. |
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn, then independently best-effort delete its uncited annulment reflections |
 | `/integration/memu/turn` | POST | MCP single-call turn wrapper: retrieve then turn |
 | `/integration/memu/sensory-search` | POST | Scoped explicit visual-memory candidate search over separate media and caption lanes |
@@ -99,7 +99,6 @@ mcp-memu-server/
 | `/integration/memu/consolidate` | POST | MCP force-consolidation wrapper |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/conversation/{id}/consolidation/force` | POST | Force consolidation now (lock-safe) |
-| `/souls/{soul_id}/intentions` | GET | Long-term life goals (`intentions_life_goals` table) |
 | `/souls/{soul_id}/relationships` | GET/POST | User-declared relationship entities; POST may promote an exact entity ID |
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or remove Relationship properties from one stable `entity:<entities.id>` reference |
 | `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot |
@@ -189,7 +188,7 @@ snapshot metadata, not introduce another registry.
 
 ```python
 from memu.app import MemoryService    # main facade
-from memu.prompts.consolidation import anchors, dossiers  # two-call reflection prompts
+from memu.prompts.consolidation import anchors, dossiers, weekly  # three-stage reflection prompts
 from memu.prompts.memory_type import ...  # type prompts
 ```
 

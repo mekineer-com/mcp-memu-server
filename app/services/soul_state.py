@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.db import json_from_db, json_to_db, normalize_text_list
-from app.services.intention_state import normalize_intentions_stack, normalize_memory_cache
+from app.services.intention_state import validate_intentions, normalize_memory_cache
 
 
 def ensure_schema(con: sqlite3.Connection) -> None:
@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS soul_state (
     narrative_self_approved TEXT,
     summaries_revision INTEGER NOT NULL DEFAULT 0,
     memory_cache JSON DEFAULT '[]',
-    intentions_active JSON,
+    intentions_active JSON NOT NULL DEFAULT '[]',
     retrieve_rewrite_angle INTEGER DEFAULT 0,
     retrieval_ids_since_consolidation JSON DEFAULT '[]',
     prior_context_ids_since_consolidation JSON DEFAULT '[]',
@@ -62,7 +62,10 @@ CREATE TABLE IF NOT EXISTS soul_state (
         if name == "narrative_self_approved":
             con.execute("UPDATE soul_state SET narrative_self_approved = narrative_self")
     if con.execute("SELECT COUNT(*) FROM soul_state").fetchone()[0] == 0:
-        con.execute("INSERT INTO soul_state (id, updated_at) VALUES (1, ?)", (datetime.now(UTC).isoformat(),))
+        con.execute(
+            "INSERT INTO soul_state (id, intentions_active, updated_at) VALUES (1, '[]', ?)",
+            (datetime.now(UTC).isoformat(),),
+        )
     if owns_migration:
         con.commit()
 
@@ -78,7 +81,7 @@ def read(con: sqlite3.Connection) -> dict[str, Any]:
         "narrative_self_approved": row["narrative_self_approved"],
         "summaries_revision": int(row["summaries_revision"] or 0),
         "memory_cache": normalize_memory_cache(json_from_db(row["memory_cache"])),
-        "intentions_active": normalize_intentions_stack(json_from_db(row["intentions_active"])),
+        "intentions_active": validate_intentions(json_from_db(row["intentions_active"])),
         "retrieve_rewrite_angle": int(row["retrieve_rewrite_angle"] or 0),
         "retrieval_ids_since_consolidation": normalize_text_list(row["retrieval_ids_since_consolidation"]),
         "prior_context_ids_since_consolidation": normalize_text_list(row["prior_context_ids_since_consolidation"]),
@@ -97,7 +100,7 @@ def defaults() -> dict[str, Any]:
         "narrative_self_approved": None,
         "summaries_revision": 0,
         "memory_cache": [],
-        "intentions_active": normalize_intentions_stack(None),
+        "intentions_active": [],
         "retrieve_rewrite_angle": 0,
         "retrieval_ids_since_consolidation": [],
         "prior_context_ids_since_consolidation": [],
@@ -130,7 +133,7 @@ def write(con: sqlite3.Connection, updates: dict[str, Any]) -> None:
     if not fields:
         return
     if "intentions_active" in fields:
-        fields["intentions_active"] = normalize_intentions_stack(fields["intentions_active"])
+        fields["intentions_active"] = validate_intentions(fields["intentions_active"])
     if "memory_cache" in fields:
         fields["memory_cache"] = normalize_memory_cache(fields["memory_cache"])
     if "retrieval_ids_since_consolidation" in fields:

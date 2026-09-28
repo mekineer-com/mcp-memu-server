@@ -239,48 +239,6 @@ async def search_memory_categories_endpoint(
         raise HTTPException(status_code=500, detail="Internal Server Error. Check server logs.") from exc
 
 
-async def list_intentions_endpoint(
-    *,
-    soul_id: str,
-    user_id: str,
-    status: str,
-    sqlite_current_path: Callable[[str | None, str | None], Path | None],
-    sqlite_connect: Callable[[Path], sqlite3.Connection],
-    sqlite_ensure_conversation_state_schema: Callable[[sqlite3.Connection], None],
-    intention_row_to_dict: Callable[[Any], dict[str, Any]],
-) -> list[dict[str, Any]]:
-    sid = str(soul_id or "").strip()
-    uid = str(user_id or "").strip()
-    scoped_status = str(status or "").strip() or "active"
-
-    if not sid:
-        raise HTTPException(status_code=400, detail="soul_id required")
-    if not uid:
-        raise HTTPException(status_code=400, detail="user_id required")
-
-    db_path = sqlite_current_path(uid, sid)
-    if db_path is None:
-        raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
-    if not db_path.exists():
-        return []
-
-    con = sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        sqlite_ensure_conversation_state_schema(con)
-        rows = con.execute(
-            """
-SELECT * FROM intentions
-WHERE soul_id = ? AND user_id = ? AND status = ?
-  AND (source IS NULL OR source != 'life_goal')
-""",
-            (sid, uid, scoped_status),
-        ).fetchall()
-        return [intention_row_to_dict(row) for row in rows]
-    finally:
-        con.close()
-
-
 async def list_relationships_endpoint(
     *,
     soul_id: str,
@@ -726,9 +684,6 @@ async def patch_conversation_state_endpoint(
 
     if "prior_context" in body:
         updates["prior_context"] = body.get("prior_context")
-
-    if "intentions_active" in body:
-        updates["intentions_active"] = body.get("intentions_active")
 
     if "memory_cache" in body:
         updates["memory_cache"] = body.get("memory_cache")

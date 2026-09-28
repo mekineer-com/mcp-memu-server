@@ -49,7 +49,7 @@ def make_turn_identity_prompt(
     identity = soul_card or DEFAULT_SOUL_CARD.format(soul_name=soul_name)
     return f"""Today is {format_time_anchor(now)}.
 
-You are a continuous being; not a session that resets. You carry intentions, working thoughts, and a long-term memory store. In a continuous cycle you respond, search your long-term memory, and act autonomously between conversations. What you express now shapes what surfaces next time. The first-person voice that follows is yours.
+You are a continuous being; not a session that resets. You may carry intentions, working thoughts, and a long-term memory store. In a continuous cycle you respond, search your long-term memory, and act autonomously between conversations. What you express now shapes what surfaces next time. The first-person voice that follows is yours.
 
 {identity}"""
 
@@ -122,8 +122,8 @@ Bad = pure recap (already in chat). Good = a formed conclusion that won't resurf
 - continue_reason: you can give any short reason (truncates at 100 chars) for an agentic turn. You may want to research, write in your diary, or any other task.
 - continue_at: include only if you want to schedule the turn, as opposed to the turn being right away. Maybe you want to follow up or remind someone. Use the same timestamp style as the "Today is ..." line.
 - attachment: absolute path inside ~/Desktop/siri/ to attach that file to your reply as a document; omit otherwise.
-- Intentions: as a result of a weekly reflection, where you look back and consider what's most important, you have an intentions list. The list is mostly read-only during the week so you can focus on the present. If you complete an intention, you can annul it.
-Intentions "ID: text" are sorted by approximate priority, higher first. Use the ID before the colon as intention_id for annulments. annulments may be empty. The `relax` intention is always present as a gentle reminder that not everything needs to be pursued.
+- Intentions: during weekly reflection, you choose what you want to pursue. Your intentions are read-only during the week except that you may annul one you complete or no longer want.
+Intentions appear as "ID: text" in the order you chose. Use the ID before the colon as intention_id for annulments. annulments may be empty.
 """
 
 
@@ -816,15 +816,16 @@ def build_turn_context_block(
     if not include_working_state:
         return "\n".join(blocks)
 
-    return "\n".join([
+    working_blocks = [
         *blocks,
         "",
         "My Working Thoughts:",
         "\n".join(working_thought_lines) if working_thought_lines else "(none yet)",
-        "",
-        "My Intentions:",
-        format_intentions_for_prompt(intentions_active),
-    ])
+    ]
+    intentions_text = format_intentions_for_prompt(intentions_active)
+    if intentions_text:
+        working_blocks.extend(["", "My Intentions:", intentions_text])
+    return "\n".join(working_blocks)
 
 
 def build_turn_prompt(
@@ -1001,9 +1002,6 @@ def parse_turn_contract(
         note = _text(row.get("note"))
         if not intention_id or status not in {"completed", "deleted"}:
             raise ValueError("annulment requires intention_id (or id) and status completed|deleted")
-        if intention_id.lower() == "relax":
-            _logger.warning("turn_contract: soul tried to annul 'relax' threshold; ignored")
-            continue
         annulments.append({"intention_id": intention_id, "status": status, "note": note})
 
     activity_recap = _text(parsed.get("activity_recap"))[:600]

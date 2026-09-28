@@ -58,7 +58,6 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
             "turn_system_prompt": "system",
             "turn_user_prompt": "user",
             "memory_cache": ["a"],
-            "intentions_active": {"items": []},
             "result": {"categories": [], "items": [], "resources": []},
             "retrieve_ms": 42,
             "turn_prompt_active_since": 100.0,
@@ -139,7 +138,6 @@ async def test_memu_turn_requests_source_history_for_whatsapp() -> None:
             "turn_user_prompt": "user",
             "turn_history": [{"role": "user", "content": "from retrieve history"}],
             "memory_cache": [],
-            "intentions_active": {"items": []},
             "result": {"categories": [], "items": [], "resources": []},
         }
 
@@ -215,7 +213,6 @@ async def test_memu_turn_omits_blank_chat_fields() -> None:
             "turn_system_prompt": "system",
             "turn_user_prompt": "user",
             "memory_cache": [],
-            "intentions_active": {"items": []},
             "result": {"categories": [], "items": [], "resources": []},
         }
 
@@ -265,7 +262,6 @@ async def test_memu_turn_forwards_mental_health_addon_override() -> None:
             "turn_system_prompt": "system",
             "turn_user_prompt": "user",
             "memory_cache": [],
-            "intentions_active": {"items": []},
             "result": {"categories": [], "items": [], "resources": []},
         }
 

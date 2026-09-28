@@ -56,12 +56,10 @@ At minimum, set `llm.api_key`, `llm.chat_model`, `llm.embedding`, the storage pa
 | `/souls/{soul_id}/narrative_suggestion` | POST | Submit narrative_self revision suggestion |
 | `/souls/{soul_id}/relationships` | CRUD | Manage declared relationships |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt (RAG + prior context) |
-| `/conversation/{id}/turn` | POST | Soul turn loop: run LLM, persist intentions + cache |
+| `/conversation/{id}/turn` | POST | Soul turn loop: run LLM, optionally annul intentions, persist cache |
 | `/conversation/{id}/messages/append` | POST | Append messages (with `memorize_chat` flag) |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state (includes `memorize_chat`) |
 | `/conversation/{id}/consolidation/force` | POST | Force consolidation now (bypass interval gate) |
-| `/intentions` | GET | List active intentions |
-| `/intentions/{id}` | PATCH | Update intention status/priority |
 | `/categories` | GET | List all categories |
 | `/clear` | POST | Delete memories in scope |
 | `/config` | GET/POST | Read or update runtime config |

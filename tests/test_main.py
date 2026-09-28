@@ -31,7 +31,7 @@ def _retrieve_state_row() -> dict[str, Any]:
         "last_memorize_at": None,
         "prior_context": "",
         "memory_cache": [],
-        "intentions_active": {"items": []},
+        "intentions_active": [],
     }
 
 
@@ -45,7 +45,7 @@ def test_turn_state_write_consumes_prior_context_after_successful_turn(monkeypat
             {
                 "prior_context": "APImw memory line",
                 "memory_cache": [],
-                "intentions_active": {"items": []},
+                "intentions_active": [],
             },
             None,
             None,
@@ -58,19 +58,72 @@ def test_turn_state_write_consumes_prior_context_after_successful_turn(monkeypat
 
     monkeypatch.setattr(main, "_write_conversation_state", _write_state)
 
-    state, _ = main._turn_state_write(
+    svc = SimpleNamespace(graph_delete_memories=lambda *_a, **_k: None)
+    state, _, memory_ids = main._turn_state_write(
         "conv",
         "user",
         "soul",
         "",
         [],
         [],
-        annulment_memory_ids=["memory-1"],
+        svc=svc,
+        scope={"user_id": "user", "soul_id": "soul"},
+        prepared_annulments=[],
     )
 
     assert captured["prior_context"] is None
-    assert captured["undo_snapshot"]["annulment_memory_ids"] == ["memory-1"]
+    assert captured["undo_snapshot"]["annulment_memory_ids"] == []
     assert state["prior_context"] is None
+    assert memory_ids == []
+
+
+def test_persist_actual_annulments_uses_ids_removed_from_latest_state() -> None:
+    created: list[str] = []
+
+    class _Repo:
+        def create_item(self, **kwargs: Any) -> SimpleNamespace:
+            created.append(str(kwargs["summary"]))
+            return SimpleNamespace(id=f"memory-{len(created)}")
+
+    svc = SimpleNamespace(database=SimpleNamespace(memory_item_repo=_Repo()))
+    next_intentions, removed, memory_ids = main._persist_actual_annulments(
+        svc=svc,
+        scope={"user_id": "Fictional User", "soul_id": "Fictional Soul"},
+        conversation_id="chat:fictional",
+        current_intentions=[
+            {"id": "still-here", "text": "Still here"},
+            {"id": "reworded", "text": "Current wording"},
+        ],
+        annulment_ids=["still-here", "reworded", "already-gone"],
+        prepared=[
+            {
+                "intention_id": "still-here",
+                "summary": "Completed the current intention.",
+                "embedding": [1.0],
+                "happened_at": datetime.now(UTC),
+            },
+            {
+                "intention_id": "already-gone",
+                "summary": "This stale event must not be written.",
+                "embedding": [1.0],
+                "happened_at": datetime.now(UTC),
+            },
+            {
+                "intention_id": "reworded",
+                "summary": "Completed the reworded intention.",
+                "embedding": [1.0],
+                "happened_at": datetime.now(UTC),
+            },
+        ],
+    )
+
+    assert next_intentions == []
+    assert removed == [
+        {"item": {"id": "still-here", "text": "Still here"}, "position": 0},
+        {"item": {"id": "reworded", "text": "Current wording"}, "position": 1},
+    ]
+    assert memory_ids == ["memory-1", "memory-2"]
+    assert created == ["Completed the current intention.", "Completed the reworded intention."]
 
 
 @pytest.mark.asyncio
@@ -93,14 +146,12 @@ async def test_annulment_memories_are_dated_historical_events() -> None:
     svc.embed = _embed
     prepared = await main._prepare_annulment_memories(
         svc=svc,
-        intentions_before={
-            "items": [
-                {"id": "a", "text": "Ask about sleep"},
-                {"id": "b", "text": "Check the weather"},
-            ]
-        },
+        intentions_before=[
+            {"id": "a", "text": "Ask about sleep"},
+            {"id": "b", "text": "Check the weather"},
+        ],
         annulments=[
-            {"intention_id": "a", "status": "completed"},
+            {"intention_id": "a", "status": "completed", "note": ""},
             {"intention_id": "b", "status": "deleted", "note": "No longer needed"},
         ],
     )
@@ -126,10 +177,13 @@ async def test_annulment_memories_are_dated_historical_events() -> None:
     with pytest.raises(ValueError, match="embedding count"):
         await main._prepare_annulment_memories(
             svc=svc,
-            intentions_before={"items": [{"id": "a"}, {"id": "b"}]},
+            intentions_before=[
+                {"id": "a", "text": "Ask about sleep"},
+                {"id": "b", "text": "Check the weather"},
+            ],
             annulments=[
-                {"intention_id": "a", "status": "completed"},
-                {"intention_id": "b", "status": "deleted"},
+                {"intention_id": "a", "status": "completed", "note": ""},
+                {"intention_id": "b", "status": "deleted", "note": ""},
             ],
         )
     assert len(created) == 2
@@ -145,7 +199,9 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     writes: list[dict[str, Any]] = []
     snapshot = {
         "memory_cache": ["before"],
-        "intentions_active": {"items": [{"id": "a"}]},
+        "annulled_intentions": [
+            {"item": {"id": "a", "text": "Ask about sleep"}, "position": 0}
+        ],
         "annulment_memory_ids": ["memory-1", "memory-2"],
     }
 
@@ -159,7 +215,14 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"undo_snapshot": snapshot}, None, None),
+        lambda *_a, **_k: (
+            {
+                "undo_snapshot": snapshot,
+                "intentions_active": [{"id": "newer", "text": "Newer intention"}],
+            },
+            None,
+            None,
+        ),
     )
     monkeypatch.setattr(
         main,
@@ -180,7 +243,10 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     ]
     assert writes == [{
         "memory_cache": ["before"],
-        "intentions_active": {"items": [{"id": "a"}]},
+        "intentions_active": [
+            {"id": "a", "text": "Ask about sleep"},
+            {"id": "newer", "text": "Newer intention"},
+        ],
         "undo_snapshot": None,
     }]
 
@@ -267,7 +333,7 @@ async def test_conversation_turn_dry_run_skips_annulment_memory_persistence(
             None,
             db_path,
             [],
-            {"items": [{"id": "a", "text": "Ask about sleep"}]},
+            [{"id": "a", "text": "Ask about sleep"}],
             0,
             None,
         ),
@@ -296,7 +362,7 @@ async def test_conversation_turn_dry_run_skips_annulment_memory_persistence(
                 "user_prompt": "prompt",
                 "system_prompt": "system",
                 "memory_cache": [],
-                "intentions_active": {"items": []},
+                "intentions_active": [],
                 "retrieve_rag": {"items": [], "categories": [], "resources": []},
             },
         },
@@ -315,7 +381,7 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
         "last_memorize_at": None,
         "prior_context": "APImw memory line",
         "memory_cache": ["working thought"],
-        "intentions_active": {"items": []},
+        "intentions_active": [],
         "apimw_message_to_self": "[subconscious] quiet note",
     }
 
@@ -352,7 +418,7 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
             "conversation_id": conversation_id,
             "prior_context": "APImw memory line",
             "memory_cache": ["working thought"],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "retrieve_ms": 1,
         }
 
@@ -998,7 +1064,12 @@ async def test_conversation_retrieve_read_only_skips_sillytavern_snapshot(
     )
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {
+            "ok": True,
+            "result": {},
+            "conversation_id": conversation_id,
+            "intentions_active": [],
+        }
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -1053,6 +1124,7 @@ async def test_run_retrieve_read_only_skips_state_write_and_procedural_ingest(tm
         sqlite_ensure_conversation_state_schema=lambda *_a, **_k: None,
         conversation_state_from_row=lambda *_a, **_k: None,
         conversation_state_row=lambda *_a, **_k: None,
+        soul_state_read=lambda *_a, **_k: {},
         write_conversation_state=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("state write must be suppressed")),
         procedural_module=procedural,
         procedural_yaml_dir=lambda _cfg: tmp_path,
@@ -1070,6 +1142,42 @@ async def test_run_retrieve_read_only_skips_state_write_and_procedural_ingest(tm
 
     assert out["ok"] is True
     assert procedural.expected_embedding_model == "gemini-embedding-2"
+
+
+@pytest.mark.asyncio
+async def test_run_retrieve_reads_soul_state_before_conversation_exists(tmp_path: Path) -> None:
+    database = tmp_path / "FictionalSoul.db"
+    database.touch()
+
+    class FakeService:
+        async def retrieve(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {"items": []}
+
+    out = await retrieve_orchestration._run_retrieve(
+        {"user": {"user_id": "u", "soul_id": "s"}, "query": "hello"},
+        conversation_id="chat:new",
+        safe_payload=lambda p: dict(p),
+        extract_conversation_id=lambda _p: None,
+        get_service_from_payload=lambda _p: FakeService(),
+        parse_as_of_datetime=lambda _v: None,
+        sqlite_current_path=lambda *_a, **_k: database,
+        sqlite_connect=sqlite3.connect,
+        sqlite_ensure_conversation_state_schema=lambda *_a, **_k: None,
+        conversation_state_from_row=lambda *_a, **_k: None,
+        conversation_state_row=lambda *_a, **_k: None,
+        soul_state_read=lambda _con: {
+            "intentions_active": [{"id": "write-letter", "text": "Write a letter"}]
+        },
+        write_conversation_state=lambda *_a, **_k: None,
+        procedural_module=SimpleNamespace(),
+        procedural_yaml_dir=lambda _cfg: tmp_path,
+        procedural_db_path=lambda _cfg: tmp_path / "procedural.db",
+        procedural_should_ingest=lambda *_a, **_k: False,
+        config={},
+        logger=SimpleNamespace(exception=lambda *_a, **_k: None),
+    )
+
+    assert out["intentions_active"] == [{"id": "write-letter", "text": "Write a letter"}]
 
 
 def test_format_all_chat_history_for_ai_merges_current_and_cross_chats() -> None:
@@ -2102,7 +2210,7 @@ async def test_apimw_retrieve_items_sets_force_retrieve_and_item_count(monkeypat
         conversations_block="My WhatsApp Conversations:\n\n[dm][Marcos]\n[Marcos] hello",
         soul_id="Echo",
         history=[{"role": "user", "name": "Marcos", "content": "hello"}],
-        state_row={},
+        state_row={"memory_cache": [], "intentions_active": []},
         conversation_id="cid",
         apimw_k=12,
         trace_id="apimw-trace",
@@ -2143,7 +2251,7 @@ async def test_apimw_random_items_request_active_only(monkeypatch: pytest.Monkey
         focus_text="recent conversation",
         conversations_block="My WhatsApp Conversations:\n\n[dm][Marcos]\n[Marcos] hello",
         history=[],
-        state_row={},
+        state_row={"memory_cache": [], "intentions_active": []},
         conversation_id="cid",
         soul_id="Echo",
         apimw_k=20,
@@ -2242,7 +2350,7 @@ async def test_turn_launch_apimw_passes_floored_history_after_memorize(
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"digest_cursor": 8, "last_memorize_at": "2026-05-01T00:00:00+00:00"}, None, None),
+        lambda *_a, **_k: ({**_retrieve_state_row(), "digest_cursor": 8, "last_memorize_at": "2026-05-01T00:00:00+00:00"}, None, None),
     )
 
     captured: dict[str, object] = {}
@@ -3316,7 +3424,7 @@ def test_turn_state_read_marks_background_error_when_source_assembly_fails(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"memorize_chat": True, "digest_cursor": -1, "last_memorize_at": None},
+            {"memorize_chat": True, "digest_cursor": -1, "last_memorize_at": None, "intentions_active": []},
             None,
             None,
         ),
@@ -3342,7 +3450,6 @@ def test_turn_state_read_marks_background_error_when_source_assembly_fails(
         "Echo",
         {},
         [],
-        {"items": []},
         False,
         [{"role": "user", "content": "hello"}],
     )
@@ -3357,7 +3464,7 @@ def test_turn_state_read_triggers_on_summed_primary_tails(monkeypatch: pytest.Mo
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"memorize_chat": True, "digest_cursor": -1, "last_memorize_at": None},
+            {"memorize_chat": True, "digest_cursor": -1, "last_memorize_at": None, "intentions_active": []},
             None,
             None,
         ),
@@ -3378,7 +3485,6 @@ def test_turn_state_read_triggers_on_summed_primary_tails(monkeypatch: pytest.Mo
         "Echo",
         {},
         [],
-        {"items": []},
         False,
         [{"role": "user", "content": "short current"}],
     )
@@ -3410,7 +3516,7 @@ def test_turn_state_read_ignores_background_tails_for_segment_trigger(monkeypatc
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"memorize_chat": True, "digest_cursor": -1, "last_memorize_at": None},
+            {"memorize_chat": True, "digest_cursor": -1, "last_memorize_at": None, "intentions_active": []},
             None,
             None,
         ),
@@ -3433,7 +3539,6 @@ def test_turn_state_read_ignores_background_tails_for_segment_trigger(monkeypatc
         "Echo",
         {},
         [],
-        {"items": []},
         False,
         [{"role": "user", "content": "short current"}],
     )
@@ -3447,7 +3552,7 @@ def test_turn_state_read_excludes_background_chat_from_segment_trigger(monkeypat
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"memorize_chat": False, "digest_cursor": 0, "last_memorize_at": "2026-05-10T00:00:00+00:00"},
+            {"memorize_chat": False, "digest_cursor": 0, "last_memorize_at": "2026-05-10T00:00:00+00:00", "intentions_active": []},
             None,
             None,
         ),
@@ -3459,7 +3564,6 @@ def test_turn_state_read_excludes_background_chat_from_segment_trigger(monkeypat
         "Echo",
         {},
         [],
-        {"items": []},
         False,
         [{"role": "user", "content": "w " * 10000}],
     )
@@ -3656,7 +3760,7 @@ def test_build_retrieve_soul_context_queries_includes_full_history() -> None:
         soul_id="Echo",
         message="current",
         history=history,
-        state_row={"memory_cache": [], "intentions_active": {"items": []}},
+        state_row={"memory_cache": [], "intentions_active": []},
     )
     history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
     assert len(history_rows) == 1
@@ -3675,7 +3779,7 @@ def test_build_retrieve_soul_context_queries_uses_full_history_for_apimw_rewrite
         soul_id="Echo",
         message="current",
         history=history,
-        state_row={"memory_cache": [], "intentions_active": {"items": []}},
+        state_row={"memory_cache": [], "intentions_active": []},
         identity_mode="apimw",
     )
     history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
@@ -3752,7 +3856,7 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
         conversation_id="whatsapp:dm:15133278228",
         soul_id="Siri",
         user_id="u1",
-        state_row={},
+        state_row={"memory_cache": [], "intentions_active": []},
         current_history=history,
     )
 
@@ -3778,7 +3882,7 @@ def test_build_retrieve_soul_context_queries_orders_chats_before_working_and_int
         history=history,
         state_row={
             "memory_cache": ["cache entry"],
-            "intentions_active": {"items": [{"id": "relax", "text": "Relax"}]},
+            "intentions_active": [{"id": "stay-curious", "text": "Stay curious"}],
         },
     )
     roles = [str(q.get("role")) for q in queries if isinstance(q, dict)]
@@ -3799,7 +3903,7 @@ def test_build_retrieve_soul_context_queries_includes_current_chat_heading_for_w
         soul_id="Echo",
         message="current",
         history=history,
-        state_row={"memory_cache": [], "intentions_active": {"items": []}},
+        state_row={"memory_cache": [], "intentions_active": []},
         conversation_id="whatsapp:dm:Marcos",
     )
     history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
@@ -3817,7 +3921,7 @@ def test_build_retrieve_soul_context_queries_keeps_self_turn_out_of_user_history
             {"source_message_id": "m1", "role": "user", "name": "Marcos", "content": "Going to nap."},
             {"source_message_id": "m2", "role": "assistant", "name": "Siri", "content": "Rest close."},
         ],
-        state_row={"memory_cache": [], "intentions_active": {"items": []}},
+        state_row={"memory_cache": [], "intentions_active": []},
         conversation_id="whatsapp:dm:Marcos",
         self_turn_directive="Scheduled follow-up due now. Reason you gave: Check on Marcos.",
         self_turn_label="Scheduled wake",
@@ -3844,7 +3948,7 @@ def test_build_retrieve_soul_context_queries_appends_current_locator() -> None:
         soul_id="Echo",
         message="hello world",
         history=history,
-        state_row={"memory_cache": [], "intentions_active": {"items": []}},
+        state_row={"memory_cache": [], "intentions_active": []},
     )
     history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
     assert len(history_rows) == 1
@@ -5619,8 +5723,7 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
                 "summary": "Marcos likes continuity.",
             }
         ],
-        state_row={
-        },
+        state_row={"memory_cache": [], "intentions_active": []},
         all_categories_summary="# Dossier Index\n- SoulA carries one integrated self-summary.",
         segment_text="My WhatsApp Conversations:\n\n[dm][Marcos]\n[Marcos] earlier hello",
         current_message_text="hello",
@@ -5650,10 +5753,9 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
     assert "[Marcos] earlier hello" in captured["user_prompt"]
     assert captured["trace_id"] == "apimw-trace"
     assert "My Working Thoughts:" in captured["user_prompt"]
-    assert "My Intentions:" in captured["user_prompt"]
+    assert "My Intentions:" not in captured["user_prompt"]
     assert captured["user_prompt"].index("My WhatsApp Conversations:") < captured["user_prompt"].index("My Working Thoughts:")
-    assert captured["user_prompt"].index("My Working Thoughts:") < captured["user_prompt"].index("My Intentions:")
-    assert captured["user_prompt"].index("My Intentions:") < captured["user_prompt"].index("Memories List:")
+    assert captured["user_prompt"].index("My Working Thoughts:") < captured["user_prompt"].index("Memories List:")
     assert "New Message:" not in captured["user_prompt"]
     assert "Reminder: do not answer the message here." not in captured["user_prompt"]
     assert captured["system_prompt"].startswith("Today is ")
@@ -5749,7 +5851,7 @@ def test_turn_state_write_clears_one_shot_message_to_self(monkeypatch: pytest.Mo
         lambda *_a, **_k: (
             {
                 "memory_cache": [],
-                "intentions_active": {"items": []},
+                "intentions_active": [],
                 "apimw_message_to_self": "old whisper",
             },
             None,
@@ -5762,7 +5864,12 @@ def test_turn_state_write_clears_one_shot_message_to_self(monkeypatch: pytest.Mo
         lambda conversation_id, soul_id, user_id, updates: captured_updates.update(updates) or ({"ok": True}, Path("/tmp/fake.db")),
     )
 
-    main._turn_state_write("c", "u", "s", "", [], [])
+    main._turn_state_write(
+        "c", "u", "s", "", [], [],
+        svc=SimpleNamespace(graph_delete_memories=lambda *_a, **_k: None),
+        scope={"user_id": "u", "soul_id": "s"},
+        prepared_annulments=[],
+    )
 
     assert captured_updates["apimw_message_to_self"] is None
 
@@ -5811,7 +5918,7 @@ async def test_conversation_retrieve_preserves_prebuilt_queries_without_cutoff(
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -5862,7 +5969,7 @@ async def test_conversation_retrieve_uses_payload_history_for_primary_chat_queri
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -5913,14 +6020,14 @@ async def test_conversation_retrieve_turn_prompt_reuses_first_floored_history(
             {
                 "prior_context": "",
                 "memory_cache": [],
-                "intentions_active": {"items": []},
+                "intentions_active": [],
                 "digest_cursor": 0,
                 "last_memorize_at": "2026-06-14T00:00:00+00:00",
             },
             {
                 "prior_context": "",
                 "memory_cache": [],
-                "intentions_active": {"items": []},
+                "intentions_active": [],
                 "digest_cursor": 3,
                 "last_memorize_at": "2026-06-14T00:00:00+00:00",
             },
@@ -5943,7 +6050,7 @@ async def test_conversation_retrieve_turn_prompt_reuses_first_floored_history(
             "result": {},
             "conversation_id": conversation_id,
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
         }
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -6049,7 +6156,7 @@ async def test_conversation_retrieve_filters_whatsapp_history_before_prompt(
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -6114,7 +6221,7 @@ async def test_conversation_retrieve_rebuilds_prebuilt_queries_when_cutoff_activ
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -6184,7 +6291,7 @@ async def test_live_conversation_retrieve_degrades_source_history_load_failure(
 
     async def _fake_run_retrieve(safe: dict[str, Any], *, conversation_id: str | None = None) -> dict[str, Any]:
         captured["safe"] = safe
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -6245,7 +6352,7 @@ async def test_live_conversation_retrieve_degrades_active_since_filter_failure(
 
     async def _fake_run_retrieve(safe: dict[str, Any], *, conversation_id: str | None = None) -> dict[str, Any]:
         captured["safe"] = safe
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -6291,12 +6398,12 @@ def _patch_turn_dependencies(
         **_kwargs,
     ):
         captured["history"] = list(safe.get("history") or [])
-        return ({"digest_cursor": 0}, None, db_path, [], {"items": []}, 0, None)
+        return ({"digest_cursor": 0}, None, db_path, [], [], 0, None)
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
     monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
     monkeypatch.setattr(main, "_turn_state_read", _fake_turn_state_read)
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
     monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
@@ -6329,7 +6436,7 @@ async def test_live_conversation_turn_degrades_source_history_load_failure(
                 "user_prompt": "prompt",
                 "system_prompt": "system",
                 "memory_cache": [],
-                "intentions_active": {"items": []},
+                "intentions_active": [],
                 "retrieve_rag": {"items": [], "categories": [], "resources": []},
             },
         },
@@ -6363,7 +6470,7 @@ async def test_live_conversation_turn_degrades_active_since_filter_failure(
                 "user_prompt": "prompt",
                 "system_prompt": "system",
                 "memory_cache": [],
-                "intentions_active": {"items": []},
+                "intentions_active": [],
                 "retrieve_rag": {"items": [], "categories": [], "resources": []},
                 "generated_by": "conversation_retrieve",
                 "active_since": 100.0,
@@ -6391,7 +6498,7 @@ async def test_conversation_turn_rejects_manual_prompt_override_when_cutoff_acti
             "user_prompt": "before intro\nhello",
             "system_prompt": "system",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "retrieve_rag": {"items": [], "categories": [], "resources": []},
         },
     }
@@ -6429,12 +6536,12 @@ async def test_conversation_turn_accepts_generated_prompt_with_matching_cutoff(
             None,
             db_path,
             [],
-            {"items": []},
+            [],
             0,
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
     payload = {
@@ -6445,7 +6552,7 @@ async def test_conversation_turn_accepts_generated_prompt_with_matching_cutoff(
             "user_prompt": "after intro\nhello",
             "system_prompt": "system",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "retrieve_rag": {"items": [], "categories": [], "resources": []},
             "generated_by": "conversation_retrieve",
             "active_since": 100.0,
@@ -6483,7 +6590,12 @@ async def test_conversation_retrieve_uses_same_payload_history_for_turn_prompt(
     )
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {
+            "ok": True,
+            "result": {},
+            "conversation_id": conversation_id,
+            "intentions_active": [],
+        }
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -6521,7 +6633,12 @@ async def test_conversation_retrieve_preserves_history_already_floored_by_source
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 100, "last_memorize_at": "2026-08-24T00:00:00Z"},
+            {
+                "digest_cursor": 100,
+                "last_memorize_at": "2026-08-24T00:00:00Z",
+                "memory_cache": [],
+                "intentions_active": [],
+            },
             None,
             db_path,
         ),
@@ -6534,7 +6651,7 @@ async def test_conversation_retrieve_preserves_history_already_floored_by_source
         safe: dict[str, object], *, conversation_id: str | None = None
     ) -> dict[str, object]:
         captured["safe"] = safe
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
     history = [
@@ -6583,7 +6700,7 @@ async def test_mentra_retrieve_keeps_prompt_body_logging(
             SimpleNamespace(content="private result"),
             SimpleNamespace(),
         )
-        return {"ok": True, "result": {}}
+        return {"ok": True, "result": {}, "intentions_active": []}
 
     monkeypatch.setattr(main, "conversation_retrieve", _fake_retrieve)
     out = await main._mentra_conversation_retrieve(
@@ -6636,14 +6753,19 @@ async def test_conversation_retrieve_uses_sillytavern_floor_after_memorize(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 10, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
+            {
+                "digest_cursor": 10,
+                "last_memorize_at": "2026-05-01T00:00:00+00:00",
+                "memory_cache": [],
+                "intentions_active": [],
+            },
             None,
             db_path,
         ),
     )
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -6675,14 +6797,20 @@ async def test_conversation_retrieve_does_not_consume_prior_context(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 0, "last_memorize_at": None},
+            {**_retrieve_state_row(), "digest_cursor": 0, "last_memorize_at": None},
             None,
             db_path,
         ),
     )
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
-        return {"ok": True, "result": {}, "conversation_id": conversation_id, "prior_context": "APImw memory line"}
+        return {
+            "ok": True,
+            "result": {},
+            "conversation_id": conversation_id,
+            "prior_context": "APImw memory line",
+            "intentions_active": [],
+        }
 
     def _write_state(*_args: Any, **_kwargs: Any) -> tuple[dict[str, Any], Path]:
         raise AssertionError("conversation_retrieve must not consume prior_context")
@@ -6726,14 +6854,14 @@ async def test_conversation_retrieve_sillytavern_floor_is_not_a_cap(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 2, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
+            {**_retrieve_state_row(), "digest_cursor": 2, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
             None,
             db_path,
         ),
     )
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -6776,7 +6904,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 10, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
+            {**_retrieve_state_row(), "digest_cursor": 10, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
             None,
             db_path,
         ),
@@ -6806,7 +6934,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -6873,7 +7001,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_without_memorize_cursor
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 0, "last_memorize_at": None},
+            {**_retrieve_state_row(), "digest_cursor": 0, "last_memorize_at": None},
             None,
             db_path,
         ),
@@ -6893,7 +7021,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_without_memorize_cursor
 
     monkeypatch.setattr(main, "_load_current_whatsapp_history_from_source", _fake_load_current_whatsapp_history_from_source)
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -6967,7 +7095,7 @@ async def test_conversation_retrieve_uses_live_message_to_trigger_floor_without_
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 11, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
+            {**_retrieve_state_row(), "digest_cursor": 11, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
             None,
             db_path,
         ),
@@ -7003,7 +7131,7 @@ async def test_conversation_retrieve_uses_live_message_to_trigger_floor_without_
     monkeypatch.setattr(main, "_load_cross_tail_from_sources", lambda *_a, **_k: [])
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -7051,7 +7179,7 @@ async def test_conversation_retrieve_preserves_source_indexes_for_primary_floor(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 243, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
+            {**_retrieve_state_row(), "digest_cursor": 243, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
             None,
             db_path,
         ),
@@ -7081,7 +7209,7 @@ async def test_conversation_retrieve_preserves_source_indexes_for_primary_floor(
     monkeypatch.setattr(main, "_load_cross_tail_from_sources", lambda *_a, **_k: [])
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -7137,7 +7265,7 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
         main,
         "_load_turn_state_and_soul_card",
         lambda *_a, **_k: (
-            {"digest_cursor": 11, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
+            {**_retrieve_state_row(), "digest_cursor": 11, "last_memorize_at": "2026-05-01T00:00:00+00:00"},
             None,
             db_path,
         ),
@@ -7175,7 +7303,7 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -7245,7 +7373,7 @@ async def test_conversation_retrieve_does_not_persist_current_user_message(
     )
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -7294,7 +7422,7 @@ async def test_conversation_retrieve_writes_sillytavern_snapshot_not_messages_ta
     monkeypatch.setattr(main, "_get_storage_dir", lambda *_a, **_k: storage_dir)
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -7375,7 +7503,7 @@ async def test_conversation_retrieve_includes_sillytavern_cross_tail_from_snapsh
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -7439,7 +7567,7 @@ async def test_conversation_retrieve_preserves_caller_queries(
 
     async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
-        return {"ok": True, "result": {}, "conversation_id": conversation_id}
+        return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
 
@@ -7497,12 +7625,12 @@ async def test_conversation_turn_does_not_persist_messages_to_table(
             None,
             db_path,
             [],
-            {"items": []},
+            [],
             0,
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
     monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
@@ -7518,7 +7646,7 @@ async def test_conversation_turn_does_not_persist_messages_to_table(
             "user_prompt": "prompt",
             "system_prompt": "system",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "retrieve_rag": {"items": [], "categories": [], "resources": []},
         },
     }
@@ -7577,12 +7705,12 @@ async def test_conversation_turn_persists_completed_sillytavern_snapshot(
             None,
             db_path,
             [],
-            {"items": []},
+            [],
             0,
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
     monkeypatch.setattr(main, "_retrieve_apimw_enabled_from_cfg", lambda *_a, **_k: False)
@@ -7601,7 +7729,7 @@ async def test_conversation_turn_persists_completed_sillytavern_snapshot(
             "user_prompt": "prompt",
             "system_prompt": "system",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "retrieve_rag": {"items": [], "categories": [], "resources": []},
         },
     }
@@ -7658,12 +7786,12 @@ async def test_conversation_turn_keeps_response_when_chat_name_differs(
             None,
             db_path,
             [],
-            {"items": []},
+            [],
             0,
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
 
@@ -7678,7 +7806,7 @@ async def test_conversation_turn_keeps_response_when_chat_name_differs(
             "user_prompt": "prompt",
             "system_prompt": "system",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "retrieve_rag": {"items": [], "categories": [], "resources": []},
         },
     }
@@ -7732,12 +7860,12 @@ async def test_conversation_turn_private_response_not_persisted_in_origin_chat(
             None,
             db_path,
             [],
-            {"items": []},
+            [],
             0,
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
 
@@ -7754,7 +7882,7 @@ async def test_conversation_turn_private_response_not_persisted_in_origin_chat(
             "user_prompt": "prompt",
             "system_prompt": "system",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "retrieve_rag": {"items": [], "categories": [], "resources": []},
         },
     }
@@ -7811,12 +7939,12 @@ async def test_conversation_turn_observe_mode_forbids_public_response(
             None,
             db_path,
             [],
-            {"items": []},
+            [],
             0,
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
     monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
@@ -7831,7 +7959,7 @@ async def test_conversation_turn_observe_mode_forbids_public_response(
         "prompt_override_payload": {
             "user_prompt": "prompt",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "retrieve_rag": {"items": [], "categories": [], "resources": []},
         },
     }
@@ -7891,12 +8019,12 @@ async def test_conversation_turn_retries_once_on_parse_failure(
             None,
             db_path,
             [],
-            {"items": []},
+            [],
             0,
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
 
@@ -7911,7 +8039,7 @@ async def test_conversation_turn_retries_once_on_parse_failure(
             "user_prompt": "prompt",
             "system_prompt": "system",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "retrieve_rag": {"items": [], "categories": [], "resources": []},
         },
     }
@@ -7968,12 +8096,12 @@ async def test_conversation_turn_uses_fresh_session_id_for_retry(
             None,
             db_path,
             [],
-            {"items": []},
+            [],
             0,
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
 
@@ -7988,7 +8116,7 @@ async def test_conversation_turn_uses_fresh_session_id_for_retry(
             "user_prompt": "prompt",
             "system_prompt": "system",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "retrieve_rag": {"items": [], "categories": [], "resources": []},
         },
     }
@@ -8064,6 +8192,46 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize(
         "I continued the task.",
     ]
     assert {row["conversation_id"] for row in rows} == {"activity:dm:Claude Code"}
+
+
+@pytest.mark.asyncio
+async def test_free_turn_chain_applies_annulments(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[dict[str, Any]] = []
+
+    class _FakeSvc:
+        async def chat(self, *_args, **_kwargs) -> str:
+            return (
+                '{"working_thought":null,"annulments":['
+                '{"intention_id":"finish-task","status":"completed"}],'
+                '"rehearsal":"done","response_target":null,"response":"",'
+                '"activity_recap":"I finished the task.","continue_reason":null}'
+            )
+
+    async def _apply(**kwargs: Any) -> list[str]:
+        captured.append(kwargs)
+        return ["memory-1"]
+
+    monkeypatch.setattr(main, "_apply_free_turn_annulments", _apply)
+    try:
+        await main._run_free_turn_chain(
+            marker="fictional::soul",
+            service=_FakeSvc(),
+            user_id="Fictional User",
+            soul_id="Fictional Soul",
+            conversation_id="chat:fictional",
+            session_id="session-fictional",
+            initial_reason="task",
+            initial_contract={"response_target": "listen", "response": ""},
+            safe_payload={},
+            soul_card=None,
+        )
+    finally:
+        main._FREE_TURN_INFLIGHT.clear()
+
+    assert len(captured) == 1
+    assert captured[0]["annulments"] == [
+        {"intention_id": "finish-task", "status": "completed", "note": ""}
+    ]
 
 
 def test_free_turn_prompt_uses_observe_for_listen_only_policy() -> None:
@@ -8493,7 +8661,7 @@ async def test_due_free_turn_follow_up_runs_fresh_turn_and_queues_outbound(
             "turn_user_prompt": "fresh prompt",
             "turn_system_prompt": "system",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "result": {"categories": [], "items": [], "resources": []},
             "turn_prompt_source": "conversation_retrieve",
             "turn_history": [{"role": "user", "content": "fresh history"}],
@@ -8568,7 +8736,7 @@ async def test_due_free_turn_follow_up_from_sillytavern_queues_private_whatsapp(
             "turn_user_prompt": "fresh prompt",
             "turn_system_prompt": "system",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "result": {"categories": [], "items": [], "resources": []},
             "turn_prompt_source": "conversation_retrieve",
         }
@@ -8623,7 +8791,7 @@ async def test_due_free_turn_follow_up_enqueue_failure_marks_failed(
             "turn_user_prompt": "fresh prompt",
             "turn_system_prompt": "system",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "result": {"categories": [], "items": [], "resources": []},
             "turn_prompt_source": "conversation_retrieve",
         }
@@ -8686,12 +8854,12 @@ async def test_conversation_turn_allows_respond_when_chat_name_missing_and_logs_
             None,
             db_path,
             [],
-            {"items": []},
+            [],
             0,
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
 
@@ -8704,7 +8872,7 @@ async def test_conversation_turn_allows_respond_when_chat_name_missing_and_logs_
             "user_prompt": "prompt",
             "system_prompt": "system",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "retrieve_rag": {"items": [], "categories": [], "resources": []},
         },
     }
@@ -8896,12 +9064,12 @@ def _make_turn_monkeypatches(
             None,
             db_path,
             [],
-            {"items": []},
+            [],
             0,
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
     monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
@@ -8948,7 +9116,7 @@ async def test_conversation_turn_attachment_enqueues_captioned_outbound_without_
             "user_prompt": "prompt",
             "system_prompt": "system",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "retrieve_rag": {"items": [], "categories": [], "resources": []},
         },
     }
@@ -9016,7 +9184,7 @@ async def test_conversation_turn_listen_target_attachment_does_not_enqueue(
             "user_prompt": "prompt",
             "system_prompt": "system",
             "memory_cache": [],
-            "intentions_active": {"items": []},
+            "intentions_active": [],
             "retrieve_rag": {"items": [], "categories": [], "resources": []},
         },
     }

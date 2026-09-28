@@ -9,6 +9,7 @@ import uuid
 from typing import Any
 
 from app.services.conversation_id import canonical_conversation_id
+from app.services.intention_state import validate_intentions
 
 _main: Any = None
 
@@ -200,7 +201,7 @@ async def _apimw_synthesize(
     formatted_memories = "\n".join(formatted_memory_lines) if formatted_memory_lines else "(none)"
 
     memory_cache = _m()._normalize_memory_cache_impl(state_row.get("memory_cache"))
-    intentions_active = _m()._normalize_intentions_stack_impl(state_row.get("intentions_active"))
+    intentions_active = validate_intentions(state_row.get("intentions_active"))
     context_block = _m()._build_turn_context_block(
         history=[],
         prior_context=None,

@@ -24,6 +24,7 @@ from memu.app.dossier_revision import (
 )
 from memu.prompts.consolidation import anchors as anchors_prompt
 from memu.prompts.consolidation import dossiers as dossiers_prompt
+from memu.prompts.consolidation import weekly as weekly_prompt
 
 from app.services.segment import (
     build_segment_inputs,
@@ -31,19 +32,21 @@ from app.services.segment import (
 )
 from app.services.xml_utils import extract_xml_fragment, xml_text
 from app.services.graph_edges import (
+    ALLOWED_EDGE_PREDICATES,
     invalidate_memory_edges,
     write_memory_edges,
 )
 from app.services.intention_state import (
-    RELAX_INTENTION_ID,
     format_intentions_for_prompt,
+    merge_consolidated_intentions,
+    validate_intention_replacement,
 )
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import soul_summaries as _soul_summaries
 from app.services.conversation_id import canonical_conversation_id
 from app.services.payload import parse_iso_datetime
 from app.services import soul_state as _soul_state
-from app.services.turn_contract import DEFAULT_SOUL_CARD, format_memory_legend, format_memory_line, format_shaped_by_line, format_relative_time_label
+from app.services.turn_contract import format_memory_legend, format_memory_line, format_shaped_by_line
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
@@ -60,7 +63,7 @@ def _segment_file_sort_key(path: Path) -> tuple[str, int]:
     return (stem, 0)
 
 
-_INTENTION_ID_SANITIZE_RE = re.compile(r"[^a-z0-9]+")
+CONSOLIDATION_PROMPT_TOKEN_LIMIT = 800_000
 
 
 @dataclass(frozen=True)
@@ -69,7 +72,7 @@ class ConsolidationDeps:
     sqlite_ensure_nonempty: Callable[[Path], None]
     sqlite_connect: Callable[[Path], sqlite3.Connection]
     sqlite_ensure_conversation_state_schema: Callable[[sqlite3.Connection], None]
-    conversation_state_row: Callable[[sqlite3.Connection, str], sqlite3.Row | None]
+    conversation_state_row: Callable[..., sqlite3.Row | None]
     conversation_state_from_row: Callable[..., dict[str, Any] | None]
     write_conversation_state: Callable[..., tuple[dict[str, Any], Path]]
     get_storage_dir: Callable[[dict[str, Any]], Path]
@@ -80,76 +83,43 @@ class ConsolidationDeps:
     json_to_db: Callable[[Any], str | None]
 
 
-def _slugify_intention_id(raw: Any) -> str:
-    text = str(raw or "").strip().lower()
-    if not text:
-        return ""
-    slug = _INTENTION_ID_SANITIZE_RE.sub("-", text).strip("-")
-    if not slug:
-        return ""
-    return slug[:64]
-
-
 def _node_text(node: ET.Element | None) -> str:
     if node is None:
         return ""
     return str(node.text or "").strip()
 
 
-def _pick_attr(node: ET.Element, *keys: str) -> str:
-    for key in keys:
-        value = str(node.get(key) or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _select_prompt_objective(prompt: str, *, first_time: bool) -> str:
-    selected = "first_time" if first_time else "ongoing"
-    for tag in ("first_time", "ongoing"):
-        pattern = re.compile(rf"<{tag}>\n?(.*?)</{tag}>\n?", re.DOTALL)
-        matches = list(pattern.finditer(prompt))
-        if len(matches) != 1:
-            raise ValueError(f"Prompt requires exactly one <{tag}> objective")
-        prompt = pattern.sub(
-            lambda match: match.group(1) + "\n" if tag == selected else "",
-            prompt,
-        )
-    return prompt
-
-
-def _is_first_reflection(inputs: dict[str, Any]) -> bool:
-    if not str(inputs.get("narrative_self") or "").strip():
-        return True
-    return any(
-        not str(bundle["dossier"].summary or "").strip()
-        for bundle in inputs["anchor_bundles"].values()
-    )
-
-
-def _parse_reflection_xml(
+def _parse_identity_maintenance_xml(
     raw: str,
     anchor_bundles: dict[str, dict[str, Any]],
-    *,
-    first_time: bool,
 ) -> dict[str, Any]:
-    root = extract_xml_fragment(raw, "reflection")
-    known_sections = {
-        "narrative_self", "anchor_revisions", "life_goals", "intentions",
-        "edges", "companion_memory", "companion_shaped_by_hints",
-    }
-    for section in known_sections:
-        if len(root.findall(section)) > 1:
-            raise ValueError(f"Reflection has duplicate {section} elements")
-    for child in root:
-        if child.tag not in known_sections:
-            log.warning("consolidation: ignored unknown reflection element %s", child.tag)
-    narrative_self = xml_text(root, "narrative_self")
-    if not narrative_self:
-        raise ValueError("Reflection requires narrative_self")
+    root = extract_xml_fragment(raw, "identity_maintenance")
+    if root.attrib or (root.text or "").strip():
+        raise ValueError("Expected exact identity_maintenance element")
+    if [child.tag for child in root] != ["narrative_self", "anchor_revisions", "life_goals"]:
+        raise ValueError("Identity maintenance requires narrative_self, anchor_revisions, then life_goals")
+
+    narrative_node = root.find("narrative_self")
+    if narrative_node is None or set(narrative_node.attrib) != {"action"} or list(narrative_node):
+        raise ValueError("Identity maintenance requires exact narrative_self action")
+    narrative_action = str(narrative_node.get("action") or "").strip()
+    narrative_text = _node_text(narrative_node)
+    if narrative_action == "keep":
+        if narrative_text:
+            raise ValueError("Kept narrative_self must be empty")
+        narrative_self = None
+    elif narrative_action == "replace" and narrative_text:
+        narrative_self = narrative_text
+    else:
+        raise ValueError("narrative_self action must be keep or nonblank replace")
+
     anchor_nodes = root.findall("anchor_revisions")
     if len(anchor_nodes) != 1:
-        raise ValueError("Reflection requires exactly one anchor_revisions element")
+        raise ValueError("Identity maintenance requires exactly one anchor_revisions element")
+    first_time = {
+        role: str(bundle["dossier"].summary or "").strip() in {"", "## unlabeled"}
+        for role, bundle in anchor_bundles.items()
+    }
     anchor_decisions = parse_anchor_revisions(
         anchor_nodes[0],
         anchor_bundles,
@@ -157,105 +127,117 @@ def _parse_reflection_xml(
     )
 
     life_goals = root.find("life_goals")
-    life_goal_add = []
-    life_goal_remove = []
-    if life_goals is not None:
-        for item in life_goals.findall("add"):
-            text = str(item.text or "").strip()
-            if text:
-                life_goal_add.append(text)
-        for item in life_goals.findall("remove"):
-            text = str(item.text or "").strip()
-            if text:
-                life_goal_remove.append(text)
-
-    edges: list[dict[str, Any]] = []
-    edge_invalidations: list[dict[str, Any]] = []
-    edges_root = root.find("edges")
-    if edges_root is not None:
-        for edge_node in edges_root.findall("edge"):
-            subject_id = str(xml_text(edge_node, "subject_id") or "").strip()
-            predicate = str(xml_text(edge_node, "predicate") or "").strip()
-            object_id = str(xml_text(edge_node, "object_id") or "").strip()
-            if not subject_id or not predicate or not object_id:
-                log.warning("consolidation: ignored edge with missing required field")
-                continue
-            confidence_text = xml_text(edge_node, "confidence")
-            confidence: float | None
-            if confidence_text:
-                try:
-                    confidence = float(confidence_text)
-                except ValueError:
-                    log.warning("consolidation: ignored edge with invalid confidence")
-                    continue
-            else:
-                confidence = None
-            edge_payload: dict[str, Any] = {
-                "subject_id": subject_id,
-                "predicate": predicate,
-                "object_id": object_id,
-            }
-            if confidence is not None:
-                edge_payload["confidence"] = confidence
-            edges.append(edge_payload)
-        for invalidate_node in edges_root.findall("invalidate"):
-            subject_id = str(xml_text(invalidate_node, "subject_id") or "").strip()
-            predicate = str(xml_text(invalidate_node, "predicate") or "").strip()
-            object_id = str(xml_text(invalidate_node, "object_id") or "").strip()
-            if not subject_id or not predicate or not object_id:
-                log.warning("consolidation: ignored edge invalidation with missing required field")
-                continue
-            edge_invalidations.append(
-                {
-                    "subject_id": subject_id,
-                    "predicate": predicate,
-                    "object_id": object_id,
-                }
-            )
-
-    comp_hints_node = root.find("companion_shaped_by_hints")
-    companion_shaped_by_hints: list[str] = []
-    if comp_hints_node is not None:
-        seen_hint: set[str] = set()
-        for mid in comp_hints_node.findall("memory_id"):
-            val = str(mid.text or "").strip()
-            if val and val not in seen_hint:
-                companion_shaped_by_hints.append(val)
-                seen_hint.add(val)
-
-    intention_actions: list[dict[str, Any]] = []
-    intentions_node = root.find("intentions")
-    if intentions_node is not None:
-        for boost in intentions_node.findall("boost"):
-            target = _pick_attr(boost, "target_id", "intention_id", "id") or _node_text(boost)
-            if target:
-                intention_actions.append({"type": "boost", "target_id": target, "amount": 1})
-        for promote in intentions_node.findall("promote"):
-            target = _pick_attr(promote, "target_id", "intention_id", "id") or _node_text(promote)
-            if target:
-                intention_actions.append({"type": "promote", "target_id": target})
-        for create in intentions_node.findall("create"):
-            ctext = _pick_attr(create, "text", "description") or _node_text(create)
-            cid = _pick_attr(create, "id", "intention_id") or _slugify_intention_id(ctext)
-            if cid and ctext:
-                intention_actions.append({"type": "create", "id": cid, "text": ctext})
-        for annul in intentions_node.findall("annul"):
-            aid = _pick_attr(annul, "intention_id", "target_id", "id") or _node_text(annul)
-            astatus = str(annul.get("status") or "completed").strip().lower()
-            anote = str(annul.get("note") or "").strip()
-            if aid:
-                intention_actions.append({"type": "annul", "intention_id": aid, "status": astatus, "note": anote})
+    if life_goals is None or set(life_goals.attrib) != {"action"}:
+        raise ValueError("Identity maintenance requires exact life_goals action")
+    life_goal_action = str(life_goals.get("action") or "").strip()
+    if life_goal_action not in {"keep", "update"}:
+        raise ValueError("life_goals action must be keep or update")
+    life_goal_add: list[str] = []
+    life_goal_remove: list[str] = []
+    for item in life_goals:
+        if item.tag not in {"add", "remove"} or item.attrib or list(item):
+            raise ValueError("life_goals may contain only plain add/remove elements")
+        text = _node_text(item)
+        if text:
+            (life_goal_add if item.tag == "add" else life_goal_remove).append(text)
+    if life_goal_action == "keep" and (life_goal_add or life_goal_remove):
+        raise ValueError("Kept life_goals cannot add or remove goals")
 
     return {
         "narrative_self": narrative_self,
         "life_goal_add": life_goal_add,
         "life_goal_remove": life_goal_remove,
-        "companion_memory": xml_text(root, "companion_memory"),
-        "companion_shaped_by_hints": companion_shaped_by_hints,
+        "anchor_decisions": anchor_decisions,
+    }
+
+
+def _parse_edges(root: ET.Element) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    edges: list[dict[str, Any]] = []
+    edge_invalidations: list[dict[str, Any]] = []
+    edges_root = root.find("edges")
+    if edges_root is None or edges_root.attrib or (edges_root.text or "").strip():
+        raise ValueError("Weekly reflection requires exact edges element")
+    for child in edges_root:
+        if child.tag not in {"edge", "invalidate"} or child.attrib or (child.tail or "").strip():
+            raise ValueError("Edges may contain only edge or invalidate elements")
+        required = ["subject_id", "predicate", "object_id"]
+        tags = [node.tag for node in child]
+        if tags not in (required, [*required, "confidence"]):
+            raise ValueError(f"Invalid {child.tag} fields")
+        if child.tag == "invalidate" and tags != required:
+            raise ValueError("Edge invalidation cannot contain confidence")
+    for edge_node in edges_root.findall("edge"):
+        subject_id = str(xml_text(edge_node, "subject_id") or "").strip()
+        predicate = str(xml_text(edge_node, "predicate") or "").strip()
+        object_id = str(xml_text(edge_node, "object_id") or "").strip()
+        if not subject_id or not predicate or not object_id:
+            raise ValueError("Edge requires subject_id, predicate, and object_id")
+        if predicate not in ALLOWED_EDGE_PREDICATES:
+            raise ValueError(f"Invalid edge predicate: {predicate}")
+        confidence_text = xml_text(edge_node, "confidence")
+        confidence: float | None
+        if confidence_text:
+            try:
+                confidence = float(confidence_text)
+            except ValueError:
+                raise ValueError("Edge confidence must be a number") from None
+            if not 0 <= confidence <= 1:
+                raise ValueError("Edge confidence must be between 0 and 1")
+        else:
+            confidence = None
+        edge_payload: dict[str, Any] = {
+            "subject_id": subject_id,
+            "predicate": predicate,
+            "object_id": object_id,
+        }
+        if confidence is not None:
+            edge_payload["confidence"] = confidence
+        edges.append(edge_payload)
+    for invalidate_node in edges_root.findall("invalidate"):
+        subject_id = str(xml_text(invalidate_node, "subject_id") or "").strip()
+        predicate = str(xml_text(invalidate_node, "predicate") or "").strip()
+        object_id = str(xml_text(invalidate_node, "object_id") or "").strip()
+        if not subject_id or not predicate or not object_id:
+            raise ValueError("Edge invalidation requires subject_id, predicate, and object_id")
+        if predicate not in ALLOWED_EDGE_PREDICATES:
+            raise ValueError(f"Invalid edge predicate: {predicate}")
+        edge_invalidations.append(
+            {
+                "subject_id": subject_id,
+                "predicate": predicate,
+                "object_id": object_id,
+            }
+        )
+    return edges, edge_invalidations
+
+
+def _parse_weekly_reflection_xml(raw: str) -> dict[str, Any]:
+    root = extract_xml_fragment(raw, "weekly_reflection")
+    if root.attrib or (root.text or "").strip():
+        raise ValueError("Expected exact weekly_reflection element")
+    if [child.tag for child in root] != ["intentions", "edges", "companion_memory"]:
+        raise ValueError("Weekly reflection requires intentions, edges, then companion_memory")
+
+    intentions_node = root.find("intentions")
+    if intentions_node is None or intentions_node.attrib or (intentions_node.text or "").strip():
+        raise ValueError("Weekly reflection requires exact intentions element")
+    intentions: list[dict[str, str]] = []
+    for node in intentions_node:
+        if node.tag != "intention" or set(node.attrib) != {"id"} or list(node):
+            raise ValueError("Intentions may contain only exact intention rows")
+        intentions.append({"id": str(node.get("id") or "").strip(), "text": _node_text(node)})
+    intentions = validate_intention_replacement(intentions)
+
+    edges, edge_invalidations = _parse_edges(root)
+    companion_memory = xml_text(root, "companion_memory")
+    if not companion_memory:
+        raise ValueError("Weekly reflection requires companion_memory")
+
+    return {
+        "intentions": intentions,
+        "companion_memory": companion_memory,
         "edges": edges,
         "edge_invalidations": edge_invalidations,
-        "intention_actions": intention_actions,
-        "anchor_decisions": anchor_decisions,
     }
 
 
@@ -281,16 +263,16 @@ def _format_dossier_revision_blocks(bundles: Sequence[dict[str, Any]]) -> str:
                     "### Current dossier prose",
                     sectioned[0] if sectioned is not None else str(dossier.summary or ""),
                     "",
-                    "### cited_member list ([M#] full text to understand context)",
+                    "### cited_member list (already members; remove only if one no longer belongs)",
                     render_memory_records(statuses["cited"]),
                     "",
-                    "### search_result list (relevance uncertain)",
+                    "### search_result list (add only what clearly belongs)",
                     render_memory_records(statuses["search"]),
                     "",
-                    "### purged_member list (for prose review)",
+                    "### purged_member list (mend the prose and citations around these)",
                     render_memory_records(statuses["purged"]),
                     "",
-                    "### pending_member list (decision needed)",
+                    "### pending_member list (decide add or remove for each)",
                     render_memory_records(statuses["pending"]),
                 ]
             )
@@ -298,66 +280,123 @@ def _format_dossier_revision_blocks(bundles: Sequence[dict[str, Any]]) -> str:
     return "\n\n".join(blocks)
 
 
-def _render_reflection_prompt(
+def _format_current_intentions_section(value: Any, heading: str) -> str:
+    text = format_intentions_for_prompt(value)
+    return f"# {heading}\n{text}" if text else ""
+
+
+def _format_active_dossiers(dossiers: Sequence[Any]) -> str:
+    blocks = []
+    for dossier in dossiers:
+        blocks.append(
+            "\n".join(
+                (
+                    f"## {dossier.name}",
+                    f"Description: {_read_only_citations(str(dossier.description or ''))}",
+                    _read_only_citations(str(dossier.summary or "")),
+                )
+            ).strip()
+        )
+    return "\n\n".join(block for block in blocks if block) or "(none)"
+
+
+def _anchor_prose(bundle: dict[str, Any]) -> str:
+    prose = str(bundle["dossier"].summary or "") or "## unlabeled"
+    sectioned = label_sections(prose)
+    return sectioned[0] if sectioned is not None else prose
+
+
+def _format_episode_memories(episodes: Sequence[Any]) -> str:
+    lines = ["Key: [episode] episodic memory"] if episodes else []
+    for item in episodes:
+        extra = item.extra if isinstance(item.extra, dict) else {}
+        summary = str(extra.get("episode_summary") or item.summary or "").strip()
+        lines.append(
+            "- " + format_memory_line(
+                {
+                    "memory_type": "episode",
+                    "summary": summary,
+                    "happened_at": item.happened_at or item.created_at,
+                },
+                show_id=True,
+                item_id=f"M{item.memory_ref}",
+            )
+        )
+    return "\n".join(lines) or "(none)"
+
+
+def _render_identity_prompt(
+    inputs: dict[str, Any], *, soul_id: str, user_id: str
+) -> tuple[str, str]:
+    context = inputs["reflection_prompt_context"]
+    bundles = inputs["anchor_bundles"]
+    statuses = {role: revision_status_items(bundle) for role, bundle in bundles.items()}
+    system_prompt = anchors_prompt.SYSTEM_PROMPT.format(soul_name=soul_id, user_name=user_id)
+    user_prompt = anchors_prompt.USER_PROMPT.format(
+        narrative_self=context["narrative_self"],
+        life_goals=context["life_goals"],
+        current_intentions_section=_format_current_intentions_section(
+            inputs["state"]["intentions_active"], "Current intentions (read-only)"
+        ),
+        dossier_index=_read_only_citations(inputs["dossier_index"]) or "(none)",
+        active_dossiers=_format_active_dossiers(inputs["active_dossiers"]),
+        episode_memories=_format_episode_memories(inputs["continuity_episodes"]),
+        soul_anchor=_anchor_prose(bundles["soul"]),
+        soul_anchor_cited_refs="\n".join(
+            f"[M{item.memory_ref}]" for item in statuses["soul"]["cited"]
+        ) or "(none)",
+        soul_anchor_inactive_linked_memory_items=render_memory_records(
+            statuses["soul"]["purged"]
+        ),
+        user_anchor=_anchor_prose(bundles["user"]),
+        user_anchor_cited_refs="\n".join(
+            f"[M{item.memory_ref}]" for item in statuses["user"]["cited"]
+        ) or "(none)",
+        user_anchor_inactive_linked_memory_items=render_memory_records(
+            statuses["user"]["purged"]
+        ),
+        user_name=user_id,
+    )
+    return system_prompt, user_prompt
+
+
+def _project_life_goals(
+    active: list[str], additions: list[str], removals: list[str]
+) -> list[str]:
+    result = [goal for goal in active if goal not in removals]
+    for goal in additions:
+        if goal not in result and len(result) < 3:
+            result.append(goal)
+    return result
+
+
+def _render_weekly_prompt(
     inputs: dict[str, Any],
+    identity: dict[str, Any],
     *,
     soul_id: str,
     user_id: str,
-    reserve_text: str = "",
 ) -> tuple[str, str]:
-    first_time = _is_first_reflection(inputs)
-    system_prompt = _select_prompt_objective(
-        anchors_prompt.SYSTEM_PROMPT,
-        first_time=first_time,
-    ).format(soul_name=soul_id, user_name=user_id)
     context = inputs["reflection_prompt_context"]
-    anchor_bundles = inputs["anchor_bundles"]
-
-    def anchor_prose(role: str) -> str:
-        prose = str(anchor_bundles[role]["dossier"].summary or "") or "## unlabeled"
-        sectioned = label_sections(prose)
-        return sectioned[0] if sectioned is not None else prose
-
-    relevant_parts: list[str] = []
-    for dossier in inputs["relevant_dossiers"]:
-        relevant_parts.extend(
-            [
-                f"## {dossier.name}",
-                f"Description: {_read_only_citations(dossier.description)}",
-                _read_only_citations(str(dossier.summary or "")),
-                "",
-            ]
-        )
-    if reserve_text:
-        relevant_parts.append(reserve_text)
-    relevant_dossiers = "\n".join(relevant_parts).strip() or "(none)"
-    anchor_statuses = {
-        role: revision_status_items(bundle) for role, bundle in anchor_bundles.items()
-    }
-    user_prompt = anchors_prompt.USER_PROMPT.format(
-        narrative_self=context["narrative_self"],
-        soul_anchor=anchor_prose("soul"),
-        soul_anchor_cited_memory_items=render_memory_records(
-            anchor_statuses["soul"]["cited"]
-        ),
-        soul_anchor_inactive_cited_memory_items=render_memory_records(
-            anchor_statuses["soul"]["purged"]
-        ),
-        user_anchor=anchor_prose("user"),
-        user_anchor_cited_memory_items=render_memory_records(
-            anchor_statuses["user"]["cited"]
-        ),
-        user_anchor_inactive_cited_memory_items=render_memory_records(
-            anchor_statuses["user"]["purged"]
+    decisions = identity["anchor_decisions"]
+    active_goals = _project_life_goals(
+        inputs["active_life_goals"], identity["life_goal_add"], identity["life_goal_remove"]
+    )
+    system_prompt = weekly_prompt.SYSTEM_PROMPT.format(soul_name=soul_id, user_name=user_id)
+    user_prompt = weekly_prompt.USER_PROMPT.format(
+        narrative_self=identity["narrative_self"] or context["narrative_self"],
+        soul_anchor=_read_only_citations(decisions["soul"]["resulting_prose"]),
+        user_anchor=_read_only_citations(decisions["user"]["resulting_prose"]),
+        life_goals=_format_life_goals_for_prompt(active_goals, []),
+        current_intentions_section=_format_current_intentions_section(
+            inputs["state"]["intentions_active"],
+            "Current intentions (keep, reword, or leave out by ID)",
         ),
         dossier_index=_read_only_citations(inputs["dossier_index"]) or "(none)",
-        relevant_dossiers=relevant_dossiers,
-        life_goals=context["life_goals"],
-        current_intentions=context["current_intentions"],
-        intention_activity=context["intention_activity"],
         prior_context_memory_items=context["prior_context_memory_items"],
         conversation_history=context["conversation_history"],
         segment_memory_items=context["segment_memory_items"],
+        existing_memory_edges=context["existing_memory_edges"],
     )
     return system_prompt, user_prompt
 
@@ -369,18 +408,12 @@ async def prepare_dossier_consolidation_context(
     inputs: dict[str, Any],
     soul_id: str,
     user_id: str,
+    llm_profile: str | None = None,
 ) -> dict[str, Any]:
     revision_profile = svc.memorize_config.category_update_llm_profile
-
     scope = {"soul_id": soul_id, "user_id": user_id}
     prompt_context = _build_consolidation_prompt_context(inputs, soul_id=soul_id)
     inputs["reflection_prompt_context"] = prompt_context
-    actionable_ids = prompt_context["actionable_item_ids"]
-    inputs["anchor_bundles"] = {
-        role: svc.prepare_anchor_revision(role, scope, actionable_ids)
-        for role in ("soul", "user")
-    }
-
     bundles = [
         svc.prepare_dossier_revision(
             dossier.id,
@@ -395,62 +428,82 @@ async def prepare_dossier_consolidation_context(
         )
     ]
     inputs["dossier_index"] = svc.build_dossier_index(scope)
-    inputs["relevant_dossiers"] = svc.list_dossiers_for_segments(
-        scope,
-        segment_ids=inputs["selected_segment_ids"],
-    )
-    if bundles:
-        profile = svc.llm_profiles.profiles[revision_profile]
-        max_tokens = int(profile.max_tokens or 0)
-        if max_tokens <= 0:
-            raise ValueError("Dossier consolidation profile requires max_tokens")
-        reserve_text = "reserve " * max_tokens
-        reflection_system, reflection_user = _render_reflection_prompt(
-            inputs,
-            soul_id=soul_id,
-            user_id=user_id,
-            reserve_text=reserve_text,
-        )
-        if estimate_prompt_tokens(reflection_system + "\n" + reflection_user) > 100_000:
-            raise ValueError("Anchor reflection prompt may exceed 100000 tokens")
+    continuity = svc.prepare_anchor_continuity_context(scope)
+    inputs["active_dossiers"] = continuity["dossiers"]
+    inputs["continuity_episodes"] = continuity["episodes"]
+    episode_ids = [item.id for item in continuity["episodes"]]
+    inputs["anchor_bundles"] = {
+        role: svc.prepare_anchor_revision(role, scope, episode_ids)
+        for role in ("soul", "user")
+    }
 
-        anchors = inputs["anchor_bundles"]
-        first_time = _is_first_reflection(inputs)
-        system_prompt = _select_prompt_objective(
-            dossiers_prompt.SYSTEM_PROMPT,
-            first_time=first_time,
-        ).format(soul_name=soul_id, user_name=user_id)
-        literal_fields = {
-            name: "{" + name + "}"
-            for name in (
-                "dossier_id",
-                "dossier_kind",
-                "dossier_title",
-                "target_words",
-                "dossier_description",
-                "current_prose",
-                "cited_memory_records",
-                "candidate_memory_records",
-                "cleanup_memberships",
-                "required_memory_records",
-            )
-        }
-        user_prompt = dossiers_prompt.USER_PROMPT.format(
-            narrative_self=prompt_context["narrative_self"],
-            soul_anchor=_read_only_citations(str(anchors["soul"]["dossier"].summary or "## unlabeled")),
-            user_anchor=_read_only_citations(str(anchors["user"]["dossier"].summary or "## unlabeled")),
-            dossier_index=_read_only_citations(inputs["dossier_index"]) or "(none)",
-            life_goals=prompt_context["life_goals"],
-            current_intentions=prompt_context["current_intentions"],
-            intention_activity=prompt_context["intention_activity"],
-            prior_context_memory_items=prompt_context["prior_context_memory_items"],
-            conversation_history=prompt_context["conversation_history"],
-            segment_memory_items=prompt_context["segment_memory_items"],
-            dossier_revision_blocks=_format_dossier_revision_blocks(bundles),
-            **literal_fields,
+    anchors = inputs["anchor_bundles"]
+    system_prompt = dossiers_prompt.SYSTEM_PROMPT.format(soul_name=soul_id, user_name=user_id)
+    literal_fields = {
+        name: "{" + name + "}"
+        for name in (
+            "dossier_id", "dossier_kind", "dossier_title", "target_words",
+            "dossier_description", "current_prose", "cited_memory_records",
+            "candidate_memory_records", "cleanup_memberships", "required_memory_records",
         )
-        if estimate_prompt_tokens(system_prompt + "\n" + user_prompt) > 100_000:
-            raise ValueError("Dossier consolidation prompt exceeds 100000 tokens")
+    }
+    user_prompt = dossiers_prompt.USER_PROMPT.format(
+        narrative_self=prompt_context["narrative_self"],
+        soul_anchor=_read_only_citations(_anchor_prose(anchors["soul"])),
+        user_anchor=_read_only_citations(_anchor_prose(anchors["user"])),
+        life_goals=prompt_context["life_goals"],
+        current_intentions_section=_format_current_intentions_section(
+            inputs["state"]["intentions_active"], "Current intentions (read-only)"
+        ),
+        dossier_index=_read_only_citations(inputs["dossier_index"]) or "(none)",
+        active_dossiers=_format_active_dossiers(inputs["active_dossiers"]),
+        prior_context_memory_items=prompt_context["prior_context_memory_items"],
+        conversation_history=prompt_context["conversation_history"],
+        segment_memory_items=prompt_context["segment_memory_items"],
+        dossier_revision_blocks=_format_dossier_revision_blocks(bundles),
+        **literal_fields,
+    )
+
+    identity_system, identity_user = _render_identity_prompt(
+        inputs, soul_id=soul_id, user_id=user_id
+    )
+    current_identity: dict[str, Any] = {
+        "narrative_self": inputs.get("narrative_self"),
+        "life_goal_add": [],
+        "life_goal_remove": [],
+        "anchor_decisions": {
+            role: {"resulting_prose": _anchor_prose(bundle)}
+            for role, bundle in anchors.items()
+        },
+    }
+    weekly_system, weekly_user = _render_weekly_prompt(
+        inputs, current_identity, soul_id=soul_id, user_id=user_id
+    )
+    revision_output = int(svc.llm_profiles.profiles[revision_profile].max_tokens or 0)
+    reflection_output = int(svc.llm_profiles.profiles[llm_profile or "default"].max_tokens or 0)
+    if revision_output <= 0 or reflection_output <= 0:
+        raise ValueError("Consolidation profiles require max_tokens")
+    estimates = {
+        "dossiers": estimate_prompt_tokens(system_prompt + "\n" + user_prompt) if bundles else 0,
+        "anchors": estimate_prompt_tokens(identity_system + "\n" + identity_user),
+        "weekly": estimate_prompt_tokens(weekly_system + "\n" + weekly_user),
+    }
+    reserves = {
+        "dossiers": revision_output,
+        "anchors": reflection_output + (revision_output if bundles else 0),
+        "weekly": reflection_output * 2,
+    }
+    for stage, tokens in estimates.items():
+        reserve = reserves[stage]
+        if tokens + reserve > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
+            raise ValueError(f"{stage} consolidation prompt exceeds provider-safe token limit")
+    inputs["prompt_token_estimates"] = estimates
+    log.info(
+        "consolidation prompt estimates: dossiers=%d anchors=%d weekly=%d combined=%d",
+        estimates["dossiers"], estimates["anchors"], estimates["weekly"], sum(estimates.values()),
+    )
+
+    if bundles:
         raw = await svc.chat(
             user_prompt,
             profile=revision_profile,
@@ -463,10 +516,14 @@ async def prepare_dossier_consolidation_context(
             await svc.apply_dossier_revision(bundle, decision, scope)
 
     inputs["dossier_index"] = svc.build_dossier_index(scope)
-    inputs["relevant_dossiers"] = svc.list_dossiers_for_segments(
-        scope,
-        segment_ids=inputs["selected_segment_ids"],
-    )
+    continuity = svc.prepare_anchor_continuity_context(scope)
+    inputs["active_dossiers"] = continuity["dossiers"]
+    inputs["continuity_episodes"] = continuity["episodes"]
+    episode_ids = [item.id for item in continuity["episodes"]]
+    inputs["anchor_bundles"] = {
+        role: svc.prepare_anchor_revision(role, scope, episode_ids)
+        for role in ("soul", "user")
+    }
     return inputs
 
 
@@ -474,7 +531,7 @@ def preflight_consolidation_profiles(
     svc: MemoryService,
     consolidation_llm_profile: str | None,
 ) -> str:
-    revision_profile = svc.memorize_config.category_update_llm_profile
+    revision_profile = str(svc.memorize_config.category_update_llm_profile)
     for profile_name in (revision_profile, consolidation_llm_profile or "default"):
         if profile_name not in svc.llm_profiles.profiles:
             raise KeyError(f"Step profile '{profile_name}' not found in config")
@@ -492,22 +549,6 @@ def _format_life_goals_for_prompt(active: list[str], removed: list[str]) -> str:
         parts.append("Recently removed (remove again to extinguish permanently):")
         parts.extend(f"- {row}" for row in removed)
     return "\n".join(parts) if parts else "You haven't established any life goals yet."
-
-
-def _format_intention_activity_for_prompt(rows: list[dict[str, str]]) -> str:
-    if not rows:
-        return "Your intentions have been steady."
-    lines = []
-    for row in rows:
-        description = str(row.get("description") or "").strip()
-        status = str(row.get("status") or "").strip()
-        updated_at = str(row.get("updated_at") or "").strip()
-        if not description:
-            continue
-        time_label = format_relative_time_label(updated_at) if updated_at else None
-        meta = ", ".join(part for part in (status, time_label) if part)
-        lines.append(f"- {description}" + (f" ({meta})" if meta else ""))
-    return "\n".join(lines) if lines else "Your intentions have been steady."
 
 
 def consolidation_due(
@@ -603,7 +644,6 @@ def _build_consolidation_prompt_context(
         inputs["active_life_goals"],
         inputs["removed_life_goals"],
     )
-    intention_text = _format_intention_activity_for_prompt(inputs["intention_activity"])
     id_map: dict[str, str] = {}
     actionable_ids: list[str] = []
 
@@ -647,21 +687,20 @@ def _build_consolidation_prompt_context(
         for item in group.get("memory_summaries") or []
         if isinstance(item, dict)
     )
-    current_intentions_raw = inputs.get("state", {}).get("intentions_active")
-    current_intentions_text = (
-        format_intentions_for_prompt(current_intentions_raw, include_internals=True)
-        if current_intentions_raw
-        else "(none yet)"
-    )
+    refs_by_id = {item_id: ref for ref, item_id in id_map.items()}
+    existing_edges = "\n".join(
+        f"- [{refs_by_id[row['subject_id']]}] {row['predicate']} [{refs_by_id[row['object_id']]}]"
+        for row in inputs.get("existing_memory_edges") or []
+        if row["subject_id"] in refs_by_id and row["object_id"] in refs_by_id
+    ) or "(none)"
     narrative = str(inputs.get("narrative_self") or "").strip()
     return {
-        "narrative_self": narrative or DEFAULT_SOUL_CARD.format(soul_name=soul_id),
+        "narrative_self": narrative or "(none)",
         "life_goals": life_goals_text,
-        "current_intentions": current_intentions_text,
-        "intention_activity": intention_text,
         "prior_context_memory_items": prior_context_text,
         "conversation_history": str(inputs.get("all_chat_history") or "").strip() or "(none)",
         "segment_memory_items": segment_memory_items_text,
+        "existing_memory_edges": existing_edges,
         "actionable_item_ids": list(dict.fromkeys(actionable_ids)),
         "id_map": id_map,
     }
@@ -793,28 +832,6 @@ ORDER BY updated_at ASC, id ASC
             str(row["description"] or "").strip()
             for row in life_goal_rows
             if str(row["status"] or "").strip() == "removed" and str(row["description"] or "").strip()
-        ]
-
-        intention_sql = """
-SELECT description, status, updated_at
-FROM intentions
-WHERE soul_id = ? AND user_id = ? AND source = 'inferred'
-"""
-        params: list[Any] = [soul_id, user_id]
-        last_consolidation_at = parse_iso_datetime(state.get("last_consolidation_at"))
-        if last_consolidation_at is not None:
-            intention_sql += " AND updated_at >= ?"
-            params.append(last_consolidation_at.isoformat())
-        intention_sql += " ORDER BY updated_at ASC, id ASC LIMIT 40"
-        intention_rows = con.execute(intention_sql, tuple(params)).fetchall()
-        intention_activity = [
-            {
-                "description": str(row["description"] or "").strip(),
-                "status": str(row["status"] or "").strip(),
-                "updated_at": str(row["updated_at"] or "").strip(),
-            }
-            for row in intention_rows
-            if str(row["description"] or "").strip()
         ]
 
         narrative_self = str(state.get("narrative_self") or "").strip() or None
@@ -971,15 +988,15 @@ WHERE id IN ({placeholders}) AND soul_id = ? AND user_id = ?
                 summary = str(row["summary"] or "").strip()
                 if not mid or not summary:
                     continue
-                entry: dict[str, Any] = {
+                prior_entry: dict[str, Any] = {
                     "id": mid,
                     "memory_ref": int(row["memory_ref"] or 0),
                     "summary": summary,
                     "memory_type": str(row["memory_type"] or "").strip(),
                     "happened_at": row["happened_at"] or row["created_at"],
                 }
-                items_by_id[mid] = entry
-                prior_context_memory_items.append(entry)
+                items_by_id[mid] = prior_entry
+                prior_context_memory_items.append(prior_entry)
 
             edge_predicates = ("caused_by", "evokes", "conflicts_with", "parallels", "shaped_by")
             edge_placeholders = ",".join("?" for _ in clean_ids)
@@ -1004,19 +1021,44 @@ WHERE id IN ({placeholders}) AND soul_id = ? AND user_id = ?
                         "happened_at": obj_item.get("happened_at"),
                     }
 
+        evidence_ids = sorted({
+            str(item["id"])
+            for group in segment_inputs
+            for item in group.get("memory_summaries") or []
+            if isinstance(item, dict)
+        } | {str(item["id"]) for item in prior_context_memory_items})
+        existing_memory_edges: list[dict[str, str]] = []
+        if evidence_ids:
+            evidence_id_set = set(evidence_ids)
+            edge_rows = con.execute(
+                "SELECT subject_id, predicate, object_id FROM triples "
+                "WHERE predicate IN ('caused_by', 'evokes', 'conflicts_with', 'parallels', 'shaped_by') "
+                "AND valid_to IS NULL ORDER BY subject_id, predicate, object_id"
+            ).fetchall()
+            existing_memory_edges = [
+                {
+                    "subject_id": str(row["subject_id"]),
+                    "predicate": str(row["predicate"]),
+                    "object_id": str(row["object_id"]),
+                }
+                for row in edge_rows
+                if str(row["subject_id"]) in evidence_id_set
+                and str(row["object_id"]) in evidence_id_set
+            ]
+
         return {
             "status": "ready",
             "db_path": db_path,
             "state": state,
             "active_life_goals": active_goals,
             "removed_life_goals": removed_goals,
-            "intention_activity": intention_activity,
             "segment_inputs": segment_inputs,
             "current_chat_messages": current_chat_messages,
             "narrative_self": narrative_self,
             "last_consolidation_at": state.get("last_consolidation_at"),
             "started_at": now.isoformat(),
             "prior_context_memory_items": prior_context_memory_items,
+            "existing_memory_edges": existing_memory_edges,
             "selected_segment_ids": selected_segment_ids,
             "selected_segment_ids_by_conversation": selected_by_conversation,
         }
@@ -1032,80 +1074,67 @@ async def run_consolidation_llm(
     user_id: str,
     llm_profile: str | None = None,
 ) -> dict[str, Any]:
-    first_time = _is_first_reflection(inputs)
     context = inputs["reflection_prompt_context"]
     id_map = context["id_map"]
     anchor_bundles = inputs["anchor_bundles"]
-    for bundle in anchor_bundles.values():
-        for item in bundle["cited_items"]:
-            memory_ref = int(item.memory_ref or 0)
-            if memory_ref <= 0:
-                raise ValueError(f"Consolidation memory lacks stable reference: {item.id}")
-            id_map[f"M{memory_ref}"] = str(item.id)
 
-    system_prompt, user_prompt = _render_reflection_prompt(
-        inputs,
-        soul_id=soul_id,
-        user_id=user_id,
+    identity_system, identity_user = _render_identity_prompt(
+        inputs, soul_id=soul_id, user_id=user_id
     )
-    if estimate_prompt_tokens(system_prompt + "\n" + user_prompt) > 100_000:
-        raise ValueError("Anchor reflection prompt exceeds 100000 tokens")
-    raw = await svc.chat(
-        user_prompt,
+    profile = svc.llm_profiles.profiles[llm_profile or "default"]
+    if estimate_prompt_tokens(identity_system + "\n" + identity_user) + int(profile.max_tokens or 0) > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
+        raise ValueError("anchors consolidation prompt exceeds provider-safe token limit")
+    identity_raw = await svc.chat(
+        identity_user,
         profile=llm_profile,
-        system_prompt=system_prompt,
+        system_prompt=identity_system,
         op="consolidation",
-        step="reflection",
+        step="anchors",
     )
-    parsed = _parse_reflection_xml(
-        str(raw or ""),
-        anchor_bundles,
-        first_time=first_time,
+    identity = _parse_identity_maintenance_xml(
+        str(identity_raw or ""), anchor_bundles
     )
-    remapped_edges = _remap_edges_with_memory_ids(parsed["edges"], id_map=id_map, include_confidence=True)
+    if not str(inputs.get("narrative_self") or "").strip() and not identity["narrative_self"]:
+        raise ValueError("First identity maintenance requires narrative_self replacement")
+
+    weekly_system, weekly_user = _render_weekly_prompt(
+        inputs, identity, soul_id=soul_id, user_id=user_id
+    )
+    if estimate_prompt_tokens(weekly_system + "\n" + weekly_user) + int(profile.max_tokens or 0) > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
+        raise ValueError("weekly consolidation prompt exceeds provider-safe token limit")
+    weekly_raw = await svc.chat(
+        weekly_user,
+        profile=llm_profile,
+        system_prompt=weekly_system,
+        op="consolidation",
+        step="weekly",
+    )
+    weekly = _parse_weekly_reflection_xml(str(weekly_raw or ""))
+    remapped_edges = _remap_edges_with_memory_ids(weekly["edges"], id_map=id_map, include_confidence=True)
     remapped_invalidations = _remap_edges_with_memory_ids(
-        parsed["edge_invalidations"],
+        weekly["edge_invalidations"],
         id_map=id_map,
         include_confidence=False,
     )
-    if parsed["edges"] and not remapped_edges:
-        log.warning(
-            "consolidation: dropped all parsed edges due unresolved ids (parsed=%d)",
-            len(parsed["edges"]),
-        )
-    elif len(remapped_edges) < len(parsed["edges"]):
-        log.warning(
-            "consolidation: dropped %d/%d edges due unresolved ids",
-            len(parsed["edges"]) - len(remapped_edges),
-            len(parsed["edges"]),
-        )
-    if parsed["edge_invalidations"] and not remapped_invalidations:
-        log.warning(
-            "consolidation: dropped all parsed edge invalidations due unresolved ids (parsed=%d)",
-            len(parsed["edge_invalidations"]),
-        )
+    if len(remapped_edges) != len(weekly["edges"]):
+        raise ValueError("Weekly reflection edge references memory outside supplied evidence")
+    if len(remapped_invalidations) != len(weekly["edge_invalidations"]):
+        raise ValueError("Weekly reflection invalidation references memory outside supplied evidence")
 
-    intention_actions = [
-        a for a in parsed["intention_actions"]
-        if not (
-            str(a.get("type") or "").strip() in {"boost", "promote"}
-            and str(a.get("target_id") or "").strip().lower() == RELAX_INTENTION_ID
-        )
-    ]
-
-    new_narrative = str(parsed["narrative_self"] or "").strip() or None
+    new_narrative = str(identity["narrative_self"] or "").strip() or None
     current_narrative = str(inputs.get("narrative_self") or "").strip() or None
     snapshot_old_narrative = bool(current_narrative and new_narrative and current_narrative != new_narrative)
     embed_inputs: list[str] = []
-    if str(parsed["companion_memory"] or "").strip():
-        embed_inputs.append(str(parsed["companion_memory"]).strip())
+    if weekly["companion_memory"]:
+        embed_inputs.append(weekly["companion_memory"])
     if snapshot_old_narrative:
+        assert current_narrative is not None
         embed_inputs.append(current_narrative)
     embeddings = await svc.embed(embed_inputs, profile="embedding") if embed_inputs else []
 
     cursor = 0
     companion_embedding = None
-    if str(parsed["companion_memory"] or "").strip():
+    if weekly["companion_memory"]:
         if cursor < len(embeddings):
             companion_embedding = embeddings[cursor]
         cursor += 1
@@ -1115,22 +1144,22 @@ async def run_consolidation_llm(
     for role in ("soul", "user"):
         await svc.apply_anchor_revision(
             anchor_bundles[role],
-            parsed["anchor_decisions"][role],
+            identity["anchor_decisions"][role],
             scope,
         )
 
     return {
         "narrative_self": new_narrative,
-        "life_goal_add": [str(x).strip() for x in parsed["life_goal_add"] if str(x).strip()],
-        "life_goal_remove": [str(x).strip() for x in parsed["life_goal_remove"] if str(x).strip()],
-        "companion_memory": str(parsed["companion_memory"] or "").strip() or None,
-        "companion_shaped_by_hints": parsed["companion_shaped_by_hints"],
+        "life_goal_add": identity["life_goal_add"],
+        "life_goal_remove": identity["life_goal_remove"],
+        "companion_memory": weekly["companion_memory"],
         "companion_embedding": companion_embedding,
         "old_narrative_text": current_narrative if snapshot_old_narrative else None,
         "old_narrative_embedding": old_narrative_embedding,
         "edges": remapped_edges,
         "edge_invalidations": remapped_invalidations,
-        "intention_actions": intention_actions,
+        "intentions_snapshot": inputs["state"]["intentions_active"],
+        "intentions_replacement": weekly["intentions"],
     }
 
 
@@ -1214,80 +1243,6 @@ ORDER BY updated_at ASC, id ASC
     finally:
         con.close()
 
-    from app.services.intention_state import (
-        apply_intention_action,
-        drop_unpromoted_ephemeral_intentions,
-        normalize_intentions_stack,
-        remove_intentions,
-        upsert_intentions_stack_entries,
-    )
-    _con = deps.sqlite_connect(db_path)
-    _con.row_factory = sqlite3.Row
-    current_state = _soul_state.read(_con)
-    _con.close()
-    current_intentions = current_state.get("intentions_active")
-    current_items = {
-        str(item.get("id") or "").strip(): item
-        for item in normalize_intentions_stack(current_intentions).get("items") or []
-    }
-    intention_actions: list[dict[str, Any]] = []
-    create_count = 0
-    promote_count = 0
-    for action in llm_results.get("intention_actions") or []:
-        atype = str(action.get("type") or "").strip()
-        target_id = str(action.get("target_id") or action.get("intention_id") or "").strip()
-        if atype in {"boost", "promote", "annul"} and (
-            target_id.lower() == RELAX_INTENTION_ID or target_id not in current_items
-        ):
-            log.warning("consolidation: ignored %s for unknown intention %s", atype, target_id)
-            continue
-        if atype == "annul" and str(action.get("status") or "") not in {"completed", "deleted"}:
-            log.warning("consolidation: ignored annul with invalid status")
-            continue
-        if atype == "promote" and (
-            promote_count or current_items.get(target_id, {}).get("ephemeral") is not True
-        ):
-            log.warning("consolidation: ignored invalid promotion for %s", target_id)
-            continue
-        if atype == "create":
-            new_id = str(action.get("id") or "").strip()
-            if create_count >= 2 or new_id in current_items:
-                log.warning("consolidation: ignored invalid intention creation")
-                continue
-            create_count += 1
-        elif atype == "promote":
-            promote_count += 1
-        intention_actions.append(action)
-    promoted_ids = {
-        str(action.get("target_id") or "").strip()
-        for action in intention_actions
-        if str(action.get("type") or "").strip() == "promote"
-    }
-    if intention_actions:
-        current_intentions = drop_unpromoted_ephemeral_intentions(current_intentions, promoted_ids)
-
-    if inputs.get("last_consolidation_at") is None:
-        current_intentions = upsert_intentions_stack_entries(
-            current_intentions,
-            [{"id": "optimize-happiness", "text": "Optimize happiness for myself and those I love.", "ephemeral": False}],
-        )
-
-    for action in intention_actions:
-        atype = str(action.get("type") or "").strip()
-        if atype == "boost":
-            current_intentions = apply_intention_action(current_intentions, action)
-        elif atype == "promote":
-            current_intentions = apply_intention_action(current_intentions, action)
-        elif atype == "create":
-            current_intentions = upsert_intentions_stack_entries(
-                current_intentions,
-                [{"id": action.get("id"), "text": action.get("text"), "ephemeral": True}],
-            )
-        elif atype == "annul":
-            aid = str(action.get("intention_id") or "").strip()
-            if aid and aid.lower() != "relax":
-                current_intentions = remove_intentions(current_intentions, [aid])
-
     selected_by_conversation = {
         str(cid): [str(segment_id) for segment_id in segment_ids]
         for cid, segment_ids in (inputs.get("selected_segment_ids_by_conversation") or {}).items()
@@ -1316,6 +1271,7 @@ ORDER BY updated_at ASC, id ASC
             old_embedding=llm_results["old_narrative_embedding"],
         )
     if companion_text:
+        assert isinstance(companion_embedding, list)
         companion_happened_at = datetime.now(UTC)
         companion_memory_id = create_companion_memory(
             svc,
@@ -1339,6 +1295,12 @@ ORDER BY updated_at ASC, id ASC
     try:
         con.row_factory = sqlite3.Row
         con.execute("BEGIN IMMEDIATE")
+        current_intentions = _soul_state.read(con)["intentions_active"]
+        merged_intentions = merge_consolidated_intentions(
+            llm_results["intentions_snapshot"],
+            current_intentions,
+            llm_results["intentions_replacement"],
+        )
         if narrative_self:
             con.execute(
                 "INSERT INTO narrative_history (id, narrative_self, related_memory_ids, created_at) "
@@ -1395,7 +1357,7 @@ INSERT INTO life_goals (
                 "last_consolidation_at": started_at,
                 "last_consolidation_error": None,
                 "last_consolidation_error_at": None,
-                "intentions_active": current_intentions,
+                "intentions_active": merged_intentions,
                 "remove_retrieval_ids_since_consolidation": inputs.get("state", {}).get(
                     "retrieval_ids_since_consolidation", []
                 ),

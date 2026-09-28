@@ -43,6 +43,7 @@ CREATE TABLE soul_state (
         "all_categories_summary_previous, all_categories_summary_approved) "
         "VALUES (1, 'old self', 'old cats', 'older cats', 'approved cats')"
     )
+    con.execute("UPDATE soul_state SET intentions_active = '[]' WHERE id = 1")
     con.commit()
     soul_state.ensure_schema(con)
     con.close()

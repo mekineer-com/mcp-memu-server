@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from app.services.intention_state import (
     format_intentions_for_prompt as _format_intentions_for_prompt,
-    normalize_intentions_stack as _normalize_intentions_stack_impl,
+    validate_intentions as _validate_intentions,
     normalize_memory_cache as _normalize_memory_cache_impl,
 )
 from app.services.payload import _canonicalize_scope_where, _extract_scope
@@ -128,7 +128,7 @@ def _build_retrieve_soul_context_queries(
     self_turn_label: str | None = None,
 ) -> list[dict[str, Any]]:
     memory_cache = _normalize_memory_cache_impl(state_row.get("memory_cache"))
-    intentions_active = _normalize_intentions_stack_impl(state_row.get("intentions_active"))
+    intentions_active = _validate_intentions(state_row.get("intentions_active"))
     current_user_text = str(message or "").strip()
     directive_text = str(self_turn_directive or "").strip()
 
@@ -161,8 +161,8 @@ def _build_retrieve_soul_context_queries(
     cache_text = "\n".join(_format_working_thoughts_lines(memory_cache))
     if cache_text:
         soul_context_for_retrieve.append({"role": "memory_cache", "content": {"text": cache_text}})
-    intentions_text = _format_intentions_for_prompt(intentions_active) if intentions_active else ""
-    if intentions_text and intentions_text.strip() != "(none)":
+    intentions_text = _format_intentions_for_prompt(intentions_active)
+    if intentions_text:
         soul_context_for_retrieve.append({"role": "intentions", "content": {"text": intentions_text}})
 
     if directive_text:
@@ -188,6 +188,7 @@ async def _run_retrieve(
     sqlite_ensure_conversation_state_schema: Callable[[Any], None],
     conversation_state_from_row: Callable[..., dict[str, Any] | None],
     conversation_state_row: Callable[[Any, str], Any],
+    soul_state_read: Callable[[Any], dict[str, Any]],
     write_conversation_state: Callable[..., Any],
     procedural_module: Any,
     procedural_yaml_dir: Callable[[dict[str, Any]], Any],
@@ -312,6 +313,8 @@ async def _run_retrieve(
                         ),
                         con=con,
                     )
+                    if state_out is None:
+                        state_out = soul_state_read(con)
                 finally:
                     con.close()
         if state_out:
@@ -321,9 +324,9 @@ async def _run_retrieve(
             memory_cache = state_out.get("memory_cache") or []
             if memory_cache:
                 out["memory_cache"] = memory_cache
-            intentions_active = state_out.get("intentions_active") or {}
-            if intentions_active.get("items"):
-                out["intentions_active"] = intentions_active
+        out["intentions_active"] = _validate_intentions(
+            state_out.get("intentions_active") if state_out else []
+        )
 
     out["method"] = "rag"
     out["conversation_id"] = scoped_conversation_id

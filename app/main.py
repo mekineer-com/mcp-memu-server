@@ -85,10 +85,10 @@ from app.services.consolidation import (
 )
 from app.services.intention_state import (
     append_memory_cache_entry as _append_memory_cache_entry,
-    apply_intention_turn_maintenance as _apply_intention_turn_maintenance_impl,
-    normalize_intentions_stack as _normalize_intentions_stack_impl,
+    validate_intentions as _validate_intentions,
     normalize_memory_cache as _normalize_memory_cache_impl,
     remove_intentions as _remove_intentions,
+    restore_intentions as _restore_intentions,
 )
 from app.services import crud_endpoints as _crud_endpoints
 from app.services import conversation_sources as _conversation_sources
@@ -542,6 +542,7 @@ async def _run_free_turn_chain(
         parse_free_turn_contract=_parse_free_turn_contract,
         record_activity_message=_record_activity_message,
         activity_recap_from_contract=_activity_recap_from_contract,
+        apply_annulments=_apply_free_turn_annulments,
         insert_whatsapp_outbound=_insert_whatsapp_outbound,
         schedule_free_turn_follow_up=_schedule_free_turn_follow_up,
         clear_inflight=_clear_inflight,
@@ -1128,10 +1129,6 @@ def _conversation_state_from_row(row: sqlite3.Row | None, *, con: sqlite3.Connec
     return state
 
 
-def _intention_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    return _sqlite_scope.intention_row_to_dict(row)
-
-
 def _write_conversation_state(
     conversation_id: str,
     *,
@@ -1483,36 +1480,41 @@ async def _prepare_annulment_memories(
     if not annulments:
         return []
 
-    stack = _normalize_intentions_stack_impl(intentions_before)
-    by_id = {
-        str(item.get("id")): item
-        for item in (stack.get("items") or [])
-        if isinstance(item, dict) and str(item.get("id") or "").strip()
-    }
+    intentions = _validate_intentions(intentions_before)
+    by_id = {item["id"]: item for item in intentions}
 
     event_at = datetime.now(UTC)
-    summaries: list[str] = []
+    candidates: list[tuple[str, str]] = []
+    seen_ids: set[str] = set()
     for row in annulments:
-        intention_id = str(row.get("intention_id") or "").strip()
-        status = str(row.get("status") or "").strip().lower()
-        if not intention_id or status not in {"completed", "deleted"}:
+        intention_id = row["intention_id"]
+        if intention_id in seen_ids:
             continue
-        note = str(row.get("note") or "").strip()
-        intention_text = str((by_id.get(intention_id) or {}).get("text") or intention_id).strip() or intention_id
-        summary = f'On {event_at.date().isoformat()}, I marked "{intention_text}" as {status}.'
+        intention = by_id.get(intention_id)
+        if intention is None:
+            continue
+        summary = f'On {event_at.date().isoformat()}, I marked "{intention["text"]}" as {row["status"]}.'
+        note = row["note"]
         if note:
             summary = f"{summary} Note: {note}"
-        summaries.append(summary)
+        seen_ids.add(intention_id)
+        candidates.append((intention_id, summary))
 
-    if not summaries:
+    if not candidates:
         return []
 
+    summaries = [summary for _, summary in candidates]
     embeddings = await svc.embed(summaries, profile="embedding")
     if len(embeddings) != len(summaries):
         raise ValueError("Annulment embedding count does not match summaries")
     return [
-        {"summary": summary, "embedding": embedding, "happened_at": event_at}
-        for summary, embedding in zip(summaries, embeddings, strict=True)
+        {
+            "intention_id": intention_id,
+            "summary": summary,
+            "embedding": embedding,
+            "happened_at": event_at,
+        }
+        for (intention_id, summary), embedding in zip(candidates, embeddings, strict=True)
     ]
 
 
@@ -1551,6 +1553,82 @@ def _persist_annulment_memories(
     return created_ids
 
 
+def _persist_actual_annulments(
+    *,
+    svc: MemoryService,
+    scope: dict[str, Any],
+    conversation_id: str,
+    current_intentions: list[dict[str, str]],
+    annulment_ids: list[str],
+    prepared: list[dict[str, Any]],
+) -> tuple[list[dict[str, str]], list[dict[str, Any]], list[str]]:
+    next_intentions, removed = _remove_intentions(current_intentions, annulment_ids)
+    removed_ids = {row["item"]["id"] for row in removed}
+    memory_ids = _persist_annulment_memories(
+        svc=svc,
+        scope=scope,
+        conversation_id=conversation_id,
+        prepared=[
+            row
+            for row in prepared
+            if row["intention_id"] in removed_ids
+        ],
+    )
+    return next_intentions, removed, memory_ids
+
+
+async def _apply_free_turn_annulments(
+    *,
+    service: MemoryService,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    annulments: list[dict[str, str]],
+) -> list[str]:
+    if not annulments:
+        return []
+    state_before, _, _ = _load_turn_state_and_soul_card(
+        conversation_id,
+        user_id=user_id,
+        soul_id=soul_id,
+    )
+    prepared = await _prepare_annulment_memories(
+        svc=service,
+        intentions_before=state_before.get("intentions_active"),
+        annulments=annulments,
+    )
+    scope = {"user_id": user_id, "soul_id": soul_id}
+    state_lock = _get_memorize_lock(_memorize_lock_key(user_id, soul_id))
+    async with state_lock:
+        latest, _, _ = _load_turn_state_and_soul_card(
+            conversation_id,
+            user_id=user_id,
+            soul_id=soul_id,
+        )
+        next_intentions, removed, memory_ids = _persist_actual_annulments(
+            svc=service,
+            scope=scope,
+            conversation_id=conversation_id,
+            current_intentions=_validate_intentions(latest.get("intentions_active")),
+            annulment_ids=[row["intention_id"] for row in annulments],
+            prepared=prepared,
+        )
+        if not removed:
+            return []
+        try:
+            _write_conversation_state(
+                conversation_id,
+                soul_id=soul_id,
+                user_id=user_id,
+                updates={"intentions_active": next_intentions},
+            )
+        except Exception:
+            if memory_ids:
+                service.graph_delete_memories(memory_ids, where=scope)
+            raise
+    return memory_ids
+
+
 # ==== Retrieve & APIMW pipeline ====
 
 async def _run_retrieve(
@@ -1570,6 +1648,7 @@ async def _run_retrieve(
         sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
         conversation_state_from_row=_conversation_state_from_row,
         conversation_state_row=_conversation_state_row,
+        soul_state_read=_soul_state.read,
         write_conversation_state=_write_conversation_state,
         procedural_module=_procedural,
         procedural_yaml_dir=_procedural_yaml_dir,
@@ -2070,6 +2149,7 @@ async def _run_consolidation_pipeline_once(
             inputs=prep,
             soul_id=soul_id,
             user_id=user_id,
+            llm_profile=consolidation_profile,
         )
 
         consolidation_llm = await _run_consolidation_llm(
@@ -2444,25 +2524,6 @@ async def search_memory_categories(payload: dict[str, Any]):
         canonicalize_scope_where=_canonicalize_scope_where,
         has_category_content=_has_category_content,
         record_call=_record_call,
-    )
-
-
-# ---- Intentions & relationships endpoints ----
-
-@app.get("/souls/{soul_id}/intentions", operation_id="list_intentions")
-async def list_intentions(
-    soul_id: str,
-    user_id: str,
-    status: str = "active",
-):
-    return await _crud_endpoints.list_intentions_endpoint(
-        soul_id=soul_id,
-        user_id=user_id,
-        status=status,
-        sqlite_current_path=_sqlite_current_path,
-        sqlite_connect=_sqlite_connect,
-        sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
-        intention_row_to_dict=_intention_row_to_dict,
     )
 
 
@@ -3789,7 +3850,7 @@ async def conversation_retrieve(
                 if not response_chat_history_for_ai.strip() and cid.startswith("chat:atomic-"):
                     response_chat_history_for_ai = "My Atomic Conversations:"
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
-                intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
+                intentions_active = _validate_intentions(out.get("intentions_active"))
                 atomic_retrieve_rag = out.get("result")
                 if isinstance(atomic_retrieve_rag, dict):
                     atomic_retrieve_rag = {**atomic_retrieve_rag, "items": []}
@@ -3847,7 +3908,7 @@ async def conversation_retrieve(
                     self_turn_directive=self_turn_directive,
                 )
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
-                intentions_active = _normalize_intentions_stack_impl(out.get("intentions_active"))
+                intentions_active = _validate_intentions(out.get("intentions_active"))
 
                 out["turn_system_prompt"] = _make_turn_system_prompt(
                     soul_id,
@@ -4293,7 +4354,6 @@ def _turn_state_read(
     soul_id: str,
     safe: dict[str, Any],
     state_override_cache: list[str],
-    state_override_intentions: dict[str, Any],
     dry_run: bool,
     history_full: list[dict[str, Any]],
 ) -> tuple[
@@ -4301,7 +4361,7 @@ def _turn_state_read(
     Any,
     Any,
     list[str],
-    dict[str, Any],
+    list[dict[str, str]],
     int,
     "dict[str, Any] | None",
 ]:
@@ -4309,7 +4369,7 @@ def _turn_state_read(
     request_soul_card = str(safe.get("soul_card") or "").strip() or None
     soul_card = request_soul_card or soul_card
     memory_cache_before = list(state_override_cache)
-    intentions_before = _normalize_intentions_stack_impl(state_override_intentions)
+    intentions_before = _validate_intentions(conversation_state.get("intentions_active"))
     unmemorized_tokens, queued_memorize_payload = _prepare_auto_memorize(
         cid,
         uid,
@@ -4339,28 +4399,32 @@ def _turn_state_write(
     retrieval_ids_since_consolidation: list[str],
     memorize_chat: bool | None = None,
     *,
-    annulment_memory_ids: list[str] | None = None,
-) -> tuple[dict[str, Any], Any]:
+    svc: MemoryService,
+    scope: dict[str, Any],
+    prepared_annulments: list[dict[str, Any]],
+) -> tuple[dict[str, Any], Any, list[str]]:
     latest_state_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
     current_memory_cache = _normalize_memory_cache_impl(latest_state_row.get("memory_cache"))
-    current_intentions = _normalize_intentions_stack_impl(latest_state_row.get("intentions_active"))
-    intentions_snapshot = current_intentions
-    current_intentions = _apply_intention_turn_maintenance_impl(current_intentions)
+    current_intentions = _validate_intentions(latest_state_row.get("intentions_active"))
     next_memory_cache = (
         _append_memory_cache_entry(current_memory_cache, cache_entry)
         if cache_entry
         else list(current_memory_cache)
     )
-    next_intentions = _remove_intentions(
-        current_intentions,
-        [item_id for item_id in annulment_ids if item_id],
+    next_intentions, annulled_intentions, annulment_memory_ids = _persist_actual_annulments(
+        svc=svc,
+        scope=scope,
+        conversation_id=cid,
+        current_intentions=current_intentions,
+        annulment_ids=[item_id for item_id in annulment_ids if item_id],
+        prepared=prepared_annulments,
     )
     updates: dict[str, Any] = {
         "intentions_active": next_intentions,
         "memory_cache": next_memory_cache,
         "undo_snapshot": {
             "memory_cache": current_memory_cache,
-            "intentions_active": intentions_snapshot,
+            "annulled_intentions": annulled_intentions,
             "annulment_memory_ids": list(annulment_memory_ids or []),
         },
     }
@@ -4370,13 +4434,18 @@ def _turn_state_write(
         updates["memorize_chat"] = memorize_chat
     updates["prior_context"] = None
     updates["apimw_message_to_self"] = None
-    state_out, state_path = _write_conversation_state(
-        cid,
-        soul_id=soul_id,
-        user_id=uid,
-        updates=updates,
-    )
-    return state_out, state_path
+    try:
+        state_out, state_path = _write_conversation_state(
+            cid,
+            soul_id=soul_id,
+            user_id=uid,
+            updates=updates,
+        )
+    except Exception:
+        if annulment_memory_ids:
+            svc.graph_delete_memories(annulment_memory_ids, where=scope)
+        raise
+    return state_out, state_path, annulment_memory_ids
 
 
 
@@ -4473,14 +4542,7 @@ async def conversation_turn(
                 status_code=400,
                 detail="prompt_override_payload.memory_cache is required",
             )
-        override_intentions_raw = prompt_override_payload.get("intentions_active")
-        if not isinstance(override_intentions_raw, dict):
-            raise HTTPException(
-                status_code=400,
-                detail="prompt_override_payload.intentions_active is required",
-            )
         override_memory_cache: list[str] = _normalize_memory_cache_impl(override_memory_cache_raw)
-        override_intentions: dict[str, Any] = _normalize_intentions_stack_impl(override_intentions_raw)
         override_retrieve_ms = prompt_override_payload.get("retrieve_ms")
         retrieve_ms = int(override_retrieve_ms) if isinstance(override_retrieve_ms, (int, float)) else 0
         dry_run = bool(safe.get("dry_run", False))
@@ -4511,7 +4573,7 @@ async def conversation_turn(
                 unmemorized_tokens,
                 queued_memorize_payload,
             ) = _turn_state_read(
-                cid, uid, soul_id, safe, override_memory_cache, override_intentions,
+                cid, uid, soul_id, safe, override_memory_cache,
                 dry_run, history_full,
             )
 
@@ -4580,10 +4642,9 @@ async def conversation_turn(
             )
 
         turn_cache_entry = str(turn_contract.get("cache_entry") or "").strip()
-        turn_annulments = turn_contract.get("annulments") if isinstance(turn_contract.get("annulments"), list) else []
-        normalized_annulments = [row for row in turn_annulments if isinstance(row, dict)]
+        normalized_annulments = turn_contract["annulments"]
         turn_annulment_ids = [
-            str(row.get("intention_id") or "").strip()
+            row["intention_id"]
             for row in normalized_annulments
         ]
 
@@ -4600,24 +4661,19 @@ async def conversation_turn(
                 annulments=normalized_annulments,
             )
             async with state_lock:
-                annulment_memory_ids = _persist_annulment_memories(
+                (
+                    conversation_state_after,
+                    conversation_state_path,
+                    annulment_memory_ids,
+                ) = _turn_state_write(
+                    cid, uid, soul_id,
+                    turn_cache_entry, turn_annulment_ids,
+                    retrieved_item_ids,
+                    memorize_chat=memorize_chat,
                     svc=memory_service,
                     scope=scope,
-                    conversation_id=cid,
-                    prepared=prepared_annulments,
+                    prepared_annulments=prepared_annulments,
                 )
-                try:
-                    conversation_state_after, conversation_state_path = _turn_state_write(
-                        cid, uid, soul_id,
-                        turn_cache_entry, turn_annulment_ids,
-                        retrieved_item_ids,
-                        memorize_chat=memorize_chat,
-                        annulment_memory_ids=annulment_memory_ids,
-                    )
-                except Exception:
-                    if annulment_memory_ids:
-                        memory_service.graph_delete_memories(annulment_memory_ids, where=scope)
-                    raise
             if not bool(conversation_state_after.get("memorize_chat", True)):
                 _queue_background_rollup_task(
                     conversation_id=cid,
@@ -4740,7 +4796,6 @@ async def conversation_turn(
                 "system_prompt": turn_system_prompt,
                 "user_prompt": turn_user_prompt,
                 "memory_cache": memory_cache_before,
-                "intentions_active": intentions_before,
             },
             "retrieve_ms": retrieve_ms,
             "turn_ms": turn_ms,
@@ -4832,13 +4887,18 @@ async def conversation_turn_undo(
             for value in undo_snapshot.get("annulment_memory_ids") or []
             if str(value or "").strip()
         ]
+        current_intentions = _validate_intentions(conversation_state.get("intentions_active"))
+        restored_intentions = _restore_intentions(
+            current_intentions,
+            undo_snapshot.get("annulled_intentions") or [],
+        )
         _write_conversation_state(
             cid,
             soul_id=soul_id,
             user_id=uid,
             updates={
                 "memory_cache": list(undo_snapshot.get("memory_cache") or []),
-                "intentions_active": undo_snapshot.get("intentions_active"),
+                "intentions_active": restored_intentions,
                 "undo_snapshot": None,
             },
         )

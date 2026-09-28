@@ -123,6 +123,7 @@ async def _run_free_turn_chain(
     parse_free_turn_contract: Callable[..., dict[str, Any]],
     record_activity_message: Callable[..., bool],
     activity_recap_from_contract: Callable[[dict[str, Any]], str],
+    apply_annulments: Callable[..., Any],
     insert_whatsapp_outbound: Callable[..., str],
     schedule_free_turn_follow_up: Callable[..., str | None],
     clear_inflight: Callable[[set[str], str], None],
@@ -160,6 +161,15 @@ async def _run_free_turn_chain(
                 soul_id=soul_id,
                 recap=activity_recap_from_contract(contract),
             )
+            annulments = contract["annulments"]
+            if annulments:
+                await apply_annulments(
+                    service=service,
+                    user_id=user_id,
+                    soul_id=soul_id,
+                    conversation_id=conversation_id,
+                    annulments=annulments,
+                )
             response_target = str(contract.get("response_target") or "").strip().lower()
             response = str(contract.get("response") or "").strip()
             media_path = str(contract.get("attachment") or "").strip() or None
@@ -182,9 +192,8 @@ async def _run_free_turn_chain(
                 else:
                     logger.info("free_turn: response ignored for non-WhatsApp conversation")
             cache_entry = str(contract.get("cache_entry") or "").strip()
-            annulments = contract.get("annulments") if isinstance(contract.get("annulments"), list) else []
-            if cache_entry or annulments:
-                logger.info("free_turn: cache_entry/annulments intentionally ignored for continuation state")
+            if cache_entry:
+                logger.info("free_turn: cache_entry intentionally ignored for continuation state")
             next_reason = str(contract.get("continue_reason") or "").strip()
             next_continue_at = str(contract.get("continue_at") or "").strip()
             if not next_reason:

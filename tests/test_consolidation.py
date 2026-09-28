@@ -11,14 +11,13 @@ from fastapi import HTTPException
 from memu.app.dossier import DossierRevisionStaleError
 
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
-from app.services import segment
+from app.services import consolidation, segment
 from app.services import soul_state as _soul_state
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
 from app.services.consolidation import _format_segment_memory_items_for_prompt
-from app.services.consolidation import _is_first_reflection
-from app.services.consolidation import _parse_reflection_xml
+from app.services.consolidation import _format_episode_memories
+from app.services.consolidation import _parse_weekly_reflection_xml
 from app.services.consolidation import _remap_edges_with_memory_ids
-from app.services.consolidation import _select_prompt_objective
 from app.services.consolidation import consolidation_due
 from app.services.consolidation import gather_consolidation_inputs
 from app.services.consolidation import prepare_dossier_consolidation_context
@@ -47,53 +46,52 @@ class _DossierContextService:
         self.calls.append(("prepare", dossier_id, scope, context))
         return {
             "dossier": SimpleNamespace(
-                id=dossier_id,
-                kind="topic",
-                name=dossier_id.title(),
-                description=f"{dossier_id} description",
-                summary="## Current\nStable.",
+                id=dossier_id, kind="topic", name=dossier_id.title(),
+                description=f"{dossier_id} description", summary="## Current\nStable.",
             ),
             "target_words": 300,
-            "cleanup_items": [],
-            "cited_items": [],
-            "pending_items": [],
-            "candidate_items": [],
-            "linked_item_ids": [],
-            "linked_inactive_item_ids": [],
-            "cited_unlinked_item_ids": [],
+            "cleanup_items": [], "cited_items": [], "pending_items": [],
+            "candidate_items": [], "linked_item_ids": [],
+            "linked_inactive_item_ids": [], "cited_unlinked_item_ids": [],
         }
 
     def prepare_anchor_revision(self, role, scope, actionable_ids):
         self.calls.append(("anchor", role, scope, actionable_ids))
         return {
             "dossier": SimpleNamespace(
-                id=f"anchor-{role}",
-                anchor_role=role,
-                summary="## Current\nStable.",
+                id=f"anchor-{role}", anchor_role=role, name=role,
+                description=f"{role} description", summary="## Current\nStable.",
             ),
-            "cited_items": [],
-            "cleanup_items": [],
-            "pending_items": [],
-            "candidate_items": [],
-            "linked_item_ids": [],
-            "linked_inactive_item_ids": [],
-            "actionable_item_ids": [],
+            "cited_items": [], "cleanup_items": [], "pending_items": [],
+            "candidate_items": [], "linked_item_ids": [],
+            "linked_inactive_item_ids": [], "actionable_item_ids": list(actionable_ids),
+        }
+
+    def prepare_anchor_continuity_context(self, _scope):
+        return {
+            "dossiers": [SimpleNamespace(
+                name="Health", description="Current health", summary="Body [M4].",
+                anchor_role=None,
+            )],
+            "episodes": [],
         }
 
     async def chat(self, prompt, **kwargs):
-        self.calls.append(("chat", kwargs["step"]))
+        step = kwargs["step"]
+        self.calls.append(("chat", step))
         self.prompts.append(prompt)
-        if kwargs["step"] == "reflection":
-            return """<reflection>
-  <narrative_self>I am steady.</narrative_self>
+        if step == "anchors":
+            return """<identity_maintenance>
+  <narrative_self action="keep"></narrative_self>
   <anchor_revisions>
-    <anchor role="soul"><description>My living history.</description><prose_action>keep</prose_action><prose_patches></prose_patches></anchor>
-    <anchor role="user"><description>My human's living history.</description><prose_action>keep</prose_action><prose_patches></prose_patches></anchor>
+    <anchor role="soul"><description>soul description</description><prose_action>keep</prose_action><prose_patches></prose_patches></anchor>
+    <anchor role="user"><description>user description</description><prose_action>keep</prose_action><prose_patches></prose_patches></anchor>
   </anchor_revisions>
-  <life_goals><add></add><remove></remove></life_goals>
-  <intentions><boost target_id="relax" /></intentions>
-  <edges></edges><companion_memory></companion_memory>
-</reflection>"""
+  <life_goals action="keep"><add></add><remove></remove></life_goals>
+</identity_maintenance>"""
+        if step == "weekly":
+            return """<weekly_reflection><intentions/><edges></edges>
+<companion_memory>I felt steady while looking back.</companion_memory></weekly_reflection>"""
         revisions = "".join(
             f'<dossier_revision dossier_id="{row.id}"><description>{row.id} description</description>'
             '<prose_action>keep</prose_action><prose_patches></prose_patches>'
@@ -111,76 +109,51 @@ class _DossierContextService:
     async def apply_anchor_revision(self, bundle, decision, scope):
         self.calls.append(("apply_anchor", decision["anchor_role"], scope))
 
-    async def embed(self, _texts, **_kwargs):
-        return []
+    async def embed(self, texts, **_kwargs):
+        return [[1.0] for _ in texts]
 
     def build_dossier_index(self, scope):
         self.calls.append(("index", scope))
         return "- Health: Current health"
 
-    def list_dossiers_for_segments(self, scope, *, segment_ids):
-        self.calls.append(("relevant", scope, list(segment_ids)))
-        return [SimpleNamespace(name="Health", description="Current health", summary="Body [M4].")]
-
 
 @pytest.mark.parametrize(
     ("profiles", "consolidation_profile", "missing"),
-    [
-        (("default",), None, "revision"),
-        (("default", "revision"), "reflection", "reflection"),
-    ],
+    [(('default',), None, 'revision'), (('default', 'revision'), 'reflection', 'reflection')],
 )
-def test_consolidation_preflight_checks_both_profiles(
-    profiles, consolidation_profile, missing
-) -> None:
+def test_consolidation_preflight_checks_both_profiles(profiles, consolidation_profile, missing) -> None:
     svc = _DossierContextService(due_ids=("first",), profiles=profiles)
     with pytest.raises(KeyError, match=missing):
         preflight_consolidation_profiles(svc, consolidation_profile)
-    assert svc.calls == []
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "due_ids",
-    [("first",), ("first", "second"), ("first", "second", "third"), ("first", "second", "third", "fourth")],
-)
-async def test_dossier_context_uses_one_holistic_call_and_preserves_due_order(due_ids) -> None:
-    svc = _DossierContextService(due_ids=due_ids)
-    inputs = {
+def _inputs() -> dict:
+    return {
         "narrative_self": "I am steady.",
         "active_life_goals": ["Stay curious"],
-        "removed_life_goals": ["Old goal"],
-        "selected_segment_ids": ["segment-2", "segment-3"],
-        "intention_activity": [],
-        "state": {},
+        "removed_life_goals": [],
+        "selected_segment_ids": ["segment-2"],
+        "state": {"intentions_active": []},
         "segment_inputs": [],
         "prior_context_memory_items": [],
+        "existing_memory_edges": [],
         "all_chat_history": "A lived span.",
     }
 
-    result = await prepare_dossier_consolidation_context(
-        svc,
-        inputs=inputs,
-        soul_id="TestSoul",
-        user_id="TestUser",
-    )
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("due_ids", [("first",), ("first", "second"), ("first", "second", "third")])
+async def test_dossier_context_uses_one_holistic_call_and_preserves_due_order(due_ids) -> None:
+    svc = _DossierContextService(due_ids=due_ids)
+    inputs = _inputs()
+    result = await prepare_dossier_consolidation_context(
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser"
+    )
     assert result is inputs
     assert [call for call in svc.calls if call[0] == "chat"] == [("chat", "dossiers")]
     assert [call[1] for call in svc.calls if call[0] == "apply"] == list(due_ids)
-    assert result["dossier_index"] == "- Health: Current health"
-    assert result["relevant_dossiers"][0].summary == "Body [M4]."
-    assert (
-        "relevant",
-        {"soul_id": "TestSoul", "user_id": "TestUser"},
-        ["segment-2", "segment-3"],
-    ) in svc.calls
-    first_context = next(call[3] for call in svc.calls if call[0] == "prepare")
-    assert first_context == {
-        "narrative_self": "I am steady.",
-        "active_life_goals": ["Stay curious"],
-        "removed_life_goals": ["Old goal"],
-    }
+    assert "Complete active life-domain dossiers" in svc.prompts[0]
+    assert "Life-domain dossiers needing my care now" in svc.prompts[0]
 
 
 @pytest.mark.asyncio
@@ -188,235 +161,106 @@ async def test_dossier_context_keeps_first_apply_when_second_is_stale() -> None:
     svc = _DossierContextService(due_ids=("first", "second"), stale_id="second")
     with pytest.raises(DossierRevisionStaleError):
         await prepare_dossier_consolidation_context(
-            svc,
-            inputs={
-                "active_life_goals": [],
-                "removed_life_goals": [],
-                "selected_segment_ids": ["segment-1"],
-                "intention_activity": [],
-                "state": {},
-                "segment_inputs": [],
-            },
-            soul_id="TestSoul",
-            user_id="TestUser",
+            svc, inputs=_inputs(), soul_id="TestSoul", user_id="TestUser"
         )
     assert [call[1] for call in svc.calls if call[0] == "apply"] == ["first", "second"]
-    assert len([call for call in svc.calls if call[0] == "index"]) == 1
-    assert len([call for call in svc.calls if call[0] == "relevant"]) == 1
 
 
 @pytest.mark.asyncio
-async def test_dossier_context_without_due_dossiers_still_builds_context() -> None:
-    svc = _DossierContextService()
-    inputs = {
-        "active_life_goals": [],
-        "removed_life_goals": [],
-        "selected_segment_ids": ["segment-4"],
-        "intention_activity": [],
-        "state": {},
-        "segment_inputs": [],
-        "prior_context_memory_items": [],
-    }
-    await prepare_dossier_consolidation_context(
-        svc,
-        inputs=inputs,
-        soul_id="TestSoul",
-        user_id="TestUser",
-    )
-    assert inputs["dossier_index"] == "- Health: Current health"
-    assert (
-        "relevant",
-        {"soul_id": "TestSoul", "user_id": "TestUser"},
-        ["segment-4"],
-    ) in svc.calls
-    assert not any(call[0] == "chat" for call in svc.calls)
-
-
-@pytest.mark.asyncio
-async def test_consolidation_preflights_no_whitespace_prompts() -> None:
-    def inputs():
-        return {
-            "narrative_self": "I am steady.",
-            "active_life_goals": [],
-            "removed_life_goals": [],
-            "selected_segment_ids": ["segment-4"],
-            "intention_activity": [],
-            "state": {},
-            "segment_inputs": [],
-            "prior_context_memory_items": [],
-            "all_chat_history": "x" * 400_001,
-        }
-
-    dossier_svc = _DossierContextService(due_ids=("first",))
-    with pytest.raises(ValueError, match="Anchor reflection prompt may exceed"):
+async def test_consolidation_preflight_fails_before_paid_call(monkeypatch) -> None:
+    monkeypatch.setattr(consolidation, "CONSOLIDATION_PROMPT_TOKEN_LIMIT", 10)
+    svc = _DossierContextService(due_ids=("first",))
+    with pytest.raises(ValueError, match="provider-safe"):
         await prepare_dossier_consolidation_context(
-            dossier_svc,
-            inputs=inputs(),
-            soul_id="TestSoul",
-            user_id="TestUser",
+            svc, inputs=_inputs(), soul_id="TestSoul", user_id="TestUser"
         )
-    assert not [call for call in dossier_svc.calls if call[0] in {"chat", "apply"}]
-
-    svc = _DossierContextService()
-    anchor_inputs = inputs()
-    await prepare_dossier_consolidation_context(
-        svc,
-        inputs=anchor_inputs,
-        soul_id="TestSoul",
-        user_id="TestUser",
-    )
-    with pytest.raises(ValueError, match="Anchor reflection prompt exceeds"):
-        await run_consolidation_llm(
-            svc,
-            inputs=anchor_inputs,
-            soul_id="TestSoul",
-            user_id="TestUser",
-        )
+    assert not [call for call in svc.calls if call[0] in {"chat", "apply"}]
 
 
 @pytest.mark.asyncio
-async def test_reflection_uses_new_root_and_applies_both_validated_anchors() -> None:
+async def test_anchor_then_weekly_stages_apply_only_after_both_validate() -> None:
     svc = _DossierContextService()
-    inputs = {
-        "narrative_self": "I am steady.",
-        "active_life_goals": [],
-        "removed_life_goals": [],
-        "selected_segment_ids": ["segment-4"],
-        "intention_activity": [],
-        "state": {"intentions_active": None},
-        "segment_inputs": [],
-        "prior_context_memory_items": [],
-        "all_chat_history": "A lived span.",
-    }
+    inputs = _inputs()
     await prepare_dossier_consolidation_context(
-        svc,
-        inputs=inputs,
-        soul_id="TestSoul",
-        user_id="TestUser",
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser"
     )
-
     out = await run_consolidation_llm(
-        svc,
-        inputs=inputs,
-        soul_id="TestSoul",
-        user_id="TestUser",
-        llm_profile=None,
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser"
     )
-
-    assert out["narrative_self"] == "I am steady."
-    assert out["intention_actions"] == []
-    assert [call[1] for call in svc.calls if call[0] == "apply_anchor"] == ["soul", "user"]
-    assert "A lived span." in svc.prompts[-1]
-    assert "Body [4]." in svc.prompts[-1]
-
-
-@pytest.mark.asyncio
-async def test_reflection_resolves_edges_from_anchor_cited_memories() -> None:
-    svc = _DossierContextService()
-    cited_at = datetime(2026, 1, 2, tzinfo=UTC)
-    anchor_item = SimpleNamespace(
-        id="anchor-memory",
-        memory_ref=77,
-        memory_type="knowledge",
-        summary="A remembered promise.",
-        happened_at=cited_at,
-        created_at=cited_at,
-    )
-    original_prepare = svc.prepare_anchor_revision
-
-    def _prepare_anchor(role, scope, actionable_ids):
-        bundle = original_prepare(role, scope, actionable_ids)
-        if role == "soul":
-            bundle["cited_items"] = [anchor_item]
-            bundle["cleanup_items"] = [anchor_item]
-            bundle["linked_inactive_item_ids"] = [anchor_item.id]
-        return bundle
-
-    async def _reflection_chat(prompt, **kwargs):
-        svc.prompts.append(prompt)
-        return """<reflection>
-  <narrative_self>I am steady.</narrative_self>
-  <anchor_revisions>
-    <anchor role="soul"><description>My living history.</description><prose_action>keep</prose_action><prose_patches></prose_patches></anchor>
-    <anchor role="user"><description>My human's living history.</description><prose_action>keep</prose_action><prose_patches></prose_patches></anchor>
-  </anchor_revisions>
-  <life_goals></life_goals><intentions></intentions>
-  <edges><edge><subject_id>M77</subject_id><predicate>evokes</predicate><object_id>M88</object_id><confidence>0.8</confidence></edge></edges>
-  <companion_memory></companion_memory>
-</reflection>"""
-
-    svc.prepare_anchor_revision = _prepare_anchor
-    svc.chat = _reflection_chat
-    inputs = {
-        "narrative_self": "I am steady.",
-        "active_life_goals": [],
-        "removed_life_goals": [],
-        "selected_segment_ids": ["segment-4"],
-        "intention_activity": [],
-        "state": {},
-        "segment_inputs": [],
-        "prior_context_memory_items": [
-            {"id": "period-memory", "memory_ref": 88, "memory_type": "knowledge", "summary": "A new realization."}
-        ],
-    }
-    await prepare_dossier_consolidation_context(
-        svc,
-        inputs=inputs,
-        soul_id="TestSoul",
-        user_id="TestUser",
-    )
-
-    out = await run_consolidation_llm(
-        svc,
-        inputs=inputs,
-        soul_id="TestSoul",
-        user_id="TestUser",
-    )
-
-    assert out["edges"] == [
-        {
-            "subject_id": "anchor-memory",
-            "predicate": "evokes",
-            "object_id": "period-memory",
-            "confidence": 0.8,
-        }
+    assert [call for call in svc.calls if call[0] == "chat"] == [
+        ("chat", "anchors"), ("chat", "weekly")
     ]
-    assert "# Inactive memories cited by your dossier anchor\n[M77]" in svc.prompts[-1]
-    assert "# Memories cited by your dossier anchor\n(none)" in svc.prompts[-1]
+    assert [call[1] for call in svc.calls if call[0] == "apply_anchor"] == ["soul", "user"]
+    assert out["intentions_snapshot"] == []
+    assert out["intentions_replacement"] == []
 
 
-def test_select_prompt_objective_unwraps_only_requested_block() -> None:
-    prompt = "before\n<first_time>first</first_time>\n<ongoing>later</ongoing>\nafter"
-    assert _select_prompt_objective(prompt, first_time=True) == "before\nfirst\nafter"
-    assert _select_prompt_objective(prompt, first_time=False) == "before\nlater\nafter"
+@pytest.mark.asyncio
+async def test_weekly_edges_are_limited_to_full_supplied_memories() -> None:
+    svc = _DossierContextService()
+    original_chat = svc.chat
+
+    async def chat(prompt, **kwargs):
+        if kwargs["step"] == "weekly":
+            svc.calls.append(("chat", "weekly"))
+            svc.prompts.append(prompt)
+            return """<weekly_reflection><intentions/><edges><edge>
+<subject_id>[M1]</subject_id><predicate>parallels</predicate><object_id>[M2]</object_id><confidence>0.8</confidence>
+</edge></edges><companion_memory>I noticed the echo.</companion_memory></weekly_reflection>"""
+        return await original_chat(prompt, **kwargs)
+
+    svc.chat = chat
+    inputs = _inputs()
+    inputs["prior_context_memory_items"] = [
+        {"id": "older", "memory_ref": 1, "memory_type": "episode", "summary": "Older"}
+    ]
+    inputs["segment_inputs"] = [{
+        "memory_summaries": [
+            {"id": "newer", "memory_ref": 2, "memory_type": "episode", "summary": "Newer"}
+        ]
+    }]
+    inputs["existing_memory_edges"] = [
+        {"subject_id": "older", "predicate": "parallels", "object_id": "newer"}
+    ]
+    await prepare_dossier_consolidation_context(
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser"
+    )
+
+    out = await run_consolidation_llm(
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser"
+    )
+
+    assert out["edges"] == [{
+        "subject_id": "older", "predicate": "parallels",
+        "object_id": "newer", "confidence": 0.8,
+    }]
+    assert "[M1] parallels [M2]" in svc.prompts[-1]
 
 
-def test_first_reflection_requires_narrative_self() -> None:
-    with pytest.raises(ValueError, match="requires narrative_self"):
-        _parse_reflection_xml("<reflection></reflection>", {}, first_time=True)
-    with pytest.raises(ValueError, match="requires narrative_self"):
-        _parse_reflection_xml("<reflection></reflection>", {}, first_time=False)
-
-
-def test_reflection_rejects_duplicate_state_sections() -> None:
-    with pytest.raises(ValueError, match="duplicate narrative_self"):
-        _parse_reflection_xml(
-            "<reflection><narrative_self>one</narrative_self><narrative_self>two</narrative_self></reflection>",
-            {},
-            first_time=False,
+def test_weekly_reflection_requires_complete_intention_list() -> None:
+    with pytest.raises(ValueError, match="requires intentions"):
+        _parse_weekly_reflection_xml(
+            "<weekly_reflection><edges></edges><companion_memory>Present.</companion_memory></weekly_reflection>"
         )
+    assert _parse_weekly_reflection_xml(
+        "<weekly_reflection><intentions/><edges></edges><companion_memory>Present.</companion_memory></weekly_reflection>"
+    )["intentions"] == []
 
 
-def test_first_reflection_includes_reseeded_blank_anchor() -> None:
-    inputs = {
-        "narrative_self": "I already know myself.",
-        "anchor_bundles": {
-            "soul": {"dossier": SimpleNamespace(summary="## Becoming\nAlive.")},
-            "user": {"dossier": SimpleNamespace(summary="")},
-        },
-    }
-    assert _is_first_reflection(inputs)
-
+def test_episode_rendering_prefers_full_summary_and_falls_back_to_item() -> None:
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    rendered = _format_episode_memories([
+        SimpleNamespace(
+            memory_ref=1, summary="Compact", extra={"episode_summary": "Full episode"},
+            happened_at=at, created_at=at,
+        ),
+        SimpleNamespace(
+            memory_ref=2, summary="Fallback episode", extra={},
+            happened_at=at, created_at=at,
+        ),
+    ])
+    assert "[M1]" in rendered and "Full episode" in rendered and "Compact" not in rendered
+    assert "[M2]" in rendered and "Fallback episode" in rendered
 
 def test_format_segment_memory_items_for_prompt_shows_memory_ids() -> None:
     id_map: dict[str, str] = {}
@@ -514,7 +358,10 @@ def test_write_consolidation_outputs_consumes_each_conversation_snapshot() -> No
             sqlite_current_path=lambda _user, _soul: db_path,
             soul_id=soul_id,
             user_id=user_id,
-            updates={"pending_segment_ids": ["ep:1-2", "ep:3-4"], "intentions_active": []},
+            updates={
+                "pending_segment_ids": ["ep:1-2", "ep:3-4"],
+                "intentions_active": [{"id": "keep", "text": "Keep"}],
+            },
         )
         write_conversation_state(
             other_cid,
@@ -579,7 +426,14 @@ def test_write_consolidation_outputs_consumes_each_conversation_snapshot() -> No
                 "life_goal_remove": [],
                 "edges": [],
                 "edge_invalidations": [],
-                "intention_actions": [],
+                "intentions_snapshot": [
+                    {"id": "keep", "text": "Keep"},
+                    {"id": "done", "text": "Done"},
+                ],
+                "intentions_replacement": [
+                    {"id": "done", "text": "Done"},
+                    {"id": "new", "text": "New"},
+                ],
             },
             conversation_id=cid,
             soul_id=soul_id,
@@ -587,6 +441,7 @@ def test_write_consolidation_outputs_consumes_each_conversation_snapshot() -> No
         )
 
         assert result["consumed_segment_ids"] == ["ep:1-2", "other:1-2"]
+        assert result["state"]["intentions_active"] == [{"id": "new", "text": "New"}]
         assert result["state"]["pending_segment_ids"] == ["ep:3-4"]
         other_state, _ = write_conversation_state(
             other_cid,
@@ -1035,7 +890,8 @@ def _base_llm_results(**overrides) -> dict:
         "life_goal_remove": [],
         "edges": [],
         "edge_invalidations": [],
-        "intention_actions": [],
+        "intentions_snapshot": [],
+        "intentions_replacement": [],
     }
     base.update(overrides)
     return base
@@ -1180,110 +1036,6 @@ def test_write_consolidation_outputs_uses_life_goals_table() -> None:
 
         assert [(row[0], row[1]) for row in rows] == [("new goal", "active"), ("old goal", "removed")]
         assert old_rows == []
-
-
-def test_write_consolidation_outputs_created_ephemeral_survives_turns_until_next_consolidation() -> None:
-    with tempfile.TemporaryDirectory() as td:
-        tmp_dir = Path(td)
-        db_path = tmp_dir / "soul.db"
-        con = sqlite3.connect(db_path)
-        try:
-            con.row_factory = sqlite3.Row
-            sqlite_ensure_conversation_state_schema(con)
-            _soul_state.ensure_schema(con)
-            con.commit()
-        finally:
-            con.close()
-
-        write_conversation_state(
-            "conv-intentions",
-            sqlite_current_path=lambda _u, _s: db_path,
-            soul_id="SoulI",
-            user_id="UserI",
-            updates={"pending_segment_ids": ["ep:1"], "intentions_active": []},
-        )
-
-        write_consolidation_outputs(
-            _make_consolidation_deps(db_path, tmp_dir),
-            _make_svc_stub(),
-            inputs={"db_path": db_path},
-            llm_results=_base_llm_results(
-                intention_actions=[{"type": "create", "id": "new-thread", "text": "Follow the thread."}],
-            ),
-            conversation_id="conv-intentions",
-            soul_id="SoulI",
-            user_id="UserI",
-        )
-
-        check_con = sqlite_connect(db_path)
-        try:
-            check_con.row_factory = sqlite3.Row
-            before_turn = _soul_state.read(check_con)["intentions_active"]
-        finally:
-            check_con.close()
-        assert "new-thread" in {item["id"] for item in before_turn["items"]}
-
-        from app.services.intention_state import apply_intention_turn_maintenance
-
-        after_turn = apply_intention_turn_maintenance(before_turn)
-        after_turn_items = {item["id"]: item for item in after_turn["items"]}
-        assert after_turn_items["new-thread"]["ephemeral"] is True
-
-
-@pytest.mark.parametrize("intention_actions", [[], [{"type": "promote", "target_id": "fabricated"}]])
-def test_write_consolidation_outputs_preserves_intentions_on_missing_or_invalid_action(
-    intention_actions: list[dict[str, str]],
-) -> None:
-    with tempfile.TemporaryDirectory() as td:
-        tmp_dir = Path(td)
-        db_path = tmp_dir / "soul.db"
-        con = sqlite3.connect(db_path)
-        try:
-            con.row_factory = sqlite3.Row
-            sqlite_ensure_conversation_state_schema(con)
-            _soul_state.ensure_schema(con)
-            con.commit()
-        finally:
-            con.close()
-
-        write_conversation_state(
-            "conv-drop-eph",
-            sqlite_current_path=lambda _u, _s: db_path,
-            soul_id="SoulE",
-            user_id="UserE",
-            updates={
-                "pending_segment_ids": ["ep:1"],
-                "intentions_active": {
-                    "items": [
-                        {"id": "old-eph", "text": "Old ephemeral", "ephemeral": True},
-                        {"id": "stable", "text": "Stable", "priority": 8.0, "ephemeral": False},
-                    ]
-                },
-            },
-        )
-
-        write_consolidation_outputs(
-            _make_consolidation_deps(db_path, tmp_dir),
-            _make_svc_stub(),
-            inputs={"db_path": db_path, "last_consolidation_at": "2026-06-01T00:00:00+00:00"},
-            llm_results=_base_llm_results(intention_actions=intention_actions),
-            conversation_id="conv-drop-eph",
-            soul_id="SoulE",
-            user_id="UserE",
-        )
-
-        check_con = sqlite_connect(db_path)
-        try:
-            check_con.row_factory = sqlite3.Row
-            items = {
-                item["id"]: item
-                for item in _soul_state.read(check_con)["intentions_active"]["items"]
-            }
-        finally:
-            check_con.close()
-
-        assert "old-eph" in items
-        assert "stable" in items
 
 
 def test_write_consolidation_outputs_db_failure_produces_no_companion_memory() -> None:

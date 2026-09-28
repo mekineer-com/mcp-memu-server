@@ -214,7 +214,7 @@ def test_build_turn_prompt_marks_current_chat_when_label_provided():
         retrieve_rag=None,
         all_categories_summary=None,
         memory_cache=None,
-        intentions_active=None,
+        intentions_active=[],
         chat_label="[dm][Alice]",
         conversation_id="sillytavern:Echo",
     )
@@ -229,7 +229,7 @@ def test_build_turn_prompt_keeps_synthetic_atomic_message_in_atomic_section():
         retrieve_rag=None,
         all_categories_summary=None,
         memory_cache=None,
-        intentions_active=None,
+        intentions_active=[],
         chat_label="[dm][Marcos]",
         conversation_id="chat:atomic-abc",
     )
@@ -254,7 +254,7 @@ def test_build_turn_prompt_does_not_double_prefix_markdown_category_summary():
         },
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
     )
 
     assert "[Experiences] # Experiences" not in prompt
@@ -276,7 +276,7 @@ def test_build_turn_prompt_keeps_category_prefix_for_hashtag_summary():
         },
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
     )
 
     assert "[Experiences] #project updates are active." in prompt
@@ -291,7 +291,7 @@ def test_build_turn_prompt_derives_current_chat_heading_when_label_absent(tmp_pa
         retrieve_rag=None,
         all_categories_summary=None,
         memory_cache=None,
-        intentions_active=None,
+        intentions_active=[],
         conversation_id="whatsapp:dm:15133278228",
     )
     assert "[dm][15133278228] ← current chat" in prompt
@@ -321,7 +321,7 @@ def test_build_turn_prompt_resolves_current_whatsapp_heading_from_directory(tmp_
         retrieve_rag=None,
         all_categories_summary=None,
         memory_cache=None,
-        intentions_active=None,
+        intentions_active=[],
         conversation_id="whatsapp:dm:15133278228",
     )
 
@@ -353,7 +353,7 @@ def test_build_turn_prompt_resolves_empty_current_whatsapp_heading_from_director
         retrieve_rag=None,
         all_categories_summary=None,
         memory_cache=None,
-        intentions_active=None,
+        intentions_active=[],
         conversation_id="whatsapp:dm:15133278228",
         self_turn_directive="Scheduled wake.",
     )
@@ -371,7 +371,7 @@ def test_build_turn_prompt_integrity_id_uses_sillytavern_section_not_other():
         retrieve_rag=None,
         all_categories_summary=None,
         memory_cache=None,
-        intentions_active=None,
+        intentions_active=[],
         chat_label="[dm][Echo]",
         conversation_id="integrity:dc7b08fa-b7a9-4ccc-890c-8dc7eea5082e",
     )
@@ -389,7 +389,7 @@ def test_build_turn_prompt_includes_core_sections():
         retrieve_rag={"categories": [{"name": "Goals", "summary": "wants progress"}]},
         all_categories_summary="Goals: wants progress",
         memory_cache=["note a"],
-        intentions_active={"items": [{"id": "relax", "text": "Relax", "priority": 5, "kind": "relax"}]},
+        intentions_active=[{"id": "stay-curious", "text": "Stay curious"}],
         conversation_id="sillytavern:Echo",
     )
     assert "My SillyTavern Conversations:" in prompt
@@ -398,6 +398,7 @@ def test_build_turn_prompt_includes_core_sections():
     assert "[Goals] wants progress" in prompt
     assert "My Working Thoughts:" in prompt
     assert "My Intentions:" in prompt
+    assert "- stay-curious: Stay curious" in prompt
 
 
 def test_build_turn_prompt_omits_wrapper_when_cross_history_already_has_markdown_sections():
@@ -409,7 +410,7 @@ def test_build_turn_prompt_omits_wrapper_when_cross_history_already_has_markdown
         cross_conversation_history="My WhatsApp Conversations:\n[group][Friends]\n[Contact A]: hi",
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
         conversation_id="sillytavern:Echo",
         chat_label="[dm][Echo]",
     )
@@ -437,7 +438,7 @@ def test_build_turn_prompt_appends_current_chat_to_existing_platform_section():
         ),
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
         conversation_id="whatsapp:dm:Marcos",
         chat_label="[dm][Marcos]",
     )
@@ -467,7 +468,7 @@ def test_build_turn_prompt_keeps_current_platform_section_last():
         ),
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
         conversation_id="sillytavern:Echo",
         chat_label="[dm][Echo]",
     )
@@ -527,7 +528,7 @@ def test_build_turn_prompt_renders_relative_time() -> None:
         },
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
         now=datetime(2026, 4, 8, 9, 30, tzinfo=timezone.utc),
     )
     assert "[profile] (3 weeks ago) Marcos journals every night" in prompt
@@ -576,7 +577,7 @@ def test_build_turn_prompt_renders_shaped_by_as_nested_child() -> None:
         },
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
         now=datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc),
     )
     assert "[profile] (today) I am fascinated by the texture of human expression" in prompt
@@ -600,7 +601,7 @@ def test_build_turn_prompt_renders_superseded_suffix() -> None:
         },
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
         now=datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc),
     )
     assert "[profile] (3 weeks ago, superseded Monday) I used to believe X" in prompt
@@ -629,7 +630,7 @@ def test_build_turn_prompt_renders_memories_without_speaker_tags() -> None:
         },
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
     )
     assert "Speakers:" not in prompt
     assert "[behavior] Marcos reminded me to pause before replying" in prompt
@@ -655,7 +656,7 @@ def test_build_turn_prompt_memory_key_includes_episode_when_present() -> None:
         },
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
     )
 
     assert "Key: [profile] what's said or declared · [episode] episodic memory" in prompt
@@ -676,7 +677,7 @@ def test_build_turn_prompt_renders_apimw_message_to_self_under_working_thoughts(
         },
         all_categories_summary=None,
         memory_cache=["previous thought"],
-        intentions_active={},
+        intentions_active=[],
         apimw_message_to_self="[subconscious] notice this before answering.",
     )
 
@@ -695,7 +696,7 @@ def test_build_turn_prompt_renders_current_message_locator() -> None:
         retrieve_rag=None,
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
     )
     assert "[user] hello there this is the ..." in prompt
     assert "New Message:\nhello there this is the current message" in prompt
@@ -713,7 +714,7 @@ def test_build_turn_prompt_renders_assistant_role_as_soul_name_when_available() 
         retrieve_rag=None,
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
         soul_name="Siri",
     )
     assert "[Siri] old 1" in prompt
@@ -740,7 +741,7 @@ def test_build_turn_prompt_uses_grouped_renderer_for_current_whatsapp_group(tmp_
         retrieve_rag=None,
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
         conversation_id="whatsapp:group:family@g.us",
         soul_name="Siri",
     )
@@ -763,7 +764,7 @@ def test_build_turn_prompt_normalizes_current_message_locator_whitespace() -> No
         retrieve_rag=None,
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
     )
     assert "[user] hello there from the current ..." in prompt
     assert "New Message:\nhello   there from the current turn" in prompt
@@ -780,7 +781,7 @@ def test_build_turn_prompt_appends_current_message_locator_when_missing_from_his
         retrieve_rag=None,
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
     )
     assert "[user] previous message" in prompt
     assert "[user] hello there from the current ..." in prompt
@@ -798,7 +799,7 @@ def test_build_turn_prompt_renders_self_turn_without_user_echo() -> None:
         retrieve_rag=None,
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
         self_turn_directive="Scheduled follow-up due now. Reason you gave: Check on Marcos.",
         self_turn_label="Scheduled wake",
     )
@@ -817,7 +818,7 @@ def test_render_retrieve_non_dict_logs_error_and_returns_empties(caplog) -> None
             retrieve_rag=["unexpected", "list"],
             all_categories_summary=None,
             memory_cache=[],
-            intentions_active={},
+            intentions_active=[],
         )
     assert "My Memories:" not in prompt
     assert any("_render_retrieve" in r.message for r in caplog.records)
@@ -837,7 +838,7 @@ def test_retrieve_renders_all_items_selected_by_memu() -> None:
         },
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
     )
 
     assert "memory 13" in prompt
@@ -865,7 +866,7 @@ def test_retrieve_renders_safe_visual_memory_candidates() -> None:
         },
         all_categories_summary=None,
         memory_cache=[],
-        intentions_active={},
+        intentions_active=[],
     )
 
     assert "Visual memory candidates:" in prompt
