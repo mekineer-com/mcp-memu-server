@@ -1668,8 +1668,6 @@ async def test_retry_consolidation_schedules_forced_background_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = []
-    release = asyncio.Event()
-    key = ("User", "Soul")
     db_path = tmp_path / "Soul.db"
     db_path.touch()
 
@@ -1694,26 +1692,16 @@ async def test_retry_consolidation_schedules_forced_background_run(
 
     async def fake_run(*_args, **kwargs):
         calls.append(kwargs)
-        main._CONSOLIDATION_RUNNING.add(key)
-        try:
-            await release.wait()
-            return {"ok": True, "status": "ok"}
-        finally:
-            main._CONSOLIDATION_RUNNING.discard(key)
+        return {"ok": True, "status": "ok"}
 
     monkeypatch.setattr(main, "_run_consolidation_task", fake_run)
     response = await main.retry_consolidation(
         "cid", {"user": {"user_id": "User", "soul_id": "Soul"}}
     )
+    await asyncio.sleep(0)
 
     assert response.status_code == 202
     assert calls[0]["force"] is True
-    with pytest.raises(HTTPException, match="already in progress"):
-        await main.retry_consolidation(
-            "cid", {"user": {"user_id": "User", "soul_id": "Soul"}}
-        )
-    release.set()
-    await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio

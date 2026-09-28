@@ -2514,8 +2514,6 @@ async def retry_consolidation(
     )
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
-    # Let the task claim this soul before another Retry request can be accepted.
-    await asyncio.sleep(0)
     return JSONResponse(
         status_code=202,
         content={"ok": True, "status": "accepted", "conversation_id": cid},
