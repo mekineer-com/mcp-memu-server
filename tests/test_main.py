@@ -77,6 +77,32 @@ def test_turn_state_write_consumes_prior_context_after_successful_turn(monkeypat
     assert memory_ids == []
 
 
+def test_scheduled_turn_preserves_the_existing_undo_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        main,
+        "_load_turn_state_and_soul_card",
+        lambda *_a, **_k: ({"memory_cache": [], "intentions_active": []}, None, None),
+    )
+    monkeypatch.setattr(
+        main,
+        "_write_conversation_state",
+        lambda *_a, **kwargs: (captured.update(kwargs["updates"]) or kwargs["updates"], None),
+    )
+    token = main._TURN_PRESERVE_UNDO.set(True)
+    try:
+        main._turn_state_write(
+            "conv", "user", "soul", "", [], [],
+            svc=SimpleNamespace(graph_delete_memories=lambda *_a, **_k: None),
+            scope={"user_id": "user", "soul_id": "soul"},
+            prepared_annulments=[],
+        )
+    finally:
+        main._TURN_PRESERVE_UNDO.reset(token)
+
+    assert "undo_snapshot" not in captured
+
+
 def test_persist_actual_annulments_uses_ids_removed_from_latest_state() -> None:
     created: list[str] = []
 
@@ -8669,12 +8695,15 @@ async def test_due_free_turn_follow_up_runs_fresh_turn_and_queues_outbound(
 
     async def _fake_turn(conversation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         calls["turn"] = {"conversation_id": conversation_id, "payload": payload}
+        calls["preserve_undo"] = main._TURN_PRESERVE_UNDO.get()
         return {"ok": True, "response_target": "private", "response": "follow-up note"}
 
     monkeypatch.setattr(main, "conversation_retrieve", _fake_retrieve)
     monkeypatch.setattr(main, "conversation_turn", _fake_turn)
 
     assert await main._run_due_free_turn_followups_once() == 1
+    assert calls["preserve_undo"] is True
+    assert main._TURN_PRESERVE_UNDO.get() is False
 
     assert calls["retrieve"]["payload"]["load_source_history"] is True
     assert calls["retrieve"]["payload"]["is_live_turn"] is False

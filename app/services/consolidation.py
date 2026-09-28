@@ -63,6 +63,8 @@ def _segment_file_sort_key(path: Path) -> tuple[str, int]:
     return (stem, 0)
 
 
+# Current beta reflection models have 1M-token contexts; keep 200k for output,
+# provider framing, and estimator error. Revisit when the beta profile changes.
 CONSOLIDATION_PROMPT_TOKEN_LIMIT = 800_000
 
 
@@ -291,7 +293,7 @@ def _format_active_dossiers(dossiers: Sequence[Any]) -> str:
         blocks.append(
             "\n".join(
                 (
-                    f"## {dossier.name}",
+                    f"--- Dossier: {dossier.name} ---",
                     f"Description: {_read_only_citations(str(dossier.description or ''))}",
                     _read_only_citations(str(dossier.summary or "")),
                 )
@@ -304,6 +306,12 @@ def _anchor_prose(bundle: dict[str, Any]) -> str:
     prose = str(bundle["dossier"].summary or "") or "## unlabeled"
     sectioned = label_sections(prose)
     return sectioned[0] if sectioned is not None else prose
+
+
+def _anchor_context(bundle: dict[str, Any], *, section_labels: bool) -> str:
+    dossier = bundle["dossier"]
+    prose = _anchor_prose(bundle) if section_labels else str(dossier.summary or "## unlabeled")
+    return f"Description: {dossier.description}\n\n{prose}"
 
 
 def _format_episode_memories(episodes: Sequence[Any]) -> str:
@@ -341,14 +349,14 @@ def _render_identity_prompt(
         dossier_index=_read_only_citations(inputs["dossier_index"]) or "(none)",
         active_dossiers=_format_active_dossiers(inputs["active_dossiers"]),
         episode_memories=_format_episode_memories(inputs["continuity_episodes"]),
-        soul_anchor=_anchor_prose(bundles["soul"]),
+        soul_anchor=_anchor_context(bundles["soul"], section_labels=True),
         soul_anchor_cited_refs="\n".join(
             f"[M{item.memory_ref}]" for item in statuses["soul"]["cited"]
         ) or "(none)",
         soul_anchor_inactive_linked_memory_items=render_memory_records(
             statuses["soul"]["purged"]
         ),
-        user_anchor=_anchor_prose(bundles["user"]),
+        user_anchor=_anchor_context(bundles["user"], section_labels=True),
         user_anchor_cited_refs="\n".join(
             f"[M{item.memory_ref}]" for item in statuses["user"]["cited"]
         ) or "(none)",
@@ -385,8 +393,14 @@ def _render_weekly_prompt(
     system_prompt = weekly_prompt.SYSTEM_PROMPT.format(soul_name=soul_id, user_name=user_id)
     user_prompt = weekly_prompt.USER_PROMPT.format(
         narrative_self=identity["narrative_self"] or context["narrative_self"],
-        soul_anchor=_read_only_citations(decisions["soul"]["resulting_prose"]),
-        user_anchor=_read_only_citations(decisions["user"]["resulting_prose"]),
+        soul_anchor=(
+            f"Description: {decisions['soul']['description']}\n\n"
+            + _read_only_citations(decisions["soul"]["resulting_prose"])
+        ),
+        user_anchor=(
+            f"Description: {decisions['user']['description']}\n\n"
+            + _read_only_citations(decisions["user"]["resulting_prose"])
+        ),
         life_goals=_format_life_goals_for_prompt(active_goals, []),
         current_intentions_section=_format_current_intentions_section(
             inputs["state"]["intentions_active"],
@@ -449,9 +463,9 @@ async def prepare_dossier_consolidation_context(
     }
     user_prompt = dossiers_prompt.USER_PROMPT.format(
         narrative_self=prompt_context["narrative_self"],
-        soul_anchor=_read_only_citations(_anchor_prose(anchors["soul"])),
-        user_anchor=_read_only_citations(_anchor_prose(anchors["user"])),
-        life_goals=prompt_context["life_goals"],
+        soul_anchor=_read_only_citations(_anchor_context(anchors["soul"], section_labels=False)),
+        user_anchor=_read_only_citations(_anchor_context(anchors["user"], section_labels=False)),
+        life_goals=_format_life_goals_for_prompt(inputs["active_life_goals"], []),
         current_intentions_section=_format_current_intentions_section(
             inputs["state"]["intentions_active"], "Current intentions (read-only)"
         ),
@@ -472,7 +486,10 @@ async def prepare_dossier_consolidation_context(
         "life_goal_add": [],
         "life_goal_remove": [],
         "anchor_decisions": {
-            role: {"resulting_prose": _anchor_prose(bundle)}
+            role: {
+                "description": bundle["dossier"].description,
+                "resulting_prose": _anchor_prose(bundle),
+            }
             for role, bundle in anchors.items()
         },
     }
@@ -1131,6 +1148,8 @@ async def run_consolidation_llm(
         assert current_narrative is not None
         embed_inputs.append(current_narrative)
     embeddings = await svc.embed(embed_inputs, profile="embedding") if embed_inputs else []
+    if len(embeddings) != len(embed_inputs):
+        raise ValueError("Consolidation embedding count does not match inputs")
 
     cursor = 0
     companion_embedding = None
@@ -1216,6 +1235,7 @@ ORDER BY updated_at ASC, id ASC
 
         goals_to_mark_removed: list[str] = []
         goals_to_delete: list[str] = []
+        goals_to_restore: list[str] = []
         goals_to_add: list[tuple[str, str]] = []
 
         for desc in llm_results["life_goal_remove"]:
@@ -1235,8 +1255,12 @@ ORDER BY updated_at ASC, id ASC
             text = str(desc or "").strip()
             if not text or text in active_ids or active_goal_count >= 3:
                 continue
-            goal_id = str(uuid.uuid4())
-            goals_to_add.append((goal_id, text))
+            goal_id = removed_ids.pop(text, None)
+            if goal_id is None:
+                goal_id = str(uuid.uuid4())
+                goals_to_add.append((goal_id, text))
+            else:
+                goals_to_restore.append(goal_id)
             active_ids[text] = goal_id
             active_goal_count += 1
 
@@ -1323,6 +1347,11 @@ ORDER BY updated_at ASC, id ASC
             )
         for goal_id in goals_to_delete:
             con.execute("DELETE FROM life_goals WHERE id = ?", (goal_id,))
+        for goal_id in goals_to_restore:
+            con.execute(
+                "UPDATE life_goals SET status = 'active', updated_at = ? WHERE id = ?",
+                (now_iso, goal_id),
+            )
         for goal_id, text in goals_to_add:
             con.execute(
                 """

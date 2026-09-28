@@ -193,6 +193,26 @@ async def test_anchor_then_weekly_stages_apply_only_after_both_validate() -> Non
     assert [call[1] for call in svc.calls if call[0] == "apply_anchor"] == ["soul", "user"]
     assert out["intentions_snapshot"] == []
     assert out["intentions_replacement"] == []
+    assert "Description: soul description" in svc.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_short_embedding_response_fails_before_anchor_apply() -> None:
+    svc = _DossierContextService()
+    inputs = _inputs()
+    await prepare_dossier_consolidation_context(
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser"
+    )
+
+    async def short_embed(_texts, **_kwargs):
+        return []
+
+    svc.embed = short_embed
+    with pytest.raises(ValueError, match="embedding count"):
+        await run_consolidation_llm(
+            svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser"
+        )
+    assert not [call for call in svc.calls if call[0] == "apply_anchor"]
 
 
 @pytest.mark.asyncio
@@ -997,6 +1017,10 @@ def test_write_consolidation_outputs_uses_life_goals_table() -> None:
                 "INSERT INTO life_goals (id, soul_id, user_id, description, status) VALUES (?, ?, ?, ?, 'active')",
                 ("goal-old", "SoulLG", "UserLG", "old goal",),
             )
+            con.execute(
+                "INSERT INTO life_goals (id, soul_id, user_id, description, status) VALUES (?, ?, ?, ?, 'removed')",
+                ("goal-return", "SoulLG", "UserLG", "return goal",),
+            )
             con.commit()
         finally:
             con.close()
@@ -1015,7 +1039,7 @@ def test_write_consolidation_outputs_uses_life_goals_table() -> None:
             inputs={"db_path": db_path},
             llm_results=_base_llm_results(
                 life_goal_remove=["old goal"],
-                life_goal_add=["new goal"],
+            life_goal_add=["new goal", "return goal"],
             ),
             conversation_id="conv-life-goals",
             soul_id="SoulLG",
@@ -1034,7 +1058,11 @@ def test_write_consolidation_outputs_uses_life_goals_table() -> None:
         finally:
             check_con.close()
 
-        assert [(row[0], row[1]) for row in rows] == [("new goal", "active"), ("old goal", "removed")]
+        assert [(row[0], row[1]) for row in rows] == [
+            ("new goal", "active"),
+            ("old goal", "removed"),
+            ("return goal", "active"),
+        ]
         assert old_rows == []
 
 

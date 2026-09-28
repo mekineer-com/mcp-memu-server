@@ -147,6 +147,7 @@ _cross_history._main = sys.modules[__name__]
 _message_log._main = sys.modules[__name__]
 _PROMPT_LOGGER = logging.getLogger("uvicorn.error")
 _MENTRA_RECALL_ACTIVE: ContextVar[bool] = ContextVar("mentra_recall_active", default=False)
+_TURN_PRESERVE_UNDO: ContextVar[bool] = ContextVar("turn_preserve_undo", default=False)
 
 
 @asynccontextmanager
@@ -1400,7 +1401,7 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
         mark_inflight=_mark_inflight,
         free_turn_follow_up_inflight=_FREE_TURN_FOLLOW_UP_INFLIGHT,
         conversation_retrieve=conversation_retrieve,
-        conversation_turn=conversation_turn,
+        conversation_turn=_scheduled_conversation_turn,
         build_prompt_override_payload=_mcp_tools.build_prompt_override_payload,
         insert_whatsapp_outbound=_insert_whatsapp_outbound,
         mark_free_turn_followup=_mark_free_turn_followup,
@@ -1408,6 +1409,14 @@ async def _run_free_turn_followup(row: dict[str, Any], db_path: Path) -> None:
         require_owner=lambda user_id: _owner.require_owner(_CONFIG, user_id),
         logger=logger,
     )
+
+
+async def _scheduled_conversation_turn(conversation_id: str, payload: dict[str, Any]) -> Any:
+    token = _TURN_PRESERVE_UNDO.set(True)
+    try:
+        return await conversation_turn(conversation_id, payload)
+    finally:
+        _TURN_PRESERVE_UNDO.reset(token)
 
 
 async def _run_due_free_turn_followups_once() -> int:
@@ -4422,12 +4431,13 @@ def _turn_state_write(
     updates: dict[str, Any] = {
         "intentions_active": next_intentions,
         "memory_cache": next_memory_cache,
-        "undo_snapshot": {
+    }
+    if not _TURN_PRESERVE_UNDO.get():
+        updates["undo_snapshot"] = {
             "memory_cache": current_memory_cache,
             "annulled_intentions": annulled_intentions,
             "annulment_memory_ids": list(annulment_memory_ids or []),
-        },
-    }
+        }
     if retrieval_ids_since_consolidation:
         updates["append_retrieval_ids_since_consolidation"] = retrieval_ids_since_consolidation
     if isinstance(memorize_chat, bool):
