@@ -13,6 +13,7 @@ from memu.app.dossier import DossierRevisionStaleError
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
 from app.services import consolidation, segment
 from app.services import soul_state as _soul_state
+from app.services import soul_summaries as _soul_summaries
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
 from app.services.consolidation import _format_segment_memory_items_for_prompt
 from app.services.consolidation import _format_episode_memories
@@ -257,7 +258,37 @@ async def test_weekly_edges_are_limited_to_full_supplied_memories() -> None:
     assert "[M1] parallels [M2]" in svc.prompts[-1]
 
 
+@pytest.mark.asyncio
+async def test_weekly_edge_outside_supplied_evidence_fails_before_anchor_apply() -> None:
+    svc = _DossierContextService()
+    original_chat = svc.chat
+
+    async def chat(prompt, **kwargs):
+        if kwargs["step"] == "weekly":
+            return """<weekly_reflection><intentions/><edges><edge>
+<subject_id>[M999]</subject_id><predicate>parallels</predicate><object_id>[M998]</object_id>
+</edge></edges><companion_memory>I noticed an echo.</companion_memory></weekly_reflection>"""
+        return await original_chat(prompt, **kwargs)
+
+    svc.chat = chat
+    inputs = _inputs()
+    await prepare_dossier_consolidation_context(
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser"
+    )
+
+    with pytest.raises(ValueError, match="outside supplied evidence"):
+        await run_consolidation_llm(
+            svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser"
+        )
+    assert not [call for call in svc.calls if call[0] == "apply_anchor"]
+
+
 def test_weekly_reflection_requires_complete_intention_list() -> None:
+    with pytest.raises(ValueError, match="exact weekly_reflection"):
+        _parse_weekly_reflection_xml(
+            '<weekly_reflection version="1"><intentions/><edges></edges>'
+            '<companion_memory>Present.</companion_memory></weekly_reflection>'
+        )
     with pytest.raises(ValueError, match="requires intentions"):
         _parse_weekly_reflection_xml(
             "<weekly_reflection><edges></edges><companion_memory>Present.</companion_memory></weekly_reflection>"
@@ -326,14 +357,14 @@ def test_consolidation_due_uses_last_success_clock() -> None:
     assert consolidation_due("2026-01-01T00:00:00+00:00", interval_days=7, now=now)
 
 
-def test_remap_edges_with_memory_ids_accepts_numbered_and_bracketed_refs() -> None:
+def test_remap_edges_with_memory_ids_accepts_exact_prompt_refs() -> None:
     payload = [
-        {"subject_id": "1", "predicate": "parallels", "object_id": "2", "confidence": 0.9},
-        {"subject_id": "[2]", "predicate": "evokes", "object_id": "#1"},
+        {"subject_id": "[M1]", "predicate": "parallels", "object_id": "[M2]", "confidence": 0.9},
+        {"subject_id": "[M2]", "predicate": "evokes", "object_id": "[M1]"},
     ]
     mapped = _remap_edges_with_memory_ids(
         payload,
-        id_map={"1": "deadbeef", "2": "cafebabe"},
+        id_map={"M1": "deadbeef", "M2": "cafebabe"},
         include_confidence=True,
     )
     assert mapped == [
@@ -646,9 +677,20 @@ INSERT INTO memory_items (
             (
                 soul_id,
                 user_id,
-                "2026-01-01T00:02:00+00:00",
+                "2026-01-01 00:02:00.000000",
                 json.dumps(["mem-0", "prior-merged", "prior-evolved"]),
             ),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    con = sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _soul_state.write(
+            con,
+            {"last_consolidation_at": "2026-01-01T00:01:00+00:00"},
         )
         con.commit()
     finally:
@@ -1066,8 +1108,73 @@ def test_write_consolidation_outputs_uses_life_goals_table() -> None:
         assert old_rows == []
 
 
-def test_write_consolidation_outputs_db_failure_produces_no_companion_memory() -> None:
-    """If the DB transaction fails, companion memory must NOT be created (it runs after the state write)."""
+def test_consolidation_rejects_a_concurrent_narrative_edit() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        db_path = tmp_dir / "soul.db"
+        con = sqlite_connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            sqlite_ensure_conversation_state_schema(con)
+            _soul_summaries.write_live(
+                con,
+                kind="narrative_self",
+                summary="Gathered story.",
+                scope={"user_id": "UserN", "soul_id": "SoulN"},
+                edited_by="setup",
+                journal=False,
+            )
+            con.commit()
+            gathered = _soul_state.read(con)
+            _soul_summaries.write_live(
+                con,
+                kind="narrative_self",
+                summary="Atomic edit.",
+                scope={"user_id": "UserN", "soul_id": "SoulN"},
+                edited_by="user",
+                expected_revision=gathered["summaries_revision"],
+                displayed_summary="Gathered story.",
+                journal=False,
+            )
+            con.commit()
+        finally:
+            con.close()
+        write_conversation_state(
+            "conv-narrative",
+            sqlite_current_path=lambda _u, _s: db_path,
+            soul_id="SoulN",
+            user_id="UserN",
+            updates={"pending_segment_ids": ["ep:1"], "intentions_active": []},
+        )
+
+        with pytest.raises(ValueError, match="summary_snapshot_stale"):
+            write_consolidation_outputs(
+                _make_consolidation_deps(db_path, tmp_dir),
+                _make_svc_stub(),
+                inputs={
+                    "db_path": db_path,
+                    "narrative_self": "Gathered story.",
+                    "state": gathered,
+                },
+                llm_results=_base_llm_results(
+                    narrative_self="Consolidated story.",
+                    old_narrative_text="Gathered story.",
+                    old_narrative_embedding=[1.0],
+                ),
+                conversation_id="conv-narrative",
+                soul_id="SoulN",
+                user_id="UserN",
+            )
+
+        check = sqlite_connect(db_path)
+        try:
+            check.row_factory = sqlite3.Row
+            assert _soul_state.read(check)["narrative_self"] == "Atomic edit."
+        finally:
+            check.close()
+
+
+def test_write_consolidation_outputs_state_preflight_failure_produces_no_companion_memory() -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp_dir = Path(td)
         db_path = tmp_dir / "soul.db"
@@ -1259,6 +1366,8 @@ def test_write_consolidation_outputs_rolls_back_final_transaction() -> None:
                 _make_svc_stub(),
                 inputs={
                     "db_path": db_path,
+                    "narrative_self": None,
+                    "state": {"narrative_self": None, "summaries_revision": 0},
                     "selected_segment_ids": ["final:0-1", "other:0-1"],
                     "selected_segment_ids_by_conversation": {
                         cid: ["final:0-1"],

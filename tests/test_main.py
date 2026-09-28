@@ -225,6 +225,7 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     writes: list[dict[str, Any]] = []
     snapshot = {
         "memory_cache": ["before"],
+        "memory_cache_entry": "turn",
         "annulled_intentions": [
             {"item": {"id": "a", "text": "Ask about sleep"}, "position": 0}
         ],
@@ -244,6 +245,7 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
         lambda *_a, **_k: (
             {
                 "undo_snapshot": snapshot,
+                "memory_cache": ["turn", "later"],
                 "intentions_active": [{"id": "newer", "text": "Newer intention"}],
             },
             None,
@@ -268,7 +270,7 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
         (["memory-2"], {"user_id": "Fictional User", "soul_id": "Fictional Soul"}),
     ]
     assert writes == [{
-        "memory_cache": ["before"],
+        "memory_cache": ["before", "later"],
         "intentions_active": [
             {"id": "a", "text": "Ask about sleep"},
             {"id": "newer", "text": "Newer intention"},

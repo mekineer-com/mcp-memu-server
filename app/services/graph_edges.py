@@ -1,4 +1,4 @@
-"""Shared edge normalization + write/invalidate helpers for APImw and consolidation.
+"""Shared edge normalization and consolidation write/invalidate helpers.
 
 Confidence convention:
 - If no AI judged the confidence, the field is left NULL.  No fallback.  Mechanical

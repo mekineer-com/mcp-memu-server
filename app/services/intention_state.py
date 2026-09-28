@@ -50,6 +50,27 @@ def append_memory_cache_entry(
     return items[-max_entries:]
 
 
+def restore_memory_cache_after_undo(snapshot: Any, current: Any, entry: Any) -> list[str]:
+    before = normalize_memory_cache(snapshot)
+    now = normalize_memory_cache(current)
+    added = _text(entry)[:MAX_MEMORY_CACHE_ENTRY_CHARS]
+    if not added:
+        return now
+    after = append_memory_cache_entry(before, added)
+    overlap = next(
+        (
+            size
+            for size in range(min(len(after), len(now)), -1, -1)
+            if after[len(after) - size :] == now[:size]
+        ),
+        0,
+    )
+    restored = before
+    for later_entry in now[overlap:]:
+        restored = append_memory_cache_entry(restored, later_entry)
+    return restored
+
+
 def slugify_intention_id(value: Any) -> str:
     slug = _INTENTION_ID_SANITIZE_RE.sub("-", _text(value).lower()).strip("-")
     return slug[:64]

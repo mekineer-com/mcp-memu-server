@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 log = logging.getLogger(__name__)
 FAILURE_COOLDOWN = timedelta(hours=1)
@@ -118,14 +118,9 @@ def _parse_identity_maintenance_xml(
     anchor_nodes = root.findall("anchor_revisions")
     if len(anchor_nodes) != 1:
         raise ValueError("Identity maintenance requires exactly one anchor_revisions element")
-    first_time = {
-        role: str(bundle["dossier"].summary or "").strip() in {"", "## unlabeled"}
-        for role, bundle in anchor_bundles.items()
-    }
     anchor_decisions = parse_anchor_revisions(
         anchor_nodes[0],
         anchor_bundles,
-        first_time=first_time,
     )
 
     life_goals = root.find("life_goals")
@@ -514,7 +509,6 @@ async def prepare_dossier_consolidation_context(
         reserve = reserves[stage]
         if tokens + reserve > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
             raise ValueError(f"{stage} consolidation prompt exceeds provider-safe token limit")
-    inputs["prompt_token_estimates"] = estimates
     log.info(
         "consolidation prompt estimates: dossiers=%d anchors=%d weekly=%d combined=%d",
         estimates["dossiers"], estimates["anchors"], estimates["weekly"], sum(estimates.values()),
@@ -662,7 +656,6 @@ def _build_consolidation_prompt_context(
         inputs["removed_life_goals"],
     )
     id_map: dict[str, str] = {}
-    actionable_ids: list[str] = []
 
     prior_context_memory_items = inputs.get("prior_context_memory_items") or []
     if prior_context_memory_items:
@@ -682,7 +675,6 @@ def _build_consolidation_prompt_context(
             if memory_ref <= 0:
                 raise ValueError(f"Consolidation memory lacks stable reference: {item_id}")
             id_map[f"M{memory_ref}"] = item_id
-            actionable_ids.append(item_id)
             prior_context_lines.append(
                 format_memory_line(item, show_id=True, item_id=f"M{memory_ref}")
             )
@@ -698,12 +690,6 @@ def _build_consolidation_prompt_context(
         prior_context_memory_items,
     )
     segment_memory_items_text = _format_segment_memory_items_for_prompt(segment_groups, id_map)
-    actionable_ids.extend(
-        str(item["id"])
-        for group in segment_groups
-        for item in group.get("memory_summaries") or []
-        if isinstance(item, dict)
-    )
     refs_by_id = {item_id: ref for ref, item_id in id_map.items()}
     existing_edges = "\n".join(
         f"- [{refs_by_id[row['subject_id']]}] {row['predicate']} [{refs_by_id[row['object_id']]}]"
@@ -718,37 +704,16 @@ def _build_consolidation_prompt_context(
         "conversation_history": str(inputs.get("all_chat_history") or "").strip() or "(none)",
         "segment_memory_items": segment_memory_items_text,
         "existing_memory_edges": existing_edges,
-        "actionable_item_ids": list(dict.fromkeys(actionable_ids)),
         "id_map": id_map,
     }
 
 
 def _resolve_memory_ref(raw_value: Any, id_map: dict[str, str]) -> str | None:
     text = str(raw_value or "").strip()
-    if not text:
+    match = re.fullmatch(r"\[M([1-9][0-9]*)\]", text)
+    if match is None:
         return None
-
-    # Most common case: numbered prompt references like "16".
-    mapped = id_map.get(text)
-    if mapped:
-        return mapped
-
-    # Allow bracketed references like "[16]".
-    if text.startswith("[") and text.endswith("]"):
-        inner = text[1:-1].strip()
-        if inner:
-            mapped_inner = id_map.get(inner)
-            if mapped_inner:
-                return mapped_inner
-            text = inner
-
-    # Some models prepend "#" to numbered references ("#16").
-    if text.startswith("#"):
-        mapped_hash = id_map.get(text[1:].strip())
-        if mapped_hash:
-            return mapped_hash
-
-    return None
+    return id_map.get(f"M{match.group(1)}")
 
 
 def _remap_edges_with_memory_ids(
@@ -963,7 +928,8 @@ ORDER BY created_at ASC, id ASC
         try:
             if last_consol:
                 res_rows = con.execute(
-                    "SELECT memory_prior_context FROM resources WHERE soul_id = ? AND user_id = ? AND created_at >= ? AND memory_prior_context IS NOT NULL",
+                    "SELECT memory_prior_context FROM resources WHERE soul_id = ? AND user_id = ? "
+                    "AND julianday(created_at) >= julianday(?) AND memory_prior_context IS NOT NULL",
                     (soul_id, user_id, last_consol),
                 ).fetchall()
             else:
@@ -1154,10 +1120,9 @@ async def run_consolidation_llm(
     cursor = 0
     companion_embedding = None
     if weekly["companion_memory"]:
-        if cursor < len(embeddings):
-            companion_embedding = embeddings[cursor]
+        companion_embedding = embeddings[cursor]
         cursor += 1
-    old_narrative_embedding = embeddings[cursor] if snapshot_old_narrative and cursor < len(embeddings) else None
+    old_narrative_embedding = embeddings[cursor] if snapshot_old_narrative else None
 
     scope = {"soul_id": soul_id, "user_id": user_id}
     for role in ("soul", "user"):
@@ -1204,8 +1169,6 @@ def write_consolidation_outputs(
     companion_memory_id = None
     companion_text = str(llm_results.get("companion_memory") or "").strip()
     companion_embedding = llm_results.get("companion_embedding")
-    if companion_text and not isinstance(companion_embedding, list):
-        raise HTTPException(status_code=500, detail="missing companion memory embedding")
 
     deps.sqlite_ensure_nonempty(db_path)
     con = deps.sqlite_connect(db_path)
@@ -1288,6 +1251,17 @@ ORDER BY updated_at ASC, id ASC
         )
 
     if old_narrative_text:
+        check = deps.sqlite_connect(db_path)
+        try:
+            check.row_factory = sqlite3.Row
+            current = _soul_state.read(check)
+        finally:
+            check.close()
+        if (
+            int(current["summaries_revision"]) != int(inputs["state"]["summaries_revision"])
+            or str(current["narrative_self"] or "") != str(inputs.get("narrative_self") or "")
+        ):
+            raise ValueError("summary_snapshot_stale")
         snapshot_previous_narrative_self(
             svc,
             scope={"user_id": user_id, "soul_id": soul_id},
@@ -1295,7 +1269,6 @@ ORDER BY updated_at ASC, id ASC
             old_embedding=llm_results["old_narrative_embedding"],
         )
     if companion_text:
-        assert isinstance(companion_embedding, list)
         companion_happened_at = datetime.now(UTC)
         companion_memory_id = create_companion_memory(
             svc,
@@ -1303,7 +1276,7 @@ ORDER BY updated_at ASC, id ASC
             soul_id=soul_id,
             conversation_id=conversation_id,
             summary=companion_text,
-            embedding=companion_embedding,
+            embedding=cast(list[float], companion_embedding),
             happened_at=companion_happened_at,
         )
 
@@ -1337,6 +1310,8 @@ ORDER BY updated_at ASC, id ASC
                 summary=narrative_self,
                 scope=scope,
                 edited_by="consolidation",
+                expected_revision=int(inputs["state"]["summaries_revision"]),
+                displayed_summary=str(inputs.get("narrative_self") or ""),
                 journal=False,
             )
 

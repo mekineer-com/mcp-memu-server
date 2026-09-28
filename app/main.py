@@ -88,6 +88,7 @@ from app.services.intention_state import (
     validate_intentions as _validate_intentions,
     normalize_memory_cache as _normalize_memory_cache_impl,
     remove_intentions as _remove_intentions,
+    restore_memory_cache_after_undo as _restore_memory_cache_after_undo,
     restore_intentions as _restore_intentions,
 )
 from app.services import crud_endpoints as _crud_endpoints
@@ -4435,6 +4436,7 @@ def _turn_state_write(
     if not _TURN_PRESERVE_UNDO.get():
         updates["undo_snapshot"] = {
             "memory_cache": current_memory_cache,
+            "memory_cache_entry": next_memory_cache[-1] if cache_entry else None,
             "annulled_intentions": annulled_intentions,
             "annulment_memory_ids": list(annulment_memory_ids or []),
         }
@@ -4898,6 +4900,12 @@ async def conversation_turn_undo(
             if str(value or "").strip()
         ]
         current_intentions = _validate_intentions(conversation_state.get("intentions_active"))
+        current_memory_cache = _normalize_memory_cache_impl(conversation_state.get("memory_cache"))
+        restored_memory_cache = _restore_memory_cache_after_undo(
+            undo_snapshot.get("memory_cache") or [],
+            current_memory_cache,
+            undo_snapshot.get("memory_cache_entry"),
+        )
         restored_intentions = _restore_intentions(
             current_intentions,
             undo_snapshot.get("annulled_intentions") or [],
@@ -4907,7 +4915,7 @@ async def conversation_turn_undo(
             soul_id=soul_id,
             user_id=uid,
             updates={
-                "memory_cache": list(undo_snapshot.get("memory_cache") or []),
+                "memory_cache": restored_memory_cache,
                 "intentions_active": restored_intentions,
                 "undo_snapshot": None,
             },

@@ -4,6 +4,7 @@ from app.services.intention_state import (
     merge_consolidated_intentions,
     normalize_memory_cache,
     remove_intentions,
+    restore_memory_cache_after_undo,
     restore_intentions,
     validate_intention_replacement,
     validate_intentions,
@@ -107,3 +108,14 @@ def test_normalize_memory_cache_caps_size_and_entry_length():
     cache = normalize_memory_cache(["x" * 700 for _ in range(12)])
     assert len(cache) == 7
     assert all(len(entry) == 600 for entry in cache)
+
+
+def test_cache_undo_preserves_later_entries_and_restores_the_right_eviction():
+    before = ["a", "b", "c", "d", "e", "f", "g"]
+    after_turn = ["b", "c", "d", "e", "f", "g", "turn"]
+    after_wake = ["c", "d", "e", "f", "g", "turn", "wake"]
+
+    assert restore_memory_cache_after_undo(before, after_wake, "turn") == [
+        "b", "c", "d", "e", "f", "g", "wake"
+    ]
+    assert restore_memory_cache_after_undo(before, after_turn, "turn") == before
