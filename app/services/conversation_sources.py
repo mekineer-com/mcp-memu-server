@@ -18,6 +18,7 @@ _CHAT_SNAPSHOT_DIRS = {
     "sillytavern": "st_chats",
     "atomic": "atomic_chats",
     "mentra": "transcripts",
+    "replika": "replika_chats",
 }
 _GATEWAY_NOTICE_PREFIXES = (
     "⚠️ Gateway shutting down — ",

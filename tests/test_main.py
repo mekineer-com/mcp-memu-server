@@ -880,6 +880,41 @@ def test_atomic_source_label_and_heading() -> None:
     assert main._message_log.derive_source_label("chat:plain") == "sillytavern"
 
 
+def test_replika_snapshot_uses_shared_source_dispatch(tmp_path: Path) -> None:
+    conversation_id = "replika:dm:Fictional-Soul:2026"
+    main._conversation_sources.persist_chat_history_snapshot(
+        storage_dir=tmp_path,
+        user_id="Fictional User",
+        soul_id="Fictional Soul",
+        conversation_id=conversation_id,
+        history=[
+            {"role": "user", "name": "Fictional User", "content": "Earlier", "ts_ms": 1},
+            {"role": "assistant", "name": "Fictional Soul", "content": "Later", "ts_ms": 2},
+        ],
+        chat_name="Fictional Soul",
+        source_label="replika",
+    )
+
+    def load(cursor: int) -> list[dict[str, object]]:
+        return main._load_tail_for_source_conversation(
+            conversation_id=conversation_id,
+            user_id="Fictional User",
+            soul_id="Fictional Soul",
+            since_cursor=cursor,
+            recent_fallback_messages=0,
+            storage_dir=tmp_path,
+            hermes_home_path=None,
+            sessions_index_path=None,
+            state_db_path=None,
+        )
+
+    rows = load(-1)
+    assert [row["content"] for row in rows] == ["Earlier", "Later"]
+    assert [row["source_conversation_index"] for row in rows] == [0, 1]
+    assert {row["source_label"] for row in rows} == {"replika"}
+    assert load(1) == []
+
+
 @pytest.mark.asyncio
 async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
     tmp_path: Path,
