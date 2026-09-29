@@ -30,6 +30,7 @@ from memu.app.graph import (
     MemoryCitationConflictError,
 )
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from app import procedural as _procedural
 from app.config import (
@@ -2863,7 +2864,8 @@ async def atomic_memory_atoms(
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
     scope = {"user_id": uid, "soul_id": sid}
     svc = _get_service_from_payload({"user": scope})
-    return svc.graph_atomic_atoms(
+    return await run_in_threadpool(
+        svc.graph_atomic_atoms,
         where=scope,
         limit=limit,
         offset=offset,
@@ -2899,7 +2901,7 @@ async def atomic_memory_tags(
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
     scope = {"user_id": uid, "soul_id": sid}
     svc = _get_service_from_payload({"user": scope})
-    return svc.graph_atomic_tags(where=scope, min_count=min_count)
+    return await run_in_threadpool(svc.graph_atomic_tags, where=scope, min_count=min_count)
 
 
 @app.get("/integration/atomic/entities", operation_id="atomic_memory_entities", tags=["integration"])
@@ -3295,7 +3297,7 @@ async def memory_graph_pending(
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
     scope = {"user_id": uid, "soul_id": sid}
     svc = _get_service_from_payload({"user": scope})
-    pending = svc.graph_list_pending(where=scope)
+    pending = await run_in_threadpool(svc.graph_list_pending, where=scope)
     db_path = _sqlite_current_path(uid, sid)
     pending["soul_summaries"] = []
     pending["summaries_revision"] = 0
