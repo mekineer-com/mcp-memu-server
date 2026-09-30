@@ -491,23 +491,13 @@ async def prepare_dossier_consolidation_context(
     weekly_system, weekly_user = _render_weekly_prompt(
         inputs, current_identity, soul_id=soul_id, user_id=user_id
     )
-    revision_output = int(svc.llm_profiles.profiles[revision_profile].max_tokens or 0)
-    reflection_output = int(svc.llm_profiles.profiles[llm_profile or "default"].max_tokens or 0)
-    if revision_output <= 0 or reflection_output <= 0:
-        raise ValueError("Consolidation profiles require max_tokens")
     estimates = {
         "dossiers": estimate_prompt_tokens(system_prompt + "\n" + user_prompt) if bundles else 0,
         "anchors": estimate_prompt_tokens(identity_system + "\n" + identity_user),
         "weekly": estimate_prompt_tokens(weekly_system + "\n" + weekly_user),
     }
-    reserves = {
-        "dossiers": revision_output,
-        "anchors": reflection_output + (revision_output if bundles else 0),
-        "weekly": reflection_output * 2,
-    }
     for stage, tokens in estimates.items():
-        reserve = reserves[stage]
-        if tokens + reserve > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
+        if tokens > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
             raise ValueError(f"{stage} consolidation prompt exceeds provider-safe token limit")
     log.info(
         "consolidation prompt estimates: dossiers=%d anchors=%d weekly=%d combined=%d",
@@ -1064,8 +1054,7 @@ async def run_consolidation_llm(
     identity_system, identity_user = _render_identity_prompt(
         inputs, soul_id=soul_id, user_id=user_id
     )
-    profile = svc.llm_profiles.profiles[llm_profile or "default"]
-    if estimate_prompt_tokens(identity_system + "\n" + identity_user) + int(profile.max_tokens or 0) > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
+    if estimate_prompt_tokens(identity_system + "\n" + identity_user) > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
         raise ValueError("anchors consolidation prompt exceeds provider-safe token limit")
     identity_raw = await svc.chat(
         identity_user,
@@ -1083,7 +1072,7 @@ async def run_consolidation_llm(
     weekly_system, weekly_user = _render_weekly_prompt(
         inputs, identity, soul_id=soul_id, user_id=user_id
     )
-    if estimate_prompt_tokens(weekly_system + "\n" + weekly_user) + int(profile.max_tokens or 0) > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
+    if estimate_prompt_tokens(weekly_system + "\n" + weekly_user) > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
         raise ValueError("weekly consolidation prompt exceeds provider-safe token limit")
     weekly_raw = await svc.chat(
         weekly_user,

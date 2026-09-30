@@ -179,6 +179,19 @@ async def test_consolidation_preflight_fails_before_paid_call(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_consolidation_preflight_ignores_output_ceiling() -> None:
+    svc = _DossierContextService(due_ids=("first",))
+    for profile in svc.llm_profiles.profiles.values():
+        profile.max_tokens = 1_000_000
+    await prepare_dossier_consolidation_context(
+        svc, inputs=_inputs(), soul_id="TestSoul", user_id="TestUser"
+    )
+    assert [call for call in svc.calls if call[0] == "chat"] == [
+        ("chat", "dossiers")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_anchor_then_weekly_stages_apply_only_after_both_validate() -> None:
     svc = _DossierContextService()
     inputs = _inputs()
