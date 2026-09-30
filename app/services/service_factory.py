@@ -261,7 +261,6 @@ def _get_service_from_payload(
     sqlite_file_from_dsn: Any,
     extract_scope: Any,
     payload_signature: Any,
-    episodes_per_segment: int,
     min_chunk_tokens: int,
     log_prompts: bool,
     prompt_log_before: Any,
@@ -346,7 +345,6 @@ def _get_service_from_payload(
         memorize_config["category_summary_target_words"] = int(
             cats_cfg.get("category_summary_target_words", 300) or 300
         )
-        memorize_config["episodes_per_segment"] = episodes_per_segment
         memorize_config["min_chunk_tokens"] = min_chunk_tokens
         mem_cfg = config.get("memorize") if isinstance(config.get("memorize"), dict) else {}
         embedding_profile = str(

@@ -85,7 +85,6 @@ use `llm.temperature` or the provider default.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `min_chunk_tokens` | `8000` | Unmemorized conversation size that triggers automatic memorization. `0` disables the size gate. |
-| `episodes_per_segment` | `3` | Maximum routed episodes per memorization segment. |
 | `background_summary_tokens` | `1000` | Target size of the rolling background summary. |
 | `background_extra_messages_tokens` | `100` | Recent-message allowance added around background summarization. |
 | `enable_confidence_normalization` | `false` | Normalize extracted confidence values within a batch. |

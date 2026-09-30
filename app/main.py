@@ -210,10 +210,8 @@ class AtomicPromptLogRequest(BaseModel):
 _BUILD_ID: str = "fix48.debloat.bloatRemoval.concepts"
 _SLEEP_SPLIT_MIN_LULL_SECONDS: int = 3 * 60 * 60
 _DEFAULT_MIN_CHUNK_TOKENS: int = 8000
-_DEFAULT_EPISODES_PER_SEGMENT: int = 3
 _DEFAULT_BACKGROUND_SUMMARY_TOKENS: int = 1000
 _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
-_EPISODES_PER_SEGMENT: int = _DEFAULT_EPISODES_PER_SEGMENT
 _BACKGROUND_SUMMARY_TOKENS: int = _DEFAULT_BACKGROUND_SUMMARY_TOKENS
 # Uniform runaway-protection caps for LLM calls. Not business logic —
 _BACKGROUND_TASKS: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
@@ -838,17 +836,13 @@ class STUserModel(BaseModel):
 _CONFIG: dict[str, Any] = _load_config()
 
 def _refresh_runtime_limits() -> None:
-    global _MIN_CHUNK_TOKENS, _EPISODES_PER_SEGMENT, _BACKGROUND_SUMMARY_TOKENS
+    global _MIN_CHUNK_TOKENS, _BACKGROUND_SUMMARY_TOKENS
     global _LOG_PROMPTS
     memorize_cfg = _CONFIG.get("memorize") if isinstance(_CONFIG.get("memorize"), dict) else {}
     try:
         _MIN_CHUNK_TOKENS = max(0, int(memorize_cfg.get("min_chunk_tokens", _DEFAULT_MIN_CHUNK_TOKENS)))
     except (TypeError, ValueError, OverflowError):
         _MIN_CHUNK_TOKENS = _DEFAULT_MIN_CHUNK_TOKENS
-    try:
-        _EPISODES_PER_SEGMENT = max(1, int(memorize_cfg.get("episodes_per_segment", _DEFAULT_EPISODES_PER_SEGMENT)))
-    except (TypeError, ValueError, OverflowError):
-        _EPISODES_PER_SEGMENT = _DEFAULT_EPISODES_PER_SEGMENT
     try:
         _BACKGROUND_SUMMARY_TOKENS = max(
             0,
@@ -1017,7 +1011,6 @@ def _get_service_from_payload(payload: dict[str, Any]):
         sqlite_file_from_dsn=_sqlite_file_from_dsn,
         extract_scope=_extract_scope,
         payload_signature=_payload_signature,
-        episodes_per_segment=_EPISODES_PER_SEGMENT,
         min_chunk_tokens=_MIN_CHUNK_TOKENS,
         log_prompts=_LOG_PROMPTS,
         prompt_log_before=_prompt_log_before,
