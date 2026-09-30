@@ -471,13 +471,7 @@ def _image_files(directory: Path, image_id: str) -> list[Path]:
 
 def _require_image_embedding_config(config: dict[str, Any]) -> None:
     embedding = (config.get("llm") or {}).get("embedding") or {}
-    metadata = (config.get("storage") or {}).get("metadata_store") or {}
-    if (
-        embedding.get("provider") != "gemini"
-        or embedding.get("embed_model") != "gemini-embedding-2"
-        or not str(embedding.get("api_key") or "").strip()
-        or metadata.get("embedding_profile") != "gemini-embedding-2:3072"
-    ):
+    if not str(embedding.get("api_key") or "").strip():
         raise HTTPException(
             status_code=503,
             detail="Mentra image embedding is not configured",

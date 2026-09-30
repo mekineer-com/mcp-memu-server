@@ -54,7 +54,7 @@ def test_soul_databases_excludes_base_hidden_and_symlink(tmp_path):
         path.touch()
     (tmp_path / "Linked.db").symlink_to(soul)
     config = {
-        "llm": {"embedding": {"embed_model": "gemini-embedding-2"}},
+        "llm": {"embedding": {}},
         "storage": {
             "sqlite_dir": str(tmp_path),
             "metadata_store": {"dsn": f"sqlite:///{base}"},
@@ -67,7 +67,7 @@ def test_soul_databases_excludes_base_hidden_and_symlink(tmp_path):
 
 def test_release_migration_accepts_no_souls_and_derives_profile(tmp_path, monkeypatch, capsys):
     config = {
-        "llm": {"embedding": {"embed_model": "gemini-embedding-2"}},
+        "llm": {"embedding": {}},
         "storage": {
             "sqlite_dir": str(tmp_path),
             "metadata_store": {"dsn": f"sqlite:///{tmp_path / 'memu.db'}"},
@@ -83,7 +83,7 @@ def test_release_migration_accepts_no_souls_and_derives_profile(tmp_path, monkey
 def test_release_migration_hides_failed_soul_filename(tmp_path, monkeypatch):
     database = tmp_path / "Private Soul.db"
     monkeypatch.setattr(migrate_release, "load_config", lambda: {
-        "llm": {"embedding": {"embed_model": "gemini-embedding-2"}},
+        "llm": {"embedding": {}},
         "storage": {"metadata_store": {"dsn": f"sqlite:///{tmp_path / 'memu.db'}"}},
     })
     monkeypatch.setattr(migrate_release, "soul_databases", lambda _config: [database])

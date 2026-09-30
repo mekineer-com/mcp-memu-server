@@ -5,10 +5,8 @@
     "base_url": "https://api.openai.com/v1",
     "chat_model": "YOUR_CHAT_MODEL",
     "embedding": {
-      "provider": "gemini",
       "api_key": "YOUR_GEMINI_API_KEY",
-      "base_url": "https://generativelanguage.googleapis.com/",
-      "embed_model": "gemini-embedding-2"
+      "base_url": "https://generativelanguage.googleapis.com/"
     }
   },
   "storage": {

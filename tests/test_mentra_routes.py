@@ -48,8 +48,6 @@ def _configured() -> dict[str, Any]:
     return {
         "llm": {
             "embedding": {
-                "provider": "gemini",
-                "embed_model": "gemini-embedding-2",
                 "api_key": "fictional-embedding-key",
             }
         },

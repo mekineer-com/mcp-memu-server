@@ -281,6 +281,7 @@ def _get_service_from_payload(
         server_profiles,
         client_profiles,
     )
+    llm_profiles["embedding"] = dict(server_profiles["embedding"])
     step_models_cfg = (config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}).get("step_models", {})
     use_server_step_models = not client_profiles
     if use_server_step_models:

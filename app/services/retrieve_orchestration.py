@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.config import EMBEDDING_MODEL
 from app.services.intention_state import (
     format_intentions_for_prompt as _format_intentions_for_prompt,
     validate_intentions as _validate_intentions,
@@ -263,13 +264,11 @@ async def _run_retrieve(
             try:
                 embeds = await svc.embed([mh_query], profile="embedding")
                 qvec = list(embeds[0]) if embeds else []
-                embedding_config = (config.get("llm") or {}).get("embedding") or {}
-                expected_embedding_model = str(embedding_config.get("embed_model") or "").strip() or None
                 hits = procedural_module.lookup(
                     procedural_db,
                     domain="mental_health",
                     query_vec=qvec,
-                    expected_embedding_model=expected_embedding_model,
+                    expected_embedding_model=EMBEDDING_MODEL,
                     limit=1,
                 )
                 if hits:

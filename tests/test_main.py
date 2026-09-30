@@ -1194,9 +1194,7 @@ async def test_run_retrieve_read_only_skips_state_write_and_procedural_ingest(tm
         procedural_db_path=lambda _cfg: tmp_path / "procedural.db",
         procedural_should_ingest=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("ingest check must be suppressed")),
         config={
-            "llm": {
-                "embedding": {"embed_model": "gemini-embedding-2"},
-            },
+            "llm": {"embedding": {}},
             "retrieve": {"mental_health_query": True},
         },
         logger=SimpleNamespace(exception=lambda *_a, **_k: None),

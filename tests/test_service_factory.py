@@ -30,10 +30,8 @@ def test_server_config_separates_embedding_provider_and_profile_guard(tmp_path) 
             "base_url": "https://chat.example/v1",
             "chat_model": "chat-model",
             "embedding": {
-                "provider": "gemini",
                 "api_key": "embed-key",
                 "base_url": "https://generativelanguage.googleapis.com/",
-                "embed_model": "gemini-embedding-2",
             },
         },
         "storage": {
@@ -41,7 +39,6 @@ def test_server_config_separates_embedding_provider_and_profile_guard(tmp_path) 
             "metadata_store": {
                 "provider": "sqlite",
                 "dsn": f"sqlite:///{tmp_path / 'base.db'}",
-                "embedding_profile": "gemini-embedding-2:3072",
             },
         },
     }
@@ -56,33 +53,14 @@ def test_server_config_separates_embedding_provider_and_profile_guard(tmp_path) 
         "provider": "gemini",
         "api_key": "embed-key",
         "base_url": "https://generativelanguage.googleapis.com/",
-        "chat_model": "chat-model",
         "embed_model": "gemini-embedding-2",
         "endpoint_overrides": {},
     }
     assert database["metadata_store"]["embedding_profile"] == "gemini-embedding-2:3072"
 
 
-def test_embedding_profile_must_match_configured_model(tmp_path) -> None:
+def test_embedding_profile_is_managed_by_openalma(tmp_path) -> None:
     cfg = {
-        "llm": {"embedding": {"embed_model": "different-model"}},
-        "storage": {
-            "metadata_store": {
-                "provider": "sqlite",
-                "dsn": f"sqlite:///{tmp_path / 'base.db'}",
-                "embedding_profile": "gemini-embedding-2:3072",
-            }
-        },
-    }
-    owner.create_owner(cfg, "test-user")
-    souls.publish_soul_db(tmp_path / "test.db")
-    with pytest.raises(RuntimeError, match="must match"):
-        database_config_from_cfg(cfg, {"user_id": "test-user", "soul_id": "test"})
-
-
-def test_embedding_profile_defaults_to_configured_model(tmp_path) -> None:
-    cfg = {
-        "llm": {"embedding": {"embed_model": "gemini-embedding-2"}},
         "storage": {
             "metadata_store": {
                 "provider": "sqlite",
@@ -96,15 +74,6 @@ def test_embedding_profile_defaults_to_configured_model(tmp_path) -> None:
     database = database_config_from_cfg(cfg, {"user_id": "test-user", "soul_id": "test"})
 
     assert database["metadata_store"]["embedding_profile"] == "gemini-embedding-2:3072"
-
-
-def test_embedding_profile_requires_a_model(tmp_path) -> None:
-    cfg = {"storage": {"metadata_store": {"dsn": f"sqlite:///{tmp_path / 'base.db'}"}}}
-    owner.create_owner(cfg, "test-user")
-    souls.publish_soul_db(tmp_path / "test.db")
-
-    with pytest.raises(RuntimeError, match="embed_model is required"):
-        database_config_from_cfg(cfg, {"user_id": "test-user", "soul_id": "test"})
 
 
 def test_semantic_dedupe_threshold_uses_profile_default_or_operator_override() -> None:
@@ -276,6 +245,10 @@ def test_client_llm_profiles_suppress_server_step_model_routing(monkeypatch: pyt
                     "chat_model": "client-model",
                     "embed_model": "client-embed",
                 },
+                "embedding": {
+                    "provider": "openai",
+                    "embed_model": "client-embed",
+                },
             },
         },
         config={"llm": {"step_models": {"memory_extract": "server-heavy", "reflection": "server-reflect"}}},
@@ -303,6 +276,7 @@ def test_client_llm_profiles_suppress_server_step_model_routing(monkeypatch: pyt
 
     assert isinstance(out, _FakeService)
     assert captured["llm_profiles"]["default"]["chat_model"] == "client-model"
+    assert captured["llm_profiles"]["embedding"]["embed_model"] == "gemini-embedding-2"
     assert "memory_extract" not in captured["llm_profiles"]
     assert "reflection" not in captured["llm_profiles"]
     assert "memory_extract_llm_profile" not in captured["memorize_config"]

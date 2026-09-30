@@ -18,7 +18,7 @@ def test_example_is_valid_json_and_non_empty() -> None:
     # setup_install.py fills paths inside these four sections.
     for required in ("llm", "storage", "memu", "listen"):
         assert required in example, f"config.example.json missing top-level '{required}'"
-    assert example["llm"]["embedding"]["embed_model"]
+    assert "embed_model" not in example["llm"]["embedding"]
     assert example["storage"]["metadata_store"]["dsn"]
 
 

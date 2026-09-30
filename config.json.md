@@ -24,15 +24,14 @@ The default chat-generation profile.
 
 ### `llm.embedding`
 
-The embedding profile may use different credentials and a different provider from chat.
+OpenAlma owns the embedding provider, model, and database profile. The launcher shows the
+currently supported model; changing models requires a managed per-Soul rebuild.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `provider` | inherited from `llm.provider` | Embedding backend: `openai`, `gemini`, or `doubao`. |
-| `api_key` | inherited from `llm.api_key` | Embedding API credential. |
-| `base_url` | inherited from `llm.base_url` | Embedding API base URL. |
-| `embed_model` | required | Embedding model. OpenAlma currently accepts stored profiles `text-embedding-3-large:3072` and `gemini-embedding-2:3072`. |
-| `endpoint_overrides` | inherited | Nonstandard embedding endpoint path. |
+| `api_key` | `""` | Gemini embedding API credential. |
+| `base_url` | Gemini API | Optional compatible endpoint override. |
+| `endpoint_overrides` | `{}` | Optional embedding endpoint path override. |
 
 Changing the embedding model does not convert an existing Soul database. Existing vectors must
 be rebuilt into a new database and atomically installed; mixing embedding spaces is rejected.
@@ -66,7 +65,7 @@ use `llm.temperature` or the provider default.
 | `provider` | `"sqlite"` | Metadata backend. Only SQLite is supported. |
 | `dsn` | `"sqlite:///:memory:"` | Base SQLite DSN or filesystem path. OpenAlma derives each Soul database from `sqlite_dir`. |
 | `ddl_mode` | `"create"` | memU schema mode: `create` or `validate`. |
-| `embedding_profile` | inferred | Stored model and width guard, such as `gemini-embedding-2:3072`. Usually omit it; if present, it must match `llm.embedding.embed_model`. |
+The stored embedding profile is managed by OpenAlma and is not a user setting.
 
 ## `memu`, `listen`, `python`, and process settings
 

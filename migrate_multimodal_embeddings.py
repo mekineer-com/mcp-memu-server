@@ -17,8 +17,10 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from app.config import EMBEDDING_BASE_URL, EMBEDDING_MODEL
+
 DIMENSIONS = 3072
-SUPPORTED_MODEL = "gemini-embedding-2"
+SUPPORTED_MODEL = EMBEDDING_MODEL
 
 
 class MigrationError(RuntimeError):
@@ -44,9 +46,9 @@ def _load_client(config_path: Path) -> Any:
     if not key:
         raise MigrationError("config mentra.gemini_api_key is required")
     return HTTPEmbeddingClient(
-        base_url=str(embedding.get("base_url") or "https://generativelanguage.googleapis.com/"),
+        base_url=str(embedding.get("base_url") or EMBEDDING_BASE_URL),
         api_key=key,
-        embed_model=str(embedding.get("embed_model") or "gemini-embedding-2"),
+        embed_model=SUPPORTED_MODEL,
         provider="gemini",
         timeout=180,
     )
