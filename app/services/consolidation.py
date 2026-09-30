@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 log = logging.getLogger(__name__)
-FAILURE_COOLDOWN = timedelta(hours=1)
 
 from fastapi import HTTPException
 from memu.app.dossier import label_sections, render_memory_records, revision_status_items
@@ -782,9 +781,8 @@ def gather_consolidation_inputs(
             not force
             and last_error_at is not None
             and (last_success_at is None or last_error_at > last_success_at)
-            and now < last_error_at + FAILURE_COOLDOWN
         ):
-            return {"status": "skip", "reason": "failure_cooldown"}
+            return {"status": "skip", "reason": "failure_requires_retry"}
 
         life_goal_rows = con.execute(
             """

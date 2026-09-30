@@ -4608,43 +4608,32 @@ async def conversation_turn(
         turn_started_at = time.monotonic()
         turn_contract: dict[str, Any] | None = None
         use_claude_session = bool(_CONFIG.get("claude_code", False))
-        turn_session_id: str | None = None
-        for attempt in (1, 2):
-            attempt_session_id = str(uuid.uuid4()) if use_claude_session else None
-            if attempt_session_id:
-                logger.info("conversation_turn: claude session_id=%s conversation_id=%s", attempt_session_id, cid)
-            chat_kwargs = {"session_id": attempt_session_id} if attempt_session_id else {}
-            turn_response_raw = await memory_service.chat(
-                turn_user_prompt,
-                system_prompt=turn_system_prompt,
-                temperature=turn_temperature,
-                response_format=turn_response_format,
-                op="turn",
-                step="respond" if attempt == 1 else "respond_retry",
-                trace_id=trace_id,
-                **chat_kwargs,
+        turn_session_id = str(uuid.uuid4()) if use_claude_session else None
+        if turn_session_id:
+            logger.info("conversation_turn: claude session_id=%s conversation_id=%s", turn_session_id, cid)
+        chat_kwargs = {"session_id": turn_session_id} if turn_session_id else {}
+        turn_response_raw = await memory_service.chat(
+            turn_user_prompt,
+            system_prompt=turn_system_prompt,
+            temperature=turn_temperature,
+            response_format=turn_response_format,
+            op="turn",
+            step="respond",
+            trace_id=trace_id,
+            **chat_kwargs,
+        )
+        try:
+            turn_contract = _parse_turn_contract(
+                turn_response_raw,
+                allow_public_response=allow_public_response,
+                attachment_workspace=_attachment_workspace(),
             )
-            try:
-                turn_contract = _parse_turn_contract(
-                    turn_response_raw,
-                    allow_public_response=allow_public_response,
-                    attachment_workspace=_attachment_workspace(),
-                )
-                turn_session_id = attempt_session_id
-                break
-            except Exception as exc:
-                raw_snippet = str(turn_response_raw or "")[:200]
-                if attempt == 1:
-                    logger.warning(
-                        "conversation_turn: turn contract parse failed on attempt 1; retrying once",
-                    )
-                    continue
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"turn contract parse failure: {exc}; raw={raw_snippet!r}",
-                ) from exc
-        if turn_contract is None:
-            raise HTTPException(status_code=502, detail="turn contract parse failure: unknown")
+        except Exception as exc:
+            raw_snippet = str(turn_response_raw or "")[:200]
+            raise HTTPException(
+                status_code=502,
+                detail=f"turn contract parse failure: {exc}; raw={raw_snippet!r}",
+            ) from exc
         turn_ms = int((time.monotonic() - turn_started_at) * 1000)
 
         if self_turn_directive and not dry_run:

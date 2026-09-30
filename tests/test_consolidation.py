@@ -2,7 +2,7 @@ import json
 import sqlite3
 import tempfile
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -747,7 +747,7 @@ INSERT INTO memory_items (
         soul_id=soul_id,
         user_id=user_id,
     )
-    assert blocked == {"status": "skip", "reason": "failure_cooldown"}
+    assert blocked == {"status": "skip", "reason": "failure_requires_retry"}
 
     forced = gather_consolidation_inputs(
         deps,
@@ -758,38 +758,6 @@ INSERT INTO memory_items (
     )
     assert forced["status"] == "ready"
 
-    con = sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        _soul_state.write(
-            con,
-            {
-                "last_consolidation_error_at": (
-                    datetime.now(UTC) - timedelta(hours=2)
-                ).isoformat(),
-            },
-        )
-        con.commit()
-    finally:
-        con.close()
-    after_cooldown = gather_consolidation_inputs(
-        deps,
-        conversation_id="conv-a",
-        soul_id=soul_id,
-        user_id=user_id,
-    )
-    assert after_cooldown["status"] == "ready"
-
-    con = sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        _soul_state.write(
-            con,
-            {"last_consolidation_error_at": datetime.now(UTC).isoformat()},
-        )
-        con.commit()
-    finally:
-        con.close()
     write_conversation_state(
         "conv-a",
         sqlite_current_path=lambda _user, _soul: db_path,
@@ -803,7 +771,7 @@ INSERT INTO memory_items (
         soul_id=soul_id,
         user_id=user_id,
     )
-    assert changed_pending == {"status": "skip", "reason": "failure_cooldown"}
+    assert changed_pending == {"status": "skip", "reason": "failure_requires_retry"}
 
 
 def test_gather_rejects_noncanonical_pending_owner(tmp_path: Path) -> None:

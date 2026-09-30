@@ -8077,7 +8077,7 @@ async def test_conversation_turn_observe_mode_forbids_public_response(
 
 
 @pytest.mark.asyncio
-async def test_conversation_turn_retries_once_on_parse_failure(
+async def test_conversation_turn_does_not_retry_parse_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -8096,13 +8096,8 @@ async def test_conversation_turn_retries_once_on_parse_failure(
 
         async def chat(self, *_args, **_kwargs) -> str:
             self.calls += 1
-            if self.calls == 1:
-                return (
-                    '{"working_thought":null,"annulments":[],"rehearsal":"first malformed"},"response_target":"respond",'
-                    '"response":"assistant says hi"}'
-                )
             return (
-                '{"working_thought":null,"annulments":[],"rehearsal":"retry good",'
+                '{"working_thought":null,"annulments":[],"rehearsal":"malformed"},'
                 '"response_target":"respond","response":"assistant says hi"}'
             )
 
@@ -8146,90 +8141,10 @@ async def test_conversation_turn_retries_once_on_parse_failure(
         },
     }
 
-    out = await main.conversation_turn("cid-turn", payload)
+    with pytest.raises(HTTPException, match="turn contract parse failure"):
+        await main.conversation_turn("cid-turn", payload)
 
-    assert out["ok"] is True
-    assert out["response"] == "assistant says hi"
-    assert svc.calls == 2
-
-
-@pytest.mark.asyncio
-async def test_conversation_turn_uses_fresh_session_id_for_retry(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "Echo.db"
-    con = main._sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        main._sqlite_ensure_conversation_state_schema(con)
-        con.commit()
-    finally:
-        con.close()
-
-    class _FakeSvc:
-        def __init__(self) -> None:
-            self.calls = 0
-            self.session_ids: list[str | None] = []
-
-        async def chat(self, *_args, **kwargs) -> str:
-            self.calls += 1
-            self.session_ids.append(kwargs.get("session_id"))
-            if self.calls == 1:
-                return '{"working_thought":null,"annulments":[],"rehearsal":"bad"'
-            return (
-                '{"working_thought":null,"annulments":[],"rehearsal":"retry good",'
-                '"response_target":"respond","response":"assistant says hi"}'
-            )
-
-    svc = _FakeSvc()
-
-    def _fake_persist_annulment_memories(**_kwargs):
-        return []
-
-    monkeypatch.setattr(main, "_CONFIG", {**main._CONFIG, "claude_code": True})
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: svc)
-    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
-    monkeypatch.setattr(
-        main,
-        "_turn_state_read",
-        lambda *_a, **_k: (
-            {"digest_cursor": 0},
-            None,
-            db_path,
-            [],
-            [],
-            0,
-            None,
-        ),
-    )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
-    monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
-    monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
-
-    payload = {
-        "user": {"user_id": "u1", "soul_id": "Echo", "conversation_id": "cid-turn"},
-        "message": "hello",
-        "user_name": "Alice",
-        "chat_name": "Alice",
-        "chat_type": "dm",
-        "history": [{"role": "user", "content": "hello"}],
-        "prompt_override_payload": {
-            "user_prompt": "prompt",
-            "system_prompt": "system",
-            "memory_cache": [],
-            "intentions_active": [],
-            "retrieve_rag": {"items": [], "categories": [], "resources": []},
-        },
-    }
-
-    out = await main.conversation_turn("cid-turn", payload)
-
-    assert out["ok"] is True
-    assert svc.calls == 2
-    assert svc.session_ids[0]
-    assert svc.session_ids[1]
-    assert svc.session_ids[0] != svc.session_ids[1]
+    assert svc.calls == 1
 
 
 @pytest.mark.asyncio
