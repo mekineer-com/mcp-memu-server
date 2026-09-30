@@ -51,6 +51,10 @@ def test_error_handler_wired_to_root_logger(tmp_path: Path) -> None:
     root_cfg = log_cfg.get("loggers", {}).get("", {})
     assert "memu_errors" in (root_cfg.get("handlers") or []), "memu_errors must be on root logger"
 
+    stream_cfg = log_cfg.get("loggers", {}).get("memu.llm.http_client", {})
+    assert stream_cfg.get("level") == "INFO"
+    assert "memu_file" in (stream_cfg.get("handlers") or [])
+
 
 def test_error_handler_writes_errors_to_file(tmp_path: Path) -> None:
     """An ERROR log message reaches errors.log when the handler is attached."""

@@ -266,6 +266,13 @@ def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
             filters_list.append("quiet_access")
         logger_cfg["filters"] = filters_list
 
+    stream_logger = loggers.setdefault("memu.llm.http_client", {})
+    stream_handlers = list(stream_logger.get("handlers") or [])
+    if "memu_file" not in stream_handlers:
+        stream_handlers.append("memu_file")
+    stream_logger["handlers"] = stream_handlers
+    stream_logger.setdefault("level", "INFO")
+
     # Attach error-only handler to the root logger so errors from all modules
     # (including the memu engine) land in errors.log.
     root_cfg = loggers.setdefault("", {})
