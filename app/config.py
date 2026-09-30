@@ -85,7 +85,6 @@ def default_config() -> dict[str, Any]:
             "api_key": "",
             "base_url": "https://api.openai.com/v1",
             "chat_model": "",
-            "embed_model": "",
             "embedding": {},
             "endpoint_overrides": {},
         },
@@ -445,11 +444,7 @@ def database_config_from_cfg(cfg: dict[str, Any], scope: dict[str, Any] | None =
 
     metadata_store = {"provider": provider, "dsn": dsn, "ddl_mode": ddl_mode}
     embedding_cfg = (cfg.get("llm") or {}).get("embedding") or {}
-    embed_model = str(
-        embedding_cfg.get("embed_model")
-        or (cfg.get("llm") or {}).get("embed_model")
-        or ""
-    ).strip()
+    embed_model = str(embedding_cfg.get("embed_model") or "").strip()
     if not embed_model:
         raise RuntimeError("llm.embedding.embed_model is required")
     expected_profile = f"{embed_model}:3072"
@@ -471,7 +466,6 @@ def default_llm_profiles_from_server_config(cfg: dict[str, Any]) -> dict[str, An
     api_key = str(llm.get("api_key") or "")
     base_url = str(llm.get("base_url") or "https://api.openai.com/v1")
     chat_model = str(llm.get("chat_model") or "")
-    embed_model = str(llm.get("embed_model") or "")
     provider = str(llm.get("provider") or "openai")
     endpoint_overrides = llm.get("endpoint_overrides") or {}
     temperature = llm.get("temperature")
@@ -480,7 +474,6 @@ def default_llm_profiles_from_server_config(cfg: dict[str, Any]) -> dict[str, An
         "api_key": api_key,
         "base_url": base_url,
         "chat_model": chat_model,
-        "embed_model": embed_model,
         "endpoint_overrides": endpoint_overrides,
     }
     if temperature is not None:

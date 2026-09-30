@@ -1195,7 +1195,6 @@ async def test_run_retrieve_read_only_skips_state_write_and_procedural_ingest(tm
         procedural_should_ingest=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("ingest check must be suppressed")),
         config={
             "llm": {
-                "embed_model": "text-embedding-3-large",
                 "embedding": {"embed_model": "gemini-embedding-2"},
             },
             "retrieve": {"mental_health_query": True},

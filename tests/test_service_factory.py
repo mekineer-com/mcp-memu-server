@@ -29,7 +29,6 @@ def test_server_config_separates_embedding_provider_and_profile_guard(tmp_path) 
             "api_key": "chat-key",
             "base_url": "https://chat.example/v1",
             "chat_model": "chat-model",
-            "embed_model": "legacy-model",
             "embedding": {
                 "provider": "gemini",
                 "api_key": "embed-key",
@@ -52,6 +51,7 @@ def test_server_config_separates_embedding_provider_and_profile_guard(tmp_path) 
     database = database_config_from_cfg(cfg, {"user_id": "test-user", "soul_id": "test"})
 
     assert profiles["default"]["provider"] == "openai"
+    assert "embed_model" not in profiles["default"]
     assert profiles["embedding"] == {
         "provider": "gemini",
         "api_key": "embed-key",

@@ -20,7 +20,6 @@ The default chat-generation profile.
 | `temperature` | provider default | Default sampling temperature. Omit or use `null` to leave it to the provider. |
 | `max_tokens` | provider default | Default maximum generated tokens. Omit or use `null` to leave it to the provider. |
 | `endpoint_overrides` | `{}` | Nonstandard endpoint paths for an OpenAI-compatible provider. |
-| `embed_model` | `""` | Legacy fallback used only when `llm.embedding.embed_model` is absent. Prefer the nested embedding block. |
 | `client_backend` | `"httpx"` | Legacy compatibility key; the current server uses its HTTP client directly. |
 
 ### `llm.embedding`
@@ -32,7 +31,7 @@ The embedding profile may use different credentials and a different provider fro
 | `provider` | inherited from `llm.provider` | Embedding backend: `openai`, `gemini`, or `doubao`. |
 | `api_key` | inherited from `llm.api_key` | Embedding API credential. |
 | `base_url` | inherited from `llm.base_url` | Embedding API base URL. |
-| `embed_model` | inherited from `llm.embed_model` | Embedding model. OpenAlma currently accepts stored profiles `text-embedding-3-large:3072` and `gemini-embedding-2:3072`. |
+| `embed_model` | required | Embedding model. OpenAlma currently accepts stored profiles `text-embedding-3-large:3072` and `gemini-embedding-2:3072`. |
 | `endpoint_overrides` | inherited | Nonstandard embedding endpoint path. |
 
 Changing the embedding model does not convert an existing Soul database. Existing vectors must
