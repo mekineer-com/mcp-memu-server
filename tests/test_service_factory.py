@@ -95,6 +95,13 @@ def test_semantic_dedupe_threshold_uses_profile_default_or_operator_override() -
         )
 
 
+def test_entity_similarity_floor_follows_embedding_profile() -> None:
+    assert service_factory._entity_similarity_floor("text-embedding-3-large:3072") == 0.30
+    assert service_factory._entity_similarity_floor("gemini-embedding-2:3072") == 0.62
+    with pytest.raises(HTTPException, match="No entity similarity floor"):
+        service_factory._entity_similarity_floor("unknown:3072")
+
+
 def test_validated_step_models_warns_on_unknown_key(caplog: pytest.LogCaptureFixture) -> None:
     llm_profiles = {
         "default": {},
@@ -277,6 +284,7 @@ def test_client_llm_profiles_suppress_server_step_model_routing(monkeypatch: pyt
     assert isinstance(out, _FakeService)
     assert captured["llm_profiles"]["default"]["chat_model"] == "client-model"
     assert captured["llm_profiles"]["embedding"]["embed_model"] == "gemini-embedding-2"
+    assert captured["retrieve_config"]["graph"]["min_entity_similarity"] == 0.62
     assert "memory_extract" not in captured["llm_profiles"]
     assert "reflection" not in captured["llm_profiles"]
     assert "memory_extract_llm_profile" not in captured["memorize_config"]

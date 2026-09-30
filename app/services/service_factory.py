@@ -29,6 +29,10 @@ _SEMANTIC_DEDUPE_THRESHOLDS = {
     "text-embedding-3-large:3072": 0.89,
     "gemini-embedding-2:3072": 0.90,
 }
+_ENTITY_SIMILARITY_FLOORS = {
+    "text-embedding-3-large:3072": 0.30,
+    "gemini-embedding-2:3072": 0.62,
+}
 
 
 def _services_cached() -> int:
@@ -166,6 +170,16 @@ def _semantic_dedupe_threshold(profile: str, configured: Any = "default") -> flo
     if not 0.0 <= threshold <= 1.0:
         raise RuntimeError("memorize.semantic_dedupe_similarity_threshold must be between 0 and 1")
     return threshold
+
+
+def _entity_similarity_floor(profile: str) -> float:
+    try:
+        return _ENTITY_SIMILARITY_FLOORS[profile]
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"No entity similarity floor is calibrated for embedding profile {profile!r}",
+        ) from exc
 
 
 def _semantic_dedupe_settings(profile: str, config: Mapping[str, Any]) -> tuple[bool, float | None]:
@@ -371,6 +385,14 @@ def _get_service_from_payload(
     if not isinstance(retrieve_config, dict):
         retrieve_config = {}
         payload["retrieve_config"] = retrieve_config
+    embedding_profile = str(
+        ((database_config or {}).get("metadata_store") or {}).get("embedding_profile") or ""
+    ).strip()
+    graph_config = retrieve_config.get("graph")
+    retrieve_config["graph"] = {
+        **(graph_config if isinstance(graph_config, dict) else {}),
+        "min_entity_similarity": _entity_similarity_floor(embedding_profile),
+    }
     if use_server_step_models and isinstance(step_models_cfg, dict):
         for cfg_key, profile_field in _STEP_MODEL_TO_RETRIEVE_PROFILE_FIELD.items():
             if profile_field not in retrieve_config and str(step_models_cfg.get(cfg_key) or "").strip():
