@@ -52,7 +52,7 @@ mcp-memu-server/
 | `/version` | GET | Build / server instance identity |
 | `/admin/shutdown` | POST | Request graceful shutdown (drain mode) |
 | `/admin/shutdown/status` | GET | Shutdown progress + active request counts |
-| `/memorize` | POST | Extract memories from conversation. `force=true` bypasses sleep-gap; `rebuild=true` wipes and resets cursor (implies force). Auto-memorize also fires inside `/conversation/{id}/turn`. |
+| `/memorize` | POST | Extract memories from conversation. `force=true` bypasses sleep-gap; `rebuild=true` archives the DB and resets cursor (implies force), returning HTTP 409 while the same owner and Soul consolidate. Auto-memorize also fires inside `/conversation/{id}/turn`. |
 | `/memorize/progress` | GET | Live memorize batch progress |
 | `/memorize/cancel` | POST | Cancel the running memorize batch |
 | `/retrieve` | POST | Query memories. Optional `as_of` for temporal triple filtering. |

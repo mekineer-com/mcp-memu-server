@@ -173,6 +173,7 @@ class MemorizeEndpointContext:
     pick_str: Callable[..., str | None]
     sqlite_current_path: Callable[[str | None, str], Path | None]
     clear_cached_services: Callable[[], None]
+    consolidation_running: set[tuple[str, str]]
     get_storage_dir: Callable[[dict[str, Any]], Path]
     run_memorize_segments: Callable[..., Awaitable[None]]
     run_consolidation_task: Callable[..., Awaitable[dict[str, Any]]]
@@ -1217,6 +1218,8 @@ async def memorize_endpoint(
         uid = str(scope["user_id"])
         async with ctx.get_memorize_lock(ctx.memorize_lock_key(uid, soul_id)):
             if rebuild:
+                if (uid, soul_id) in endpoint_ctx.consolidation_running:
+                    raise HTTPException(status_code=409, detail="cannot rebuild during consolidation")
                 db_path = endpoint_ctx.sqlite_current_path(uid, soul_id)
                 if db_path is not None and db_path.exists():
                     ts = datetime.now(UTC).strftime("%y%m%d-%H%M%S")

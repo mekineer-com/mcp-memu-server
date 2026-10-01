@@ -2321,6 +2321,7 @@ def _make_memorize_endpoint_context() -> _memorize_endpoint.MemorizeEndpointCont
         pick_str=_pick_str,
         sqlite_current_path=_sqlite_current_path,
         clear_cached_services=_clear_cached_services,
+        consolidation_running=_CONSOLIDATION_RUNNING,
         get_storage_dir=_get_storage_dir,
         run_memorize_segments=_run_memorize_segments,
         run_consolidation_task=_run_consolidation_task,

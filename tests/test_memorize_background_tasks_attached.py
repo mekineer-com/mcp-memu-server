@@ -368,14 +368,41 @@ def test_force_without_rebuild_does_not_archive_db(
     assert manifest["segments"] == [{"start": 0, "end": 1}]
 
 
-def test_rebuild_archives_db_and_service_reacquired_after_archive(
+def test_rebuild_rejected_during_same_soul_consolidation(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
+    db_file = tmp_path / "TestSoul.db"
+    db_file.write_bytes(b"original database")
+    original_files = set(tmp_path.iterdir())
+    monkeypatch.setattr(main_module, "_CONSOLIDATION_RUNNING", {("u1", "TestSoul")})
+    monkeypatch.setattr(main_module, "_sqlite_current_path", lambda *_args: db_file)
+
+    def unexpected_service(*_args):
+        pytest.fail("blocked rebuild must not acquire or clear a service")
+
+    monkeypatch.setattr(main_module, "_get_service_from_payload", unexpected_service)
+    monkeypatch.setattr(main_module, "_clear_cached_services", unexpected_service)
+    resp = client.post("/memorize?rebuild=true", json=_make_stub_payload("u1", "TestSoul", "cid-r"))
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "cannot rebuild during consolidation"
+    assert db_file.read_bytes() == b"original database"
+    assert set(tmp_path.iterdir()) == original_files
+
+
+@pytest.mark.parametrize("running", [set(), {("u2", "TestSoul")}, {("u1", "OtherSoul")}])
+def test_rebuild_archives_db_and_service_reacquired_after_archive(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    running,
+) -> None:
     """rebuild=True must archive the DB and re-acquire the service AFTER the archive."""
     db_file = tmp_path / "TestSoul.db"
     db_file.write_text("fake-db")
+    monkeypatch.setattr(main_module, "_CONSOLIDATION_RUNNING", running)
 
     call_order: list[str] = []
 
