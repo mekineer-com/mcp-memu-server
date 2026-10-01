@@ -27,7 +27,7 @@ mcp-memu-server/
 ├── app/services/crud_endpoints.py
 ├── app/services/graph_routes.py   # Graph/query read HTTP routes; scoped resolver supplied by main
 ├── app/services/entity_routes.py  # Entity HTTP routes and private helpers; scoped resolver supplied by main
-├── app/services/review_routes.py  # Memory/category/Soul-summary review; main supplies guarded scope/DB helpers
+├── app/services/review_routes.py  # Review routes; category mutation + snapshot/revision share one caller-owned transaction
 ├── app/services/state.py
 ├── app/services/soul_summaries.py
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start

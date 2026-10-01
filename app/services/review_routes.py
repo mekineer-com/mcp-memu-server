@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -105,33 +106,42 @@ def register_review_routes(
         return {**item, "summaries_revision": _soul_summaries.current_revision(con)}
 
 
-    def _reserve_category_snapshot(
-        svc: Any,
-        *,
-        category_id: str,
-        scope: dict[str, str],
-        snapshot: tuple[int, str],
-    ) -> int:
-        item_id = category_id if category_id.startswith("category:") else f"category:{category_id}"
-        current = svc.graph_memory(item_id, where=scope)
-        if current is None:
-            raise HTTPException(status_code=404, detail="category not found")
-        if str(current.get("summary") or "") != snapshot[1]:
-            raise HTTPException(status_code=409, detail="summary_snapshot_stale")
-        con, _scope = _summary_db(scope["user_id"], scope["soul_id"])
-        try:
-            con.execute("BEGIN IMMEDIATE")
-            revision = _soul_summaries.reserve_revision(con, snapshot[0])
-            con.commit()
-        except ValueError as exc:
-            con.rollback()
-            raise HTTPException(status_code=409, detail="summary_snapshot_stale") from exc
-        finally:
-            con.close()
-        current = svc.graph_memory(item_id, where=scope)
-        if current is None or str(current.get("summary") or "") != snapshot[1]:
-            raise HTTPException(status_code=409, detail="summary_snapshot_stale")
-        return revision
+    @contextmanager
+    def _category_review_write(svc: Any, category_id: str, scope: dict[str, str], snapshot: tuple[int, str] | None):
+        raw_id = category_id.removeprefix("category:")
+        session_cm = svc._sqlite_write_session(svc.database)
+        if session_cm is None:
+            raise RuntimeError("Category review requires SQLite")
+        with session_cm as session:
+            connection = session.connection()
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            con = connection.connection.driver_connection
+            previous_row_factory = con.row_factory
+            try:
+                con.row_factory = sqlite3.Row
+                _soul_state.ensure_schema(con)
+                current = svc.database.memory_category_repo.list_categories(
+                    {**scope, "id": raw_id}, session=session,
+                ).get(raw_id)
+                if current is None:
+                    raise HTTPException(status_code=404, detail="category not found")
+                revision = None
+                if snapshot is not None:
+                    if str(current.summary or current.description or "") != snapshot[1]:
+                        raise HTTPException(status_code=409, detail="summary_snapshot_stale")
+                    try:
+                        revision = _soul_summaries.reserve_revision(con, snapshot[0])
+                    except ValueError as exc:
+                        raise HTTPException(status_code=409, detail="summary_snapshot_stale") from exc
+                yield session, revision
+                con.row_factory = previous_row_factory
+                session.commit()
+            except Exception:
+                con.row_factory = previous_row_factory
+                session.rollback()
+                raise
+            finally:
+                con.row_factory = previous_row_factory
 
 
     @app.patch("/soul-summary/{kind}", operation_id="soul_summary_update")
@@ -328,22 +338,18 @@ def register_review_routes(
         scope = {"user_id": uid, "soul_id": sid}
         svc = get_service({"user": scope})
         snapshot = _summary_snapshot(payload)
-        revision = (
-            _reserve_category_snapshot(svc, category_id=category_id, scope=scope, snapshot=snapshot)
-            if snapshot is not None
-            else None
-        )
         try:
-            item = await svc.graph_update_category_summary(
-                category_id,
-                summary=summary,
-                title=title,
-                description=description,
-                category_kind=category_kind,
-                where=scope,
+            prepared = await svc.prepare_graph_category_update(
+                category_id, summary=summary, title=title, description=description,
+                category_kind=category_kind, where=scope,
                 edited_by=payload.get("edited_by") if isinstance(payload.get("edited_by"), str) else None,
                 approved=payload.get("approved") is True,
             )
+            with _category_review_write(svc, prepared["category_id"], scope, snapshot) as (session, revision):
+                category, journal = svc.write_graph_category_update(prepared, scope, session=session)
+            item = svc.finish_category_review(category, scope, journal=journal)
+        except DossierRevisionStaleError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except KeyError:
@@ -375,20 +381,13 @@ def register_review_routes(
         svc = get_service({"user": scope})
         raw_category_id = category_id.removeprefix("category:")
         raw_memory_id = memory_id.removeprefix("memory:")
-        revision = _reserve_category_snapshot(
-            svc,
-            category_id=raw_category_id,
-            scope=scope,
-            snapshot=snapshot,
-        )
         try:
-            item = svc.graph_set_category_membership(
-                raw_category_id,
-                raw_memory_id,
-                attached=attached,
-                expected_displayed_summary=snapshot[1],
-                where=scope,
-            )
+            with _category_review_write(svc, raw_category_id, scope, snapshot) as (session, revision):
+                category = svc.graph_set_category_membership(
+                    raw_category_id, raw_memory_id, attached=attached,
+                    expected_displayed_summary=snapshot[1], where=scope, session=session,
+                )
+            item = svc.finish_category_review(category, scope, refresh_memberships=True)
         except (DossierRevisionStaleError, DossierMembershipConflictError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except KeyError as exc:
@@ -444,13 +443,19 @@ def register_review_routes(
         scope = {"user_id": uid, "soul_id": sid}
         svc = get_service({"user": scope})
         snapshot = _summary_snapshot(payload or {})
-        revision = (
-            _reserve_category_snapshot(svc, category_id=category_id, scope=scope, snapshot=snapshot)
-            if snapshot is not None
-            else None
-        )
         try:
-            item = svc.graph_approve_category(category_id, where=scope)
+            kind, _, raw_id = str(category_id or "").partition(":")
+            if not raw_id:
+                kind, raw_id = "category", kind
+            if kind != "category" or not raw_id:
+                raise ValueError("only category approvals are supported")
+            with _category_review_write(svc, raw_id, scope, snapshot) as (session, revision):
+                category = svc.graph_approve_category(category_id, where=scope, session=session)
+                if category is None:
+                    raise HTTPException(status_code=404, detail="category not found")
+            item = svc.finish_category_review(category, scope)
+        except DossierRevisionStaleError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if item is None:

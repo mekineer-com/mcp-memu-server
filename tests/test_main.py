@@ -138,6 +138,135 @@ async def test_review_routes_registered_and_lookups_are_live(monkeypatch: pytest
         assert (out["marker"], out["summaries_revision"], connected) == (revision, revision, [path])
 
 
+def _review_test_service(tmp_path: Path, monkeypatch, scope):
+    from memu.app import category_summary_journal
+
+    monkeypatch.setattr(category_summary_journal, "JOURNAL_DIR", tmp_path / "journals")
+    path = tmp_path / "soul.db"
+    service = main.MemoryService(
+        database_config={"metadata_store": {"provider": "sqlite", "dsn": f"sqlite:///{path}"}},
+        user_config={"model": main.STUserModel},
+    )
+    store = service.database
+    with store._sessions.session() as session:
+        session.add(store._sqla_models.MemoryCategory(id="c1", name="Review", description="", summary="shown", kind="topic", **scope))
+        for index in (1, 2):
+            session.add(store._sqla_models.MemoryItem(id=f"m{index}", memory_type="knowledge", summary=f"Example {index}", memory_ref=index, **scope))
+        session.commit()
+    store.memory_category_repo.update_category(category_id="c1", embedding=[1.0, 0.0])
+    con = main._sqlite_connect(path)
+    main._soul_state.ensure_schema(con)
+    con.close()
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
+    return service
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["embedding", "write", "approval"])
+async def test_category_review_failure_rolls_back_prose_revision_and_cache(monkeypatch, tmp_path, failure):
+    from memu.app import graph
+
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    service = _review_test_service(tmp_path, monkeypatch, scope)
+    store = service.database
+    before = store.memory_category_repo.list_categories(scope)["c1"]
+    journals = []
+    monkeypatch.setattr(graph, "append_category_summary_journal", lambda **entry: journals.append(entry))
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
+
+    class Embedder:
+        async def embed(self, _texts):
+            raise RuntimeError("embedding failed")
+
+    if failure == "embedding":
+        monkeypatch.setattr(service, "_select_embedding_client", lambda _ctx: Embedder())
+    elif failure == "write":
+        original = service.write_graph_category_update
+
+        def fail_write(*args, **kwargs):
+            original(*args, **kwargs)
+            raise RuntimeError("write failed")
+
+        monkeypatch.setattr(service, "write_graph_category_update", fail_write)
+    else:
+        def fail_approval(*args, **kwargs):
+            raise RuntimeError("approval failed")
+
+        monkeypatch.setattr(store.memory_category_repo, "approve_category_summary", fail_approval)
+
+    payload = {"summary": "## Section\nEdited", "approved": True, "displayed_summary": "shown", "summaries_revision": 0}
+    if failure == "embedding":
+        payload["title"] = "Changed title"
+    with pytest.raises(RuntimeError, match="failed"):
+        await _route_endpoint("memory_graph_category_update")("c1", "TestOwner", "TestSoul", payload)
+    assert store.memory_category_repo.categories["c1"] == before
+    assert journals == []
+    with store._sessions.session() as session:
+        assert session.connection().connection.driver_connection.row_factory is None
+    con = main._sqlite_connect(tmp_path / "soul.db")
+    try:
+        assert con.execute("SELECT summary, approved_summary FROM categories WHERE id = 'c1'").fetchone() == ("shown", None)
+        assert con.execute("SELECT summaries_revision FROM soul_state").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("competing", ["summary", "name"])
+async def test_category_review_rejects_edit_during_embedding(monkeypatch, tmp_path, competing):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    service = _review_test_service(tmp_path, monkeypatch, scope)
+    store = service.database
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Embedder:
+        async def embed(self, _texts):
+            entered.set()
+            await release.wait()
+            return [[0.0, 1.0]]
+
+    monkeypatch.setattr(service, "_select_embedding_client", lambda _ctx: Embedder())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
+    task = asyncio.create_task(_route_endpoint("memory_graph_category_update")(
+        "c1", "TestOwner", "TestSoul",
+        {"summary": "## Section\nEdited", "title": "Requested title", "displayed_summary": "shown", "summaries_revision": 0},
+    ))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        store.memory_category_repo.update_category(category_id="c1", **{competing: "Concurrent edit"})
+        release.set()
+        with pytest.raises(HTTPException) as error:
+            await task
+        assert error.value.status_code == 409
+        assert error.value.detail == "summary_snapshot_stale"
+        saved = store.memory_category_repo.list_categories(scope)["c1"]
+        assert getattr(saved, competing) == "Concurrent edit"
+        assert saved.approved_summary is None
+        con = main._sqlite_connect(tmp_path / "soul.db")
+        try:
+            assert con.execute("SELECT summaries_revision FROM soul_state").fetchone()[0] == 0
+        finally:
+            con.close()
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+def test_category_membership_caller_noop_does_not_commit(monkeypatch, tmp_path):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    service = _review_test_service(tmp_path, monkeypatch, scope)
+    store = service.database
+    store.category_item_repo.link_item_category("m1", "c1", scope)
+    with store._sessions.session() as session:
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        store.memory_category_repo.update_category(category_id="c1", description="Uncommitted", session=session)
+        service.graph_set_category_membership("c1", "m1", attached=True, expected_displayed_summary="shown", where=scope, session=session)
+        session.rollback()
+    assert store.memory_category_repo.list_categories(scope)["c1"].description == ""
+
+
 def _retrieve_state_row() -> dict[str, Any]:
     return {
         "memorize_chat": True,
@@ -5435,11 +5564,16 @@ def test_memory_graph_item_mutations_require_displayed_summary():
         )
 
 
-def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPatch):
+def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     calls: dict[str, object] = {}
 
+    service = _review_test_service(tmp_path, monkeypatch, {"user_id": "u", "soul_id": "s"})
+
     class _Svc:
-        async def graph_update_category_summary(
+        def __getattr__(self, name):
+            return getattr(service, name)
+
+        async def prepare_graph_category_update(
             self, item_id, *, summary, title, description, category_kind, where, edited_by, approved
         ):
             calls["item_id"] = item_id
@@ -5450,7 +5584,7 @@ def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: 
             calls["where"] = where
             calls["edited_by"] = edited_by
             calls["approved"] = approved
-            return {"id": f"category:{item_id}", "summary": summary}
+            return await service.prepare_graph_category_update(item_id, summary=summary, title=title, description=description, category_kind=category_kind, where=where, edited_by=edited_by, approved=approved)
 
     def _fake_service(payload):
         calls["payload"] = payload
@@ -5467,7 +5601,8 @@ def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: 
         )
     )
 
-    assert out == {"id": "category:c1", "summary": "new"}
+    assert out["id"] == "category:c1"
+    assert out["summary"] == "## unlabeled\nnew"
     assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}
     assert calls["where"] == {"user_id": "u", "soul_id": "s"}
     assert calls["category_kind"] == "topic"
@@ -5476,23 +5611,9 @@ def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: 
 
 
 def test_memory_graph_category_update_reserves_summary_revision(monkeypatch: pytest.MonkeyPatch, tmp_path):
-    path = tmp_path / "soul.db"
-    con = main._sqlite_connect(path)
-    con.row_factory = sqlite3.Row
-    main._soul_state.ensure_schema(con)
-    con.close()
+    service = _review_test_service(tmp_path, monkeypatch, {"user_id": "u", "soul_id": "s"})
 
-    class _Svc:
-        def graph_memory(self, item_id, *, where):
-            assert item_id == "category:c1"
-            assert where == {"user_id": "u", "soul_id": "s"}
-            return {"id": "category:c1", "summary": "shown"}
-
-        async def graph_update_category_summary(self, _item_id, **_kwargs):
-            return {"id": "category:c1", "summary": "edited"}
-
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
-    monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
 
     out = asyncio.run(
         _route_endpoint("memory_graph_category_update")(
@@ -5507,29 +5628,43 @@ def test_memory_graph_category_update_reserves_summary_revision(monkeypatch: pyt
         )
     )
     assert out["summaries_revision"] == 1
+    saved = service.database.memory_category_repo.list_categories({"user_id": "u", "soul_id": "s"})["c1"]
+    assert saved.summary == "## unlabeled\nedited"
+    assert saved.previous_summary == "shown"
+    approved = asyncio.run(_route_endpoint("memory_graph_category_approve")(
+        "c1", "u", "s", {"displayed_summary": saved.summary, "summaries_revision": 1},
+    ))
+    assert approved["summaries_revision"] == 2
+    assert service.database.memory_category_repo.list_categories({"user_id": "u", "soul_id": "s"})["c1"].approved_summary == saved.summary
+    with pytest.raises(HTTPException) as stale:
+        asyncio.run(_route_endpoint("memory_graph_category_approve")(
+            "c1", "u", "s", {"displayed_summary": "shown", "summaries_revision": 2},
+        ))
+    assert stale.value.status_code == 409
+    con = main._sqlite_connect(tmp_path / "soul.db")
+    try:
+        assert con.execute("SELECT summaries_revision FROM soul_state").fetchone()[0] == 2
+    finally:
+        con.close()
 
 
 def test_category_membership_routes_reserve_snapshot_and_forward_state(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    path = tmp_path / "soul.db"
-    con = main._sqlite_connect(path)
-    main._soul_state.ensure_schema(con)
-    con.close()
     calls: list[dict[str, Any]] = []
 
+    service = _review_test_service(tmp_path, monkeypatch, {"user_id": "user", "soul_id": "soul"})
+
     class _Svc:
-        def graph_memory(self, _item_id, *, where):
-            assert where == {"user_id": "user", "soul_id": "soul"}
-            return {"id": "category:c1", "summary": "shown"}
+        def __getattr__(self, name):
+            return getattr(service, name)
 
         def graph_set_category_membership(self, category_id, memory_id, **kwargs):
-            calls.append({"category_id": category_id, "memory_id": memory_id, **kwargs})
-            return {"id": f"category:{category_id}", "summary": "shown", "members": []}
+            calls.append({"category_id": category_id, "memory_id": memory_id, **{k: v for k, v in kwargs.items() if k != "session"}})
+            return service.graph_set_category_membership(category_id, memory_id, **kwargs)
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
-    monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
 
     attached = asyncio.run(
         _route_endpoint("memory_graph_category_memory_attach")(
@@ -5596,20 +5731,17 @@ def test_category_membership_routes_map_engine_errors(
     status: int,
     tmp_path: Path,
 ):
-    path = tmp_path / "soul.db"
-    con = main._sqlite_connect(path)
-    main._soul_state.ensure_schema(con)
-    con.close()
+
+    service = _review_test_service(tmp_path, monkeypatch, {"user_id": "user", "soul_id": "soul"})
 
     class _Svc:
-        def graph_memory(self, *_args, **_kwargs):
-            return {"id": "category:c1", "summary": "shown"}
+        def __getattr__(self, name):
+            return getattr(service, name)
 
         def graph_set_category_membership(self, *_args, **_kwargs):
             raise error
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
-    monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
 
     with pytest.raises(main.HTTPException) as exc:
         asyncio.run(
@@ -5630,14 +5762,19 @@ def test_category_membership_routes_require_snapshot():
     assert exc.value.status_code == 400
 
 
-def test_memory_graph_category_approve_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPatch):
+def test_memory_graph_category_approve_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     calls: dict[str, object] = {}
 
+    service = _review_test_service(tmp_path, monkeypatch, {"user_id": "u", "soul_id": "s"})
+
     class _Svc:
-        def graph_approve_category(self, item_id, *, where):
+        def __getattr__(self, name):
+            return getattr(service, name)
+
+        def graph_approve_category(self, item_id, *, where, session):
             calls["item_id"] = item_id
             calls["where"] = where
-            return {"id": f"category:{item_id}"}
+            return service.graph_approve_category(item_id, where=where, session=session)
 
     def _fake_service(payload):
         calls["payload"] = payload
@@ -5647,7 +5784,7 @@ def test_memory_graph_category_approve_endpoint_uses_scoped_service(monkeypatch:
 
     out = asyncio.run(_route_endpoint("memory_graph_category_approve")(category_id="c1", user_id="u", soul_id="s"))
 
-    assert out == {"id": "category:c1"}
+    assert out["id"] == "category:c1"
     assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}
     assert calls["where"] == {"user_id": "u", "soul_id": "s"}
 
