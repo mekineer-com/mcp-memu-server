@@ -17,6 +17,36 @@ from app.services import consolidation, conversation_sources, crud_endpoints, re
 from memu.app.memorize_segments import grouped_chat_happened_at
 
 
+def _route_endpoint(name: str):
+    return next(route.endpoint for route in main.app.routes if route.name == name)
+
+
+@pytest.mark.asyncio
+async def test_graph_routes_registered_and_service_lookup_is_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected = {
+        "memory_graph": ("/graph", "GET"),
+        "atomic_memory_atoms": ("/integration/atomic/atoms", "GET"),
+        "atomic_memory_tags": ("/integration/atomic/tags", "GET"),
+        "atomic_memory_canvas_source": ("/integration/atomic/canvas-source", "GET"),
+        "atomic_memory_canvas_source_post": ("/integration/atomic/canvas-source", "POST"),
+        "atomic_memory_neighborhood": ("/integration/atomic/neighborhood/{item_id}", "GET"),
+        "atomic_memory_similar": ("/integration/atomic/similar/{item_id}", "GET"),
+        "atomic_memory_search": ("/integration/atomic/search", "GET"),
+    }
+    for name, (path, method) in expected.items():
+        routes = [route for route in main.app.routes if route.name == name]
+        assert len(routes) == 1
+        route = routes[0]
+        assert (route.path, route.methods, route.operation_id) == (path, {method}, name)
+        assert route.tags == ([] if name == "memory_graph" else ["integration"])
+
+    endpoint = _route_endpoint("memory_graph")
+    for marker in ("first", "second"):
+        svc = SimpleNamespace(graph_recent=lambda **kwargs: marker)
+        monkeypatch.setattr(main, "_get_service_from_payload", lambda payload: svc)
+        assert await endpoint(user_id="TestOwner", soul_id="TestSoul") == marker
+
+
 def _messages_table_exists(con: sqlite3.Connection) -> bool:
     row = con.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
@@ -556,10 +586,10 @@ async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: py
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
 
-    out = await main.atomic_memory_search(
+    out = await _route_endpoint("atomic_memory_search")(
         q="sushi",
-        user_id="Marcos",
-        soul_id="Siri",
+        user_id="TestOwner",
+        soul_id="TestSoul",
         limit=3,
         mode="keyword",
         since_days=7,
@@ -571,7 +601,7 @@ async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: py
     assert out["nodes"][0]["id"] == "memory:m1"
     assert captured == {
         "query": "sushi",
-        "where": {"user_id": "Marcos", "soul_id": "Siri"},
+        "where": {"user_id": "TestOwner", "soul_id": "TestSoul"},
         "limit": 3,
         "mode": "keyword",
         "since_days": 7,
@@ -581,7 +611,7 @@ async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: py
     }
 
     captured.clear()
-    await main.atomic_memory_search(q="plain", user_id="Marcos", soul_id="Siri")
+    await _route_endpoint("atomic_memory_search")(q="plain", user_id="TestOwner", soul_id="TestSoul")
     assert captured["memory_only"] is False
     assert captured["exclude_entity_id"] is None
     assert captured["exclude_category_id"] is None
@@ -603,12 +633,12 @@ async def test_atomic_canvas_source_threads_scope_and_edges(monkeypatch: pytest.
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
 
-    out = await main.atomic_memory_canvas_source(user_id="Marcos", soul_id="Siri", limit=7)
+    out = await _route_endpoint("atomic_memory_canvas_source")(user_id="TestOwner", soul_id="TestSoul", limit=7)
 
     assert out["edges"][0]["weight"] == 0.8
     assert out["atoms"][0]["embedding_f32_le_b64"] == "AACAPwAAAAA="
     assert "embedding" not in out["atoms"][0]
-    assert captured == {"where": {"user_id": "Marcos", "soul_id": "Siri"}, "limit": 7}
+    assert captured == {"where": {"user_id": "TestOwner", "soul_id": "TestSoul"}, "limit": 7}
 
 
 @pytest.mark.asyncio
@@ -758,9 +788,9 @@ async def test_atomic_canvas_source_threads_atom_ids(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
 
-    await main.atomic_memory_canvas_source(
-        user_id="Marcos",
-        soul_id="Siri",
+    await _route_endpoint("atomic_memory_canvas_source")(
+        user_id="TestOwner",
+        soul_id="TestSoul",
         atom_ids="memory:a, category:b",
     )
 
@@ -778,9 +808,9 @@ async def test_atomic_canvas_source_post_threads_atom_ids(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
 
-    await main.atomic_memory_canvas_source_post({
-        "user_id": "Marcos",
-        "soul_id": "Siri",
+    await _route_endpoint("atomic_memory_canvas_source_post")({
+        "user_id": "TestOwner",
+        "soul_id": "TestSoul",
         "atom_ids": ["memory:a", "category:b"],
     })
 
@@ -790,7 +820,7 @@ async def test_atomic_canvas_source_post_threads_atom_ids(monkeypatch: pytest.Mo
 @pytest.mark.asyncio
 async def test_atomic_canvas_source_requires_scope() -> None:
     with pytest.raises(main.HTTPException) as exc:
-        await main.atomic_memory_canvas_source(user_id="", soul_id="Siri")
+        await _route_endpoint("atomic_memory_canvas_source")(user_id="", soul_id="TestSoul")
 
     assert exc.value.status_code == 400
 
@@ -809,10 +839,10 @@ async def test_atomic_neighborhood_threads_scope_and_404(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
 
-    out = await main.atomic_memory_neighborhood(
+    out = await _route_endpoint("atomic_memory_neighborhood")(
         item_id="memory:m1",
-        user_id="Marcos",
-        soul_id="Siri",
+        user_id="TestOwner",
+        soul_id="TestSoul",
         depth=2,
         min_similarity=0.7,
     )
@@ -820,13 +850,13 @@ async def test_atomic_neighborhood_threads_scope_and_404(monkeypatch: pytest.Mon
     assert out["nodes"][0]["depth"] == 0
     assert captured == {
         "item_id": "memory:m1",
-        "where": {"user_id": "Marcos", "soul_id": "Siri"},
+        "where": {"user_id": "TestOwner", "soul_id": "TestSoul"},
         "depth": 2,
         "min_similarity": 0.7,
         "similarity_limit": 5,
     }
     with pytest.raises(main.HTTPException) as exc:
-        await main.atomic_memory_neighborhood(item_id="memory:missing", user_id="Marcos", soul_id="Siri")
+        await _route_endpoint("atomic_memory_neighborhood")(item_id="memory:missing", user_id="TestOwner", soul_id="TestSoul")
     assert exc.value.status_code == 404
 
 
@@ -844,10 +874,10 @@ async def test_atomic_similar_threads_scope_and_404(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
 
-    out = await main.atomic_memory_similar(
+    out = await _route_endpoint("atomic_memory_similar")(
         item_id="memory:m1",
-        user_id="Marcos",
-        soul_id="Siri",
+        user_id="TestOwner",
+        soul_id="TestSoul",
         limit=3,
         min_similarity=0.8,
     )
@@ -855,19 +885,19 @@ async def test_atomic_similar_threads_scope_and_404(monkeypatch: pytest.MonkeyPa
     assert out == [{"id": "memory:m2", "similarity_score": 0.9}]
     assert captured == {
         "item_id": "memory:m1",
-        "where": {"user_id": "Marcos", "soul_id": "Siri"},
+        "where": {"user_id": "TestOwner", "soul_id": "TestSoul"},
         "limit": 3,
         "min_similarity": 0.8,
     }
     with pytest.raises(main.HTTPException) as exc:
-        await main.atomic_memory_similar(item_id="memory:missing", user_id="Marcos", soul_id="Siri")
+        await _route_endpoint("atomic_memory_similar")(item_id="memory:missing", user_id="TestOwner", soul_id="TestSoul")
     assert exc.value.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_atomic_similar_requires_scope() -> None:
     with pytest.raises(main.HTTPException) as exc:
-        await main.atomic_memory_similar(item_id="memory:m1", user_id="", soul_id="Siri")
+        await _route_endpoint("atomic_memory_similar")(item_id="memory:m1", user_id="", soul_id="TestSoul")
 
     assert exc.value.status_code == 400
 
@@ -5000,7 +5030,7 @@ def test_memory_graph_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
 
-    out = asyncio.run(main.memory_graph(user_id="u", soul_id="s", limit=25))
+    out = asyncio.run(_route_endpoint("memory_graph")(user_id="u", soul_id="s", limit=25))
 
     assert out["limit"] == 25
     assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}

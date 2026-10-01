@@ -25,6 +25,7 @@ mcp-memu-server/
 ├── app/services/souls.py
 ├── app/services/owner.py          # One create-once OpenAlma user identity
 ├── app/services/crud_endpoints.py
+├── app/services/graph_routes.py   # Graph/query read HTTP routes; scoped resolver supplied by main
 ├── app/services/state.py
 ├── app/services/soul_summaries.py
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
