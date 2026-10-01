@@ -119,7 +119,6 @@ from app.services.state import (
     conversation_state_from_row as _conversation_state_from_row_impl,
     conversation_state_row as _conversation_state_row,
     effective_digest_cursor_from_row as _effective_digest_cursor_from_row,
-    memorize_chat_from_row as _memorize_chat_from_row,
     write_conversation_state as _write_conversation_state_impl,
 )
 from app.services.turn_contract import (
@@ -1143,10 +1142,6 @@ def _ensure_whatsapp_outbounds_schema(con: sqlite3.Connection) -> None:
     _whatsapp_outbounds._ensure_whatsapp_outbounds_schema(con)
 
 
-def _whatsapp_outbound_row(row: sqlite3.Row) -> dict[str, Any]:
-    return _whatsapp_outbounds._whatsapp_outbound_row(row)
-
-
 def _sqlite_has_rows_quietly(
     db_path: Path,
     *,
@@ -1160,10 +1155,6 @@ def _sqlite_has_rows_quietly(
         where_sql=where_sql,
         params=params,
     )
-
-
-def _poll_marker_path(db_path: Path, name: str) -> Path:
-    return _whatsapp_outbounds._poll_marker_path(db_path, name)
 
 
 def _touch_poll_marker(db_path: Path, name: str, value: str = "") -> None:
@@ -1298,10 +1289,6 @@ def _ensure_free_turn_followups_schema(con: sqlite3.Connection) -> None:
     _free_turn._ensure_free_turn_followups_schema(con)
 
 
-def _free_turn_followup_row(row: sqlite3.Row) -> dict[str, Any]:
-    return _free_turn._free_turn_followup_row(row, json_from_db=_json_from_db)
-
-
 def _parse_free_turn_follow_up_at(raw: str) -> datetime | None:
     return _free_turn._parse_free_turn_follow_up_at(
         raw,
@@ -1429,7 +1416,6 @@ async def _free_turn_followup_scheduler() -> None:
 # ==== Retrieve payload helpers ====
 
 _extract_retrieve_where = _retrieve_orchestration._extract_retrieve_where
-_extract_retrieve_queries = _retrieve_orchestration._extract_retrieve_queries
 
 
 # ==== Turn prompt context builders ====
@@ -1935,7 +1921,6 @@ def _read_list(p: Path) -> list[dict[str, Any]]:
     return [m for m in obj if isinstance(m, dict)] if isinstance(obj, list) else []
 
 
-_date_label = _memorize_endpoint.date_label
 _split_indices_by_sleep = _memorize_endpoint.split_indices_by_sleep
 
 
@@ -1982,7 +1967,6 @@ def _make_consolidation_deps() -> ConsolidationDeps:
     )
 
 
-_ACTIVE_SINCE_UNSET = _cross_history._ACTIVE_SINCE_UNSET
 TURN_HISTORY_WINDOW_MESSAGES = _cross_history.TURN_HISTORY_WINDOW_MESSAGES
 
 def _resolve_cross_source_paths(*args: Any, **kwargs: Any) -> Any:
