@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -45,6 +46,7 @@ from app.services import soul_summaries as _soul_summaries
 from app.services.conversation_id import canonical_conversation_id
 from app.services.payload import parse_iso_datetime
 from app.services import soul_state as _soul_state
+from app.services import service_factory as _service_factory
 from app.services.turn_contract import format_memory_legend, format_memory_line, format_shaped_by_line
 
 if TYPE_CHECKING:
@@ -1388,3 +1390,123 @@ INSERT INTO life_goals (
         "consumed_segment_ids": consumed_segment_ids,
         "state": state_after,
     }
+
+
+def _record_consolidation_failure(
+    *,
+    deps: ConsolidationDeps,
+    soul_id: str,
+    user_id: str,
+    exc: Exception,
+) -> None:
+    now_iso = datetime.now(UTC).isoformat()
+    error = f"{type(exc).__name__}: {str(exc)[:260]}"
+    db_path = deps.sqlite_current_path(user_id, soul_id)
+    if db_path is None or not db_path.exists():
+        raise FileNotFoundError(f"soul database not found: {soul_id}")
+    con = deps.sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _soul_state.ensure_schema(con)
+        _soul_state.write(
+            con,
+            {
+                "last_consolidation_error": error,
+                "last_consolidation_error_at": now_iso,
+            },
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+async def _run_consolidation_pipeline_once(
+    *,
+    svc: Any,
+    deps: ConsolidationDeps,
+    state_lock: asyncio.Lock,
+    running: set[tuple[str, str]],
+    load_cross_tail_for_ai: Callable[..., Any],
+    format_all_chat_history_for_ai: Callable[..., str],
+    conversation_id: str,
+    soul_id: str,
+    user_id: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    run_key = (user_id, soul_id)
+    if run_key in running:
+        return {"status": "skipped", "reason": "in_progress"}
+    running.add(run_key)
+    try:
+        async with state_lock:
+            prep = gather_consolidation_inputs(
+                deps,
+                conversation_id=conversation_id,
+                soul_id=soul_id,
+                user_id=user_id,
+                force=force,
+            )
+        if prep.get("status") == "skip":
+            return {"status": "skipped", "reason": prep.get("reason")}
+        consolidation_profile = _service_factory._resolve_profile_if_configured(svc, "consolidation")
+        preflight_consolidation_profiles(svc, consolidation_profile)
+        current_chat_messages = [
+            row for row in (prep.get("current_chat_messages") or [])
+            if isinstance(row, dict)
+        ]
+        prep["all_chat_history"] = format_all_chat_history_for_ai(
+            current_history=current_chat_messages,
+            cross_tail=load_cross_tail_for_ai(
+                user_id=user_id,
+                soul_id=soul_id,
+                conversation_id=conversation_id,
+            ),
+            conversation_id=conversation_id,
+            soul_id=soul_id,
+            mark_current_chat=False,
+        )
+        await prepare_dossier_consolidation_context(
+            svc,
+            inputs=prep,
+            soul_id=soul_id,
+            user_id=user_id,
+            llm_profile=consolidation_profile,
+        )
+
+        consolidation_llm = await run_consolidation_llm(
+            svc,
+            inputs=prep,
+            soul_id=soul_id,
+            user_id=user_id,
+            llm_profile=consolidation_profile,
+        )
+        async with state_lock:
+            result = write_consolidation_outputs(
+                deps,
+                svc,
+                inputs=prep,
+                llm_results=consolidation_llm,
+                conversation_id=conversation_id,
+                soul_id=soul_id,
+                user_id=user_id,
+            )
+        return {"status": "ok", "result": result}
+    except Exception as exc:
+        db_path = deps.sqlite_current_path(user_id, soul_id)
+        if db_path is not None and db_path.exists():
+            try:
+                async with state_lock:
+                    _record_consolidation_failure(
+                        deps=deps,
+                        soul_id=soul_id,
+                        user_id=user_id,
+                        exc=exc,
+                    )
+            except Exception:
+                log.exception(
+                    "failed to record consolidation error state for %s",
+                    conversation_id,
+                )
+        raise
+    finally:
+        running.discard(run_key)

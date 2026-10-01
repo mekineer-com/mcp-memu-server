@@ -76,12 +76,8 @@ from app.services import souls as _souls
 from app.services import whatsapp_outbounds as _whatsapp_outbounds
 from app.services.consolidation import (
     ConsolidationDeps,
+    _run_consolidation_pipeline_once,
     consolidation_due as _consolidation_due,
-    gather_consolidation_inputs as _gather_consolidation_inputs,
-    prepare_dossier_consolidation_context as _prepare_dossier_consolidation_context,
-    preflight_consolidation_profiles as _preflight_consolidation_profiles,
-    run_consolidation_llm as _run_consolidation_llm,
-    write_consolidation_outputs as _write_consolidation_outputs,
 )
 from app.services.intention_state import (
     append_memory_cache_entry as _append_memory_cache_entry,
@@ -2071,121 +2067,6 @@ def _source_cursor_checkpoint(*args: Any, **kwargs: Any) -> Any:
     return _cross_history._source_cursor_checkpoint(*args, **kwargs)
 
 
-def _record_consolidation_failure(
-    *,
-    soul_id: str,
-    user_id: str,
-    exc: Exception,
-) -> None:
-    now_iso = datetime.now(UTC).isoformat()
-    error = f"{type(exc).__name__}: {str(exc)[:260]}"
-    db_path = _sqlite_current_path(user_id, soul_id)
-    if db_path is None or not db_path.exists():
-        raise FileNotFoundError(f"soul database not found: {soul_id}")
-    con = _sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        _soul_state.ensure_schema(con)
-        _soul_state.write(
-            con,
-            {
-                "last_consolidation_error": error,
-                "last_consolidation_error_at": now_iso,
-            },
-        )
-        con.commit()
-    finally:
-        con.close()
-
-
-async def _run_consolidation_pipeline_once(
-    *,
-    svc: Any,
-    deps: ConsolidationDeps,
-    state_lock: asyncio.Lock,
-    conversation_id: str,
-    soul_id: str,
-    user_id: str,
-    force: bool = False,
-) -> dict[str, Any]:
-    run_key = (user_id, soul_id)
-    if run_key in _CONSOLIDATION_RUNNING:
-        return {"status": "skipped", "reason": "in_progress"}
-    _CONSOLIDATION_RUNNING.add(run_key)
-    try:
-        async with state_lock:
-            prep = _gather_consolidation_inputs(
-                deps,
-                conversation_id=conversation_id,
-                soul_id=soul_id,
-                user_id=user_id,
-                force=force,
-            )
-        if prep.get("status") == "skip":
-            return {"status": "skipped", "reason": prep.get("reason")}
-        consolidation_profile = _resolve_profile_if_configured(svc, "consolidation")
-        _preflight_consolidation_profiles(svc, consolidation_profile)
-        current_chat_messages = [
-            row for row in (prep.get("current_chat_messages") or [])
-            if isinstance(row, dict)
-        ]
-        prep["all_chat_history"] = _format_all_chat_history_for_ai(
-            current_history=current_chat_messages,
-            cross_tail=_load_cross_tail_for_ai(
-                user_id=user_id,
-                soul_id=soul_id,
-                conversation_id=conversation_id,
-            ),
-            conversation_id=conversation_id,
-            soul_id=soul_id,
-            mark_current_chat=False,
-        )
-        await _prepare_dossier_consolidation_context(
-            svc,
-            inputs=prep,
-            soul_id=soul_id,
-            user_id=user_id,
-            llm_profile=consolidation_profile,
-        )
-
-        consolidation_llm = await _run_consolidation_llm(
-            svc,
-            inputs=prep,
-            soul_id=soul_id,
-            user_id=user_id,
-            llm_profile=consolidation_profile,
-        )
-        async with state_lock:
-            result = _write_consolidation_outputs(
-                deps,
-                svc,
-                inputs=prep,
-                llm_results=consolidation_llm,
-                conversation_id=conversation_id,
-                soul_id=soul_id,
-                user_id=user_id,
-            )
-        return {"status": "ok", "result": result}
-    except Exception as exc:
-        db_path = _sqlite_current_path(user_id, soul_id)
-        if db_path is not None and db_path.exists():
-            try:
-                async with state_lock:
-                    _record_consolidation_failure(
-                        soul_id=soul_id,
-                        user_id=user_id,
-                        exc=exc,
-                    )
-            except Exception:
-                logger.exception(
-                    "failed to record consolidation error state for %s",
-                    conversation_id,
-                )
-        raise
-    finally:
-        _CONSOLIDATION_RUNNING.discard(run_key)
-
-
 async def _run_consolidation_task(
     svc: Any,
     *,
@@ -2212,6 +2093,9 @@ async def _run_consolidation_task(
             svc=svc,
             deps=deps,
             state_lock=state_lock,
+            running=_CONSOLIDATION_RUNNING,
+            load_cross_tail_for_ai=_load_cross_tail_for_ai,
+            format_all_chat_history_for_ai=_format_all_chat_history_for_ai,
             conversation_id=conversation_id,
             soul_id=soul_id,
             user_id=uid,
@@ -2440,6 +2324,9 @@ async def force_consolidation(
             svc=svc,
             deps=_make_consolidation_deps(),
             state_lock=state_lock,
+            running=_CONSOLIDATION_RUNNING,
+            load_cross_tail_for_ai=_load_cross_tail_for_ai,
+            format_all_chat_history_for_ai=_format_all_chat_history_for_ai,
             conversation_id=cid,
             soul_id=soul_id,
             user_id=uid,

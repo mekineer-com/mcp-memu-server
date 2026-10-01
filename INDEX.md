@@ -153,7 +153,7 @@ snapshot metadata, not introduce another registry.
 |--------|---------|
 | `app/config.py` | `load_config()`, `save_config()`, `mask_config()`, storage path normalization, sqlite DSN scoping |
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
-| `app/services/consolidation.py` | Consolidation pipeline: 7-day clock on last success, then next memorize consumes all pending conversations → dossier revision → reflection |
+| `app/services/consolidation.py` | Consolidation coordinator and failure recording, plus gather → dossier revision → anchor maintenance → weekly reflection → final state write. Main supplies its shared running set, lock, and cross-history callbacks; weekly clock advances on success. |
 | `app/services/graph_edges.py` | Edge normalization + write/invalidate helpers (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`) |
 | `app/services/activity_messages.py` | `activity_messages` scoped-SQLite table for synthetic self-DM activity recaps (`My Activities:`); accepts a caller-owned transaction for Atomic End |
 | `app/services/whatsapp_outbounds.py` | `whatsapp_pending_outbounds` scoped-SQLite queue for WhatsApp replies/attachments |

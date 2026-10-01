@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from app import main
-from app.services import conversation_sources, crud_endpoints, retrieve_orchestration, segment
+from app.services import consolidation, conversation_sources, crud_endpoints, retrieve_orchestration, segment, service_factory
 from memu.app.memorize_segments import grouped_chat_happened_at
 
 
@@ -1434,6 +1434,9 @@ async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.Mon
     calls: list[int] = []
 
     async def fake_pipeline_once(**_kwargs):
+        assert _kwargs["running"] is main._CONSOLIDATION_RUNNING
+        assert _kwargs["load_cross_tail_for_ai"] is main._load_cross_tail_for_ai
+        assert _kwargs["format_all_chat_history_for_ai"] is main._format_all_chat_history_for_ai
         calls.append(len(calls) + 1)
         return {"status": "ok", "result": {}}
 
@@ -1461,6 +1464,11 @@ async def test_consolidation_pipeline_records_preflight_error_and_releases_claim
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorded = []
+    lock = asyncio.Lock()
+
+    def record(**kwargs):
+        assert lock.locked()
+        recorded.append(kwargs)
 
     def gather(*_args, **_kwargs):
         return {"status": "ready"}
@@ -1468,21 +1476,24 @@ async def test_consolidation_pipeline_records_preflight_error_and_releases_claim
     def fail_preflight(*_args, **_kwargs):
         raise HTTPException(status_code=500, detail="preflight failed")
 
-    monkeypatch.setattr(main, "_gather_consolidation_inputs", gather)
-    monkeypatch.setattr(main, "_resolve_profile_if_configured", lambda *_args: "broken")
-    monkeypatch.setattr(main, "_preflight_consolidation_profiles", fail_preflight)
+    monkeypatch.setattr(consolidation, "gather_consolidation_inputs", gather)
+    monkeypatch.setattr(service_factory, "_resolve_profile_if_configured", lambda *_args: "broken")
+    monkeypatch.setattr(consolidation, "preflight_consolidation_profiles", fail_preflight)
     monkeypatch.setattr(
-        main,
+        consolidation,
         "_record_consolidation_failure",
-        lambda **kwargs: recorded.append(kwargs),
+        record,
     )
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: Path("/"))
 
     with pytest.raises(HTTPException, match="preflight failed"):
         await main._run_consolidation_pipeline_once(
             svc=object(),
-            deps=object(),
-            state_lock=asyncio.Lock(),
+            deps=main._make_consolidation_deps(),
+            state_lock=lock,
+            running=main._CONSOLIDATION_RUNNING,
+            load_cross_tail_for_ai=main._load_cross_tail_for_ai,
+            format_all_chat_history_for_ai=main._format_all_chat_history_for_ai,
             conversation_id="cid-owner",
             soul_id="SoulOwner",
             user_id="UserOwner",
@@ -1497,6 +1508,11 @@ async def test_consolidation_pipeline_records_failure_and_releases_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorded = []
+    lock = asyncio.Lock()
+
+    def record(**kwargs):
+        assert lock.locked()
+        recorded.append(kwargs)
 
     def gather(*_args, **_kwargs):
         return {"status": "ready", "current_chat_messages": []}
@@ -1504,23 +1520,26 @@ async def test_consolidation_pipeline_records_failure_and_releases_claim(
     def fail_after_gather(**_kwargs):
         raise RuntimeError("reflection failed")
 
-    monkeypatch.setattr(main, "_resolve_profile_if_configured", lambda *_args: "profile")
-    monkeypatch.setattr(main, "_preflight_consolidation_profiles", lambda *_args: None)
-    monkeypatch.setattr(main, "_gather_consolidation_inputs", gather)
+    monkeypatch.setattr(service_factory, "_resolve_profile_if_configured", lambda *_args: "profile")
+    monkeypatch.setattr(consolidation, "preflight_consolidation_profiles", lambda *_args: None)
+    monkeypatch.setattr(consolidation, "gather_consolidation_inputs", gather)
     monkeypatch.setattr(main, "_load_cross_tail_for_ai", lambda **_kwargs: [])
     monkeypatch.setattr(main, "_format_all_chat_history_for_ai", fail_after_gather)
     monkeypatch.setattr(
-        main,
+        consolidation,
         "_record_consolidation_failure",
-        lambda **kwargs: recorded.append(kwargs),
+        record,
     )
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: Path("/"))
 
     with pytest.raises(RuntimeError, match="reflection failed"):
         await main._run_consolidation_pipeline_once(
             svc=object(),
-            deps=object(),
-            state_lock=asyncio.Lock(),
+            deps=main._make_consolidation_deps(),
+            state_lock=lock,
+            running=main._CONSOLIDATION_RUNNING,
+            load_cross_tail_for_ai=main._load_cross_tail_for_ai,
+            format_all_chat_history_for_ai=main._format_all_chat_history_for_ai,
             conversation_id="cid-owner",
             soul_id="SoulOwner",
             user_id="UserOwner",
@@ -1535,23 +1554,31 @@ async def test_consolidation_pipeline_records_gather_failure_and_releases_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorded = []
+    lock = asyncio.Lock()
+
+    def record(**kwargs):
+        assert lock.locked()
+        recorded.append(kwargs)
 
     def gather(*_args, **_kwargs):
         raise HTTPException(status_code=400, detail="segment history is damaged")
 
-    monkeypatch.setattr(main, "_gather_consolidation_inputs", gather)
+    monkeypatch.setattr(consolidation, "gather_consolidation_inputs", gather)
     monkeypatch.setattr(
-        main,
+        consolidation,
         "_record_consolidation_failure",
-        lambda **kwargs: recorded.append(kwargs),
+        record,
     )
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: Path("/"))
 
     with pytest.raises(HTTPException, match="segment history is damaged"):
         await main._run_consolidation_pipeline_once(
             svc=object(),
-            deps=object(),
-            state_lock=asyncio.Lock(),
+            deps=main._make_consolidation_deps(),
+            state_lock=lock,
+            running=main._CONSOLIDATION_RUNNING,
+            load_cross_tail_for_ai=main._load_cross_tail_for_ai,
+            format_all_chat_history_for_ai=main._format_all_chat_history_for_ai,
             conversation_id="cid-owner",
             soul_id="SoulOwner",
             user_id="UserOwner",
@@ -1570,8 +1597,11 @@ async def test_consolidation_pipeline_busy_caller_cannot_release_owner(
     try:
         out = await main._run_consolidation_pipeline_once(
             svc=object(),
-            deps=object(),
+            deps=main._make_consolidation_deps(),
             state_lock=asyncio.Lock(),
+            running=main._CONSOLIDATION_RUNNING,
+            load_cross_tail_for_ai=main._load_cross_tail_for_ai,
+            format_all_chat_history_for_ai=main._format_all_chat_history_for_ai,
             conversation_id="cid-owner",
             soul_id="SoulOwner",
             user_id="UserOwner",
@@ -1588,51 +1618,73 @@ async def test_consolidation_pipeline_runs_once_for_concurrent_same_soul(
 ) -> None:
     entered = asyncio.Event()
     release = asyncio.Event()
+    lock = asyncio.Lock()
+
+    def gather(*_args, **_kwargs):
+        assert lock.locked()
+        return {"status": "ready", "current_chat_messages": []}
+
+    def write(*_args, **_kwargs):
+        assert lock.locked()
+        return {}
 
     monkeypatch.setattr(
-        main,
-        "_gather_consolidation_inputs",
-        lambda *_args, **_kwargs: {"status": "ready", "current_chat_messages": []},
+        consolidation,
+        "gather_consolidation_inputs",
+        gather,
     )
-    monkeypatch.setattr(main, "_resolve_profile_if_configured", lambda *_args: "profile")
-    monkeypatch.setattr(main, "_preflight_consolidation_profiles", lambda *_args: None)
+    monkeypatch.setattr(service_factory, "_resolve_profile_if_configured", lambda *_args: "profile")
+    monkeypatch.setattr(consolidation, "preflight_consolidation_profiles", lambda *_args: None)
     monkeypatch.setattr(main, "_load_cross_tail_for_ai", lambda **_kwargs: [])
     monkeypatch.setattr(main, "_format_all_chat_history_for_ai", lambda **_kwargs: "")
 
     async def wait_in_prepare(*_args, **_kwargs):
+        assert not lock.locked()
         entered.set()
         await release.wait()
 
     async def fake_llm(*_args, **_kwargs):
+        assert not lock.locked()
         return {}
 
-    monkeypatch.setattr(main, "_prepare_dossier_consolidation_context", wait_in_prepare)
-    monkeypatch.setattr(main, "_run_consolidation_llm", fake_llm)
-    monkeypatch.setattr(main, "_write_consolidation_outputs", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(consolidation, "prepare_dossier_consolidation_context", wait_in_prepare)
+    monkeypatch.setattr(consolidation, "run_consolidation_llm", fake_llm)
+    monkeypatch.setattr(consolidation, "write_consolidation_outputs", write)
 
     first = asyncio.create_task(
         main._run_consolidation_pipeline_once(
             svc=object(),
-            deps=object(),
-            state_lock=asyncio.Lock(),
+            deps=main._make_consolidation_deps(),
+            state_lock=lock,
+            running=main._CONSOLIDATION_RUNNING,
+            load_cross_tail_for_ai=main._load_cross_tail_for_ai,
+            format_all_chat_history_for_ai=main._format_all_chat_history_for_ai,
             conversation_id="cid-owner",
             soul_id="SoulOwner",
             user_id="UserOwner",
         )
     )
-    await entered.wait()
-    second = await main._run_consolidation_pipeline_once(
-        svc=object(),
-        deps=object(),
-        state_lock=asyncio.Lock(),
-        conversation_id="cid-owner",
-        soul_id="SoulOwner",
-        user_id="UserOwner",
-    )
-    release.set()
-
-    assert second == {"status": "skipped", "reason": "in_progress"}
-    assert (await first)["status"] == "ok"
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        second = await main._run_consolidation_pipeline_once(
+            svc=object(),
+            deps=main._make_consolidation_deps(),
+            state_lock=lock,
+            running=main._CONSOLIDATION_RUNNING,
+            load_cross_tail_for_ai=main._load_cross_tail_for_ai,
+            format_all_chat_history_for_ai=main._format_all_chat_history_for_ai,
+            conversation_id="cid-owner",
+            soul_id="SoulOwner",
+            user_id="UserOwner",
+        )
+        assert second == {"status": "skipped", "reason": "in_progress"}
+        release.set()
+        assert (await first)["status"] == "ok"
+    finally:
+        release.set()
+        if not first.done():
+            first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -1643,12 +1695,12 @@ async def test_consolidation_pipeline_cancel_releases_claim(
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(
-        main,
-        "_gather_consolidation_inputs",
+        consolidation,
+        "gather_consolidation_inputs",
         lambda *_args, **_kwargs: {"status": "ready", "current_chat_messages": []},
     )
-    monkeypatch.setattr(main, "_resolve_profile_if_configured", lambda *_args: "profile")
-    monkeypatch.setattr(main, "_preflight_consolidation_profiles", lambda *_args: None)
+    monkeypatch.setattr(service_factory, "_resolve_profile_if_configured", lambda *_args: "profile")
+    monkeypatch.setattr(consolidation, "preflight_consolidation_profiles", lambda *_args: None)
     monkeypatch.setattr(
         main,
         "_format_all_chat_history_for_ai",
@@ -1658,8 +1710,11 @@ async def test_consolidation_pipeline_cancel_releases_claim(
     with pytest.raises(asyncio.CancelledError):
         await main._run_consolidation_pipeline_once(
             svc=object(),
-            deps=object(),
+            deps=main._make_consolidation_deps(),
             state_lock=asyncio.Lock(),
+            running=main._CONSOLIDATION_RUNNING,
+            load_cross_tail_for_ai=main._load_cross_tail_for_ai,
+            format_all_chat_history_for_ai=main._format_all_chat_history_for_ai,
             conversation_id="cid-owner",
             soul_id="SoulOwner",
             user_id="UserOwner",
@@ -1675,12 +1730,15 @@ async def test_force_consolidation_validation_failure_does_not_record_or_seed_st
     recorded = []
 
     async def invalid_request(**_kwargs):
+        assert _kwargs["running"] is main._CONSOLIDATION_RUNNING
+        assert _kwargs["load_cross_tail_for_ai"] is main._load_cross_tail_for_ai
+        assert _kwargs["format_all_chat_history_for_ai"] is main._format_all_chat_history_for_ai
         raise HTTPException(status_code=404, detail="conversation state not found")
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: object())
     monkeypatch.setattr(main, "_run_consolidation_pipeline_once", invalid_request)
     monkeypatch.setattr(
-        main,
+        consolidation,
         "_record_consolidation_failure",
         lambda **kwargs: recorded.append(kwargs),
     )
@@ -1788,7 +1846,8 @@ def test_record_consolidation_failure_never_creates_missing_soul_db(
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user, _soul: missing)
 
     with pytest.raises(FileNotFoundError, match="soul database not found"):
-        main._record_consolidation_failure(
+        consolidation._record_consolidation_failure(
+            deps=main._make_consolidation_deps(),
             soul_id="MissingSoul",
             user_id="User",
             exc=RuntimeError("failed"),
@@ -1810,7 +1869,8 @@ def test_record_consolidation_failure_is_soul_level(
     finally:
         con.close()
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user, _soul: db_path)
-    main._record_consolidation_failure(
+    consolidation._record_consolidation_failure(
+        deps=main._make_consolidation_deps(),
         soul_id="Soul",
         user_id="User",
         exc=RuntimeError("invalid request"),
@@ -1832,7 +1892,8 @@ def test_record_consolidation_failure_is_soul_level(
         updates={},
     )
 
-    main._record_consolidation_failure(
+    consolidation._record_consolidation_failure(
+        deps=main._make_consolidation_deps(),
         soul_id="Soul",
         user_id="User",
         exc=RuntimeError("reflection failed"),
@@ -1848,7 +1909,8 @@ def test_record_consolidation_failure_is_soul_level(
     assert soul["last_consolidation_error"] == "RuntimeError: reflection failed"
     assert conversation_count == 1
 
-    main._record_consolidation_failure(
+    consolidation._record_consolidation_failure(
+        deps=main._make_consolidation_deps(),
         soul_id="Soul",
         user_id="User",
         exc=RuntimeError("profile invalid"),
