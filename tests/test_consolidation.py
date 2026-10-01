@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sqlite3
 import tempfile
@@ -975,6 +976,9 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
     previous = store.memory_item_repo.create_item(
         memory_type="narrative_self", summary="Earlier self", embedding=[1.0, 0.0], user_data=scope,
     )
+    stale = store.memory_item_repo.create_item(
+        memory_type="knowledge", summary="Deleted while thinking", embedding=[1.0, 0.0], user_data=scope,
+    )
     ordinary = store.memory_category_repo.get_or_create_category(
         name="Life domain", description="Evidence", embedding=[1.0, 0.0], user_data=scope,
         kind="topic", last_evidence_at=datetime.now(UTC),
@@ -1003,6 +1007,7 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
         user_data=scope, conversation_id="chat", segment_id="chat:2-3",
     )
     store.category_item_repo.link_item_category(later.id, ordinary.id, scope)
+    svc.graph_delete_memory(stale.id, where=scope)
     deps = _make_consolidation_deps(path, tmp_path)
     deps.write_conversation_state("chat", **scope, updates={"pending_segment_ids": ["chat:0-1", "chat:2-3"]})
     with sqlite_connect(path) as con:
@@ -1012,13 +1017,16 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
                                   edited_by="test", journal=False)
         con.commit()
         state = _soul_state.read(con)
+        con.execute("UPDATE soul_state SET summaries_revision = summaries_revision + 1 WHERE id = 1")
+        con.commit()
         assert con.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     inputs = {"db_path": path, "state": state, "narrative_self": "Current self", "selected_segment_ids": ["chat:0-1"]}
     results = _base_llm_results(
         anchor_writes=anchor_writes, narrative_self="New self", old_narrative_text="Current self",
         old_narrative_embedding=[1.0, 0.0], companion_memory="Reflection", companion_embedding=[1.0, 0.0],
         life_goal_add=["Be curious"], intentions_replacement=[{"id": "new", "text": "Explore"}],
-        edges=[{"subject_id": first.id, "predicate": "evokes", "object_id": later.id}],
+        edges=[{"subject_id": first.id, "predicate": "evokes", "object_id": later.id},
+               {"subject_id": stale.id, "predicate": "evokes", "object_id": later.id}],
     )
 
     def snapshot():
@@ -1035,15 +1043,44 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
         write_consolidation_outputs(deps, svc, inputs={**inputs, "db_path": wrong_path},
             llm_results=results, conversation_id="chat", **scope)
     assert not wrong_path.exists()
+    with monkeypatch.context() as patch:
+        patch.setattr(consolidation, "gather_consolidation_inputs",
+                      lambda *_args, **_kwargs: {**inputs, "status": "ready", "db_path": wrong_path})
+        patch.setattr(consolidation, "_record_consolidation_failure", lambda **_kwargs: None)
+        with pytest.raises(ValueError, match="different databases"):
+            await consolidation._run_consolidation_pipeline_once(
+                svc=svc, deps=deps, state_lock=asyncio.Lock(), running=set(),
+                load_cross_tail_for_ai=lambda **_kw: pytest.fail("must fail before context/model work"),
+                format_all_chat_history_for_ai=lambda **_kw: pytest.fail("must fail before context/model work"),
+                conversation_id="chat", **scope,
+            )
     cached_before = {key: value.model_dump() for key, value in store.categories.items()}
     journals.clear()
-    window = {"active": False}
+    window = {"active": False, "expect_begin": False, "checkout_begin": False}
     bad_commits = []
+    first_statements = []
+    session_factory = svc._sqlite_write_session
+
+    def write_session(db):
+        window["checkout_begin"] = True
+        return session_factory(db)
+
+    monkeypatch.setattr(svc, "_sqlite_write_session", write_session)
+
+    def trace(sql):
+        if window["expect_begin"]:
+            first_statements.append(sql)
+            window["expect_begin"] = False
+        if sql == "COMMIT" and window["active"]:
+            bad_commits.append(sql)
 
     def checkout(con, *_args):
         assert not window["active"], "a helper opened a second repository connection"
         assert con.row_factory is None
-        con.set_trace_callback(lambda sql: bad_commits.append(sql) if sql == "COMMIT" and window["active"] else None)
+        if window["checkout_begin"]:
+            window["expect_begin"] = True
+            window["checkout_begin"] = False
+        con.set_trace_callback(trace)
 
     def before_sql(_con, _cursor, statement, *_args):
         if statement == "BEGIN IMMEDIATE":
@@ -1064,6 +1101,11 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
         assert not window["active"], "a helper opened a second MCP connection"
         return connect(db_path)
 
+    from app import db as db_module
+    from app.services import state as state_module
+    monkeypatch.setattr(db_module, "sqlite_connect", guarded_connect)
+    monkeypatch.setattr(state_module, "sqlite_connect", guarded_connect)
+
     write = deps.write_conversation_state
 
     def fail_at_end(cid, **kwargs):
@@ -1078,6 +1120,7 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
     assert snapshot() == before
     assert {key: value.model_dump() for key, value in store.categories.items()} == cached_before
     assert journals == [] and bad_commits == []
+    assert first_statements == ["BEGIN IMMEDIATE"]
     assert svc.list_due_dossiers(scope, segment_ids=["chat:0-1"]) == []
 
     async def no_dossier_call(*_args, **_kwargs):
@@ -1090,12 +1133,19 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
     write_consolidation_outputs(replace(deps, sqlite_connect=guarded_connect), svc,
         inputs=inputs, llm_results=results, conversation_id="chat", **scope)
     assert bad_commits == [] and len(journals) == 3
+    assert first_statements == ["BEGIN IMMEDIATE", "BEGIN IMMEDIATE"]
+    assert [row["edited_by"] for row in journals] == ["anchor_revision", "anchor_revision", "consolidation"]
     for role, anchor in anchors.items():
         assert store.categories[anchor.id].summary == "## Identity\nRevised prose."
     assert ordinary.id in {row.id for row in svc.list_due_dossiers(scope, segment_ids=["chat:2-3"])}
     with sqlite_connect(path) as con:
         con.row_factory = sqlite3.Row
-        assert _soul_state.read(con)["narrative_self"] == "New self"
+        final_state = _soul_state.read(con)
+        assert final_state["narrative_self"] == "New self"
+        assert final_state["intentions_active"] == [{"id": "new", "text": "Explore"}]
+        assert con.execute("SELECT COUNT(*) FROM narrative_history").fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM triples WHERE subject_id=? AND predicate='evokes'", (first.id,)).fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM triples WHERE subject_id=?", (stale.id,)).fetchone()[0] == 0
         assert json.loads(con.execute("SELECT pending_segment_ids FROM conversations WHERE conversation_id='chat'").fetchone()[0]) == ["chat:2-3"]
         assert con.execute("SELECT COUNT(*) FROM memory_items WHERE summary='Reflection'").fetchone()[0] == 1
         assert con.execute("SELECT COUNT(*) FROM memory_items WHERE summary='Current self'").fetchone()[0] == 1
@@ -1316,81 +1366,6 @@ def test_consolidation_rejects_a_concurrent_narrative_edit() -> None:
             assert _soul_state.read(check)["narrative_self"] == "Atomic edit."
         finally:
             check.close()
-
-
-def test_write_consolidation_outputs_state_preflight_failure_produces_no_companion_memory() -> None:
-    with tempfile.TemporaryDirectory() as td:
-        tmp_dir = Path(td)
-        db_path = tmp_dir / "soul.db"
-        con = sqlite3.connect(db_path)
-        try:
-            con.row_factory = sqlite3.Row
-            sqlite_ensure_conversation_state_schema(con)
-            _soul_state.ensure_schema(con)
-            con.commit()
-        finally:
-            con.close()
-
-        cid = "conv-db-fail"
-        soul_id = "SoulB"
-        user_id = "UserB"
-
-        write_conversation_state(
-            cid,
-            sqlite_current_path=lambda _u, _s: db_path,
-            soul_id=soul_id,
-            user_id=user_id,
-            updates={"pending_segment_ids": ["ep:2"], "intentions_active": []},
-        )
-
-        companion_calls: list[str] = []
-
-        def _fake_write_state(cid, *, soul_id, user_id, updates, connection=None):
-            raise RuntimeError("simulated DB failure")
-
-        failing_deps = ConsolidationDeps(
-            sqlite_current_path=lambda _u, _s: db_path,
-            sqlite_ensure_nonempty=sqlite_ensure_nonempty,
-            sqlite_connect=sqlite_connect,
-            sqlite_ensure_conversation_state_schema=sqlite_ensure_conversation_state_schema,
-            conversation_state_row=conversation_state_row,
-            conversation_state_from_row=lambda row, **kw: conversation_state_from_row(row),
-            write_conversation_state=_fake_write_state,
-            get_storage_dir=lambda _cfg: tmp_dir,
-            config={},
-            find_chat_dir_for_conversation=lambda _a, _b, _c, _d: None,
-            read_list=lambda _p: [],
-            normalize_text_list=normalize_text_list,
-            json_to_db=json_to_db,
-        )
-
-        import app.services.consolidation as _consol_mod
-
-        original_create = _consol_mod.create_companion_memory
-
-        def _tracking_create(*args, **kwargs):
-            companion_calls.append("called")
-            return original_create(*args, **kwargs)
-
-        _consol_mod.create_companion_memory = _tracking_create
-        try:
-            with pytest.raises(RuntimeError, match="simulated DB failure"):
-                write_consolidation_outputs(
-                    failing_deps,
-                    _make_svc_stub(db_path),
-                    inputs={"db_path": db_path},
-                    llm_results=_base_llm_results(
-                        companion_memory="Something to remember.",
-                        companion_embedding=[0.1, 0.2, 0.3],
-                    ),
-                    conversation_id=cid,
-                    soul_id=soul_id,
-                    user_id=user_id,
-                )
-        finally:
-            _consol_mod.create_companion_memory = original_create
-
-        assert companion_calls == [], "companion memory must not be created when DB phase fails"
 
 
 def test_write_consolidation_outputs_late_failure_keeps_pending_segment_ids() -> None:

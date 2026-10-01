@@ -1471,7 +1471,7 @@ async def test_consolidation_pipeline_records_preflight_error_and_releases_claim
         recorded.append(kwargs)
 
     def gather(*_args, **_kwargs):
-        return {"status": "ready"}
+        return {"status": "ready", "db_path": Path("/")}
 
     def fail_preflight(*_args, **_kwargs):
         raise HTTPException(status_code=500, detail="preflight failed")
@@ -1488,7 +1488,7 @@ async def test_consolidation_pipeline_records_preflight_error_and_releases_claim
 
     with pytest.raises(HTTPException, match="preflight failed"):
         await main._run_consolidation_pipeline_once(
-            svc=object(),
+            svc=SimpleNamespace(database=SimpleNamespace(dsn="sqlite:////")),
             deps=main._make_consolidation_deps(),
             state_lock=lock,
             running=main._CONSOLIDATION_RUNNING,
@@ -1515,7 +1515,7 @@ async def test_consolidation_pipeline_records_failure_and_releases_claim(
         recorded.append(kwargs)
 
     def gather(*_args, **_kwargs):
-        return {"status": "ready", "current_chat_messages": []}
+        return {"status": "ready", "db_path": Path("/"), "current_chat_messages": []}
 
     def fail_after_gather(**_kwargs):
         raise RuntimeError("reflection failed")
@@ -1534,7 +1534,7 @@ async def test_consolidation_pipeline_records_failure_and_releases_claim(
 
     with pytest.raises(RuntimeError, match="reflection failed"):
         await main._run_consolidation_pipeline_once(
-            svc=object(),
+            svc=SimpleNamespace(database=SimpleNamespace(dsn="sqlite:////")),
             deps=main._make_consolidation_deps(),
             state_lock=lock,
             running=main._CONSOLIDATION_RUNNING,
@@ -1573,7 +1573,7 @@ async def test_consolidation_pipeline_records_gather_failure_and_releases_claim(
 
     with pytest.raises(HTTPException, match="segment history is damaged"):
         await main._run_consolidation_pipeline_once(
-            svc=object(),
+            svc=SimpleNamespace(database=SimpleNamespace(dsn="sqlite:////")),
             deps=main._make_consolidation_deps(),
             state_lock=lock,
             running=main._CONSOLIDATION_RUNNING,
@@ -1596,7 +1596,7 @@ async def test_consolidation_pipeline_busy_caller_cannot_release_owner(
     main._CONSOLIDATION_RUNNING.add(key)
     try:
         out = await main._run_consolidation_pipeline_once(
-            svc=object(),
+            svc=SimpleNamespace(database=SimpleNamespace(dsn="sqlite:////")),
             deps=main._make_consolidation_deps(),
             state_lock=asyncio.Lock(),
             running=main._CONSOLIDATION_RUNNING,
@@ -1622,7 +1622,7 @@ async def test_consolidation_pipeline_runs_once_for_concurrent_same_soul(
 
     def gather(*_args, **_kwargs):
         assert lock.locked()
-        return {"status": "ready", "current_chat_messages": []}
+        return {"status": "ready", "db_path": Path("/"), "current_chat_messages": []}
 
     def write(*_args, **_kwargs):
         assert lock.locked()
@@ -1653,7 +1653,7 @@ async def test_consolidation_pipeline_runs_once_for_concurrent_same_soul(
 
     first = asyncio.create_task(
         main._run_consolidation_pipeline_once(
-            svc=object(),
+            svc=SimpleNamespace(database=SimpleNamespace(dsn="sqlite:////")),
             deps=main._make_consolidation_deps(),
             state_lock=lock,
             running=main._CONSOLIDATION_RUNNING,
@@ -1667,7 +1667,7 @@ async def test_consolidation_pipeline_runs_once_for_concurrent_same_soul(
     try:
         await asyncio.wait_for(entered.wait(), timeout=2)
         second = await main._run_consolidation_pipeline_once(
-            svc=object(),
+            svc=SimpleNamespace(database=SimpleNamespace(dsn="sqlite:////")),
             deps=main._make_consolidation_deps(),
             state_lock=lock,
             running=main._CONSOLIDATION_RUNNING,
@@ -1697,7 +1697,7 @@ async def test_consolidation_pipeline_cancel_releases_claim(
     monkeypatch.setattr(
         consolidation,
         "gather_consolidation_inputs",
-        lambda *_args, **_kwargs: {"status": "ready", "current_chat_messages": []},
+        lambda *_args, **_kwargs: {"status": "ready", "db_path": Path("/"), "current_chat_messages": []},
     )
     monkeypatch.setattr(service_factory, "_resolve_profile_if_configured", lambda *_args: "profile")
     monkeypatch.setattr(consolidation, "preflight_consolidation_profiles", lambda *_args: None)
@@ -1709,7 +1709,7 @@ async def test_consolidation_pipeline_cancel_releases_claim(
 
     with pytest.raises(asyncio.CancelledError):
         await main._run_consolidation_pipeline_once(
-            svc=object(),
+            svc=SimpleNamespace(database=SimpleNamespace(dsn="sqlite:////")),
             deps=main._make_consolidation_deps(),
             state_lock=asyncio.Lock(),
             running=main._CONSOLIDATION_RUNNING,

@@ -1138,6 +1138,14 @@ async def run_consolidation_llm(
     }
 
 
+def _consolidation_database_path(svc: MemoryService, inputs: dict[str, Any]) -> Path:
+    db_path: Path = inputs["db_path"]
+    service_path = sqlite_file_from_dsn(svc.database.dsn)
+    if service_path is None or service_path.resolve() != db_path.resolve():
+        raise ValueError("Consolidation service and inputs use different databases")
+    return db_path
+
+
 def write_consolidation_outputs(
     deps: ConsolidationDeps,
     svc: MemoryService,
@@ -1148,10 +1156,7 @@ def write_consolidation_outputs(
     soul_id: str,
     user_id: str,
 ) -> dict[str, Any]:
-    db_path: Path = inputs["db_path"]
-    service_path = sqlite_file_from_dsn(svc.database.dsn)
-    if service_path is None or service_path.resolve() != db_path.resolve():
-        raise ValueError("Consolidation service and inputs use different databases")
+    db_path = _consolidation_database_path(svc, inputs)
     now_iso = datetime.now(UTC).isoformat()
     started_at = str(inputs.get("started_at") or "").strip() or now_iso
 
@@ -1249,22 +1254,9 @@ ORDER BY updated_at ASC, id ASC
                 active_ids[text] = goal_id
                 active_goal_count += 1
 
-            # Preflight every state row before companion and graph side effects.
-            for pending_conversation_id in selected_by_conversation:
-                deps.write_conversation_state(
-                    pending_conversation_id,
-                    soul_id=soul_id,
-                    user_id=user_id,
-                    updates={},
-                    connection=con,
-                )
-
-            if old_narrative_text:
+            if narrative_self or old_narrative_text:
                 current = _soul_state.read(con)
-                if (
-                    int(current["summaries_revision"]) != int(inputs["state"]["summaries_revision"])
-                    or str(current["narrative_self"] or "") != str(inputs.get("narrative_self") or "")
-                ):
+                if str(current["narrative_self"] or "") != str(inputs.get("narrative_self") or ""):
                     raise ValueError("summary_snapshot_stale")
             for bundle, prepared in llm_results["anchor_writes"]:
                 committed = svc.write_dossier_revision(bundle, prepared, session=session)
@@ -1290,7 +1282,12 @@ ORDER BY updated_at ASC, id ASC
                     session=session,
                 )
 
-            wrote = write_memory_edges(svc.database.triple_repo, llm_results["edges"], scope=scope, session=session)
+            edges = llm_results["edges"]
+            if edges:
+                endpoint_ids = {edge[key] for edge in edges for key in ("subject_id", "object_id")}
+                active = svc.database.memory_item_repo.list_items_by_ids(endpoint_ids, scope, session=session)
+                edges = [edge for edge in edges if edge["subject_id"] in active and edge["object_id"] in active]
+            wrote = write_memory_edges(svc.database.triple_repo, edges, scope=scope, session=session)
             invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results["edge_invalidations"], scope=scope, session=session)
             current_intentions = _soul_state.read(con)["intentions_active"]
             merged_intentions = merge_consolidated_intentions(
@@ -1310,8 +1307,7 @@ ORDER BY updated_at ASC, id ASC
                     summary=narrative_self,
                     scope=scope,
                     edited_by="consolidation",
-                    expected_revision=int(inputs["state"]["summaries_revision"]),
-                    displayed_summary=str(inputs.get("narrative_self") or ""),
+                    advance_revision_on_noop=True,
                     journal=False,
                 )
 
@@ -1464,6 +1460,7 @@ async def _run_consolidation_pipeline_once(
             )
         if prep.get("status") == "skip":
             return {"status": "skipped", "reason": prep.get("reason")}
+        _consolidation_database_path(svc, prep)
         consolidation_profile = _service_factory._resolve_profile_if_configured(svc, "consolidation")
         preflight_consolidation_profiles(svc, consolidation_profile)
         current_chat_messages = [
