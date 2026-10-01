@@ -10,6 +10,10 @@ from app.services import soul_state, soul_summaries
 from app import main
 
 
+def _route_endpoint(name: str):
+    return next(route.endpoint for route in main.app.routes if route.name == name)
+
+
 def _connection() -> sqlite3.Connection:
     con = sqlite3.connect(":memory:")
     con.row_factory = sqlite3.Row
@@ -91,8 +95,9 @@ def test_fresh_schema_omits_holistic_summary_columns() -> None:
     } & columns
 
 
-@pytest.mark.parametrize("route", [main.soul_summary_update, main.soul_summary_approve])
-def test_dossier_index_routes_are_read_only(route) -> None:
+@pytest.mark.parametrize("route_name", ["soul_summary_update", "soul_summary_approve"])
+def test_dossier_index_routes_are_read_only(route_name) -> None:
+    route = _route_endpoint(route_name)
     with pytest.raises(main.HTTPException) as exc_info:
         asyncio.run(route(kind="all_categories_summary", user_id="u", soul_id="s", payload={}))
 
@@ -149,7 +154,7 @@ def test_pending_endpoint_omits_approved_soul_summary(monkeypatch, tmp_path) -> 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: Service())
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
 
-    pending = asyncio.run(main.memory_graph_pending(user_id="u", soul_id="s"))
+    pending = asyncio.run(_route_endpoint("memory_graph_pending")(user_id="u", soul_id="s"))
 
     assert pending["soul_summaries"] == []
 
@@ -169,7 +174,7 @@ def test_soul_summary_route_rejects_stale_snapshot(monkeypatch, tmp_path) -> Non
 
     with pytest.raises(main.HTTPException) as exc_info:
         asyncio.run(
-            main.soul_summary_update(
+            _route_endpoint("soul_summary_update")(
                 kind="narrative_self",
                 user_id="u",
                 soul_id="s",
@@ -213,7 +218,7 @@ def test_atomic_narrative_correction_updates_state_without_evolution(monkeypatch
     )
 
     out = asyncio.run(
-        main.soul_summary_update(
+        _route_endpoint("soul_summary_update")(
             kind="narrative_self",
             user_id="u",
             soul_id="s",

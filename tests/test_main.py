@@ -14,7 +14,8 @@ from fastapi import HTTPException
 
 from app import main
 from app.services import consolidation, conversation_sources, crud_endpoints, retrieve_orchestration, segment, service_factory
-from memu.app.graph import EntityActionConflictError, EntityMergeConflictError
+from memu.app.dossier import DossierRevisionStaleError
+from memu.app.graph import DossierMembershipConflictError, EntityActionConflictError, EntityMergeConflictError
 from memu.app.memorize_segments import grouped_chat_happened_at
 
 
@@ -91,6 +92,50 @@ def _messages_table_exists(con: sqlite3.Connection) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
     ).fetchone()
     return row is not None
+
+
+@pytest.mark.asyncio
+async def test_review_routes_registered_and_lookups_are_live(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    expected = {
+        "memory_graph_item": ("/memory/{item_id}", "GET"),
+        "memory_graph_pending": ("/pending", "GET"),
+        "soul_summary_update": ("/soul-summary/{kind}", "PATCH"),
+        "soul_summary_approve": ("/soul-summary/{kind}/approve", "POST"),
+        "memory_graph_item_update": ("/memory/{item_id}", "PATCH"),
+        "memory_graph_item_approve": ("/memory/{item_id}/approve", "POST"),
+        "memory_graph_item_delete": ("/memory/{item_id}", "DELETE"),
+        "memory_graph_category_update": ("/category/{category_id}", "PATCH"),
+        "memory_graph_category_memory_attach": ("/category/{category_id}/memory/{memory_id}", "PUT"),
+        "memory_graph_category_memory_detach": ("/category/{category_id}/memory/{memory_id}", "DELETE"),
+        "memory_graph_category_approve": ("/category/{category_id}/approve", "POST"),
+    }
+    for name, (path, method) in expected.items():
+        routes = [route for route in main.app.routes if route.name == name]
+        assert len(routes) == 1
+        route = routes[0]
+        assert (route.path, route.methods, route.operation_id, route.tags) == (path, {method}, name, [])
+
+    endpoint = _route_endpoint("memory_graph_pending")
+    guarded_connect = main._sqlite_connect
+    for revision in (1, 2):
+        path = tmp_path / f"review-{revision}.db"
+        con = guarded_connect(path)
+        main._soul_state.ensure_schema(con)
+        con.execute("UPDATE soul_state SET summaries_revision = ? WHERE id = 1", (revision,))
+        con.commit()
+        con.close()
+        connected = []
+
+        def connect(db_path):
+            connected.append(db_path)
+            return guarded_connect(db_path)
+
+        svc = SimpleNamespace(graph_list_pending=lambda **kwargs: {"marker": revision})
+        monkeypatch.setattr(main, "_get_service_from_payload", lambda payload: svc)
+        monkeypatch.setattr(main, "_sqlite_current_path", lambda uid, sid: path)
+        monkeypatch.setattr(main, "_sqlite_connect", connect)
+        out = await endpoint(user_id="TestOwner", soul_id="TestSoul")
+        assert (out["marker"], out["summaries_revision"], connected) == (revision, revision, [path])
 
 
 def _retrieve_state_row() -> dict[str, Any]:
@@ -5098,7 +5143,7 @@ def test_memory_graph_item_endpoint_uses_scoped_service(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
 
-    out = asyncio.run(main.memory_graph_item(item_id="memory:m1", user_id="u", soul_id="s"))
+    out = asyncio.run(_route_endpoint("memory_graph_item")(item_id="memory:m1", user_id="u", soul_id="s"))
 
     assert out == {"id": "memory:m1"}
     assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}
@@ -5167,7 +5212,7 @@ def test_memory_graph_category_detail_includes_summary_revision(monkeypatch: pyt
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
 
-    out = asyncio.run(main.memory_graph_item(item_id="category:c1", user_id="u", soul_id="s"))
+    out = asyncio.run(_route_endpoint("memory_graph_item")(item_id="category:c1", user_id="u", soul_id="s"))
 
     assert out["summaries_revision"] == 4
 
@@ -5194,7 +5239,7 @@ def test_memory_graph_item_update_endpoint_uses_scoped_service(monkeypatch: pyte
     monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
 
     out = asyncio.run(
-        main.memory_graph_item_update(
+        _route_endpoint("memory_graph_item_update")(
             item_id="memory:m1",
             user_id="u",
             soul_id="s",
@@ -5229,7 +5274,7 @@ def test_memory_graph_pending_endpoint_uses_scoped_service(monkeypatch: pytest.M
 
     monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
 
-    out = asyncio.run(main.memory_graph_pending(user_id="u", soul_id="s"))
+    out = asyncio.run(_route_endpoint("memory_graph_pending")(user_id="u", soul_id="s"))
 
     assert out == {
         "items": [],
@@ -5258,7 +5303,7 @@ def test_memory_graph_item_approve_endpoint_uses_scoped_service(monkeypatch: pyt
     monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
 
     out = asyncio.run(
-        main.memory_graph_item_approve(
+        _route_endpoint("memory_graph_item_approve")(
             item_id="memory:m1",
             user_id="u",
             soul_id="s",
@@ -5289,7 +5334,7 @@ def test_memory_graph_item_delete_endpoint_uses_scoped_service(monkeypatch: pyte
     monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
 
     out = asyncio.run(
-        main.memory_graph_item_delete(
+        _route_endpoint("memory_graph_item_delete")(
             item_id="memory:m1",
             user_id="u",
             soul_id="s",
@@ -5316,7 +5361,7 @@ def test_memory_graph_item_delete_returns_citation_conflict(monkeypatch: pytest.
 
     with pytest.raises(main.HTTPException) as exc_info:
         asyncio.run(
-            main.memory_graph_item_delete(
+            _route_endpoint("memory_graph_item_delete")(
                 item_id="memory:fictional",
                 user_id="u",
                 soul_id="s",
@@ -5343,19 +5388,19 @@ def test_memory_graph_item_mutations_map_stale_summary_to_conflict(monkeypatch: 
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
     calls = [
-        main.memory_graph_item_update(
+        _route_endpoint("memory_graph_item_update")(
             item_id="memory:m1",
             user_id="u",
             soul_id="s",
             payload={"summary": "new", "displayed_summary": "old"},
         ),
-        main.memory_graph_item_approve(
+        _route_endpoint("memory_graph_item_approve")(
             item_id="memory:m1",
             user_id="u",
             soul_id="s",
             payload={"displayed_summary": "old"},
         ),
-        main.memory_graph_item_delete(
+        _route_endpoint("memory_graph_item_delete")(
             item_id="memory:m1",
             user_id="u",
             soul_id="s",
@@ -5372,7 +5417,7 @@ def test_memory_graph_item_mutations_map_stale_summary_to_conflict(monkeypatch: 
 def test_memory_graph_item_mutations_require_displayed_summary():
     with pytest.raises(HTTPException, match="displayed_summary is required"):
         asyncio.run(
-            main.memory_graph_item_update(
+            _route_endpoint("memory_graph_item_update")(
                 item_id="memory:m1",
                 user_id="u",
                 soul_id="s",
@@ -5381,7 +5426,7 @@ def test_memory_graph_item_mutations_require_displayed_summary():
         )
     with pytest.raises(HTTPException, match="displayed_summary is required"):
         asyncio.run(
-            main.memory_graph_item_approve(
+            _route_endpoint("memory_graph_item_approve")(
                 item_id="memory:m1",
                 user_id="u",
                 soul_id="s",
@@ -5414,7 +5459,7 @@ def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: 
     monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
 
     out = asyncio.run(
-        main.memory_graph_category_update(
+        _route_endpoint("memory_graph_category_update")(
             category_id="c1",
             user_id="u",
             soul_id="s",
@@ -5450,7 +5495,7 @@ def test_memory_graph_category_update_reserves_summary_revision(monkeypatch: pyt
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
 
     out = asyncio.run(
-        main.memory_graph_category_update(
+        _route_endpoint("memory_graph_category_update")(
             category_id="category:c1",
             user_id="u",
             soul_id="s",
@@ -5487,7 +5532,7 @@ def test_category_membership_routes_reserve_snapshot_and_forward_state(
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
 
     attached = asyncio.run(
-        main.memory_graph_category_memory_attach(
+        _route_endpoint("memory_graph_category_memory_attach")(
             "category:c1",
             "memory:m1",
             "user",
@@ -5497,7 +5542,7 @@ def test_category_membership_routes_reserve_snapshot_and_forward_state(
     )
     with pytest.raises(main.HTTPException) as stale:
         asyncio.run(
-            main.memory_graph_category_memory_attach(
+            _route_endpoint("memory_graph_category_memory_attach")(
                 "c1",
                 "m2",
                 "user",
@@ -5507,7 +5552,7 @@ def test_category_membership_routes_reserve_snapshot_and_forward_state(
         )
     assert stale.value.status_code == 409
     detached = asyncio.run(
-        main.memory_graph_category_memory_detach(
+        _route_endpoint("memory_graph_category_memory_detach")(
             "c1",
             "m1",
             "user",
@@ -5539,8 +5584,8 @@ def test_category_membership_routes_reserve_snapshot_and_forward_state(
 @pytest.mark.parametrize(
     ("error", "status"),
     [
-        (main.DossierRevisionStaleError("stale"), 409),
-        (main.DossierMembershipConflictError("cited"), 409),
+        (DossierRevisionStaleError("stale"), 409),
+        (DossierMembershipConflictError("cited"), 409),
         (KeyError("missing"), 404),
         (ValueError("bad"), 400),
     ],
@@ -5549,17 +5594,26 @@ def test_category_membership_routes_map_engine_errors(
     monkeypatch: pytest.MonkeyPatch,
     error: Exception,
     status: int,
+    tmp_path: Path,
 ):
+    path = tmp_path / "soul.db"
+    con = main._sqlite_connect(path)
+    main._soul_state.ensure_schema(con)
+    con.close()
+
     class _Svc:
+        def graph_memory(self, *_args, **_kwargs):
+            return {"id": "category:c1", "summary": "shown"}
+
         def graph_set_category_membership(self, *_args, **_kwargs):
             raise error
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
-    monkeypatch.setattr(main, "_reserve_category_snapshot", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
 
     with pytest.raises(main.HTTPException) as exc:
         asyncio.run(
-            main.memory_graph_category_memory_attach(
+            _route_endpoint("memory_graph_category_memory_attach")(
                 "c1",
                 "m1",
                 "user",
@@ -5572,7 +5626,7 @@ def test_category_membership_routes_map_engine_errors(
 
 def test_category_membership_routes_require_snapshot():
     with pytest.raises(main.HTTPException) as exc:
-        asyncio.run(main.memory_graph_category_memory_attach("c1", "m1", "user", "soul", {}))
+        asyncio.run(_route_endpoint("memory_graph_category_memory_attach")("c1", "m1", "user", "soul", {}))
     assert exc.value.status_code == 400
 
 
@@ -5591,7 +5645,7 @@ def test_memory_graph_category_approve_endpoint_uses_scoped_service(monkeypatch:
 
     monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
 
-    out = asyncio.run(main.memory_graph_category_approve(category_id="c1", user_id="u", soul_id="s"))
+    out = asyncio.run(_route_endpoint("memory_graph_category_approve")(category_id="c1", user_id="u", soul_id="s"))
 
     assert out == {"id": "category:c1"}
     assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}
