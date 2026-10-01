@@ -8,7 +8,12 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from memu.app import MemoryService
 from memu.app.dossier import DossierRevisionStaleError
+from pydantic import BaseModel
+from sqlalchemy import event
+from sqlalchemy.pool import NullPool
+from sqlmodel import Session, create_engine
 
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
 from app.services import consolidation, segment
@@ -107,8 +112,9 @@ class _DossierContextService:
         if dossier_id == self.stale_id:
             raise DossierRevisionStaleError("changed")
 
-    async def apply_anchor_revision(self, bundle, decision, scope):
-        self.calls.append(("apply_anchor", decision["anchor_role"], scope))
+    async def prepare_anchor_revision_apply(self, bundle, decision, scope):
+        self.calls.append(("prepare_anchor", decision["anchor_role"], scope))
+        return {"scope": scope}
 
     async def embed(self, texts, **_kwargs):
         return [[1.0] for _ in texts]
@@ -192,7 +198,7 @@ async def test_consolidation_preflight_ignores_output_ceiling() -> None:
 
 
 @pytest.mark.asyncio
-async def test_anchor_then_weekly_stages_apply_only_after_both_validate() -> None:
+async def test_anchor_then_weekly_stages_prepare_writes_only_after_both_validate() -> None:
     svc = _DossierContextService()
     inputs = _inputs()
     await prepare_dossier_consolidation_context(
@@ -204,7 +210,7 @@ async def test_anchor_then_weekly_stages_apply_only_after_both_validate() -> Non
     assert [call for call in svc.calls if call[0] == "chat"] == [
         ("chat", "anchors"), ("chat", "weekly")
     ]
-    assert [call[1] for call in svc.calls if call[0] == "apply_anchor"] == ["soul", "user"]
+    assert [call[1] for call in svc.calls if call[0] == "prepare_anchor"] == ["soul", "user"]
     assert out["intentions_snapshot"] == []
     assert out["intentions_replacement"] == []
     assert "Description: soul description" in svc.prompts[0]
@@ -226,7 +232,7 @@ async def test_short_embedding_response_fails_before_anchor_apply() -> None:
         await run_consolidation_llm(
             svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser"
         )
-    assert not [call for call in svc.calls if call[0] == "apply_anchor"]
+    assert not [call for call in svc.calls if call[0] == "prepare_anchor"]
 
 
 @pytest.mark.asyncio
@@ -293,7 +299,7 @@ async def test_weekly_edge_outside_supplied_evidence_fails_before_anchor_apply()
         await run_consolidation_llm(
             svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser"
         )
-    assert not [call for call in svc.calls if call[0] == "apply_anchor"]
+    assert not [call for call in svc.calls if call[0] == "prepare_anchor"]
 
 
 def test_weekly_reflection_requires_complete_intention_list() -> None:
@@ -458,20 +464,9 @@ def test_write_consolidation_outputs_consumes_each_conversation_snapshot() -> No
             json_to_db=json_to_db,
         )
 
-        class _TripleRepoStub:
-            def add(self, _triple, user_data=None):  # pragma: no cover - not used in this test
-                return None
-
-            def invalidate(self, _subject_id, _predicate, _object_id, scope=None):  # pragma: no cover - not used here
-                return None
-
-        class _SvcStub:
-            def __init__(self) -> None:
-                self.database = type("DB", (), {"triple_repo": _TripleRepoStub()})()
-
         result = write_consolidation_outputs(
             deps,
-            _SvcStub(),
+            _make_svc_stub(db_path),
             inputs={
                 "db_path": db_path,
                 "selected_segment_ids": ["ep:1-2", "other:1-2"],
@@ -481,6 +476,7 @@ def test_write_consolidation_outputs_consumes_each_conversation_snapshot() -> No
                 },
             },
             llm_results={
+                "anchor_writes": [],
                 "narrative_self": None,
                 "old_narrative_text": None,
                 "old_narrative_embedding": None,
@@ -910,20 +906,23 @@ def _make_consolidation_deps(db_path: Path, tmp_dir: Path) -> ConsolidationDeps:
     )
 
 
-def _make_svc_stub() -> object:
+def _make_svc_stub(db_path: Path | None = None) -> object:
     class _TripleRepo:
-        def add(self, _t, user_data=None): return None
-        def invalidate(self, _s, _p, _o, scope=None): return None
+        def add(self, _t, user_data=None, session=None): return None
+        def invalidate(self, _s, _p, _o, scope=None, session=None): return None
 
     class _SvcStub:
         def __init__(self) -> None:
-            self.database = type("DB", (), {"triple_repo": _TripleRepo()})()
+            self.database = type("DB", (), {"triple_repo": _TripleRepo(), "dsn": f"sqlite:///{db_path}"})()
 
-    return _SvcStub()
+    svc = _SvcStub()
+    svc._sqlite_write_session = lambda _store: Session(create_engine(f"sqlite:///{db_path}", poolclass=NullPool))
+    return svc
 
 
 def _base_llm_results(**overrides) -> dict:
     base = {
+        "anchor_writes": [],
         "narrative_self": None,
         "old_narrative_text": None,
         "old_narrative_embedding": None,
@@ -938,6 +937,170 @@ def _base_llm_results(**overrides) -> dict:
     }
     base.update(overrides)
     return base
+
+
+@pytest.mark.asyncio
+async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path, monkeypatch, request):
+    class Scope(BaseModel):
+        user_id: str | None = None
+        soul_id: str | None = None
+
+    class Embed:
+        async def embed(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+    path = tmp_path / "transaction.db"
+    scope = {"user_id": "Fictional User", "soul_id": "Fictional Soul"}
+    svc = MemoryService(
+        database_config={"metadata_store": {"provider": "sqlite", "dsn": f"sqlite:///{path}"}},
+        user_config={"model": Scope},
+    )
+    store = svc.database
+    request.addfinalizer(store.close)
+    journals = []
+    import memu.app.dossier as dossier_module
+    monkeypatch.setattr(dossier_module, "append_category_summary_journal", lambda **kw: journals.append(kw))
+    monkeypatch.setattr(_soul_summaries, "append_summary_journal", lambda **kw: journals.append(kw))
+    anchors = {
+        role: store.memory_category_repo.get_or_create_category(
+            name=name, description="Original description", embedding=[1.0, 0.0],
+            user_data=scope, kind="lore", lore_subtype="person", anchor_role=role,
+        )
+        for role, name in (("soul", scope["soul_id"]), ("user", scope["user_id"]))
+    }
+    first = store.memory_item_repo.create_item(
+        memory_type="knowledge", summary="First evidence", embedding=[1.0, 0.0],
+        user_data=scope, conversation_id="chat", segment_id="chat:0-1",
+    )
+    previous = store.memory_item_repo.create_item(
+        memory_type="narrative_self", summary="Earlier self", embedding=[1.0, 0.0], user_data=scope,
+    )
+    ordinary = store.memory_category_repo.get_or_create_category(
+        name="Life domain", description="Evidence", embedding=[1.0, 0.0], user_data=scope,
+        kind="topic", last_evidence_at=datetime.now(UTC),
+    )
+    store.category_item_repo.link_item_category(first.id, ordinary.id, scope)
+    bundle = svc.prepare_dossier_revision(ordinary.id, scope)
+    await svc.apply_dossier_revision(bundle, {
+        "dossier_id": ordinary.id, "description": ordinary.description,
+        "resulting_prose": f"Evidence [M{first.memory_ref}].", "cited_item_ids": [first.id],
+        "add_item_ids": [], "remove_item_ids": [], "cleanup_item_ids": [],
+    }, scope)
+    assert svc.list_due_dossiers(scope, segment_ids=["chat:0-1"]) == []
+    anchor_writes = []
+    for role, anchor in anchors.items():
+        bundle = svc.prepare_anchor_revision(role, scope, [])
+        decision = {
+            "anchor_role": role, "dossier_id": anchor.id, "description": "Revised description",
+            "resulting_prose": "## Identity\nRevised prose.", "cited_item_ids": [],
+            "add_item_ids": [], "remove_item_ids": [], "cleanup_item_ids": [],
+        }
+        anchor_writes.append((bundle, await svc.prepare_anchor_revision_apply(
+            bundle, decision, scope, embedding_client=Embed(),
+        )))
+    later = store.memory_item_repo.create_item(
+        memory_type="knowledge", summary="Later evidence", embedding=[1.0, 0.0],
+        user_data=scope, conversation_id="chat", segment_id="chat:2-3",
+    )
+    store.category_item_repo.link_item_category(later.id, ordinary.id, scope)
+    deps = _make_consolidation_deps(path, tmp_path)
+    deps.write_conversation_state("chat", **scope, updates={"pending_segment_ids": ["chat:0-1", "chat:2-3"]})
+    with sqlite_connect(path) as con:
+        con.row_factory = sqlite3.Row
+        _soul_state.write(con, {"intentions_active": []})
+        _soul_summaries.write_live(con, kind="narrative_self", summary="Current self", scope=scope,
+                                  edited_by="test", journal=False)
+        con.commit()
+        state = _soul_state.read(con)
+        assert con.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    inputs = {"db_path": path, "state": state, "narrative_self": "Current self", "selected_segment_ids": ["chat:0-1"]}
+    results = _base_llm_results(
+        anchor_writes=anchor_writes, narrative_self="New self", old_narrative_text="Current self",
+        old_narrative_embedding=[1.0, 0.0], companion_memory="Reflection", companion_embedding=[1.0, 0.0],
+        life_goal_add=["Be curious"], intentions_replacement=[{"id": "new", "text": "Explore"}],
+        edges=[{"subject_id": first.id, "predicate": "evokes", "object_id": later.id}],
+    )
+
+    def snapshot():
+        with sqlite_connect(path) as con:
+            return {
+                table: con.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()  # nosec B608: fixed table tuple below
+                for table in ("memory_items", "categories", "category_items", "triples",
+                              "memory_ref_counters", "conversations", "soul_state", "life_goals", "narrative_history")
+            }
+
+    before = snapshot()
+    wrong_path = tmp_path / "wrong.db"
+    with pytest.raises(ValueError, match="different databases"):
+        write_consolidation_outputs(deps, svc, inputs={**inputs, "db_path": wrong_path},
+            llm_results=results, conversation_id="chat", **scope)
+    assert not wrong_path.exists()
+    cached_before = {key: value.model_dump() for key, value in store.categories.items()}
+    journals.clear()
+    window = {"active": False}
+    bad_commits = []
+
+    def checkout(con, *_args):
+        assert not window["active"], "a helper opened a second repository connection"
+        assert con.row_factory is None
+        con.set_trace_callback(lambda sql: bad_commits.append(sql) if sql == "COMMIT" and window["active"] else None)
+
+    def before_sql(_con, _cursor, statement, *_args):
+        if statement == "BEGIN IMMEDIATE":
+            window["active"] = True
+
+    def end_window(con):
+        assert con.connection.driver_connection.row_factory is None
+        window["active"] = False
+
+    engine = store._sessions.engine
+    event.listen(engine, "checkout", checkout)
+    event.listen(engine, "before_cursor_execute", before_sql)
+    event.listen(engine, "commit", end_window)
+    event.listen(engine, "rollback", end_window)
+    connect = deps.sqlite_connect
+
+    def guarded_connect(db_path):
+        assert not window["active"], "a helper opened a second MCP connection"
+        return connect(db_path)
+
+    write = deps.write_conversation_state
+
+    def fail_at_end(cid, **kwargs):
+        result = write(cid, **kwargs)
+        if kwargs["updates"].get("last_consolidation_at"):
+            raise RuntimeError("late apply failure")
+        return result
+
+    with pytest.raises(RuntimeError, match="late apply failure"):
+        write_consolidation_outputs(replace(deps, sqlite_connect=guarded_connect, write_conversation_state=fail_at_end),
+            svc, inputs=inputs, llm_results=results, conversation_id="chat", **scope)
+    assert snapshot() == before
+    assert {key: value.model_dump() for key, value in store.categories.items()} == cached_before
+    assert journals == [] and bad_commits == []
+    assert svc.list_due_dossiers(scope, segment_ids=["chat:0-1"]) == []
+
+    async def no_dossier_call(*_args, **_kwargs):
+        pytest.fail("Retry must not regenerate the checkpointed dossier")
+
+    monkeypatch.setattr(svc, "chat", no_dossier_call)
+    await prepare_dossier_consolidation_context(svc, inputs={**_inputs(), **inputs},
+        soul_id=scope["soul_id"], user_id=scope["user_id"])
+
+    write_consolidation_outputs(replace(deps, sqlite_connect=guarded_connect), svc,
+        inputs=inputs, llm_results=results, conversation_id="chat", **scope)
+    assert bad_commits == [] and len(journals) == 3
+    for role, anchor in anchors.items():
+        assert store.categories[anchor.id].summary == "## Identity\nRevised prose."
+    assert ordinary.id in {row.id for row in svc.list_due_dossiers(scope, segment_ids=["chat:2-3"])}
+    with sqlite_connect(path) as con:
+        con.row_factory = sqlite3.Row
+        assert _soul_state.read(con)["narrative_self"] == "New self"
+        assert json.loads(con.execute("SELECT pending_segment_ids FROM conversations WHERE conversation_id='chat'").fetchone()[0]) == ["chat:2-3"]
+        assert con.execute("SELECT COUNT(*) FROM memory_items WHERE summary='Reflection'").fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM memory_items WHERE summary='Current self'").fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM triples WHERE subject_id=? AND predicate='evolved_into'", (previous.id,)).fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM life_goals WHERE description='Be curious'").fetchone()[0] == 1
 
 
 def test_write_consolidation_outputs_subtracts_gathered_accumulators() -> None:
@@ -1001,7 +1164,7 @@ def test_write_consolidation_outputs_subtracts_gathered_accumulators() -> None:
 
         write_consolidation_outputs(
             _make_consolidation_deps(db_path, tmp_dir),
-            _make_svc_stub(),
+            _make_svc_stub(db_path),
             inputs={
                 "db_path": db_path,
                 "started_at": started_at,
@@ -1058,7 +1221,7 @@ def test_write_consolidation_outputs_uses_life_goals_table() -> None:
 
         write_consolidation_outputs(
             _make_consolidation_deps(db_path, tmp_dir),
-            _make_svc_stub(),
+            _make_svc_stub(db_path),
             inputs={"db_path": db_path},
             llm_results=_base_llm_results(
                 life_goal_remove=["old goal"],
@@ -1131,7 +1294,7 @@ def test_consolidation_rejects_a_concurrent_narrative_edit() -> None:
         with pytest.raises(ValueError, match="summary_snapshot_stale"):
             write_consolidation_outputs(
                 _make_consolidation_deps(db_path, tmp_dir),
-                _make_svc_stub(),
+                _make_svc_stub(db_path),
                 inputs={
                     "db_path": db_path,
                     "narrative_self": "Gathered story.",
@@ -1214,7 +1377,7 @@ def test_write_consolidation_outputs_state_preflight_failure_produces_no_compani
             with pytest.raises(RuntimeError, match="simulated DB failure"):
                 write_consolidation_outputs(
                     failing_deps,
-                    _make_svc_stub(),
+                    _make_svc_stub(db_path),
                     inputs={"db_path": db_path},
                     llm_results=_base_llm_results(
                         companion_memory="Something to remember.",
@@ -1268,7 +1431,7 @@ def test_write_consolidation_outputs_late_failure_keeps_pending_segment_ids() ->
             with pytest.raises(RuntimeError, match="simulated companion failure"):
                 write_consolidation_outputs(
                     _make_consolidation_deps(db_path, tmp_dir),
-                    _make_svc_stub(),
+                    _make_svc_stub(db_path),
                     inputs={"db_path": db_path},
                     llm_results=_base_llm_results(
                         companion_memory="Something to remember.",
@@ -1344,7 +1507,7 @@ def test_write_consolidation_outputs_rolls_back_final_transaction() -> None:
         with pytest.raises(RuntimeError, match="simulated finalization failure"):
             write_consolidation_outputs(
                 failing_deps,
-                _make_svc_stub(),
+                _make_svc_stub(db_path),
                 inputs={
                     "db_path": db_path,
                     "narrative_self": None,

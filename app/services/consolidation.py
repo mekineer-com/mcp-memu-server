@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, cast
 log = logging.getLogger(__name__)
 
 from fastapi import HTTPException
+from app.config import sqlite_file_from_dsn
 from memu.app.dossier import label_sections, render_memory_records, revision_status_items
 from memu.app.dossier_revision import (
     estimate_prompt_tokens,
@@ -1114,14 +1115,15 @@ async def run_consolidation_llm(
     old_narrative_embedding = embeddings[cursor] if snapshot_old_narrative else None
 
     scope = {"soul_id": soul_id, "user_id": user_id}
-    for role in ("soul", "user"):
-        await svc.apply_anchor_revision(
-            anchor_bundles[role],
-            identity["anchor_decisions"][role],
-            scope,
-        )
+    anchor_writes = [
+        (anchor_bundles[role], await svc.prepare_anchor_revision_apply(
+            anchor_bundles[role], identity["anchor_decisions"][role], scope,
+        ))
+        for role in ("soul", "user")
+    ]
 
     return {
+        "anchor_writes": anchor_writes,
         "narrative_self": new_narrative,
         "life_goal_add": identity["life_goal_add"],
         "life_goal_remove": identity["life_goal_remove"],
@@ -1146,8 +1148,10 @@ def write_consolidation_outputs(
     soul_id: str,
     user_id: str,
 ) -> dict[str, Any]:
-    # ponytail: rare partial-write retries may duplicate outputs; add idempotency if observed.
     db_path: Path = inputs["db_path"]
+    service_path = sqlite_file_from_dsn(svc.database.dsn)
+    if service_path is None or service_path.resolve() != db_path.resolve():
+        raise ValueError("Consolidation service and inputs use different databases")
     now_iso = datetime.now(UTC).isoformat()
     started_at = str(inputs.get("started_at") or "").strip() or now_iso
 
@@ -1162,60 +1166,7 @@ def write_consolidation_outputs(
     deps.sqlite_ensure_nonempty(db_path)
     con = deps.sqlite_connect(db_path)
     try:
-        con.row_factory = sqlite3.Row
         deps.sqlite_ensure_conversation_state_schema(con)
-
-        life_goal_rows = con.execute(
-            """
-SELECT id, description, status
-FROM life_goals
-WHERE soul_id = ? AND user_id = ? AND status IN ('active', 'removed')
-ORDER BY updated_at ASC, id ASC
-""",
-            (soul_id, user_id),
-        ).fetchall()
-        active_ids: dict[str, str] = {}
-        removed_ids: dict[str, str] = {}
-        for row in life_goal_rows:
-            description = str(row["description"] or "").strip()
-            if not description:
-                continue
-            if str(row["status"] or "").strip() == "active":
-                active_ids[description] = str(row["id"])
-            else:
-                removed_ids[description] = str(row["id"])
-
-        goals_to_mark_removed: list[str] = []
-        goals_to_delete: list[str] = []
-        goals_to_restore: list[str] = []
-        goals_to_add: list[tuple[str, str]] = []
-
-        for desc in llm_results["life_goal_remove"]:
-            text = str(desc or "").strip()
-            if not text:
-                continue
-            if text in active_ids:
-                goals_to_mark_removed.append(active_ids[text])
-                removed_ids[text] = active_ids[text]
-                active_ids.pop(text, None)
-            elif text in removed_ids:
-                goals_to_delete.append(removed_ids[text])
-                removed_ids.pop(text, None)
-
-        active_goal_count = len(active_ids)
-        for desc in llm_results["life_goal_add"]:
-            text = str(desc or "").strip()
-            if not text or text in active_ids or active_goal_count >= 3:
-                continue
-            goal_id = removed_ids.pop(text, None)
-            if goal_id is None:
-                goal_id = str(uuid.uuid4())
-                goals_to_add.append((goal_id, text))
-            else:
-                goals_to_restore.append(goal_id)
-            active_ids[text] = goal_id
-            active_goal_count += 1
-
     finally:
         con.close()
 
@@ -1230,142 +1181,207 @@ ORDER BY updated_at ASC, id ASC
                 for segment_id in (inputs.get("selected_segment_ids") or [])
             ]
         }
-    # Preflight every state row before companion and graph side effects.
-    for pending_conversation_id in selected_by_conversation:
-        deps.write_conversation_state(
-            pending_conversation_id,
-            soul_id=soul_id,
-            user_id=user_id,
-            updates={},
-        )
-
-    if old_narrative_text:
-        check = deps.sqlite_connect(db_path)
-        try:
-            check.row_factory = sqlite3.Row
-            current = _soul_state.read(check)
-        finally:
-            check.close()
-        if (
-            int(current["summaries_revision"]) != int(inputs["state"]["summaries_revision"])
-            or str(current["narrative_self"] or "") != str(inputs.get("narrative_self") or "")
-        ):
-            raise ValueError("summary_snapshot_stale")
-        snapshot_previous_narrative_self(
-            svc,
-            scope={"user_id": user_id, "soul_id": soul_id},
-            old_text=old_narrative_text,
-            old_embedding=llm_results["old_narrative_embedding"],
-        )
-    if companion_text:
-        companion_happened_at = datetime.now(UTC)
-        companion_memory_id = create_companion_memory(
-            svc,
-            user_id=user_id,
-            soul_id=soul_id,
-            conversation_id=conversation_id,
-            summary=companion_text,
-            embedding=cast(list[float], companion_embedding),
-            happened_at=companion_happened_at,
-        )
-
-    scope = {"user_id": user_id, "soul_id": soul_id}
-    wrote = write_memory_edges(svc.database.triple_repo, llm_results["edges"], scope=scope)
-    invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results["edge_invalidations"], scope=scope)
     consumed_segment_ids = [
         str(segment_id).strip()
         for segment_id in (inputs.get("selected_segment_ids") or [])
         if str(segment_id).strip()
     ]
-    con = deps.sqlite_connect(db_path)
-    try:
-        con.row_factory = sqlite3.Row
-        con.execute("BEGIN IMMEDIATE")
-        current_intentions = _soul_state.read(con)["intentions_active"]
-        merged_intentions = merge_consolidated_intentions(
-            llm_results["intentions_snapshot"],
-            current_intentions,
-            llm_results["intentions_replacement"],
-        )
-        if narrative_self:
-            con.execute(
-                "INSERT INTO narrative_history (id, narrative_self, related_memory_ids, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (narrative_id, narrative_self, deps.json_to_db([]), now_iso),
-            )
-            _soul_summaries.write_live(
-                con,
-                kind="narrative_self",
-                summary=narrative_self,
-                scope=scope,
-                edited_by="consolidation",
-                expected_revision=int(inputs["state"]["summaries_revision"]),
-                displayed_summary=str(inputs.get("narrative_self") or ""),
-                journal=False,
-            )
-
-        for goal_id in goals_to_mark_removed:
-            con.execute(
-                "UPDATE life_goals SET status = 'removed', updated_at = ? WHERE id = ?",
-                (now_iso, goal_id),
-            )
-        for goal_id in goals_to_delete:
-            con.execute("DELETE FROM life_goals WHERE id = ?", (goal_id,))
-        for goal_id in goals_to_restore:
-            con.execute(
-                "UPDATE life_goals SET status = 'active', updated_at = ? WHERE id = ?",
-                (now_iso, goal_id),
-            )
-        for goal_id, text in goals_to_add:
-            con.execute(
+    scope = {"user_id": user_id, "soul_id": soul_id}
+    committed_anchors = []
+    session_cm = svc._sqlite_write_session(svc.database)
+    if session_cm is None:
+        raise RuntimeError("Consolidation apply requires SQLite")
+    with session_cm as session:
+        connection = session.connection()
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        con = connection.connection.driver_connection
+        previous_row_factory = con.row_factory
+        try:
+            con.row_factory = sqlite3.Row
+            life_goal_rows = con.execute(
                 """
+SELECT id, description, status
+FROM life_goals
+WHERE soul_id = ? AND user_id = ? AND status IN ('active', 'removed')
+ORDER BY updated_at ASC, id ASC
+""",
+                (soul_id, user_id),
+            ).fetchall()
+            active_ids: dict[str, str] = {}
+            removed_ids: dict[str, str] = {}
+            for row in life_goal_rows:
+                description = str(row["description"] or "").strip()
+                if not description:
+                    continue
+                if str(row["status"] or "").strip() == "active":
+                    active_ids[description] = str(row["id"])
+                else:
+                    removed_ids[description] = str(row["id"])
+
+            goals_to_mark_removed: list[str] = []
+            goals_to_delete: list[str] = []
+            goals_to_restore: list[str] = []
+            goals_to_add: list[tuple[str, str]] = []
+
+            for desc in llm_results["life_goal_remove"]:
+                text = str(desc or "").strip()
+                if not text:
+                    continue
+                if text in active_ids:
+                    goals_to_mark_removed.append(active_ids[text])
+                    removed_ids[text] = active_ids[text]
+                    active_ids.pop(text, None)
+                elif text in removed_ids:
+                    goals_to_delete.append(removed_ids[text])
+                    removed_ids.pop(text, None)
+
+            active_goal_count = len(active_ids)
+            for desc in llm_results["life_goal_add"]:
+                text = str(desc or "").strip()
+                if not text or text in active_ids or active_goal_count >= 3:
+                    continue
+                goal_id = removed_ids.pop(text, None)
+                if goal_id is None:
+                    goal_id = str(uuid.uuid4())
+                    goals_to_add.append((goal_id, text))
+                else:
+                    goals_to_restore.append(goal_id)
+                active_ids[text] = goal_id
+                active_goal_count += 1
+
+            # Preflight every state row before companion and graph side effects.
+            for pending_conversation_id in selected_by_conversation:
+                deps.write_conversation_state(
+                    pending_conversation_id,
+                    soul_id=soul_id,
+                    user_id=user_id,
+                    updates={},
+                    connection=con,
+                )
+
+            if old_narrative_text:
+                current = _soul_state.read(con)
+                if (
+                    int(current["summaries_revision"]) != int(inputs["state"]["summaries_revision"])
+                    or str(current["narrative_self"] or "") != str(inputs.get("narrative_self") or "")
+                ):
+                    raise ValueError("summary_snapshot_stale")
+            for bundle, prepared in llm_results["anchor_writes"]:
+                committed = svc.write_dossier_revision(bundle, prepared, session=session)
+                committed_anchors.append((bundle, committed))
+            if old_narrative_text:
+                snapshot_previous_narrative_self(
+                    svc,
+                    scope={"user_id": user_id, "soul_id": soul_id},
+                    old_text=old_narrative_text,
+                    old_embedding=llm_results["old_narrative_embedding"],
+                    session=session,
+                )
+            if companion_text:
+                companion_happened_at = datetime.now(UTC)
+                companion_memory_id = create_companion_memory(
+                    svc,
+                    user_id=user_id,
+                    soul_id=soul_id,
+                    conversation_id=conversation_id,
+                    summary=companion_text,
+                    embedding=cast(list[float], companion_embedding),
+                    happened_at=companion_happened_at,
+                    session=session,
+                )
+
+            wrote = write_memory_edges(svc.database.triple_repo, llm_results["edges"], scope=scope, session=session)
+            invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results["edge_invalidations"], scope=scope, session=session)
+            current_intentions = _soul_state.read(con)["intentions_active"]
+            merged_intentions = merge_consolidated_intentions(
+                llm_results["intentions_snapshot"],
+                current_intentions,
+                llm_results["intentions_replacement"],
+            )
+            if narrative_self:
+                con.execute(
+                    "INSERT INTO narrative_history (id, narrative_self, related_memory_ids, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (narrative_id, narrative_self, deps.json_to_db([]), now_iso),
+                )
+                _soul_summaries.write_live(
+                    con,
+                    kind="narrative_self",
+                    summary=narrative_self,
+                    scope=scope,
+                    edited_by="consolidation",
+                    expected_revision=int(inputs["state"]["summaries_revision"]),
+                    displayed_summary=str(inputs.get("narrative_self") or ""),
+                    journal=False,
+                )
+
+            for goal_id in goals_to_mark_removed:
+                con.execute(
+                    "UPDATE life_goals SET status = 'removed', updated_at = ? WHERE id = ?",
+                    (now_iso, goal_id),
+                )
+            for goal_id in goals_to_delete:
+                con.execute("DELETE FROM life_goals WHERE id = ?", (goal_id,))
+            for goal_id in goals_to_restore:
+                con.execute(
+                    "UPDATE life_goals SET status = 'active', updated_at = ? WHERE id = ?",
+                    (now_iso, goal_id),
+                )
+            for goal_id, text in goals_to_add:
+                con.execute(
+                    """
 INSERT INTO life_goals (
     id, soul_id, user_id, description, status, updated_at
 ) VALUES (?, ?, ?, ?, 'active', ?)
 """,
-                (goal_id, soul_id, user_id, text, now_iso),
-            )
+                    (goal_id, soul_id, user_id, text, now_iso),
+                )
 
-        for pending_conversation_id, pending_ids in selected_by_conversation.items():
-            if pending_conversation_id == conversation_id:
-                continue
-            deps.write_conversation_state(
-                pending_conversation_id,
+            for pending_conversation_id, pending_ids in selected_by_conversation.items():
+                if pending_conversation_id == conversation_id:
+                    continue
+                deps.write_conversation_state(
+                    pending_conversation_id,
+                    soul_id=soul_id,
+                    user_id=user_id,
+                    updates={"remove_pending_segment_ids": pending_ids},
+                    connection=con,
+                )
+
+            state_after, _ = deps.write_conversation_state(
+                conversation_id,
                 soul_id=soul_id,
                 user_id=user_id,
-                updates={"remove_pending_segment_ids": pending_ids},
+                updates={
+                    # Subtract only what this run consumed: a memorize that finished
+                    # during the LLM phase may have appended new pending ids.
+                    "remove_pending_segment_ids": selected_by_conversation.get(
+                        conversation_id, []
+                    ),
+                    "last_consolidation_at": started_at,
+                    "last_consolidation_error": None,
+                    "last_consolidation_error_at": None,
+                    "intentions_active": merged_intentions,
+                    "remove_retrieval_ids_since_consolidation": inputs.get("state", {}).get(
+                        "retrieval_ids_since_consolidation", []
+                    ),
+                    "remove_prior_context_ids_since_consolidation": inputs.get("state", {}).get(
+                        "prior_context_ids_since_consolidation", []
+                    ),
+                },
                 connection=con,
             )
+            con.row_factory = previous_row_factory
+            session.commit()
+        except Exception:
+            con.row_factory = previous_row_factory
+            session.rollback()
+            raise
+        finally:
+            con.row_factory = previous_row_factory
 
-        state_after, _ = deps.write_conversation_state(
-            conversation_id,
-            soul_id=soul_id,
-            user_id=user_id,
-            updates={
-                # Subtract only what this run consumed: a memorize that finished
-                # during the LLM phase may have appended new pending ids.
-                "remove_pending_segment_ids": selected_by_conversation.get(
-                    conversation_id, []
-                ),
-                "last_consolidation_at": started_at,
-                "last_consolidation_error": None,
-                "last_consolidation_error_at": None,
-                "intentions_active": merged_intentions,
-                "remove_retrieval_ids_since_consolidation": inputs.get("state", {}).get(
-                    "retrieval_ids_since_consolidation", []
-                ),
-                "remove_prior_context_ids_since_consolidation": inputs.get("state", {}).get(
-                    "prior_context_ids_since_consolidation", []
-                ),
-            },
-            connection=con,
-        )
-        con.commit()
-    except Exception:
-        con.rollback()
-        raise
-    finally:
-        con.close()
+    for bundle, committed in committed_anchors:
+        svc.finish_dossier_revision(bundle, committed, scope, _journal_actor="anchor_revision")
 
     previous_narrative = str(inputs.get("narrative_self") or "")
     if narrative_self and narrative_self != previous_narrative:

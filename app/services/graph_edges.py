@@ -56,7 +56,7 @@ def _normalize_edges(payload: Any) -> list[dict[str, Any]]:
     return out
 
 
-def write_memory_edges(triple_repo: Any, payload: Any, *, scope: Mapping[str, Any]) -> int:
+def write_memory_edges(triple_repo: Any, payload: Any, *, scope: Mapping[str, Any], session: Any | None = None) -> int:
     edges = _normalize_edges(payload)
     for edge in edges:
         subject_id = edge["subject_id"]
@@ -71,12 +71,13 @@ def write_memory_edges(triple_repo: Any, payload: Any, *, scope: Mapping[str, An
                 source_memory_id=subject_id,
             ),
             user_data=scope,
+            session=session,
         )
     return len(edges)
 
 
-def invalidate_memory_edges(triple_repo: Any, payload: Any, *, scope: Mapping[str, Any]) -> int:
+def invalidate_memory_edges(triple_repo: Any, payload: Any, *, scope: Mapping[str, Any], session: Any | None = None) -> int:
     edges = _normalize_edges(payload)
     for edge in edges:
-        triple_repo.invalidate(edge["subject_id"], edge["predicate"], edge["object_id"], scope=scope)
+        triple_repo.invalidate(edge["subject_id"], edge["predicate"], edge["object_id"], scope=scope, session=session)
     return len(edges)

@@ -74,6 +74,7 @@ def create_companion_memory(
     summary: str,
     embedding: list[float],
     happened_at: datetime | None,
+    session: Any | None = None,
 ) -> str:
     conversation_id = canonical_conversation_id(conversation_id)
     item = svc.database.memory_item_repo.create_item(
@@ -85,5 +86,6 @@ def create_companion_memory(
         user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
         conversation_id=conversation_id,
         happened_at=happened_at,
+        session=session,
     )
     return str(item.id)

@@ -202,8 +202,9 @@ def write_conversation_state(
     if db_path is None:
         raise HTTPException(status_code=400, detail="soul_id is required")
 
-    sqlite_ensure_nonempty(db_path)
     owns_connection = connection is None
+    if owns_connection:
+        sqlite_ensure_nonempty(db_path)
     con = connection or sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
