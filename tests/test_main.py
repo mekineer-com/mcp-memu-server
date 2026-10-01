@@ -14,6 +14,7 @@ from fastapi import HTTPException
 
 from app import main
 from app.services import consolidation, conversation_sources, crud_endpoints, retrieve_orchestration, segment, service_factory
+from memu.app.graph import EntityActionConflictError, EntityMergeConflictError
 from memu.app.memorize_segments import grouped_chat_happened_at
 
 
@@ -43,6 +44,44 @@ async def test_graph_routes_registered_and_service_lookup_is_live(monkeypatch: p
     endpoint = _route_endpoint("memory_graph")
     for marker in ("first", "second"):
         svc = SimpleNamespace(graph_recent=lambda **kwargs: marker)
+        monkeypatch.setattr(main, "_get_service_from_payload", lambda payload: svc)
+        assert await endpoint(user_id="TestOwner", soul_id="TestSoul") == marker
+
+
+@pytest.mark.asyncio
+async def test_entity_routes_registered_and_service_lookup_is_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    base = "/integration/atomic/entities"
+    member = base + "/{entity_id}"
+    attachment = "/integration/atomic/memories/{memory_id}/entities/{entity_id}"
+    expected = {
+        "atomic_memory_entities": (base, "GET"),
+        "atomic_create_entity": (base, "POST"),
+        "atomic_memory_entity": (member, "GET"),
+        "atomic_update_entity": (member, "PATCH"),
+        "atomic_ignore_entity": (member + "/ignore", "POST"),
+        "atomic_restore_entity": (member + "/restore", "POST"),
+        "atomic_delete_entity": (member, "DELETE"),
+        "atomic_preview_entity_merge": (member + "/merge-preview", "GET"),
+        "atomic_merge_entities": (member + "/merge", "POST"),
+        "atomic_attach_entity": (attachment, "PUT"),
+        "atomic_detach_entity": (attachment, "DELETE"),
+    }
+    generated = {
+        "atomic_ignore_entity": "atomic_ignore_entity_integration_atomic_entities__entity_id__ignore_post",
+        "atomic_restore_entity": "atomic_restore_entity_integration_atomic_entities__entity_id__restore_post",
+        "atomic_delete_entity": "atomic_delete_entity_integration_atomic_entities__entity_id__delete",
+    }
+    for name, (path, method) in expected.items():
+        routes = [route for route in main.app.routes if route.name == name]
+        assert len(routes) == 1
+        route = routes[0]
+        assert (route.path, route.methods, route.tags) == (path, {method}, ["integration"])
+        assert route.operation_id == (None if name in generated else name)
+        assert (route.operation_id or route.unique_id) == generated.get(name, name)
+
+    endpoint = _route_endpoint("atomic_memory_entities")
+    for marker in ("first", "second"):
+        svc = SimpleNamespace(graph_atomic_entities=lambda **kwargs: marker)
         monkeypatch.setattr(main, "_get_service_from_payload", lambda payload: svc)
         assert await endpoint(user_id="TestOwner", soul_id="TestSoul") == marker
 
@@ -648,11 +687,11 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
     class _FakeSvc:
         def graph_atomic_entities(self, **kwargs: Any) -> dict[str, Any]:
             captured.append(("list", kwargs))
-            return {"entities": [{"id": "e1", "name": "Annie"}], "total_count": 1}
+            return {"entities": [{"id": "e1", "name": "ExampleEntity"}], "total_count": 1}
 
         def graph_atomic_entity(self, entity_id: str, **kwargs: Any) -> dict[str, Any] | None:
             captured.append((entity_id, kwargs))
-            return {"id": entity_id, "name": "Annie", "memories": []} if entity_id == "e1" else None
+            return {"id": entity_id, "name": "ExampleEntity", "memories": []} if entity_id == "e1" else None
 
         def graph_create_entity(self, name: str, entity_type: str, **kwargs: Any) -> dict[str, Any]:
             captured.append(("create", {"name": name, "entity_type": entity_type, **kwargs}))
@@ -681,29 +720,34 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
             captured.append(("attach", {"memory_id": memory_id, "entity_id": entity_id, **kwargs}))
             return {"id": f"memory:{memory_id}"}
 
+        def graph_detach_entity(self, memory_id: str, entity_id: str, **kwargs: Any) -> dict[str, Any]:
+            captured.append(("detach", {"memory_id": memory_id, "entity_id": entity_id, **kwargs}))
+            return {"id": f"memory:{memory_id}"}
+
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
 
-    listing = await main.atomic_memory_entities(user_id="Marcos", soul_id="Siri")
-    detail = await main.atomic_memory_entity(entity_id="e1", user_id="Marcos", soul_id="Siri")
-    created = await main.atomic_create_entity(
-        user_id="Marcos",
-        soul_id="Siri",
+    listing = await _route_endpoint("atomic_memory_entities")(user_id="TestOwner", soul_id="TestSoul")
+    detail = await _route_endpoint("atomic_memory_entity")(entity_id="e1", user_id="TestOwner", soul_id="TestSoul")
+    created = await _route_endpoint("atomic_create_entity")(
+        user_id="TestOwner",
+        soul_id="TestSoul",
         payload={"name": "New Library", "entity_type": "WhatsApp integration library"},
     )
-    updated = await main.atomic_update_entity(
+    updated = await _route_endpoint("atomic_update_entity")(
         entity_id="e1",
-        user_id="Marcos",
-        soul_id="Siri",
+        user_id="TestOwner",
+        soul_id="TestSoul",
         payload={"name": "Renamed"},
     )
-    preview = await main.atomic_preview_entity_merge("e1", "e2", "Marcos", "Siri")
-    merged = await main.atomic_merge_entities(
-        "e1", "Marcos", "Siri", {"duplicate_entity_id": "e2"}
+    preview = await _route_endpoint("atomic_preview_entity_merge")("e1", "e2", "TestOwner", "TestSoul")
+    merged = await _route_endpoint("atomic_merge_entities")(
+        "e1", "TestOwner", "TestSoul", {"duplicate_entity_id": "e2"}
     )
-    ignored = await main.atomic_ignore_entity("e1", "Marcos", "Siri")
-    restored = await main.atomic_restore_entity("e1", "Marcos", "Siri")
-    deleted = await main.atomic_delete_entity("e2", "Marcos", "Siri")
-    attached = await main.atomic_attach_entity("m1", "e1", "Marcos", "Siri")
+    ignored = await _route_endpoint("atomic_ignore_entity")("e1", "TestOwner", "TestSoul")
+    restored = await _route_endpoint("atomic_restore_entity")("e1", "TestOwner", "TestSoul")
+    deleted = await _route_endpoint("atomic_delete_entity")("e2", "TestOwner", "TestSoul")
+    attached = await _route_endpoint("atomic_attach_entity")("m1", "e1", "TestOwner", "TestSoul")
+    detached = await _route_endpoint("atomic_detach_entity")("m1", "e1", "TestOwner", "TestSoul")
 
     assert listing["total_count"] == 1
     assert detail["id"] == "e1"
@@ -715,20 +759,22 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
     assert created["id"] == "e2"
     assert updated["name"] == "Renamed"
     assert attached["id"] == "memory:m1"
+    assert detached["id"] == "memory:m1"
     assert captured == [
-        ("list", {"where": {"user_id": "Marcos", "soul_id": "Siri"}}),
-        ("e1", {"where": {"user_id": "Marcos", "soul_id": "Siri"}}),
-        ("create", {"name": "New Library", "entity_type": "WhatsApp integration library", "aliases": None, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
-        ("update", {"entity_id": "e1", "name": "Renamed", "entity_type": None, "aliases": None, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
-        ("preview_merge", {"entity_id": "e1", "duplicate_id": "e2", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
-        ("merge", {"entity_id": "e1", "duplicate_id": "e2", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
-        ("set_ignored", {"entity_id": "e1", "ignored": True, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
-        ("set_ignored", {"entity_id": "e1", "ignored": False, "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
-        ("delete", {"entity_id": "e2", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
-        ("attach", {"memory_id": "m1", "entity_id": "e1", "where": {"user_id": "Marcos", "soul_id": "Siri"}}),
+        ("list", {"where": {"user_id": "TestOwner", "soul_id": "TestSoul"}}),
+        ("e1", {"where": {"user_id": "TestOwner", "soul_id": "TestSoul"}}),
+        ("create", {"name": "New Library", "entity_type": "WhatsApp integration library", "aliases": None, "where": {"user_id": "TestOwner", "soul_id": "TestSoul"}}),
+        ("update", {"entity_id": "e1", "name": "Renamed", "entity_type": None, "aliases": None, "where": {"user_id": "TestOwner", "soul_id": "TestSoul"}}),
+        ("preview_merge", {"entity_id": "e1", "duplicate_id": "e2", "where": {"user_id": "TestOwner", "soul_id": "TestSoul"}}),
+        ("merge", {"entity_id": "e1", "duplicate_id": "e2", "where": {"user_id": "TestOwner", "soul_id": "TestSoul"}}),
+        ("set_ignored", {"entity_id": "e1", "ignored": True, "where": {"user_id": "TestOwner", "soul_id": "TestSoul"}}),
+        ("set_ignored", {"entity_id": "e1", "ignored": False, "where": {"user_id": "TestOwner", "soul_id": "TestSoul"}}),
+        ("delete", {"entity_id": "e2", "where": {"user_id": "TestOwner", "soul_id": "TestSoul"}}),
+        ("attach", {"memory_id": "m1", "entity_id": "e1", "where": {"user_id": "TestOwner", "soul_id": "TestSoul"}}),
+        ("detach", {"memory_id": "m1", "entity_id": "e1", "where": {"user_id": "TestOwner", "soul_id": "TestSoul"}}),
     ]
     with pytest.raises(main.HTTPException) as exc:
-        await main.atomic_memory_entity(entity_id="missing", user_id="Marcos", soul_id="Siri")
+        await _route_endpoint("atomic_memory_entity")(entity_id="missing", user_id="TestOwner", soul_id="TestSoul")
     assert exc.value.status_code == 404
 
 
@@ -736,7 +782,7 @@ async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pyt
 async def test_atomic_entity_update_rejects_description_only(
 ) -> None:
     with pytest.raises(main.HTTPException) as exc:
-        await main.atomic_update_entity("e1", "user", "soul", {"description": "legacy"})
+        await _route_endpoint("atomic_update_entity")("e1", "user", "soul", {"description": "legacy"})
     assert exc.value.status_code == 400
 
 
@@ -744,12 +790,12 @@ async def test_atomic_entity_update_rejects_description_only(
 async def test_atomic_entity_merge_maps_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
     class _FakeSvc:
         def graph_merge_entities(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
-            raise main.EntityMergeConflictError({"id": "e1"}, {"id": "e2"}, ["states differ"])
+            raise EntityMergeConflictError({"id": "e1"}, {"id": "e2"}, ["states differ"])
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
 
     with pytest.raises(main.HTTPException) as exc:
-        await main.atomic_merge_entities("e1", "Marcos", "Siri", {"duplicate_entity_id": "e2"})
+        await _route_endpoint("atomic_merge_entities")("e1", "TestOwner", "TestSoul", {"duplicate_entity_id": "e2"})
 
     assert exc.value.status_code == 409
     assert exc.value.detail["conflicts"] == ["states differ"]
@@ -759,12 +805,12 @@ async def test_atomic_entity_merge_maps_conflict(monkeypatch: pytest.MonkeyPatch
 async def test_atomic_entity_action_maps_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
     class _FakeSvc:
         def graph_delete_entity(self, *_args: Any, **_kwargs: Any) -> None:
-            raise main.EntityActionConflictError(["Graph references: 1"])
+            raise EntityActionConflictError(["Graph references: 1"])
 
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
 
     with pytest.raises(main.HTTPException) as exc:
-        await main.atomic_delete_entity("e1", "user", "soul")
+        await _route_endpoint("atomic_delete_entity")("e1", "user", "soul")
 
     assert exc.value.status_code == 409
     assert exc.value.detail["conflicts"] == ["Graph references: 1"]
@@ -773,7 +819,7 @@ async def test_atomic_entity_action_maps_conflict(monkeypatch: pytest.MonkeyPatc
 @pytest.mark.asyncio
 async def test_atomic_entities_require_scope() -> None:
     with pytest.raises(main.HTTPException) as exc:
-        await main.atomic_memory_entities(user_id="", soul_id="Siri")
+        await _route_endpoint("atomic_memory_entities")(user_id="", soul_id="TestSoul")
     assert exc.value.status_code == 400
 
 
