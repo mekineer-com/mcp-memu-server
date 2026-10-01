@@ -101,6 +101,7 @@ mcp-memu-server/
 | `/integration/memu/consolidate` | POST | MCP force-consolidation wrapper |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/conversation/{id}/consolidation/force` | POST | Force consolidation now (lock-safe) |
+| `/conversation/{id}/consolidation/retry` | POST | Manual retry of a failed consolidation (409 when the last run did not fail). Failed paid runs never retry automatically. |
 | `/souls/{soul_id}/relationships` | GET/POST | User-declared relationship entities; POST may promote an exact entity ID |
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or remove Relationship properties from one stable `entity:<entities.id>` reference |
 | `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot |
@@ -162,7 +163,7 @@ snapshot metadata, not introduce another registry.
 | `app/services/whatsapp_outbounds.py` | `whatsapp_pending_outbounds` scoped-SQLite queue for WhatsApp replies/attachments |
 | `app/services/mentra_routes.py` | Authenticated Mentra boundary: sitting-scoped lease lifecycle, bootstrap/token mint, non-blocking recall, transcript append/ack, and durable image snapshot/finalize. Image finalize stays unavailable until Gemini embedding config and DB profile are both active. |
 | `app/services/memorize_endpoint.py` | `/memorize` core: segment-file persistence, forced-memorize runner, rolling-summary injection, sleep-gap/token chunking, progress/cancel. Listen-only segments advance source cursors without producing memory, consuming rolling summaries, or retaining segment files. |
-| `app/services/conversation_sources.py` | Source adapters: WhatsApp from `web_source.db`; ST/Atomic from resource snapshots; Mentra from `openalma/mentra/transcripts`. Handles atomic writes, cursor slicing, floor backfill, and role normalization. |
+| `app/services/conversation_sources.py` | Source adapters: WhatsApp from `web_source.db`; ST/Atomic/Replika from resource chat snapshots (`st_chats` / `atomic_chats` / `replika_chats`); Mentra from `openalma/mentra/transcripts`. Handles atomic writes, cursor slicing, floor backfill, and role normalization. |
 | `app/services/cross_history.py` | Cross-conversation history: formats AI-facing all-chat history, assembles cross-tail/background memorize feeds, manages display-segment cleanup |
 | `app/services/apimw.py` | APImw background memory-weaving pipeline: retrieve → synthesize prior-context/message-to-self → persist |
 | `app/services/admin_routes.py` | Health/version/shutdown/diag endpoint handlers |
