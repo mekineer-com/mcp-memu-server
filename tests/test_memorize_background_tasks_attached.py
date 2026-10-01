@@ -17,11 +17,13 @@ recorder, posts to /memorize, and asserts the task actually ran.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
+from fastapi import BackgroundTasks, HTTPException
 
 from app import main as main_module
 from app.main import app
@@ -390,6 +392,31 @@ def test_rebuild_rejected_during_same_soul_consolidation(
     assert resp.json()["detail"] == "cannot rebuild during consolidation"
     assert db_file.read_bytes() == b"original database"
     assert set(tmp_path.iterdir()) == original_files
+
+
+@pytest.mark.asyncio
+async def test_rebuild_rechecks_consolidation_after_waiting_for_lock(monkeypatch, tmp_path):
+    db_file = tmp_path / "TestSoul.db"
+    db_file.write_bytes(b"original database")
+    running = set()
+    lock = asyncio.Lock()
+    monkeypatch.setattr(main_module, "_CONSOLIDATION_RUNNING", running)
+    monkeypatch.setattr(main_module, "_get_memorize_lock", lambda *_args: lock)
+    monkeypatch.setattr(main_module, "_sqlite_current_path", lambda *_args: db_file)
+
+    await lock.acquire()
+    task = asyncio.create_task(main_module.memorize(
+        _make_stub_payload("u1", "TestSoul", "cid-r"), BackgroundTasks(), rebuild=True,
+    ))
+    await asyncio.sleep(0)
+    assert not task.done()
+    running.add(("u1", "TestSoul"))
+    lock.release()
+    with pytest.raises(HTTPException) as exc:
+        await task
+    assert exc.value.status_code == 409
+    assert db_file.read_bytes() == b"original database"
+    assert not list(tmp_path.glob("*.bak-*"))
 
 
 @pytest.mark.parametrize("running", [set(), {("u2", "TestSoul")}, {("u1", "OtherSoul")}])
