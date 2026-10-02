@@ -103,7 +103,7 @@ mcp-memu-server/
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/conversation/{id}/consolidation/force` | POST | Force consolidation now (lock-safe) |
 | `/conversation/{id}/consolidation/retry` | POST | Manual retry of a failed consolidation (409 when the last run did not fail). Failed paid runs never retry automatically. |
-| `/memorize/retry` | POST | Scoped launcher recovery of failed Memorize using saved sources/checkpoints; an active Retry keeps activity paused until success |
+| `/memorize/retry` | POST | Scoped launcher recovery through existing all-chat assembly, including activity and context-only tails when the original chat has no new tail. Original history owner and completion obligations retained; activity stays paused until success |
 | `/souls/{soul_id}/relationships` | GET/POST | User-declared relationship entities; POST may promote an exact entity ID |
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or remove Relationship properties from one stable `entity:<entities.id>` reference |
 | `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot; reject concurrent self-description changes before saving |

@@ -326,7 +326,6 @@ async def run_memorize_segments(
     durable_segments_committed = False
     terminal_result: str = "success"
     failure_record: dict[str, Any] | None = None
-    retry_targets: dict[str, Any] | None = None
     rolling_summaries_raw = safe.get("_background_rolling_summaries")
     rolling_summaries: dict[str, dict[str, Any]] = (
         rolling_summaries_raw if isinstance(rolling_summaries_raw, dict) else {}
@@ -341,6 +340,7 @@ async def run_memorize_segments(
                     user_id=uid,
                     soul_id=soul_id,
                 )
+                failure_record = state_row.get("memorize_failure")
                 raw_ret_ids = state_row.get("retrieval_ids_since_consolidation")
                 if isinstance(raw_ret_ids, list):
                     cached_retrieval_ids = [str(rid).strip() for rid in raw_ret_ids if str(rid).strip()]
@@ -469,19 +469,14 @@ async def run_memorize_segments(
                 ctx.logger.info("memorize cancelled before batch extraction")
                 terminal_result = "cancelled"
             else:
-                if any(job["memory_producing"] for job in segment_jobs):
-                    previous, _, _ = run_ctx.load_turn_state_and_soul_card(
-                        conversation_id, user_id=uid, soul_id=soul_id,
-                    )
-                    old_failure = previous.get("memorize_failure")
-                    retry_targets = old_failure["targets"] if old_failure else None
+                if failure_record is not None or any(job["memory_producing"] for job in segment_jobs):
                     targets = final_cursors or {
                         conversation_id: {"cursor": memorize_segments[-1][3], "memory_producing": True},
                     }
                     failure_record = {
                         "conversation_id": conversation_id,
-                        "error": old_failure["error"] if old_failure else "Memorize interrupted before completion. Retry in launcher.",
-                        "paused": bool(old_failure), "targets": {**targets, **(retry_targets or {})},
+                        "error": failure_record["error"] if failure_record else "Memorize interrupted before completion. Retry in launcher.",
+                        "paused": bool(failure_record), "targets": {**targets, **(failure_record["targets"] if failure_record else {})},
                     }
                     ctx.write_conversation_state(
                         conversation_id, user_id=uid, soul_id=soul_id,
@@ -688,7 +683,7 @@ async def run_memorize_segments(
                     if fc_cid == conversation_id and pending_segment_ids:
                         created_segment_paths.clear()
                         durable_segments_committed = True
-            elif conversation_id and has_results and pending_segment_ids:
+            if conversation_id and has_results and pending_segment_ids and conversation_id not in (final_cursors or {}):
                 ctx.write_conversation_state(
                     conversation_id,
                     soul_id=soul_id,
@@ -718,7 +713,7 @@ async def run_memorize_segments(
                     )
 
             if failure_record is not None and not cancelled:
-                if retry_targets and not run_ctx.memorize_targets_complete(uid, soul_id, retry_targets):
+                if failure_record["paused"] and not run_ctx.memorize_targets_complete(uid, soul_id, failure_record["targets"]):
                     raise RuntimeError("Failed Memorize still has unfinished source checkpoints; restore the source and Retry.")
                 ctx.write_conversation_state(
                     conversation_id, user_id=uid, soul_id=soul_id,

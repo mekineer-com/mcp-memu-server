@@ -2388,32 +2388,23 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
                 progress_key=marker, memorize_progress=_MEMORIZE_PROGRESS,
             )
         return {"ok": True, "status": "already_memorized"}
+    state, _, _ = _load_turn_state_and_soul_card(cid, user_id=user_id, soul_id=soul_id)
     storage, hermes, sessions, channels = _resolve_cross_source_paths()
-    remaining = []
-    for source_cid, target in failure["targets"].items():
-        if _memorize_targets_complete(user_id, soul_id, {source_cid: target}):
-            continue
-        state, _, _ = _load_turn_state_and_soul_card(source_cid, user_id=user_id, soul_id=soul_id)
-        memory_producing = target.get("memory_producing", True)
-        prefix = "digest" if memory_producing else "rolling_summary"
-        saved_cursor = _effective_digest_cursor_from_row(state) if memory_producing else int(state.get("rolling_summary_cursor_id") or 0)
-        cursor, floor, web_source = _resolve_source_cursor(
-            source_cid, saved_cursor, state.get(f"{prefix}_cursor_source_message_id"),
-            state.get(f"{prefix}_cursor_ts"), rolling=not memory_producing, hermes_home_path=hermes,
-        )
-        history = _cross_history._load_tail_for_source_conversation(
-            conversation_id=source_cid, user_id=user_id, soul_id=soul_id, since_cursor=cursor,
-            recent_fallback_messages=0, storage_dir=storage, hermes_home_path=hermes,
-            sessions_index_path=sessions, state_db_path=channels, min_timestamp=floor,
-        )
-        if not history:
-            raise HTTPException(status_code=409, detail=f"Failed Memorize source is unavailable: {source_cid}. Restore it before Retry.")
-        remaining.append((source_cid, history, saved_cursor, memory_producing, web_source))
-    remaining.sort(key=lambda source: not source[3])
-    source_cid, history, saved_cursor, memory_producing, web_source = remaining[0]
+    memory_producing = failure["targets"].get(cid, {}).get("memory_producing", state.get("memorize_chat", True))
+    prefix = "digest" if memory_producing else "rolling_summary"
+    saved_cursor = _effective_digest_cursor_from_row(state) if memory_producing else int(state.get("rolling_summary_cursor_id") or 0)
+    cursor, floor, web_source = _resolve_source_cursor(
+        cid, saved_cursor, state.get(f"{prefix}_cursor_source_message_id"),
+        state.get(f"{prefix}_cursor_ts"), rolling=not memory_producing, hermes_home_path=hermes,
+    )
+    history = _cross_history._load_tail_for_source_conversation(
+        conversation_id=cid, user_id=user_id, soul_id=soul_id, since_cursor=cursor,
+        recent_fallback_messages=0, storage_dir=storage, hermes_home_path=hermes,
+        sessions_index_path=sessions, state_db_path=channels, min_timestamp=floor,
+    )
     payload = _build_cross_conversation_payload(
-        source_cid, user_id, soul_id, {"memorize_chat": memory_producing}, history,
-        saved_cursor, memory_producing,
+        cid, user_id, soul_id, {"memorize_chat": state.get("memorize_chat", True)}, history,
+        saved_cursor, bool(state.get("memorize_chat", True)),
         trigger_web_source=web_source,
     )
     if payload is None:
@@ -3237,8 +3228,6 @@ def _build_cross_conversation_payload(
     trigger_memorize = trigger_memorize_raw if isinstance(trigger_memorize_raw, bool) else trigger_memorize_default
     trigger_chat_name = str(safe.get("chat_name") or "").strip()
     trigger_tail = _normalize_conversation(trigger_history)
-    if not trigger_tail:
-        return None
 
     for i, msg in enumerate(trigger_tail):
         msg["source_label"] = trigger_label
@@ -3258,14 +3247,16 @@ def _build_cross_conversation_payload(
         if isinstance(ts, (int, float)) and "received_at" not in msg:
             msg["received_at"] = datetime.fromtimestamp(ts / 1000.0, tz=UTC).isoformat()
 
-    trigger_checkpoint = _source_cursor_checkpoint(trigger_tail, web_source=trigger_web_source)
-    if trigger_checkpoint is None:
-        raise RuntimeError(
-            f"memorize tail has no checkpoint for {cid}; "
-            "repair the conversation cursor with patch_conversation_state_endpoint"
-        )
-    trigger_checkpoint["memory_producing"] = trigger_memorize
-    final_cursors: dict[str, dict[str, Any]] = {cid: trigger_checkpoint}
+    final_cursors: dict[str, dict[str, Any]] = {}
+    if trigger_tail:
+        trigger_checkpoint = _source_cursor_checkpoint(trigger_tail, web_source=trigger_web_source)
+        if trigger_checkpoint is None:
+            raise RuntimeError(
+                f"memorize tail has no checkpoint for {cid}; "
+                "repair the conversation cursor with patch_conversation_state_endpoint"
+            )
+        trigger_checkpoint["memory_producing"] = trigger_memorize
+        final_cursors[cid] = trigger_checkpoint
     all_messages = list(trigger_tail)
 
     con = _sqlite_connect(db_path)
@@ -3299,6 +3290,8 @@ def _build_cross_conversation_payload(
             final_cursors[other_cid] = final_cursor
         all_messages.extend(tail_msgs)
 
+    if not all_messages:
+        return None
     all_messages.sort(key=_cross_history.message_sort_key)
 
     return {

@@ -87,6 +87,9 @@ async def test_direct_and_tool_retrieve_refuse_paused_scope(monkeypatch):
     with pytest.raises(HTTPException) as blocked:
         await main.retrieve({"where": {"user_id": uid, "soul_id": sid}, "queries": ["Test"]})
     assert blocked.value.detail["code"] == "soul_paused"
+    with pytest.raises(HTTPException) as tool_blocked:
+        await main.mcp_memu_retrieve(main._mcp_tools.MemuRetrieveRequest(user_id=uid, soul_id=sid, query="Test"))
+    assert tool_blocked.value.detail["code"] == "soul_paused"
 
 
 @pytest.mark.asyncio
@@ -165,7 +168,7 @@ async def test_cross_checkpoint_failure_retains_published_history_and_retry_uses
     monkeypatch.setattr(main, "_write_conversation_state", real_write)
     reader = main._cross_history._load_tail_for_source_conversation
     monkeypatch.setattr(main._cross_history, "_load_tail_for_source_conversation", lambda **kwargs: [] if kwargs["conversation_id"] == second else reader(**kwargs))
-    with pytest.raises(HTTPException, match="source is unavailable"):
+    with pytest.raises(HTTPException, match="unavailable"):
         await main.retry_memorize(uid, sid, BackgroundTasks())
     assert len(calls) == 1 and second in main._paid_work_state(uid, sid)["memorize_failure"]["targets"]
     monkeypatch.setattr(main._cross_history, "_load_tail_for_source_conversation", reader)
@@ -185,9 +188,82 @@ async def test_cross_checkpoint_failure_retains_published_history_and_retry_uses
     tasks = BackgroundTasks()
     await main.retry_memorize(uid, sid, tasks)
     await tasks()
-    assert len(calls) == 3 and calls[-1]["conversation_id"] == second
+    assert len(calls) == 3 and calls[-1]["conversation_id"] == first
     assert main._paid_work_state(uid, sid)["memorize_failure"] is None
     assert main._memorize_targets_complete(uid, sid, payload["_final_cursors"])
+    state, _, _ = main._load_turn_state_and_soul_card(first, user_id=uid, soul_id=sid)
+    assert calls[-1]["segments"][0]["segment"]["segment_id"] in state["pending_segment_ids"]
+
+
+@pytest.mark.asyncio
+async def test_retry_assembles_remaining_activity_under_original_owner(monkeypatch):
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:activity-owner"
+    main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={"digest_cursor": 0, "last_memorize_at": datetime.now(UTC).isoformat()})
+    main._conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=main._get_storage_dir(main._CONFIG), user_id=uid, soul_id=sid, conversation_id=cid,
+        history=[{"role": "user", "content": "Already consumed"}],
+    )
+    main._record_activity_message(user_id=uid, soul_id=sid, recap="Completed a fictional task")
+    activity = main._activity_messages.activity_conversation_id(sid)
+    targets = {activity: {"cursor": 1, "memory_producing": True}}
+    main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={"memorize_failure": {
+        "conversation_id": cid, "error": "Failed", "paused": True, "targets": targets,
+    }})
+    class Service:
+        async def memorize_segments_batch(self, **kwargs):
+            assert kwargs["conversation_id"] == cid
+            assert "Completed a fictional task" in kwargs["segments"][0]["raw_text"]
+            return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: Service())
+    monkeypatch.setattr(main, "_should_run_consolidation", lambda *_args: False)
+    tasks = BackgroundTasks()
+    await main.retry_memorize(uid, sid, tasks)
+    await tasks()
+    assert main._memorize_targets_complete(uid, sid, targets)
+    assert main._paid_work_state(uid, sid)["memorize_failure"] is None
+    state, _, _ = main._load_turn_state_and_soul_card(cid, user_id=uid, soul_id=sid)
+    assert state["pending_segment_ids"] and all(item.startswith(cid + ':') for item in state["pending_segment_ids"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovering", [False, True])
+async def test_context_only_remainder_recovers_existing_failure_without_creating_new_one(monkeypatch, recovering):
+    uid, sid, cid, background = "TestOwner", "TestSoul", "chat:context-owner", "chat:background"
+    main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={"digest_cursor": 0, "last_memorize_at": datetime.now(UTC).isoformat()})
+    main._conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=main._get_storage_dir(main._CONFIG), user_id=uid, soul_id=sid, conversation_id=cid,
+        history=[{"role": "user", "content": "Already consumed"}],
+    )
+    main._write_conversation_state(background, user_id=uid, soul_id=sid, updates={"memorize_chat": False})
+    main._conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=main._get_storage_dir(main._CONFIG), user_id=uid, soul_id=sid, conversation_id=background,
+        history=[{"role": "user", "content": "Earlier context"}, {"role": "assistant", "content": "Remaining context"}],
+    )
+    targets = {background: {"cursor": 1, "memory_producing": False}}
+    if recovering:
+        main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={
+            "memorize_failure": {"conversation_id": cid, "error": "Failed", "paused": True, "targets": targets},
+            "last_consolidation_error": "Reflection failed", "last_consolidation_error_at": datetime.now(UTC).isoformat(),
+        })
+    class Service:
+        async def memorize_segments_batch(self, **kwargs):
+            failure = main._paid_work_state(uid, sid)["memorize_failure"]
+            assert (failure is not None and failure["paused"]) if recovering else failure is None
+            assert all(segment["segment"]["context_only"] for segment in kwargs["segments"])
+            return [{"context_only": True} for _segment in kwargs["segments"]]
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: Service())
+    monkeypatch.setattr(main, "_should_run_consolidation", lambda *_args: False)
+    tasks = BackgroundTasks()
+    if recovering:
+        await main.retry_memorize(uid, sid, tasks)
+    else:
+        payload = main._build_cross_conversation_payload(cid, uid, sid, {}, [], 0)
+        await main.memorize(payload, tasks, True)
+    await tasks()
+    assert main._memorize_targets_complete(uid, sid, targets)
+    assert main._paid_work_state(uid, sid)["memorize_failure"] is None
+    if recovering:
+        assert main._soul_activity_pause(uid, sid) == "Reflection failed"
 
 
 @pytest.mark.asyncio
