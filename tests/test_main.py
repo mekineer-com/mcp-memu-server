@@ -194,7 +194,7 @@ async def test_category_review_failure_rolls_back_prose_revision_and_cache(monke
 
         monkeypatch.setattr(store.memory_category_repo, "approve_category_summary", fail_approval)
 
-    payload = {"summary": "## Section\nEdited", "approved": True, "displayed_summary": "shown", "summaries_revision": 0}
+    payload = {"summary": "## Section\nEdited", "approved": True, "displayed_summary": "shown", "displayed_title": "Review", "displayed_description": "", "summaries_revision": 0}
     if failure == "embedding":
         payload["title"] = "Changed title"
     with pytest.raises(RuntimeError, match="failed"):
@@ -229,7 +229,7 @@ async def test_category_review_rejects_edit_during_embedding(monkeypatch, tmp_pa
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
     payload = {"summary": "## Section\nEdited", "title": "Requested title"}
     if snapshot:
-        payload.update(displayed_summary="shown", summaries_revision=0)
+        payload.update(displayed_summary="shown", displayed_title="Review", displayed_description="", summaries_revision=0)
     task = asyncio.create_task(_route_endpoint("memory_graph_category_update")("c1", "TestOwner", "TestSoul", payload))
     try:
         await asyncio.wait_for(entered.wait(), timeout=5)
@@ -252,6 +252,36 @@ async def test_category_review_rejects_edit_during_embedding(monkeypatch, tmp_pa
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["name", "description"])
+@pytest.mark.parametrize("action", ["update", "approve", "memory_attach", "memory_detach"])
+async def test_category_review_rejects_unseen_identity(monkeypatch, tmp_path, field, action):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    service = _review_test_service(tmp_path, monkeypatch, scope)
+    store = service.database
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
+    store.memory_category_repo.update_category(category_id="c1", **{field: "Unseen text"})
+    payload = {"displayed_summary": "shown", "displayed_title": "Review", "displayed_description": "", "summaries_revision": 0}
+    if action == "update":
+        payload.update(summary="## Section\nEdited", approved=True)
+    args = ("c1", "m1", "TestOwner", "TestSoul") if action.startswith("memory_") else ("c1", "TestOwner", "TestSoul")
+    endpoint = _route_endpoint(f"memory_graph_category_{action}")
+    with pytest.raises(HTTPException) as stale:
+        await endpoint(*args, payload)
+    assert (stale.value.status_code, stale.value.detail) == (409, "summary_snapshot_stale")
+    saved = store.memory_category_repo.list_categories(scope)["c1"]
+    assert saved.summary == "shown" and saved.approved_summary is None
+    assert getattr(saved, field) == "Unseen text"
+    assert store.category_item_repo.list_relations(scope) == []
+    assert not (tmp_path / "journals").exists()
+    con = main._sqlite_connect(tmp_path / "soul.db")
+    assert con.execute("SELECT summaries_revision FROM soul_state").fetchone()[0] == 0
+    con.close()
+    payload.update(displayed_title=saved.name, displayed_description=saved.description or "")
+    result = await endpoint(*args, payload)
+    assert result["summaries_revision"] == 1
 
 
 def test_category_membership_caller_noop_does_not_commit(monkeypatch, tmp_path):
@@ -5623,6 +5653,8 @@ def test_memory_graph_category_update_reserves_summary_revision(monkeypatch: pyt
             payload={
                 "summary": "edited",
                 "displayed_summary": "shown",
+                "displayed_title": "Review",
+                "displayed_description": "",
                 "summaries_revision": 0,
             },
         )
@@ -5634,13 +5666,13 @@ def test_memory_graph_category_update_reserves_summary_revision(monkeypatch: pyt
     journal = tmp_path / "journals" / "s.summary_journal.jsonl"
     assert json.loads(journal.read_text().splitlines()[0])["summary_before"] == "shown"
     approved = asyncio.run(_route_endpoint("memory_graph_category_approve")(
-        "c1", "u", "s", {"displayed_summary": saved.summary, "summaries_revision": 1},
+        "c1", "u", "s", {"displayed_summary": saved.summary, "displayed_title": saved.name, "displayed_description": saved.description or "", "summaries_revision": 1},
     ))
     assert approved["summaries_revision"] == 2
     assert service.database.memory_category_repo.list_categories({"user_id": "u", "soul_id": "s"})["c1"].approved_summary == saved.summary
     with pytest.raises(HTTPException) as stale:
         asyncio.run(_route_endpoint("memory_graph_category_approve")(
-            "c1", "u", "s", {"displayed_summary": "shown", "summaries_revision": 2},
+            "c1", "u", "s", {"displayed_summary": "shown", "displayed_title": "Review", "displayed_description": "", "summaries_revision": 2},
         ))
     assert stale.value.status_code == 409
     con = main._sqlite_connect(tmp_path / "soul.db")
@@ -5674,7 +5706,7 @@ def test_category_membership_routes_reserve_snapshot_and_forward_state(
             "memory:m1",
             "user",
             "soul",
-            {"displayed_summary": "shown", "summaries_revision": 0},
+            {"displayed_summary": "shown", "displayed_title": "Review", "displayed_description": "", "summaries_revision": 0},
         )
     )
     with pytest.raises(main.HTTPException) as stale:
@@ -5684,7 +5716,7 @@ def test_category_membership_routes_reserve_snapshot_and_forward_state(
                 "m2",
                 "user",
                 "soul",
-                {"displayed_summary": "shown", "summaries_revision": 0},
+                {"displayed_summary": "shown", "displayed_title": "Review", "displayed_description": "", "summaries_revision": 0},
             )
         )
     assert stale.value.status_code == 409
@@ -5694,7 +5726,7 @@ def test_category_membership_routes_reserve_snapshot_and_forward_state(
             "m1",
             "user",
             "soul",
-            {"displayed_summary": "shown", "summaries_revision": 1},
+            {"displayed_summary": "shown", "displayed_title": "Review", "displayed_description": "", "summaries_revision": 1},
         )
     )
 
@@ -5719,7 +5751,7 @@ def test_category_membership_routes_reserve_snapshot_and_forward_state(
     monkeypatch.setattr(service, "graph_memory", lambda *_args, **_kwargs: None)
     with pytest.raises(HTTPException) as missing:
         asyncio.run(_route_endpoint("memory_graph_category_memory_attach")(
-            "c1", "m1", "user", "soul", {"displayed_summary": "shown", "summaries_revision": 2},
+            "c1", "m1", "user", "soul", {"displayed_summary": "shown", "displayed_title": "Review", "displayed_description": "", "summaries_revision": 2},
         ))
     assert missing.value.status_code == 404
 
@@ -5758,7 +5790,7 @@ def test_category_membership_routes_map_engine_errors(
                 "m1",
                 "user",
                 "soul",
-                {"displayed_summary": "shown", "summaries_revision": 0},
+                {"displayed_summary": "shown", "displayed_title": "Review", "displayed_description": "", "summaries_revision": 0},
             )
         )
     assert exc.value.status_code == status
@@ -5769,9 +5801,14 @@ def test_category_membership_routes_map_engine_errors(
         con.close()
 
 
-def test_category_membership_routes_require_snapshot():
+@pytest.mark.parametrize("payload", [
+    {},
+    {"displayed_summary": "shown", "summaries_revision": 0},
+    {"displayed_summary": "shown", "summaries_revision": 0, "displayed_title": "Review", "displayed_description": None},
+])
+def test_category_membership_routes_require_snapshot(payload):
     with pytest.raises(main.HTTPException) as exc:
-        asyncio.run(_route_endpoint("memory_graph_category_memory_attach")("c1", "m1", "user", "soul", {}))
+        asyncio.run(_route_endpoint("memory_graph_category_memory_attach")("c1", "m1", "user", "soul", payload))
     assert exc.value.status_code == 400
 
 
