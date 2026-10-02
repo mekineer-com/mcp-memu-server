@@ -223,6 +223,7 @@ def _session_app(
     register_mentra_routes(
         app,
         get_config=lambda: config,
+        get_activity_pause=lambda *_args: calls.get("pause_reason"),
         get_service_from_scope=get_service,
         load_turn_state_and_soul_card=load_state,
         build_identity_context=lambda soul_id: f"Today is server time.\nYou are {soul_id}.",
@@ -248,7 +249,7 @@ def _session_app(
 def test_mentra_health_requires_enabled_configured_bearer() -> None:
     config = {"mentra": {"enabled": False, "integration_bearer_token": ""}}
     app = FastAPI()
-    register_mentra_routes(app, get_config=lambda: config)
+    register_mentra_routes(app, get_config=lambda: config, get_activity_pause=lambda *_args: None)
     client = TestClient(app)
 
     assert client.get("/integration/mentra/health").status_code == 404
@@ -677,6 +678,24 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
         "tokenMs",
         "totalMs",
     }
+
+
+def test_pause_blocks_new_sitting_but_keeps_lease_renewal_heartbeat_and_end(monkeypatch, tmp_path):
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    calls["pause_reason"] = "Memorize failed"
+    response = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
+    assert response.status_code == 409 and response.json()["detail"]["code"] == "soul_paused"
+    assert not calls["token"] and not mentra_routes._leases
+    calls["pause_reason"] = None
+    response = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
+    response.raise_for_status()
+    session_id = response.json()["session_id"]
+    calls["pause_reason"] = "Memorize failed"
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    heartbeat = client.post(f"/integration/mentra/session/{session_id}/heartbeat", json=scope, headers=AUTH)
+    assert heartbeat.status_code == 200 and heartbeat.json()["pause_reason"] == "Memorize failed"
+    assert client.post(f"/integration/mentra/session/{session_id}/token", json=scope, headers=AUTH).status_code == 200
+    assert client.post(f"/integration/mentra/session/{session_id}/end", json=scope, headers=AUTH).status_code == 200
 
 
 def test_lease_resume_heartbeat_and_end_are_scoped(
@@ -1611,6 +1630,7 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
         f"/integration/mentra/session/{sitting_id}/heartbeat", json=scope, headers=AUTH
     ).json() == {
         "ok": True,
+        "pause_reason": None,
         "background_error": "Photo memory processing failed; the original remains saved.",
     }
 
@@ -1684,6 +1704,7 @@ def test_snapshot_finalize_failure_keeps_bytes_and_reports_error(
     )
     assert heartbeat.json() == {
         "ok": True,
+        "pause_reason": None,
         "background_error": "Photo memory processing failed; the original remains saved.",
     }
     assert client.post(

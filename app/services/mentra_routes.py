@@ -639,6 +639,7 @@ def register_mentra_routes(
     app: FastAPI,
     *,
     get_config: Callable[[], dict[str, Any]],
+    get_activity_pause: Callable[[str, str], str | None],
     get_service_from_scope: Callable[[dict[str, str]], Any] | None = None,
     load_turn_state_and_soul_card: Callable[..., tuple[dict[str, Any], str | None, Any]] | None = None,
     build_identity_context: Callable[[str], str] | None = None,
@@ -859,6 +860,12 @@ def register_mentra_routes(
         phase_started = started_at
         timings: dict[str, int] = {}
         scope = {"user_id": body.user_id, "soul_id": body.soul_id}
+        reason = get_activity_pause(body.user_id, body.soul_id)
+        if reason:
+            raise HTTPException(status_code=409, detail={
+                "code": "soul_paused", "soul_id": body.soul_id,
+                "message": f"{body.soul_id} is paused. Retry in OpenAlma launcher.", "reason": reason,
+            })
 
         def record_failure(exc: Exception) -> None:
             if record_call is not None:
@@ -1128,6 +1135,7 @@ def register_mentra_routes(
         errors = _image_finalize_errors.get((body.user_id, body.soul_id, session_id))
         return {
             "ok": True,
+            "pause_reason": get_activity_pause(body.user_id, body.soul_id),
             **(
                 {"background_error": "Photo memory processing failed; the original remains saved."}
                 if errors

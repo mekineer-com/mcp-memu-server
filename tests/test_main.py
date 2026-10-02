@@ -769,6 +769,7 @@ async def test_atomic_chat_profile_maps_openai_config(monkeypatch: pytest.Monkey
         main,
         "_CONFIG",
         {
+            **main._CONFIG,
             "turn_response_sentences": 4,
             "debug": {"log_prompts": True},
             "llm": {
@@ -780,7 +781,7 @@ async def test_atomic_chat_profile_maps_openai_config(monkeypatch: pytest.Monkey
         },
     )
 
-    out = await main.atomic_chat_profile()
+    out = await main.atomic_chat_profile("TestOwner", "TestSoul")
 
     assert out == {
         "ok": True,

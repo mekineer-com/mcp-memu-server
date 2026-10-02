@@ -1838,6 +1838,7 @@ _owner.register_owner_routes(
 _mentra_routes.register_mentra_routes(
     app,
     get_config=lambda: _CONFIG,
+    get_activity_pause=lambda uid, sid: _soul_activity_pause(uid, sid),
     get_service_from_scope=lambda scope: _get_service_from_payload({"user": scope}),
     load_turn_state_and_soul_card=_load_turn_state_and_soul_card,
     build_identity_context=lambda soul_id: _build_retrieve_identity_context(
@@ -4355,7 +4356,12 @@ def _atomic_chat_settings_from_config(cfg: dict[str, Any]) -> dict[str, str]:
 
 
 @app.get("/integration/atomic/chat_profile", operation_id="atomic_chat_profile", tags=["integration"])
-async def atomic_chat_profile():
+async def atomic_chat_profile(user_id: str, soul_id: str):
+    scope = _extract_scope(_safe_payload({"user": {"user_id": user_id, "soul_id": soul_id}})) or {}
+    uid, sid = str(scope.get("user_id") or ""), str(scope.get("soul_id") or "")
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    _require_soul_active(uid, sid)
     return {"ok": True, "settings": _atomic_chat_settings_from_config(_CONFIG)}
 
 

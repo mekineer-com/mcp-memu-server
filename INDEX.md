@@ -72,9 +72,9 @@ mcp-memu-server/
 | `/integration/mentra/host/seen` | POST | Record bounded OpenAlma Mentra host capabilities for one device while preserving Iris installation fields |
 | `/integration/mentra/earcons/{name}.wav` | GET | Serve a bundled audio cue; public, unauthenticated |
 | `/integration/mentra/status` | GET | Bearer-authenticated installation discovery, scoped active lease, global busy/start claims, and latest-sitting transcript gap. Remains readable when Mentra is disabled so existing leases cannot disappear from Stop protection; new starts still return 404. Static earcons remain public. |
-| `/integration/mentra/session/start` | POST | Authenticated soul bootstrap plus constrained Gemini Live token; returns a fresh sitting ID and next device-conversation transcript sequence |
+| `/integration/mentra/session/start` | POST | Authenticated soul bootstrap plus constrained Gemini Live token; refuses paused Souls before bootstrap/token; returns a fresh sitting ID and next device-conversation transcript sequence |
 | `/integration/mentra/session/{id}/token` | POST | Mint a fresh constrained Gemini token for the unchanged active sitting before a replacement socket |
-| `/integration/mentra/session/{id}/heartbeat` / `end` | POST | Renew or release one sitting-scoped Mentra lease; heartbeat repeats each image-processing failure until that image succeeds or the sitting ends |
+| `/integration/mentra/session/{id}/heartbeat` / `end` | POST | Renew or release one sitting-scoped Mentra lease; heartbeat includes nullable `pause_reason` and repeats each image-processing failure until that image succeeds or the sitting ends. Existing token renewal, append and End remain available while paused |
 | `/integration/mentra/session/{id}/recall` | POST | Sitting-scoped, read-only forced retrieve over the cursor-bounded Mentra tail; returns compact ID-free context for Gemini `SILENT` delivery |
 | `/integration/mentra/session/{id}/snapshot` | POST | Accept one durable image snapshot for background processing |
 | `/integration/mentra/session/{id}/snapshot/replay` | POST | Replay a stored snapshot that failed its first processing attempt |
@@ -82,7 +82,7 @@ mcp-memu-server/
 | `/integration/mentra/session/{id}/transcripts/append` | POST | Redacted-validation, contiguous/idempotent transcript, gap, or sitting-summary append into the atomic Mentra snapshot; conversational rows queue shared auto-memorize while gap markers never enter AI history |
 | `/integration/atomic/session_start` | POST | Atomic session bootstrap: stripped retrieve snapshot → seeds `chat:atomic-<uuid>` |
 | `/integration/atomic/session_end` | POST | Atomic session close: persists transcript, then atomically records the activity recap and End marker |
-| `/integration/atomic/chat_profile` | GET | Atomic-facing LLM profile (includes API key — do not log) |
+| `/integration/atomic/chat_profile` | GET | Scoped `user_id` + `soul_id` generation gate and LLM profile (includes API key — do not log); paused Soul returns 409 |
 | `/integration/atomic/prompt_log` | POST | Atomic prompt-log sink (writes to `mcp-memu-server.log` when `debug.log_prompts` enabled) |
 | `/integration/atomic/atoms` | GET | Paginated atom list with canonical dossier metadata; `category_id`/`tag_id` filter, `cursor` pagination |
 | `/integration/atomic/tags` | GET | Category/tag list with kind, activity state, and counts |

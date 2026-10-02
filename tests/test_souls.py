@@ -20,7 +20,7 @@ def client_for(tmp_path, *, with_owner=True):
     app = FastAPI()
     souls.register_soul_routes(app, get_config=lambda: cfg)
     owner.register_owner_routes(app, get_config=lambda: cfg)
-    register_mentra_routes(app, get_config=lambda: cfg)
+    register_mentra_routes(app, get_config=lambda: cfg, get_activity_pause=lambda *_args: None)
     if with_owner:
         owner.create_owner(cfg, "Marcos")
     return TestClient(app), cfg

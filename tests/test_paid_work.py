@@ -27,6 +27,24 @@ def test_pause_record_survives_restart_and_retry_without_pausing_other_soul():
     assert soul_state.activity_pause(state, memorize_running=False, consolidation_running=True) == "Reflection failed"
 
 
+def test_atomic_profile_gates_only_paused_soul_before_returning_credentials(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    main._write_conversation_state("saved-chat", user_id="TestOwner", soul_id="TestSoul", updates={
+        "memorize_failure": {"conversation_id": "saved-chat", "error": "Failed", "paused": True, "targets": {}},
+    })
+    calls = []
+    monkeypatch.setattr(main, "_atomic_chat_settings_from_config", lambda _config: calls.append(True) or {"api_key": "fake"})
+    client = TestClient(main.app)
+    response = client.get("/integration/atomic/chat_profile", params={"user_id": "TestOwner", "soul_id": "TestSoul"})
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "soul_paused"
+    assert not calls
+    response = client.get("/integration/atomic/chat_profile", params={"user_id": "TestOwner", "soul_id": "OtherSoul"})
+    assert response.status_code == 200 and calls == [True]
+    assert client.get("/integration/atomic/chat_profile").status_code == 422
+
+
 @pytest.mark.asyncio
 async def test_invalid_memorize_source_is_rejected_before_admission(monkeypatch):
     monkeypatch.setattr(main, "_safe_payload", lambda payload: payload)
