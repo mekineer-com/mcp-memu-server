@@ -185,10 +185,29 @@ async def test_cross_checkpoint_failure_retains_published_history_and_retry_uses
         storage_dir=main._get_storage_dir(main._CONFIG), user_id=uid, soul_id=sid,
         conversation_id=second, history=history,
     )
+    third = "chat:audit-new"
+    main._write_conversation_state(third, user_id=uid, soul_id=sid, updates={"memorize_chat": True})
+    main._conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=main._get_storage_dir(main._CONFIG), user_id=uid, soul_id=sid,
+        conversation_id=third, history=history,
+    )
+    def fail_later_checkpoint(cid, **kwargs):
+        if cid == third and "digest_cursor" in kwargs["updates"]:
+            raise RuntimeError("Later checkpoint failed")
+        return real_write(cid, **kwargs)
+    monkeypatch.setattr(main, "_write_conversation_state", fail_later_checkpoint)
+    tasks = BackgroundTasks()
+    await main.retry_memorize(uid, sid, tasks)
+    with pytest.raises(RuntimeError, match="Later checkpoint failed"):
+        await tasks()
+    state, _, _ = main._load_turn_state_and_soul_card(first, user_id=uid, soul_id=sid)
+    assert calls[-1]["segments"][0]["segment"]["segment_id"] in state["pending_segment_ids"]
+    assert all(Path(segment["local_path"]).is_file() for segment in calls[-1]["segments"])
+    monkeypatch.setattr(main, "_write_conversation_state", real_write)
     tasks = BackgroundTasks()
     await main.retry_memorize(uid, sid, tasks)
     await tasks()
-    assert len(calls) == 3 and calls[-1]["conversation_id"] == first
+    assert len(calls) == 4 and calls[-1]["conversation_id"] == first
     assert main._paid_work_state(uid, sid)["memorize_failure"] is None
     assert main._memorize_targets_complete(uid, sid, payload["_final_cursors"])
     state, _, _ = main._load_turn_state_and_soul_card(first, user_id=uid, soul_id=sid)

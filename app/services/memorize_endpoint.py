@@ -591,6 +591,21 @@ async def run_memorize_segments(
                 created_segment_paths.clear()
                 if conversation_id:
                     _remove_manifest_ranges(segments_dir.parent / "manifest.json", reserved_manifest_ranges)
+            # Publish the original owner's history before advancing other chats.
+            if conversation_id and has_results and pending_segment_ids and conversation_id not in (final_cursors or {}):
+                ctx.write_conversation_state(
+                    conversation_id,
+                    soul_id=soul_id,
+                    user_id=uid,
+                    updates=_cursor_updates_for_unit(
+                        memory_producing=True,
+                        cursor=None,
+                        now_iso=datetime.now(UTC).isoformat(),
+                        pending_segment_ids=pending_segment_ids,
+                    ),
+                )
+                created_segment_paths.clear()
+                durable_segments_committed = True
             if has_results and final_cursors:
                 now_iso = datetime.now(UTC).isoformat()
                 if cross_memorize:
@@ -683,18 +698,6 @@ async def run_memorize_segments(
                     if fc_cid == conversation_id and pending_segment_ids:
                         created_segment_paths.clear()
                         durable_segments_committed = True
-            if conversation_id and has_results and pending_segment_ids and conversation_id not in (final_cursors or {}):
-                ctx.write_conversation_state(
-                    conversation_id,
-                    soul_id=soul_id,
-                    user_id=uid,
-                    updates=_cursor_updates_for_unit(
-                        memory_producing=True,
-                        cursor=None,
-                        now_iso=datetime.now(UTC).isoformat(),
-                        pending_segment_ids=pending_segment_ids,
-                    ),
-                )
             if conversation_id and has_memory_results:
                 # Pending ids now reference these files; the failure path must not unlink them
                 # or consolidation would reject the whole pending list as missing history.
