@@ -38,13 +38,9 @@ def _load_client(config_path: Path) -> Any:
     embedding = config.get("llm", {}).get("embedding", {})
     if not isinstance(embedding, dict):
         embedding = {}
-    key = str(
-        embedding.get("api_key")
-        or config.get("mentra", {}).get("gemini_api_key")
-        or ""
-    ).strip()
+    key = str(embedding.get("api_key") or "").strip()
     if not key:
-        raise MigrationError("config mentra.gemini_api_key is required")
+        raise MigrationError("config llm.embedding.api_key is required")
     return HTTPEmbeddingClient(
         base_url=str(embedding.get("base_url") or EMBEDDING_BASE_URL),
         api_key=key,

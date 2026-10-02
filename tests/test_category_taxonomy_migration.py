@@ -64,6 +64,22 @@ def _database(path) -> None:
         conn.commit()
 
 
+def test_service_rejects_mismatched_embedding_profile(tmp_path):
+    from memu.app.service import MemoryService
+    path = tmp_path / "soul.db"
+    service = MemoryService(database_config={"metadata_store": {
+        "provider": "sqlite", "dsn": f"sqlite:///{path}",
+        "embedding_profile": "text-embedding-3-large:3072",
+    }}, user_config={"model": _Scope})
+    service.database.memory_item_repo.create_item(
+        memory_type="knowledge", summary="A fictional memory", embedding=[0.1] * 3072,
+        user_data={"user_id": "TestOwner", "soul_id": "TestSoul"},
+    )
+    service.database._sessions.engine.dispose()
+    with pytest.raises(RuntimeError, match="embedding profile mismatch"):
+        migration._build_service({}, path)
+
+
 def test_inventory_is_read_only_and_reports_scope(tmp_path) -> None:
     path = tmp_path / "soul.db"
     _database(path)

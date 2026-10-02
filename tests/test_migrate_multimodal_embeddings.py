@@ -6,6 +6,19 @@ import pytest
 import migrate_multimodal_embeddings as migration
 
 
+def test_rebuild_requires_the_runtime_embedding_key(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    import memu.embedding
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"mentra": {"gemini_api_key": "other-test-key"}}))
+    with pytest.raises(migration.MigrationError, match="llm.embedding.api_key"):
+        migration._load_client(config)
+    config.write_text(json.dumps({"llm": {"embedding": {"api_key": "test-embedding-key"}}}))
+    monkeypatch.setattr(memu.embedding, "HTTPEmbeddingClient", lambda **kwargs: SimpleNamespace(**kwargs))
+    assert migration._load_client(config).api_key == "test-embedding-key"
+
+
 class FakeClient:
     provider = "gemini"
     embed_model = migration.SUPPORTED_MODEL

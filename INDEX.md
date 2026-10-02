@@ -31,8 +31,8 @@ mcp-memu-server/
 ├── app/services/state.py
 ├── app/services/soul_summaries.py # SQL-only summary writes; shared journal finishing after caller commit
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
-├── migrate_category_taxonomy.py # Offline inventory/discover/apply/validate migration; explicit DB only
-├── migrate_multimodal_embeddings.py # Offline Gemini embedding rebuild; publishes a new DB only after validation
+├── migrate_category_taxonomy.py # Offline inventory/discover/apply/validate migration; explicit DB only, same embedding-profile gate as server
+├── migrate_multimodal_embeddings.py # Offline Gemini embedding rebuild; same llm.embedding.api_key as server; publishes only after validation
 ├── migrate_release.py       # Rerunnable release schema/data migration over stopped soul DBs
 ├── embedding_bakeoff.py         # Offline embedding-quality comparison runner
 ├── config.json              # Runtime config (llm, storage, listen, dossier policy, memu path)

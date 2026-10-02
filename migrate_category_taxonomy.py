@@ -21,6 +21,7 @@ from defusedxml import ElementTree
 from pydantic import BaseModel
 
 from app.config import (
+    EMBEDDING_PROFILE,
     blob_config_from_cfg,
     default_llm_profiles_from_server_config,
     sqlite_dir_from_cfg,
@@ -638,6 +639,7 @@ def _build_service(cfg: Mapping[str, Any], path: Path) -> tuple[Any, str, dict[s
                 "provider": "sqlite",
                 "dsn": f"sqlite:////{path.expanduser().resolve().as_posix().lstrip('/')}",
                 "ddl_mode": "create",
+                "embedding_profile": EMBEDDING_PROFILE,
             }
         },
         memorize_config={
