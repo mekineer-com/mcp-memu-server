@@ -579,16 +579,19 @@ async def narrative_suggestion_endpoint(
                 "VALUES (?, ?, ?, ?)",
                 (narrative_id, new_narrative, "[]", now_iso),
             )
+            before = str(_soul_state.read(con).get("narrative_self") or "")
             _soul_summaries.write_live(
                 con,
                 kind="narrative_self",
                 summary=new_narrative,
-                scope=scope,
-                edited_by="narrative_suggestion",
             )
             con.commit()
         finally:
             con.close()
+        _soul_summaries.journal_committed_write(
+            kind="narrative_self", before=before, after=new_narrative,
+            scope=scope, edited_by="narrative_suggestion",
+        )
         if current_narrative:
             snapshot_previous_narrative_self(
                 svc,

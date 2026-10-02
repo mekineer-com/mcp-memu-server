@@ -104,28 +104,18 @@ def test_dossier_index_routes_are_read_only(route_name) -> None:
     assert exc_info.value.status_code == 409
 
 
-def test_soul_summary_write_approve_and_journal(monkeypatch, tmp_path) -> None:
-    journal = tmp_path / "journal.jsonl"
-
-    def append(**entry):
-        journal.write_text(json.dumps(entry), encoding="utf-8")
-
-    monkeypatch.setattr(soul_summaries, "append_summary_journal", append)
+def test_soul_summary_write_and_approve() -> None:
     con = _connection()
-    scope = {"user_id": "u", "soul_id": "s"}
 
     state = soul_summaries.write_live(
         con,
         kind="narrative_self",
         summary="first self",
-        scope=scope,
-        edited_by="consolidation",
     )
     assert state["narrative_self"] == "first self"
     assert state["narrative_self_previous"] is None
     assert state["narrative_self_approved"] is None
     assert state["summaries_revision"] == 1
-    assert json.loads(journal.read_text())["summary_id"] == "soul-summary:narrative_self"
 
     state = soul_summaries.approve(con, kind="narrative_self")
     assert state["narrative_self_approved"] == "first self"
@@ -189,7 +179,8 @@ def test_soul_summary_route_rejects_stale_snapshot(monkeypatch, tmp_path) -> Non
     assert exc_info.value.detail == "summary_snapshot_stale"
 
 
-def test_atomic_narrative_correction_updates_state_without_evolution(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("journal_failure", [False, True])
+def test_atomic_narrative_correction_updates_state_without_evolution(monkeypatch, tmp_path, journal_failure, caplog) -> None:
     path = tmp_path / "soul.db"
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
@@ -205,7 +196,18 @@ def test_atomic_narrative_correction_updates_state_without_evolution(monkeypatch
     con.close()
     journal_entries = []
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
-    monkeypatch.setattr(soul_summaries, "append_summary_journal", lambda **entry: journal_entries.append(entry))
+
+    def append(**entry):
+        check = sqlite3.connect(path)
+        try:
+            assert check.execute("SELECT narrative_self, summaries_revision FROM soul_state").fetchone() == ("edited", 5)
+        finally:
+            check.close()
+        journal_entries.append(entry)
+        if journal_failure:
+            raise OSError("fictional journal failure")
+
+    monkeypatch.setattr(soul_summaries, "append_summary_journal", append)
     monkeypatch.setattr(
         main,
         "_get_service_from_payload",
@@ -234,9 +236,64 @@ def test_atomic_narrative_correction_updates_state_without_evolution(monkeypatch
     assert out["previous_summary"] == "current"
     assert out["summaries_revision"] == 5
     assert len(journal_entries) == 1
+    assert journal_entries[0]["summary_before"] == "current"
+    if journal_failure:
+        assert "Failed to journal committed soul summary" in caplog.text
 
     check = sqlite3.connect(path)
     check.row_factory = sqlite3.Row
     assert check.execute("SELECT COUNT(*) FROM narrative_history").fetchone()[0] == 0
     assert soul_state.read(check)["updated_at"] != "old"
     check.close()
+
+
+@pytest.mark.parametrize("surface", ["atomic", "suggestion"])
+def test_failed_narrative_save_does_not_journal(monkeypatch, tmp_path, surface) -> None:
+    from memu.app import category_summary_journal
+
+    path = tmp_path / "soul.db"
+    con = sqlite3.connect(path)
+    soul_state.ensure_schema(con)
+    con.execute("UPDATE soul_state SET narrative_self = 'Original card', summaries_revision = 0")
+    con.execute("CREATE TRIGGER reject_card BEFORE UPDATE OF narrative_self ON soul_state BEGIN SELECT RAISE(ABORT, 'fictional write failure'); END")
+    con.commit()
+    con.close()
+    journal_dir = tmp_path / "journals"
+    monkeypatch.setattr(category_summary_journal, "JOURNAL_DIR", journal_dir)
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
+
+    if surface == "atomic":
+        request = _route_endpoint("soul_summary_update")(
+            "narrative_self", "TestOwner", "TestSoul",
+            {"summary": "Rejected card", "displayed_summary": "Original card", "summaries_revision": 0},
+        )
+    else:
+        from app.services import crud_endpoints
+
+        class Service:
+            def build_dossier_index(self, _scope):
+                return ""
+
+            async def chat(self, *_args, **_kwargs):
+                return json.dumps({"narrative_self": "Rejected card", "companion_memory": ""})
+
+            async def embed(self, *_args, **_kwargs):
+                return [[1.0, 0.0]]
+
+        request = crud_endpoints.narrative_suggestion_endpoint(
+            soul_id="TestSoul", payload={"user_id": "TestOwner", "suggestion": "A fictional suggestion"},
+            sqlite_current_path=lambda _u, _s: path, sqlite_connect=main._sqlite_connect,
+            sqlite_ensure_conversation_state_schema=main._sqlite_ensure_conversation_state_schema,
+            sqlite_ensure_nonempty=main._sqlite_ensure_nonempty,
+            get_service_from_payload=lambda _payload: Service(),
+            build_retrieve_identity_context=lambda _name: "",
+            snapshot_previous_narrative_self=lambda *_args, **_kwargs: None,
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="fictional write failure"):
+        asyncio.run(request)
+    assert not journal_dir.exists()
+    con = sqlite3.connect(path)
+    try:
+        assert con.execute("SELECT narrative_self, summaries_revision FROM soul_state").fetchone() == ("Original card", 0)
+    finally:
+        con.close()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -8,6 +9,9 @@ from typing import Any
 from memu.app.category_summary_journal import append_summary_journal
 
 from app.services import soul_state
+
+
+logger = logging.getLogger(__name__)
 
 
 _KINDS = {
@@ -49,15 +53,12 @@ def write_live(
     *,
     kind: str,
     summary: str | None,
-    scope: Mapping[str, Any],
-    edited_by: str,
     approve: bool = False,
     advance_revision_on_noop: bool = False,
     expected_revision: int | None = None,
     displayed_summary: str | None = None,
-    journal: bool = True,
 ) -> dict[str, Any]:
-    _label, summary_id = _kind(kind)
+    _kind(kind)
     clean = str(summary or "").strip()
     soul_state.ensure_schema(con)
     row = con.execute(
@@ -93,15 +94,6 @@ def write_live(
             )
         return soul_state.read(con)
 
-    if journal:
-        append_summary_journal(
-            kind=kind,
-            summary_id=summary_id,
-            summary_before=before,
-            summary_after=clean,
-            scope=scope,
-            edited_by=edited_by,
-        )
     approved = f", {kind}_approved = ?" if approve else ""
     params: list[Any] = [before_value, clean]
     if approve:
@@ -118,6 +110,17 @@ def write_live(
     if result.rowcount != 1:
         raise ValueError("summary_snapshot_stale")
     return soul_state.read(con)
+
+
+def journal_committed_write(*, kind: str, before: str, after: str, scope: Mapping[str, Any], edited_by: str) -> None:
+    if before == after:
+        return
+    _label, summary_id = _kind(kind)
+    try:
+        append_summary_journal(kind=kind, summary_id=summary_id, summary_before=before,
+                               summary_after=after, scope=scope, edited_by=edited_by)
+    except Exception:
+        logger.exception("Failed to journal committed soul summary (%s)", edited_by)
 
 
 def approve(

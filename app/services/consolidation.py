@@ -1305,10 +1305,7 @@ ORDER BY updated_at ASC, id ASC
                     con,
                     kind="narrative_self",
                     summary=narrative_self,
-                    scope=scope,
-                    edited_by="consolidation",
                     advance_revision_on_noop=True,
-                    journal=False,
                 )
 
             for goal_id in goals_to_mark_removed:
@@ -1380,18 +1377,11 @@ INSERT INTO life_goals (
         svc.finish_dossier_revision(bundle, committed, scope, _journal_actor="anchor_revision")
 
     previous_narrative = str(inputs.get("narrative_self") or "")
-    if narrative_self and narrative_self != previous_narrative:
-        try:
-            _soul_summaries.append_summary_journal(
-                kind="narrative_self",
-                summary_id="soul-summary:narrative_self",
-                summary_before=previous_narrative,
-                summary_after=narrative_self,
-                scope=scope,
-                edited_by="consolidation",
-            )
-        except Exception:
-            log.exception("Failed to journal committed consolidation narrative")
+    if narrative_self:
+        _soul_summaries.journal_committed_write(
+            kind="narrative_self", before=previous_narrative, after=narrative_self,
+            scope=scope, edited_by="consolidation",
+        )
 
     return {
         "conversation_id": conversation_id,

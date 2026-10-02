@@ -29,7 +29,7 @@ mcp-memu-server/
 ├── app/services/entity_routes.py  # Entity HTTP routes and private helpers; scoped resolver supplied by main
 ├── app/services/review_routes.py  # Review routes; category mutation + snapshot/revision share one caller-owned transaction
 ├── app/services/state.py
-├── app/services/soul_summaries.py
+├── app/services/soul_summaries.py # SQL-only summary writes; shared journal finishing after caller commit
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
 ├── migrate_category_taxonomy.py # Offline inventory/discover/apply/validate migration; explicit DB only
 ├── migrate_multimodal_embeddings.py # Offline Gemini embedding rebuild; publishes a new DB only after validation

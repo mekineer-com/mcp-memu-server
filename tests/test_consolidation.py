@@ -1013,8 +1013,7 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
     with sqlite_connect(path) as con:
         con.row_factory = sqlite3.Row
         _soul_state.write(con, {"intentions_active": []})
-        _soul_summaries.write_live(con, kind="narrative_self", summary="Current self", scope=scope,
-                                  edited_by="test", journal=False)
+        _soul_summaries.write_live(con, kind="narrative_self", summary="Current self")
         con.commit()
         state = _soul_state.read(con)
         con.execute("UPDATE soul_state SET summaries_revision = summaries_revision + 1 WHERE id = 1")
@@ -1314,9 +1313,6 @@ def test_consolidation_rejects_a_concurrent_narrative_edit() -> None:
                 con,
                 kind="narrative_self",
                 summary="Gathered story.",
-                scope={"user_id": "UserN", "soul_id": "SoulN"},
-                edited_by="setup",
-                journal=False,
             )
             con.commit()
             gathered = _soul_state.read(con)
@@ -1324,11 +1320,8 @@ def test_consolidation_rejects_a_concurrent_narrative_edit() -> None:
                 con,
                 kind="narrative_self",
                 summary="Atomic edit.",
-                scope={"user_id": "UserN", "soul_id": "SoulN"},
-                edited_by="user",
                 expected_revision=gathered["summaries_revision"],
                 displayed_summary="Gathered story.",
-                journal=False,
             )
             con.commit()
         finally:

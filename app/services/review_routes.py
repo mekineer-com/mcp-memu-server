@@ -170,20 +170,23 @@ def register_review_routes(
                 con,
                 kind=kind,
                 summary=summary,
-                scope=scope,
-                edited_by="atomic:user",
                 approve=True,
                 expected_revision=snapshot[0],
                 displayed_summary=snapshot[1],
             )
             con.commit()
-            return _soul_summary_response(con, kind)
+            response = _soul_summary_response(con, kind)
         except ValueError as exc:
             con.rollback()
             status = 409 if str(exc) == "summary_snapshot_stale" else 400
             raise HTTPException(status_code=status, detail=str(exc)) from exc
         finally:
             con.close()
+        # The successful write has verified this snapshot against the locked row.
+        _soul_summaries.journal_committed_write(
+            kind=kind, before=snapshot[1], after=summary.strip(), scope=scope, edited_by="atomic:user",
+        )
+        return response
 
 
     @app.post("/soul-summary/{kind}/approve", operation_id="soul_summary_approve")
