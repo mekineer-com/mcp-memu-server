@@ -104,7 +104,7 @@ mcp-memu-server/
 | `/conversation/{id}/consolidation/retry` | POST | Manual retry of a failed consolidation (409 when the last run did not fail). Failed paid runs never retry automatically. |
 | `/souls/{soul_id}/relationships` | GET/POST | User-declared relationship entities; POST may promote an exact entity ID |
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or remove Relationship properties from one stable `entity:<entities.id>` reference |
-| `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot |
+| `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot; reject concurrent self-description changes before saving |
 | `/owner` | GET/POST | Loopback-only read/create contract for the one OpenAlma user identity |
 | `/integration/mentra/owner` | GET/POST | Bearer-authenticated Iris alias of the same owner contract |
 | `/pending` | GET | Review queue: unapproved memories/dossiers and persistent narrative self |

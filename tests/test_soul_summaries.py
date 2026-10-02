@@ -247,6 +247,58 @@ def test_atomic_narrative_correction_updates_state_without_evolution(monkeypatch
     check.close()
 
 
+@pytest.mark.parametrize("concurrent_edit", [False, True])
+def test_narrative_suggestion_preserves_concurrent_card(monkeypatch, tmp_path, concurrent_edit):
+    from memu.app import category_summary_journal
+    from app.services import crud_endpoints
+
+    path = tmp_path / "soul.db"
+    con = sqlite3.connect(path)
+    soul_state.ensure_schema(con)
+    con.execute("UPDATE soul_state SET narrative_self = 'Original card  ', summaries_revision = 0")
+    con.commit()
+    con.close()
+    monkeypatch.setattr(category_summary_journal, "JOURNAL_DIR", tmp_path / "journals")
+    snapshots = []
+
+    class Service:
+        def build_dossier_index(self, _scope):
+            return ""
+
+        async def chat(self, *_args, **_kwargs):
+            if concurrent_edit:
+                with sqlite3.connect(path) as writer:
+                    writer.execute("UPDATE soul_state SET narrative_self = 'Newer card'")
+            return json.dumps({"narrative_self": "Suggested card", "companion_memory": ""})
+
+        async def embed(self, *_args, **_kwargs):
+            return [[1.0, 0.0]]
+
+    request = crud_endpoints.narrative_suggestion_endpoint(
+        soul_id="TestSoul", payload={"user_id": "TestOwner", "suggestion": "A fictional suggestion"},
+        sqlite_current_path=lambda _u, _s: path, sqlite_connect=main._sqlite_connect,
+        sqlite_ensure_conversation_state_schema=main._sqlite_ensure_conversation_state_schema,
+        sqlite_ensure_nonempty=main._sqlite_ensure_nonempty,
+        get_service_from_payload=lambda _payload: Service(),
+        build_retrieve_identity_context=lambda _name: "",
+        snapshot_previous_narrative_self=lambda *_args, **kwargs: snapshots.append(kwargs),
+    )
+    if concurrent_edit:
+        with pytest.raises(main.HTTPException) as stale:
+            asyncio.run(request)
+        assert stale.value.status_code == 409
+        assert "changed" in stale.value.detail
+    else:
+        assert asyncio.run(request) == {"narrative_self": "Suggested card"}
+    with sqlite3.connect(path) as check:
+        assert check.execute("SELECT narrative_self, summaries_revision FROM soul_state").fetchone() == (
+            ("Newer card", 0) if concurrent_edit else ("Suggested card", 1)
+        )
+        assert check.execute("SELECT COUNT(*) FROM narrative_history").fetchone()[0] == (0 if concurrent_edit else 1)
+    assert bool(snapshots) == (not concurrent_edit)
+    assert (tmp_path / "journals").exists() == (not concurrent_edit)
+
+
 @pytest.mark.parametrize("surface", ["atomic", "suggestion"])
 def test_failed_narrative_save_does_not_journal(monkeypatch, tmp_path, surface) -> None:
     from memu.app import category_summary_journal

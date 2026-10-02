@@ -499,6 +499,7 @@ async def narrative_suggestion_endpoint(
         raise HTTPException(status_code=400, detail="soul_id, user_id, suggestion required")
 
     db_path = sqlite_current_path(uid, sid)
+    displayed_narrative = ""
     current_narrative = ""
     scope = {"user_id": uid, "soul_id": sid}
     svc = get_service_from_payload({"user": scope})
@@ -509,7 +510,8 @@ async def narrative_suggestion_endpoint(
             con.row_factory = sqlite3.Row
             sqlite_ensure_conversation_state_schema(con)
             soul = _soul_state.read(con)
-            current_narrative = str(soul.get("narrative_self") or "").strip()
+            displayed_narrative = str(soul.get("narrative_self") or "")
+            current_narrative = displayed_narrative.strip()
         finally:
             con.close()
 
@@ -580,6 +582,8 @@ async def narrative_suggestion_endpoint(
                 (narrative_id, new_narrative, "[]", now_iso),
             )
             before = str(_soul_state.read(con).get("narrative_self") or "")
+            if before != displayed_narrative:
+                raise HTTPException(status_code=409, detail="Self-description changed while the suggestion was being considered; nothing was overwritten.")
             _soul_summaries.write_live(
                 con,
                 kind="narrative_self",
