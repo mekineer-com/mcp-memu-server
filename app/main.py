@@ -317,7 +317,8 @@ async def _run_background_rollup_for_conversation(
     sid = str(soul_id or "").strip()
     if not cid or not uid or not sid:
         return "skipped_scope"
-    _require_soul_active(uid, sid)
+    if _soul_activity_pause(uid, sid):
+        return "skipped_paused"
 
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, sid))
     async with state_lock:
@@ -1621,6 +1622,11 @@ async def _run_retrieve(
     *,
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
+    scope = _extract_retrieve_where(_safe_payload(payload)) or {}
+    uid, sid = str(scope.get("user_id") or ""), str(scope.get("soul_id") or "")
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    _require_soul_active(uid, sid)
     return await _retrieve_orchestration._run_retrieve(
         payload,
         conversation_id=conversation_id,
@@ -2204,6 +2210,7 @@ def _make_memorize_run_context() -> _memorize_endpoint.MemorizeRunContext:
         run_consolidation_task=_run_consolidation_task,
         clear_last_display_segments_for_nonparticipants=_clear_last_display_segments_for_nonparticipants,
         resolve_web_source_checkpoint=_resolve_web_source_checkpoint,
+        memorize_targets_complete=_memorize_targets_complete,
         background_tasks_set=_BACKGROUND_TASKS,
     )
 
@@ -2293,6 +2300,7 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
     uid, sid = str(scope.get("user_id") or ""), str(scope.get("soul_id") or "")
     if not uid or not sid:
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    safe["user"] = {**(safe.get("user") or {}), "user_id": uid, "soul_id": sid}
     marker = _memorize_lock_key(uid, sid)
     if not retry and not admitted:
         _require_soul_active(uid, sid)
@@ -2302,6 +2310,9 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
                 raise HTTPException(status_code=409, detail="Memorize is already running")
             _FORCED_MEMORIZE_INFLIGHT.add(marker)
     try:
+        source = _message_log.derive_source_label(_extract_conversation_id(safe))
+        if source not in {"whatsapp:dm", "whatsapp:group", "sillytavern", "atomic", "mentra", "replika"}:
+            raise HTTPException(status_code=400, detail="Memorize requires a saved chat source with a supported history reader")
         if retry:
             failure = _paid_work_state(uid, sid).get("memorize_failure")
             if not failure:
@@ -2311,6 +2322,12 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
                 updates={"memorize_failure": {**failure, "paused": True}},
             )
         if not retry:
+            failure = _paid_work_state(uid, sid).get("memorize_failure")
+            if failure:
+                _write_conversation_state(
+                    failure["conversation_id"], user_id=uid, soul_id=sid,
+                    updates={"memorize_failure": {**failure, "paused": True}},
+                )
             _require_soul_active(uid, sid)
         return await _memorize_endpoint.memorize_endpoint(
             safe, background_tasks, force, tail=tail, rebuild=rebuild,
@@ -2371,20 +2388,32 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
                 progress_key=marker, memorize_progress=_MEMORIZE_PROGRESS,
             )
         return {"ok": True, "status": "already_memorized"}
-    state, _, _ = _load_turn_state_and_soul_card(cid, user_id=user_id, soul_id=soul_id)
     storage, hermes, sessions, channels = _resolve_cross_source_paths()
-    cursor, floor, web_source = _resolve_source_cursor(
-        cid, _effective_digest_cursor_from_row(state), state.get("digest_cursor_source_message_id"),
-        state.get("digest_cursor_ts"), rolling=False, hermes_home_path=hermes,
-    )
-    history = _cross_history._load_tail_for_source_conversation(
-        conversation_id=cid, user_id=user_id, soul_id=soul_id, since_cursor=cursor,
-        recent_fallback_messages=0, storage_dir=storage, hermes_home_path=hermes,
-        sessions_index_path=sessions, state_db_path=channels, min_timestamp=floor,
-    )
+    remaining = []
+    for source_cid, target in failure["targets"].items():
+        if _memorize_targets_complete(user_id, soul_id, {source_cid: target}):
+            continue
+        state, _, _ = _load_turn_state_and_soul_card(source_cid, user_id=user_id, soul_id=soul_id)
+        memory_producing = target.get("memory_producing", True)
+        prefix = "digest" if memory_producing else "rolling_summary"
+        saved_cursor = _effective_digest_cursor_from_row(state) if memory_producing else int(state.get("rolling_summary_cursor_id") or 0)
+        cursor, floor, web_source = _resolve_source_cursor(
+            source_cid, saved_cursor, state.get(f"{prefix}_cursor_source_message_id"),
+            state.get(f"{prefix}_cursor_ts"), rolling=not memory_producing, hermes_home_path=hermes,
+        )
+        history = _cross_history._load_tail_for_source_conversation(
+            conversation_id=source_cid, user_id=user_id, soul_id=soul_id, since_cursor=cursor,
+            recent_fallback_messages=0, storage_dir=storage, hermes_home_path=hermes,
+            sessions_index_path=sessions, state_db_path=channels, min_timestamp=floor,
+        )
+        if not history:
+            raise HTTPException(status_code=409, detail=f"Failed Memorize source is unavailable: {source_cid}. Restore it before Retry.")
+        remaining.append((source_cid, history, saved_cursor, memory_producing, web_source))
+    remaining.sort(key=lambda source: not source[3])
+    source_cid, history, saved_cursor, memory_producing, web_source = remaining[0]
     payload = _build_cross_conversation_payload(
-        cid, user_id, soul_id, {"memorize_chat": state.get("memorize_chat", True)}, history,
-        _effective_digest_cursor_from_row(state), bool(state.get("memorize_chat", True)),
+        source_cid, user_id, soul_id, {"memorize_chat": memory_producing}, history,
+        saved_cursor, memory_producing,
         trigger_web_source=web_source,
     )
     if payload is None:
@@ -4412,6 +4441,7 @@ async def mcp_memu_retrieve(req: _mcp_tools.MemuRetrieveRequest):
 @app.post("/integration/memu/sensory-search", operation_id="memu_sensory_search", tags=["mcp_tools"])
 async def mcp_memu_sensory_search(req: _mcp_tools.MemuSensorySearchRequest):
     async def _search(query: str, scope: dict[str, str]) -> dict[str, Any]:
+        _require_soul_active(scope["user_id"], scope["soul_id"])
         svc = _get_service_from_payload({"user": scope})
         return await svc.sensory_search(query, where=scope)
 
@@ -4425,11 +4455,7 @@ async def mcp_memu_memorize(req: _mcp_tools.MemuMemorizeRequest):
         response = await memorize(payload, background_tasks, force)
         # Internal endpoint call: FastAPI response hooks do not execute, so launch
         # background tasks explicitly and return immediately (fire-and-forget).
-        try:
-            runner = asyncio.create_task(background_tasks())
-        except RuntimeError:
-            logger.exception("failed to schedule memorize background tasks")
-            return {"ok": False, "detail": "failed to schedule memorize background tasks"}
+        runner = asyncio.create_task(background_tasks())
         _BACKGROUND_TASKS.add(runner)
         runner.add_done_callback(_BACKGROUND_TASKS.discard)
         if isinstance(response, dict):

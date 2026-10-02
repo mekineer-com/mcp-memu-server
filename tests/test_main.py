@@ -1743,7 +1743,10 @@ def test_should_run_consolidation_uses_soul_clock() -> None:
 @pytest.mark.asyncio
 async def test_consolidation_pipeline_records_preflight_error_and_releases_claim(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    db_path = tmp_path / "preflight.db"
+    db_path.touch()
     recorded = []
     lock = asyncio.Lock()
 
@@ -1752,7 +1755,7 @@ async def test_consolidation_pipeline_records_preflight_error_and_releases_claim
         recorded.append(kwargs)
 
     def gather(*_args, **_kwargs):
-        return {"status": "ready", "db_path": Path("/")}
+        return {"status": "ready", "db_path": db_path}
 
     def fail_preflight(*_args, **_kwargs):
         raise HTTPException(status_code=500, detail="preflight failed")
@@ -1765,11 +1768,11 @@ async def test_consolidation_pipeline_records_preflight_error_and_releases_claim
         "_record_consolidation_failure",
         record,
     )
-    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: Path("/"))
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: db_path)
 
     with pytest.raises(HTTPException, match="preflight failed"):
         await main._run_consolidation_pipeline_once(
-            svc=SimpleNamespace(database=SimpleNamespace(dsn="sqlite:////")),
+            svc=SimpleNamespace(database=SimpleNamespace(dsn=f"sqlite:///{db_path}")),
             deps=main._make_consolidation_deps(),
             state_lock=lock,
             running=main._CONSOLIDATION_RUNNING,
@@ -1787,7 +1790,10 @@ async def test_consolidation_pipeline_records_preflight_error_and_releases_claim
 @pytest.mark.asyncio
 async def test_consolidation_pipeline_records_failure_and_releases_claim(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    db_path = tmp_path / "failure.db"
+    db_path.touch()
     recorded = []
     lock = asyncio.Lock()
 
@@ -1796,7 +1802,7 @@ async def test_consolidation_pipeline_records_failure_and_releases_claim(
         recorded.append(kwargs)
 
     def gather(*_args, **_kwargs):
-        return {"status": "ready", "db_path": Path("/"), "current_chat_messages": []}
+        return {"status": "ready", "db_path": db_path, "current_chat_messages": []}
 
     def fail_after_gather(**_kwargs):
         raise RuntimeError("reflection failed")
@@ -1811,11 +1817,11 @@ async def test_consolidation_pipeline_records_failure_and_releases_claim(
         "_record_consolidation_failure",
         record,
     )
-    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: Path("/"))
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: db_path)
 
     with pytest.raises(RuntimeError, match="reflection failed"):
         await main._run_consolidation_pipeline_once(
-            svc=SimpleNamespace(database=SimpleNamespace(dsn="sqlite:////")),
+            svc=SimpleNamespace(database=SimpleNamespace(dsn=f"sqlite:///{db_path}")),
             deps=main._make_consolidation_deps(),
             state_lock=lock,
             running=main._CONSOLIDATION_RUNNING,
@@ -1833,7 +1839,10 @@ async def test_consolidation_pipeline_records_failure_and_releases_claim(
 @pytest.mark.asyncio
 async def test_consolidation_pipeline_records_gather_failure_and_releases_claim(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    db_path = tmp_path / "gather.db"
+    db_path.touch()
     recorded = []
     lock = asyncio.Lock()
 
@@ -1850,11 +1859,11 @@ async def test_consolidation_pipeline_records_gather_failure_and_releases_claim(
         "_record_consolidation_failure",
         record,
     )
-    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: Path("/"))
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: db_path)
 
     with pytest.raises(HTTPException, match="segment history is damaged"):
         await main._run_consolidation_pipeline_once(
-            svc=SimpleNamespace(database=SimpleNamespace(dsn="sqlite:////")),
+            svc=SimpleNamespace(database=SimpleNamespace(dsn=f"sqlite:///{db_path}")),
             deps=main._make_consolidation_deps(),
             state_lock=lock,
             running=main._CONSOLIDATION_RUNNING,
@@ -4613,7 +4622,7 @@ async def test_run_memorize_segments_ignores_cancel_after_batch_extraction(
         if "last_memorize_at" in updates:
             state_row["last_memorize_at"] = updates["last_memorize_at"]
         if "append_pending_segment_ids" in updates:
-            state_row["pending_segment_ids"].extend(updates["append_pending_segment_ids"])
+            state_row["pending_segment_ids"] = list(dict.fromkeys(state_row["pending_segment_ids"] + updates["append_pending_segment_ids"]))
         return dict(state_row), tmp_path / "Echo.db"
 
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)

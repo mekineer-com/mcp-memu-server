@@ -1,5 +1,7 @@
 import asyncio
+import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,8 +15,8 @@ from app.services import consolidation, service_factory
 def test_pause_record_survives_restart_and_retry_without_pausing_other_soul():
     state = soul_state.defaults()
     state["memorize_failure"] = {
-        "conversation_id": "saved-chat", "error": "Memorize failed",
-        "paused": False, "targets": {"saved-chat": {"cursor": 2}},
+        "conversation_id": "chat:saved-chat", "error": "Memorize failed",
+        "paused": False, "targets": {"chat:saved-chat": {"cursor": 2}},
     }
     assert soul_state.activity_pause(state, memorize_running=True, consolidation_running=False) is None
     assert soul_state.activity_pause(state, memorize_running=False, consolidation_running=False)
@@ -30,8 +32,8 @@ def test_pause_record_survives_restart_and_retry_without_pausing_other_soul():
 def test_atomic_profile_gates_only_paused_soul_before_returning_credentials(monkeypatch):
     from fastapi.testclient import TestClient
 
-    main._write_conversation_state("saved-chat", user_id="TestOwner", soul_id="TestSoul", updates={
-        "memorize_failure": {"conversation_id": "saved-chat", "error": "Failed", "paused": True, "targets": {}},
+    main._write_conversation_state("chat:saved-chat", user_id="TestOwner", soul_id="TestSoul", updates={
+        "memorize_failure": {"conversation_id": "chat:saved-chat", "error": "Failed", "paused": True, "targets": {}},
     })
     calls = []
     monkeypatch.setattr(main, "_atomic_chat_settings_from_config", lambda _config: calls.append(True) or {"api_key": "fake"})
@@ -52,11 +54,169 @@ async def test_invalid_memorize_source_is_rejected_before_admission(monkeypatch)
         await main.memorize({"user": {"user_id": "TestOwner", "soul_id": "TestSoul"}, "conversation": []}, BackgroundTasks(), True)
     assert error.value.status_code == 400
     assert error.value.detail == "conversation_id is required"
+    with pytest.raises(HTTPException, match="supported history reader"):
+        await main.memorize({"user": {"user_id": "TestOwner", "soul_id": "TestSoul"}, "conversation_id": "hermes:unsupported"}, BackgroundTasks(), True)
+    marker = main._memorize_lock_key("TestOwner", "TestSoul")
+    main._FORCED_MEMORIZE_INFLIGHT.add(marker)
+    with pytest.raises(HTTPException, match="supported history reader"):
+        await main._memorize_admitted({"user": {"user_id": "TestOwner", "soul_id": "TestSoul"}, "conversation_id": "hermes:unsupported"}, BackgroundTasks(), True)
+    assert marker not in main._FORCED_MEMORIZE_INFLIGHT
+
+
+@pytest.mark.asyncio
+async def test_admitted_stale_turn_cannot_hide_interrupted_record(monkeypatch):
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:stale"
+    failure = {"conversation_id": cid, "error": "Interrupted", "paused": False, "targets": {cid: {"cursor": 1}}}
+    main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={"memorize_failure": failure})
+    marker = main._memorize_lock_key(uid, sid)
+    main._FORCED_MEMORIZE_INFLIGHT.add(marker)
+    monkeypatch.setattr(main._memorize_endpoint, "memorize_endpoint", lambda *_args, **_kwargs: pytest.fail("Must not schedule paid work"))
+    with pytest.raises(HTTPException) as blocked:
+        await main._memorize_admitted({"user": {"user_id": uid, "soul_id": sid}, "conversation_id": cid}, BackgroundTasks(), True)
+    assert blocked.value.detail["code"] == "soul_paused"
+    assert marker not in main._FORCED_MEMORIZE_INFLIGHT
+
+
+@pytest.mark.asyncio
+async def test_direct_and_tool_retrieve_refuse_paused_scope(monkeypatch):
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:paused"
+    main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={"memorize_failure": {
+        "conversation_id": cid, "error": "Failed", "paused": True, "targets": {cid: {"cursor": 1}},
+    }})
+    monkeypatch.setattr(main._retrieve_orchestration, "_run_retrieve", lambda *_args, **_kwargs: pytest.fail("Must not retrieve"))
+    with pytest.raises(HTTPException) as blocked:
+        await main.retrieve({"where": {"user_id": uid, "soul_id": sid}, "queries": ["Test"]})
+    assert blocked.value.detail["code"] == "soul_paused"
+
+
+@pytest.mark.asyncio
+async def test_memorize_uses_one_scope_for_admission_runner_and_release(monkeypatch):
+    uid, sid = "TestOwner", "TestSoul"
+    async def endpoint(payload, *_args, **_kwargs):
+        assert payload["user"]["soul_id"] == sid
+        assert main._memorize_lock_key(uid, sid) in main._FORCED_MEMORIZE_INFLIGHT
+        return {"ok": True}
+    monkeypatch.setattr(main._memorize_endpoint, "memorize_endpoint", endpoint)
+    await main.memorize({"user_id": uid, "soul_id": sid,
+                        "user": {"user_id": uid, "soul_id": "OtherSoul"}, "conversation_id": "chat:scope"}, BackgroundTasks(), True)
+    assert main._memorize_lock_key(uid, sid) not in main._FORCED_MEMORIZE_INFLIGHT
+
+
+@pytest.mark.asyncio
+async def test_waiting_consolidation_retry_never_lifts_pause(monkeypatch):
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:interrupted"
+    main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={
+        "last_consolidation_error": soul_state.CONSOLIDATION_UNFINISHED,
+        "last_consolidation_error_at": datetime.now(UTC).isoformat(),
+    })
+    lock = main._get_memorize_lock(main._memorize_lock_key(uid, sid))
+    await lock.acquire()
+    retry = asyncio.create_task(main._run_consolidation_pipeline_once(
+        svc=object(), deps=main._make_consolidation_deps(), state_lock=lock,
+        running=main._CONSOLIDATION_RUNNING, load_cross_tail_for_ai=lambda **_kwargs: [],
+        format_all_chat_history_for_ai=lambda **_kwargs: '',
+        conversation_id=cid, soul_id=sid, user_id=uid, force=True,
+    ))
+    await asyncio.sleep(0)
+    try:
+        assert (uid, sid) in main._CONSOLIDATION_RUNNING
+        assert main._soul_activity_pause(uid, sid)
+        with pytest.raises(HTTPException):
+            main._require_soul_active(uid, sid)
+    finally:
+        retry.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await retry
+        lock.release()
+
+
+@pytest.mark.asyncio
+async def test_cross_checkpoint_failure_retains_published_history_and_retry_uses_remaining_source(monkeypatch):
+    uid, sid, first, second = "TestOwner", "TestSoul", "chat:audit-a", "chat:audit-b"
+    history = [{"role": "user", "content": "Test", "ts_ms": 1}, {"role": "assistant", "content": "Reply", "ts_ms": 2}]
+    for cid in (first, second):
+        main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={"memorize_chat": True})
+        main._conversation_sources.persist_sillytavern_history_snapshot(
+            storage_dir=main._get_storage_dir(main._CONFIG), user_id=uid, soul_id=sid,
+            conversation_id=cid, history=history,
+        )
+    payload = main._build_cross_conversation_payload(first, uid, sid, {}, history, -1)
+    real_write = main._write_conversation_state
+    calls = []
+    class Service:
+        async def memorize_segments_batch(self, **kwargs):
+            calls.append(kwargs)
+            return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
+    def write(cid, **kwargs):
+        if cid == second and "digest_cursor" in kwargs["updates"]:
+            raise RuntimeError("Checkpoint failed")
+        return real_write(cid, **kwargs)
+    monkeypatch.setattr(main, "_write_conversation_state", write)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: Service())
+    monkeypatch.setattr(main, "_should_run_consolidation", lambda *_args: False)
+    tasks = BackgroundTasks()
+    await main.memorize(payload, tasks, True)
+    with pytest.raises(RuntimeError, match="Checkpoint failed"):
+        await tasks()
+    state, _, _ = main._load_turn_state_and_soul_card(first, user_id=uid, soul_id=sid)
+    assert state["pending_segment_ids"]
+    assert all(Path(segment["local_path"]).is_file() for segment in calls[0]["segments"])
+    assert main._paid_work_state(uid, sid)["memorize_failure"]
+    monkeypatch.setattr(main, "_write_conversation_state", real_write)
+    reader = main._cross_history._load_tail_for_source_conversation
+    monkeypatch.setattr(main._cross_history, "_load_tail_for_source_conversation", lambda **kwargs: [] if kwargs["conversation_id"] == second else reader(**kwargs))
+    with pytest.raises(HTTPException, match="source is unavailable"):
+        await main.retry_memorize(uid, sid, BackgroundTasks())
+    assert len(calls) == 1 and second in main._paid_work_state(uid, sid)["memorize_failure"]["targets"]
+    monkeypatch.setattr(main._cross_history, "_load_tail_for_source_conversation", reader)
+    main._conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=main._get_storage_dir(main._CONFIG), user_id=uid, soul_id=sid,
+        conversation_id=second, history=history[:1],
+    )
+    tasks = BackgroundTasks()
+    await main.retry_memorize(uid, sid, tasks)
+    with pytest.raises(RuntimeError, match="unfinished source checkpoints"):
+        await tasks()
+    assert main._paid_work_state(uid, sid)["memorize_failure"]["targets"][second]["cursor"] == 1
+    main._conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=main._get_storage_dir(main._CONFIG), user_id=uid, soul_id=sid,
+        conversation_id=second, history=history,
+    )
+    tasks = BackgroundTasks()
+    await main.retry_memorize(uid, sid, tasks)
+    await tasks()
+    assert len(calls) == 3 and calls[-1]["conversation_id"] == second
+    assert main._paid_work_state(uid, sid)["memorize_failure"] is None
+    assert main._memorize_targets_complete(uid, sid, payload["_final_cursors"])
+
+
+@pytest.mark.asyncio
+async def test_direct_checkpoint_cannot_commit_without_pending_bookkeeping(monkeypatch):
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:bookkeeping"
+    main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={})
+    con = main._sqlite_connect(main._sqlite_current_path(uid, sid))
+    con.execute("CREATE TRIGGER reject_pending BEFORE UPDATE OF pending_segment_ids ON conversations "
+                "WHEN NEW.pending_segment_ids IS NOT OLD.pending_segment_ids "
+                "BEGIN SELECT RAISE(ABORT, 'Bookkeeping failed'); END")
+    con.commit()
+    con.close()
+    class Service:
+        async def memorize_segments_batch(self, **kwargs):
+            return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: Service())
+    tasks = BackgroundTasks()
+    await main.memorize({"user": {"user_id": uid, "soul_id": sid}, "conversation_id": cid,
+                        "conversation": [{"role": "user", "content": "Test"}]}, tasks, True)
+    with pytest.raises(sqlite3.IntegrityError, match="Bookkeeping failed"):
+        await tasks()
+    state, _, _ = main._load_turn_state_and_soul_card(cid, user_id=uid, soul_id=sid)
+    assert main._effective_digest_cursor_from_row(state) == -1
+    assert state["memorize_failure"]
 
 
 @pytest.mark.asyncio
 async def test_automatic_admission_reaches_real_endpoint_once(monkeypatch):
-    uid, sid, cid = "TestOwner", "TestSoul", "saved-chat"
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:saved-chat"
     main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={})
     monkeypatch.setattr(main, "_safe_payload", lambda payload: payload)
     marker = main._memorize_lock_key(uid, sid)
@@ -88,7 +248,7 @@ async def test_automatic_admission_reaches_real_endpoint_once(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_retry_of_completed_targets_clears_only_memorize(monkeypatch):
-    uid, sid, cid = "TestOwner", "TestSoul", "saved-chat"
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:saved-chat"
     failure = {"conversation_id": cid, "error": "Failed", "paused": True, "targets": {cid: {"cursor": 0}}}
     main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={"memorize_failure": failure})
     assert not main._memorize_targets_complete(uid, sid, failure["targets"])
@@ -106,7 +266,7 @@ async def test_retry_of_completed_targets_clears_only_memorize(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_retry_stays_paused_and_duplicate_is_refused(monkeypatch):
-    uid, sid, cid = "TestOwner", "TestSoul", "saved-chat"
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:saved-chat"
     failure = {"conversation_id": cid, "error": "Failed", "paused": False, "targets": {cid: {"cursor": 1}}}
     main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={"memorize_failure": failure})
     monkeypatch.setattr(main, "_safe_payload", lambda payload: payload)
@@ -147,7 +307,7 @@ async def test_retry_stays_paused_and_duplicate_is_refused(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_interrupted_consolidation_is_durable_and_retry_remains_paused(monkeypatch):
-    uid, sid, cid = "TestOwner", "TestSoul", "saved-chat"
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:saved-chat"
     main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={})
     path = main._sqlite_current_path(uid, sid)
     calls = []

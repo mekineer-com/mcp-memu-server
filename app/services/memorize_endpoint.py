@@ -159,6 +159,7 @@ class MemorizeRunContext:
     run_consolidation_task: Callable[..., Awaitable[dict[str, Any]]]
     clear_last_display_segments_for_nonparticipants: Callable[..., None]
     resolve_web_source_checkpoint: Callable[[str, str], int | None]
+    memorize_targets_complete: Callable[[str, str, dict[str, Any]], bool]
     background_tasks_set: set[asyncio.Task]
 
 
@@ -325,6 +326,7 @@ async def run_memorize_segments(
     durable_segments_committed = False
     terminal_result: str = "success"
     failure_record: dict[str, Any] | None = None
+    retry_targets: dict[str, Any] | None = None
     rolling_summaries_raw = safe.get("_background_rolling_summaries")
     rolling_summaries: dict[str, dict[str, Any]] = (
         rolling_summaries_raw if isinstance(rolling_summaries_raw, dict) else {}
@@ -472,13 +474,14 @@ async def run_memorize_segments(
                         conversation_id, user_id=uid, soul_id=soul_id,
                     )
                     old_failure = previous.get("memorize_failure")
+                    retry_targets = old_failure["targets"] if old_failure else None
                     targets = final_cursors or {
                         conversation_id: {"cursor": memorize_segments[-1][3], "memory_producing": True},
                     }
                     failure_record = {
                         "conversation_id": conversation_id,
                         "error": old_failure["error"] if old_failure else "Memorize interrupted before completion. Retry in launcher.",
-                        "paused": bool(old_failure), "targets": targets,
+                        "paused": bool(old_failure), "targets": {**targets, **(retry_targets or {})},
                     }
                     ctx.write_conversation_state(
                         conversation_id, user_id=uid, soul_id=soul_id,
@@ -570,6 +573,7 @@ async def run_memorize_segments(
                                     memory_producing=memory_producing,
                                     cursor=processed_end_cursor,
                                     now_iso=datetime.now(UTC).isoformat(),
+                                    pending_segment_ids=pending_segment_ids if memory_producing else None,
                                 )
                                 ctx.write_conversation_state(
                                     conversation_id,
@@ -577,6 +581,9 @@ async def run_memorize_segments(
                                     user_id=uid,
                                     updates=updates,
                                 )
+                                if memory_producing and pending_segment_ids:
+                                    created_segment_paths.clear()
+                                    durable_segments_committed = True
                             else:
                                 # Another runner advanced the cursor past this segment; honour the further value.
                                 processed_end_cursor = max(processed_end_cursor, fresh_cursor)
@@ -650,6 +657,9 @@ async def run_memorize_segments(
                                     user_id=uid,
                                     updates=updates,
                                 )
+                                if fc_cid == conversation_id and pending_segment_ids:
+                                    created_segment_paths.clear()
+                                    durable_segments_committed = True
                             continue
                         fc_cursor = payload_position
                     updates = _cursor_updates_for_unit(
@@ -675,6 +685,9 @@ async def run_memorize_segments(
                         user_id=uid,
                         updates=updates,
                     )
+                    if fc_cid == conversation_id and pending_segment_ids:
+                        created_segment_paths.clear()
+                        durable_segments_committed = True
             elif conversation_id and has_results and pending_segment_ids:
                 ctx.write_conversation_state(
                     conversation_id,
@@ -705,6 +718,8 @@ async def run_memorize_segments(
                     )
 
             if failure_record is not None and not cancelled:
+                if retry_targets and not run_ctx.memorize_targets_complete(uid, soul_id, retry_targets):
+                    raise RuntimeError("Failed Memorize still has unfinished source checkpoints; restore the source and Retry.")
                 ctx.write_conversation_state(
                     conversation_id, user_id=uid, soul_id=soul_id,
                     updates={"memorize_failure": None},

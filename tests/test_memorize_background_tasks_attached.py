@@ -60,8 +60,8 @@ def test_memorize_background_task_runs(client: TestClient, monkeypatch: pytest.M
     monkeypatch.setattr(main_module, "_get_service_from_payload", lambda *a, **k: _FakeSvc())
 
     payload = {
-        "user": {"user_id": "test_user", "soul_id": "test_soul", "conversation_id": "cid-1"},
-        "conversation_id": "cid-1",
+        "user": {"user_id": "test_user", "soul_id": "test_soul", "conversation_id": "chat:cid-1"},
+        "conversation_id": "chat:cid-1",
         "conversation": [
             {"role": "user", "name": "test_user", "content": "hello"},
             {"role": "assistant", "name": "test_soul", "content": "hi"},
@@ -114,7 +114,7 @@ def test_memorize_tail_retries_consolidation_when_pending_segments_exist(
             {
                 "last_memorize_at": "2026-05-09T00:00:00+00:00",
                 "digest_cursor": 1,  # with 2-message input below, tail is empty
-                "pending_segment_ids": ["cid-2:0-1"],
+                "pending_segment_ids": ["chat:cid-2:0-1"],
             },
             tmp_path / "Echo.db",
         )
@@ -126,8 +126,8 @@ def test_memorize_tail_retries_consolidation_when_pending_segments_exist(
     monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
 
     payload = {
-        "user": {"user_id": "test_user", "soul_id": "test_soul", "conversation_id": "cid-2"},
-        "conversation_id": "cid-2",
+        "user": {"user_id": "test_user", "soul_id": "test_soul", "conversation_id": "chat:cid-2"},
+        "conversation_id": "chat:cid-2",
         "conversation": [
             {"role": "user", "name": "test_user", "content": "hello"},
             {"role": "assistant", "name": "test_soul", "content": "hi"},
@@ -139,7 +139,7 @@ def test_memorize_tail_retries_consolidation_when_pending_segments_exist(
     assert resp.status_code == 202, f"unexpected status: {resp.status_code} body={resp.text[:300]}"
     body = resp.json()
     assert body.get("pending_segment_retry") is True
-    assert recorded == [{"conversation_id": "cid-2", "soul_id": "test_soul", "uid": "test_user"}]
+    assert recorded == [{"conversation_id": "chat:cid-2", "soul_id": "test_soul", "uid": "test_user"}]
 
 
 def test_memorize_tail_nothing_to_memorize_sets_terminal_progress(
@@ -165,8 +165,8 @@ def test_memorize_tail_nothing_to_memorize_sets_terminal_progress(
     monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
 
     payload = {
-        "user": {"user_id": "test_user", "soul_id": "test_soul", "conversation_id": "cid-3"},
-        "conversation_id": "cid-3",
+        "user": {"user_id": "test_user", "soul_id": "test_soul", "conversation_id": "chat:cid-3"},
+        "conversation_id": "chat:cid-3",
         "conversation": [
             {"role": "user", "name": "test_user", "content": "hello"},
             {"role": "assistant", "name": "test_soul", "content": "hi"},
@@ -299,7 +299,7 @@ def test_cross_memorize_endpoint_marks_manifest_range(
         chats_dir,
         "u1",
         "TestSoul",
-        "cid-cross",
+        "chat:cid-cross",
     )
     chat_dir.mkdir(parents=True)
     (chat_dir / "manifest.json").write_text(
@@ -307,7 +307,7 @@ def test_cross_memorize_endpoint_marks_manifest_range(
         encoding="utf-8",
     )
 
-    payload = _make_stub_payload("u1", "TestSoul", "cid-cross")
+    payload = _make_stub_payload("u1", "TestSoul", "chat:cid-cross")
     payload["_cross_memorize"] = True
     payload["conversation"] = [
         {"role": "user", "name": "u1", "content": "one"},
@@ -360,7 +360,7 @@ def test_force_without_rebuild_does_not_archive_db(
     monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)
     monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
 
-    resp = client.post("/memorize?force=true", json=_make_stub_payload("u1", "TestSoul", "cid-f"))
+    resp = client.post("/memorize?force=true", json=_make_stub_payload("u1", "TestSoul", "chat:cid-f"))
     assert resp.status_code == 202, f"status={resp.status_code} body={resp.text[:300]}"
     assert resp.json()["segment_count"] == 1
     assert recorded == [{"segment_count": 1}]
@@ -372,7 +372,7 @@ def test_force_without_rebuild_does_not_archive_db(
     manifests = list((tmp_path / "st_chats").glob("*/manifest.json"))
     assert len(manifests) == 1
     manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-    assert manifest["source"]["conversation_id"] == "cid-f"
+    assert manifest["source"]["conversation_id"] == "chat:cid-f"
     assert manifest["segments"] == [{"start": 0, "end": 1}]
 
 
@@ -392,7 +392,7 @@ def test_rebuild_rejected_during_same_soul_consolidation(
 
     monkeypatch.setattr(main_module, "_get_service_from_payload", unexpected_service)
     monkeypatch.setattr(main_module, "_clear_cached_services", unexpected_service)
-    resp = client.post("/memorize?rebuild=true", json=_make_stub_payload("u1", "TestSoul", "cid-r"))
+    resp = client.post("/memorize?rebuild=true", json=_make_stub_payload("u1", "TestSoul", "chat:cid-r"))
 
     assert resp.status_code == 409
     assert resp.json()["detail"] == "cannot rebuild during consolidation"
@@ -412,7 +412,7 @@ async def test_rebuild_rechecks_consolidation_after_waiting_for_lock(monkeypatch
 
     await lock.acquire()
     task = asyncio.create_task(main_module.memorize(
-        _make_stub_payload("u1", "TestSoul", "cid-r"), BackgroundTasks(), rebuild=True,
+        _make_stub_payload("u1", "TestSoul", "chat:cid-r"), BackgroundTasks(), rebuild=True,
     ))
     await asyncio.sleep(0)
     assert not task.done()
@@ -459,7 +459,7 @@ def test_rebuild_archives_db_and_service_reacquired_after_archive(
     monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)
     monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
 
-    resp = client.post("/memorize?rebuild=true", json=_make_stub_payload("u1", "TestSoul", "cid-r"))
+    resp = client.post("/memorize?rebuild=true", json=_make_stub_payload("u1", "TestSoul", "chat:cid-r"))
     assert resp.status_code in (200, 202), f"status={resp.status_code} body={resp.text[:300]}"
 
     # DB must have been renamed — .bak file should exist, original should not.

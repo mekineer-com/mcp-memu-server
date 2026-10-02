@@ -1194,6 +1194,8 @@ def register_mentra_routes(
                 status_code=502, detail="Mentra memory recall failed"
             ) from exc
         except HTTPException as exc:
+            if isinstance(exc.detail, dict) and exc.detail.get("code") == "soul_paused":
+                raise
             status = 502 if exc.status_code == 504 else exc.status_code
             if record_call is not None:
                 record_call(

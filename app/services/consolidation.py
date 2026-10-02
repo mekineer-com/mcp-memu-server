@@ -1437,6 +1437,21 @@ async def _run_consolidation_pipeline_once(
     run_key = (user_id, soul_id)
     if run_key in running:
         return {"status": "skipped", "reason": "in_progress"}
+    db_path = deps.sqlite_current_path(user_id, soul_id)
+    if db_path is not None and db_path.exists():
+        con = deps.sqlite_connect(db_path)
+        try:
+            con.row_factory = sqlite3.Row
+            interrupted = _soul_state.consolidation_failure(_soul_state.read(con)) == _soul_state.CONSOLIDATION_UNFINISHED
+        finally:
+            con.close()
+        if interrupted:
+            if not force:
+                return {"status": "skipped", "reason": "failure_requires_retry"}
+            _record_consolidation_failure(
+                deps=deps, soul_id=soul_id, user_id=user_id,
+                error="Consolidation was interrupted. Retry required.",
+            )
     running.add(run_key)
     try:
         async with state_lock:

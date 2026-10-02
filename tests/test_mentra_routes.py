@@ -680,6 +680,16 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
     }
 
 
+def test_recall_preserves_structured_pause_through_real_server_wrapper(monkeypatch, tmp_path):
+    detail = {"code": "soul_paused", "message": "Codexia is paused. Retry in OpenAlma launcher."}
+    client, _, _ = _session_app(monkeypatch, tmp_path, retrieve_result=HTTPException(status_code=409, detail=detail))
+    session = client.post("/integration/mentra/session/start", json=START, headers=AUTH).json()["session_id"]
+    response = client.post(f"/integration/mentra/session/{session}/recall", json={
+        "user_id": START["user_id"], "soul_id": START["soul_id"], "query": "Test",
+    }, headers=AUTH)
+    assert response.status_code == 409 and response.json()["detail"] == detail
+
+
 def test_pause_blocks_new_sitting_but_keeps_lease_renewal_heartbeat_and_end(monkeypatch, tmp_path):
     client, calls, _ = _session_app(monkeypatch, tmp_path)
     calls["pause_reason"] = "Memorize failed"
