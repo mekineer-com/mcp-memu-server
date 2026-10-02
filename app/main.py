@@ -223,7 +223,7 @@ _estimate_unmemorized_tokens = _memorize_endpoint.estimate_unmemorized_tokens
 async def _run_forced_memorize_from_turn(payload: dict[str, Any]) -> bool:
     return await _memorize_endpoint.run_forced_memorize_from_turn(
         payload,
-        memorize_handler=memorize,
+        memorize_handler=_memorize_admitted,
         logger=logger,
         get_memorize_lock=_get_memorize_lock,
         memorize_lock_key=_memorize_lock_key,
@@ -317,6 +317,7 @@ async def _run_background_rollup_for_conversation(
     sid = str(soul_id or "").strip()
     if not cid or not uid or not sid:
         return "skipped_scope"
+    _require_soul_active(uid, sid)
 
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, sid))
     async with state_lock:
@@ -540,6 +541,7 @@ async def _run_free_turn_chain(
         schedule_free_turn_follow_up=_schedule_free_turn_follow_up,
         clear_inflight=_clear_inflight,
         free_turn_inflight=_FREE_TURN_INFLIGHT,
+        require_soul_active=_require_soul_active,
         logger=logger,
     )
 
@@ -1642,6 +1644,35 @@ async def _run_retrieve(
     )
 
 
+def _paid_work_state(user_id: str, soul_id: str) -> dict[str, Any]:
+    path = _sqlite_current_path(user_id, soul_id)
+    if path is None or not path.exists():
+        return _soul_state.defaults()
+    con = _sqlite_connect(path)
+    try:
+        con.row_factory = sqlite3.Row
+        return _soul_state.read(con)
+    finally:
+        con.close()
+
+
+def _soul_activity_pause(user_id: str, soul_id: str, state: dict[str, Any] | None = None) -> str | None:
+    return _soul_state.activity_pause(
+        _paid_work_state(user_id, soul_id) if state is None else state,
+        memorize_running=_memorize_lock_key(user_id, soul_id) in _FORCED_MEMORIZE_INFLIGHT,
+        consolidation_running=(user_id, soul_id) in _CONSOLIDATION_RUNNING,
+    )
+
+
+def _require_soul_active(user_id: str, soul_id: str) -> None:
+    reason = _soul_activity_pause(user_id, soul_id)
+    if reason:
+        raise HTTPException(status_code=409, detail={
+            "code": "soul_paused", "soul_id": soul_id,
+            "message": f"{soul_id} is paused. Retry in OpenAlma launcher.", "reason": reason,
+        })
+
+
 def _set_background_error(
     conversation_id: str,
     *,
@@ -2215,40 +2246,149 @@ async def _run_memorize_segments(
     cross_memorize: bool = False,
     final_cursors: dict[str, dict[str, Any]] | None = None,
 ) -> None:
-    await _memorize_endpoint.run_memorize_segments(
-        memorize_segments=memorize_segments,
-        svc=svc,
-        scope=scope,
-        conversation_id=conversation_id,
-        soul_id=soul_id,
-        uid=uid,
-        processed_cursor=processed_cursor,
-        safe=safe,
-        resource_url=resource_url,
-        chat_key=chat_key,
-        merged_len=merged_len,
-        force=force,
-        sleep_stats=sleep_stats,
-        run_ctx=_make_memorize_run_context(),
-        segments_dir=segments_dir,
-        zi=zi,
-        cross_memorize=cross_memorize,
-        final_cursors=final_cursors,
-    )
+    success = False
+    try:
+        success = await _memorize_endpoint.run_memorize_segments(
+            memorize_segments=memorize_segments,
+            svc=svc,
+            scope=scope,
+            conversation_id=conversation_id,
+            soul_id=soul_id,
+            uid=uid,
+            processed_cursor=processed_cursor,
+            safe=safe,
+            resource_url=resource_url,
+            chat_key=chat_key,
+            merged_len=merged_len,
+            force=force,
+            sleep_stats=sleep_stats,
+            run_ctx=_make_memorize_run_context(),
+            segments_dir=segments_dir,
+            zi=zi,
+            cross_memorize=cross_memorize,
+            final_cursors=final_cursors,
+        )
+    finally:
+        await _finish_memorize_claim(_memorize_lock_key(uid, soul_id), success)
 
 
 # ---- Memorize endpoint ----
 
 @app.post("/memorize", operation_id="memorize")
 async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool = False, tail: bool = False, rebuild: bool = False):
-    return await _memorize_endpoint.memorize_endpoint(
-        payload,
-        background_tasks,
-        force,
-        tail=tail,
-        rebuild=rebuild,
-        endpoint_ctx=_make_memorize_endpoint_context(),
+    return await _memorize_owned(payload, background_tasks, force, tail=tail, rebuild=rebuild)
+
+
+async def _memorize_admitted(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool):
+    return await _memorize_owned(payload, background_tasks, force, admitted=True)
+
+
+async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool,
+                          *, tail: bool = False, rebuild: bool = False, admitted: bool = False, retry: bool = False):
+    safe = _safe_payload(payload)
+    if not _extract_conversation_id(safe):
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+    scope = _extract_scope(safe) or {}
+    uid, sid = str(scope.get("user_id") or ""), str(scope.get("soul_id") or "")
+    if not uid or not sid:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    marker = _memorize_lock_key(uid, sid)
+    if not retry and not admitted:
+        _require_soul_active(uid, sid)
+    if not admitted:
+        with _STATE_LOCK:
+            if marker in _FORCED_MEMORIZE_INFLIGHT:
+                raise HTTPException(status_code=409, detail="Memorize is already running")
+            _FORCED_MEMORIZE_INFLIGHT.add(marker)
+    try:
+        if retry:
+            failure = _paid_work_state(uid, sid).get("memorize_failure")
+            if not failure:
+                raise HTTPException(status_code=409, detail="No failed Memorize is ready to retry")
+            _write_conversation_state(
+                failure["conversation_id"], user_id=uid, soul_id=sid,
+                updates={"memorize_failure": {**failure, "paused": True}},
+            )
+        if not retry:
+            _require_soul_active(uid, sid)
+        return await _memorize_endpoint.memorize_endpoint(
+            safe, background_tasks, force, tail=tail, rebuild=rebuild,
+            endpoint_ctx=_make_memorize_endpoint_context(),
+        )
+    finally:
+        if not any(task.func is _run_memorize_segments for task in background_tasks.tasks):
+            await _finish_memorize_claim(marker, False)
+
+
+def _memorize_targets_complete(user_id: str, soul_id: str, targets: dict[str, Any]) -> bool:
+    if not targets:
+        return False
+    con = _sqlite_connect(_sqlite_current_path(user_id, soul_id))
+    try:
+        con.row_factory = sqlite3.Row
+        for cid, target in targets.items():
+            row = _conversation_state_row(con, cid, user_id=user_id, soul_id=soul_id)
+            if row is None:
+                return False
+            prefix = "digest" if target.get("memory_producing", True) else "rolling_summary"
+            cursor_field = "digest_cursor" if prefix == "digest" else "rolling_summary_cursor_id"
+            current = (_effective_digest_cursor_from_row(dict(row))
+                       if prefix == "digest" else row[cursor_field])
+            expected = target.get("cursor")
+            source_id = target.get("source_message_id")
+            if source_id:
+                expected = _resolve_web_source_checkpoint(cid, source_id)
+                current_id = row[f"{prefix}_cursor_source_message_id"]
+                current = _resolve_web_source_checkpoint(cid, current_id) if current_id else None
+            if expected is None or current is None or int(current) < int(expected):
+                return False
+        return True
+    finally:
+        con.close()
+
+
+@app.post("/memorize/retry", operation_id="retry_memorize")
+async def retry_memorize(user_id: str, soul_id: str, background_tasks: BackgroundTasks):
+    scope = _extract_scope(_safe_payload({"user": {"user_id": user_id, "soul_id": soul_id}})) or {}
+    user_id, soul_id = str(scope.get("user_id") or ""), str(scope.get("soul_id") or "")
+    if not user_id or not soul_id:
+        raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    failure = _paid_work_state(user_id, soul_id).get("memorize_failure")
+    if not failure:
+        raise HTTPException(status_code=409, detail="No failed Memorize is ready to retry")
+    marker = _memorize_lock_key(user_id, soul_id)
+    if marker in _FORCED_MEMORIZE_INFLIGHT:
+        raise HTTPException(status_code=409, detail="Memorize is already running")
+    cid = failure["conversation_id"]
+    if _memorize_targets_complete(user_id, soul_id, failure["targets"]):
+        _write_conversation_state(cid, user_id=user_id, soul_id=soul_id, updates={"memorize_failure": None})
+        state, _, _ = _load_turn_state_and_soul_card(cid, user_id=user_id, soul_id=soul_id)
+        if _consolidation_due(state):
+            background_tasks.add_task(
+                _run_consolidation_task, _get_service_from_payload({"user": {"user_id": user_id, "soul_id": soul_id}}),
+                conversation_id=cid, soul_id=soul_id, uid=user_id,
+                progress_key=marker, memorize_progress=_MEMORIZE_PROGRESS,
+            )
+        return {"ok": True, "status": "already_memorized"}
+    state, _, _ = _load_turn_state_and_soul_card(cid, user_id=user_id, soul_id=soul_id)
+    storage, hermes, sessions, channels = _resolve_cross_source_paths()
+    cursor, floor, web_source = _resolve_source_cursor(
+        cid, _effective_digest_cursor_from_row(state), state.get("digest_cursor_source_message_id"),
+        state.get("digest_cursor_ts"), rolling=False, hermes_home_path=hermes,
     )
+    history = _cross_history._load_tail_for_source_conversation(
+        conversation_id=cid, user_id=user_id, soul_id=soul_id, since_cursor=cursor,
+        recent_fallback_messages=0, storage_dir=storage, hermes_home_path=hermes,
+        sessions_index_path=sessions, state_db_path=channels, min_timestamp=floor,
+    )
+    payload = _build_cross_conversation_payload(
+        cid, user_id, soul_id, {"memorize_chat": state.get("memorize_chat", True)}, history,
+        _effective_digest_cursor_from_row(state), bool(state.get("memorize_chat", True)),
+        trigger_web_source=web_source,
+    )
+    if payload is None:
+        raise HTTPException(status_code=409, detail="Failed Memorize source is unavailable; nothing was retried")
+    return await _memorize_owned(payload, background_tasks, True, retry=True)
 
 
 @app.get("/memorize/progress", operation_id="memorize_progress")
@@ -2301,6 +2441,7 @@ async def force_consolidation(
         cid, safe, uid, soul_id, svc = _consolidation_request_context(
             conversation_id, payload
         )
+        _require_soul_active(uid, soul_id)
         state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
         out = await _run_consolidation_pipeline_once(
             svc=svc,
@@ -2480,6 +2621,7 @@ async def delete_relationship(
 
 @app.post("/souls/{soul_id}/narrative_suggestion", operation_id="narrative_suggestion")
 async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)):
+    _require_soul_active(str(payload.get("user_id") or ""), soul_id)
     return await _crud_endpoints.narrative_suggestion_endpoint(
         soul_id=soul_id,
         payload=payload,
@@ -2810,6 +2952,8 @@ async def conversation_retrieve(
                 finally:
                     _con.close()
 
+        if uid and soul_id:
+            _require_soul_active(uid, soul_id)
         chat_label_for_prompt = _chat_label_for_prompt(safe)
         digest_cursor, min_timestamp = -1, None
         if history:
@@ -3225,7 +3369,12 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         if consolidation_overdue
         else "ok"
     )
+    pause_reason = _soul_activity_pause(uid, sid, soul_status)
     return {
+        "soul_id": sid, "paused": bool(pause_reason), "pause_reason": pause_reason,
+        "memorize_failure": soul_status.get("memorize_failure"),
+        "memorize_running": _memorize_lock_key(uid, sid) in _FORCED_MEMORIZE_INFLIGHT,
+        "progress": _MEMORIZE_PROGRESS.get(_memorize_lock_key(uid, sid), {}),
         "summed_unmemorized_tokens": summed,
         "threshold": threshold,
         "pct": round(summed * 100 / threshold) if threshold else 0,
@@ -3257,6 +3406,8 @@ def _prepare_auto_memorize(
     *,
     dry_run: bool,
 ) -> tuple[int, dict[str, Any] | None]:
+    if _soul_activity_pause(uid, soul_id, conversation_state):
+        return 0, None
     digest_cursor = _effective_digest_cursor_from_row(conversation_state)
     _, hermes_home_path, _, _ = _resolve_cross_source_paths()
     resolved_cursor, min_timestamp, trigger_web_source = _resolve_source_cursor(
@@ -3333,14 +3484,10 @@ def _auto_memorize_scope(
     }
 
 
-async def _run_auto_memorize(payload: dict[str, Any], marker: str) -> None:
-    success = False
-    try:
-        success = await _run_forced_memorize_from_turn(payload)
-    finally:
-        with _STATE_LOCK:
-            _FORCED_MEMORIZE_INFLIGHT.discard(marker)
-            recheck = _FORCED_MEMORIZE_RECHECK.pop(marker, None)
+async def _finish_memorize_claim(marker: str, success: bool) -> None:
+    with _STATE_LOCK:
+        _FORCED_MEMORIZE_INFLIGHT.discard(marker)
+        recheck = _FORCED_MEMORIZE_RECHECK.pop(marker, None)
     if not success or recheck is None:
         return
 
@@ -3380,7 +3527,7 @@ def _schedule_auto_memorize(
             return "coalesced"
         _FORCED_MEMORIZE_INFLIGHT.add(marker)
     try:
-        task = asyncio.create_task(_run_auto_memorize(payload, marker))
+        task = asyncio.create_task(_run_forced_memorize_from_turn(payload))
     except Exception:
         with _STATE_LOCK:
             _FORCED_MEMORIZE_INFLIGHT.discard(marker)
@@ -3512,6 +3659,7 @@ async def conversation_turn(
         soul_id = str(scope.get("soul_id") or "").strip()
         if not uid or not soul_id:
             raise HTTPException(status_code=400, detail="user_id and soul_id required")
+        _require_soul_active(uid, soul_id)
 
         message = str(safe.get("message") or "").strip()
         self_turn_directive = str(safe.get("self_turn_directive") or "").strip()

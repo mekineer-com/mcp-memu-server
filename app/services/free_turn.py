@@ -128,6 +128,7 @@ async def _run_free_turn_chain(
     schedule_free_turn_follow_up: Callable[..., str | None],
     clear_inflight: Callable[[set[str], str], None],
     free_turn_inflight: set[str],
+    require_soul_active: Callable[[str, str], None],
     logger: Any,
 ) -> None:
     reason = initial_reason
@@ -141,6 +142,7 @@ async def _run_free_turn_chain(
     )
     try:
         for continuation_index in range(1, 4):
+            require_soul_active(user_id, soul_id)
             prompt = _build_free_turn_prompt(
                 reason=reason,
                 continuation_index=continuation_index,

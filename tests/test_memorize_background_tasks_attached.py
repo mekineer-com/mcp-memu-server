@@ -29,6 +29,12 @@ from app import main as main_module
 from app.main import app
 
 
+@pytest.fixture(autouse=True)
+def _healthy_paid_state(monkeypatch):
+    # These file/archive tests use fake DB bytes; pause behavior has real-DB checks.
+    monkeypatch.setattr(main_module, "_paid_work_state", lambda *_args: main_module._soul_state.defaults())
+
+
 def _state_response() -> dict:
     return {"digest_cursor": 0, "last_memorize_at": None, "pending_segment_ids": []}
 
@@ -45,7 +51,7 @@ def test_memorize_background_task_runs(client: TestClient, monkeypatch: pytest.M
         recorded.append({"ran": True, "segment_count": len(kwargs.get("memorize_segments") or [])})
 
     # Stub the heavy work so we can verify the task fires without LLM calls.
-    monkeypatch.setattr(main_module, "_run_memorize_segments", fake_run)
+    monkeypatch.setattr(main_module._memorize_endpoint, "run_memorize_segments", fake_run)
 
     # Stub _get_service_from_payload to avoid real service construction.
     class _FakeSvc:
@@ -114,7 +120,7 @@ def test_memorize_tail_retries_consolidation_when_pending_segments_exist(
         )
 
     monkeypatch.setattr(main_module, "_get_service_from_payload", lambda *a, **k: _FakeSvc())
-    monkeypatch.setattr(main_module, "_run_memorize_segments", fake_run_memorize_segments)
+    monkeypatch.setattr(main_module._memorize_endpoint, "run_memorize_segments", fake_run_memorize_segments)
     monkeypatch.setattr(main_module, "_run_consolidation_task", fake_consolidation_task)
     monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)
     monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
@@ -284,7 +290,7 @@ def test_cross_memorize_endpoint_marks_manifest_range(
         return ({"digest_cursor": 7, "last_memorize_at": "2026-06-14T00:00:00+00:00", "pending_segment_ids": []}, tmp_path / "state.db")
 
     monkeypatch.setattr(main_module, "_get_service_from_payload", lambda *a, **k: object())
-    monkeypatch.setattr(main_module, "_run_memorize_segments", fake_run)
+    monkeypatch.setattr(main_module._memorize_endpoint, "run_memorize_segments", fake_run)
     monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)
     monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
 
@@ -349,7 +355,7 @@ def test_force_without_rebuild_does_not_archive_db(
         recorded.append({"segment_count": len(kwargs.get("memorize_segments") or [])})
 
     monkeypatch.setattr(main_module, "_get_service_from_payload", lambda *a, **k: object())
-    monkeypatch.setattr(main_module, "_run_memorize_segments", fake_run)
+    monkeypatch.setattr(main_module._memorize_endpoint, "run_memorize_segments", fake_run)
     monkeypatch.setattr(main_module, "_sqlite_current_path", fake_sqlite_current_path)
     monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)
     monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
@@ -447,7 +453,7 @@ def test_rebuild_archives_db_and_service_reacquired_after_archive(
         return (_state_response(), tmp_path / "fake_state.db")
 
     monkeypatch.setattr(main_module, "_get_service_from_payload", fake_get_service)
-    monkeypatch.setattr(main_module, "_run_memorize_segments", _noop_run)
+    monkeypatch.setattr(main_module._memorize_endpoint, "run_memorize_segments", _noop_run)
     monkeypatch.setattr(main_module, "_sqlite_current_path", fake_sqlite_current_path)
     monkeypatch.setattr(main_module, "_clear_cached_services", fake_clear_cached_services)
     monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)

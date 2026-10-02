@@ -329,6 +329,7 @@ async def test_mcp_memu_memorize_returns_before_background_finishes(monkeypatch:
     req = mcp_tools.MemuMemorizeRequest(
         user_id="u1",
         soul_id="s1",
+        conversation_id="saved-chat",
         conversation=[{"role": "user", "content": "hello"}],
     )
     out = await main.mcp_memu_memorize(req)

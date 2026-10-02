@@ -299,7 +299,7 @@ async def run_memorize_segments(
     zi: Any | None = None,
     cross_memorize: bool = False,
     final_cursors: dict[str, dict[str, Any]] | None = None,
-) -> None:
+) -> bool:
     ctx = run_ctx.base
     progress_key = ctx.memorize_lock_key(uid, soul_id)
     mem_lock = ctx.get_memorize_lock(progress_key)
@@ -324,6 +324,7 @@ async def run_memorize_segments(
     consolidation_started = False
     durable_segments_committed = False
     terminal_result: str = "success"
+    failure_record: dict[str, Any] | None = None
     rolling_summaries_raw = safe.get("_background_rolling_summaries")
     rolling_summaries: dict[str, dict[str, Any]] = (
         rolling_summaries_raw if isinstance(rolling_summaries_raw, dict) else {}
@@ -466,6 +467,23 @@ async def run_memorize_segments(
                 ctx.logger.info("memorize cancelled before batch extraction")
                 terminal_result = "cancelled"
             else:
+                if any(job["memory_producing"] for job in segment_jobs):
+                    previous, _, _ = run_ctx.load_turn_state_and_soul_card(
+                        conversation_id, user_id=uid, soul_id=soul_id,
+                    )
+                    old_failure = previous.get("memorize_failure")
+                    targets = final_cursors or {
+                        conversation_id: {"cursor": memorize_segments[-1][3], "memory_producing": True},
+                    }
+                    failure_record = {
+                        "conversation_id": conversation_id,
+                        "error": old_failure["error"] if old_failure else "Memorize interrupted before completion. Retry in launcher.",
+                        "paused": bool(old_failure), "targets": targets,
+                    }
+                    ctx.write_conversation_state(
+                        conversation_id, user_id=uid, soul_id=soul_id,
+                        updates={"memorize_failure": failure_record},
+                    )
                 _set_memorize_progress(
                     ctx.memorize_progress,
                     progress_key,
@@ -686,6 +704,12 @@ async def run_memorize_segments(
                         },
                     )
 
+            if failure_record is not None and not cancelled:
+                ctx.write_conversation_state(
+                    conversation_id, user_id=uid, soul_id=soul_id,
+                    updates={"memorize_failure": None},
+                )
+                failure_record = None
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
             should_consolidate = False
             if (
@@ -765,7 +789,13 @@ async def run_memorize_segments(
                     active=False,
                     last_result="success",
                 )
+        return terminal_result != "cancelled"
     except Exception as exc:
+        if failure_record is not None:
+            ctx.write_conversation_state(
+                conversation_id, user_id=uid, soul_id=soul_id,
+                updates={"memorize_failure": {**failure_record, "paused": True, "error": f"Memorize failed: {exc}"[:300]}},
+            )
         for segment_path in created_segment_paths:
             try:
                 segment_path.unlink(missing_ok=True)

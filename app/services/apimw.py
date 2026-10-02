@@ -239,6 +239,7 @@ async def _apimw_synthesize(
         if str(part or "").strip()
     )
 
+    _m()._require_soul_active(user_id, soul_id)
     llm_raw = await svc.chat(
         apimw_user_prompt,
         profile=llm_profile,
@@ -352,6 +353,7 @@ async def _run_apimw(
         svc = _m()._get_service_from_payload(payload)
         apimw_trace_id = uuid.uuid4().hex
         scope = {"user_id": user_id, "soul_id": soul_id}
+        _m()._require_soul_active(user_id, soul_id)
         all_categories_summary = svc.build_dossier_index(scope)
         apimw_item_top_k = _m()._apimw_memory_count_from_cfg(_m()._CONFIG)
         apimw_random_count = _m()._apimw_random_count_from_cfg(_m()._CONFIG)

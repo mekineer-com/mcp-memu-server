@@ -8,6 +8,28 @@ from typing import Any
 
 from app.db import json_from_db, json_to_db, normalize_text_list
 from app.services.intention_state import validate_intentions, normalize_memory_cache
+from app.services.payload import parse_iso_datetime
+
+CONSOLIDATION_UNFINISHED = "Consolidation interrupted before completion. Retry in launcher."
+
+
+def consolidation_failure(state: dict[str, Any]) -> str | None:
+    error = state.get("last_consolidation_error")
+    failed_at = parse_iso_datetime(state.get("last_consolidation_error_at"))
+    completed_at = parse_iso_datetime(state.get("last_consolidation_at"))
+    if error and failed_at and (completed_at is None or failed_at > completed_at):
+        return str(error)
+    return None
+
+
+def activity_pause(state: dict[str, Any], *, memorize_running: bool, consolidation_running: bool) -> str | None:
+    failure = state.get("memorize_failure")
+    if failure and (failure.get("paused") or not memorize_running):
+        return str(failure["error"])
+    error = consolidation_failure(state)
+    if error and (error != CONSOLIDATION_UNFINISHED or not consolidation_running):
+        return error
+    return None
 
 
 def ensure_schema(con: sqlite3.Connection) -> None:
@@ -26,6 +48,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         "summaries_revision": "INTEGER NOT NULL DEFAULT 0",
         "last_consolidation_error": "TEXT",
         "last_consolidation_error_at": "DATETIME",
+        "memorize_failure": "TEXT",
     }
     missing_row = table_exists and con.execute("SELECT COUNT(*) FROM soul_state").fetchone()[0] == 0
     needs_migration = (
@@ -52,6 +75,7 @@ CREATE TABLE IF NOT EXISTS soul_state (
     last_consolidation_at DATETIME,
     last_consolidation_error TEXT,
     last_consolidation_error_at DATETIME,
+    memorize_failure TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )""")
     cols = {row[1] for row in con.execute("PRAGMA table_info(soul_state)").fetchall()}
@@ -89,6 +113,7 @@ def read(con: sqlite3.Connection) -> dict[str, Any]:
         "last_consolidation_at": row["last_consolidation_at"],
         "last_consolidation_error": row["last_consolidation_error"],
         "last_consolidation_error_at": row["last_consolidation_error_at"],
+        "memorize_failure": json_from_db(row["memorize_failure"]),
         "updated_at": row["updated_at"],
     }
 
@@ -108,16 +133,19 @@ def defaults() -> dict[str, Any]:
         "last_consolidation_at": None,
         "last_consolidation_error": None,
         "last_consolidation_error_at": None,
+        "memorize_failure": None,
         "updated_at": None,
     }
 
 
 _JSON_FIELDS = {
+    "memorize_failure",
     "intentions_active", "memory_cache",
     "retrieval_ids_since_consolidation", "prior_context_ids_since_consolidation",
 }
 
 _VALID_FIELDS = {
+    "memorize_failure",
     "memory_cache", "intentions_active",
     "retrieve_rewrite_angle", "retrieval_ids_since_consolidation",
     "prior_context_ids_since_consolidation", "apimw_message_to_self",
@@ -136,6 +164,10 @@ def write(con: sqlite3.Connection, updates: dict[str, Any]) -> None:
         fields["intentions_active"] = validate_intentions(fields["intentions_active"])
     if "memory_cache" in fields:
         fields["memory_cache"] = normalize_memory_cache(fields["memory_cache"])
+    if fields.get("memorize_failure") is not None:
+        failure = fields["memorize_failure"]
+        if not isinstance(failure, dict) or not isinstance(failure.get("conversation_id"), str) or not isinstance(failure.get("error"), str) or not isinstance(failure.get("paused"), bool) or not isinstance(failure.get("targets"), dict):
+            raise ValueError("invalid memorize failure record")
     if "retrieval_ids_since_consolidation" in fields:
         fields["retrieval_ids_since_consolidation"] = normalize_text_list(fields["retrieval_ids_since_consolidation"])
     if "prior_context_ids_since_consolidation" in fields:

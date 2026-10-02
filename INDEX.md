@@ -30,6 +30,7 @@ mcp-memu-server/
 ├── app/services/review_routes.py  # Review routes; category prose/title/description snapshot + revision checked in the caller-owned write transaction
 ├── app/services/state.py
 ├── app/services/soul_summaries.py # SQL-only summary writes; shared journal finishing after caller commit
+├── app/services/soul_state.py # Shared Soul state, durable Memorize failure and common activity-pause predicate
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
 ├── migrate_category_taxonomy.py # Offline inventory/discover/apply/validate migration; explicit DB only, same embedding-profile gate as server
 ├── migrate_multimodal_embeddings.py # Offline Gemini embedding rebuild; same llm.embedding.api_key as server; publishes only after validation
@@ -102,6 +103,7 @@ mcp-memu-server/
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/conversation/{id}/consolidation/force` | POST | Force consolidation now (lock-safe) |
 | `/conversation/{id}/consolidation/retry` | POST | Manual retry of a failed consolidation (409 when the last run did not fail). Failed paid runs never retry automatically. |
+| `/memorize/retry` | POST | Scoped launcher recovery of failed Memorize using saved sources/checkpoints; an active Retry keeps activity paused until success |
 | `/souls/{soul_id}/relationships` | GET/POST | User-declared relationship entities; POST may promote an exact entity ID |
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or remove Relationship properties from one stable `entity:<entities.id>` reference |
 | `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot; reject concurrent self-description changes before saving |

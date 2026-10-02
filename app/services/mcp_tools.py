@@ -56,7 +56,7 @@ class MemuMemorizeRequest(BaseModel):
     user_id: str
     soul_id: str
     conversation: list[dict[str, Any]]
-    conversation_id: str | None = None
+    conversation_id: str
     force: bool = False
 
 

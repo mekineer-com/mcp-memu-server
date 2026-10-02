@@ -1779,7 +1779,7 @@ async def test_consolidation_pipeline_records_preflight_error_and_releases_claim
             user_id="UserOwner",
         )
 
-    assert isinstance(recorded[0]["exc"], HTTPException)
+    assert recorded[0]["error"].startswith("HTTPException:")
     assert ("UserOwner", "SoulOwner") not in main._CONSOLIDATION_RUNNING
 
 
@@ -1825,7 +1825,7 @@ async def test_consolidation_pipeline_records_failure_and_releases_claim(
             user_id="UserOwner",
         )
 
-    assert isinstance(recorded[0]["exc"], RuntimeError)
+    assert recorded[0]["error"].startswith("RuntimeError:")
     assert ("UserOwner", "SoulOwner") not in main._CONSOLIDATION_RUNNING
 
 
@@ -1864,7 +1864,7 @@ async def test_consolidation_pipeline_records_gather_failure_and_releases_claim(
             user_id="UserOwner",
         )
 
-    assert isinstance(recorded[0]["exc"], HTTPException)
+    assert recorded[0]["error"].startswith("HTTPException:")
     assert ("UserOwner", "SoulOwner") not in main._CONSOLIDATION_RUNNING
 
 
@@ -2130,7 +2130,7 @@ def test_record_consolidation_failure_never_creates_missing_soul_db(
             deps=main._make_consolidation_deps(),
             soul_id="MissingSoul",
             user_id="User",
-            exc=RuntimeError("failed"),
+            error="RuntimeError: failed",
         )
 
     assert not missing.exists()
@@ -2153,7 +2153,7 @@ def test_record_consolidation_failure_is_soul_level(
         deps=main._make_consolidation_deps(),
         soul_id="Soul",
         user_id="User",
-        exc=RuntimeError("invalid request"),
+        error="RuntimeError: invalid request",
     )
     con = main._sqlite_connect(db_path)
     try:
@@ -2176,7 +2176,7 @@ def test_record_consolidation_failure_is_soul_level(
         deps=main._make_consolidation_deps(),
         soul_id="Soul",
         user_id="User",
-        exc=RuntimeError("reflection failed"),
+        error="RuntimeError: reflection failed",
     )
 
     con = main._sqlite_connect(db_path)
@@ -2193,7 +2193,7 @@ def test_record_consolidation_failure_is_soul_level(
         deps=main._make_consolidation_deps(),
         soul_id="Soul",
         user_id="User",
-        exc=RuntimeError("profile invalid"),
+        error="RuntimeError: profile invalid",
     )
     con = main._sqlite_connect(db_path)
     try:
@@ -4088,6 +4088,7 @@ async def test_auto_memorize_collision_rechecks_latest_scope_after_success(
         runs.append(payload)
         if len(runs) == 1:
             await release.wait()
+        await main._finish_memorize_claim(marker, True)
         return True
 
     def prepare(*_args: Any, **kwargs: Any) -> tuple[int, dict[str, Any] | None]:
@@ -4133,6 +4134,7 @@ async def test_auto_memorize_failure_discards_pending_recheck(
 
     async def fail(_payload: dict[str, Any]) -> bool:
         await release.wait()
+        await main._finish_memorize_claim(marker, False)
         return False
 
     def prepare(*_args: Any, **_kwargs: Any) -> tuple[int, dict[str, Any] | None]:
@@ -4412,6 +4414,7 @@ async def test_run_memorize_segments_records_failure_progress_on_exception(tmp_p
     key = main._memorize_lock_key(user_id, soul_id)
     main._MEMORIZE_PROGRESS.pop(key, None)
     main._MEMORIZE_CANCEL.discard(key)
+    main._FORCED_MEMORIZE_INFLIGHT.add(key)
 
     with pytest.raises(RuntimeError):
         await main._run_memorize_segments(
@@ -4421,7 +4424,7 @@ async def test_run_memorize_segments_records_failure_progress_on_exception(tmp_p
             ),
             svc=_FailingService(),
             scope={"user_id": user_id, "soul_id": soul_id},
-            conversation_id=None,
+            conversation_id="saved-test",
             soul_id=soul_id,
             uid=user_id,
             processed_cursor=-1,
@@ -4467,6 +4470,7 @@ async def test_run_memorize_segments_batches_one_job_per_persisted_segment(tmp_p
     key = main._memorize_lock_key(user_id, soul_id)
     main._MEMORIZE_PROGRESS.pop(key, None)
     main._MEMORIZE_CANCEL.discard(key)
+    main._FORCED_MEMORIZE_INFLIGHT.add(key)
 
     await main._run_memorize_segments(
         memorize_segments=main._memorize_endpoint._offset_memorize_segments(
@@ -4478,7 +4482,7 @@ async def test_run_memorize_segments_batches_one_job_per_persisted_segment(tmp_p
         ),
         svc=_FakeService(),
         scope={"user_id": user_id, "soul_id": soul_id},
-        conversation_id=None,
+        conversation_id="saved-test",
         soul_id=soul_id,
         uid=user_id,
         processed_cursor=-1,

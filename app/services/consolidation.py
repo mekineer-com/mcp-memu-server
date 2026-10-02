@@ -1399,10 +1399,9 @@ def _record_consolidation_failure(
     deps: ConsolidationDeps,
     soul_id: str,
     user_id: str,
-    exc: Exception,
+    error: str,
 ) -> None:
     now_iso = datetime.now(UTC).isoformat()
-    error = f"{type(exc).__name__}: {str(exc)[:260]}"
     db_path = deps.sqlite_current_path(user_id, soul_id)
     if db_path is None or not db_path.exists():
         raise FileNotFoundError(f"soul database not found: {soul_id}")
@@ -1413,7 +1412,7 @@ def _record_consolidation_failure(
         _soul_state.write(
             con,
             {
-                "last_consolidation_error": error,
+                "last_consolidation_error": error[:300],
                 "last_consolidation_error_at": now_iso,
             },
         )
@@ -1468,6 +1467,14 @@ async def _run_consolidation_pipeline_once(
             soul_id=soul_id,
             mark_current_chat=False,
         )
+        async with state_lock:
+            old_error = _soul_state.consolidation_failure(prep.get("state", {}))
+            if old_error is None or old_error == _soul_state.CONSOLIDATION_UNFINISHED:
+                _record_consolidation_failure(
+                    deps=deps, soul_id=soul_id, user_id=user_id,
+                    error=("Consolidation was interrupted. Retry in progress."
+                           if old_error else _soul_state.CONSOLIDATION_UNFINISHED),
+                )
         await prepare_dossier_consolidation_context(
             svc,
             inputs=prep,
@@ -1503,7 +1510,7 @@ async def _run_consolidation_pipeline_once(
                         deps=deps,
                         soul_id=soul_id,
                         user_id=user_id,
-                        exc=exc,
+                        error=f"{type(exc).__name__}: {str(exc)[:260]}",
                     )
             except Exception:
                 log.exception(
