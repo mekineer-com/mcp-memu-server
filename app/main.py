@@ -3370,10 +3370,14 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         else "ok"
     )
     pause_reason = _soul_activity_pause(uid, sid, soul_status)
+    memory_failure = soul_status.get("memorize_failure")
+    memory_running = _memorize_lock_key(uid, sid) in _FORCED_MEMORIZE_INFLIGHT
+    retry_operation = ("memorize" if memory_failure and (memory_failure.get("paused") or not memory_running)
+                       else "consolidation" if pause_reason else None)
     return {
         "soul_id": sid, "paused": bool(pause_reason), "pause_reason": pause_reason,
-        "memorize_failure": soul_status.get("memorize_failure"),
-        "memorize_running": _memorize_lock_key(uid, sid) in _FORCED_MEMORIZE_INFLIGHT,
+        "retry_operation": retry_operation, "consolidation_running": consolidation_running,
+        "memorize_failure": memory_failure, "memorize_running": memory_running,
         "progress": _MEMORIZE_PROGRESS.get(_memorize_lock_key(uid, sid), {}),
         "summed_unmemorized_tokens": summed,
         "threshold": threshold,
