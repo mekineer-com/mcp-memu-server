@@ -76,7 +76,6 @@ from app.services import whatsapp_outbounds as _whatsapp_outbounds
 from app.services.consolidation import (
     ConsolidationDeps,
     _run_consolidation_pipeline_once,
-    consolidation_due as _consolidation_due,
 )
 from app.services.intention_state import (
     append_memory_cache_entry as _append_memory_cache_entry,
@@ -2158,15 +2157,6 @@ async def _run_consolidation_task(
         return {"ok": False, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
 
-def _should_run_consolidation(state: dict[str, Any]) -> bool:
-    now = datetime.now(UTC)
-    return _consolidation_due(
-        state.get("last_consolidation_at"),
-        interval_days=_consolidation_interval_days_from_cfg(_CONFIG),
-        now=now,
-    )
-
-
 def _active_consolidation_failure(
     state: dict[str, Any],
 ) -> tuple[str | None, datetime | None]:
@@ -2191,7 +2181,6 @@ def _make_memorize_context() -> _memorize_endpoint.MemorizeContext:
         logger=logger,
         min_chunk_tokens=_MIN_CHUNK_TOKENS,
         sleep_split_min_lull_seconds=_SLEEP_SPLIT_MIN_LULL_SECONDS,
-        consolidation_due=_should_run_consolidation,
     )
 
 
@@ -2391,13 +2380,11 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
     cid = failure["conversation_id"]
     if _memorize_targets_complete(user_id, soul_id, failure["targets"]):
         _write_conversation_state(cid, user_id=user_id, soul_id=soul_id, updates={"memorize_failure": None})
-        state, _, _ = _load_turn_state_and_soul_card(cid, user_id=user_id, soul_id=soul_id)
-        if _consolidation_due(state):
-            background_tasks.add_task(
-                _run_consolidation_task, _get_service_from_payload({"user": {"user_id": user_id, "soul_id": soul_id}}),
-                conversation_id=cid, soul_id=soul_id, uid=user_id,
-                progress_key=marker, memorize_progress=_MEMORIZE_PROGRESS,
-            )
+        background_tasks.add_task(
+            _run_consolidation_task, _get_service_from_payload({"user": {"user_id": user_id, "soul_id": soul_id}}),
+            conversation_id=cid, soul_id=soul_id, uid=user_id,
+            progress_key=marker, memorize_progress=_MEMORIZE_PROGRESS,
+        )
         return {"ok": True, "status": "already_memorized"}
     state, _, _ = _load_turn_state_and_soul_card(cid, user_id=user_id, soul_id=soul_id)
     storage, hermes, sessions, channels = _resolve_cross_source_paths()

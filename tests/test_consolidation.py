@@ -1972,3 +1972,83 @@ def test_write_consolidation_outputs_rolls_back_final_transaction() -> None:
         assert soul["narrative_self"] is None
         assert soul["last_consolidation_at"] is None
         assert narrative_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["wait", "time", "revision-size", "reflection-size", "cli-size", "too-large", "missing"])
+async def test_ordinary_automatic_consolidation_uses_time_or_actual_stage_capacity(tmp_path, monkeypatch, mode):
+    from datetime import timedelta
+    path = tmp_path / "cadence.db"
+    deps = _make_consolidation_deps(path, tmp_path)
+    scope = {"user_id": "TestUser", "soul_id": "TestSoul"}
+    last = (datetime.now(UTC) - timedelta(days=8 if mode == "time" else 0)).isoformat()
+    selected = {"chat-a": ["chat-a:0-0", "chat-a:1-1"], "chat-b": ["chat-b:0-0"]}
+    for cid, ids in selected.items():
+        deps.write_conversation_state(cid, **scope, updates={"pending_segment_ids": ids, "last_consolidation_at": last})
+    with sqlite_connect(path) as con:
+        con.row_factory = sqlite3.Row
+        before = _soul_state.read(con)
+    svc = _DossierContextService(due_ids=("first",), profiles=("default", "revision", "consolidation"))
+    svc.database = _make_svc_stub(path).database
+    rows = [{"conversation_id": cid, "segment_id": sid, "memory_summaries": []}
+            for cid, ids in selected.items() for sid in ids]
+    inputs = {**_inputs(), "status": "ready", "db_path": path, "last_consolidation_at": last,
+              "state": before, "segment_inputs": rows, "current_chat_messages": [],
+              "selected_segment_ids": [row["segment_id"] for row in rows],
+              "selected_segment_ids_by_conversation": selected}
+    prepare = consolidation._prepare_dossier_consolidation_prompts
+    estimates = prepare(svc, inputs=inputs, **scope)[3]
+    if mode in {"revision-size", "reflection-size", "cli-size", "too-large"}:
+        tokens = (estimates["dossiers"] if mode in {"revision-size", "too-large"}
+                  else max(estimates.values()) if mode == "cli-size"
+                  else max(estimates["anchors"], estimates["weekly"]))
+        budget = tokens - 1 if mode == "too-large" else tokens + (tokens + 2) // 3 - 1
+        context = 8000 + (budget * 5 + 3) // 4
+        if mode == "cli-size":
+            svc._claude_code = True
+            svc._claude_code_model = "TestCLIModel"
+            svc._claude_code_context_window_tokens = context - 8000
+        else:
+            svc.llm_profiles.profiles["revision" if mode in {"revision-size", "too-large"} else "consolidation"].context_window_tokens = context
+    elif mode == "missing":
+        svc.llm_profiles.profiles["consolidation"].context_window_tokens = None
+    gathers, preparations, applied = [], [], []
+    def gather(*_args, **kwargs):
+        assert kwargs["selected_segments"] is None and kwargs["force"] is False
+        gathers.append(True)
+        return inputs
+    def prepared(*args, **kwargs):
+        preparations.append(True)
+        return prepare(*args, **kwargs)
+    def apply(*_args, **kwargs):
+        applied.append(kwargs["inputs"]["selected_segment_ids"])
+        return {"consumed_segment_ids": applied[-1]}
+    monkeypatch.setattr(consolidation, "gather_consolidation_inputs", gather)
+    monkeypatch.setattr(consolidation, "_prepare_dossier_consolidation_prompts", prepared)
+    monkeypatch.setattr(consolidation, "write_consolidation_outputs", apply)
+    svc.calls.clear()
+    running = {}
+    kwargs = dict(svc=svc, deps=deps, state_lock=asyncio.Lock(), running=running,
+                  load_cross_tail_for_ai=lambda **_kw: [], format_all_chat_history_for_ai=lambda **_kw: "A lived span.",
+                  conversation_id="chat-a", **scope)
+    if mode in {"too-large", "missing"}:
+        with pytest.raises(ValueError, match="token limit" if mode == "too-large" else "context_window_tokens"):
+            await consolidation._run_consolidation_pipeline_once(**kwargs)
+    else:
+        result = await consolidation._run_consolidation_pipeline_once(**kwargs)
+        assert result["status"] == ("skipped" if mode == "wait" else "ok")
+    assert running == {} and len(gathers) == len(preparations) == 1
+    model_calls = [call for call in svc.calls if call[0] == "chat"]
+    if mode in {"wait", "too-large", "missing"}:
+        assert model_calls == [] and applied == []
+        with sqlite_connect(path) as con:
+            con.row_factory = sqlite3.Row
+            after = _soul_state.read(con)
+            assert after["last_consolidation_at"] == before["last_consolidation_at"]
+            assert after["memorize_failure"] is None
+            assert bool(after["last_consolidation_error"]) == (mode != "wait")
+            for cid, ids in selected.items():
+                assert conversation_state_from_row(conversation_state_row(con, cid, **scope))["pending_segment_ids"] == ids
+    else:
+        assert model_calls == [("chat", "dossiers"), ("chat", "anchors"), ("chat", "weekly")]
+        assert applied == [inputs["selected_segment_ids"]]

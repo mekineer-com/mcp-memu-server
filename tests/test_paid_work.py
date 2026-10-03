@@ -4,6 +4,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
@@ -210,7 +211,7 @@ async def test_cross_checkpoint_failure_retains_published_history_and_retry_uses
         return real_write(cid, **kwargs)
     monkeypatch.setattr(main, "_write_conversation_state", write)
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: Service())
-    monkeypatch.setattr(main, "_should_run_consolidation", lambda *_args: False)
+    monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
     tasks = BackgroundTasks()
     await main.memorize(payload, tasks, True)
     with pytest.raises(RuntimeError, match="Checkpoint failed"):
@@ -288,7 +289,7 @@ async def test_retry_assembles_remaining_activity_under_original_owner(monkeypat
             assert "Completed a fictional task" in kwargs["segments"][0]["raw_text"]
             return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: Service())
-    monkeypatch.setattr(main, "_should_run_consolidation", lambda *_args: False)
+    monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
     tasks = BackgroundTasks()
     await main.retry_memorize(uid, sid, tasks)
     await tasks()
@@ -325,7 +326,7 @@ async def test_context_only_remainder_recovers_existing_failure_without_creating
             assert all(segment["segment"]["context_only"] for segment in kwargs["segments"])
             return [{"context_only": True} for _segment in kwargs["segments"]]
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: Service())
-    monkeypatch.setattr(main, "_should_run_consolidation", lambda *_args: False)
+    monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
     tasks = BackgroundTasks()
     if recovering:
         await main.retry_memorize(uid, sid, tasks)
@@ -406,8 +407,12 @@ async def test_retry_of_completed_targets_clears_only_memorize(monkeypatch):
         "last_consolidation_error": "Reflection failed", "last_consolidation_error_at": datetime.now(UTC).isoformat(),
     })
     monkeypatch.setattr(main, "_safe_payload", lambda payload: payload)
-    monkeypatch.setattr(main, "_consolidation_due", lambda _state: False)
-    assert (await main.retry_memorize(uid, sid, BackgroundTasks()))["status"] == "already_memorized"
+    schedule = AsyncMock(return_value={"status": "skipped"})
+    monkeypatch.setattr(main, "_run_consolidation_task", schedule)
+    tasks = BackgroundTasks()
+    assert (await main.retry_memorize(uid, sid, tasks))["status"] == "already_memorized"
+    await tasks()
+    schedule.assert_awaited_once()
     state = main._paid_work_state(uid, sid)
     assert state["memorize_failure"] is None
     assert main._soul_activity_pause(uid, sid) == "Reflection failed"
@@ -564,7 +569,7 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
             raise RuntimeError("Second publication failed")
         return writer(*args, **kwargs)
     monkeypatch.setattr(main, "_write_conversation_state", fail_second)
-    monkeypatch.setattr(main, "_should_run_consolidation", lambda *_args: False)
+    monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
     messages = [[{"role": "user", "content": word, "ts_ms": 1_577_836_800_000}] for word in ("First", "Second")]
     async def run(indices):
         await main._run_memorize_segments(
@@ -580,3 +585,23 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
     await run([1])
     assert resources[1] == resources[2]
     assert len(list(segments_dir.iterdir())) == 2
+
+
+@pytest.mark.asyncio
+async def test_no_new_tail_still_checks_pending_consolidation_with_a_recent_clock(monkeypatch):
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:pending-cadence"
+    main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={
+        "pending_segment_ids": [f"{cid}:0-0"], "last_consolidation_at": datetime.now(UTC).isoformat(),
+        "digest_cursor": 0, "last_memorize_at": datetime.now(UTC).isoformat(),
+    })
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: object())
+    schedule = AsyncMock(return_value={"status": "skipped"})
+    monkeypatch.setattr(main, "_run_consolidation_task", schedule)
+    tasks = BackgroundTasks()
+    response = await main.memorize({"user": {"user_id": uid, "soul_id": sid},
+        "conversation_id": cid, "conversation": [{"role": "user", "content": "Already memorized"}]}, tasks, True, tail=True)
+    assert response.status_code == 202
+    await tasks()
+    schedule.assert_awaited_once()
+    assert schedule.await_args.kwargs["conversation_id"] == cid
+    assert not schedule.await_args.kwargs.get("force", False)

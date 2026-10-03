@@ -1711,8 +1711,8 @@ def test_conversation_state_schema_migrates_pending_segment_ids_from_old_name(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("historical", [False, True])
-async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.MonkeyPatch, historical) -> None:
+@pytest.mark.parametrize(("historical", "force"), [(False, False), (False, True), (True, False)])
+async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.MonkeyPatch, historical, force) -> None:
     calls: list[int] = []
 
     async def fake_pipeline_once(**_kwargs):
@@ -1720,6 +1720,7 @@ async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.Mon
         assert _kwargs["load_cross_tail_for_ai"] is main._load_cross_tail_for_ai
         assert _kwargs["format_all_chat_history_for_ai"] is main._format_all_chat_history_for_ai
         assert _kwargs["historical"] is historical
+        assert _kwargs["force"] is force
         calls.append(len(calls) + 1)
         return {"status": "ok", "result": {}}
 
@@ -1731,16 +1732,11 @@ async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.Mon
         soul_id="SoulLoop",
         uid="UserLoop",
         historical=historical,
+        force=force,
     )
 
     assert out == {"ok": True, "status": "ok", "result": {}}
     assert len(calls) == 1
-
-
-def test_should_run_consolidation_uses_soul_clock() -> None:
-    now = datetime.now(UTC)
-    assert main._should_run_consolidation({}) is True
-    assert main._should_run_consolidation({"last_consolidation_at": now.isoformat()}) is False
 
 
 @pytest.mark.asyncio
@@ -4567,7 +4563,7 @@ async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeyp
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", load)
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_: path)
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
-    monkeypatch.setattr(main, "_should_run_consolidation", lambda *_: pytest.fail("no normal schedule during import"))
+    monkeypatch.setattr(main, "_run_consolidation_task", lambda *_a, **_kw: pytest.fail("no normal schedule during import"))
     key = main._memorize_lock_key(scope["user_id"], scope["soul_id"])
     with pytest.raises(HTTPException):
         main._require_soul_active(scope["user_id"], scope["soul_id"])

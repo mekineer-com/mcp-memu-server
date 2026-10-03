@@ -1550,6 +1550,20 @@ async def _run_consolidation_pipeline_once(
             mark_current_chat=False,
         )
         prepared = None
+        if not force and not historical and not consolidation_due(
+            prep.get("last_consolidation_at"),
+            interval_days=_service_factory._consolidation_interval_days_from_cfg(deps.config),
+        ):
+            prepared = _prepare_dossier_consolidation_prompts(
+                svc, inputs=prep, soul_id=soul_id, user_id=user_id,
+            )
+            segment_count = len(prep["segment_inputs"])
+            # ponytail: total-prompt average includes fixed context; conservative until real growth warrants finer sizing.
+            if all(not tokens or tokens + (tokens + segment_count - 1) // segment_count < consolidation_input_budget(
+                svc, svc.memorize_config.category_update_llm_profile if stage == "dossiers" else consolidation_profile,
+            ) for stage, tokens in prepared[3].items()):
+                return {"status": "skipped", "reason": "not_due"}
+            log.info("consolidation due by size: segments=%d estimates=%s", segment_count, prepared[3])
         if historical:
             ordered_segments = prep["segment_inputs"]
             revision_profile = svc.memorize_config.category_update_llm_profile
