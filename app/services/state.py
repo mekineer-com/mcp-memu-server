@@ -24,6 +24,21 @@ from app.services import soul_state as _soul_state
 _MISSING = object()
 
 
+def normalize_import_state(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("import_state must be an object or null")
+    end, cursor = value.get("history_end_index"), value.get("memorize_cursor")
+    if type(end) is not int or type(cursor) is not int or not -1 <= cursor < end:
+        raise ValueError("import_state requires a nonnegative history end and a cursor within that range")
+    if value.get("stage") not in {"memorize", "consolidation", "complete"}:
+        raise ValueError("import_state has an invalid stage")
+    if value.get("error") is not None and not isinstance(value["error"], str):
+        raise ValueError("import_state error must be text or null")
+    return {**value, "pending_segment_ids": normalize_text_list(value.get("pending_segment_ids"))}
+
+
 def _row_value(row: Any, key: str) -> Any:
     try:
         return row[key]
@@ -92,6 +107,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "rolling_summary_updated_at": row["rolling_summary_updated_at"] if "rolling_summary_updated_at" in row.keys() else None,
         "prior_context": None if prior_context is None else str(prior_context),
         "pending_segment_ids": normalize_text_list(row["pending_segment_ids"]),
+        "import_state": normalize_import_state(json_from_db(row["import_state"])),
         "last_memorize_at": row["last_memorize_at"],
         "last_display_segment_start_index": (
             int(row["last_display_segment_start_index"])
@@ -127,7 +143,7 @@ def conversation_state_row(
         "rolling_summary, rolling_summary_cursor_id, "
         "rolling_summary_cursor_source_message_id, rolling_summary_cursor_ts, "
         "rolling_summary_updated_at, prior_context, "
-        "pending_segment_ids, last_memorize_at, "
+        "pending_segment_ids, import_state, last_memorize_at, "
         "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at, "
         "updated_at, undo_snapshot, "
         "last_background_error, last_background_error_at, "
@@ -168,6 +184,7 @@ def conversation_state_empty(
         "rolling_summary_updated_at": None,
         "prior_context": None,
         "pending_segment_ids": [],
+        "import_state": None,
         "last_memorize_at": None,
         "last_display_segment_start_index": None,
         "last_display_segment_end_index": None,
@@ -311,6 +328,7 @@ INSERT OR IGNORE INTO conversations (
                 "rolling_summary_updated_at",
                 "prior_context",
                 "pending_segment_ids",
+                "import_state",
                 "last_memorize_at",
                 "last_display_segment_start_index",
                 "last_display_segment_end_index",
@@ -409,6 +427,11 @@ INSERT OR IGNORE INTO conversations (
             field_updates["prior_context"] = None if raw_prior_context is None else str(raw_prior_context)
         if "pending_segment_ids" in field_updates:
             field_updates["pending_segment_ids"] = normalize_text_list(field_updates["pending_segment_ids"])
+        if "import_state" in field_updates:
+            try:
+                field_updates["import_state"] = normalize_import_state(field_updates["import_state"])
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         if field_updates:
             field_updates["updated_at"] = datetime.now(UTC).isoformat()
@@ -416,7 +439,7 @@ INSERT OR IGNORE INTO conversations (
             params: list[Any] = []
             for key, value in field_updates.items():
                 assignments.append(f"{key} = ?")
-                if key in {"pending_segment_ids", "undo_snapshot"}:
+                if key in {"pending_segment_ids", "undo_snapshot", "import_state"}:
                     params.append(json_to_db(value))
                 elif key == "memorize_chat":
                     params.append(1 if bool(value) else 0)

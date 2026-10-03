@@ -392,6 +392,7 @@ def _load_tail_for_source_conversation(
     state_db_path: Path | None,
     min_timestamp: int | None = None,
     include_floor_without_new: bool = False,
+    import_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     source_label = _message_log.derive_source_label(conversation_id)
     if source_label.startswith("whatsapp:"):
@@ -431,6 +432,7 @@ def _load_tail_for_source_conversation(
             conversation_id=conversation_id,
             since_cursor=since_cursor,
             recent_fallback_messages=recent_fallback_messages,
+            import_state=import_state,
         )
     if source_label == "atomic":
         return _conversation_sources.load_atomic_tail(
@@ -440,6 +442,7 @@ def _load_tail_for_source_conversation(
             conversation_id=conversation_id,
             since_cursor=since_cursor,
             recent_fallback_messages=recent_fallback_messages,
+            import_state=import_state,
         )
     if source_label == "mentra":
         return _conversation_sources.load_mentra_tail(
@@ -449,6 +452,7 @@ def _load_tail_for_source_conversation(
             conversation_id=conversation_id,
             since_cursor=since_cursor,
             recent_fallback_messages=recent_fallback_messages,
+            import_state=import_state,
         )
     if source_label == "replika":
         return _conversation_sources.load_chat_snapshot_tail(
@@ -460,6 +464,7 @@ def _load_tail_for_source_conversation(
             recent_fallback_messages=recent_fallback_messages,
             source_label="replika",
             include_floor_without_new=include_floor_without_new,
+            import_state=import_state,
         )
     return []
 
@@ -503,7 +508,7 @@ def _load_cross_tail_from_sources(
     cursor_rows = con.execute(
         "SELECT conversation_id, memorize_chat, digest_cursor, last_memorize_at, "
         "digest_cursor_source_message_id, digest_cursor_ts, "
-        "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at "
+        "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at, import_state "
         "FROM conversations"
     ).fetchall()
     newest_display_at = max(
@@ -586,6 +591,7 @@ def _load_cross_tail_from_sources(
                 state_db_path=state_db_path,
                 min_timestamp=min_timestamp,
                 include_floor_without_new=latest_display_participant,
+                import_state=json.loads(row["import_state"]) if row["import_state"] is not None else None,
             )
         except Exception as exc:
             _m().logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)
@@ -777,7 +783,7 @@ def _load_cross_memorize_tails_from_sources(
     rows = con.execute(
         "SELECT conversation_id, digest_cursor, digest_cursor_source_message_id, digest_cursor_ts, "
         "last_memorize_at, memorize_chat, rolling_summary_cursor_id, "
-        "rolling_summary_cursor_source_message_id, rolling_summary_cursor_ts "
+        "rolling_summary_cursor_source_message_id, rolling_summary_cursor_ts, import_state "
         "FROM conversations"
     ).fetchall()
     tails: dict[str, list[dict[str, Any]]] = {}
@@ -820,6 +826,7 @@ def _load_cross_memorize_tails_from_sources(
                     sessions_index_path=sessions_index_path,
                     state_db_path=state_db_path,
                     min_timestamp=min_timestamp,
+                    import_state=json.loads(row["import_state"]) if row["import_state"] is not None else None,
                 )
                 _m()._stamp_assistant_display_name(tail, soul_id)
                 if not tail:
@@ -876,6 +883,7 @@ def _load_cross_memorize_tails_from_sources(
                     conversation_id=cid,
                     since_cursor=int(rolling_cursor_id) if rolling_cursor_id is not None else -1,
                     recent_fallback_messages=0,
+                    import_state=json.loads(row["import_state"]) if row["import_state"] is not None else None,
                 )
             else:
                 continue

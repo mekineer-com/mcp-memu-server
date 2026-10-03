@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     atomic_session_ended_at DATETIME,
     prior_context TEXT,
     pending_segment_ids JSON DEFAULT '[]',
+    import_state JSON,
     last_memorize_at DATETIME,
     last_display_segment_start_index INTEGER,
     last_display_segment_end_index INTEGER,
@@ -135,6 +136,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     conversation_cols = set(sqlite_table_columns(con, "conversations"))
     if "memorize_chat" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN memorize_chat INTEGER DEFAULT 1")
+    if "import_state" not in conversation_cols:
+        con.execute("ALTER TABLE conversations ADD COLUMN import_state JSON")
     if "pending_segment_ids" not in conversation_cols:
         con.execute("ALTER TABLE conversations ADD COLUMN pending_segment_ids JSON DEFAULT '[]'")
         if "pending_episode_ids" in conversation_cols:

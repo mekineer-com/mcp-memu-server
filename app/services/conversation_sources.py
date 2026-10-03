@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services import memorize_endpoint
+from app.services.state import normalize_import_state
 
 _NUMERIC_LIKE_RE = re.compile(r"^[0-9+\-() .]+$")
 _ST_SNAPSHOT_FILE = "latest_history.json"
@@ -906,7 +907,12 @@ def load_chat_snapshot_tail(
     recent_fallback_messages: int,
     source_label: str,
     include_floor_without_new: bool = False,
+    import_state: dict[str, Any] | None = None,
+    historical: bool = False,
 ) -> list[dict[str, Any]]:
+    import_state = normalize_import_state(import_state)
+    if historical and import_state is None:
+        raise ValueError("Historical source reads require registered import state")
     path = _chat_snapshot_path(
         storage_dir=storage_dir,
         user_id=user_id,
@@ -944,6 +950,10 @@ def load_chat_snapshot_tail(
         if not received_at:
             received_at = str(item.get("received_at") or item.get("created_at") or "").strip()
         source_index = item.get("sequence") if source_label == "mentra" else idx
+        if import_state is not None:
+            in_history = source_index < import_state["history_end_index"]
+            if in_history != historical:
+                continue
         row = {
             "role": role,
             "speaker": speaker,
@@ -991,6 +1001,7 @@ def load_sillytavern_tail(
     conversation_id: str,
     since_cursor: int,
     recent_fallback_messages: int,
+    import_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     return load_chat_snapshot_tail(
         storage_dir=storage_dir,
@@ -1000,6 +1011,7 @@ def load_sillytavern_tail(
         since_cursor=since_cursor,
         recent_fallback_messages=recent_fallback_messages,
         source_label="sillytavern",
+        import_state=import_state,
     )
 
 
@@ -1011,6 +1023,7 @@ def load_atomic_tail(
     conversation_id: str,
     since_cursor: int,
     recent_fallback_messages: int,
+    import_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     return load_chat_snapshot_tail(
         storage_dir=storage_dir,
@@ -1020,6 +1033,7 @@ def load_atomic_tail(
         since_cursor=since_cursor,
         recent_fallback_messages=recent_fallback_messages,
         source_label="atomic",
+        import_state=import_state,
     )
 
 
@@ -1032,6 +1046,7 @@ def load_mentra_tail(
     since_cursor: int,
     recent_fallback_messages: int,
     include_floor_without_new: bool = False,
+    import_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     try:
         return load_chat_snapshot_tail(
@@ -1043,6 +1058,7 @@ def load_mentra_tail(
             recent_fallback_messages=recent_fallback_messages,
             source_label="mentra",
             include_floor_without_new=include_floor_without_new,
+            import_state=import_state,
         )
     except FileNotFoundError:
         return []

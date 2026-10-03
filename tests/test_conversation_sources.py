@@ -6,6 +6,45 @@ from pathlib import Path
 import pytest
 
 from app.services import conversation_sources
+from app.services import cross_history, state
+
+
+def test_registered_import_split_survives_source_update_and_filters_live_reads(tmp_path, monkeypatch):
+    from app import main
+    from app.db import sqlite_ensure_conversation_state_schema
+
+    db_path = tmp_path / "TestSoul.db"
+    with sqlite3.connect(db_path) as con:
+        sqlite_ensure_conversation_state_schema(con)
+    cid = "replika:test-import"
+    record = {"history_end_index": 4, "memorize_cursor": 1,
+              "pending_segment_ids": [f"{cid}:0-1"], "stage": "consolidation",
+              "error": "Historical failure"}
+    kwargs = {"storage_dir": tmp_path, "user_id": "TestOwner", "soul_id": "TestSoul",
+              "conversation_id": cid, "source_label": "replika"}
+    state.write_conversation_state(
+        cid, sqlite_current_path=lambda *_: db_path, user_id="TestOwner", soul_id="TestSoul",
+        updates={"import_state": record},
+    )
+    for count in (6, 9):
+        conversation_sources.persist_chat_history_snapshot(
+            **kwargs, history=[{"role": "user", "content": f"message {i}"} for i in range(count)],
+        )
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        loaded = state.conversation_state_from_row(state.conversation_state_row(
+            con, cid, user_id="TestOwner", soul_id="TestSoul",
+        ))["import_state"]
+        assert loaded == record
+        live = cross_history._load_cross_tail_from_sources(con, user_id="TestOwner", soul_id="TestSoul")
+        pending = cross_history._load_cross_memorize_tails_from_sources(con, user_id="TestOwner", soul_id="TestSoul")[cid]
+    assert [row["source_conversation_index"] for row in live] == list(range(4, 9))
+    assert [row["source_conversation_index"] for row in pending] == list(range(4, 9))
+    history = conversation_sources.load_chat_snapshot_tail(
+        **kwargs, since_cursor=1, recent_fallback_messages=0, import_state=loaded, historical=True,
+    )
+    assert [row["source_conversation_index"] for row in history] == [2, 3]
 
 
 def test_atomic_snapshot_blank_speakers_fall_back_to_scope_names(tmp_path: Path) -> None:

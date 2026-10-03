@@ -42,6 +42,38 @@ def _tmp_sqlite_setup(tmp_dir: Path, soul_id: str) -> tuple[Path, Path]:
     return db_path, tmp_dir
 
 
+@pytest.mark.parametrize("commit", [False, True])
+def test_import_state_shares_checkpoint_transaction_without_clearing_ordinary_failure(tmp_path, commit):
+    db_path, _ = _tmp_sqlite_setup(tmp_path, "TestSoul")
+    cid = "replika:test-import"
+    record = {"history_end_index": 4, "memorize_cursor": -1,
+              "pending_segment_ids": [], "stage": "memorize", "error": None}
+    failure = {"conversation_id": cid, "error": "Ordinary failure", "paused": True,
+               "targets": {cid: {"cursor": 20, "memory_producing": True}}}
+    kwargs = {"sqlite_current_path": lambda *_: db_path, "user_id": "TestOwner", "soul_id": "TestSoul"}
+    write_conversation_state(cid, **kwargs, updates={
+        "import_state": record, "digest_cursor": 20,
+        "pending_segment_ids": ["ordinary:0-20"], "memorize_failure": failure,
+    })
+    updated = {**record, "memorize_cursor": 1, "pending_segment_ids": [f"{cid}:0-1"],
+               "stage": "consolidation", "error": "Historical failure"}
+    with sqlite3.connect(db_path) as con:
+        con.execute("BEGIN")
+        write_conversation_state(cid, **kwargs, connection=con, updates={"import_state": updated})
+        if commit:
+            con.commit()
+        else:
+            con.rollback()
+    loaded, _ = write_conversation_state(cid, **kwargs)
+    assert loaded["import_state"] == (updated if commit else record)
+    assert loaded["digest_cursor"] == 20
+    assert loaded["pending_segment_ids"] == ["ordinary:0-20"]
+    assert loaded["memorize_failure"] == failure
+    with pytest.raises(HTTPException, match="400"):
+        write_conversation_state(cid, **kwargs, updates={"import_state": {**record, "memorize_cursor": 4}})
+    assert write_conversation_state(cid, **kwargs)[0]["import_state"] == loaded["import_state"]
+
+
 def test_background_error_fields_round_trip_through_state() -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp_dir = Path(td)

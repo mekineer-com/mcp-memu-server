@@ -2401,6 +2401,7 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
         conversation_id=cid, user_id=user_id, soul_id=soul_id, since_cursor=cursor,
         recent_fallback_messages=0, storage_dir=storage, hermes_home_path=hermes,
         sessions_index_path=sessions, state_db_path=channels, min_timestamp=floor,
+        import_state=state.get("import_state"),
     )
     payload = _build_cross_conversation_payload(
         cid, user_id, soul_id, {"memorize_chat": state.get("memorize_chat", True)}, history,
