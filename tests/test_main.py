@@ -1711,13 +1711,15 @@ def test_conversation_state_schema_migrates_pending_segment_ids_from_old_name(
 
 
 @pytest.mark.asyncio
-async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("historical", [False, True])
+async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.MonkeyPatch, historical) -> None:
     calls: list[int] = []
 
     async def fake_pipeline_once(**_kwargs):
         assert _kwargs["running"] is main._CONSOLIDATION_RUNNING
         assert _kwargs["load_cross_tail_for_ai"] is main._load_cross_tail_for_ai
         assert _kwargs["format_all_chat_history_for_ai"] is main._format_all_chat_history_for_ai
+        assert _kwargs["historical"] is historical
         calls.append(len(calls) + 1)
         return {"status": "ok", "result": {}}
 
@@ -1728,9 +1730,10 @@ async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.Mon
         conversation_id="cid-loop",
         soul_id="SoulLoop",
         uid="UserLoop",
+        historical=historical,
     )
 
-    assert out == {"ok": True, "status": "ok"}
+    assert out == {"ok": True, "status": "ok", "result": {}}
     assert len(calls) == 1
 
 
@@ -4519,6 +4522,74 @@ def test_auto_consolidation_policy() -> None:
     assert policy(force=False, cross_memorize=False)
     assert policy(force=True, cross_memorize=True)
     assert not policy(force=True, cross_memorize=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail", [False, True])
+async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeypatch, fail):
+    from app.db import sqlite_connect, sqlite_ensure_conversation_state_schema
+    from app.services import state as state_module, soul_state
+    path = tmp_path / "test.db"
+    with sqlite_connect(path) as con:
+        sqlite_ensure_conversation_state_schema(con)
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "replika:test-history"
+    def write(cid, **kwargs):
+        return state_module.write_conversation_state(cid, sqlite_current_path=lambda *_: path, **kwargs)
+    write(cid, **scope, updates={
+        "pending_segment_ids": ["ordinary"], "digest_cursor": 10,
+        "last_memorize_at": "2026-01-01T00:00:00+00:00",
+        "memorize_failure": {"conversation_id": cid, "paused": True, "error": "Ordinary failed",
+                             "targets": {cid: {"cursor": 11, "memory_producing": True}}},
+        "import_state": {"history_end_index": 2, "memorize_cursor": -1,
+                         "pending_segment_ids": [], "stage": "memorize", "error": None},
+    })
+    def load(cid, **kwargs):
+        with sqlite_connect(path) as con:
+            con.row_factory = sqlite3.Row
+            state = state_module.conversation_state_from_row(state_module.conversation_state_row(con, cid, **kwargs))
+        return state, None, None
+    with sqlite_connect(path) as con:
+        con.row_factory = sqlite3.Row
+        before = soul_state.read(con)
+    class Service:
+        async def memorize_segments_batch(self, **kwargs):
+            assert kwargs["memory_retrieve_history"] is None and kwargs["memory_prior_context"] is None
+            if fail:
+                raise RuntimeError("Import extraction failed")
+            return [{"pending_segment_ids": [row["segment"]["segment_id"]]} for row in kwargs["segments"]]
+    monkeypatch.setattr(main, "_write_conversation_state", write)
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", load)
+    monkeypatch.setattr(main, "_consolidation_due", lambda *_: pytest.fail("no normal schedule during import"))
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    key = main._memorize_lock_key(scope["user_id"], scope["soul_id"])
+    main._FORCED_MEMORIZE_INFLIGHT.add(key)
+    kwargs = dict(
+        memorize_segments=main._memorize_endpoint._offset_memorize_segments([
+            ("source.json", [{"role": "user", "content": "Earlier"},
+                             {"role": "assistant", "content": "Old reply"}], 0, 1),
+        ], start=0), svc=Service(), scope=scope, conversation_id=cid,
+        soul_id=scope["soul_id"], uid=scope["user_id"], processed_cursor=-1,
+        safe={}, resource_url="source.json", chat_key=None, merged_len=2,
+        force=False, sleep_stats=None, segments_dir=segments_dir, historical=True,
+    )
+    if fail:
+        with pytest.raises(RuntimeError, match="Import extraction failed"):
+            await main._run_memorize_segments(**kwargs)
+    else:
+        await main._run_memorize_segments(**kwargs)
+    assert key not in main._FORCED_MEMORIZE_INFLIGHT
+    state = load(cid, **scope)[0]
+    assert state["pending_segment_ids"] == ["ordinary"] and state["digest_cursor"] == 10
+    record = state["import_state"]
+    assert record["memorize_cursor"] == (-1 if fail else 1)
+    assert record["pending_segment_ids"] == ([] if fail else [f"{cid}:0-1"])
+    assert bool(record["error"]) is fail
+    assert bool(list(segments_dir.glob("*.json"))) is not fail
+    with sqlite_connect(path) as con:
+        con.row_factory = sqlite3.Row
+        assert soul_state.read(con) == before
 
 
 @pytest.mark.asyncio

@@ -300,6 +300,7 @@ async def run_memorize_segments(
     zi: Any | None = None,
     cross_memorize: bool = False,
     final_cursors: dict[str, dict[str, Any]] | None = None,
+    historical: bool = False,
 ) -> bool:
     ctx = run_ctx.base
     progress_key = ctx.memorize_lock_key(uid, soul_id)
@@ -328,10 +329,12 @@ async def run_memorize_segments(
     failure_record: dict[str, Any] | None = None
     rolling_summaries_raw = safe.get("_background_rolling_summaries")
     rolling_summaries: dict[str, dict[str, Any]] = (
-        rolling_summaries_raw if isinstance(rolling_summaries_raw, dict) else {}
+        rolling_summaries_raw if not historical and isinstance(rolling_summaries_raw, dict) else {}
     )
     run_started_at = datetime.now(UTC).isoformat()
     try:
+        if historical and (not conversation_id or cross_memorize or final_cursors):
+            raise ValueError("historical Memorize requires one registered import source")
         # Phase 1: read initial state under lock.
         async with mem_lock:
             if conversation_id:
@@ -340,15 +343,21 @@ async def run_memorize_segments(
                     user_id=uid,
                     soul_id=soul_id,
                 )
-                failure_record = state_row.get("memorize_failure")
+                if historical:
+                    if state_row.get("import_state") is None:
+                        raise ValueError("historical Memorize requires one registered import source")
+                else:
+                    failure_record = state_row.get("memorize_failure")
                 raw_ret_ids = state_row.get("retrieval_ids_since_consolidation")
-                if isinstance(raw_ret_ids, list):
+                if not historical and isinstance(raw_ret_ids, list):
                     cached_retrieval_ids = [str(rid).strip() for rid in raw_ret_ids if str(rid).strip()]
                 raw_pc_ids = state_row.get("prior_context_ids_since_consolidation")
-                if isinstance(raw_pc_ids, list):
+                if not historical and isinstance(raw_pc_ids, list):
                     cached_prior_context_ids = [str(rid).strip() for rid in raw_pc_ids if str(rid).strip()]
-                had_existing_pending = bool(run_ctx.normalize_text_list(state_row.get("pending_segment_ids")))
-                conversation_rolling_summary = str(state_row.get("rolling_summary") or "").strip() or None
+                had_existing_pending = bool(run_ctx.normalize_text_list(
+                    state_row["import_state"]["pending_segment_ids"] if historical else state_row.get("pending_segment_ids")
+                ))
+                conversation_rolling_summary = None if historical else str(state_row.get("rolling_summary") or "").strip() or None
 
         # Phase 2: persist each memorize segment as a single file and feed one
         # synthetic segment payload per segment into batch memorize.
@@ -469,7 +478,10 @@ async def run_memorize_segments(
                 ctx.logger.info("memorize cancelled before batch extraction")
                 terminal_result = "cancelled"
             else:
-                if failure_record is not None or any(job["memory_producing"] for job in segment_jobs):
+                if historical:
+                    ctx.write_conversation_state(conversation_id, user_id=uid, soul_id=soul_id,
+                        updates={"import_state": {**state_row["import_state"], "error": "Memorize interrupted before completion. Retry required."}})
+                elif failure_record is not None or any(job["memory_producing"] for job in segment_jobs):
                     targets = final_cursors or {
                         conversation_id: {"cursor": memorize_segments[-1][3], "memory_producing": True},
                     }
@@ -559,17 +571,29 @@ async def run_memorize_segments(
                             )
                             memory_producing = segment_job["memory_producing"]
                             cursor_field = "digest_cursor" if memory_producing else "rolling_summary_cursor_id"
-                            fresh_cursor = int(fresh_row.get(cursor_field) or 0)
+                            fresh_cursor = (fresh_row["import_state"]["memorize_cursor"] if historical
+                                            else int(fresh_row.get(cursor_field) or 0))
                             if fresh_cursor <= segment_end_index:
                                 processed_end_cursor = max(processed_end_cursor, segment_end_index)
                                 # per-segment advance — crash recovery needs the cursor to move
                                 # only after the whole segment completes.
-                                updates = _cursor_updates_for_unit(
-                                    memory_producing=memory_producing,
-                                    cursor=processed_end_cursor,
-                                    now_iso=datetime.now(UTC).isoformat(),
-                                    pending_segment_ids=pending_segment_ids if memory_producing else None,
-                                )
+                                if historical:
+                                    record = fresh_row["import_state"]
+                                    pending = run_ctx.normalize_text_list(record["pending_segment_ids"] + pending_segment_ids)
+                                    updates = {"import_state": {**record,
+                                        "memorize_cursor": processed_end_cursor,
+                                        "pending_segment_ids": pending,
+                                        "stage": ("consolidation" if pending else "complete"
+                                                  if processed_end_cursor == record["history_end_index"] - 1 else "memorize"),
+                                        "error": None,
+                                    }}
+                                else:
+                                    updates = _cursor_updates_for_unit(
+                                        memory_producing=memory_producing,
+                                        cursor=processed_end_cursor,
+                                        now_iso=datetime.now(UTC).isoformat(),
+                                        pending_segment_ids=pending_segment_ids if memory_producing else None,
+                                    )
                                 ctx.write_conversation_state(
                                     conversation_id,
                                     soul_id=soul_id,
@@ -592,7 +616,7 @@ async def run_memorize_segments(
                 if conversation_id:
                     _remove_manifest_ranges(segments_dir.parent / "manifest.json", reserved_manifest_ranges)
             # Publish the original owner's history before advancing other chats.
-            if conversation_id and has_results and pending_segment_ids and conversation_id not in (final_cursors or {}):
+            if not historical and conversation_id and has_results and pending_segment_ids and conversation_id not in (final_cursors or {}):
                 ctx.write_conversation_state(
                     conversation_id,
                     soul_id=soul_id,
@@ -726,7 +750,7 @@ async def run_memorize_segments(
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
             should_consolidate = False
             if (
-                conversation_id
+                not historical and conversation_id
                 and _auto_consolidation_enabled(force=force, cross_memorize=cross_memorize)
                 and (has_memory_results or had_existing_pending)
             ):
@@ -804,7 +828,12 @@ async def run_memorize_segments(
                 )
         return terminal_result != "cancelled"
     except Exception as exc:
-        if failure_record is not None:
+        if historical and conversation_id:
+            fresh_row, _, _ = run_ctx.load_turn_state_and_soul_card(conversation_id, user_id=uid, soul_id=soul_id)
+            if fresh_row.get("import_state") is not None:
+                ctx.write_conversation_state(conversation_id, user_id=uid, soul_id=soul_id,
+                    updates={"import_state": {**fresh_row["import_state"], "error": f"Memorize failed: {exc}"[:300]}})
+        elif failure_record is not None:
             ctx.write_conversation_state(
                 conversation_id, user_id=uid, soul_id=soul_id,
                 updates={"memorize_failure": {**failure_record, "paused": True, "error": f"Memorize failed: {exc}"[:300]}},
@@ -1219,6 +1248,7 @@ async def memorize_endpoint(
     rebuild: bool = False,
     *,
     endpoint_ctx: MemorizeEndpointContext,
+    historical: bool = False,
 ) -> JSONResponse:
     """Memorize a SillyTavern conversation.
 
@@ -1228,6 +1258,8 @@ async def memorize_endpoint(
 
     Preferred: send the full memU payload (llm_profiles/database_config/etc) so per-step routing works.
     """
+    if historical and rebuild:
+        raise HTTPException(status_code=400, detail="historical imports cannot rebuild the Soul database")
     if rebuild:
         force = True
     ctx = endpoint_ctx.base
@@ -1307,8 +1339,18 @@ async def memorize_endpoint(
                     user_id=uid,
                     updates={},
                 )
-                processed_cursor = effective_digest_cursor_from_row(state_out)
-                raw_pending_ids = state_out.get("pending_segment_ids")
+                if historical:
+                    record = state_out.get("import_state")
+                    if record is None or is_cross:
+                        raise HTTPException(status_code=400, detail="historical Memorize requires one registered import source")
+                    merged = merged[:record["history_end_index"]]
+                    processed_cursor = record["memorize_cursor"]
+                    raw_pending_ids = record["pending_segment_ids"]
+                else:
+                    processed_cursor = effective_digest_cursor_from_row(state_out)
+                    if not is_cross and state_out.get("import_state") is not None:
+                        processed_cursor = max(processed_cursor, state_out["import_state"]["history_end_index"] - 1)
+                    raw_pending_ids = state_out.get("pending_segment_ids")
                 has_pending_segments = isinstance(raw_pending_ids, list) and any(
                     str(item).strip() for item in raw_pending_ids
                 )
@@ -1376,7 +1418,7 @@ async def memorize_endpoint(
                 if not raw_memorize_segments:
                     progress_key = ctx.memorize_lock_key(uid, soul_id)
                     if (
-                        conversation_id
+                        not historical and conversation_id
                         and has_pending_segments
                         and ctx.consolidation_due(state_out)
                     ):
@@ -1514,6 +1556,7 @@ async def memorize_endpoint(
                 zi=zi,
                 cross_memorize=is_cross,
                 final_cursors=safe.get("_final_cursors") if is_cross else None,
+                historical=historical,
             )
             # background=background_tasks is REQUIRED: when an endpoint returns a
             # Response object directly, FastAPI does not auto-attach the tasks from

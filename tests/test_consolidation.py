@@ -246,6 +246,37 @@ async def test_anchor_then_weekly_stages_prepare_writes_only_after_both_validate
 
 
 @pytest.mark.asyncio
+async def test_historical_stages_skip_weekly_but_embed_previous_narrative(monkeypatch) -> None:
+    svc = _DossierContextService(due_ids=("first",))
+    inputs = {**_inputs(), "historical": True}
+    monkeypatch.setattr(consolidation, "_render_weekly_prompt",
+                        lambda *_a, **_kw: pytest.fail("historical work must not render weekly"))
+    original_chat = svc.chat
+    async def chat(prompt, **kwargs):
+        raw = await original_chat(prompt, **kwargs)
+        return raw.replace('<narrative_self action="keep"></narrative_self>',
+                           '<narrative_self action="replace">A broader self.</narrative_self>')
+    embedded = []
+    async def embed(texts, **_kwargs):
+        embedded.extend(texts)
+        return [[1.0] for _ in texts]
+    svc.chat, svc.embed = chat, embed
+    prepared = consolidation._prepare_dossier_consolidation_prompts(
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser",
+    )
+    assert prepared[3]["weekly"] == 0
+    assert next(call for call in svc.calls if call[0] == "prepare")[3]["segment_ids"] == ["segment-2"]
+    await prepare_dossier_consolidation_context(
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser", prepared=prepared,
+    )
+    result = await run_consolidation_llm(svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser")
+    assert [call for call in svc.calls if call[0] == "chat"] == [("chat", "dossiers"), ("chat", "anchors")]
+    assert embedded == ["I am steady."]
+    assert result["old_narrative_embedding"] == [1.0]
+    assert not {"edges", "intentions_replacement", "companion_memory"} & result.keys()
+
+
+@pytest.mark.asyncio
 async def test_short_embedding_response_fails_before_anchor_apply() -> None:
     svc = _DossierContextService()
     inputs = _inputs()
@@ -804,6 +835,18 @@ INSERT INTO memory_items (
     assert len(out["segment_inputs"][1]["memory_summaries"]) == 30
     assert [item["id"] for item in out["prior_context_memory_items"]] == ["mem-0"]
 
+    deps.write_conversation_state("conv-a", soul_id=soul_id, user_id=user_id, updates={"import_state": {
+        "history_end_index": 2, "memorize_cursor": 1, "pending_segment_ids": [historical_id],
+        "stage": "consolidation", "error": None,
+    }})
+    historical = gather_consolidation_inputs(
+        deps, conversation_id="conv-a", soul_id=soul_id, user_id=user_id, historical=True,
+        selected_segments={("conv-a", historical_id)},
+    )
+    assert historical["selected_segment_ids_by_conversation"] == {"conv-a": [historical_id]}
+    assert [row["content"] for row in historical["current_chat_messages"]] == ["older imported history"]
+    assert historical["prior_context_memory_items"] == []
+
     con = sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
@@ -1077,7 +1120,54 @@ def _base_llm_results(**overrides) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path, monkeypatch, request):
+@pytest.mark.parametrize("ordinary_failed", [False, True])
+async def test_historical_runner_failure_is_import_only(tmp_path, monkeypatch, ordinary_failed):
+    path = tmp_path / "test.db"
+    with sqlite_connect(path) as con:
+        sqlite_ensure_conversation_state_schema(con)
+    deps = _make_consolidation_deps(path, tmp_path)
+    scope = {"soul_id": "TestSoul", "user_id": "TestUser"}
+    deps.write_conversation_state("chat", **scope, updates={
+        "pending_segment_ids": ["ordinary"], "last_consolidation_error": "Ordinary failed" if ordinary_failed else None,
+        "last_consolidation_error_at": "2026-01-02T00:00:00+00:00" if ordinary_failed else None,
+        "import_state": {"history_end_index": 2, "memorize_cursor": 1,
+                         "pending_segment_ids": ["historical"], "stage": "consolidation", "error": None},
+    })
+    with sqlite_connect(path) as con:
+        con.row_factory = sqlite3.Row
+        before = _soul_state.read(con)
+    svc = _DossierContextService()
+    svc.database = _make_svc_stub(path).database
+    async def fail_chat(_prompt, **kwargs):
+        assert kwargs["step"] == "anchors"
+        raise RuntimeError("Import model call failed")
+    svc.chat = fail_chat
+    def gather(*_args, **kwargs):
+        assert kwargs["historical"] is True
+        return {**_inputs(), "historical": True, "status": "ready", "db_path": path}
+    monkeypatch.setattr(consolidation, "gather_consolidation_inputs", gather)
+    running = set()
+    with pytest.raises(RuntimeError, match="Import model call failed"):
+        await consolidation._run_consolidation_pipeline_once(
+            svc=svc, deps=deps, state_lock=asyncio.Lock(), running=running,
+            load_cross_tail_for_ai=lambda **_kw: pytest.fail("no live tail in historical work"),
+            format_all_chat_history_for_ai=lambda **_kw: "Historical evidence",
+            conversation_id="chat", historical=True, **scope,
+        )
+    assert running == set()
+    with sqlite_connect(path) as con:
+        con.row_factory = sqlite3.Row
+        assert _soul_state.read(con) == before
+        assert bool(_soul_state.activity_pause(before, memorize_running=False, consolidation_running=False)) is ordinary_failed
+        state = conversation_state_from_row(conversation_state_row(con, "chat", **scope))
+        assert state["pending_segment_ids"] == ["ordinary"]
+        assert state["import_state"]["pending_segment_ids"] == ["historical"]
+        assert "Import model call failed" in state["import_state"]["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("historical", [False, True])
+async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path, monkeypatch, request, historical):
     class Scope(BaseModel):
         user_id: str | None = None
         soul_id: str | None = None
@@ -1146,16 +1236,28 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
     svc.graph_delete_memory(stale.id, where=scope)
     deps = _make_consolidation_deps(path, tmp_path)
     deps.write_conversation_state("chat", **scope, updates={"pending_segment_ids": ["chat:0-1", "chat:2-3"]})
+    if historical:
+        deps.write_conversation_state("chat", **scope, updates={"import_state": {
+            "history_end_index": 4, "memorize_cursor": 3,
+            "pending_segment_ids": ["chat:0-1", "chat:2-3"], "stage": "consolidation", "error": "Earlier import failure",
+        }})
     with sqlite_connect(path) as con:
         con.row_factory = sqlite3.Row
-        _soul_state.write(con, {"intentions_active": []})
+        _soul_state.write(con, {
+            "intentions_active": [], "last_consolidation_at": "2026-01-01T00:00:00+00:00",
+            "last_consolidation_error": "Independent ordinary failure",
+            "last_consolidation_error_at": "2026-01-02T00:00:00+00:00",
+            "retrieval_ids_since_consolidation": ["tracked"],
+            "prior_context_ids_since_consolidation": ["prior"],
+        })
         _soul_summaries.write_live(con, kind="narrative_self", summary="Current self")
         con.commit()
         state = _soul_state.read(con)
         con.execute("UPDATE soul_state SET summaries_revision = summaries_revision + 1 WHERE id = 1")
         con.commit()
         assert con.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-    inputs = {"db_path": path, "state": state, "narrative_self": "Current self", "selected_segment_ids": ["chat:0-1"]}
+    inputs = {"db_path": path, "historical": historical, "state": state,
+              "narrative_self": "Current self", "selected_segment_ids": ["chat:0-1"]}
     results = _base_llm_results(
         anchor_writes=anchor_writes, narrative_self="New self", old_narrative_text="Current self",
         old_narrative_embedding=[1.0, 0.0], companion_memory="Reflection", companion_embedding=[1.0, 0.0],
@@ -1245,7 +1347,7 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
 
     def fail_at_end(cid, **kwargs):
         result = write(cid, **kwargs)
-        if kwargs["updates"].get("last_consolidation_at"):
+        if kwargs["updates"].get("last_consolidation_at") or "import_state" in kwargs["updates"]:
             raise RuntimeError("late apply failure")
         return result
 
@@ -1277,12 +1379,19 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
         con.row_factory = sqlite3.Row
         final_state = _soul_state.read(con)
         assert final_state["narrative_self"] == "New self"
-        assert final_state["intentions_active"] == [{"id": "new", "text": "Explore"}]
+        assert final_state["intentions_active"] == ([] if historical else [{"id": "new", "text": "Explore"}])
         assert con.execute("SELECT COUNT(*) FROM narrative_history").fetchone()[0] == 1
-        assert con.execute("SELECT COUNT(*) FROM triples WHERE subject_id=? AND predicate='evokes'", (first.id,)).fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM triples WHERE subject_id=? AND predicate='evokes'", (first.id,)).fetchone()[0] == (0 if historical else 1)
         assert con.execute("SELECT COUNT(*) FROM triples WHERE subject_id=?", (stale.id,)).fetchone()[0] == 0
-        assert json.loads(con.execute("SELECT pending_segment_ids FROM conversations WHERE conversation_id='chat'").fetchone()[0]) == ["chat:2-3"]
-        assert con.execute("SELECT COUNT(*) FROM memory_items WHERE summary='Reflection'").fetchone()[0] == 1
+        row = con.execute("SELECT * FROM conversations WHERE conversation_id='chat'").fetchone()
+        assert json.loads(row["pending_segment_ids"]) == (["chat:0-1", "chat:2-3"] if historical else ["chat:2-3"])
+        if historical:
+            record = json.loads(row["import_state"])
+            assert record["pending_segment_ids"] == ["chat:2-3"] and record["error"] is None
+            for key in ("last_consolidation_at", "last_consolidation_error", "last_consolidation_error_at",
+                        "retrieval_ids_since_consolidation", "prior_context_ids_since_consolidation"):
+                assert final_state[key] == state[key]
+        assert con.execute("SELECT COUNT(*) FROM memory_items WHERE summary='Reflection'").fetchone()[0] == (0 if historical else 1)
         assert con.execute("SELECT COUNT(*) FROM memory_items WHERE summary='Current self'").fetchone()[0] == 1
         assert con.execute("SELECT COUNT(*) FROM triples WHERE subject_id=? AND predicate='evolved_into'", (previous.id,)).fetchone()[0] == 1
         assert con.execute("SELECT COUNT(*) FROM life_goals WHERE description='Be curious'").fetchone()[0] == 1

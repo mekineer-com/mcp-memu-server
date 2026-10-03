@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,6 +11,39 @@ from fastapi import BackgroundTasks, HTTPException
 from app import main
 from app.services import soul_state
 from app.services import consolidation, service_factory
+
+
+@pytest.mark.asyncio
+async def test_registered_import_handoff_keeps_history_out_of_normal_memorize(monkeypatch):
+    uid, sid, cid = "TestOwner", "TestSoul", "replika:test-import"
+    main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={"import_state": {
+        "history_end_index": 2, "memorize_cursor": -1, "pending_segment_ids": [],
+        "stage": "memorize", "error": None,
+    }})
+    calls = []
+    class Service:
+        async def memorize_segments_batch(self, **kwargs):
+            calls.append(kwargs)
+            return [{"pending_segment_ids": [row["segment"]["segment_id"]]} for row in kwargs["segments"]]
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
+    history = [{"role": "user", "content": text} for text in ("Old one", "Old two", "Current tail")]
+    payload = {"user": {"user_id": uid, "soul_id": sid}, "conversation_id": cid, "conversation": history}
+    tasks = BackgroundTasks()
+    response = await main._memorize_owned(payload, tasks, True, historical=True)
+    assert response.status_code == 202
+    await tasks()
+    state, _, _ = main._load_turn_state_and_soul_card(cid, user_id=uid, soul_id=sid)
+    import_state = state["import_state"]
+    assert import_state["memorize_cursor"] == 1 and len(import_state["pending_segment_ids"]) == 1
+    assert state["pending_segment_ids"] == [] and state["last_memorize_at"] is None
+    tasks = BackgroundTasks()
+    await main.memorize(payload, tasks, True)
+    await tasks()
+    assert [[row["content"] for segment in call["segments"] for row in json.loads(segment["raw_text"])]
+            for call in calls] == [["Old one", "Old two"], ["Current tail"]]
+    state, _, _ = main._load_turn_state_and_soul_card(cid, user_id=uid, soul_id=sid)
+    assert state["import_state"] == import_state
+    assert state["digest_cursor"] == 2 and len(state["pending_segment_ids"]) == 1
 
 
 def test_pause_record_survives_restart_and_retry_without_pausing_other_soul():

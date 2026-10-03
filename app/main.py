@@ -2094,6 +2094,8 @@ async def _run_consolidation_task(
     soul_id: str,
     uid: str,
     force: bool = False,
+    historical: bool = False,
+    selected_segments: set[tuple[str, str]] | None = None,
     progress_key: str | None = None,
     memorize_progress: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -2120,6 +2122,8 @@ async def _run_consolidation_task(
             soul_id=soul_id,
             user_id=uid,
             force=force,
+            historical=historical,
+            selected_segments=selected_segments,
         )
         if out.get("status") == "skipped":
             if progress_key and memorize_progress is not None:
@@ -2137,7 +2141,7 @@ async def _run_consolidation_task(
                 active=False,
                 last_result="success",
             )
-        return {"ok": True, "status": "ok"}
+        return {"ok": True, "status": "ok", "result": out["result"]}
     except Exception as exc:
         logger.exception("consolidation failed (non-fatal)")
         if progress_key and memorize_progress is not None:
@@ -2253,6 +2257,7 @@ async def _run_memorize_segments(
     zi: Any = None,
     cross_memorize: bool = False,
     final_cursors: dict[str, dict[str, Any]] | None = None,
+    historical: bool = False,
 ) -> None:
     success = False
     try:
@@ -2275,6 +2280,7 @@ async def _run_memorize_segments(
             zi=zi,
             cross_memorize=cross_memorize,
             final_cursors=final_cursors,
+            historical=historical,
         )
     finally:
         await _finish_memorize_claim(_memorize_lock_key(uid, soul_id), success)
@@ -2292,7 +2298,8 @@ async def _memorize_admitted(payload: dict[str, Any], background_tasks: Backgrou
 
 
 async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool,
-                          *, tail: bool = False, rebuild: bool = False, admitted: bool = False, retry: bool = False):
+                          *, tail: bool = False, rebuild: bool = False, admitted: bool = False, retry: bool = False,
+                          historical: bool = False):
     safe = _safe_payload(payload)
     if not _extract_conversation_id(safe):
         raise HTTPException(status_code=400, detail="conversation_id is required")
@@ -2313,7 +2320,7 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
         source = _message_log.derive_source_label(_extract_conversation_id(safe))
         if source not in {"whatsapp:dm", "whatsapp:group", "sillytavern", "atomic", "mentra", "replika"}:
             raise HTTPException(status_code=400, detail="Memorize requires a saved chat source with a supported history reader")
-        if retry:
+        if retry and not historical:
             failure = _paid_work_state(uid, sid).get("memorize_failure")
             if not failure:
                 raise HTTPException(status_code=409, detail="No failed Memorize is ready to retry")
@@ -2321,7 +2328,7 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
                 failure["conversation_id"], user_id=uid, soul_id=sid,
                 updates={"memorize_failure": {**failure, "paused": True}},
             )
-        if not retry:
+        if not retry and not historical:
             failure = _paid_work_state(uid, sid).get("memorize_failure")
             if failure:
                 _write_conversation_state(
@@ -2332,6 +2339,7 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
         return await _memorize_endpoint.memorize_endpoint(
             safe, background_tasks, force, tail=tail, rebuild=rebuild,
             endpoint_ctx=_make_memorize_endpoint_context(),
+            historical=historical,
         )
     finally:
         if not any(task.func is _run_memorize_segments for task in background_tasks.tasks):

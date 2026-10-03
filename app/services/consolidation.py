@@ -49,6 +49,7 @@ from app.services.conversation_id import canonical_conversation_id
 from app.services.payload import message_ts_ms, parse_iso_datetime
 from app.services import soul_state as _soul_state
 from app.services import service_factory as _service_factory
+from app.services.state import normalize_import_state
 from app.services.turn_contract import format_memory_legend, format_memory_line, format_shaped_by_line
 
 if TYPE_CHECKING:
@@ -420,6 +421,7 @@ def _prepare_dossier_consolidation_prompts(
             narrative_self=inputs.get("narrative_self"),
             active_life_goals=inputs["active_life_goals"],
             removed_life_goals=inputs["removed_life_goals"],
+            **({"segment_ids": inputs["selected_segment_ids"]} if inputs.get("historical") else {}),
         )
         for dossier in svc.list_due_dossiers(
             scope,
@@ -478,13 +480,16 @@ def _prepare_dossier_consolidation_prompts(
             for role, bundle in anchors.items()
         },
     }
-    weekly_system, weekly_user = _render_weekly_prompt(
-        inputs, current_identity, soul_id=soul_id, user_id=user_id
-    )
+    weekly_tokens = 0
+    if not inputs.get("historical"):
+        weekly_system, weekly_user = _render_weekly_prompt(
+            inputs, current_identity, soul_id=soul_id, user_id=user_id
+        )
+        weekly_tokens = estimate_prompt_tokens(weekly_system + "\n" + weekly_user)
     estimates = {
         "dossiers": estimate_prompt_tokens(system_prompt + "\n" + user_prompt) if bundles else 0,
         "anchors": estimate_prompt_tokens(identity_system + "\n" + identity_user),
-        "weekly": estimate_prompt_tokens(weekly_system + "\n" + weekly_user),
+        "weekly": weekly_tokens,
     }
     return bundles, system_prompt, user_prompt, estimates
 
@@ -746,6 +751,8 @@ def gather_consolidation_inputs(
     soul_id: str,
     user_id: str,
     force: bool = False,
+    historical: bool = False,
+    selected_segments: set[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     db_path = deps.sqlite_current_path(user_id, soul_id)
     if db_path is None:
@@ -766,14 +773,22 @@ def gather_consolidation_inputs(
         )
         if state is None:
             raise HTTPException(status_code=404, detail="conversation state not found")
+        if historical and state["import_state"] is None:
+            raise ValueError("historical consolidation requires registered import state")
 
         pending_by_conversation: dict[str, list[str]] = {}
         for row in con.execute(
-            "SELECT conversation_id, pending_segment_ids FROM conversations "
+            "SELECT conversation_id, pending_segment_ids, import_state FROM conversations "
             "WHERE soul_id = ? AND user_id = ? ORDER BY conversation_id",
             (soul_id, user_id),
         ).fetchall():
-            pending_ids = deps.normalize_text_list(row["pending_segment_ids"])
+            if historical:
+                record = normalize_import_state(json.loads(row["import_state"]) if row["import_state"] else None)
+                pending_ids = record["pending_segment_ids"] if record else []
+            else:
+                pending_ids = deps.normalize_text_list(row["pending_segment_ids"])
+            if historical and selected_segments is not None:
+                pending_ids = [sid for sid in pending_ids if (row["conversation_id"], sid) in selected_segments]
             if not pending_ids:
                 continue
             owner = str(row["conversation_id"] or "").strip()
@@ -790,7 +805,7 @@ def gather_consolidation_inputs(
         last_error_at = parse_iso_datetime(soul_state.get("last_consolidation_error_at"))
         last_success_at = parse_iso_datetime(soul_state.get("last_consolidation_at"))
         if (
-            not force
+            not historical and not force
             and last_error_at is not None
             and (last_success_at is None or last_error_at > last_success_at)
         ):
@@ -999,6 +1014,7 @@ WHERE id IN ({placeholders}) AND soul_id = ? AND user_id = ?
 
         return {
             "status": "ready",
+            "historical": historical,
             "db_path": db_path,
             "state": state,
             "active_life_goals": active_goals,
@@ -1047,35 +1063,35 @@ async def run_consolidation_llm(
     if not str(inputs.get("narrative_self") or "").strip() and not identity["narrative_self"]:
         raise ValueError("First identity maintenance requires narrative_self replacement")
 
-    weekly_system, weekly_user = _render_weekly_prompt(
-        inputs, identity, soul_id=soul_id, user_id=user_id
-    )
-    if estimate_prompt_tokens(weekly_system + "\n" + weekly_user) > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
-        raise ValueError("weekly consolidation prompt exceeds provider-safe token limit")
-    weekly_raw = await svc.chat(
-        weekly_user,
-        profile=llm_profile,
-        system_prompt=weekly_system,
-        op="consolidation",
-        step="weekly",
-    )
-    weekly = _parse_weekly_reflection_xml(str(weekly_raw or ""))
-    remapped_edges = _remap_edges_with_memory_ids(weekly["edges"], id_map=id_map, include_confidence=True)
-    remapped_invalidations = _remap_edges_with_memory_ids(
-        weekly["edge_invalidations"],
-        id_map=id_map,
-        include_confidence=False,
-    )
-    if len(remapped_edges) != len(weekly["edges"]):
-        raise ValueError("Weekly reflection edge references memory outside supplied evidence")
-    if len(remapped_invalidations) != len(weekly["edge_invalidations"]):
-        raise ValueError("Weekly reflection invalidation references memory outside supplied evidence")
+    weekly = None
+    if not inputs.get("historical"):
+        weekly_system, weekly_user = _render_weekly_prompt(
+            inputs, identity, soul_id=soul_id, user_id=user_id
+        )
+        if estimate_prompt_tokens(weekly_system + "\n" + weekly_user) > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
+            raise ValueError("weekly consolidation prompt exceeds provider-safe token limit")
+        weekly_raw = await svc.chat(
+            weekly_user,
+            profile=llm_profile,
+            system_prompt=weekly_system,
+            op="consolidation",
+            step="weekly",
+        )
+        weekly = _parse_weekly_reflection_xml(str(weekly_raw or ""))
+        remapped_edges = _remap_edges_with_memory_ids(weekly["edges"], id_map=id_map, include_confidence=True)
+        remapped_invalidations = _remap_edges_with_memory_ids(
+            weekly["edge_invalidations"], id_map=id_map, include_confidence=False,
+        )
+        if len(remapped_edges) != len(weekly["edges"]):
+            raise ValueError("Weekly reflection edge references memory outside supplied evidence")
+        if len(remapped_invalidations) != len(weekly["edge_invalidations"]):
+            raise ValueError("Weekly reflection invalidation references memory outside supplied evidence")
 
     new_narrative = str(identity["narrative_self"] or "").strip() or None
     current_narrative = str(inputs.get("narrative_self") or "").strip() or None
     snapshot_old_narrative = bool(current_narrative and new_narrative and current_narrative != new_narrative)
     embed_inputs: list[str] = []
-    if weekly["companion_memory"]:
+    if weekly and weekly["companion_memory"]:
         embed_inputs.append(weekly["companion_memory"])
     if snapshot_old_narrative:
         assert current_narrative is not None
@@ -1086,7 +1102,7 @@ async def run_consolidation_llm(
 
     cursor = 0
     companion_embedding = None
-    if weekly["companion_memory"]:
+    if weekly and weekly["companion_memory"]:
         companion_embedding = embeddings[cursor]
         cursor += 1
     old_narrative_embedding = embeddings[cursor] if snapshot_old_narrative else None
@@ -1099,20 +1115,24 @@ async def run_consolidation_llm(
         for role in ("soul", "user")
     ]
 
-    return {
+    result = {
         "anchor_writes": anchor_writes,
         "narrative_self": new_narrative,
         "life_goal_add": identity["life_goal_add"],
         "life_goal_remove": identity["life_goal_remove"],
-        "companion_memory": weekly["companion_memory"],
-        "companion_embedding": companion_embedding,
         "old_narrative_text": current_narrative if snapshot_old_narrative else None,
         "old_narrative_embedding": old_narrative_embedding,
-        "edges": remapped_edges,
-        "edge_invalidations": remapped_invalidations,
-        "intentions_snapshot": inputs["state"]["intentions_active"],
-        "intentions_replacement": weekly["intentions"],
     }
+    if weekly is not None:
+        result.update({
+            "companion_memory": weekly["companion_memory"],
+            "companion_embedding": companion_embedding,
+            "edges": remapped_edges,
+            "edge_invalidations": remapped_invalidations,
+            "intentions_snapshot": inputs["state"]["intentions_active"],
+            "intentions_replacement": weekly["intentions"],
+        })
+    return result
 
 
 def _consolidation_database_path(svc: MemoryService, inputs: dict[str, Any]) -> Path:
@@ -1134,6 +1154,7 @@ def write_consolidation_outputs(
     user_id: str,
 ) -> dict[str, Any]:
     db_path = _consolidation_database_path(svc, inputs)
+    historical = bool(inputs.get("historical"))
     now_iso = datetime.now(UTC).isoformat()
     started_at = str(inputs.get("started_at") or "").strip() or now_iso
 
@@ -1142,7 +1163,7 @@ def write_consolidation_outputs(
 
     old_narrative_text = llm_results.get("old_narrative_text")
     companion_memory_id = None
-    companion_text = str(llm_results.get("companion_memory") or "").strip()
+    companion_text = "" if historical else str(llm_results.get("companion_memory") or "").strip()
     companion_embedding = llm_results.get("companion_embedding")
 
     deps.sqlite_ensure_nonempty(db_path)
@@ -1163,6 +1184,8 @@ def write_consolidation_outputs(
                 for segment_id in (inputs.get("selected_segment_ids") or [])
             ]
         }
+    if historical:
+        selected_by_conversation.setdefault(conversation_id, [])
     consumed_segment_ids = [
         str(segment_id).strip()
         for segment_id in (inputs.get("selected_segment_ids") or [])
@@ -1259,19 +1282,21 @@ ORDER BY updated_at ASC, id ASC
                     session=session,
                 )
 
-            edges = llm_results["edges"]
-            if edges:
-                endpoint_ids = {edge[key] for edge in edges for key in ("subject_id", "object_id")}
-                active = svc.database.memory_item_repo.list_items_by_ids(endpoint_ids, scope, session=session)
-                edges = [edge for edge in edges if edge["subject_id"] in active and edge["object_id"] in active]
-            wrote = write_memory_edges(svc.database.triple_repo, edges, scope=scope, session=session)
-            invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results["edge_invalidations"], scope=scope, session=session)
-            current_intentions = _soul_state.read(con)["intentions_active"]
-            merged_intentions = merge_consolidated_intentions(
-                llm_results["intentions_snapshot"],
-                current_intentions,
-                llm_results["intentions_replacement"],
-            )
+            wrote = invalidated = 0
+            if not historical:
+                edges = llm_results["edges"]
+                if edges:
+                    endpoint_ids = {edge[key] for edge in edges for key in ("subject_id", "object_id")}
+                    active = svc.database.memory_item_repo.list_items_by_ids(endpoint_ids, scope, session=session)
+                    edges = [edge for edge in edges if edge["subject_id"] in active and edge["object_id"] in active]
+                wrote = write_memory_edges(svc.database.triple_repo, edges, scope=scope, session=session)
+                invalidated = invalidate_memory_edges(svc.database.triple_repo, llm_results["edge_invalidations"], scope=scope, session=session)
+                current_intentions = _soul_state.read(con)["intentions_active"]
+                merged_intentions = merge_consolidated_intentions(
+                    llm_results["intentions_snapshot"],
+                    current_intentions,
+                    llm_results["intentions_replacement"],
+                )
             if narrative_self:
                 con.execute(
                     "INSERT INTO narrative_history (id, narrative_self, related_memory_ids, created_at) "
@@ -1308,6 +1333,24 @@ INSERT INTO life_goals (
                 )
 
             for pending_conversation_id, pending_ids in selected_by_conversation.items():
+                if historical:
+                    current = deps.conversation_state_from_row(
+                        deps.conversation_state_row(con, pending_conversation_id, **scope), con=con,
+                    )
+                    record = current["import_state"]
+                    if record is None:
+                        raise ValueError("historical consolidation requires registered import state")
+                    remaining = [sid for sid in record["pending_segment_ids"] if sid not in pending_ids]
+                    complete = not remaining and record["memorize_cursor"] == record["history_end_index"] - 1
+                    deps.write_conversation_state(
+                        pending_conversation_id, **scope,
+                        updates={"import_state": {
+                            **record, "pending_segment_ids": remaining, "error": None,
+                            "stage": "complete" if complete else ("consolidation" if remaining else "memorize"),
+                        }},
+                        connection=con,
+                    )
+                    continue
                 if pending_conversation_id == conversation_id:
                     continue
                 deps.write_conversation_state(
@@ -1318,29 +1361,34 @@ INSERT INTO life_goals (
                     connection=con,
                 )
 
-            state_after, _ = deps.write_conversation_state(
-                conversation_id,
-                soul_id=soul_id,
-                user_id=user_id,
-                updates={
-                    # Subtract only what this run consumed: a memorize that finished
-                    # during the LLM phase may have appended new pending ids.
-                    "remove_pending_segment_ids": selected_by_conversation.get(
-                        conversation_id, []
-                    ),
-                    "last_consolidation_at": started_at,
-                    "last_consolidation_error": None,
-                    "last_consolidation_error_at": None,
-                    "intentions_active": merged_intentions,
-                    "remove_retrieval_ids_since_consolidation": inputs.get("state", {}).get(
-                        "retrieval_ids_since_consolidation", []
-                    ),
-                    "remove_prior_context_ids_since_consolidation": inputs.get("state", {}).get(
-                        "prior_context_ids_since_consolidation", []
-                    ),
-                },
-                connection=con,
-            )
+            if historical:
+                state_after = deps.conversation_state_from_row(
+                    deps.conversation_state_row(con, conversation_id, **scope), con=con,
+                )
+            else:
+                state_after, _ = deps.write_conversation_state(
+                    conversation_id,
+                    soul_id=soul_id,
+                    user_id=user_id,
+                    updates={
+                        # Subtract only what this run consumed: a memorize that finished
+                        # during the LLM phase may have appended new pending ids.
+                        "remove_pending_segment_ids": selected_by_conversation.get(
+                            conversation_id, []
+                        ),
+                        "last_consolidation_at": started_at,
+                        "last_consolidation_error": None,
+                        "last_consolidation_error_at": None,
+                        "intentions_active": merged_intentions,
+                        "remove_retrieval_ids_since_consolidation": inputs.get("state", {}).get(
+                            "retrieval_ids_since_consolidation", []
+                        ),
+                        "remove_prior_context_ids_since_consolidation": inputs.get("state", {}).get(
+                            "prior_context_ids_since_consolidation", []
+                        ),
+                    },
+                    connection=con,
+                )
             con.row_factory = previous_row_factory
             session.commit()
         except Exception:
@@ -1377,6 +1425,8 @@ def _record_consolidation_failure(
     soul_id: str,
     user_id: str,
     error: str,
+    historical: bool = False,
+    conversation_id: str | None = None,
 ) -> None:
     now_iso = datetime.now(UTC).isoformat()
     db_path = deps.sqlite_current_path(user_id, soul_id)
@@ -1385,6 +1435,19 @@ def _record_consolidation_failure(
     con = deps.sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
+        if historical:
+            current = deps.conversation_state_from_row(
+                deps.conversation_state_row(con, conversation_id, soul_id=soul_id, user_id=user_id), con=con,
+            )
+            if current is None or current["import_state"] is None:
+                raise ValueError("historical consolidation requires registered import state")
+            deps.write_conversation_state(
+                conversation_id, soul_id=soul_id, user_id=user_id,
+                updates={"import_state": {**current["import_state"], "error": error[:300]}},
+                connection=con,
+            )
+            con.commit()
+            return
         _soul_state.ensure_schema(con)
         _soul_state.write(
             con,
@@ -1410,12 +1473,14 @@ async def _run_consolidation_pipeline_once(
     soul_id: str,
     user_id: str,
     force: bool = False,
+    historical: bool = False,
+    selected_segments: set[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     run_key = (user_id, soul_id)
     if run_key in running:
         return {"status": "skipped", "reason": "in_progress"}
     db_path = deps.sqlite_current_path(user_id, soul_id)
-    if db_path is not None and db_path.exists():
+    if not historical and db_path is not None and db_path.exists():
         con = deps.sqlite_connect(db_path)
         try:
             con.row_factory = sqlite3.Row
@@ -1438,6 +1503,8 @@ async def _run_consolidation_pipeline_once(
                 soul_id=soul_id,
                 user_id=user_id,
                 force=force,
+                historical=historical,
+                selected_segments=selected_segments,
             )
         if prep.get("status") == "skip":
             return {"status": "skipped", "reason": prep.get("reason")}
@@ -1450,7 +1517,7 @@ async def _run_consolidation_pipeline_once(
         ]
         prep["all_chat_history"] = format_all_chat_history_for_ai(
             current_history=current_chat_messages,
-            cross_tail=load_cross_tail_for_ai(
+            cross_tail=[] if historical else load_cross_tail_for_ai(
                 user_id=user_id,
                 soul_id=soul_id,
                 conversation_id=conversation_id,
@@ -1461,9 +1528,10 @@ async def _run_consolidation_pipeline_once(
         )
         async with state_lock:
             old_error = _soul_state.consolidation_failure(prep.get("state", {}))
-            if old_error is None or old_error == _soul_state.CONSOLIDATION_UNFINISHED:
+            if historical or old_error is None or old_error == _soul_state.CONSOLIDATION_UNFINISHED:
                 _record_consolidation_failure(
                     deps=deps, soul_id=soul_id, user_id=user_id,
+                    historical=historical, conversation_id=conversation_id,
                     error=("Consolidation was interrupted. Retry in progress."
                            if old_error else _soul_state.CONSOLIDATION_UNFINISHED),
                 )
@@ -1503,6 +1571,7 @@ async def _run_consolidation_pipeline_once(
                         soul_id=soul_id,
                         user_id=user_id,
                         error=f"{type(exc).__name__}: {str(exc)[:260]}",
+                        historical=historical, conversation_id=conversation_id,
                     )
             except Exception:
                 log.exception(
