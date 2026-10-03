@@ -214,6 +214,8 @@ def _render_current_chat_block(
     mark_current_chat: bool = True,
 ) -> tuple[str, str]:
     rows = _current_chat_rows_for_grouped_render(history, conversation_id=conversation_id)
+    if mark_current_chat and conversation_id:
+        rows = [row for row in rows if row.get("conversation_id") == conversation_id]
     if not rows:
         heading = _resolve_current_chat_heading_from_grouped_renderer(
             chat_label=chat_label,

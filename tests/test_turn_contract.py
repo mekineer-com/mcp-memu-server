@@ -49,6 +49,24 @@ def test_mentra_current_history_uses_smartglasses_section_and_marker() -> None:
     assert "[dm][Smartglasses] ← current chat" in rendered
 
 
+def test_current_marker_stays_on_requester_with_foreign_source_rows(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.message_log._load_whatsapp_directory_names", lambda: {})
+    rows = [
+        {"role": "user", "source_conversation_id": "sillytavern:primary",
+         "content": "Primary evidence", "received_at": "2026-01-01T00:00:00Z"},
+        {"role": "user", "source_conversation_id": "whatsapp:dm:foreign",
+         "content": "Foreign evidence", "received_at": "2026-01-02T00:00:00Z"},
+    ]
+    cross = main._format_cross_tail_for_ai([rows[1] | {"conversation_id": "whatsapp:dm:foreign"}], soul_id="TestSoul")
+    rendered = build_conversations_block(
+        history=rows, cross_conversation_history=cross,
+        conversation_id="sillytavern:primary", soul_name="TestSoul",
+    )
+    assert "Primary evidence" in rendered and rendered.count("Foreign evidence") == 1
+    assert "[dm][primary] ← current chat" in rendered
+    assert "[dm][foreign] ← current chat" not in rendered
+
+
 def test_parse_turn_contract_valid_json():
     parsed = parse_turn_contract(
         '{"response":"Hi there","response_target":"respond","working_thought":{"entry":"thinking"},"intention_action":{"type":"boost","target_id":"a"},"annulments":[],"rehearsal":"hmm"}'
