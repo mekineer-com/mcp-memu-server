@@ -1528,6 +1528,10 @@ async def _run_consolidation_pipeline_once(
             )
         if prep.get("status") == "skip":
             return {"status": "skipped", "reason": prep.get("reason")}
+        if historical:
+            failure_conversation_ids = [
+                cid for cid, segment_ids in prep["selected_segment_ids_by_conversation"].items() if segment_ids
+            ]
         _consolidation_database_path(svc, prep)
         consolidation_profile = _service_factory._resolve_profile_if_configured(svc, "consolidation")
         preflight_consolidation_profiles(svc, consolidation_profile)
@@ -1567,13 +1571,13 @@ async def _run_consolidation_pipeline_once(
                     force=force, historical=True,
                     selected_segments={(row["conversation_id"], row["segment_id"]) for row in ordered_segments},
                 )
+                failure_conversation_ids = [
+                    cid for cid, segment_ids in prep["selected_segment_ids_by_conversation"].items() if segment_ids
+                ]
                 prep["all_chat_history"] = format_all_chat_history_for_ai(
                     current_history=prep["current_chat_messages"], cross_tail=[],
                     conversation_id=conversation_id, soul_id=soul_id, mark_current_chat=False,
                 )
-            failure_conversation_ids = [
-                cid for cid, segment_ids in prep["selected_segment_ids_by_conversation"].items() if segment_ids
-            ]
         async with state_lock:
             old_error = _soul_state.consolidation_failure(prep.get("state", {}))
             if historical or old_error is None or old_error == _soul_state.CONSOLIDATION_UNFINISHED:

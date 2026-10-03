@@ -1251,15 +1251,15 @@ async def test_historical_consolidation_only_changes_contributing_imports(tmp_pa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fits", [False, True])
-async def test_historical_selection_shrinks_whole_prefix_before_any_model_call(tmp_path, monkeypatch, fits):
+@pytest.mark.parametrize(("fits", "anchor_capacity"), [(False, 8001), (False, None), (True, 1_000_000)])
+async def test_historical_selection_shrinks_whole_prefix_before_any_model_call(tmp_path, monkeypatch, fits, anchor_capacity):
     path = tmp_path / "test.db"
     with sqlite_connect(path) as con:
         sqlite_ensure_conversation_state_schema(con)
     svc = _DossierContextService(due_ids=("first",))
     svc.database = _make_svc_stub(path).database
     segments = [{
-        "conversation_id": "chat", "segment_id": f"chat:{i}-{i}",
+        "conversation_id": f"import-{i}", "segment_id": f"import-{i}:0-0",
         "memory_summaries": [{"id": f"memory-{i}", "memory_ref": i + 1, "memory_type": "knowledge",
                               "summary": f"Evidence {i}: " + "Detail. " * 500}],
     } for i in range(3)]
@@ -1267,7 +1267,22 @@ async def test_historical_selection_shrinks_whole_prefix_before_any_model_call(t
         return {**_inputs(), "status": "ready", "historical": True, "db_path": path,
                 "segment_inputs": rows, "current_chat_messages": [],
                 "selected_segment_ids": [row["segment_id"] for row in rows],
-                "selected_segment_ids_by_conversation": {"chat": [row["segment_id"] for row in rows]}}
+                "selected_segment_ids_by_conversation": {row["conversation_id"]: [row["segment_id"]] for row in rows}}
+    deps = _make_consolidation_deps(path, tmp_path)
+    scope = {"soul_id": "TestSoul", "user_id": "TestUser"}
+    records = {}
+    for row in segments:
+        record = {"history_end_index": 1, "memorize_cursor": 0, "stage": "consolidation", "error": None,
+                  "pending_segment_ids": [row["segment_id"]]}
+        records[row["conversation_id"]] = record
+        deps.write_conversation_state(row["conversation_id"], **scope, updates={"import_state": record})
+    unrelated = {"history_end_index": 1, "memorize_cursor": -1, "stage": "memorize",
+                 "error": "Unrelated failure", "pending_segment_ids": []}
+    deps.write_conversation_state("requester", **scope, updates={"import_state": unrelated,
+        "last_consolidation_error": "Ordinary failed", "last_consolidation_error_at": "2026-01-01T00:00:00+00:00"})
+    with sqlite_connect(path) as con:
+        con.row_factory = sqlite3.Row
+        ordinary_before = _soul_state.read(con)
     first = consolidation._prepare_dossier_consolidation_prompts(
         svc, inputs=inputs(segments[:1]), soul_id="TestSoul", user_id="TestUser",
     )[3]["dossiers"]
@@ -1276,32 +1291,45 @@ async def test_historical_selection_shrinks_whole_prefix_before_any_model_call(t
     )[3]["dossiers"]
     assert first < second
     svc.llm_profiles.profiles["revision"].context_window_tokens = 8000 + ((first + second) // 2) * 5 // 4 + 1
-    if not fits:
-        svc.llm_profiles.profiles["default"].context_window_tokens = 8001
+    svc.llm_profiles.profiles["default"].context_window_tokens = anchor_capacity
     svc.calls.clear()
     captures = []
     def gather(*_args, **kwargs):
         selection = kwargs["selected_segments"]
-        rows = [row for row in segments if selection is None or ("chat", row["segment_id"]) in selection]
+        rows = [row for row in segments if selection is None or (row["conversation_id"], row["segment_id"]) in selection]
         captures.append([row["segment_id"] for row in rows])
         return inputs(rows)
     monkeypatch.setattr(consolidation, "gather_consolidation_inputs", gather)
-    monkeypatch.setattr(consolidation, "_record_consolidation_failure", lambda **_kwargs: None)
     monkeypatch.setattr(consolidation, "write_consolidation_outputs", lambda *_a, **kw: {
         "consumed_segment_ids": kw["inputs"]["selected_segment_ids"],
     })
-    kwargs = dict(svc=svc, deps=_make_consolidation_deps(path, tmp_path), state_lock=asyncio.Lock(), running={},
+    kwargs = dict(svc=svc, deps=deps, state_lock=asyncio.Lock(), running={},
                   load_cross_tail_for_ai=lambda **_kw: [], format_all_chat_history_for_ai=lambda **_kw: "A lived span.",
-                  conversation_id="chat", soul_id="TestSoul", user_id="TestUser", historical=True)
+                  conversation_id="requester", historical=True, **scope)
     if fits:
         result = await consolidation._run_consolidation_pipeline_once(**kwargs)
-        assert result["result"]["consumed_segment_ids"] == ["chat:0-0"]
+        assert result["result"]["consumed_segment_ids"] == ["import-0:0-0"]
         assert [call for call in svc.calls if call[0] == "chat"] == [("chat", "dossiers"), ("chat", "anchors")]
     else:
-        with pytest.raises(ValueError, match="No whole historical segment"):
+        error_text = "No whole historical segment" if anchor_capacity is not None else "context_window_tokens is required"
+        with pytest.raises(ValueError, match=error_text):
             await consolidation._run_consolidation_pipeline_once(**kwargs)
         assert not [call for call in svc.calls if call[0] in {"chat", "apply"}]
-    assert captures == [["chat:0-0", "chat:1-1", "chat:2-2"], ["chat:0-0", "chat:1-1"], ["chat:0-0"]]
+    assert captures == [["import-0:0-0", "import-1:0-0", "import-2:0-0"], ["import-0:0-0", "import-1:0-0"], ["import-0:0-0"]]
+    assert kwargs["running"] == {}
+    with sqlite_connect(path) as con:
+        con.row_factory = sqlite3.Row
+        assert _soul_state.read(con) == ordinary_before
+        requester = conversation_state_from_row(conversation_state_row(con, "requester", **scope))
+        assert requester["import_state"] == unrelated
+        for cid, original in records.items():
+            record = conversation_state_from_row(conversation_state_row(con, cid, **scope))["import_state"]
+            if cid == "import-0":
+                assert record["error"] and {**record, "error": None} == original
+                if not fits:
+                    assert error_text in record["error"]
+            else:
+                assert record == original
 
 
 @pytest.mark.asyncio
