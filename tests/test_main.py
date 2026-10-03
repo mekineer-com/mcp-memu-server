@@ -4112,7 +4112,7 @@ async def test_auto_memorize_collision_rechecks_latest_scope_after_success(
     monkeypatch.setattr(main, "_run_forced_memorize_from_turn", run)
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", lambda *_a, **_k: ({}, None, None))
     monkeypatch.setattr(main, "_prepare_auto_memorize", prepare)
-    main._FORCED_MEMORIZE_INFLIGHT.discard(marker)
+    main._FORCED_MEMORIZE_INFLIGHT.pop(marker, None)
     main._FORCED_MEMORIZE_RECHECK.pop(marker, None)
     try:
         first_scope = main._auto_memorize_scope("cid", "u1", "Echo", {}, [{"content": "first"}])
@@ -4133,7 +4133,7 @@ async def test_auto_memorize_collision_rechecks_latest_scope_after_success(
     finally:
         release.set()
         await asyncio.gather(*list(main._BACKGROUND_TASKS), return_exceptions=True)
-        main._FORCED_MEMORIZE_INFLIGHT.discard(marker)
+        main._FORCED_MEMORIZE_INFLIGHT.pop(marker, None)
         main._FORCED_MEMORIZE_RECHECK.pop(marker, None)
 
 
@@ -4157,7 +4157,7 @@ async def test_auto_memorize_failure_discards_pending_recheck(
 
     monkeypatch.setattr(main, "_run_forced_memorize_from_turn", fail)
     monkeypatch.setattr(main, "_prepare_auto_memorize", prepare)
-    main._FORCED_MEMORIZE_INFLIGHT.discard(marker)
+    main._FORCED_MEMORIZE_INFLIGHT.pop(marker, None)
     main._FORCED_MEMORIZE_RECHECK.pop(marker, None)
     try:
         scope = main._auto_memorize_scope("cid", "u1", "Echo", {}, [{"content": "latest"}])
@@ -4173,7 +4173,7 @@ async def test_auto_memorize_failure_discards_pending_recheck(
         assert marker not in main._FORCED_MEMORIZE_RECHECK
     finally:
         release.set()
-        main._FORCED_MEMORIZE_INFLIGHT.discard(marker)
+        main._FORCED_MEMORIZE_INFLIGHT.pop(marker, None)
         main._FORCED_MEMORIZE_RECHECK.pop(marker, None)
 
 
@@ -4427,7 +4427,7 @@ async def test_run_memorize_segments_records_failure_progress_on_exception(tmp_p
     key = main._memorize_lock_key(user_id, soul_id)
     main._MEMORIZE_PROGRESS.pop(key, None)
     main._MEMORIZE_CANCEL.discard(key)
-    main._FORCED_MEMORIZE_INFLIGHT.add(key)
+    main._FORCED_MEMORIZE_INFLIGHT[key] = False
 
     with pytest.raises(RuntimeError):
         await main._run_memorize_segments(
@@ -4483,7 +4483,7 @@ async def test_run_memorize_segments_batches_one_job_per_persisted_segment(tmp_p
     key = main._memorize_lock_key(user_id, soul_id)
     main._MEMORIZE_PROGRESS.pop(key, None)
     main._MEMORIZE_CANCEL.discard(key)
-    main._FORCED_MEMORIZE_INFLIGHT.add(key)
+    main._FORCED_MEMORIZE_INFLIGHT[key] = False
 
     await main._run_memorize_segments(
         memorize_segments=main._memorize_endpoint._offset_memorize_segments(
@@ -4527,6 +4527,7 @@ def test_auto_consolidation_policy() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fail", [False, True])
 async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeypatch, fail):
+    from fastapi import BackgroundTasks
     from app.db import sqlite_connect, sqlite_ensure_conversation_state_schema
     from app.services import state as state_module, soul_state
     path = tmp_path / "test.db"
@@ -4539,7 +4540,7 @@ async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeyp
     write(cid, **scope, updates={
         "pending_segment_ids": ["ordinary"], "digest_cursor": 10,
         "last_memorize_at": "2026-01-01T00:00:00+00:00",
-        "memorize_failure": {"conversation_id": cid, "paused": True, "error": "Ordinary failed",
+        "memorize_failure": {"conversation_id": cid, "paused": False, "error": "Ordinary interrupted",
                              "targets": {cid: {"cursor": 11, "memory_producing": True}}},
         "import_state": {"history_end_index": 2, "memorize_cursor": -1,
                          "pending_segment_ids": [], "stage": "memorize", "error": None},
@@ -4552,33 +4553,36 @@ async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeyp
     with sqlite_connect(path) as con:
         con.row_factory = sqlite3.Row
         before = soul_state.read(con)
+    paths = []
     class Service:
         async def memorize_segments_batch(self, **kwargs):
+            paths.extend(Path(row["local_path"]) for row in kwargs["segments"])
             assert kwargs["memory_retrieve_history"] is None and kwargs["memory_prior_context"] is None
+            with pytest.raises(HTTPException):
+                main._require_soul_active(scope["user_id"], scope["soul_id"])
             if fail:
                 raise RuntimeError("Import extraction failed")
             return [{"pending_segment_ids": [row["segment"]["segment_id"]]} for row in kwargs["segments"]]
     monkeypatch.setattr(main, "_write_conversation_state", write)
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", load)
-    monkeypatch.setattr(main, "_consolidation_due", lambda *_: pytest.fail("no normal schedule during import"))
-    segments_dir = tmp_path / "segments"
-    segments_dir.mkdir()
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_: path)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
+    monkeypatch.setattr(main, "_should_run_consolidation", lambda *_: pytest.fail("no normal schedule during import"))
     key = main._memorize_lock_key(scope["user_id"], scope["soul_id"])
-    main._FORCED_MEMORIZE_INFLIGHT.add(key)
-    kwargs = dict(
-        memorize_segments=main._memorize_endpoint._offset_memorize_segments([
-            ("source.json", [{"role": "user", "content": "Earlier"},
-                             {"role": "assistant", "content": "Old reply"}], 0, 1),
-        ], start=0), svc=Service(), scope=scope, conversation_id=cid,
-        soul_id=scope["soul_id"], uid=scope["user_id"], processed_cursor=-1,
-        safe={}, resource_url="source.json", chat_key=None, merged_len=2,
-        force=False, sleep_stats=None, segments_dir=segments_dir, historical=True,
-    )
+    with pytest.raises(HTTPException):
+        main._require_soul_active(scope["user_id"], scope["soul_id"])
+    tasks = BackgroundTasks()
+    response = await main._memorize_owned({
+        "user": scope, "conversation_id": cid,
+        "conversation": [{"role": "user", "content": "Earlier"},
+                         {"role": "assistant", "content": "Old reply"}],
+    }, tasks, True, historical=True, retry=True)
+    assert response.status_code == 202
     if fail:
         with pytest.raises(RuntimeError, match="Import extraction failed"):
-            await main._run_memorize_segments(**kwargs)
+            await tasks()
     else:
-        await main._run_memorize_segments(**kwargs)
+        await tasks()
     assert key not in main._FORCED_MEMORIZE_INFLIGHT
     state = load(cid, **scope)[0]
     assert state["pending_segment_ids"] == ["ordinary"] and state["digest_cursor"] == 10
@@ -4586,7 +4590,9 @@ async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeyp
     assert record["memorize_cursor"] == (-1 if fail else 1)
     assert record["pending_segment_ids"] == ([] if fail else [f"{cid}:0-1"])
     assert bool(record["error"]) is fail
-    assert bool(list(segments_dir.glob("*.json"))) is not fail
+    assert paths and all(path.is_file() for path in paths) is not fail
+    with pytest.raises(HTTPException):
+        main._require_soul_active(scope["user_id"], scope["soul_id"])
     with sqlite_connect(path) as con:
         con.row_factory = sqlite3.Row
         assert soul_state.read(con) == before

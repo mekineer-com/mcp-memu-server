@@ -111,7 +111,7 @@ async def test_invalid_memorize_source_is_rejected_before_admission(monkeypatch)
     with pytest.raises(HTTPException, match="supported history reader"):
         await main.memorize({"user": {"user_id": "TestOwner", "soul_id": "TestSoul"}, "conversation_id": "hermes:unsupported"}, BackgroundTasks(), True)
     marker = main._memorize_lock_key("TestOwner", "TestSoul")
-    main._FORCED_MEMORIZE_INFLIGHT.add(marker)
+    main._FORCED_MEMORIZE_INFLIGHT[marker] = False
     with pytest.raises(HTTPException, match="supported history reader"):
         await main._memorize_admitted({"user": {"user_id": "TestOwner", "soul_id": "TestSoul"}, "conversation_id": "hermes:unsupported"}, BackgroundTasks(), True)
     assert marker not in main._FORCED_MEMORIZE_INFLIGHT
@@ -123,7 +123,7 @@ async def test_admitted_stale_turn_cannot_hide_interrupted_record(monkeypatch):
     failure = {"conversation_id": cid, "error": "Interrupted", "paused": False, "targets": {cid: {"cursor": 1}}}
     main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={"memorize_failure": failure})
     marker = main._memorize_lock_key(uid, sid)
-    main._FORCED_MEMORIZE_INFLIGHT.add(marker)
+    main._FORCED_MEMORIZE_INFLIGHT[marker] = False
     monkeypatch.setattr(main._memorize_endpoint, "memorize_endpoint", lambda *_args, **_kwargs: pytest.fail("Must not schedule paid work"))
     with pytest.raises(HTTPException) as blocked:
         await main._memorize_admitted({"user": {"user_id": uid, "soul_id": sid}, "conversation_id": cid}, BackgroundTasks(), True)
@@ -385,14 +385,14 @@ async def test_automatic_admission_reaches_real_endpoint_once(monkeypatch):
         "conversation_id": cid,
         "conversation": [{"role": "user", "content": "First"}, {"role": "assistant", "content": "Second"}],
     }
-    main._FORCED_MEMORIZE_INFLIGHT.add(marker)
+    main._FORCED_MEMORIZE_INFLIGHT[marker] = False
     try:
         await main._run_forced_memorize_from_turn(payload)
         assert len(calls) == 1
         assert marker not in main._FORCED_MEMORIZE_INFLIGHT
         assert main._paid_work_state(uid, sid)["memorize_failure"] is None
     finally:
-        main._FORCED_MEMORIZE_INFLIGHT.discard(marker)
+        main._FORCED_MEMORIZE_INFLIGHT.pop(marker, None)
 
 
 @pytest.mark.asyncio
@@ -451,7 +451,7 @@ async def test_retry_stays_paused_and_duplicate_is_refused(monkeypatch):
     finally:
         release.set()
         await runner
-        main._FORCED_MEMORIZE_INFLIGHT.discard(marker)
+        main._FORCED_MEMORIZE_INFLIGHT.pop(marker, None)
 
 
 @pytest.mark.asyncio

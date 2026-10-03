@@ -602,7 +602,7 @@ _ACTIVE_WORK_REQUESTS: int = 0
 _SHUTDOWN_TASK: asyncio.Task | None = None
 _APIMW_INFLIGHT: set[str] = set()
 _BACKGROUND_ROLLUP_INFLIGHT: set[str] = set()
-_FORCED_MEMORIZE_INFLIGHT: set[str] = set()
+_FORCED_MEMORIZE_INFLIGHT: dict[str, bool] = {}  # True marks historical work, not ordinary recovery.
 _FORCED_MEMORIZE_RECHECK: dict[str, dict[str, Any]] = {}
 _FREE_TURN_INFLIGHT: set[str] = set()
 _FREE_TURN_FOLLOW_UP_INFLIGHT: set[str] = set()
@@ -1665,7 +1665,7 @@ def _paid_work_state(user_id: str, soul_id: str) -> dict[str, Any]:
 def _soul_activity_pause(user_id: str, soul_id: str, state: dict[str, Any] | None = None) -> str | None:
     return _soul_state.activity_pause(
         _paid_work_state(user_id, soul_id) if state is None else state,
-        memorize_running=_memorize_lock_key(user_id, soul_id) in _FORCED_MEMORIZE_INFLIGHT,
+        memorize_running=_FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(user_id, soul_id)) is False,
         consolidation_running=_CONSOLIDATION_RUNNING.get((user_id, soul_id)) is False,
     )
 
@@ -2315,7 +2315,7 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
         with _STATE_LOCK:
             if marker in _FORCED_MEMORIZE_INFLIGHT:
                 raise HTTPException(status_code=409, detail="Memorize is already running")
-            _FORCED_MEMORIZE_INFLIGHT.add(marker)
+            _FORCED_MEMORIZE_INFLIGHT[marker] = historical
     try:
         source = _message_log.derive_source_label(_extract_conversation_id(safe))
         if source not in {"whatsapp:dm", "whatsapp:group", "sillytavern", "atomic", "mentra", "replika"}:
@@ -3522,7 +3522,7 @@ def _auto_memorize_scope(
 
 async def _finish_memorize_claim(marker: str, success: bool) -> None:
     with _STATE_LOCK:
-        _FORCED_MEMORIZE_INFLIGHT.discard(marker)
+        _FORCED_MEMORIZE_INFLIGHT.pop(marker, None)
         recheck = _FORCED_MEMORIZE_RECHECK.pop(marker, None)
     if not success or recheck is None:
         return
@@ -3561,12 +3561,12 @@ def _schedule_auto_memorize(
                 "history_full": [dict(row) for row in scope["history_full"]],
             }
             return "coalesced"
-        _FORCED_MEMORIZE_INFLIGHT.add(marker)
+        _FORCED_MEMORIZE_INFLIGHT[marker] = False
     try:
         task = asyncio.create_task(_run_forced_memorize_from_turn(payload))
     except Exception:
         with _STATE_LOCK:
-            _FORCED_MEMORIZE_INFLIGHT.discard(marker)
+            _FORCED_MEMORIZE_INFLIGHT.pop(marker, None)
         raise
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
