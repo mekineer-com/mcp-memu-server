@@ -754,14 +754,6 @@ async def run_memorize_segments(
             )
             if should_consolidate:
                 consolidation_started = True
-                _set_memorize_progress(
-                    ctx.memorize_progress,
-                    progress_key,
-                    active=True,
-                    phase="consolidating",
-                    current=1,
-                    total=1,
-                )
                 _ct = asyncio.create_task(
                     run_ctx.run_consolidation_task(
                         svc,
@@ -1428,14 +1420,6 @@ async def memorize_endpoint(
                         not historical and conversation_id
                         and has_pending_segments
                     ):
-                        _set_memorize_progress(
-                            ctx.memorize_progress,
-                            progress_key,
-                            active=True,
-                            phase="consolidating",
-                            current=1,
-                            total=1,
-                        )
                         background_tasks.add_task(
                             endpoint_ctx.run_consolidation_task,
                             svc,

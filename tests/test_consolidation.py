@@ -1975,7 +1975,7 @@ def test_write_consolidation_outputs_rolls_back_final_transaction() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["wait", "time", "revision-size", "reflection-size", "cli-size", "too-large", "missing"])
+@pytest.mark.parametrize("mode", ["wait", "force", "time", "revision-size", "reflection-size", "cli-size", "too-large", "missing"])
 async def test_ordinary_automatic_consolidation_uses_time_or_actual_stage_capacity(tmp_path, monkeypatch, mode):
     from datetime import timedelta
     path = tmp_path / "cadence.db"
@@ -2014,7 +2014,7 @@ async def test_ordinary_automatic_consolidation_uses_time_or_actual_stage_capaci
         svc.llm_profiles.profiles["consolidation"].context_window_tokens = None
     gathers, preparations, applied = [], [], []
     def gather(*_args, **kwargs):
-        assert kwargs["selected_segments"] is None and kwargs["force"] is False
+        assert kwargs["selected_segments"] is None and kwargs["force"] is (mode == "force")
         gathers.append(True)
         return inputs
     def prepared(*args, **kwargs):
@@ -2030,7 +2030,7 @@ async def test_ordinary_automatic_consolidation_uses_time_or_actual_stage_capaci
     running = {}
     kwargs = dict(svc=svc, deps=deps, state_lock=asyncio.Lock(), running=running,
                   load_cross_tail_for_ai=lambda **_kw: [], format_all_chat_history_for_ai=lambda **_kw: "A lived span.",
-                  conversation_id="chat-a", **scope)
+                  conversation_id="chat-a", force=mode == "force", **scope)
     if mode in {"too-large", "missing"}:
         with pytest.raises(ValueError, match="token limit" if mode == "too-large" else "context_window_tokens"):
             await consolidation._run_consolidation_pipeline_once(**kwargs)

@@ -2101,6 +2101,8 @@ async def _run_consolidation_task(
     progress_key: str | None = None,
     memorize_progress: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    if (uid, soul_id) in _CONSOLIDATION_RUNNING:
+        return {"ok": True, "status": "skipped"}
     if progress_key and memorize_progress is not None:
         _memorize_endpoint._set_memorize_progress(
             memorize_progress,
@@ -2133,7 +2135,7 @@ async def _run_consolidation_task(
                     memorize_progress,
                     progress_key,
                     active=False,
-                    last_result="success",
+                    last_result="skipped",
                 )
             return {"ok": True, "status": "skipped"}
         if progress_key and memorize_progress is not None:

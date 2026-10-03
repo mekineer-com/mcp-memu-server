@@ -1740,6 +1740,25 @@ async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["not_due", "failure_requires_retry", "failure"])
+async def test_consolidation_task_progress_does_not_report_skips_as_success(monkeypatch, outcome):
+    async def pipeline(**_kwargs):
+        if outcome == "failure":
+            raise ValueError("Context measurement failed")
+        return {"status": "skipped", "reason": outcome}
+
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", pipeline)
+    progress = {}
+    result = await main._run_consolidation_task(
+        object(), conversation_id="chat", soul_id="TestSoul", uid="TestUser",
+        progress_key="scope", memorize_progress=progress,
+    )
+    assert result["status"] == ("error" if outcome == "failure" else "skipped")
+    assert progress["scope"]["active"] is False
+    assert progress["scope"]["last_result"] == ("failure" if outcome == "failure" else "skipped")
+
+
+@pytest.mark.asyncio
 async def test_consolidation_pipeline_records_preflight_error_and_releases_claim(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1896,6 +1915,15 @@ async def test_consolidation_pipeline_busy_caller_cannot_release_owner(
             user_id="UserOwner",
         )
         assert out == {"status": "skipped", "reason": "in_progress"}
+        assert key in main._CONSOLIDATION_RUNNING
+        owner_progress = {"active": True, "phase": "consolidating", "current": 1, "total": 1}
+        progress = {"owner": owner_progress.copy()}
+        refused = await main._run_consolidation_task(
+            object(), conversation_id="cid-owner", soul_id=key[1], uid=key[0],
+            progress_key="owner", memorize_progress=progress,
+        )
+        assert refused == {"ok": True, "status": "skipped"}
+        assert progress["owner"] == owner_progress
         assert key in main._CONSOLIDATION_RUNNING
     finally:
         main._CONSOLIDATION_RUNNING.pop(key, None)
