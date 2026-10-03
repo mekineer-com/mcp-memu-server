@@ -276,6 +276,49 @@ async def test_historical_stages_skip_weekly_but_embed_previous_narrative(monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("growth_stage", ["anchors", "weekly"])
+async def test_later_stage_rechecks_after_valid_prose_growth(growth_stage):
+    svc = _DossierContextService(due_ids=("first",))
+    stored = {"summary": "## Current\nStable.", "description": "first description"}
+    svc.prepare_anchor_continuity_context = lambda _scope: {
+        "dossiers": [SimpleNamespace(name="First", anchor_role=None, **stored)], "episodes": [],
+    }
+    svc.build_dossier_index = lambda _scope: "- First: first description"
+    inputs = _inputs()
+    prepared = consolidation._prepare_dossier_consolidation_prompts(
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser",
+    )
+    budget = max(prepared[3]["anchors"], prepared[3]["weekly"]) + 100
+    svc.llm_profiles.profiles["default"].context_window_tokens = 8000 + budget * 5 // 4 + 1
+    grown = "A broader self. " * 1000
+    original_chat, original_apply = svc.chat, svc.apply_dossier_revision
+    async def chat(prompt, **kwargs):
+        raw = await original_chat(prompt, **kwargs)
+        if growth_stage == "anchors" and kwargs["step"] == "dossiers":
+            raw = raw.replace("<prose_action>keep</prose_action><prose_patches></prose_patches>",
+                '<prose_action>patch</prose_action><prose_patches><section ref="S1" action="replace">'
+                f"## Current\n{grown}</section></prose_patches>")
+        if growth_stage == "weekly" and kwargs["step"] == "anchors":
+            raw = raw.replace('<narrative_self action="keep"></narrative_self>',
+                              f'<narrative_self action="replace">{grown}</narrative_self>')
+        assert consolidation.estimate_prompt_tokens(raw) < 8000
+        return raw
+    async def apply(bundle, decision, scope):
+        await original_apply(bundle, decision, scope)
+        stored["summary"] = decision["resulting_prose"]
+    svc.chat, svc.apply_dossier_revision = chat, apply
+    await prepare_dossier_consolidation_context(
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser", prepared=prepared,
+    )
+    with pytest.raises(ValueError, match=f"{growth_stage} consolidation prompt"):
+        await run_consolidation_llm(svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser")
+    expected = [("chat", "dossiers")] + ([("chat", "anchors")] if growth_stage == "weekly" else [])
+    assert [call for call in svc.calls if call[0] == "chat"] == expected
+    assert len([call for call in svc.calls if call[0] == "apply"]) == 1
+    assert not [call for call in svc.calls if call[0] == "prepare_anchor"]
+
+
+@pytest.mark.asyncio
 async def test_short_embedding_response_fails_before_anchor_apply() -> None:
     svc = _DossierContextService()
     inputs = _inputs()

@@ -240,6 +240,7 @@ def _validated_step_models(
     *,
     llm_profiles: Mapping[str, Any],
     logger: logging.Logger,
+    setting: str = "step_models",
 ) -> dict[str, str]:
     if not isinstance(step_models, Mapping):
         return {}
@@ -249,7 +250,7 @@ def _validated_step_models(
         if not key:
             continue
         if key not in _VALID_STEP_MODEL_KEYS:
-            logger.warning("ignoring unrecognized llm.step_models key: %s", key)
+            logger.warning("ignoring unrecognized llm.%s key: %s", setting, key)
             continue
         model_name = str(raw_value or "").strip()
         if not model_name:
@@ -258,8 +259,8 @@ def _validated_step_models(
             raise HTTPException(
                 status_code=500,
                 detail=(
-                    f"llm.step_models.{key} is configured but profile '{key}' is missing; "
-                    "check config step_models keys"
+                    f"llm.{setting}.{key} is configured but profile '{key}' is missing; "
+                    f"check config {setting} keys"
                 ),
             )
         out[key] = model_name
@@ -309,6 +310,10 @@ def _get_service_from_payload(
             step_models_cfg,
             llm_profiles=llm_profiles,
             logger=logger,
+        )
+        _validated_step_models(
+            step_capacities_cfg, llm_profiles=llm_profiles, logger=logger,
+            setting="step_context_window_tokens",
         )
     step_temps = (config.get("llm") or {}).get("step_temperatures")
     if isinstance(step_temps, dict):

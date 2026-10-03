@@ -133,7 +133,8 @@ def test_entity_similarity_floor_follows_embedding_profile() -> None:
         service_factory._entity_similarity_floor("unknown:3072")
 
 
-def test_validated_step_models_warns_on_unknown_key(caplog: pytest.LogCaptureFixture) -> None:
+@pytest.mark.parametrize("setting", ["step_models", "step_context_window_tokens"])
+def test_validated_step_models_warns_on_unknown_key(caplog: pytest.LogCaptureFixture, setting) -> None:
     llm_profiles = {
         "default": {},
         "preprocess": {},
@@ -144,13 +145,15 @@ def test_validated_step_models_warns_on_unknown_key(caplog: pytest.LogCaptureFix
     }
     with caplog.at_level(logging.WARNING):
         out = service_factory._validated_step_models(
-            {"typo_step": "gpt-4o-mini", "preprocess": "gpt-4o-mini"},
+            {"typo_step": "gpt-4o-mini", "preprocess": "gpt-4o-mini"} if setting == "step_models"
+            else {"typo_step": 200_000, "preprocess": 200_000},
             llm_profiles=llm_profiles,
             logger=logging.getLogger("test.step_models"),
+            setting=setting,
         )
 
-    assert out == {"preprocess": "gpt-4o-mini"}
-    assert "ignoring unrecognized llm.step_models key: typo_step" in caplog.text
+    assert out == {"preprocess": "gpt-4o-mini" if setting == "step_models" else "200000"}
+    assert f"ignoring unrecognized llm.{setting} key: typo_step" in caplog.text
 
 
 def test_validated_step_models_raises_when_profile_missing() -> None:
