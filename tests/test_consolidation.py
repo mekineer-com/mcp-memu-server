@@ -38,7 +38,7 @@ class _DossierContextService:
     def __init__(self, *, due_ids=(), profiles=("default", "revision"), stale_id=None) -> None:
         self.memorize_config = SimpleNamespace(category_update_llm_profile="revision")
         self.llm_profiles = SimpleNamespace(
-            profiles={name: SimpleNamespace(max_tokens=8000) for name in profiles}
+            profiles={name: SimpleNamespace(max_tokens=8000, context_window_tokens=1_000_000, chat_model=name) for name in profiles}
         )
         self.due = [SimpleNamespace(id=dossier_id) for dossier_id in due_ids]
         self.stale_id = stale_id
@@ -167,9 +167,9 @@ async def test_dossier_context_uses_one_holistic_call_and_preserves_due_order(du
 @pytest.mark.asyncio
 @pytest.mark.parametrize("over_budget", [False, True])
 async def test_dry_prompt_preparation_is_reused_without_model_calls_or_rebuilding(monkeypatch, over_budget):
-    if over_budget:
-        monkeypatch.setattr(consolidation, "CONSOLIDATION_PROMPT_TOKEN_LIMIT", 10)
     svc = _DossierContextService(due_ids=("first", "second"))
+    if over_budget:
+        svc.llm_profiles.profiles["revision"].context_window_tokens = 8010
     inputs = _inputs()
     prepared = consolidation._prepare_dossier_consolidation_prompts(
         svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser",
@@ -204,8 +204,8 @@ async def test_dossier_context_keeps_first_apply_when_second_is_stale() -> None:
 
 @pytest.mark.asyncio
 async def test_consolidation_preflight_fails_before_paid_call(monkeypatch) -> None:
-    monkeypatch.setattr(consolidation, "CONSOLIDATION_PROMPT_TOKEN_LIMIT", 10)
     svc = _DossierContextService(due_ids=("first",))
+    svc.llm_profiles.profiles["revision"].context_window_tokens = 8010
     with pytest.raises(ValueError, match="provider-safe"):
         await prepare_dossier_consolidation_context(
             svc, inputs=_inputs(), soul_id="TestSoul", user_id="TestUser"
@@ -214,16 +214,15 @@ async def test_consolidation_preflight_fails_before_paid_call(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_consolidation_preflight_ignores_output_ceiling() -> None:
+async def test_consolidation_preflight_reserves_output_ceiling() -> None:
     svc = _DossierContextService(due_ids=("first",))
     for profile in svc.llm_profiles.profiles.values():
         profile.max_tokens = 1_000_000
-    await prepare_dossier_consolidation_context(
-        svc, inputs=_inputs(), soul_id="TestSoul", user_id="TestUser"
-    )
-    assert [call for call in svc.calls if call[0] == "chat"] == [
-        ("chat", "dossiers")
-    ]
+    with pytest.raises(ValueError, match="must exceed max_tokens"):
+        await prepare_dossier_consolidation_context(
+            svc, inputs=_inputs(), soul_id="TestSoul", user_id="TestUser"
+        )
+    assert not [call for call in svc.calls if call[0] == "chat"]
 
 
 @pytest.mark.asyncio
@@ -1222,6 +1221,60 @@ async def test_historical_consolidation_only_changes_contributing_imports(tmp_pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fits", [False, True])
+async def test_historical_selection_shrinks_whole_prefix_before_any_model_call(tmp_path, monkeypatch, fits):
+    path = tmp_path / "test.db"
+    with sqlite_connect(path) as con:
+        sqlite_ensure_conversation_state_schema(con)
+    svc = _DossierContextService(due_ids=("first",))
+    svc.database = _make_svc_stub(path).database
+    segments = [{
+        "conversation_id": "chat", "segment_id": f"chat:{i}-{i}",
+        "memory_summaries": [{"id": f"memory-{i}", "memory_ref": i + 1, "memory_type": "knowledge",
+                              "summary": f"Evidence {i}: " + "Detail. " * 500}],
+    } for i in range(3)]
+    def inputs(rows):
+        return {**_inputs(), "status": "ready", "historical": True, "db_path": path,
+                "segment_inputs": rows, "current_chat_messages": [],
+                "selected_segment_ids": [row["segment_id"] for row in rows],
+                "selected_segment_ids_by_conversation": {"chat": [row["segment_id"] for row in rows]}}
+    first = consolidation._prepare_dossier_consolidation_prompts(
+        svc, inputs=inputs(segments[:1]), soul_id="TestSoul", user_id="TestUser",
+    )[3]["dossiers"]
+    second = consolidation._prepare_dossier_consolidation_prompts(
+        svc, inputs=inputs(segments[:2]), soul_id="TestSoul", user_id="TestUser",
+    )[3]["dossiers"]
+    assert first < second
+    svc.llm_profiles.profiles["revision"].context_window_tokens = 8000 + ((first + second) // 2) * 5 // 4 + 1
+    if not fits:
+        svc.llm_profiles.profiles["default"].context_window_tokens = 8001
+    svc.calls.clear()
+    captures = []
+    def gather(*_args, **kwargs):
+        selection = kwargs["selected_segments"]
+        rows = [row for row in segments if selection is None or ("chat", row["segment_id"]) in selection]
+        captures.append([row["segment_id"] for row in rows])
+        return inputs(rows)
+    monkeypatch.setattr(consolidation, "gather_consolidation_inputs", gather)
+    monkeypatch.setattr(consolidation, "_record_consolidation_failure", lambda **_kwargs: None)
+    monkeypatch.setattr(consolidation, "write_consolidation_outputs", lambda *_a, **kw: {
+        "consumed_segment_ids": kw["inputs"]["selected_segment_ids"],
+    })
+    kwargs = dict(svc=svc, deps=_make_consolidation_deps(path, tmp_path), state_lock=asyncio.Lock(), running={},
+                  load_cross_tail_for_ai=lambda **_kw: [], format_all_chat_history_for_ai=lambda **_kw: "A lived span.",
+                  conversation_id="chat", soul_id="TestSoul", user_id="TestUser", historical=True)
+    if fits:
+        result = await consolidation._run_consolidation_pipeline_once(**kwargs)
+        assert result["result"]["consumed_segment_ids"] == ["chat:0-0"]
+        assert [call for call in svc.calls if call[0] == "chat"] == [("chat", "dossiers"), ("chat", "anchors")]
+    else:
+        with pytest.raises(ValueError, match="No whole historical segment"):
+            await consolidation._run_consolidation_pipeline_once(**kwargs)
+        assert not [call for call in svc.calls if call[0] in {"chat", "apply"}]
+    assert captures == [["chat:0-0", "chat:1-1", "chat:2-2"], ["chat:0-0", "chat:1-1"], ["chat:0-0"]]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("historical", [False, True])
 async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path, monkeypatch, request, historical):
     class Scope(BaseModel):
@@ -1238,6 +1291,7 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
         database_config={"metadata_store": {"provider": "sqlite", "dsn": f"sqlite:///{path}"}},
         user_config={"model": Scope},
     )
+    svc.llm_profiles.profiles["default"].context_window_tokens = 1_000_000
     store = svc.database
     request.addfinalizer(store.close)
     journals = []

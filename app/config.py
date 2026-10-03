@@ -90,6 +90,8 @@ def default_config() -> dict[str, Any]:
             "api_key": "",
             "base_url": "https://api.openai.com/v1",
             "chat_model": "",
+            "context_window_tokens": None,
+            "step_context_window_tokens": {},
             "embedding": {},
             "endpoint_overrides": {},
         },
@@ -129,6 +131,7 @@ def default_config() -> dict[str, Any]:
             "mental_health_query": True,
         },
         "consolidation_interval_days": 7,
+        "claude_code_context_window_tokens": None,
         "procedural": {
             "yaml_dir": "../memu/procedural",
             "db_path": "../memu/sqlite/procedural.db",
@@ -476,6 +479,8 @@ def default_llm_profiles_from_server_config(cfg: dict[str, Any]) -> dict[str, An
     max_tokens = llm.get("max_tokens")
     if max_tokens is not None:
         default_profile["max_tokens"] = int(max_tokens)
+    if llm.get("context_window_tokens") is not None:
+        default_profile["context_window_tokens"] = llm["context_window_tokens"]
     embedding_cfg = llm.get("embedding") if isinstance(llm.get("embedding"), dict) else {}
     embedding_profile = {
         "provider": EMBEDDING_PROVIDER,
@@ -494,4 +499,11 @@ def default_llm_profiles_from_server_config(cfg: dict[str, Any]) -> dict[str, An
             model_str = str(model or "").strip()
             if model_str:
                 profiles[step_name] = {**default_profile, "chat_model": model_str}
+                if model_str != chat_model:
+                    profiles[step_name].pop("context_window_tokens", None)
+    step_capacities = llm.get("step_context_window_tokens")
+    if isinstance(step_capacities, dict):
+        for step_name, capacity in step_capacities.items():
+            if capacity is not None:
+                profiles[step_name] = {**profiles.get(step_name, default_profile), "context_window_tokens": capacity}
     return profiles

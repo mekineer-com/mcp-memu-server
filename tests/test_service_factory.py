@@ -1,4 +1,5 @@
 import logging
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -6,6 +7,36 @@ from pydantic import BaseModel
 
 from app.config import database_config_from_cfg, default_llm_profiles_from_server_config
 from app.services import owner, service_factory, souls
+from app.services.consolidation import consolidation_input_budget
+from memu.app.settings import LLMConfig
+
+
+def test_capacity_follows_effective_model_and_cli_without_inheriting_other_models():
+    cfg = {"llm": {"chat_model": "large", "context_window_tokens": 1_000_000, "max_tokens": 100_000,
+                   "step_models": {"category_update": "small", "consolidation": "large"},
+                   "step_context_window_tokens": {"category_update": 200_000}}}
+    profiles = default_llm_profiles_from_server_config(cfg)
+    svc = SimpleNamespace(llm_profiles=SimpleNamespace(profiles={
+        name: LLMConfig(**profile) for name, profile in profiles.items()
+    }))
+    assert consolidation_input_budget(svc, None) == 720_000
+    assert consolidation_input_budget(svc, "category_update") == 80_000
+    assert consolidation_input_budget(svc, "consolidation") == 720_000
+    same = service_factory._merge_llm_profiles(profiles, {"default": {"chat_model": "large"}})
+    assert same["default"]["context_window_tokens"] == 1_000_000
+    changed = service_factory._merge_llm_profiles(profiles, {"default": {"chat_model": "another"}})
+    svc.llm_profiles.profiles["default"] = LLMConfig(**changed["default"])
+    with pytest.raises(ValueError, match="context_window_tokens is required"):
+        consolidation_input_budget(svc, None)
+    del cfg["llm"]["step_context_window_tokens"]["category_update"]
+    assert "context_window_tokens" not in default_llm_profiles_from_server_config(cfg)["category_update"]
+    svc._claude_code = True
+    svc._claude_code_model = "cli-model"
+    svc._claude_code_context_window_tokens = 200_000
+    assert consolidation_input_budget(svc, "category_update") == 160_000
+    svc._claude_code_context_window_tokens = None
+    with pytest.raises(ValueError, match="cli-model"):
+        consolidation_input_budget(svc, None)
 
 
 def test_storage_fingerprint_treats_omitted_provider_as_sqlite(tmp_path) -> None:
@@ -160,6 +191,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         },
         "claude_code": True,
         "claude_code_model": "claude-opus-4-7",
+        "claude_code_context_window_tokens": 200_000,
         "claude_code_effort": "medium",
         "claude_code_permission_mode": "bypassPermissions",
         "claude_code_settings": "/home/marcos/.config/memu/siri-claude-settings.json",
@@ -209,6 +241,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert isinstance(out, _FakeService)
     assert captured["claude_code"] is True
     assert captured["claude_code_model"] == "claude-opus-4-7"
+    assert captured["claude_code_context_window_tokens"] == 200_000
     assert captured["claude_code_effort"] == "medium"
     assert captured["claude_code_permission_mode"] == "bypassPermissions"
     assert captured["claude_code_settings"] == "/home/marcos/.config/memu/siri-claude-settings.json"

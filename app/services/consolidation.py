@@ -56,9 +56,19 @@ if TYPE_CHECKING:
     from memu.app import MemoryService
 
 
-# Current beta reflection models have 1M-token contexts; keep 200k for output,
-# provider framing, and estimator error. Revisit when the beta profile changes.
-CONSOLIDATION_PROMPT_TOKEN_LIMIT = 800_000
+def consolidation_input_budget(svc: MemoryService, profile: str | None) -> int:
+    if getattr(svc, "_claude_code", False):
+        context = svc._claude_code_context_window_tokens
+        output_cap = 0  # The CLI does not use the API profile's output cap.
+        model = svc._claude_code_model
+    else:
+        cfg = svc.llm_profiles.profiles[profile or "default"]
+        context, output_cap, model = cfg.context_window_tokens, cfg.max_tokens or 0, cfg.chat_model
+    if type(context) is not int or context <= 0:
+        raise ValueError(f"context_window_tokens is required for consolidation model {model}")
+    if context <= output_cap:
+        raise ValueError("consolidation context_window_tokens must exceed max_tokens")
+    return (context - output_cap) * 4 // 5
 
 
 @dataclass(frozen=True)
@@ -511,7 +521,10 @@ async def prepare_dossier_consolidation_context(
     revision_profile = svc.memorize_config.category_update_llm_profile
     scope = {"soul_id": soul_id, "user_id": user_id}
     for stage, tokens in estimates.items():
-        if tokens > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
+        if not tokens:
+            continue
+        budget = consolidation_input_budget(svc, revision_profile if stage == "dossiers" else llm_profile)
+        if tokens > budget:
             raise ValueError(f"{stage} consolidation prompt exceeds provider-safe token limit")
     log.info(
         "consolidation prompt estimates: dossiers=%d anchors=%d weekly=%d combined=%d",
@@ -1048,7 +1061,7 @@ async def run_consolidation_llm(
     identity_system, identity_user = _render_identity_prompt(
         inputs, soul_id=soul_id, user_id=user_id
     )
-    if estimate_prompt_tokens(identity_system + "\n" + identity_user) > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
+    if estimate_prompt_tokens(identity_system + "\n" + identity_user) > consolidation_input_budget(svc, llm_profile):
         raise ValueError("anchors consolidation prompt exceeds provider-safe token limit")
     identity_raw = await svc.chat(
         identity_user,
@@ -1068,7 +1081,7 @@ async def run_consolidation_llm(
         weekly_system, weekly_user = _render_weekly_prompt(
             inputs, identity, soul_id=soul_id, user_id=user_id
         )
-        if estimate_prompt_tokens(weekly_system + "\n" + weekly_user) > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
+        if estimate_prompt_tokens(weekly_system + "\n" + weekly_user) > consolidation_input_budget(svc, llm_profile):
             raise ValueError("weekly consolidation prompt exceeds provider-safe token limit")
         weekly_raw = await svc.chat(
             weekly_user,
@@ -1509,10 +1522,6 @@ async def _run_consolidation_pipeline_once(
             )
         if prep.get("status") == "skip":
             return {"status": "skipped", "reason": prep.get("reason")}
-        if historical:
-            failure_conversation_ids = [
-                cid for cid, segment_ids in prep["selected_segment_ids_by_conversation"].items() if segment_ids
-            ]
         _consolidation_database_path(svc, prep)
         consolidation_profile = _service_factory._resolve_profile_if_configured(svc, "consolidation")
         preflight_consolidation_profiles(svc, consolidation_profile)
@@ -1531,6 +1540,34 @@ async def _run_consolidation_pipeline_once(
             soul_id=soul_id,
             mark_current_chat=False,
         )
+        prepared = None
+        if historical:
+            ordered_segments = prep["segment_inputs"]
+            revision_profile = svc.memorize_config.category_update_llm_profile
+            while True:
+                prepared = _prepare_dossier_consolidation_prompts(
+                    svc, inputs=prep, soul_id=soul_id, user_id=user_id,
+                )
+                if all(not tokens or tokens <= consolidation_input_budget(
+                    svc, revision_profile if stage == "dossiers" else consolidation_profile,
+                ) for stage, tokens in prepared[3].items()):
+                    break
+                if len(ordered_segments) <= 1:
+                    raise ValueError("No whole historical segment fits the configured consolidation context")
+                # ponytail: linear prefix shrink; optimize only if large imports make preparation slow.
+                ordered_segments = ordered_segments[:-1]
+                prep = gather_consolidation_inputs(
+                    deps, conversation_id=conversation_id, soul_id=soul_id, user_id=user_id,
+                    force=force, historical=True,
+                    selected_segments={(row["conversation_id"], row["segment_id"]) for row in ordered_segments},
+                )
+                prep["all_chat_history"] = format_all_chat_history_for_ai(
+                    current_history=prep["current_chat_messages"], cross_tail=[],
+                    conversation_id=conversation_id, soul_id=soul_id, mark_current_chat=False,
+                )
+            failure_conversation_ids = [
+                cid for cid, segment_ids in prep["selected_segment_ids_by_conversation"].items() if segment_ids
+            ]
         async with state_lock:
             old_error = _soul_state.consolidation_failure(prep.get("state", {}))
             if historical or old_error is None or old_error == _soul_state.CONSOLIDATION_UNFINISHED:
@@ -1547,6 +1584,7 @@ async def _run_consolidation_pipeline_once(
             soul_id=soul_id,
             user_id=user_id,
             llm_profile=consolidation_profile,
+            prepared=prepared,
         )
 
         consolidation_llm = await run_consolidation_llm(

@@ -4,11 +4,14 @@
     "api_key": "YOUR_API_KEY_HERE",
     "base_url": "https://api.openai.com/v1",
     "chat_model": "YOUR_CHAT_MODEL",
+    "context_window_tokens": null,
+    "step_context_window_tokens": {},
     "embedding": {
       "api_key": "YOUR_GEMINI_API_KEY",
       "base_url": "https://generativelanguage.googleapis.com/"
     }
   },
+  "claude_code_context_window_tokens": null,
   "storage": {
     "resources_dir": "../memu/resources",
     "metadata_store": {

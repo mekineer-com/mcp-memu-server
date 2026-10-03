@@ -221,6 +221,9 @@ def _merge_llm_profiles(
             merged_profile = dict(base)
         else:
             merged_profile = {}
+        if (client_profile.get("chat_model", merged_profile.get("chat_model")) != merged_profile.get("chat_model")
+                and "context_window_tokens" not in client_profile):
+            merged_profile.pop("context_window_tokens", None)
         for field_name, field_value in client_profile.items():
             if field_value is None:
                 raise HTTPException(
@@ -297,6 +300,9 @@ def _get_service_from_payload(
     )
     llm_profiles["embedding"] = dict(server_profiles["embedding"])
     step_models_cfg = (config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}).get("step_models", {})
+    step_capacities_cfg = (config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}).get("step_context_window_tokens", {})
+    if not isinstance(step_capacities_cfg, dict):
+        step_capacities_cfg = {}
     use_server_step_models = not client_profiles
     if use_server_step_models:
         _validated_step_models(
@@ -379,7 +385,9 @@ def _get_service_from_payload(
                 memorize_config[passthrough_key] = mem_cfg[passthrough_key]
         if use_server_step_models and isinstance(step_models_cfg, dict):
             for cfg_key, profile_field in _STEP_MODEL_TO_MEMORIZE_PROFILE_FIELD.items():
-                if profile_field not in memorize_config and str(step_models_cfg.get(cfg_key) or "").strip():
+                if profile_field not in memorize_config and (
+                    str(step_models_cfg.get(cfg_key) or "").strip() or step_capacities_cfg.get(cfg_key) is not None
+                ):
                     memorize_config[profile_field] = cfg_key
     retrieve_config = payload.get("retrieve_config")
     if not isinstance(retrieve_config, dict):
@@ -395,7 +403,9 @@ def _get_service_from_payload(
     }
     if use_server_step_models and isinstance(step_models_cfg, dict):
         for cfg_key, profile_field in _STEP_MODEL_TO_RETRIEVE_PROFILE_FIELD.items():
-            if profile_field not in retrieve_config and str(step_models_cfg.get(cfg_key) or "").strip():
+            if profile_field not in retrieve_config and (
+                str(step_models_cfg.get(cfg_key) or "").strip() or step_capacities_cfg.get(cfg_key) is not None
+            ):
                 retrieve_config[profile_field] = cfg_key
     user_config = payload.get("user_config") or {}
 
@@ -428,6 +438,7 @@ def _get_service_from_payload(
             user_config=user_config,
             claude_code=bool(config.get("claude_code", False)),
             claude_code_model=str(config.get("claude_code_model", "claude-opus-4-7")),
+            claude_code_context_window_tokens=config.get("claude_code_context_window_tokens"),
             claude_code_effort=str(config.get("claude_code_effort", "medium")),
             claude_code_permission_mode=str(config.get("claude_code_permission_mode", "")).strip() or None,
             claude_code_settings=str(config.get("claude_code_settings", "")).strip() or None,
