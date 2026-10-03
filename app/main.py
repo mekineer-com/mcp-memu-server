@@ -2042,7 +2042,10 @@ def _persist_completed_sillytavern_turn_snapshot(*args: Any, **kwargs: Any) -> A
     return _cross_history._persist_completed_sillytavern_turn_snapshot(*args, **kwargs)
 
 def _load_tail_for_source_conversation(*args: Any, **kwargs: Any) -> Any:
-    return _cross_history._load_tail_for_source_conversation(*args, **kwargs)
+    try:
+        return _cross_history._load_tail_for_source_conversation(*args, **kwargs)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        raise HTTPException(status_code=409, detail=f"Chat source {kwargs['conversation_id']} is unavailable; restore it before retrying: {exc}") from exc
 
 def _resolve_source_cursor(*args: Any, **kwargs: Any) -> Any:
     return _cross_history._resolve_source_cursor(*args, **kwargs)
@@ -2405,7 +2408,7 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
         cid, saved_cursor, state.get(f"{prefix}_cursor_source_message_id"),
         state.get(f"{prefix}_cursor_ts"), rolling=not memory_producing, hermes_home_path=hermes,
     )
-    history = _cross_history._load_tail_for_source_conversation(
+    history = _load_tail_for_source_conversation(
         conversation_id=cid, user_id=user_id, soul_id=soul_id, since_cursor=cursor,
         recent_fallback_messages=0, storage_dir=storage, hermes_home_path=hermes,
         sessions_index_path=sessions, state_db_path=channels, min_timestamp=floor,
@@ -2417,7 +2420,7 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
         trigger_web_source=web_source,
     )
     if payload is None:
-        raise HTTPException(status_code=409, detail="Failed Memorize source is unavailable; nothing was retried")
+        raise HTTPException(status_code=409, detail=f"Chat source {cid} is unavailable; restore it before retrying Memorize")
     return await _memorize_owned(payload, background_tasks, True, retry=True)
 
 
@@ -4185,6 +4188,7 @@ async def atomic_session_start(req: AtomicSessionStartRequest):
     soul_id = str(req.soul_id or "").strip()
     if not uid or not soul_id:
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    _require_soul_active(uid, soul_id)
 
     raw_cid = str(req.conversation_id or "").strip()
     conversation_id = raw_cid or "chat:memory-surfer"

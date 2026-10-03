@@ -498,3 +498,85 @@ async def test_interrupted_consolidation_is_durable_and_retry_remains_paused(mon
     assert len(calls) == 1
     assert (await main._run_consolidation_pipeline_once(**kwargs, force=True))["status"] == "ok"
     assert main._soul_activity_pause(uid, sid) is None
+
+
+@pytest.mark.asyncio
+async def test_paused_atomic_session_creates_no_state_or_snapshot(monkeypatch):
+    from fastapi.testclient import TestClient
+    uid, sid = "TestOwner", "TestSoul"
+    main._write_conversation_state("chat:failure", user_id=uid, soul_id=sid, updates={
+        "memorize_failure": {"conversation_id": "chat:failure", "error": "Failed", "paused": True, "targets": {}},
+    })
+    monkeypatch.setattr(main, "_write_conversation_state", lambda *_args, **_kwargs: pytest.fail("must not create a session"))
+    monkeypatch.setattr(main._conversation_sources, "persist_atomic_history_snapshot", lambda **_kwargs: pytest.fail("must not write history"))
+    response = TestClient(main.app).post("/integration/atomic/session_start", json={
+        "user_id": uid, "soul_id": sid, "conversation_id": "chat:atomic-test",
+    })
+    assert response.status_code == 409 and response.json()["detail"]["code"] == "soul_paused"
+
+
+@pytest.mark.asyncio
+async def test_retry_names_unreadable_source_without_clearing_failure(monkeypatch):
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:unreadable"
+    main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={
+        "memorize_failure": {"conversation_id": cid, "error": "Failed", "paused": True,
+                             "targets": {cid: {"cursor": 1, "memory_producing": True}}},
+    })
+    def broken(**_kwargs):
+        raise OSError("Unreadable snapshot")
+    monkeypatch.setattr(main._cross_history, "_load_tail_for_source_conversation", broken)
+    with pytest.raises(HTTPException) as refused:
+        await main.retry_memorize(uid, sid, BackgroundTasks())
+    assert refused.value.status_code == 409
+    assert cid in refused.value.detail and "restore" in refused.value.detail
+    assert main._paid_work_state(uid, sid)["memorize_failure"]["paused"]
+
+
+@pytest.mark.asyncio
+async def test_partial_publication_retains_only_published_files_and_retry_reuses_resource(monkeypatch, tmp_path, request):
+    from pydantic import BaseModel
+    from memu.app.service import MemoryService
+    class Scope(BaseModel):
+        user_id: str | None = None
+        soul_id: str | None = None
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:partial-publish"
+    path = main._sqlite_current_path(uid, sid)
+    svc = MemoryService(database_config={"metadata_store": {"provider": "sqlite", "dsn": f"sqlite:///{path}"}}, user_config={"model": Scope})
+    request.addfinalizer(svc.database.close)
+    scope = {"user_id": uid, "soul_id": sid}
+    main._write_conversation_state(cid, **scope, updates={})
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    resources = []
+    async def batch(**kwargs):
+        for segment in kwargs["segments"]:
+            resource = svc.database.resource_repo.create_resource(
+                url=segment["resource_url"], local_path=segment["local_path"], modality="conversation",
+                caption=None, embedding=None, user_data=scope, conversation_id=cid,
+                segment_id=segment["segment"]["segment_id"],
+            )
+            resources.append(resource.id)
+        return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
+    svc.memorize_segments_batch = batch
+    writer = main._write_conversation_state
+    def fail_second(*args, **kwargs):
+        if kwargs["updates"].get("digest_cursor") == 1:
+            raise RuntimeError("Second publication failed")
+        return writer(*args, **kwargs)
+    monkeypatch.setattr(main, "_write_conversation_state", fail_second)
+    monkeypatch.setattr(main, "_should_run_consolidation", lambda *_args: False)
+    messages = [[{"role": "user", "content": word, "ts_ms": 1_577_836_800_000}] for word in ("First", "Second")]
+    async def run(indices):
+        await main._run_memorize_segments(
+            memorize_segments=[("unused", messages[i], i, i, (i, i)) for i in indices],
+            svc=svc, scope=scope, conversation_id=cid, soul_id=sid, uid=uid,
+            processed_cursor=-1, safe={}, resource_url="unused", chat_key=None, merged_len=2,
+            force=True, sleep_stats=None, segments_dir=segments_dir,
+        )
+    with pytest.raises(RuntimeError, match="Second publication"):
+        await run([0, 1])
+    assert [file.name for file in segments_dir.iterdir()] == ["2020-01-01.json"]
+    monkeypatch.setattr(main, "_write_conversation_state", writer)
+    await run([1])
+    assert resources[1] == resources[2]
+    assert len(list(segments_dir.iterdir())) == 2

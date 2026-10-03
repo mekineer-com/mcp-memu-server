@@ -76,7 +76,7 @@ def test_service_rejects_mismatched_embedding_profile(tmp_path):
         user_data={"user_id": "TestOwner", "soul_id": "TestSoul"},
     )
     service.database._sessions.engine.dispose()
-    with pytest.raises(RuntimeError, match="embedding profile mismatch"):
+    with pytest.raises(migration.MigrationError, match="embedding profile mismatch"):
         migration._build_service({}, path)
 
 

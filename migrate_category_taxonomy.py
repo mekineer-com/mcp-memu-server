@@ -631,31 +631,34 @@ def _build_service(cfg: Mapping[str, Any], path: Path) -> tuple[Any, str, dict[s
     profiles = _configured_profiles(cfg)
     profile_name = "category_update" if "category_update" in profiles else "default"
     categories = cfg.get("categories") if isinstance(cfg.get("categories"), dict) else {}
-    service = MemoryService(
-        llm_profiles=profiles,
-        blob_config=blob_config_from_cfg(dict(cfg)),
-        database_config={
-            "metadata_store": {
-                "provider": "sqlite",
-                "dsn": f"sqlite:////{path.expanduser().resolve().as_posix().lstrip('/')}",
-                "ddl_mode": "create",
-                "embedding_profile": EMBEDDING_PROFILE,
-            }
-        },
-        memorize_config={
-            "dynamic_category_cluster_size": int(categories.get("dynamic_category_cluster_size", 10) or 10),
-            "category_summary_target_words": int(categories.get("category_summary_target_words", 300) or 300),
-            "category_update_llm_profile": profile_name,
-        },
-        user_config={"model": ScopeModel},
-        claude_code=bool(cfg.get("claude_code", False)),
-        claude_code_model=str(cfg.get("claude_code_model") or "claude-opus-4-7"),
-        claude_code_effort=str(cfg.get("claude_code_effort") or "medium"),
-        claude_code_permission_mode=str(cfg.get("claude_code_permission_mode") or "").strip() or None,
-        claude_code_settings=str(cfg.get("claude_code_settings") or "").strip() or None,
-        claude_code_workspace=str(cfg.get("claude_code_workspace") or "").strip() or None,
-        claude_code_timeout_seconds=int(cfg.get("claude_code_timeout_seconds", 3600) or 3600),
-    )
+    try:
+        service = MemoryService(
+            llm_profiles=profiles,
+            blob_config=blob_config_from_cfg(dict(cfg)),
+            database_config={
+                "metadata_store": {
+                    "provider": "sqlite",
+                    "dsn": f"sqlite:////{path.expanduser().resolve().as_posix().lstrip('/')}",
+                    "ddl_mode": "create",
+                    "embedding_profile": EMBEDDING_PROFILE,
+                }
+            },
+            memorize_config={
+                "dynamic_category_cluster_size": int(categories.get("dynamic_category_cluster_size", 10) or 10),
+                "category_summary_target_words": int(categories.get("category_summary_target_words", 300) or 300),
+                "category_update_llm_profile": profile_name,
+            },
+            user_config={"model": ScopeModel},
+            claude_code=bool(cfg.get("claude_code", False)),
+            claude_code_model=str(cfg.get("claude_code_model") or "claude-opus-4-7"),
+            claude_code_effort=str(cfg.get("claude_code_effort") or "medium"),
+            claude_code_permission_mode=str(cfg.get("claude_code_permission_mode") or "").strip() or None,
+            claude_code_settings=str(cfg.get("claude_code_settings") or "").strip() or None,
+            claude_code_workspace=str(cfg.get("claude_code_workspace") or "").strip() or None,
+            claude_code_timeout_seconds=int(cfg.get("claude_code_timeout_seconds", 3600) or 3600),
+        )
+    except RuntimeError as exc:
+        raise MigrationError(str(exc)) from exc
     return service, profile_name, _model_identity(cfg, profiles)
 
 

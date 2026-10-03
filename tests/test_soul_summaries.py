@@ -116,6 +116,7 @@ def test_soul_summary_write_and_approve() -> None:
     assert state["narrative_self_previous"] is None
     assert state["narrative_self_approved"] is None
     assert state["summaries_revision"] == 1
+    assert soul_summaries.write_live(con, kind="narrative_self", summary="first self")["summaries_revision"] == 1
 
     state = soul_summaries.approve(con, kind="narrative_self")
     assert state["narrative_self_approved"] == "first self"
@@ -260,8 +261,10 @@ def test_narrative_suggestion_preserves_concurrent_card(monkeypatch, tmp_path, c
     con.close()
     monkeypatch.setattr(category_summary_journal, "JOURNAL_DIR", tmp_path / "journals")
     snapshots = []
+    memories = []
 
     class Service:
+        database = type("Database", (), {"memory_item_repo": type("Repo", (), {"create_item": staticmethod(lambda **kwargs: memories.append(kwargs))})()})()
         def build_dossier_index(self, _scope):
             return ""
 
@@ -269,7 +272,7 @@ def test_narrative_suggestion_preserves_concurrent_card(monkeypatch, tmp_path, c
             if concurrent_edit:
                 with sqlite3.connect(path) as writer:
                     writer.execute("UPDATE soul_state SET narrative_self = 'Newer card'")
-            return json.dumps({"narrative_self": "Suggested card", "companion_memory": ""})
+            return json.dumps({"narrative_self": "Suggested card", "companion_memory": "I considered the suggestion."})
 
         async def embed(self, *_args, **_kwargs):
             return [[1.0, 0.0]]
@@ -296,6 +299,7 @@ def test_narrative_suggestion_preserves_concurrent_card(monkeypatch, tmp_path, c
         )
         assert check.execute("SELECT COUNT(*) FROM narrative_history").fetchone()[0] == (0 if concurrent_edit else 1)
     assert bool(snapshots) == (not concurrent_edit)
+    assert bool(memories) == (not concurrent_edit)
     assert (tmp_path / "journals").exists() == (not concurrent_edit)
 
 

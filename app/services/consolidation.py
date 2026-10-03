@@ -928,7 +928,7 @@ ORDER BY created_at ASC, id ASC
             entry["happened_at"] or datetime.min.replace(tzinfo=UTC),
             entry["conversation_id"], entry["segment_id"],
         ))
-        current_chat_messages.sort(key=lambda message: message_ts_ms(message) or 0)
+        current_chat_messages.sort(key=lambda message: message_ts_ms(message) if message_ts_ms(message) is not None else float("inf"))
 
         selected_segment_ids = [
             segment_id
@@ -1324,7 +1324,6 @@ ORDER BY updated_at ASC, id ASC
                     con,
                     kind="narrative_self",
                     summary=narrative_self,
-                    advance_revision_on_noop=True,
                 )
 
             for goal_id in goals_to_mark_removed:

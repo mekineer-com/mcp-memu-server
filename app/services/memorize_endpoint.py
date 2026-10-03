@@ -601,7 +601,7 @@ async def run_memorize_segments(
                                     updates=updates,
                                 )
                                 if memory_producing and pending_segment_ids:
-                                    created_segment_paths.clear()
+                                    created_segment_paths.remove(Path(segment_job["segment_resource_url"]))
                                     durable_segments_committed = True
                             else:
                                 # Another runner advanced the cursor past this segment; honour the further value.

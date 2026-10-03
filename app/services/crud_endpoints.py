@@ -551,19 +551,6 @@ async def narrative_suggestion_endpoint(
     new_narrative = str(parsed.get("narrative_self") or "").strip()
     companion_memory = str(parsed.get("companion_memory") or "").strip()
 
-    if companion_memory and db_path is not None:
-        sqlite_ensure_nonempty(db_path)
-        [companion_embedding] = await svc.embed([companion_memory], profile="embedding")
-        svc.database.memory_item_repo.create_item(
-            resource_id=None,
-            memory_type="reflection",
-            summary=companion_memory,
-            embedding=companion_embedding,
-            user_data=scope,
-            source_role="soul",
-            happened_at=datetime.now(UTC),
-        )
-
     if new_narrative and db_path is not None and current_narrative != new_narrative:
         old_embedding = None
         if current_narrative:
@@ -603,7 +590,20 @@ async def narrative_suggestion_endpoint(
                 old_text=current_narrative,
                 old_embedding=old_embedding,
             )
-        return {"narrative_self": new_narrative}
+        current_narrative = new_narrative
+
+    if companion_memory and db_path is not None:
+        sqlite_ensure_nonempty(db_path)
+        [companion_embedding] = await svc.embed([companion_memory], profile="embedding")
+        svc.database.memory_item_repo.create_item(
+            resource_id=None,
+            memory_type="reflection",
+            summary=companion_memory,
+            embedding=companion_embedding,
+            user_data=scope,
+            source_role="soul",
+            happened_at=datetime.now(UTC),
+        )
 
     if current_narrative:
         return {"narrative_self": current_narrative}

@@ -279,7 +279,7 @@ async def test_category_review_rejects_unseen_identity(monkeypatch, tmp_path, fi
     con = main._sqlite_connect(tmp_path / "soul.db")
     assert con.execute("SELECT summaries_revision FROM soul_state").fetchone()[0] == 0
     con.close()
-    payload.update(displayed_title=saved.name, displayed_description=saved.description or "")
+    payload.update(displayed_title=f" {saved.name} ", displayed_description=f" {saved.description or ''} ", displayed_summary=" shown ")
     result = await endpoint(*args, payload)
     assert result["summaries_revision"] == 1
 

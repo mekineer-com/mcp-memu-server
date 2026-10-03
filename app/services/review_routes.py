@@ -96,7 +96,7 @@ def register_review_routes(
             return None
         if snapshot is None or any(not isinstance(payload.get(field), str) for field in fields):
             raise HTTPException(status_code=400, detail="complete category snapshot is required")
-        return (*snapshot, payload["displayed_title"], payload["displayed_description"])
+        return (snapshot[0], snapshot[1].strip(), payload["displayed_title"].strip(), payload["displayed_description"].strip())
 
 
     def _summary_db(user_id: str, soul_id: str) -> tuple[sqlite3.Connection, dict[str, str]]:

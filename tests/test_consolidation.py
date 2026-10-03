@@ -877,6 +877,13 @@ INSERT INTO memory_items (
     assert len(out["segment_inputs"][1]["memory_summaries"]) == 30
     assert [item["id"] for item in out["prior_context_memory_items"]] == ["mem-0"]
 
+    dateless_file = chat_dirs["conv-b"] / "segments" / "segment_0.json"
+    original = dateless_file.read_text()
+    dateless_file.write_text(json.dumps([{"role": "user", "content": "message 1", "source_conversation_id": "conv-b"}]))
+    dateless = gather_consolidation_inputs(deps, conversation_id="conv-a", soul_id=soul_id, user_id=user_id)
+    assert [row["content"] for row in dateless["current_chat_messages"]] == ["older imported history", "message 0", "message 1"]
+    dateless_file.write_text(original)
+
     deps.write_conversation_state("conv-a", soul_id=soul_id, user_id=user_id, updates={"import_state": {
         "history_end_index": 2, "memorize_cursor": 1, "pending_segment_ids": [historical_id],
         "stage": "consolidation", "error": None,

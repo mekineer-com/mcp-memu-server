@@ -80,7 +80,7 @@ mcp-memu-server/
 | `/integration/mentra/session/{id}/snapshot/replay` | POST | Replay a stored snapshot that failed its first processing attempt |
 | `/integration/mentra/session/{id}/snapshot/finalize` | POST | Finalize a snapshot into memory; unavailable unless Gemini embedding config and DB profile are both active |
 | `/integration/mentra/session/{id}/transcripts/append` | POST | Redacted-validation, contiguous/idempotent transcript, gap, or sitting-summary append into the atomic Mentra snapshot; conversational rows queue shared auto-memorize while gap markers never enter AI history |
-| `/integration/atomic/session_start` | POST | Atomic session bootstrap: stripped retrieve snapshot → seeds `chat:atomic-<uuid>` |
+| `/integration/atomic/session_start` | POST | Atomic session bootstrap: paused Souls refused before session/history writes; stripped retrieve snapshot → seeds `chat:atomic-<uuid>` |
 | `/integration/atomic/session_end` | POST | Atomic session close: persists transcript, then atomically records the activity recap and End marker |
 | `/integration/atomic/chat_profile` | GET | Scoped `user_id` + `soul_id` generation gate and LLM profile (includes API key — do not log); paused Soul returns 409 |
 | `/integration/atomic/prompt_log` | POST | Atomic prompt-log sink (writes to `mcp-memu-server.log` when `debug.log_prompts` enabled) |
@@ -103,7 +103,7 @@ mcp-memu-server/
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state |
 | `/conversation/{id}/consolidation/force` | POST | Force consolidation now (lock-safe) |
 | `/conversation/{id}/consolidation/retry` | POST | Manual retry of a failed consolidation (409 when the last run did not fail). Failed paid runs never retry automatically. |
-| `/memorize/retry` | POST | Scoped launcher recovery through existing all-chat assembly, including activity and context-only tails when the original chat has no new tail. Original history owner and completion obligations retained; activity stays paused until success |
+| `/memorize/retry` | POST | Scoped launcher recovery through existing all-chat assembly, including activity and context-only tails when the original chat has no new tail. Unreadable sources are named for manual restoration, not skipped. Original history owner and completion obligations retained; activity stays paused until success |
 | `/souls/{soul_id}/relationships` | GET/POST | User-declared relationship entities; POST may promote an exact entity ID |
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or remove Relationship properties from one stable `entity:<entities.id>` reference |
 | `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot; reject concurrent self-description changes before saving |

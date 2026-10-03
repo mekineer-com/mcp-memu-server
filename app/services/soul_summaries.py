@@ -54,7 +54,6 @@ def write_live(
     kind: str,
     summary: str | None,
     approve: bool = False,
-    advance_revision_on_noop: bool = False,
     expected_revision: int | None = None,
     displayed_summary: str | None = None,
 ) -> dict[str, Any]:
@@ -70,12 +69,6 @@ def write_live(
     if guarded and (int(row[2] or 0) != expected_revision or before != displayed_summary):
         raise ValueError("summary_snapshot_stale")
     if not clean:
-        if advance_revision_on_noop:
-            con.execute(
-                "UPDATE soul_state SET summaries_revision = summaries_revision + 1, updated_at = ? WHERE id = 1",
-                (_now(),),
-            )
-            return soul_state.read(con)
         raise ValueError("summary is required")
     if before == clean:
         if approve and str(row[1] or "") != clean:
@@ -87,7 +80,7 @@ def write_live(
             )
             if result.rowcount != 1:
                 raise ValueError("summary_snapshot_stale")
-        elif guarded or advance_revision_on_noop:
+        elif guarded:
             con.execute(
                 "UPDATE soul_state SET summaries_revision = summaries_revision + 1, updated_at = ? WHERE id = 1",
                 (_now(),),
