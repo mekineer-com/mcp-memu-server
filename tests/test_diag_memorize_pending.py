@@ -147,11 +147,11 @@ async def test_diag_pending_reports_stalled_consolidation(
     assert out["last_consolidation_error"] == "RuntimeError: reflection failed"
 
     run_key = ("u1", "Echo")
-    main._CONSOLIDATION_RUNNING.add(run_key)
+    main._CONSOLIDATION_RUNNING[run_key] = False
     try:
         in_progress = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
     finally:
-        main._CONSOLIDATION_RUNNING.discard(run_key)
+        main._CONSOLIDATION_RUNNING.pop(run_key, None)
     assert in_progress["consolidation_state"] == "running"
 
     con = main._sqlite_connect(db_path)

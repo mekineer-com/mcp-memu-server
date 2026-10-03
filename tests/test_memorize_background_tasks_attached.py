@@ -384,7 +384,7 @@ def test_rebuild_rejected_during_same_soul_consolidation(
     db_file = tmp_path / "TestSoul.db"
     db_file.write_bytes(b"original database")
     original_files = set(tmp_path.iterdir())
-    monkeypatch.setattr(main_module, "_CONSOLIDATION_RUNNING", {("u1", "TestSoul")})
+    monkeypatch.setattr(main_module, "_CONSOLIDATION_RUNNING", {("u1", "TestSoul"): False})
     monkeypatch.setattr(main_module, "_sqlite_current_path", lambda *_args: db_file)
 
     def unexpected_service(*_args):
@@ -404,7 +404,7 @@ def test_rebuild_rejected_during_same_soul_consolidation(
 async def test_rebuild_rechecks_consolidation_after_waiting_for_lock(monkeypatch, tmp_path):
     db_file = tmp_path / "TestSoul.db"
     db_file.write_bytes(b"original database")
-    running = set()
+    running = {}
     lock = asyncio.Lock()
     monkeypatch.setattr(main_module, "_CONSOLIDATION_RUNNING", running)
     monkeypatch.setattr(main_module, "_get_memorize_lock", lambda *_args: lock)
@@ -416,7 +416,7 @@ async def test_rebuild_rechecks_consolidation_after_waiting_for_lock(monkeypatch
     ))
     await asyncio.sleep(0)
     assert not task.done()
-    running.add(("u1", "TestSoul"))
+    running[("u1", "TestSoul")] = False
     lock.release()
     with pytest.raises(HTTPException) as exc:
         await task
@@ -425,7 +425,7 @@ async def test_rebuild_rechecks_consolidation_after_waiting_for_lock(monkeypatch
     assert not list(tmp_path.glob("*.bak-*"))
 
 
-@pytest.mark.parametrize("running", [set(), {("u2", "TestSoul")}, {("u1", "OtherSoul")}])
+@pytest.mark.parametrize("running", [{}, {("u2", "TestSoul"): False}, {("u1", "OtherSoul"): False}])
 def test_rebuild_archives_db_and_service_reacquired_after_archive(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

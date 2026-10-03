@@ -1120,16 +1120,17 @@ def _base_llm_results(**overrides) -> dict:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ordinary_failed", [False, True])
-async def test_historical_runner_failure_is_import_only(tmp_path, monkeypatch, ordinary_failed):
+@pytest.mark.parametrize("ordinary_error", [None, "Ordinary failed", _soul_state.CONSOLIDATION_UNFINISHED])
+async def test_historical_runner_failure_is_import_only(tmp_path, monkeypatch, ordinary_error):
+    from app import main
     path = tmp_path / "test.db"
     with sqlite_connect(path) as con:
         sqlite_ensure_conversation_state_schema(con)
     deps = _make_consolidation_deps(path, tmp_path)
     scope = {"soul_id": "TestSoul", "user_id": "TestUser"}
     deps.write_conversation_state("chat", **scope, updates={
-        "pending_segment_ids": ["ordinary"], "last_consolidation_error": "Ordinary failed" if ordinary_failed else None,
-        "last_consolidation_error_at": "2026-01-02T00:00:00+00:00" if ordinary_failed else None,
+        "pending_segment_ids": ["ordinary"], "last_consolidation_error": ordinary_error,
+        "last_consolidation_error_at": "2026-01-02T00:00:00+00:00" if ordinary_error else None,
         "import_state": {"history_end_index": 2, "memorize_cursor": 1,
                          "pending_segment_ids": ["historical"], "stage": "consolidation", "error": None},
     })
@@ -1138,15 +1139,21 @@ async def test_historical_runner_failure_is_import_only(tmp_path, monkeypatch, o
         before = _soul_state.read(con)
     svc = _DossierContextService()
     svc.database = _make_svc_stub(path).database
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_: path)
     async def fail_chat(_prompt, **kwargs):
         assert kwargs["step"] == "anchors"
+        if ordinary_error:
+            with pytest.raises(HTTPException):
+                main._require_soul_active(scope["user_id"], scope["soul_id"])
+        else:
+            main._require_soul_active(scope["user_id"], scope["soul_id"])
         raise RuntimeError("Import model call failed")
     svc.chat = fail_chat
     def gather(*_args, **kwargs):
         assert kwargs["historical"] is True
         return {**_inputs(), "historical": True, "status": "ready", "db_path": path}
     monkeypatch.setattr(consolidation, "gather_consolidation_inputs", gather)
-    running = set()
+    running = main._CONSOLIDATION_RUNNING
     with pytest.raises(RuntimeError, match="Import model call failed"):
         await consolidation._run_consolidation_pipeline_once(
             svc=svc, deps=deps, state_lock=asyncio.Lock(), running=running,
@@ -1154,11 +1161,11 @@ async def test_historical_runner_failure_is_import_only(tmp_path, monkeypatch, o
             format_all_chat_history_for_ai=lambda **_kw: "Historical evidence",
             conversation_id="chat", historical=True, **scope,
         )
-    assert running == set()
+    assert running == {}
     with sqlite_connect(path) as con:
         con.row_factory = sqlite3.Row
         assert _soul_state.read(con) == before
-        assert bool(_soul_state.activity_pause(before, memorize_running=False, consolidation_running=False)) is ordinary_failed
+        assert bool(_soul_state.activity_pause(before, memorize_running=False, consolidation_running=False)) is bool(ordinary_error)
         state = conversation_state_from_row(conversation_state_row(con, "chat", **scope))
         assert state["pending_segment_ids"] == ["ordinary"]
         assert state["import_state"]["pending_segment_ids"] == ["historical"]
@@ -1286,7 +1293,7 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
         patch.setattr(consolidation, "_record_consolidation_failure", lambda **_kwargs: None)
         with pytest.raises(ValueError, match="different databases"):
             await consolidation._run_consolidation_pipeline_once(
-                svc=svc, deps=deps, state_lock=asyncio.Lock(), running=set(),
+                svc=svc, deps=deps, state_lock=asyncio.Lock(), running={},
                 load_cross_tail_for_ai=lambda **_kw: pytest.fail("must fail before context/model work"),
                 format_all_chat_history_for_ai=lambda **_kw: pytest.fail("must fail before context/model work"),
                 conversation_id="chat", **scope,

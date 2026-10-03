@@ -14,10 +14,11 @@ from app.services import consolidation, service_factory
 
 
 @pytest.mark.asyncio
-async def test_registered_import_handoff_keeps_history_out_of_normal_memorize(monkeypatch):
+@pytest.mark.parametrize("tail", [False, True])
+async def test_registered_import_handoff_keeps_history_out_of_normal_memorize(monkeypatch, tail):
     uid, sid, cid = "TestOwner", "TestSoul", "replika:test-import"
     main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={"import_state": {
-        "history_end_index": 2, "memorize_cursor": -1, "pending_segment_ids": [],
+        "history_end_index": 3, "memorize_cursor": -1, "pending_segment_ids": [],
         "stage": "memorize", "error": None,
     }})
     calls = []
@@ -26,24 +27,43 @@ async def test_registered_import_handoff_keeps_history_out_of_normal_memorize(mo
             calls.append(kwargs)
             return [{"pending_segment_ids": [row["segment"]["segment_id"]]} for row in kwargs["segments"]]
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
-    history = [{"role": "user", "content": text} for text in ("Old one", "Old two", "Current tail")]
-    payload = {"user": {"user_id": uid, "soul_id": sid}, "conversation_id": cid, "conversation": history}
+    storage = main._get_storage_dir(main._CONFIG)
+    source = dict(storage_dir=storage, user_id=uid, soul_id=sid, conversation_id=cid, source_label="replika")
+    history = [{"role": "user", "content": text} for text in ("Old one", "", "Old two", "Current tail")]
+    main._conversation_sources.persist_chat_history_snapshot(**source, history=history)
+    def read(record, *, historical, cursor):
+        return main._conversation_sources.load_chat_snapshot_tail(
+            **source, since_cursor=cursor, recent_fallback_messages=0,
+            import_state=record, historical=historical,
+        )
+    state, _, _ = main._load_turn_state_and_soul_card(cid, user_id=uid, soul_id=sid)
+    prefix = read(state["import_state"], historical=True, cursor=-1)
+    assert [row["source_conversation_index"] for row in prefix] == [0, 2]
+    payload = {"user": {"user_id": uid, "soul_id": sid}, "conversation_id": cid, "conversation": prefix}
     tasks = BackgroundTasks()
-    response = await main._memorize_owned(payload, tasks, True, historical=True)
+    response = await main._memorize_owned(payload, tasks, True, historical=True, tail=tail)
     assert response.status_code == 202
     await tasks()
     state, _, _ = main._load_turn_state_and_soul_card(cid, user_id=uid, soul_id=sid)
     import_state = state["import_state"]
-    assert import_state["memorize_cursor"] == 1 and len(import_state["pending_segment_ids"]) == 1
+    assert import_state["memorize_cursor"] == 2 and len(import_state["pending_segment_ids"]) == 1
     assert state["pending_segment_ids"] == [] and state["last_memorize_at"] is None
+    assert read(import_state, historical=True, cursor=2) == []
     tasks = BackgroundTasks()
-    await main.memorize(payload, tasks, True)
+    stale_tail = read(import_state, historical=True, cursor=0)
+    response = await main._memorize_owned({**payload, "conversation": stale_tail}, tasks, True, historical=True, tail=tail)
+    assert response.status_code == 200
+    await tasks()
+    tasks = BackgroundTasks()
+    current = read(import_state, historical=False, cursor=-1)
+    assert [row["source_conversation_index"] for row in current] == [3]
+    await main.memorize({**payload, "conversation": current}, tasks, True, tail=tail)
     await tasks()
     assert [[row["content"] for segment in call["segments"] for row in json.loads(segment["raw_text"])]
             for call in calls] == [["Old one", "Old two"], ["Current tail"]]
     state, _, _ = main._load_turn_state_and_soul_card(cid, user_id=uid, soul_id=sid)
     assert state["import_state"] == import_state
-    assert state["digest_cursor"] == 2 and len(state["pending_segment_ids"]) == 1
+    assert state["digest_cursor"] == 3 and len(state["pending_segment_ids"]) == 1
 
 
 def test_pause_record_survives_restart_and_retry_without_pausing_other_soul():

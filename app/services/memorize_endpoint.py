@@ -174,7 +174,7 @@ class MemorizeEndpointContext:
     pick_str: Callable[..., str | None]
     sqlite_current_path: Callable[[str | None, str], Path | None]
     clear_cached_services: Callable[[], None]
-    consolidation_running: set[tuple[str, str]]
+    consolidation_running: dict[tuple[str, str], bool]
     get_storage_dir: Callable[[dict[str, Any]], Path]
     run_memorize_segments: Callable[..., Awaitable[None]]
     run_consolidation_task: Callable[..., Awaitable[dict[str, Any]]]
@@ -1287,6 +1287,14 @@ async def memorize_endpoint(
         if not isinstance(conversation, list) or not conversation:
             raise HTTPException(status_code=400, detail="Missing or empty 'conversation' list")
 
+        indexed_source = not is_cross and any(
+            isinstance(message, dict) and "source_conversation_index" in message for message in conversation
+        )
+        if not is_cross:
+            conversation = [
+                {**message, "source_conversation_index": message.get("source_conversation_index", index)}
+                for index, message in enumerate(conversation) if isinstance(message, dict)
+            ]
         conv_norm = endpoint_ctx.normalize_conversation(conversation)
 
         # scope is validated dict with non-empty soul_id above; no need to re-guard.
@@ -1343,7 +1351,8 @@ async def memorize_endpoint(
                     record = state_out.get("import_state")
                     if record is None or is_cross:
                         raise HTTPException(status_code=400, detail="historical Memorize requires one registered import source")
-                    merged = merged[:record["history_end_index"]]
+                    merged = [message for message in merged
+                              if message["source_conversation_index"] < record["history_end_index"]]
                     processed_cursor = record["memorize_cursor"]
                     raw_pending_ids = record["pending_segment_ids"]
                 else:
@@ -1355,6 +1364,11 @@ async def memorize_endpoint(
                     str(item).strip() for item in raw_pending_ids
                 )
 
+            source_cursor = processed_cursor
+            if not is_cross:
+                processed_cursor = max((index for index, message in enumerate(merged)
+                                        if message["source_conversation_index"] <= source_cursor), default=-1)
+
             zi = server_timezone()
 
             rawm = manifest_path.read_text(encoding="utf-8") if manifest_path.exists() else ""
@@ -1363,7 +1377,8 @@ async def memorize_endpoint(
             manifest_segments_existing: list[dict[str, Any]] = [
                 segment for segment in raw_segments if isinstance(segment, dict)
             ]
-            segments = _canonical_manifest_segments(manifest_segments_existing)
+            # Indexed source tails are not the dense durable file ranges in the manifest.
+            segments = [] if indexed_source or historical else _canonical_manifest_segments(manifest_segments_existing)
 
             resource_url = str(chat_dir)
             sleep_stats: Any | None = None
@@ -1462,6 +1477,7 @@ async def memorize_endpoint(
                     )
             elif rebuild:
                 processed_cursor = -1
+                source_cursor = -1
                 manifest_segments_existing = []
                 if segments_dir and segments_dir.exists():
                     for old_seg in segments_dir.glob("*.json"):
@@ -1509,6 +1525,11 @@ async def memorize_endpoint(
                         content={"ok": True, "status": "nothing_to_memorize", "conversation_id": conversation_id},
                     )
 
+            if not is_cross:
+                raw_memorize_segments = [
+                    (url, messages, messages[0]["source_conversation_index"], messages[-1]["source_conversation_index"])
+                    for url, messages, _start, _end in raw_memorize_segments
+                ]
             memorize_segments = _offset_memorize_segments(
                 raw_memorize_segments,
                 start=_next_manifest_start(manifest_segments_existing),
@@ -1536,7 +1557,7 @@ async def memorize_endpoint(
                 }
                 manifest_path.write_text(json.dumps(manifest_out, ensure_ascii=False, indent=2), encoding="utf-8")
 
-            expected_cursor = memorize_segments[-1][3] if memorize_segments else processed_cursor
+            expected_cursor = memorize_segments[-1][3] if memorize_segments else source_cursor
             background_tasks.add_task(
                 endpoint_ctx.run_memorize_segments,
                 memorize_segments=memorize_segments,
@@ -1545,7 +1566,7 @@ async def memorize_endpoint(
                 conversation_id=conversation_id,
                 soul_id=soul_id,
                 uid=uid,
-                processed_cursor=processed_cursor,
+                processed_cursor=source_cursor,
                 safe=safe,
                 resource_url=resource_url,
                 chat_key=chat_key,

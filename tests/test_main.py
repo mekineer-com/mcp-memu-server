@@ -1886,7 +1886,7 @@ async def test_consolidation_pipeline_busy_caller_cannot_release_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     key = ("UserOwner", "SoulOwner")
-    main._CONSOLIDATION_RUNNING.add(key)
+    main._CONSOLIDATION_RUNNING[key] = False
     try:
         out = await main._run_consolidation_pipeline_once(
             svc=SimpleNamespace(database=SimpleNamespace(dsn="sqlite:////")),
@@ -1902,7 +1902,7 @@ async def test_consolidation_pipeline_busy_caller_cannot_release_owner(
         assert out == {"status": "skipped", "reason": "in_progress"}
         assert key in main._CONSOLIDATION_RUNNING
     finally:
-        main._CONSOLIDATION_RUNNING.discard(key)
+        main._CONSOLIDATION_RUNNING.pop(key, None)
 
 
 @pytest.mark.asyncio
@@ -2097,14 +2097,14 @@ async def test_retry_consolidation_rejects_running_soul(
         lambda _cid, _payload: ("cid", {}, "User", "Soul", object()),
     )
     key = ("User", "Soul")
-    main._CONSOLIDATION_RUNNING.add(key)
+    main._CONSOLIDATION_RUNNING[key] = False
     try:
         with pytest.raises(HTTPException, match="already in progress"):
             await main.retry_consolidation(
                 "cid", {"user": {"user_id": "User", "soul_id": "Soul"}}
             )
     finally:
-        main._CONSOLIDATION_RUNNING.discard(key)
+        main._CONSOLIDATION_RUNNING.pop(key, None)
 
 
 @pytest.mark.asyncio

@@ -1466,7 +1466,7 @@ async def _run_consolidation_pipeline_once(
     svc: Any,
     deps: ConsolidationDeps,
     state_lock: asyncio.Lock,
-    running: set[tuple[str, str]],
+    running: dict[tuple[str, str], bool],
     load_cross_tail_for_ai: Callable[..., Any],
     format_all_chat_history_for_ai: Callable[..., str],
     conversation_id: str,
@@ -1494,7 +1494,7 @@ async def _run_consolidation_pipeline_once(
                 deps=deps, soul_id=soul_id, user_id=user_id,
                 error="Consolidation was interrupted. Retry required.",
             )
-    running.add(run_key)
+    running[run_key] = historical
     try:
         async with state_lock:
             prep = gather_consolidation_inputs(
@@ -1580,4 +1580,4 @@ async def _run_consolidation_pipeline_once(
                 )
         raise
     finally:
-        running.discard(run_key)
+        running.pop(run_key, None)

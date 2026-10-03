@@ -208,7 +208,7 @@ _MIN_CHUNK_TOKENS: int = _DEFAULT_MIN_CHUNK_TOKENS
 _BACKGROUND_SUMMARY_TOKENS: int = _DEFAULT_BACKGROUND_SUMMARY_TOKENS
 # Uniform runaway-protection caps for LLM calls. Not business logic —
 _BACKGROUND_TASKS: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
-_CONSOLIDATION_RUNNING: set[tuple[str, str]] = set()
+_CONSOLIDATION_RUNNING: dict[tuple[str, str], bool] = {}  # True marks historical work, not ordinary recovery.
 _LOG_PROMPTS: bool = False
 
 
@@ -1666,7 +1666,7 @@ def _soul_activity_pause(user_id: str, soul_id: str, state: dict[str, Any] | Non
     return _soul_state.activity_pause(
         _paid_work_state(user_id, soul_id) if state is None else state,
         memorize_running=_memorize_lock_key(user_id, soul_id) in _FORCED_MEMORIZE_INFLIGHT,
-        consolidation_running=(user_id, soul_id) in _CONSOLIDATION_RUNNING,
+        consolidation_running=_CONSOLIDATION_RUNNING.get((user_id, soul_id)) is False,
     )
 
 
