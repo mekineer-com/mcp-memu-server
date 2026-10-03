@@ -597,7 +597,8 @@ def test_gather_consolidation_inputs_skips_when_no_pending_segments() -> None:
         assert out == {"status": "skip", "reason": "no_pending_segments"}
 
 
-def test_gather_consolidation_inputs_collects_all_pending_conversations(tmp_path: Path) -> None:
+@pytest.mark.parametrize("ambiguous_path", [False, True])
+def test_gather_consolidation_inputs_collects_all_pending_conversations(tmp_path: Path, ambiguous_path) -> None:
     db_path = tmp_path / "soul.db"
     con = sqlite3.connect(db_path)
     try:
@@ -613,7 +614,8 @@ CREATE TABLE triples (
     subject_id TEXT, predicate TEXT, object_id TEXT, valid_to DATETIME
 );
 CREATE TABLE resources (
-    soul_id TEXT, user_id TEXT, created_at DATETIME, memory_prior_context TEXT
+    soul_id TEXT, user_id TEXT, created_at DATETIME, memory_prior_context TEXT,
+    conversation_id TEXT, segment_id TEXT, local_path TEXT, modality TEXT
 );
 """
         )
@@ -652,6 +654,12 @@ CREATE TABLE resources (
             encoding="utf-8",
         )
         chat_dirs[cid] = chat_dir
+        with sqlite3.connect(db_path) as resource_con:
+            resource_con.execute(
+                "INSERT INTO resources (soul_id, user_id, conversation_id, segment_id, local_path, modality) "
+                "VALUES (?, ?, ?, ?, ?, 'conversation')",
+                (soul_id, user_id, cid, segment_id, str(segments_dir / "segment_0.json")),
+            )
 
     con = sqlite3.connect(db_path)
     try:
@@ -710,18 +718,52 @@ INSERT INTO memory_items (
             "VALUES ('prior-evolved', 'evolved_into', 'mem-0', NULL)"
         )
         con.execute(
-            "INSERT INTO resources (soul_id, user_id, created_at, memory_prior_context) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO resources (soul_id, user_id, created_at, memory_prior_context, "
+            "conversation_id, segment_id, local_path, modality) VALUES (?, ?, ?, ?, ?, ?, ?, 'conversation')",
             (
                 soul_id,
                 user_id,
                 "2026-01-01 00:02:00.000000",
                 json.dumps(["mem-0", "prior-merged", "prior-evolved"]),
+                "conv-a", "conv-a:0-0", str(chat_dirs["conv-a"] / "segments" / "segment_0.json"),
             ),
         )
         con.commit()
     finally:
         con.close()
+
+    historical_id = "conv-a:1-1"
+    historical_file = chat_dirs["conv-a"] / "segments" / "2020-01-01.json"
+    historical_file.write_text(json.dumps([{
+        "role": "user", "content": "older imported history", "ts_ms": 1_577_836_800_000,
+        "source_conversation_id": "conv-a",
+    }]), encoding="utf-8")
+    expected["conv-a"].append(historical_id)
+    write_conversation_state(
+        "conv-a", sqlite_current_path=lambda *_: db_path, soul_id=soul_id, user_id=user_id,
+        updates={"append_pending_segment_ids": [historical_id]},
+    )
+    with sqlite3.connect(db_path) as con:
+        con.executemany(
+            "INSERT INTO resources (soul_id, user_id, conversation_id, segment_id, local_path, modality) "
+            "VALUES (?, ?, 'conv-a', ?, ?, 'conversation')",
+            [
+                (soul_id, user_id, historical_id, str(historical_file)),
+                ("OtherSoul", user_id, "conv-a:0-0", str(historical_file)),
+                (soul_id, "OtherOwner", "conv-a:0-0", str(historical_file)),
+                (soul_id, user_id, "conv-a:2-2", str(historical_file)),
+            ],
+        )
+        if ambiguous_path:
+            con.execute(
+                "INSERT INTO resources (soul_id, user_id, conversation_id, segment_id, local_path, modality) "
+                "VALUES (?, ?, 'conv-a', 'conv-a:0-0', ?, 'conversation')",
+                (soul_id, user_id, str(historical_file)),
+            )
+        con.execute(
+            "UPDATE resources SET local_path = ? WHERE conversation_id = 'conv-b'",
+            (r"C:\old-app\segments\segment_0.json",),
+        )
 
     con = sqlite_connect(db_path)
     try:
@@ -739,6 +781,10 @@ INSERT INTO memory_items (
         deps,
         find_chat_dir_for_conversation=lambda _a, _b, _c, cid: chat_dirs.get(cid),
     )
+    if ambiguous_path:
+        with pytest.raises(HTTPException, match="ownership missing or ambiguous"):
+            gather_consolidation_inputs(deps, conversation_id="conv-a", soul_id=soul_id, user_id=user_id)
+        return
     out = gather_consolidation_inputs(
         deps,
         conversation_id="conv-a",
@@ -747,9 +793,10 @@ INSERT INTO memory_items (
     )
 
     assert out["selected_segment_ids_by_conversation"] == expected
-    assert [row["conversation_id"] for row in out["segment_inputs"]] == ["conv-a", "conv-b"]
-    assert [row["content"] for row in out["current_chat_messages"]] == ["message 0", "message 1"]
-    assert len(out["segment_inputs"][0]["memory_summaries"]) == 30
+    assert [row["segment_id"] for row in out["segment_inputs"]] == [historical_id, "conv-a:0-0", "conv-b:0-0"]
+    assert out["segment_inputs"][0]["start_idx"] == out["segment_inputs"][0]["end_idx"] == 1
+    assert [row["content"] for row in out["current_chat_messages"]] == ["message 0", "older imported history", "message 1"]
+    assert len(out["segment_inputs"][1]["memory_summaries"]) == 30
     assert [item["id"] for item in out["prior_context_memory_items"]] == ["mem-0"]
 
     con = sqlite_connect(db_path)
@@ -782,6 +829,8 @@ INSERT INTO memory_items (
         force=True,
     )
     assert forced["status"] == "ready"
+    assert forced["segment_inputs"] == out["segment_inputs"]
+    assert forced["current_chat_messages"] == out["current_chat_messages"]
 
     write_conversation_state(
         "conv-a",
@@ -797,6 +846,53 @@ INSERT INTO memory_items (
         user_id=user_id,
     )
     assert changed_pending == {"status": "skip", "reason": "failure_requires_retry"}
+
+
+def test_resource_retry_after_failed_publication_reuses_one_owned_file(tmp_path, request):
+    class PublicationScope(BaseModel):
+        user_id: str | None = None
+        soul_id: str | None = None
+
+    db_path = tmp_path / "publication.db"
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    svc = MemoryService(
+        database_config={"metadata_store": {"provider": "sqlite", "dsn": f"sqlite:///{db_path}"}},
+        user_config={"model": PublicationScope},
+    )
+    store = svc.database
+    request.addfinalizer(store.close)
+    cid, segment_id = "replika:test-publication", "replika:test-publication:0-0"
+    chat_dir = tmp_path / "publication"
+    (chat_dir / "segments").mkdir(parents=True)
+    file = chat_dir / "segments" / "2020-01-01.json"
+    content = json.dumps([{"role": "user", "content": "history", "ts_ms": 1_577_836_800_000}])
+    file.write_text(content, encoding="utf-8")
+    state_args = {"sqlite_current_path": lambda *_: db_path, **scope}
+    write_conversation_state(cid, **state_args)
+    resource_args = {"url": str(file), "local_path": str(file), "modality": "conversation",
+                     "caption": None, "embedding": None, "user_data": scope,
+                     "conversation_id": cid, "segment_id": segment_id}
+    first = store.resource_repo.create_resource(**resource_args)
+    with sqlite_connect(db_path) as con:
+        con.execute("CREATE TRIGGER fail_publish BEFORE UPDATE OF pending_segment_ids ON conversations "
+                    "BEGIN SELECT RAISE(ABORT, 'injected publication failure'); END")
+    with pytest.raises(sqlite3.IntegrityError, match="publication failure"):
+        write_conversation_state(cid, **state_args, updates={"append_pending_segment_ids": [segment_id]})
+    deps = replace(_make_consolidation_deps(db_path, tmp_path),
+                   find_chat_dir_for_conversation=lambda *_: chat_dir)
+    assert gather_consolidation_inputs(deps, conversation_id=cid, **scope)["reason"] == "no_pending_segments"
+    # Match the existing runner's disposable-file cleanup after failed publication.
+    file.unlink()
+    file.write_text(content, encoding="utf-8")
+    retried = store.resource_repo.create_resource(**resource_args)
+    assert retried.id == first.id
+    store.resource_repo.create_resource(**{**resource_args, "user_data": {**scope, "soul_id": "OtherSoul"}})
+    with sqlite_connect(db_path) as con:
+        con.execute("DROP TRIGGER fail_publish")
+    write_conversation_state(cid, **state_args, updates={"append_pending_segment_ids": [segment_id]})
+    result = gather_consolidation_inputs(deps, conversation_id=cid, **scope)
+    assert [entry["segment_id"] for entry in result["segment_inputs"]] == [segment_id]
+    assert [row["content"] for row in result["current_chat_messages"]] == ["history"]
 
 
 def test_gather_rejects_noncanonical_pending_owner(tmp_path: Path) -> None:
@@ -840,7 +936,7 @@ def test_gather_rejects_noncanonical_pending_owner(tmp_path: Path) -> None:
     [
         ("{not json", 0, "segment history unreadable"),
         (json.dumps([{"role": "user", "content": "valid"}, 7]), 0, "non-message row"),
-        (json.dumps([{"role": "user", "content": "only row"}]), 1, "range exceeds stored history"),
+        (json.dumps([{"role": "user", "content": "only row"}]), 1, "range does not match stored history"),
     ],
 )
 def test_gather_consolidation_inputs_rejects_invalid_segment_file(
@@ -864,7 +960,8 @@ CREATE TABLE triples (
     subject_id TEXT, predicate TEXT, object_id TEXT, valid_to DATETIME
 );
 CREATE TABLE resources (
-    soul_id TEXT, user_id TEXT, created_at DATETIME, memory_prior_context TEXT
+    soul_id TEXT, user_id TEXT, created_at DATETIME, memory_prior_context TEXT,
+    conversation_id TEXT, segment_id TEXT, local_path TEXT, modality TEXT
 );
 """
         )
@@ -892,6 +989,12 @@ CREATE TABLE resources (
     )
     bad_file = segments_dir / "segment_0.json"
     bad_file.write_text(bad_content, encoding="utf-8")
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "INSERT INTO resources (soul_id, user_id, conversation_id, segment_id, local_path, modality) "
+            "VALUES (?, ?, ?, ?, ?, 'conversation')",
+            (soul_id, user_id, cid, segment_id, str(bad_file)),
+        )
 
     deps = replace(
         _make_consolidation_deps(db_path, tmp_path),
@@ -905,7 +1008,7 @@ CREATE TABLE resources (
                 user_id=user_id,
             )
 
-    expected_identifier = segment_id if "range exceeds" in error_text else str(bad_file)
+    expected_identifier = segment_id if "range" in error_text else str(bad_file)
     assert expected_identifier in str(exc_info.value.detail)
 
 

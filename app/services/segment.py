@@ -38,25 +38,27 @@ def _message_happened_at(msg: dict[str, Any]) -> datetime | None:
 def build_segment_inputs(
     messages: list[dict[str, Any]],
     segment_ids: list[str],
+    *,
+    start_offset: int = 0,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for segment_id in segment_ids:
         start_idx, end_idx = parse_segment_range(segment_id)
         if not messages:
             continue
-        if start_idx < 0 or end_idx >= len(messages):
+        if start_idx < start_offset or end_idx - start_offset >= len(messages):
             raise ValueError(
                 f"segment range exceeds stored history: {segment_id} "
                 f"for {len(messages)} messages"
             )
-        start = start_idx
+        start = start_idx - start_offset
         end = end_idx
         msg = messages[start]
         happened_at = _message_happened_at(msg) if isinstance(msg, dict) else None
         out.append(
             {
                 "segment_id": segment_id,
-                "start_idx": start,
+                "start_idx": start_idx,
                 "end_idx": end,
                 "happened_at": happened_at,
             }

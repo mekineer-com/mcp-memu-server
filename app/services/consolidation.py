@@ -30,6 +30,7 @@ from memu.prompts.consolidation import weekly as weekly_prompt
 from app.services.segment import (
     build_segment_inputs,
     create_companion_memory,
+    parse_segment_range,
 )
 from app.services.xml_utils import extract_xml_fragment, xml_text
 from app.services.graph_edges import (
@@ -52,17 +53,6 @@ from app.services.turn_contract import format_memory_legend, format_memory_line,
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
-
-
-_SEGMENT_SUFFIX_RE = re.compile(r"_(\d+)\.json$")
-
-
-def _segment_file_sort_key(path: Path) -> tuple[str, int]:
-    stem = path.stem
-    m = _SEGMENT_SUFFIX_RE.search(path.name)
-    if m:
-        return (path.name[:m.start()], int(m.group(1)))
-    return (stem, 0)
 
 
 # Current beta reflection models have 1M-token contexts; keep 200k for output,
@@ -584,11 +574,13 @@ def consolidation_due(
 def _messages_for_segment_inputs(
     messages: list[dict[str, Any]],
     segment_inputs: list[dict[str, Any]],
+    *,
+    start_offset: int = 0,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in segment_inputs:
-        start = int(row.get("start_idx") or 0)
-        end = int(row.get("end_idx") or 0)
+        start = int(row.get("start_idx") or 0) - start_offset
+        end = int(row.get("end_idx") or 0) - start_offset
         if start < 0 or end < start:
             continue
         out.extend(msg for msg in messages[start : end + 1] if isinstance(msg, dict))
@@ -829,71 +821,45 @@ ORDER BY updated_at ASC, id ASC
         segment_inputs: list[dict[str, Any]] = []
         current_chat_messages: list[dict[str, Any]] = []
         selected_by_conversation: dict[str, list[str]] = {}
-        storage_dir = deps.get_storage_dir(deps.config)
-        chats_dir = (storage_dir / "st_chats").resolve()
+        selected_resource_rows: list[sqlite3.Row] = []
+        chats_dir = (deps.get_storage_dir(deps.config) / "st_chats").resolve()
         for pending_conversation_id, pending_segment_ids in pending_by_conversation.items():
-            chat_dir = deps.find_chat_dir_for_conversation(
-                chats_dir, user_id, soul_id, pending_conversation_id
-            )
+            chat_dir = deps.find_chat_dir_for_conversation(chats_dir, user_id, soul_id, pending_conversation_id)
             if chat_dir is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"conversation resource not found: {pending_conversation_id}",
-                )
-            manifest_path = (chat_dir / "manifest.json").resolve()
-            if not manifest_path.exists():
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"conversation manifest not found: {pending_conversation_id}",
-                )
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"conversation manifest unreadable: {pending_conversation_id}",
-                ) from exc
-            raw_segments = manifest.get("segments") if isinstance(manifest, dict) else None
-            if not isinstance(raw_segments, list) or not raw_segments:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"conversation manifest has no segments: {pending_conversation_id}",
-                )
-            messages: list[dict[str, Any]] = []
-            segments_dir = (chat_dir / "segments").resolve()
-            if segments_dir.is_dir():
-                for ep_file in sorted(segments_dir.glob("*.json"), key=_segment_file_sort_key):
-                    try:
-                        parsed = json.loads(ep_file.read_text(encoding="utf-8"))
-                    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"segment history unreadable: {ep_file}",
-                        ) from exc
-                    if not isinstance(parsed, list):
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"segment history is not a message list: {ep_file}",
-                        )
-                    if any(not isinstance(message, dict) for message in parsed):
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"segment history contains a non-message row: {ep_file}",
-                        )
-                    messages.extend(parsed)
-            try:
-                conversation_segments = build_segment_inputs(messages, pending_segment_ids)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            if len(conversation_segments) != len(pending_segment_ids):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"queued segments are not present in conversation history: {pending_conversation_id}",
-                )
+                raise HTTPException(status_code=404, detail=f"conversation resource not found: {pending_conversation_id}")
+            segments_dir = chat_dir / "segments"
+            resources_by_segment: dict[str, list[sqlite3.Row]] = {sid: [] for sid in pending_segment_ids}
+            for row in con.execute(
+                "SELECT segment_id, local_path, memory_prior_context FROM resources "
+                "WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND modality = 'conversation'",
+                (soul_id, user_id, pending_conversation_id),
+            ):
+                if row["segment_id"] in resources_by_segment:
+                    resources_by_segment[row["segment_id"]].append(row)
             selected_by_conversation[pending_conversation_id] = list(pending_segment_ids)
-            current_chat_messages.extend(_messages_for_segment_inputs(messages, conversation_segments))
-            for entry in conversation_segments:
-                segment_id = str(entry["segment_id"])
+            for segment_id in pending_segment_ids:
+                resource_rows = resources_by_segment[segment_id]
+                paths = {Path(str(row["local_path"] or "").replace("\\", "/")).name for row in resource_rows}
+                if len(paths) != 1 or not next(iter(paths)):
+                    raise HTTPException(status_code=400, detail=f"segment resource ownership missing or ambiguous: {segment_id}")
+                ep_file = segments_dir / next(iter(paths))
+                try:
+                    messages = json.loads(ep_file.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    raise HTTPException(status_code=400, detail=f"segment history unreadable: {ep_file}") from exc
+                if not isinstance(messages, list):
+                    raise HTTPException(status_code=400, detail=f"segment history is not a message list: {ep_file}")
+                if any(not isinstance(message, dict) for message in messages):
+                    raise HTTPException(status_code=400, detail=f"segment history contains a non-message row: {ep_file}")
+                try:
+                    start, end = parse_segment_range(segment_id)
+                    if len(messages) != end - start + 1:
+                        raise ValueError(f"segment range does not match stored history: {segment_id}")
+                    entry = build_segment_inputs(messages, [segment_id], start_offset=start)[0]
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                selected_resource_rows.extend(resource_rows)
+                current_chat_messages.extend(_messages_for_segment_inputs(messages, [entry], start_offset=start))
                 entry["conversation_id"] = pending_conversation_id
                 rows = con.execute(
                     """
@@ -922,7 +888,12 @@ ORDER BY created_at ASC, id ASC
                     for row in rows
                     if str(row["id"] or "").strip() and str(row["summary"] or "").strip()
                 ]
-            segment_inputs.extend(conversation_segments)
+                segment_inputs.append(entry)
+
+        segment_inputs.sort(key=lambda entry: (
+            entry["happened_at"] or datetime.min.replace(tzinfo=UTC),
+            entry["conversation_id"], entry["segment_id"],
+        ))
 
         selected_segment_ids = [
             segment_id
@@ -932,20 +903,8 @@ ORDER BY created_at ASC, id ASC
 
         prior_context_memory_items: list[dict[str, Any]] = []
         all_prior_context_ids: list[str] = []
-        last_consol = state.get("last_consolidation_at")
         try:
-            if last_consol:
-                res_rows = con.execute(
-                    "SELECT memory_prior_context FROM resources WHERE soul_id = ? AND user_id = ? "
-                    "AND julianday(created_at) >= julianday(?) AND memory_prior_context IS NOT NULL",
-                    (soul_id, user_id, last_consol),
-                ).fetchall()
-            else:
-                res_rows = con.execute(
-                    "SELECT memory_prior_context FROM resources WHERE soul_id = ? AND user_id = ? AND memory_prior_context IS NOT NULL",
-                    (soul_id, user_id),
-                ).fetchall()
-            for rr in res_rows:
+            for rr in selected_resource_rows:
                 raw = rr["memory_prior_context"]
                 if raw is None:
                     continue

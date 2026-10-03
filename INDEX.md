@@ -13,7 +13,7 @@ mcp-memu-server/
 ├── app/config.py            # Runtime config load/save/mask + path + sqlite DSN helpers
 ├── app/db.py                # SQLite helpers, schema ensures, JSON marshalling
 ├── app/models/base.py       # Declarative ORM base
-├── app/services/consolidation.py
+├── app/services/consolidation.py # Shared runner, read-only prompt preparation, Resource-owned segment reconstruction and selected prior context
 ├── app/services/memorize_endpoint.py
 ├── app/services/activity_messages.py
 ├── app/services/whatsapp_outbounds.py
