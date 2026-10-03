@@ -413,15 +413,13 @@ def _render_weekly_prompt(
 
 
 # Marcos' reminder: a category is a dossier.
-async def prepare_dossier_consolidation_context(
+def _prepare_dossier_consolidation_prompts(
     svc: MemoryService,
     *,
     inputs: dict[str, Any],
     soul_id: str,
     user_id: str,
-    llm_profile: str | None = None,
-) -> dict[str, Any]:
-    revision_profile = svc.memorize_config.category_update_llm_profile
+) -> tuple[list[dict[str, Any]], str, str, dict[str, int]]:
     scope = {"soul_id": soul_id, "user_id": user_id}
     prompt_context = _build_consolidation_prompt_context(inputs, soul_id=soul_id)
     inputs["reflection_prompt_context"] = prompt_context
@@ -498,6 +496,25 @@ async def prepare_dossier_consolidation_context(
         "anchors": estimate_prompt_tokens(identity_system + "\n" + identity_user),
         "weekly": estimate_prompt_tokens(weekly_system + "\n" + weekly_user),
     }
+    return bundles, system_prompt, user_prompt, estimates
+
+
+async def prepare_dossier_consolidation_context(
+    svc: MemoryService,
+    *,
+    inputs: dict[str, Any],
+    soul_id: str,
+    user_id: str,
+    llm_profile: str | None = None,
+    prepared: tuple[list[dict[str, Any]], str, str, dict[str, int]] | None = None,
+) -> dict[str, Any]:
+    if prepared is None:
+        prepared = _prepare_dossier_consolidation_prompts(
+            svc, inputs=inputs, soul_id=soul_id, user_id=user_id,
+        )
+    bundles, system_prompt, user_prompt, estimates = prepared
+    revision_profile = svc.memorize_config.category_update_llm_profile
+    scope = {"soul_id": soul_id, "user_id": user_id}
     for stage, tokens in estimates.items():
         if tokens > CONSOLIDATION_PROMPT_TOKEN_LIMIT:
             raise ValueError(f"{stage} consolidation prompt exceeds provider-safe token limit")

@@ -165,6 +165,34 @@ async def test_dossier_context_uses_one_holistic_call_and_preserves_due_order(du
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("over_budget", [False, True])
+async def test_dry_prompt_preparation_is_reused_without_model_calls_or_rebuilding(monkeypatch, over_budget):
+    if over_budget:
+        monkeypatch.setattr(consolidation, "CONSOLIDATION_PROMPT_TOKEN_LIMIT", 10)
+    svc = _DossierContextService(due_ids=("first", "second"))
+    inputs = _inputs()
+    prepared = consolidation._prepare_dossier_consolidation_prompts(
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser",
+    )
+    assert not [call for call in svc.calls if call[0] in {"chat", "apply", "prepare_anchor"}]
+    assert set(prepared[3]) == {"dossiers", "anchors", "weekly"}
+    assert prepared[3]["dossiers"] == consolidation.estimate_prompt_tokens(prepared[1] + "\n" + prepared[2])
+    if over_budget:
+        with pytest.raises(ValueError, match="provider-safe"):
+            await prepare_dossier_consolidation_context(
+                svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser", prepared=prepared,
+            )
+        assert not [call for call in svc.calls if call[0] in {"chat", "apply", "prepare_anchor"}]
+        return
+    await prepare_dossier_consolidation_context(
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser", prepared=prepared,
+    )
+    assert svc.prompts == [prepared[2]]
+    assert len([call for call in svc.calls if call[0] == "due"]) == 1
+    assert len([call for call in svc.calls if call[0] == "prepare"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_dossier_context_keeps_first_apply_when_second_is_stale() -> None:
     svc = _DossierContextService(due_ids=("first", "second"), stale_id="second")
     with pytest.raises(DossierRevisionStaleError):
