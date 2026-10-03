@@ -46,7 +46,7 @@ from app.services.intention_state import (
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import soul_summaries as _soul_summaries
 from app.services.conversation_id import canonical_conversation_id
-from app.services.payload import parse_iso_datetime
+from app.services.payload import message_ts_ms, parse_iso_datetime
 from app.services import soul_state as _soul_state
 from app.services import service_factory as _service_factory
 from app.services.turn_contract import format_memory_legend, format_memory_line, format_shaped_by_line
@@ -894,6 +894,7 @@ ORDER BY created_at ASC, id ASC
             entry["happened_at"] or datetime.min.replace(tzinfo=UTC),
             entry["conversation_id"], entry["segment_id"],
         ))
+        current_chat_messages.sort(key=lambda message: message_ts_ms(message) or 0)
 
         selected_segment_ids = [
             segment_id

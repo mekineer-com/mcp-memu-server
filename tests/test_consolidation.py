@@ -17,7 +17,7 @@ from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine
 
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
-from app.services import consolidation, segment
+from app.services import consolidation, message_log, segment, turn_contract
 from app.services import soul_state as _soul_state
 from app.services import soul_summaries as _soul_summaries
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
@@ -598,7 +598,7 @@ def test_gather_consolidation_inputs_skips_when_no_pending_segments() -> None:
 
 
 @pytest.mark.parametrize("ambiguous_path", [False, True])
-def test_gather_consolidation_inputs_collects_all_pending_conversations(tmp_path: Path, ambiguous_path) -> None:
+def test_gather_consolidation_inputs_collects_all_pending_conversations(tmp_path: Path, ambiguous_path, monkeypatch) -> None:
     db_path = tmp_path / "soul.db"
     con = sqlite3.connect(db_path)
     try:
@@ -795,7 +795,12 @@ INSERT INTO memory_items (
     assert out["selected_segment_ids_by_conversation"] == expected
     assert [row["segment_id"] for row in out["segment_inputs"]] == [historical_id, "conv-a:0-0", "conv-b:0-0"]
     assert out["segment_inputs"][0]["start_idx"] == out["segment_inputs"][0]["end_idx"] == 1
-    assert [row["content"] for row in out["current_chat_messages"]] == ["message 0", "older imported history", "message 1"]
+    assert [row["content"] for row in out["current_chat_messages"]] == ["older imported history", "message 0", "message 1"]
+    monkeypatch.setattr(message_log, "_load_whatsapp_directory_names", lambda: {})
+    rendered = turn_contract.build_conversations_block(
+        history=out["current_chat_messages"], conversation_id="conv-a", soul_name=soul_id,
+    )
+    assert rendered.index("older imported history") < rendered.index("message 0") < rendered.index("message 1")
     assert len(out["segment_inputs"][1]["memory_summaries"]) == 30
     assert [item["id"] for item in out["prior_context_memory_items"]] == ["mem-0"]
 
