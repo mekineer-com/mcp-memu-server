@@ -87,7 +87,7 @@ mcp-memu-server/
 | `/integration/atomic/atoms` | GET | Paginated atom list with canonical dossier metadata; `category_id`/`tag_id` filter, `cursor` pagination |
 | `/integration/atomic/tags` | GET | Category/tag list with kind, activity state, and counts |
 | `/integration/atomic/entities` | GET/POST | Scoped entity list or create-always entity write |
-| `/integration/atomic/entities/{entity_id}` | GET/PATCH/DELETE | Scoped entity detail, stable-ID name/free-text-type/alias edit, or safe deletion of an unreferenced extracted entity |
+| `/integration/atomic/entities/{entity_id}` | GET/PATCH/DELETE | Scoped entity detail, stable-ID name/free-text-type/alias edit, or deletion with hidden-link cleanup in one transaction. Current mentions from active memories and identity/dossier/speaker safeguards still block deletion |
 | `/integration/atomic/entities/{entity_id}/ignore` / `restore` | POST | Reversibly suppress or restore an extracted entity without changing its references |
 | `/integration/atomic/entities/{entity_id}/merge-preview` / `merge` | GET/POST | Preview then atomically absorb one duplicate entity into the open canonical entity |
 | `/integration/atomic/memories/{memory_id}/entities/{entity_id}` | PUT/DELETE | Transactionally attach/detach one current `mentions` edge |
@@ -159,12 +159,12 @@ snapshot metadata, not introduce another registry.
 |--------|---------|
 | `app/config.py` | `load_config()`, `save_config()`, `mask_config()`, storage path normalization, sqlite DSN scoping |
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
-| `app/services/consolidation.py` | Consolidation coordinator: gather → committed dossier checkpoint → anchor/weekly generation → one caller-owned transaction for anchors, lineage, reflection, edges, goals, intentions, and pending state. Main supplies shared running set/lock/history callbacks; cache/journals finish after commit. Weekly clock advances on success. |
+| `app/services/consolidation.py` | Shared coordinator: Resource-owned chronological evidence → reusable read-only prompt preparation → committed dossier checkpoint → anchors and, for ordinary runs, weekly reflection → caller-owned final transaction. Historical mode consumes import queues without weekly effects or ordinary clock updates; anchors retain whole-life context. Main supplies mode-aware running claims/lock/history callbacks; cache/journals finish after commit. Capacity-aware selection and public Imports execution remain unfinished. |
 | `app/services/graph_edges.py` | Edge normalization + write/invalidate helpers (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`) |
 | `app/services/activity_messages.py` | `activity_messages` scoped-SQLite table for synthetic self-DM activity recaps (`My Activities:`); accepts a caller-owned transaction for Atomic End |
 | `app/services/whatsapp_outbounds.py` | `whatsapp_pending_outbounds` scoped-SQLite queue for WhatsApp replies/attachments |
 | `app/services/mentra_routes.py` | Authenticated Mentra boundary: sitting-scoped lease lifecycle, bootstrap/token mint, non-blocking recall, transcript append/ack, and durable image snapshot/finalize. Image finalize stays unavailable until Gemini embedding config and DB profile are both active. |
-| `app/services/memorize_endpoint.py` | `/memorize` core: segment-file persistence, forced-memorize runner, rolling-summary injection, sleep-gap/token chunking, progress/cancel. Listen-only segments advance source cursors without producing memory, consuming rolling summaries, or retaining segment files. |
+| `app/services/memorize_endpoint.py` | `/memorize` core: segment-file persistence, forced-memorize runner, rolling-summary injection, sleep-gap/token chunking, progress/cancel. Historical mode uses registered import progress and original source positions, not filtered-list offsets. Main's mode-aware claim distinguishes ordinary recovery from historical work. Listen-only segments advance source cursors without producing memory, consuming rolling summaries, or retaining segment files. |
 | `app/services/conversation_sources.py` | Source adapters: WhatsApp from `web_source.db`; ST/Atomic/Replika from resource chat snapshots (`st_chats` / `atomic_chats` / `replika_chats`); Mentra from `openalma/mentra/transcripts`. Handles atomic writes, cursor slicing, floor backfill, and role normalization. |
 | `app/services/cross_history.py` | Cross-conversation history: formats AI-facing all-chat history, assembles cross-tail/background memorize feeds, manages display-segment cleanup |
 | `app/services/apimw.py` | APImw background memory-weaving pipeline: retrieve → synthesize prior-context/message-to-self → persist |
