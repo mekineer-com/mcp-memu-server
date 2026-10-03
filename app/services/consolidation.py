@@ -430,6 +430,11 @@ def _prepare_dossier_consolidation_prompts(
     scope = {"soul_id": soul_id, "user_id": user_id}
     prompt_context = _build_consolidation_prompt_context(inputs, soul_id=soul_id)
     inputs["reflection_prompt_context"] = prompt_context
+    evidence_scope = (
+        {"segment_ids": inputs["selected_segment_ids"]}
+        if inputs.get("historical") else
+        {"excluded_segment_ids": inputs.get("excluded_segment_ids", [])}
+    )
     bundles = [
         svc.prepare_dossier_revision(
             dossier.id,
@@ -437,11 +442,12 @@ def _prepare_dossier_consolidation_prompts(
             narrative_self=inputs.get("narrative_self"),
             active_life_goals=inputs["active_life_goals"],
             removed_life_goals=inputs["removed_life_goals"],
-            **({"segment_ids": inputs["selected_segment_ids"]} if inputs.get("historical") else {}),
+            **evidence_scope,
         )
         for dossier in svc.list_due_dossiers(
             scope,
             segment_ids=inputs["selected_segment_ids"],
+            excluded_segment_ids=inputs.get("excluded_segment_ids", []),
         )
     ]
     inputs["dossier_index"] = svc.build_dossier_index(scope)
@@ -796,16 +802,19 @@ def gather_consolidation_inputs(
             raise ValueError("historical consolidation requires registered import state")
 
         pending_by_conversation: dict[str, list[str]] = {}
+        excluded_segment_ids: list[str] = []
         for row in con.execute(
             "SELECT conversation_id, pending_segment_ids, import_state FROM conversations "
             "WHERE soul_id = ? AND user_id = ? ORDER BY conversation_id",
             (soul_id, user_id),
         ).fetchall():
+            record = normalize_import_state(json.loads(row["import_state"]) if row["import_state"] else None)
             if historical:
-                record = normalize_import_state(json.loads(row["import_state"]) if row["import_state"] else None)
                 pending_ids = record["pending_segment_ids"] if record else []
             else:
                 pending_ids = deps.normalize_text_list(row["pending_segment_ids"])
+                if record:
+                    excluded_segment_ids.extend(record["pending_segment_ids"])
             if historical and selected_segments is not None:
                 pending_ids = [sid for sid in pending_ids if (row["conversation_id"], sid) in selected_segments]
             if not pending_ids:
@@ -1046,6 +1055,7 @@ WHERE id IN ({placeholders}) AND soul_id = ? AND user_id = ?
             "prior_context_memory_items": prior_context_memory_items,
             "existing_memory_edges": existing_memory_edges,
             "selected_segment_ids": selected_segment_ids,
+            "excluded_segment_ids": list(dict.fromkeys(excluded_segment_ids)),
             "selected_segment_ids_by_conversation": selected_by_conversation,
         }
     finally:

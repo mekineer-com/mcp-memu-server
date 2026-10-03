@@ -150,8 +150,8 @@ def _current_chat_rows_for_grouped_render(
         if not _text(item.get("content")):
             continue
         row = dict(item)
-        if conversation_id and not _text(row.get("conversation_id")):
-            row["conversation_id"] = conversation_id
+        if not _text(row.get("conversation_id")):
+            row["conversation_id"] = _text(row.get("source_conversation_id")) or conversation_id
         if "received_at" not in row:
             timestamp = row.get("ts_ms") or row.get("created_at")
             if timestamp is not None:

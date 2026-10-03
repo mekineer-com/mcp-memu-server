@@ -17,7 +17,7 @@ from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine
 
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
-from app.services import consolidation, message_log, segment, turn_contract
+from app.services import consolidation, cross_history, message_log, payload, segment, turn_contract
 from app.services import soul_state as _soul_state
 from app.services import soul_summaries as _soul_summaries
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
@@ -45,8 +45,9 @@ class _DossierContextService:
         self.calls: list[tuple] = []
         self.prompts: list[str] = []
 
-    def list_due_dossiers(self, scope, *, segment_ids):
+    def list_due_dossiers(self, scope, *, segment_ids=None, excluded_segment_ids=()):
         self.calls.append(("due", scope, segment_ids))
+        self.excluded_segment_ids = list(excluded_segment_ids)
         return self.due
 
     def prepare_dossier_revision(self, dossier_id, scope, **context):
@@ -723,6 +724,7 @@ CREATE TABLE resources (
                 "content": f"message {index}",
                 "ts_ms": 1_767_225_600_000 + index,
                 "source_conversation_id": cid,
+                "conversation_id": cid,
             }]),
             encoding="utf-8",
         )
@@ -810,6 +812,7 @@ INSERT INTO memory_items (
     historical_file.write_text(json.dumps([{
         "role": "user", "content": "older imported history", "ts_ms": 1_577_836_800_000,
         "source_conversation_id": "conv-a",
+        "conversation_id": "conv-a",
     }]), encoding="utf-8")
     expected["conv-a"].append(historical_id)
     write_conversation_state(
@@ -870,10 +873,19 @@ INSERT INTO memory_items (
     assert out["segment_inputs"][0]["start_idx"] == out["segment_inputs"][0]["end_idx"] == 1
     assert [row["content"] for row in out["current_chat_messages"]] == ["older imported history", "message 0", "message 1"]
     monkeypatch.setattr(message_log, "_load_whatsapp_directory_names", lambda: {})
-    rendered = turn_contract.build_conversations_block(
-        history=out["current_chat_messages"], conversation_id="conv-a", soul_name=soul_id,
-    )
-    assert rendered.index("older imported history") < rendered.index("message 0") < rendered.index("message 1")
+    render_rows = [*out["current_chat_messages"], {
+            "conversation_id": "whatsapp:dm:fictional", "role": "user",
+            "source_conversation_id": "whatsapp:dm:fictional",
+            "content": "a separate platform", "ts_ms": 1_767_225_601_000,
+        }]
+    for rows in (render_rows, payload._normalize_conversation(render_rows)):
+        rendered = cross_history._format_all_chat_history_for_ai(
+            current_history=rows, cross_tail=[], conversation_id="conv-a",
+            soul_id=soul_id, mark_current_chat=False,
+        )
+        assert "[dm][conv-a]" in rendered and "[dm][conv-b]" in rendered
+        assert "a separate platform" in rendered
+        assert rendered.index("older imported history") < rendered.index("message 0") < rendered.index("message 1")
     assert len(out["segment_inputs"][1]["memory_summaries"]) == 30
     assert [item["id"] for item in out["prior_context_memory_items"]] == ["mem-0"]
 
@@ -888,6 +900,15 @@ INSERT INTO memory_items (
         "history_end_index": 2, "memorize_cursor": 1, "pending_segment_ids": [historical_id],
         "stage": "consolidation", "error": None,
     }})
+    ordinary = gather_consolidation_inputs(deps, conversation_id="conv-a", soul_id=soul_id, user_id=user_id)
+    assert ordinary["excluded_segment_ids"] == [historical_id]
+    svc = _DossierContextService(due_ids=("first",))
+    ordinary["state"] = {**_inputs()["state"], **ordinary["state"]}
+    ordinary["all_chat_history"] = rendered
+    prepared = consolidation._prepare_dossier_consolidation_prompts(svc, inputs=ordinary, soul_id=soul_id, user_id=user_id)
+    assert all(text in prepared[2] for text in ("older imported history", "message 0", "message 1", "a separate platform"))
+    assert svc.excluded_segment_ids == [historical_id]
+    assert [call[3]["excluded_segment_ids"] for call in svc.calls if call[0] == "prepare"] == [[historical_id]]
     historical = gather_consolidation_inputs(
         deps, conversation_id="conv-a", soul_id=soul_id, user_id=user_id, historical=True,
         selected_segments={("conv-a", historical_id)},

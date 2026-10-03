@@ -15,6 +15,7 @@ from app.config import validate_soul_id
 from app.services import conversation_sources as _conversation_sources
 from app.services import memorize_endpoint as _memorize_endpoint
 from app.services import message_log as _message_log
+from app.services.turn_contract import _current_chat_rows_for_grouped_render
 from app.services.conversation_id import canonical_conversation_id
 from app.services.payload import (
     _normalize_conversation,
@@ -698,6 +699,14 @@ def _format_all_chat_history_for_ai(
     self_turn_directive: str | None = None,
     mark_current_chat: bool = True,
 ) -> str:
+    if not mark_current_chat and len({
+        str(row.get("conversation_id") or row.get("source_conversation_id") or conversation_id)
+        for row in (current_history or []) if isinstance(row, dict)
+    }) > 1:
+        return _m()._format_cross_tail_for_ai([
+            *(cross_tail or []),
+            *_current_chat_rows_for_grouped_render(current_history or [], conversation_id=conversation_id),
+        ], soul_id=soul_id)
     cross_text = _m()._format_cross_tail_for_ai(cross_tail or [], soul_id=soul_id) if cross_tail else ""
     history_rows = current_history or []
     if not history_rows:
