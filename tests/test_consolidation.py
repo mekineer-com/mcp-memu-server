@@ -1151,7 +1151,8 @@ async def test_historical_runner_failure_is_import_only(tmp_path, monkeypatch, o
     svc.chat = fail_chat
     def gather(*_args, **kwargs):
         assert kwargs["historical"] is True
-        return {**_inputs(), "historical": True, "status": "ready", "db_path": path}
+        return {**_inputs(), "historical": True, "status": "ready", "db_path": path,
+                "selected_segment_ids_by_conversation": {"chat": ["historical"]}}
     monkeypatch.setattr(consolidation, "gather_consolidation_inputs", gather)
     running = main._CONSOLIDATION_RUNNING
     with pytest.raises(RuntimeError, match="Import model call failed"):
@@ -1170,6 +1171,54 @@ async def test_historical_runner_failure_is_import_only(tmp_path, monkeypatch, o
         assert state["pending_segment_ids"] == ["ordinary"]
         assert state["import_state"]["pending_segment_ids"] == ["historical"]
         assert "Import model call failed" in state["import_state"]["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail", [False, True])
+async def test_historical_consolidation_only_changes_contributing_imports(tmp_path, monkeypatch, fail):
+    path = tmp_path / "test.db"
+    with sqlite_connect(path) as con:
+        sqlite_ensure_conversation_state_schema(con)
+    deps = _make_consolidation_deps(path, tmp_path)
+    scope = {"soul_id": "TestSoul", "user_id": "TestOwner"}
+    untouched = {"history_end_index": 2, "memorize_cursor": -1, "pending_segment_ids": [],
+                 "stage": "memorize", "error": "Extraction failed"}
+    contributor = {**untouched, "memorize_cursor": 1, "pending_segment_ids": ["other:0-1"],
+                   "stage": "consolidation", "error": None}
+    for cid, record in (("requester", untouched), ("other", contributor)):
+        deps.write_conversation_state(cid, **scope, updates={"import_state": record})
+    svc = _DossierContextService()
+    stub = _make_svc_stub(path)
+    svc.database, svc._sqlite_write_session = stub.database, stub._sqlite_write_session
+    def record(cid):
+        with sqlite_connect(path) as con:
+            con.row_factory = sqlite3.Row
+            return conversation_state_from_row(conversation_state_row(con, cid, **scope))["import_state"]
+    monkeypatch.setattr(consolidation, "gather_consolidation_inputs", lambda *_a, **_kw: {
+        **_inputs(), "status": "ready", "db_path": path, "historical": True,
+        "selected_segment_ids": ["other:0-1"],
+        "selected_segment_ids_by_conversation": {"other": ["other:0-1"]},
+    })
+    async def llm(*_a, **_kw):
+        assert record("requester") == untouched
+        assert record("other")["error"]
+        if fail:
+            raise RuntimeError("Selected import failed")
+        return _base_llm_results()
+    monkeypatch.setattr(consolidation, "run_consolidation_llm", llm)
+    kwargs = dict(svc=svc, deps=deps, state_lock=asyncio.Lock(), running={},
+                  load_cross_tail_for_ai=lambda **_kw: [], format_all_chat_history_for_ai=lambda **_kw: "",
+                  conversation_id="requester", historical=True, **scope)
+    if fail:
+        with pytest.raises(RuntimeError, match="Selected import failed"):
+            await consolidation._run_consolidation_pipeline_once(**kwargs)
+        assert record("other")["pending_segment_ids"] == contributor["pending_segment_ids"]
+        assert "Selected import failed" in record("other")["error"]
+    else:
+        result = await consolidation._run_consolidation_pipeline_once(**kwargs)
+        assert result["status"] == "ok" and record("other")["stage"] == "complete"
+        assert record("other")["pending_segment_ids"] == [] and record("other")["error"] is None
+    assert record("requester") == untouched
 
 
 @pytest.mark.asyncio

@@ -1184,8 +1184,6 @@ def write_consolidation_outputs(
                 for segment_id in (inputs.get("selected_segment_ids") or [])
             ]
         }
-    if historical:
-        selected_by_conversation.setdefault(conversation_id, [])
     consumed_segment_ids = [
         str(segment_id).strip()
         for segment_id in (inputs.get("selected_segment_ids") or [])
@@ -1334,6 +1332,8 @@ INSERT INTO life_goals (
 
             for pending_conversation_id, pending_ids in selected_by_conversation.items():
                 if historical:
+                    if not pending_ids:
+                        continue
                     current = deps.conversation_state_from_row(
                         deps.conversation_state_row(con, pending_conversation_id, **scope), con=con,
                     )
@@ -1495,6 +1495,7 @@ async def _run_consolidation_pipeline_once(
                 error="Consolidation was interrupted. Retry required.",
             )
     running[run_key] = historical
+    failure_conversation_ids = [] if historical else [conversation_id]
     try:
         async with state_lock:
             prep = gather_consolidation_inputs(
@@ -1508,6 +1509,10 @@ async def _run_consolidation_pipeline_once(
             )
         if prep.get("status") == "skip":
             return {"status": "skipped", "reason": prep.get("reason")}
+        if historical:
+            failure_conversation_ids = [
+                cid for cid, segment_ids in prep["selected_segment_ids_by_conversation"].items() if segment_ids
+            ]
         _consolidation_database_path(svc, prep)
         consolidation_profile = _service_factory._resolve_profile_if_configured(svc, "consolidation")
         preflight_consolidation_profiles(svc, consolidation_profile)
@@ -1529,12 +1534,13 @@ async def _run_consolidation_pipeline_once(
         async with state_lock:
             old_error = _soul_state.consolidation_failure(prep.get("state", {}))
             if historical or old_error is None or old_error == _soul_state.CONSOLIDATION_UNFINISHED:
-                _record_consolidation_failure(
-                    deps=deps, soul_id=soul_id, user_id=user_id,
-                    historical=historical, conversation_id=conversation_id,
-                    error=("Consolidation was interrupted. Retry in progress."
-                           if old_error else _soul_state.CONSOLIDATION_UNFINISHED),
-                )
+                for failure_cid in failure_conversation_ids:
+                    _record_consolidation_failure(
+                        deps=deps, soul_id=soul_id, user_id=user_id,
+                        historical=historical, conversation_id=failure_cid,
+                        error=("Consolidation was interrupted. Retry in progress."
+                               if old_error else _soul_state.CONSOLIDATION_UNFINISHED),
+                    )
         await prepare_dossier_consolidation_context(
             svc,
             inputs=prep,
@@ -1566,13 +1572,14 @@ async def _run_consolidation_pipeline_once(
         if db_path is not None and db_path.exists():
             try:
                 async with state_lock:
-                    _record_consolidation_failure(
-                        deps=deps,
-                        soul_id=soul_id,
-                        user_id=user_id,
-                        error=f"{type(exc).__name__}: {str(exc)[:260]}",
-                        historical=historical, conversation_id=conversation_id,
-                    )
+                    for failure_cid in failure_conversation_ids:
+                        _record_consolidation_failure(
+                            deps=deps,
+                            soul_id=soul_id,
+                            user_id=user_id,
+                            error=f"{type(exc).__name__}: {str(exc)[:260]}",
+                            historical=historical, conversation_id=failure_cid,
+                        )
             except Exception:
                 log.exception(
                     "failed to record consolidation error state for %s",

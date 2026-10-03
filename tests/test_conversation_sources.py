@@ -45,6 +45,32 @@ def test_registered_import_split_survives_source_update_and_filters_live_reads(t
         **kwargs, since_cursor=1, recent_fallback_messages=0, import_state=loaded, historical=True,
     )
     assert [row["source_conversation_index"] for row in history] == [2, 3]
+    other = "chat:other-test"
+    state.write_conversation_state(other, sqlite_current_path=lambda *_: db_path,
+                                   user_id="TestOwner", soul_id="TestSoul", updates={})
+    conversation_sources.persist_chat_history_snapshot(
+        storage_dir=tmp_path, user_id="TestOwner", soul_id="TestSoul", conversation_id=other,
+        source_label="sillytavern", history=[{"role": "user", "content": "Other chat"}],
+    )
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_: db_path)
+    full_history = [{"role": "user", "content": f"message {i}"} for i in range(9)]
+    payload = main._build_cross_conversation_payload(cid, "TestOwner", "TestSoul", {}, full_history, -1)
+    assert [row["content"] for row in payload["conversation"] if row["source_conversation_id"] == cid] == [
+        f"message {i}" for i in range(4, 9)
+    ]
+    assert [row["content"] for row in payload["conversation"] if row["source_conversation_id"] == other] == ["Other chat"]
+    assert payload["_final_cursors"][cid]["cursor"] == 8
+    assert payload["_final_cursors"][other]["cursor"] == 0
+    monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 1)
+    monkeypatch.setattr(main, "_unmemorized_sleep_gap_detected", lambda *_a, **_kw: True)
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        current = state.conversation_state_from_row(state.conversation_state_row(
+            con, cid, user_id="TestOwner", soul_id="TestSoul",
+        ))
+    _, automatic = main._prepare_auto_memorize(cid, "TestOwner", "TestSoul", {}, current, full_history, dry_run=False)
+    assert automatic is not None
+    assert [row["content"] for row in automatic["conversation"]] == [row["content"] for row in payload["conversation"]]
 
 
 def test_atomic_snapshot_blank_speakers_fall_back_to_scope_names(tmp_path: Path) -> None:

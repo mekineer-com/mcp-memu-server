@@ -3256,21 +3256,14 @@ def _build_cross_conversation_payload(
         if isinstance(ts, (int, float)) and "received_at" not in msg:
             msg["received_at"] = datetime.fromtimestamp(ts / 1000.0, tz=UTC).isoformat()
 
-    final_cursors: dict[str, dict[str, Any]] = {}
-    if trigger_tail:
-        trigger_checkpoint = _source_cursor_checkpoint(trigger_tail, web_source=trigger_web_source)
-        if trigger_checkpoint is None:
-            raise RuntimeError(
-                f"memorize tail has no checkpoint for {cid}; "
-                "repair the conversation cursor with patch_conversation_state_endpoint"
-            )
-        trigger_checkpoint["memory_producing"] = trigger_memorize
-        final_cursors[cid] = trigger_checkpoint
-    all_messages = list(trigger_tail)
-
     con = _sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
+        trigger_row = con.execute(
+            "SELECT import_state FROM conversations WHERE conversation_id = ? AND user_id = ? AND soul_id = ?",
+            (cid, uid, soul_id),
+        ).fetchone()
+        import_state = json.loads(trigger_row["import_state"]) if trigger_row and trigger_row["import_state"] else None
         other_tails = _load_cross_memorize_tails_from_sources(
             con,
             user_id=uid,
@@ -3283,6 +3276,23 @@ def _build_cross_conversation_payload(
         )
     finally:
         con.close()
+
+    if import_state is not None:
+        trigger_tail = _conversation_sources.slice_tail_with_floor(
+            trigger_tail, since_cursor=import_state["history_end_index"] - 1,
+            recent_fallback_messages=0,
+        )
+    final_cursors: dict[str, dict[str, Any]] = {}
+    if trigger_tail:
+        trigger_checkpoint = _source_cursor_checkpoint(trigger_tail, web_source=trigger_web_source)
+        if trigger_checkpoint is None:
+            raise RuntimeError(
+                f"memorize tail has no checkpoint for {cid}; "
+                "repair the conversation cursor with patch_conversation_state_endpoint"
+            )
+        trigger_checkpoint["memory_producing"] = trigger_memorize
+        final_cursors[cid] = trigger_checkpoint
+    all_messages = list(trigger_tail)
 
     for other_cid, tail_msgs in other_tails.items():
         if not tail_msgs:
@@ -3445,6 +3455,8 @@ def _prepare_auto_memorize(
     if _soul_activity_pause(uid, soul_id, conversation_state):
         return 0, None
     digest_cursor = _effective_digest_cursor_from_row(conversation_state)
+    if conversation_state.get("import_state") is not None:
+        digest_cursor = max(digest_cursor, conversation_state["import_state"]["history_end_index"] - 1)
     _, hermes_home_path, _, _ = _resolve_cross_source_paths()
     resolved_cursor, min_timestamp, trigger_web_source = _resolve_source_cursor(
         cid,
