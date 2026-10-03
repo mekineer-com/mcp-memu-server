@@ -71,6 +71,12 @@ def consolidation_input_budget(svc: MemoryService, profile: str | None) -> int:
     return (context - output_cap) * 4 // 5
 
 
+class ConsolidationSourceError(HTTPException):
+    def __init__(self, conversation_id: str, *, status_code: int, detail: str):
+        super().__init__(status_code=status_code, detail=detail)
+        self.conversation_id = conversation_id
+
+
 @dataclass(frozen=True)
 class ConsolidationDeps:
     sqlite_current_path: Callable[[str, str], Path | None]
@@ -854,7 +860,7 @@ ORDER BY updated_at ASC, id ASC
         for pending_conversation_id, pending_segment_ids in pending_by_conversation.items():
             chat_dir = deps.find_chat_dir_for_conversation(chats_dir, user_id, soul_id, pending_conversation_id)
             if chat_dir is None:
-                raise HTTPException(status_code=404, detail=f"conversation resource not found: {pending_conversation_id}")
+                raise ConsolidationSourceError(pending_conversation_id, status_code=404, detail=f"conversation resource not found: {pending_conversation_id}")
             segments_dir = chat_dir / "segments"
             resources_by_segment: dict[str, list[sqlite3.Row]] = {sid: [] for sid in pending_segment_ids}
             for row in con.execute(
@@ -869,23 +875,23 @@ ORDER BY updated_at ASC, id ASC
                 resource_rows = resources_by_segment[segment_id]
                 paths = {Path(str(row["local_path"] or "").replace("\\", "/")).name for row in resource_rows}
                 if len(paths) != 1 or not next(iter(paths)):
-                    raise HTTPException(status_code=400, detail=f"segment resource ownership missing or ambiguous: {segment_id}")
+                    raise ConsolidationSourceError(pending_conversation_id, status_code=400, detail=f"segment resource ownership missing or ambiguous: {segment_id}")
                 ep_file = segments_dir / next(iter(paths))
                 try:
                     messages = json.loads(ep_file.read_text(encoding="utf-8"))
                 except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                    raise HTTPException(status_code=400, detail=f"segment history unreadable: {ep_file}") from exc
+                    raise ConsolidationSourceError(pending_conversation_id, status_code=400, detail=f"segment history unreadable: {ep_file}") from exc
                 if not isinstance(messages, list):
-                    raise HTTPException(status_code=400, detail=f"segment history is not a message list: {ep_file}")
+                    raise ConsolidationSourceError(pending_conversation_id, status_code=400, detail=f"segment history is not a message list: {ep_file}")
                 if any(not isinstance(message, dict) for message in messages):
-                    raise HTTPException(status_code=400, detail=f"segment history contains a non-message row: {ep_file}")
+                    raise ConsolidationSourceError(pending_conversation_id, status_code=400, detail=f"segment history contains a non-message row: {ep_file}")
                 try:
                     start, end = parse_segment_range(segment_id)
                     if len(messages) != end - start + 1:
                         raise ValueError(f"segment range does not match stored history: {segment_id}")
                     entry = build_segment_inputs(messages, [segment_id], start_offset=start)[0]
                 except ValueError as exc:
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                    raise ConsolidationSourceError(pending_conversation_id, status_code=400, detail=str(exc)) from exc
                 selected_resource_rows.extend(resource_rows)
                 current_chat_messages.extend(_messages_for_segment_inputs(messages, [entry], start_offset=start))
                 entry["conversation_id"] = pending_conversation_id
@@ -1606,6 +1612,8 @@ async def _run_consolidation_pipeline_once(
             )
         return {"status": "ok", "result": result}
     except Exception as exc:
+        if historical and isinstance(exc, ConsolidationSourceError):
+            failure_conversation_ids = [exc.conversation_id]
         db_path = deps.sqlite_current_path(user_id, soul_id)
         if db_path is not None and db_path.exists():
             try:

@@ -978,6 +978,7 @@ def test_gather_rejects_noncanonical_pending_owner(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("bad_content", "segment_end", "error_text"),
     [
@@ -986,7 +987,7 @@ def test_gather_rejects_noncanonical_pending_owner(tmp_path: Path) -> None:
         (json.dumps([{"role": "user", "content": "only row"}]), 1, "range does not match stored history"),
     ],
 )
-def test_gather_consolidation_inputs_rejects_invalid_segment_file(
+async def test_gather_consolidation_inputs_rejects_invalid_segment_file(
     tmp_path: Path,
     bad_content: str,
     segment_end: int,
@@ -1057,6 +1058,35 @@ CREATE TABLE resources (
 
     expected_identifier = segment_id if "range" in error_text else str(bad_file)
     assert expected_identifier in str(exc_info.value.detail)
+
+    broken = {"history_end_index": segment_end + 1, "memorize_cursor": segment_end,
+              "pending_segment_ids": [segment_id], "stage": "consolidation", "error": None}
+    unrelated = {"history_end_index": 1, "memorize_cursor": 0,
+                 "pending_segment_ids": ["requester:0-0"], "stage": "consolidation", "error": "Unrelated failure"}
+    deps.write_conversation_state(cid, soul_id=soul_id, user_id=user_id,
+                                  updates={"import_state": broken, "pending_segment_ids": ["ordinary-next"]})
+    deps.write_conversation_state("requester", soul_id=soul_id, user_id=user_id, updates={"import_state": unrelated})
+    with sqlite_connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        before = _soul_state.read(con)
+    running = {}
+    with pytest.raises(consolidation.ConsolidationSourceError, match=error_text) as source_error:
+        await consolidation._run_consolidation_pipeline_once(
+            svc=object(), deps=deps, state_lock=asyncio.Lock(), running=running,
+            load_cross_tail_for_ai=lambda **_kw: pytest.fail("gather failure must precede prompt/model work"),
+            format_all_chat_history_for_ai=lambda **_kw: pytest.fail("gather failure must precede prompt/model work"),
+            conversation_id="requester", soul_id=soul_id, user_id=user_id, historical=True,
+        )
+    assert source_error.value.conversation_id == cid and running == {}
+    with sqlite_connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        assert _soul_state.read(con) == before
+        current = conversation_state_from_row(conversation_state_row(con, cid, soul_id=soul_id, user_id=user_id))
+        assert current["pending_segment_ids"] == ["ordinary-next"]
+        record = current["import_state"]
+        assert {**record, "error": None} == broken and error_text in record["error"]
+        requester = conversation_state_from_row(conversation_state_row(con, "requester", soul_id=soul_id, user_id=user_id))
+        assert requester["import_state"] == unrelated
 
 
 def _make_consolidation_deps(db_path: Path, tmp_dir: Path) -> ConsolidationDeps:
