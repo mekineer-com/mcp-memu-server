@@ -526,6 +526,7 @@ async def run_memorize_segments(
                         current=current,
                         total=total,
                     ),
+                    **({"enforce_input_budget": True} if historical else {}),
                 )
                 if len(batch_results) != len(segment_jobs):
                     error_message = (

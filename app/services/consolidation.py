@@ -20,6 +20,7 @@ from app.config import sqlite_file_from_dsn
 from memu.app.dossier import label_sections, render_memory_records, revision_status_items
 from memu.app.dossier_revision import (
     estimate_prompt_tokens,
+    model_input_budget as consolidation_input_budget,
     parse_anchor_revisions,
     parse_dossier_revision_batch,
 )
@@ -54,21 +55,6 @@ from app.services.turn_contract import format_memory_legend, format_memory_line,
 
 if TYPE_CHECKING:
     from memu.app import MemoryService
-
-
-def consolidation_input_budget(svc: MemoryService, profile: str | None) -> int:
-    if getattr(svc, "_claude_code", False):
-        context = svc._claude_code_context_window_tokens
-        output_cap = 0  # The CLI does not use the API profile's output cap.
-        model = svc._claude_code_model
-    else:
-        cfg = svc.llm_profiles.profiles[profile or "default"]
-        context, output_cap, model = cfg.context_window_tokens, cfg.max_tokens or 0, cfg.chat_model
-    if type(context) is not int or context <= 0:
-        raise ValueError(f"context_window_tokens is required for consolidation model {model}")
-    if context <= output_cap:
-        raise ValueError("consolidation context_window_tokens must exceed max_tokens")
-    return (context - output_cap) * 4 // 5
 
 
 class ConsolidationSourceError(HTTPException):

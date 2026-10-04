@@ -4635,6 +4635,7 @@ async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeyp
     paths = []
     class Service:
         async def memorize_segments_batch(self, **kwargs):
+            assert kwargs["enforce_input_budget"] is True
             paths.extend(Path(row["local_path"]) for row in kwargs["segments"])
             if sql_import:
                 stored = json.loads(paths[0].read_text())
