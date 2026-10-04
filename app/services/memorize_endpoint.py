@@ -479,7 +479,7 @@ async def run_memorize_segments(
             else:
                 if historical:
                     ctx.write_conversation_state(conversation_id, user_id=uid, soul_id=soul_id,
-                        updates={"import_state": {**state_row["import_state"], "error": "Memorize interrupted before completion. Retry required."}})
+                        updates={"import_error": "Memorize interrupted before completion. Retry required."})
                 elif failure_record is not None or any(job["memory_producing"] for job in segment_jobs):
                     targets = final_cursors or {
                         conversation_id: {"cursor": memorize_segments[-1][3], "memory_producing": True},
@@ -577,15 +577,9 @@ async def run_memorize_segments(
                                 # per-segment advance — crash recovery needs the cursor to move
                                 # only after the whole segment completes.
                                 if historical:
-                                    record = fresh_row["import_state"]
-                                    pending = run_ctx.normalize_text_list(record["pending_segment_ids"] + pending_segment_ids)
-                                    updates = {"import_state": {**record,
-                                        "memorize_cursor": processed_end_cursor,
-                                        "pending_segment_ids": pending,
-                                        "stage": ("consolidation" if pending else "complete"
-                                                  if processed_end_cursor == record["history_end_index"] - 1 else "memorize"),
-                                        "error": None,
-                                    }}
+                                    updates = {"import_memorize_cursor": processed_end_cursor,
+                                               "append_import_pending_segment_ids": pending_segment_ids,
+                                               "import_error": None}
                                 else:
                                     updates = _cursor_updates_for_unit(
                                         memory_producing=memory_producing,
@@ -813,10 +807,8 @@ async def run_memorize_segments(
         return terminal_result != "cancelled"
     except Exception as exc:
         if historical and conversation_id:
-            fresh_row, _, _ = run_ctx.load_turn_state_and_soul_card(conversation_id, user_id=uid, soul_id=soul_id)
-            if fresh_row.get("import_state") is not None:
-                ctx.write_conversation_state(conversation_id, user_id=uid, soul_id=soul_id,
-                    updates={"import_state": {**fresh_row["import_state"], "error": f"Memorize failed: {exc}"[:300]}})
+            ctx.write_conversation_state(conversation_id, user_id=uid, soul_id=soul_id,
+                updates={"import_error": f"Memorize failed: {exc}"[:300]})
         elif failure_record is not None:
             ctx.write_conversation_state(
                 conversation_id, user_id=uid, soul_id=soul_id,

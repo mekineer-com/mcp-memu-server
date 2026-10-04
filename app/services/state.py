@@ -220,6 +220,9 @@ def write_conversation_state(
         raise HTTPException(status_code=400, detail="soul_id is required")
 
     owns_connection = connection is None
+    raw_updates = dict(updates) if updates else {}
+    patch_import = any(key in raw_updates for key in (
+        "import_memorize_cursor", "append_import_pending_segment_ids", "import_error"))
     if owns_connection:
         sqlite_ensure_nonempty(db_path)
     con = connection or sqlite_connect(db_path)
@@ -227,6 +230,8 @@ def write_conversation_state(
         con.row_factory = sqlite3.Row
         if owns_connection:
             sqlite_ensure_conversation_state_schema(con)
+            if patch_import:
+                con.execute("BEGIN IMMEDIATE")
 
         if existing_state is None:
             existing_state = conversation_state_from_row(
@@ -263,13 +268,12 @@ INSERT OR IGNORE INTO conversations (
                     seed.get("updated_at"),
                 ),
             )
-            if owns_connection:
+            if owns_connection and not patch_import:
                 con.commit()
             existing_state = conversation_state_from_row(
                 conversation_state_row(con, cid, user_id=scoped_user, soul_id=scoped_soul)
             ) or seed
 
-        raw_updates = dict(updates) if updates else {}
         soul_updates = {k: raw_updates.pop(k) for k in list(raw_updates) if k in _soul_state._VALID_FIELDS}
         for append_key, field in (
             ("append_retrieval_ids_since_consolidation", "retrieval_ids_since_consolidation"),
@@ -293,6 +297,17 @@ INSERT OR IGNORE INTO conversations (
             _soul_state.write(con, soul_updates)
         append_pending_segment_ids = raw_updates.pop("append_pending_segment_ids", None)
         field_updates: dict[str, Any] = {}
+        if patch_import:
+            record = existing_state.get("import_state")
+            if record is None:
+                raise HTTPException(status_code=400, detail="Historical writes require registered import state")
+            advancing = "import_memorize_cursor" in raw_updates
+            cursor = max(record["memorize_cursor"], raw_updates.pop("import_memorize_cursor", record["memorize_cursor"]))
+            pending = merge_unique_text_lists(record["pending_segment_ids"], raw_updates.pop("append_import_pending_segment_ids", []))
+            field_updates["import_state"] = {**record, "memorize_cursor": cursor, "pending_segment_ids": pending,
+                "error": raw_updates.pop("import_error", record.get("error")),
+                "stage": (("consolidation" if pending else "complete" if cursor == record["history_end_index"] - 1 else "memorize")
+                          if advancing else record["stage"])}
 
         for cursor, source_id, source_ts in (
             ("digest_cursor", "digest_cursor_source_message_id", "digest_cursor_ts"),

@@ -188,7 +188,6 @@ def _normalize_conversation(conv: Any) -> Any:
                             "source_day",
                             "source_message_id",
                             "historical",
-                            "import_metadata",
                         )
                         if m.get(key) is not None
                     }

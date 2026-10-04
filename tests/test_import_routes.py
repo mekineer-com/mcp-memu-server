@@ -46,9 +46,25 @@ def test_registration_extends_history_without_resetting_progress(tmp_path, monke
         {"id": "older", "role": "assistant", "content": "older", "timestamp": "2024-01-01"}])
     chat_import.store_upload(source, **scope, messages=older, history_count=1)
     assert register(request)["import_state"] == {**saved, "history_end_index": 6}
+    # An old extraction result must patch the newly registered bound, not replace it.
+    main._write_conversation_state(upload["conversation_id"], user_id="TestOwner", soul_id="TestSoul",
+        updates={"import_error": "Interrupted"})
+    main._write_conversation_state(upload["conversation_id"], user_id="TestOwner", soul_id="TestSoul",
+        updates={"import_memorize_cursor": 1, "append_import_pending_segment_ids": ["later-segment"], "import_error": None})
+    patched = register(request)["import_state"]
+    assert patched["history_end_index"] == 6 and patched["memorize_cursor"] == 1
+    assert patched["pending_segment_ids"] == ["test-segment", "later-segment"] and patched["error"] is None
     state, _, _ = main._load_turn_state_and_soul_card(upload["conversation_id"], user_id="TestOwner", soul_id="TestSoul")
     assert state["digest_cursor"] == 3 and state["last_memorize_at"] == "2025-01-01T12:00:00Z"
-    assert register(request)["import_state"] == {**saved, "history_end_index": 6}
+    assert register(request)["import_state"] == patched
+    main._write_conversation_state(upload["conversation_id"], user_id="TestOwner", soul_id="TestSoul",
+        updates={"import_state": {**patched, "pending_segment_ids": [], "stage": "memorize"}})
+    advanced, _ = main._write_conversation_state(upload["conversation_id"], user_id="TestOwner", soul_id="TestSoul",
+        updates={"import_memorize_cursor": 5, "import_error": None})
+    assert advanced["import_state"]["stage"] == "complete"
+    late, _ = main._write_conversation_state(upload["conversation_id"], user_id="TestOwner", soul_id="TestSoul",
+        updates={"import_memorize_cursor": 1, "import_error": "Late failure"})
+    assert late["import_state"]["memorize_cursor"] == 5 and late["import_state"]["history_end_index"] == 6
     with pytest.raises(HTTPException) as refused:
         register(ImportScope(**{**scope, "soul_id": "OtherSoul"}))
     assert refused.value.status_code == 404

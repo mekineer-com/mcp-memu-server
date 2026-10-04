@@ -17,6 +17,8 @@ def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path
     from app.services.payload import _normalize_conversation
     from app.services.segment import _message_happened_at
     from memu.app.memorize_parsing import _extract_message_happened_at_map
+    from memu.app.memorize_speakers import _build_speaker_map, _attribute_memory
+    from memu.app.memorize import StructuredMemoryEntry
     from memu.utils.conversation import format_grouped_chat_history, format_relative_time_label
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "openalma" / "launcher"))
@@ -48,7 +50,16 @@ def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path
     assert [m["source_conversation_index"] for m in floor] == [2, 3, 4]
     normalized = _normalize_conversation(current)
     assert normalized[0]["app_label"] == "Kindroid" and normalized[0]["source_day"] == "2025-01-01"
-    assert normalized[0]["import_metadata"]["id"] == "3"
+    with sqlite3.connect(source) as con:
+        assert json.loads(con.execute("SELECT raw_json FROM imported_messages WHERE position = 3").fetchone()[0])["id"] == "3"
+    assert "import_metadata" not in normalized[0]
+    speaker_map = _build_speaker_map(normalized, scope, {"testspeaker": "entity:test-guest"})
+    memory = StructuredMemoryEntry("social", "TestSpeaker shared a thought", [], "entity", None, [0], None)
+    attributed = _attribute_memory(memory, speaker_map)
+    assert attributed.speaker_id == "entity:test-guest" and attributed.speaker_label == "TestSpeaker"
+    assert _build_speaker_map(normalized, scope) == {}
+    assert _build_speaker_map([{**normalized[0], "name": ""}], scope) == {}
+    assert normalized[0]["role"] == "user"
     assert _message_happened_at(normalized[0]).date().isoformat() == "2025-01-01"
     assert _extract_message_happened_at_map(json.dumps(normalized))[0].date().isoformat() == "2025-01-01"
     rendered = format_grouped_chat_history(current, time_label_resolver=lambda value:

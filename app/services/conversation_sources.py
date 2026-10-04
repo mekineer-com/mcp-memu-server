@@ -66,20 +66,18 @@ def _import_source_message(row: sqlite3.Row, chat: sqlite3.Row, conversation_id:
             "source_message_id": row["supplied_id"], "app_label": chat["label"],
             "chat_name": chat["title"] or chat["label"], "source_label": "import",
             "conversation_id": conversation_id, "source_conversation_id": conversation_id,
-            "source_conversation_index": row["position"], "historical": bool(row["historical"]),
-            "import_metadata": json.loads(row["raw_json"])}
+            "source_conversation_index": row["position"], "historical": bool(row["historical"])}
 
 
 def load_import_tail(
     *, user_id: str, soul_id: str, conversation_id: str, since_cursor: int,
     recent_fallback_messages: int, include_floor_without_new: bool = False,
     import_state: dict[str, Any] | None = None, historical: bool = False,
-    db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     record = normalize_import_state(import_state)
     if historical and record is None:
         raise ValueError("Historical source reads require registered import state")
-    path = db_path or import_source_path()
+    path = import_source_path()
     chat_id = conversation_id.removeprefix("import:dm:")
     with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as con:
         con.row_factory = sqlite3.Row
