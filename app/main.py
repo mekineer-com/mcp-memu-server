@@ -95,6 +95,7 @@ from app.services.conversation_id import canonical_conversation_id as _canonical
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import memorize_endpoint as _memorize_endpoint
 from app.services import service_factory as _service_factory
+from app.services import import_routes as _import_routes
 from app.services.payload import (
     _canonicalize_scope_where,
     _extract_conversation_id,
@@ -2312,7 +2313,7 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
             _FORCED_MEMORIZE_INFLIGHT[marker] = historical
     try:
         source = _message_log.derive_source_label(_extract_conversation_id(safe))
-        if source not in {"whatsapp:dm", "whatsapp:group", "sillytavern", "atomic", "mentra", "replika"}:
+        if source not in {"whatsapp:dm", "whatsapp:group", "sillytavern", "atomic", "mentra", "replika", "import"}:
             raise HTTPException(status_code=400, detail="Memorize requires a saved chat source with a supported history reader")
         if retry and not historical:
             failure = _paid_work_state(uid, sid).get("memorize_failure")
@@ -2885,6 +2886,8 @@ _review_routes.register_review_routes(
     sqlite_connect=lambda path: _sqlite_connect(path),
 )
 
+_import_routes.register_import_routes(app, runtime=sys.modules[__name__])
+
 
 @app.post("/conversation/{conversation_id}/retrieve", operation_id="conversation_retrieve")
 async def conversation_retrieve(
@@ -3269,7 +3272,7 @@ def _build_cross_conversation_payload(
     finally:
         con.close()
 
-    if import_state is not None:
+    if import_state is not None and not cid.startswith("import:dm:"):
         trigger_tail = _conversation_sources.slice_tail_with_floor(
             trigger_tail, since_cursor=import_state["history_end_index"] - 1,
             recent_fallback_messages=0,
@@ -3447,7 +3450,7 @@ def _prepare_auto_memorize(
     if _soul_activity_pause(uid, soul_id, conversation_state):
         return 0, None
     digest_cursor = _effective_digest_cursor_from_row(conversation_state)
-    if conversation_state.get("import_state") is not None:
+    if conversation_state.get("import_state") is not None and not cid.startswith("import:dm:"):
         digest_cursor = max(digest_cursor, conversation_state["import_state"]["history_end_index"] - 1)
     _, hermes_home_path, _, _ = _resolve_cross_source_paths()
     resolved_cursor, min_timestamp, trigger_web_source = _resolve_source_cursor(

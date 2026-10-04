@@ -184,6 +184,11 @@ def _normalize_conversation(conv: Any) -> Any:
                             "event_kind",
                             "transcript_status",
                             "media_ref",
+                            "app_label",
+                            "source_day",
+                            "source_message_id",
+                            "historical",
+                            "import_metadata",
                         )
                         if m.get(key) is not None
                     }

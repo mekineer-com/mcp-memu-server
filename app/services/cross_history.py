@@ -455,6 +455,12 @@ def _load_tail_for_source_conversation(
             recent_fallback_messages=recent_fallback_messages,
             import_state=import_state,
         )
+    if source_label == "import":
+        return _conversation_sources.load_import_tail(
+            user_id=user_id, soul_id=soul_id, conversation_id=conversation_id,
+            since_cursor=since_cursor, recent_fallback_messages=recent_fallback_messages,
+            include_floor_without_new=include_floor_without_new, import_state=import_state,
+        )
     if source_label == "replika":
         return _conversation_sources.load_chat_snapshot_tail(
             storage_dir=storage_dir,

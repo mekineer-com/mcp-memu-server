@@ -1336,12 +1336,13 @@ async def memorize_endpoint(
                     if record is None or is_cross:
                         raise HTTPException(status_code=400, detail="historical Memorize requires one registered import source")
                     merged = [message for message in merged
-                              if message["source_conversation_index"] < record["history_end_index"]]
+                              if message["source_conversation_index"] < record["history_end_index"]
+                              and (not conversation_id.startswith("import:dm:") or message.get("historical") is True)]
                     processed_cursor = record["memorize_cursor"]
                     raw_pending_ids = record["pending_segment_ids"]
                 else:
                     processed_cursor = effective_digest_cursor_from_row(state_out)
-                    if not is_cross and state_out.get("import_state") is not None:
+                    if not is_cross and state_out.get("import_state") is not None and not conversation_id.startswith("import:dm:"):
                         processed_cursor = max(processed_cursor, state_out["import_state"]["history_end_index"] - 1)
                     raw_pending_ids = state_out.get("pending_segment_ids")
                 has_pending_segments = isinstance(raw_pending_ids, list) and any(

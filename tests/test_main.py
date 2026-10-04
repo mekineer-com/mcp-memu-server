@@ -4550,7 +4550,8 @@ def test_auto_consolidation_policy() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fail", [False, True])
-async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeypatch, fail):
+@pytest.mark.parametrize("sql_import", [False, True])
+async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeypatch, fail, sql_import):
     from fastapi import BackgroundTasks
     from app.db import sqlite_connect, sqlite_ensure_conversation_state_schema
     from app.services import state as state_module, soul_state
@@ -4558,7 +4559,7 @@ async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeyp
     with sqlite_connect(path) as con:
         sqlite_ensure_conversation_state_schema(con)
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
-    cid = "replika:test-history"
+    cid = "import:dm:test-history" if sql_import else "replika:test-history"
     def write(cid, **kwargs):
         return state_module.write_conversation_state(cid, sqlite_current_path=lambda *_: path, **kwargs)
     write(cid, **scope, updates={
@@ -4566,7 +4567,7 @@ async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeyp
         "last_memorize_at": "2026-01-01T00:00:00+00:00",
         "memorize_failure": {"conversation_id": cid, "paused": False, "error": "Ordinary interrupted",
                              "targets": {cid: {"cursor": 11, "memory_producing": True}}},
-        "import_state": {"history_end_index": 2, "memorize_cursor": -1,
+        "import_state": {"history_end_index": 6 if sql_import else 2, "memorize_cursor": 0 if sql_import else -1,
                          "pending_segment_ids": [], "stage": "memorize", "error": None},
     })
     def load(cid, **kwargs):
@@ -4581,6 +4582,11 @@ async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeyp
     class Service:
         async def memorize_segments_batch(self, **kwargs):
             paths.extend(Path(row["local_path"]) for row in kwargs["segments"])
+            if sql_import:
+                stored = json.loads(paths[0].read_text())
+                assert [row["source_conversation_index"] for row in stored] == [1, 5]
+                assert [row["source_day"] for row in stored] == ["2025-01-01", "2024-01-01"]
+                assert all(row["app_label"] == "Replika" for row in stored)
             assert kwargs["memory_retrieve_history"] is None and kwargs["memory_prior_context"] is None
             with pytest.raises(HTTPException):
                 main._require_soul_active(scope["user_id"], scope["soul_id"])
@@ -4598,8 +4604,14 @@ async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeyp
     tasks = BackgroundTasks()
     response = await main._memorize_owned({
         "user": scope, "conversation_id": cid,
-        "conversation": [{"role": "user", "content": "Earlier"},
-                         {"role": "assistant", "content": "Old reply"}],
+        "conversation": ([
+            {"role": "user", "content": "Earlier", "source_conversation_index": 1, "historical": True,
+             "app_label": "Replika", "source_day": "2025-01-01"},
+            {"role": "user", "content": "Current stays ordinary", "source_conversation_index": 3, "historical": False},
+            {"role": "assistant", "content": "Old reply", "source_conversation_index": 5, "historical": True,
+             "app_label": "Replika", "source_day": "2024-01-01"},
+        ] if sql_import else [{"role": "user", "content": "Earlier"},
+                              {"role": "assistant", "content": "Old reply"}]),
     }, tasks, True, historical=True, retry=True)
     assert response.status_code == 202
     if fail:
@@ -4611,7 +4623,7 @@ async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeyp
     state = load(cid, **scope)[0]
     assert state["pending_segment_ids"] == ["ordinary"] and state["digest_cursor"] == 10
     record = state["import_state"]
-    assert record["memorize_cursor"] == (-1 if fail else 1)
+    assert record["memorize_cursor"] == ((0 if sql_import else -1) if fail else (5 if sql_import else 1))
     assert record["pending_segment_ids"] == ([] if fail else [f"{cid}:0-1"])
     assert bool(record["error"]) is fail
     assert paths and all(path.is_file() for path in paths) is not fail

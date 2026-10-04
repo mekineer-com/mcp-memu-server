@@ -6,6 +6,7 @@ import re
 import sqlite3
 import tempfile
 from collections.abc import Sequence
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,85 @@ def mentra_storage_dir() -> Path:
     if not openalma_dir.is_dir():
         raise RuntimeError(f"OpenAlma application directory is missing: {openalma_dir}")
     return openalma_dir / "mentra"
+
+
+def import_source_path() -> Path:
+    return Path(__file__).resolve().parents[3] / "openalma" / "imports" / "chats.db"
+
+
+def import_chat_info(*, user_id: str, soul_id: str, label: str) -> dict[str, Any] | None:
+    path = import_source_path()
+    if not path.exists():
+        return None
+    with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as con:
+        con.row_factory = sqlite3.Row
+        chat = con.execute(
+            "SELECT * FROM imported_chats WHERE user_id = ? AND soul_id = ? AND label = ?",
+            (user_id, soul_id, label),
+        ).fetchone()
+        if chat is None:
+            return None
+        end = con.execute(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM imported_messages WHERE chat_id = ? AND historical = 1",
+            (chat["chat_id"],),
+        ).fetchone()[0]
+        return {**dict(chat), "conversation_id": f"import:dm:{chat['chat_id']}", "history_end_index": end}
+
+
+def _import_source_message(row: sqlite3.Row, chat: sqlite3.Row, conversation_id: str) -> dict[str, Any]:
+    return {"role": row["role"], "name": row["speaker"], "speaker": row["speaker"],
+            "content": row["content"], "received_at": row["timestamp"],
+            "ts_ms": row["ts_ms"], "source_day": row["source_day"],
+            "source_message_id": row["supplied_id"], "app_label": chat["label"],
+            "chat_name": chat["title"] or chat["label"], "source_label": "import",
+            "conversation_id": conversation_id, "source_conversation_id": conversation_id,
+            "source_conversation_index": row["position"], "historical": bool(row["historical"]),
+            "import_metadata": json.loads(row["raw_json"])}
+
+
+def load_import_tail(
+    *, user_id: str, soul_id: str, conversation_id: str, since_cursor: int,
+    recent_fallback_messages: int, include_floor_without_new: bool = False,
+    import_state: dict[str, Any] | None = None, historical: bool = False,
+    db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    record = normalize_import_state(import_state)
+    if historical and record is None:
+        raise ValueError("Historical source reads require registered import state")
+    path = db_path or import_source_path()
+    chat_id = conversation_id.removeprefix("import:dm:")
+    with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as con:
+        con.row_factory = sqlite3.Row
+        chat = con.execute(
+            "SELECT label, title FROM imported_chats WHERE chat_id = ? AND user_id = ? AND soul_id = ?",
+            (chat_id, user_id, soul_id),
+        ).fetchone()
+        if chat is None:
+            raise ValueError("Imported chat does not belong to this owner and Soul")
+        bound = " AND position < ?" if historical else ""
+        params = (chat_id, int(historical), since_cursor)
+        if historical:
+            params += (record["history_end_index"],)
+        selected = con.execute(
+            "SELECT * FROM imported_messages WHERE chat_id = ? AND historical = ? AND position > ?"
+            + bound + " ORDER BY position", params,
+        )
+        rows, tokens = [], 0
+        for row in selected:
+            msg = _import_source_message(row, chat, conversation_id)
+            size = memorize_endpoint.estimate_tokens([msg])
+            if historical and rows and tokens + size > memorize_endpoint._FORCE_MEMORIZE_MAX_CHUNK_TOKENS:
+                break
+            rows.append(msg)
+            tokens += size
+        if not historical and since_cursor >= 0 and len(rows) < recent_fallback_messages and (rows or include_floor_without_new):
+            older = con.execute(
+                "SELECT * FROM imported_messages WHERE chat_id = ? AND historical = 0 AND position <= ?"
+                " ORDER BY position DESC LIMIT ?",
+                (chat_id, since_cursor, recent_fallback_messages - len(rows)),
+            ).fetchall()
+            rows = [_import_source_message(row, chat, conversation_id) for row in reversed(older)] + rows
+        return rows
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:

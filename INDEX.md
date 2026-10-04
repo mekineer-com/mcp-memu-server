@@ -19,6 +19,8 @@ mcp-memu-server/
 ├── app/services/whatsapp_outbounds.py
 ├── app/services/free_turn.py
 ├── app/services/cross_history.py
+├── app/services/import_routes.py # Unpaid imported-source registration + known-context suffix validation
+├── app/services/conversation_sources.py # Client-owned source reads; import SQL selects immutable mode/position, bounded historical reads and indexed current floors
 ├── app/services/conversation_id.py
 ├── app/services/apimw.py
 ├── app/services/sqlite_scope.py
@@ -57,6 +59,8 @@ mcp-memu-server/
 | `/admin/shutdown` | POST | Request graceful shutdown (drain mode) |
 | `/admin/shutdown/status` | GET | Shutdown progress + active request counts |
 | `/memorize` | POST | Extract memories from conversation. `force=true` bypasses sleep-gap; `rebuild=true` archives the DB and resets cursor (implies force), returning HTTP 409 while the same owner and Soul consolidate. Auto-memorize also fires inside `/conversation/{id}/turn`. |
+| `/imports/register` | POST | Register/reuse a stored imported chat by owner, Soul and app label; extend only its historical bound without resetting cursors, queues or errors. No model call. |
+| `/imports/validate` | POST | Check proposed new current rows against stored display floors, cross-chat/activity context and known Soul state with the actual turn allowance. No model call, source insertion or Memorize scheduling. |
 | `/memorize/progress` | GET | Live memorize batch progress |
 | `/memorize/cancel` | POST | Cancel the running memorize batch |
 | `/retrieve` | POST | Query memories. Optional `as_of` for temporal triple filtering. |

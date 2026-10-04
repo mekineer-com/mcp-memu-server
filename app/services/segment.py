@@ -29,6 +29,8 @@ def parse_segment_range(segment_id: str) -> tuple[int, int]:
 
 
 def _message_happened_at(msg: dict[str, Any]) -> datetime | None:
+    if msg.get("source_day"):
+        return datetime.fromisoformat(msg["source_day"]).replace(tzinfo=UTC)
     ts_ms = message_ts_ms(msg)
     if ts_ms is None:
         return None

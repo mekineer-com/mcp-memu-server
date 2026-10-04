@@ -9,6 +9,79 @@ from app.services import conversation_sources
 from app.services import cross_history, state
 
 
+def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path, monkeypatch):
+    import sys
+    from datetime import UTC, datetime
+    from app import main
+    from app.db import sqlite_ensure_conversation_state_schema
+    from app.services.payload import _normalize_conversation
+    from app.services.segment import _message_happened_at
+    from memu.app.memorize_parsing import _extract_message_happened_at_map
+    from memu.utils.conversation import format_grouped_chat_history, format_relative_time_label
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "openalma" / "launcher"))
+    import chat_import
+
+    source = tmp_path / "imports.db"
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "label": "Kindroid"}
+    messages, _, _ = chat_import.normalize_messages([
+        {"id": str(i), "role": "user", "name": "TestSpeaker", "content": f"message {i}",
+         "timestamp": "2025-01-01T00:30:00+02:00"} for i in range(5)])
+    upload = chat_import.store_upload(source, **scope, messages=messages, history_count=2)
+    cid = upload["conversation_id"]
+    older, _, _ = chat_import.normalize_messages([
+        {"id": "older", "role": "assistant", "name": "TestCompanion", "content": "older history", "timestamp": "2024-01-01"}])
+    chat_import.store_upload(source, **scope, messages=older, history_count=1)
+    monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
+    record = {"history_end_index": 2, "memorize_cursor": 0, "stage": "memorize",
+              "pending_segment_ids": [], "error": None}
+    kwargs = {"user_id": "TestOwner", "soul_id": "TestSoul", "conversation_id": cid,
+              "recent_fallback_messages": 0, "import_state": record}
+    selected = conversation_sources.load_import_tail(**kwargs, since_cursor=0, historical=True)
+    assert [m["source_conversation_index"] for m in selected] == [1]
+    record["history_end_index"] = 6
+    selected = conversation_sources.load_import_tail(**kwargs, since_cursor=0, historical=True)
+    assert [m["source_conversation_index"] for m in selected] == [1, 5]
+    current = conversation_sources.load_import_tail(**kwargs, since_cursor=2)
+    assert [m["source_conversation_index"] for m in current] == [3, 4]
+    floor = conversation_sources.load_import_tail(**{**kwargs, "recent_fallback_messages": 8}, since_cursor=3)
+    assert [m["source_conversation_index"] for m in floor] == [2, 3, 4]
+    normalized = _normalize_conversation(current)
+    assert normalized[0]["app_label"] == "Kindroid" and normalized[0]["source_day"] == "2025-01-01"
+    assert normalized[0]["import_metadata"]["id"] == "3"
+    assert _message_happened_at(normalized[0]).date().isoformat() == "2025-01-01"
+    assert _extract_message_happened_at_map(json.dumps(normalized))[0].date().isoformat() == "2025-01-01"
+    rendered = format_grouped_chat_history(current, time_label_resolver=lambda value:
+        format_relative_time_label(value, now=datetime(2025, 1, 1, 12, tzinfo=UTC)))
+    assert "My Kindroid Conversations:" in rendered and "--- today ---" in rendered
+    assert "[TestSpeaker] message 3" in rendered and "My SillyTavern" not in rendered
+
+    soul_db = tmp_path / "TestSoul.db"
+    with sqlite3.connect(soul_db) as con:
+        sqlite_ensure_conversation_state_schema(con)
+    state.write_conversation_state(cid, sqlite_current_path=lambda *_: soul_db,
+        user_id="TestOwner", soul_id="TestSoul",
+        updates={"import_state": record, "digest_cursor": 2, "last_memorize_at": "2025-01-01T00:00:00Z"})
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_: soul_db)
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+    with sqlite3.connect(soul_db) as con:
+        con.row_factory = sqlite3.Row
+        tails = cross_history._load_cross_memorize_tails_from_sources(con, user_id="TestOwner", soul_id="TestSoul")
+    assert [m["source_conversation_index"] for m in tails[cid]] == [3, 4]
+    payload = main._build_cross_conversation_payload(cid, "TestOwner", "TestSoul", {}, current, 2)
+    assert [m["source_conversation_index"] for m in payload["conversation"]] == [3, 4]
+    assert payload["_final_cursors"][cid]["cursor"] == 4
+    with pytest.raises(ValueError, match="does not belong"):
+        conversation_sources.load_import_tail(**{**kwargs, "soul_id": "OtherSoul"}, since_cursor=-1)
+    long, _, _ = chat_import.normalize_messages([
+        {"id": f"long-{i}", "role": "user", "content": "word " * 4000, "timestamp": "2024-02-01"}
+        for i in range(3)])
+    extended = chat_import.store_upload(source, **scope, messages=long, history_count=3)
+    record["history_end_index"] = extended["history_end_index"]
+    bounded = conversation_sources.load_import_tail(**kwargs, since_cursor=5, historical=True)
+    assert [row["source_conversation_index"] for row in bounded] == [6]
+
+
 def test_registered_import_split_survives_source_update_and_filters_live_reads(tmp_path, monkeypatch):
     from app import main
     from app.db import sqlite_ensure_conversation_state_schema
