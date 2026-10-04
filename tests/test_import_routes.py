@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.db import sqlite_ensure_conversation_state_schema
-from app.services import consolidation, conversation_sources, import_routes
+from app.services import consolidation, conversation_sources
 from app.services.import_routes import ImportPreview, ImportScope
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "openalma" / "launcher"))
