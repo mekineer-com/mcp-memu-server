@@ -4220,8 +4220,11 @@ async def test_busy_consolidation_closes_progress_before_pipeline(monkeypatch, h
         force=True, progress_key=marker, memorize_progress=progress,
     )
     assert result["status"] == "skipped"
-    assert progress[marker]["active"] is False
-    assert progress[marker]["last_result"] == "skipped"
+    if historical_claim:
+        assert progress[marker] == {"active": True, "phase": "accepted"}
+    else:
+        assert progress[marker]["active"] is False
+        assert progress[marker]["last_result"] == "skipped"
     if historical_claim:
         for endpoint in (main.force_consolidation, main.retry_consolidation):
             with pytest.raises(HTTPException) as refused:

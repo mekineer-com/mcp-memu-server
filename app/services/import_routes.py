@@ -36,7 +36,7 @@ class ImportPreview(ImportScope):
     current_messages: list[ImportMessage]
 
 
-async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: bool = False) -> dict:
+async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: bool = False) -> None:
     cid = chat["conversation_id"]
     uid, sid = scoped["user_id"], scoped["soul_id"]
     marker = runtime._memorize_lock_key(uid, sid)
@@ -82,6 +82,8 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
                 raise RuntimeError("Import extraction did not advance its source checkpoint")
             days.update(date.fromisoformat(row["source_day"]) for row in rows)
             if not current["pending_segment_ids"]:
+                if (max(days) - min(days)).days >= runtime._consolidation_interval_days_from_cfg(runtime._CONFIG):
+                    break
                 continue
             phase = "consolidation"
             pairs = {(cid, segment_id) for segment_id in current["pending_segment_ids"]}
@@ -95,6 +97,7 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
                 current_history=prep["current_chat_messages"], cross_tail=[],
                 conversation_id=cid, soul_id=sid, mark_current_chat=False,
             )
+            days.update(date.fromisoformat(row["source_day"]) for row in prep["current_chat_messages"])
             estimates = consolidation._prepare_dossier_consolidation_prompts(
                 svc, inputs=prep, **scoped,
             )[3]
@@ -102,7 +105,6 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
                 svc, estimates, len(prep["segment_inputs"]), profile,
             ):
                 break
-        result = {"status": "complete"}
         if current["pending_segment_ids"]:
             phase = "consolidation"
             memorize_endpoint._set_memorize_progress(
@@ -119,19 +121,20 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
                 raise RuntimeError(f"Import consolidation did not complete: {result.get('reason', 'skipped')}")
         success = True
         memorize_endpoint._set_memorize_progress(runtime._MEMORIZE_PROGRESS, marker, active=False, last_result="success")
-        return {**result, "conversation_id": cid, "import_state": record()}
     except (Exception, asyncio.CancelledError) as exc:
-        runtime._write_conversation_state(cid, **scoped, updates={
-            "import_stage": phase, "import_error": f"{type(exc).__name__}: {exc}"[:300],
-        })
+        error = "Import interrupted. Retry required." if isinstance(exc, asyncio.CancelledError) else f"{type(exc).__name__}: {exc}"
+        runtime.logger.exception("Import batch failed for %s", cid)
         memorize_endpoint._set_memorize_progress(
-            runtime._MEMORIZE_PROGRESS, marker, active=False, last_result="failure", error=str(exc),
+            runtime._MEMORIZE_PROGRESS, marker, active=False, last_result="failure", error=error,
         )
+        try:
+            runtime._write_conversation_state(cid, **scoped, updates={"import_stage": phase, "import_error": error[:300]})
+        except Exception:
+            runtime.logger.exception("Failed to record import error for %s", cid)
         if isinstance(exc, asyncio.CancelledError):
             raise
-        runtime.logger.exception("Import batch failed for %s", cid)
-        return {"status": "error", "conversation_id": cid, "import_state": record()}
     finally:
+        runtime._MEMORIZE_CANCEL.discard(marker)
         await runtime._finish_memorize_claim(marker, success)
 
 

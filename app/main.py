@@ -2109,6 +2109,7 @@ async def _run_consolidation_task(
     ):
         if (
             progress_key and memorize_progress is not None
+            and _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, soul_id)) is not True
             and memorize_progress.get(progress_key, {}).get("phase") != "consolidating"
         ):
             _memorize_endpoint._set_memorize_progress(

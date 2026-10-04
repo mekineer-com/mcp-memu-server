@@ -129,7 +129,7 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stop", ["calendar", "capacity", "failure", "consolidation_failure", "no_memories"])
+@pytest.mark.parametrize("stop", ["calendar", "calendar_retry", "capacity", "failure", "error_write", "consolidation_failure", "no_memories", "no_memories_calendar"])
 async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, monkeypatch, stop):
     import asyncio
     from app.services import memorize_endpoint
@@ -143,7 +143,7 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
         sqlite_ensure_conversation_state_schema(con)
     rows, _, _ = chat_import.normalize_messages([
         {"id": str(i), "role": "user", "content": "fictional story " * 20,
-         "timestamp": "2025-01-09" if stop == "calendar" and i else "2025-01-01"}
+         "timestamp": "2025-01-09" if stop in {"calendar", "calendar_retry", "no_memories_calendar"} and i else "2025-01-01"}
         for i in range(3)])
     stored = chat_import.store_upload(source, **scope, messages=rows, history_count=3)
     request = ImportScope(**scope)
@@ -151,7 +151,14 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
     cid = stored["conversation_id"]
     marker = main._memorize_lock_key(**scoped)
     extracts, consolidations, releases = [], [], []
-    fail = stop in {"failure", "consolidation_failure"}
+    fail = stop in {"failure", "calendar_retry", "error_write", "consolidation_failure"}
+    if stop == "error_write":
+        write = main._write_conversation_state
+        def failing_write(*args, **kwargs):
+            if str(kwargs.get("updates", {}).get("import_error", "")).startswith("ValueError:"):
+                raise sqlite3.OperationalError("Fictional error-write lock")
+            return write(*args, **kwargs)
+        monkeypatch.setattr(main, "_write_conversation_state", failing_write)
     profile = SimpleNamespace(context_window_tokens=100, max_tokens=0, chat_model="fictional")
     class Service:
         memorize_config = SimpleNamespace(category_update_llm_profile="default")
@@ -163,16 +170,18 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
             with pytest.raises(HTTPException) as busy:
                 await _endpoint("/imports/process")(request)
             assert busy.value.status_code == 409
-            if stop == "failure" and fail and len(extracts) == 2:
+            if stop in {"failure", "calendar_retry", "error_write"} and fail and len(extracts) == 2:
                 raise ValueError("Fictional extraction failure")
-            if stop == "no_memories":
+            if stop in {"no_memories", "no_memories_calendar"}:
                 return [{} for _ in kwargs["segments"]]
             return [{"pending_segment_ids": [row["segment"]["segment_id"]]} for row in kwargs["segments"]]
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
     def gather(_deps, **kwargs):
         pairs = kwargs["selected_segments"]
         assert all(owner == cid for owner, _ in pairs)
-        return {"segment_inputs": [{} for _ in pairs], "current_chat_messages": []}
+        return {"segment_inputs": [{} for _ in pairs], "current_chat_messages": [
+            {"source_day": rows[int(segment_id.rsplit(":", 1)[1].split("-")[0])]["source_day"]}
+            for _owner, segment_id in pairs]}
     monkeypatch.setattr(consolidation, "gather_consolidation_inputs", gather)
     monkeypatch.setattr(consolidation, "_prepare_dossier_consolidation_prompts", lambda *_a, **kw:
         ([], "", "", {"dossiers": 60 if stop in {"capacity", "consolidation_failure"} and len(kw["inputs"]["segment_inputs"]) >= 2 else 10}))
@@ -182,6 +191,8 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
     async def pipeline(**kwargs):
         assert kwargs["historical"] and main._FORCED_MEMORIZE_INFLIGHT[marker] is True
         consolidations.append(kwargs["selected_segments"])
+        assert kwargs["selected_segments"] == {(cid, segment_id) for segment_id in record()["pending_segment_ids"]}
+        assert (await main.memorize_cancel(scoped))["status"] == "cancel_requested"
         entered.set()
         await finish.wait()
         if stop == "consolidation_failure" and fail:
@@ -197,13 +208,14 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
     monkeypatch.setattr(main, "_run_consolidation_pipeline_once", pipeline)
     release = main._finish_memorize_claim
     async def finished(key, success):
+        assert key not in main._MEMORIZE_CANCEL
         releases.append((key, success))
         await release(key, success)
     monkeypatch.setattr(main, "_finish_memorize_claim", finished)
     response = await _endpoint("/imports/process")(request)
     assert response.status_code == 202
     tasks = list(main._BACKGROUND_TASKS)
-    if stop not in {"failure", "no_memories"}:
+    if stop not in {"failure", "calendar_retry", "error_write", "no_memories", "no_memories_calendar"}:
         await asyncio.wait_for(entered.wait(), 5)
         with pytest.raises(HTTPException) as busy:
             await _endpoint("/imports/process")(request)
@@ -211,8 +223,8 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
         finish.set()
     await asyncio.gather(*tasks)
     assert len(extracts) == (3 if stop == "no_memories" else 2) and marker not in main._FORCED_MEMORIZE_INFLIGHT
-    assert releases == [(marker, stop not in {"failure", "consolidation_failure"})]
-    if stop == "failure":
+    assert releases == [(marker, stop not in {"failure", "calendar_retry", "error_write", "consolidation_failure"})]
+    if stop in {"failure", "calendar_retry", "error_write"}:
         assert record()["stage"] == "memorize" and record()["error"]
         assert record()["memorize_cursor"] == 0 and not consolidations
         with pytest.raises(HTTPException, match="Retry"):
@@ -221,7 +233,7 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
         finish.set()
         await _endpoint("/imports/retry")(request)
         await asyncio.gather(*list(main._BACKGROUND_TASKS))
-        assert len(extracts) == 4 and len(consolidations) == 1
+        assert len(extracts) == (3 if stop == "calendar_retry" else 4) and len(consolidations) == 1
     elif stop == "consolidation_failure":
         assert record()["stage"] == "consolidation" and record()["error"]
         assert len(consolidations) == 1
@@ -233,6 +245,9 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
         assert len(extracts) == 2 and len(consolidations) == 2
     elif stop == "no_memories":
         assert record()["stage"] == "complete" and record()["memorize_cursor"] == 2
+        assert not consolidations
+    elif stop == "no_memories_calendar":
+        assert record()["stage"] == "memorize" and record()["memorize_cursor"] == 1
         assert not consolidations
     else:
         assert len(consolidations) == 1 and record()["pending_segment_ids"]
