@@ -1460,22 +1460,15 @@ def _record_consolidation_failure(
     db_path = deps.sqlite_current_path(user_id, soul_id)
     if db_path is None or not db_path.exists():
         raise FileNotFoundError(f"soul database not found: {soul_id}")
+    if historical:
+        deps.write_conversation_state(
+            conversation_id, soul_id=soul_id, user_id=user_id,
+            updates={"import_error": error[:300]},
+        )
+        return
     con = deps.sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
-        if historical:
-            current = deps.conversation_state_from_row(
-                deps.conversation_state_row(con, conversation_id, soul_id=soul_id, user_id=user_id), con=con,
-            )
-            if current is None or current["import_state"] is None:
-                raise ValueError("historical consolidation requires registered import state")
-            deps.write_conversation_state(
-                conversation_id, soul_id=soul_id, user_id=user_id,
-                updates={"import_state": {**current["import_state"], "error": error[:300]}},
-                connection=con,
-            )
-            con.commit()
-            return
         _soul_state.ensure_schema(con)
         _soul_state.write(
             con,

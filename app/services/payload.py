@@ -187,6 +187,7 @@ def _normalize_conversation(conv: Any) -> Any:
                             "app_label",
                             "source_day",
                             "source_message_id",
+                            "source_owner_id",
                             "historical",
                         )
                         if m.get(key) is not None

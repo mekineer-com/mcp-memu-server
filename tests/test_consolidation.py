@@ -1237,6 +1237,17 @@ async def test_historical_runner_failure_is_import_only(tmp_path, monkeypatch, o
     with sqlite_connect(path) as con:
         con.row_factory = sqlite3.Row
         before = _soul_state.read(con)
+    write_state = deps.write_conversation_state
+    def register_before_error_write(cid, **kwargs):
+        updates = kwargs.get("updates", {})
+        if "import_error" in updates or (updates.get("import_state") or {}).get("error"):
+            # Registration commits in the old error handler's read/write gap.
+            write_state(cid, **scope, updates={"import_state": {
+                "history_end_index": 6, "memorize_cursor": 1,
+                "pending_segment_ids": ["historical"], "stage": "consolidation", "error": None,
+            }})
+        return write_state(cid, **kwargs)
+    deps = replace(deps, write_conversation_state=register_before_error_write)
     svc = _DossierContextService()
     svc.database = _make_svc_stub(path).database
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_: path)
@@ -1270,6 +1281,7 @@ async def test_historical_runner_failure_is_import_only(tmp_path, monkeypatch, o
         state = conversation_state_from_row(conversation_state_row(con, "chat", **scope))
         assert state["pending_segment_ids"] == ["ordinary"]
         assert state["import_state"]["pending_segment_ids"] == ["historical"]
+        assert state["import_state"]["history_end_index"] == 6
         assert "Import model call failed" in state["import_state"]["error"]
 
 

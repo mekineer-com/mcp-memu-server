@@ -102,6 +102,18 @@ def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path
     record["history_end_index"] = extended["history_end_index"]
     bounded = conversation_sources.load_import_tail(**kwargs, since_cursor=5, historical=True)
     assert [row["source_conversation_index"] for row in bounded] == [6]
+    native, _, _ = chat_import.normalize_messages([{
+        "id": "native-customer", "meta": {"nature": "Customer", "timestamp": "2025-01-01"},
+        "content": {"type": "text", "text": "The owner shared a thought"},
+    }])
+    native_chat = chat_import.store_upload(source, **{**scope, "label": "Replika"}, messages=native, history_count=0)
+    owner_rows = _normalize_conversation(conversation_sources.load_import_tail(
+        user_id="TestOwner", soul_id="TestSoul", conversation_id=native_chat["conversation_id"],
+        since_cursor=-1, recent_fallback_messages=0))
+    assert owner_rows[0]["name"] == "TestOwner" and owner_rows[0]["source_owner_id"] == "TestOwner"
+    owner_map = _build_speaker_map(owner_rows, scope)
+    owner_memory = _attribute_memory(memory._replace(source_role="user"), owner_map)
+    assert owner_memory.speaker_id == "user:testowner" and owner_memory.speaker_label == "TestOwner"
 
 
 def test_registered_import_split_survives_source_update_and_filters_live_reads(tmp_path, monkeypatch):
