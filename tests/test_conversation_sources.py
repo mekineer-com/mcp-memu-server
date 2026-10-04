@@ -75,8 +75,19 @@ def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path
         updates={"import_state": record, "digest_cursor": 2, "last_memorize_at": "2025-01-01T00:00:00Z"})
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_: soul_db)
     monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+    monkeypatch.setattr(main, "_get_storage_dir", lambda *_: tmp_path)
+    artifacts = tmp_path / "st_chats" / "TestSoul_import-test" / "segments"
+    artifacts.mkdir(parents=True)
+    ordinary_file, historical_file = artifacts / "ordinary.json", artifacts / "historical.json"
+    ordinary_file.write_text(json.dumps(current))
+    historical_file.write_text(json.dumps([selected[-1]]))
+    os.utime(ordinary_file, (10, 10))
+    os.utime(historical_file, (20, 20))
+    assert main._latest_saved_segment_display_ranges(soul_id="TestSoul") == {cid: (3, 4)}
     with sqlite3.connect(soul_db) as con:
         con.row_factory = sqlite3.Row
+        displayed = cross_history._load_cross_tail_from_sources(con, user_id="TestOwner", soul_id="TestSoul")
+        assert [m["source_conversation_index"] for m in displayed] == [2, 3, 4]
         tails = cross_history._load_cross_memorize_tails_from_sources(con, user_id="TestOwner", soul_id="TestSoul")
     assert [m["source_conversation_index"] for m in tails[cid]] == [3, 4]
     payload = main._build_cross_conversation_payload(cid, "TestOwner", "TestSoul", {}, current, 2)

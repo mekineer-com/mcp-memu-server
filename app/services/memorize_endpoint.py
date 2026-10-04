@@ -187,7 +187,7 @@ def _segment_display_ranges(
     for fallback_idx, msg in enumerate(segment_messages):
         if not isinstance(msg, dict):
             continue
-        if not bool(msg.get("memorize_chat", True)):
+        if not bool(msg.get("memorize_chat", True)) or msg.get("historical") is True:
             continue
         cid = str(msg.get("source_conversation_id") or msg.get("conversation_id") or "").strip()
         if not cid:

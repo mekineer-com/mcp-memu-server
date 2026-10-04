@@ -91,8 +91,9 @@ def load_import_tail(
         params = (chat_id, int(historical), since_cursor)
         if historical:
             params += (record["history_end_index"],)
+        columns = "position, supplied_id, timestamp, source_day, ts_ms, speaker, role, content, historical"
         selected = con.execute(
-            "SELECT * FROM imported_messages WHERE chat_id = ? AND historical = ? AND position > ?"
+            f"SELECT {columns} FROM imported_messages WHERE chat_id = ? AND historical = ? AND position > ?"
             + bound + " ORDER BY position", params,
         )
         rows, tokens = [], 0
@@ -105,7 +106,7 @@ def load_import_tail(
             tokens += size
         if not historical and since_cursor >= 0 and len(rows) < recent_fallback_messages and (rows or include_floor_without_new):
             older = con.execute(
-                "SELECT * FROM imported_messages WHERE chat_id = ? AND historical = 0 AND position <= ?"
+                f"SELECT {columns} FROM imported_messages WHERE chat_id = ? AND historical = 0 AND position <= ?"
                 " ORDER BY position DESC LIMIT ?",
                 (chat_id, since_cursor, recent_fallback_messages - len(rows)),
             ).fetchall()
