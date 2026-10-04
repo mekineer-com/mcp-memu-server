@@ -479,7 +479,7 @@ async def run_memorize_segments(
             else:
                 if historical:
                     ctx.write_conversation_state(conversation_id, user_id=uid, soul_id=soul_id,
-                        updates={"import_error": "Memorize interrupted before completion. Retry required."})
+                        updates={"import_stage": "memorize", "import_error": "Memorize interrupted before completion. Retry required."})
                 elif failure_record is not None or any(job["memory_producing"] for job in segment_jobs):
                     targets = final_cursors or {
                         conversation_id: {"cursor": memorize_segments[-1][3], "memory_producing": True},
@@ -809,7 +809,7 @@ async def run_memorize_segments(
     except Exception as exc:
         if historical and conversation_id:
             ctx.write_conversation_state(conversation_id, user_id=uid, soul_id=soul_id,
-                updates={"import_error": f"Memorize failed: {exc}"[:300]})
+                updates={"import_stage": "memorize", "import_error": f"Memorize failed: {exc}"[:300]})
         elif failure_record is not None:
             ctx.write_conversation_state(
                 conversation_id, user_id=uid, soul_id=soul_id,

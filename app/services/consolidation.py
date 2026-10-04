@@ -564,6 +564,13 @@ def preflight_consolidation_profiles(
     return revision_profile
 
 
+def consolidation_size_due(svc: MemoryService, estimates: dict[str, int], segment_count: int, profile: str | None) -> bool:
+    # ponytail: total-prompt average includes fixed context; conservative until real growth warrants finer sizing.
+    return any(tokens and tokens + (tokens + segment_count - 1) // segment_count >= consolidation_input_budget(
+        svc, svc.memorize_config.category_update_llm_profile if stage == "dossiers" else profile,
+    ) for stage, tokens in estimates.items())
+
+
 def _format_life_goals_for_prompt(active: list[str], removed: list[str]) -> str:
     parts: list[str] = []
     if active:
@@ -1449,7 +1456,7 @@ def _record_consolidation_failure(
     if historical:
         deps.write_conversation_state(
             conversation_id, soul_id=soul_id, user_id=user_id,
-            updates={"import_error": error[:300]},
+            updates={"import_stage": "consolidation", "import_error": error[:300]},
         )
         return
     con = deps.sqlite_connect(db_path)
@@ -1547,10 +1554,7 @@ async def _run_consolidation_pipeline_once(
                 svc, inputs=prep, soul_id=soul_id, user_id=user_id,
             )
             segment_count = len(prep["segment_inputs"])
-            # ponytail: total-prompt average includes fixed context; conservative until real growth warrants finer sizing.
-            if all(not tokens or tokens + (tokens + segment_count - 1) // segment_count < consolidation_input_budget(
-                svc, svc.memorize_config.category_update_llm_profile if stage == "dossiers" else consolidation_profile,
-            ) for stage, tokens in prepared[3].items()):
+            if not consolidation_size_due(svc, prepared[3], segment_count, consolidation_profile):
                 return {"status": "skipped", "reason": "not_due"}
             log.info("consolidation due by size: segments=%d estimates=%s", segment_count, prepared[3])
         if historical:

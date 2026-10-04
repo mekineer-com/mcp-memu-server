@@ -1,14 +1,16 @@
-"""Unpaid admission for the client-owned imported-chat source."""
+"""Admission and bounded historical processing for the client-owned import source."""
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from memu.app.dossier_revision import estimate_prompt_tokens
-from app.services import conversation_sources
+from app.services import consolidation, conversation_sources, memorize_endpoint
 from app.services.consolidation import consolidation_input_budget
 from app.services.state import effective_digest_cursor_from_row
 
@@ -34,12 +36,151 @@ class ImportPreview(ImportScope):
     current_messages: list[ImportMessage]
 
 
+async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: bool = False) -> dict:
+    cid = chat["conversation_id"]
+    uid, sid = scoped["user_id"], scoped["soul_id"]
+    marker = runtime._memorize_lock_key(uid, sid)
+    lock = runtime._get_memorize_lock(marker)
+    phase, success = "memorize", False
+    def record():
+        state, _card, _path = runtime._load_turn_state_and_soul_card(cid, **scoped)
+        return state["import_state"]
+    try:
+        current = record()
+        pending_first = bool(current["pending_segment_ids"]) and not (
+            retry and current["error"] and current["stage"] == "memorize"
+        )
+        phase = "consolidation" if pending_first else "memorize"
+        svc = runtime._get_service_from_payload({"user": scoped})
+        deps = runtime._make_consolidation_deps()
+        profile = runtime._resolve_profile_if_configured(svc, "consolidation")
+        days: set[date] = set()
+        while not pending_first:
+            phase = "memorize"
+            rows = conversation_sources.load_import_tail(
+                **scoped, conversation_id=cid, since_cursor=current["memorize_cursor"],
+                recent_fallback_messages=0, import_state=current, historical=True,
+            )
+            if not rows:
+                runtime._write_conversation_state(cid, **scoped, updates={
+                    "import_memorize_cursor": current["history_end_index"] - 1, "import_error": None,
+                })
+                current = record()
+                break
+            tasks = BackgroundTasks()
+            await runtime._memorize_owned(
+                {"user": scoped, "conversation_id": cid, "chat_name": chat["title"] or chat["label"],
+                 "conversation": rows},
+                tasks, True, admitted=True, historical=True, batch_owned=True,
+            )
+            for task in tasks.tasks:
+                if not await task.func(*task.args, **task.kwargs):
+                    raise RuntimeError("Import extraction did not complete; Retry required")
+            previous_cursor = current["memorize_cursor"]
+            current = record()
+            if current["memorize_cursor"] <= previous_cursor:
+                raise RuntimeError("Import extraction did not advance its source checkpoint")
+            days.update(date.fromisoformat(row["source_day"]) for row in rows)
+            if not current["pending_segment_ids"]:
+                continue
+            phase = "consolidation"
+            pairs = {(cid, segment_id) for segment_id in current["pending_segment_ids"]}
+            async with lock:
+                prep = consolidation.gather_consolidation_inputs(
+                    deps, conversation_id=cid, **scoped, force=True, historical=True, selected_segments=pairs,
+                )
+            if prep.get("status") == "skip":
+                raise RuntimeError("Extracted import segments could not be prepared for consolidation")
+            prep["all_chat_history"] = runtime._format_all_chat_history_for_ai(
+                current_history=prep["current_chat_messages"], cross_tail=[],
+                conversation_id=cid, soul_id=sid, mark_current_chat=False,
+            )
+            estimates = consolidation._prepare_dossier_consolidation_prompts(
+                svc, inputs=prep, **scoped,
+            )[3]
+            if (max(days) - min(days)).days >= runtime._consolidation_interval_days_from_cfg(runtime._CONFIG) or consolidation.consolidation_size_due(
+                svc, estimates, len(prep["segment_inputs"]), profile,
+            ):
+                break
+        result = {"status": "complete"}
+        if current["pending_segment_ids"]:
+            phase = "consolidation"
+            memorize_endpoint._set_memorize_progress(
+                runtime._MEMORIZE_PROGRESS, marker, active=True, phase="consolidating", current=1, total=1,
+            )
+            result = await runtime._run_consolidation_pipeline_once(
+                svc=svc, deps=deps, state_lock=lock, running=runtime._CONSOLIDATION_RUNNING,
+                load_cross_tail_for_ai=runtime._load_cross_tail_for_ai,
+                format_all_chat_history_for_ai=runtime._format_all_chat_history_for_ai,
+                conversation_id=cid, **scoped, force=True, historical=True,
+                selected_segments={(cid, segment_id) for segment_id in current["pending_segment_ids"]},
+            )
+            if result.get("status") != "ok":
+                raise RuntimeError(f"Import consolidation did not complete: {result.get('reason', 'skipped')}")
+        success = True
+        memorize_endpoint._set_memorize_progress(runtime._MEMORIZE_PROGRESS, marker, active=False, last_result="success")
+        return {**result, "conversation_id": cid, "import_state": record()}
+    except (Exception, asyncio.CancelledError) as exc:
+        runtime._write_conversation_state(cid, **scoped, updates={
+            "import_stage": phase, "import_error": f"{type(exc).__name__}: {exc}"[:300],
+        })
+        memorize_endpoint._set_memorize_progress(
+            runtime._MEMORIZE_PROGRESS, marker, active=False, last_result="failure", error=str(exc),
+        )
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        runtime.logger.exception("Import batch failed for %s", cid)
+        return {"status": "error", "conversation_id": cid, "import_state": record()}
+    finally:
+        await runtime._finish_memorize_claim(marker, success)
+
+
 def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
     def scope(request: ImportScope) -> tuple[dict, str]:
         scoped = runtime._extract_scope(request.model_dump())
         if not scoped.get("user_id") or not scoped.get("soul_id") or len(request.label.split()) != 1:
             raise HTTPException(status_code=400, detail="Owner, Soul and a one-word chat-app label are required")
         return scoped, request.label.strip()
+
+    def registered(request: ImportScope):
+        scoped, label = scope(request)
+        chat = conversation_sources.import_chat_info(**scoped, label=label)
+        if chat is None:
+            raise HTTPException(status_code=404, detail="Imported chat not found")
+        state, _card, _path = runtime._load_turn_state_and_soul_card(chat["conversation_id"], **scoped)
+        if state.get("import_state") is None:
+            raise HTTPException(status_code=409, detail="Register the imported chat first")
+        return scoped, chat, state["import_state"]
+
+    def start(request: ImportScope, *, retry: bool):
+        scoped, chat, record = registered(request)
+        marker = runtime._memorize_lock_key(**scoped)
+        with runtime._STATE_LOCK:
+            if marker in runtime._FORCED_MEMORIZE_INFLIGHT or (scoped["user_id"], scoped["soul_id"]) in runtime._CONSOLIDATION_RUNNING:
+                raise HTTPException(status_code=409, detail="Memory work is still running")
+            if bool(record["error"]) != retry:
+                raise HTTPException(status_code=409, detail="Retry the failed import" if record["error"] else "No failed import to retry")
+            runtime._FORCED_MEMORIZE_INFLIGHT[marker] = True
+        task = asyncio.create_task(run_import_batch(runtime, scoped=scoped, chat=chat, retry=retry))
+        runtime._BACKGROUND_TASKS.add(task)
+        task.add_done_callback(runtime._BACKGROUND_TASKS.discard)
+        return JSONResponse(status_code=202, content={"status": "accepted", "conversation_id": chat["conversation_id"]})
+
+    @app.post("/imports/process", operation_id="process_import")
+    async def process(request: ImportScope):
+        return start(request, retry=False)
+
+    @app.post("/imports/retry", operation_id="retry_import")
+    async def retry(request: ImportScope):
+        return start(request, retry=True)
+
+    @app.get("/imports/status", operation_id="import_status")
+    def status(user_id: str, soul_id: str, label: str):
+        scoped, chat, record = registered(ImportScope(user_id=user_id, soul_id=soul_id, label=label))
+        marker = runtime._memorize_lock_key(**scoped)
+        return {"conversation_id": chat["conversation_id"], "import_state": record,
+                "running": marker in runtime._FORCED_MEMORIZE_INFLIGHT,
+                "progress": runtime._MEMORIZE_PROGRESS.get(marker, {"active": False})}
 
     @app.post("/imports/register", operation_id="register_import")
     def register(request: ImportScope):

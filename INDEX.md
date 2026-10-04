@@ -61,6 +61,8 @@ mcp-memu-server/
 | `/memorize` | POST | Extract memories from conversation. `force=true` bypasses sleep-gap; `rebuild=true` archives the DB and resets cursor (implies force), returning HTTP 409 while the same owner and Soul consolidate. Auto-memorize also fires inside `/conversation/{id}/turn`. |
 | `/imports/register` | POST | Register/reuse a stored imported chat by owner, Soul and app label; extend only its historical bound without resetting cursors, queues or errors. No model call. |
 | `/imports/validate` | POST | Check proposed new current rows against stored display floors, cross-chat/activity context and known Soul state with the actual turn allowance. No model call, source insertion or Memorize scheduling. |
+| `/imports/process`, `/imports/retry` | POST | Start one tracked historical batch, returning promptly. Reuse bounded source reads, extraction and one consolidation; failed work requires explicit Retry. |
+| `/imports/status` | GET | Scoped imported-chat checkpoint, error and existing per-Soul progress; no separate job ledger. |
 | `/memorize/progress` | GET | Live memorize batch progress |
 | `/memorize/cancel` | POST | Cancel the running memorize batch |
 | `/retrieve` | POST | Query memories. Optional `as_of` for temporal triple filtering. |
@@ -170,6 +172,7 @@ snapshot metadata, not introduce another registry.
 | `app/services/mentra_routes.py` | Authenticated Mentra boundary: sitting-scoped lease lifecycle, bootstrap/token mint, non-blocking recall, transcript append/ack, and durable image snapshot/finalize. Image finalize stays unavailable until Gemini embedding config and DB profile are both active. |
 | `app/services/memorize_endpoint.py` | `/memorize` core: segment-file persistence, forced-memorize runner, rolling-summary injection, sleep-gap/token chunking, progress/cancel. Historical mode uses registered import progress and original source positions, not filtered-list offsets, and enables engine-owned actual-model prompt budgets. Main's mode-aware claim distinguishes ordinary recovery from historical work. Listen-only segments advance source cursors without producing memory, consuming rolling summaries, or retaining segment files. |
 | `app/services/conversation_sources.py` | Source adapters: WhatsApp from `web_source.db`; ST/Atomic/Replika from resource chat snapshots (`st_chats` / `atomic_chats` / `replika_chats`); Mentra from `openalma/mentra/transcripts`. Handles atomic writes, cursor slicing, floor backfill, and role normalization. |
+| `app/services/import_routes.py` | Echo's scoped registration, unpaid current-tail validation, Process/Retry/status and bounded outer historical loop. Holds the existing claim through extraction plus one consolidation, resumes pending spans first, records the failed phase, and releases coalesced ordinary work. |
 | `app/services/cross_history.py` | Cross-conversation history: formats AI-facing all-chat history, assembles cross-tail/background memorize feeds, manages display-segment cleanup |
 | `app/services/apimw.py` | APImw background memory-weaving pipeline: retrieve → synthesize prior-context/message-to-self → persist |
 | `app/services/admin_routes.py` | Health/version/shutdown/diag endpoint handlers |

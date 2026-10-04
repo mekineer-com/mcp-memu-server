@@ -222,7 +222,7 @@ def write_conversation_state(
     owns_connection = connection is None
     raw_updates = dict(updates) if updates else {}
     patch_import = any(key in raw_updates for key in (
-        "import_memorize_cursor", "append_import_pending_segment_ids", "import_error"))
+        "import_memorize_cursor", "append_import_pending_segment_ids", "import_error", "import_stage"))
     if owns_connection:
         sqlite_ensure_nonempty(db_path)
     con = connection or sqlite_connect(db_path)
@@ -307,7 +307,7 @@ INSERT OR IGNORE INTO conversations (
             field_updates["import_state"] = {**record, "memorize_cursor": cursor, "pending_segment_ids": pending,
                 "error": raw_updates.pop("import_error", record.get("error")),
                 "stage": (("consolidation" if pending else "complete" if cursor == record["history_end_index"] - 1 else "memorize")
-                          if advancing else record["stage"])}
+                          if advancing else raw_updates.pop("import_stage", record["stage"]))}
 
         for cursor, source_id, source_ts in (
             ("digest_cursor", "digest_cursor_source_message_id", "digest_cursor_ts"),
