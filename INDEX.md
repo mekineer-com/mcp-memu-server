@@ -133,7 +133,7 @@ mcp-memu-server/
 | `/config` | GET/POST | Read or update runtime config |
 | `/reload` | POST | Reload config from disk |
 | `/diag`, `/diag/calls`, `/diag/http`, `/diag/sqlite/*` | GET | Diagnostic pages. Read-only — never use for DB bootstrap. |
-| `/diag/memorize/pending` | GET | Global memorize pressure: unmemorized tokens vs threshold + sleep-gap status |
+| `/diag/memorize/pending` | GET | Scoped Soul memorize pressure: unmemorized tokens vs threshold, sleep-gap status and existing historical import-claim activity |
 
 ### Soul Setup Contract
 

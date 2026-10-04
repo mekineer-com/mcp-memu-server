@@ -52,13 +52,17 @@ def _patch_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tails: dict)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("claim", [None, False, True])
 async def test_diag_pending_sum_matches_turn_path_estimate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    claim,
 ) -> None:
     tails = _fixture_tails()
     _patch_sources(tmp_path, monkeypatch, tails)
     monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 500)
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT",
+        {} if claim is None else {main._memorize_lock_key("u1", "Echo"): claim})
 
     out = await main.diag_memorize_pending(user_id="u1", soul_id="Echo")
 
@@ -69,6 +73,7 @@ async def test_diag_pending_sum_matches_turn_path_estimate(
     assert out["threshold"] == 500
     assert out["pct"] == round(expected * 100 / 500)
     assert out["computed_at"]
+    assert out["import_running"] is (claim is True)
 
 
 @pytest.mark.asyncio

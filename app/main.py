@@ -3438,6 +3438,7 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         "soul_id": sid, "paused": bool(pause_reason), "pause_reason": pause_reason,
         "retry_operation": retry_operation, "consolidation_running": consolidation_running,
         "memorize_failure": memory_failure, "memorize_running": memory_running,
+        "import_running": _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, sid)) is True,
         "progress": _MEMORIZE_PROGRESS.get(_memorize_lock_key(uid, sid), {}),
         "summed_unmemorized_tokens": summed,
         "threshold": threshold,
