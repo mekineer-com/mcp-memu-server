@@ -4162,8 +4162,10 @@ async def test_auto_memorize_collision_rechecks_latest_scope_after_success(
 
 
 @pytest.mark.asyncio
-async def test_auto_memorize_failure_discards_pending_recheck(
+@pytest.mark.parametrize("historical", [False, True])
+async def test_auto_memorize_failure_rechecks_only_after_historical_work(
     monkeypatch: pytest.MonkeyPatch,
+    historical: bool,
 ) -> None:
     marker = main._memorize_lock_key("u1", "Echo")
     release = asyncio.Event()
@@ -4177,7 +4179,7 @@ async def test_auto_memorize_failure_discards_pending_recheck(
     def prepare(*_args: Any, **_kwargs: Any) -> tuple[int, dict[str, Any] | None]:
         nonlocal prepares
         prepares += 1
-        return 9000, {"run": "unexpected"}
+        return 9000, None
 
     monkeypatch.setattr(main, "_run_forced_memorize_from_turn", fail)
     monkeypatch.setattr(main, "_prepare_auto_memorize", prepare)
@@ -4186,19 +4188,62 @@ async def test_auto_memorize_failure_discards_pending_recheck(
     try:
         scope = main._auto_memorize_scope("cid", "u1", "Echo", {}, [{"content": "latest"}])
         main._schedule_auto_memorize({"run": "first"}, scope)
+        main._FORCED_MEMORIZE_INFLIGHT[marker] = historical
         await asyncio.sleep(0)
         main._schedule_auto_memorize({"run": "ignored"}, scope)
         release.set()
         await asyncio.gather(*list(main._BACKGROUND_TASKS))
         await asyncio.sleep(0)
 
-        assert prepares == 0
+        assert prepares == int(historical)
         assert marker not in main._FORCED_MEMORIZE_INFLIGHT
         assert marker not in main._FORCED_MEMORIZE_RECHECK
     finally:
         release.set()
         main._FORCED_MEMORIZE_INFLIGHT.pop(marker, None)
         main._FORCED_MEMORIZE_RECHECK.pop(marker, None)
+
+
+@pytest.mark.asyncio
+async def test_historical_claim_blocks_ordinary_consolidation_before_progress(monkeypatch):
+    marker = main._memorize_lock_key("TestOwner", "TestSoul")
+    monkeypatch.setitem(main._FORCED_MEMORIZE_INFLIGHT, marker, True)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: pytest.fail("busy admission must precede service lookup"))
+    progress = {marker: {"active": True, "phase": "accepted"}}
+    result = await main._run_consolidation_task(
+        object(), conversation_id="chat:test", uid="TestOwner", soul_id="TestSoul",
+        force=True, progress_key=marker, memorize_progress=progress,
+    )
+    assert result["status"] == "skipped" and progress[marker] == {"active": True, "phase": "accepted"}
+    for endpoint in (main.force_consolidation, main.retry_consolidation):
+        with pytest.raises(HTTPException) as refused:
+            await endpoint("chat:test", {"user_id": "TestOwner", "soul_id": "TestSoul"})
+        assert refused.value.status_code == 409
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prepare_failure", [False, True])
+async def test_batch_owned_prepare_does_not_release_outer_claim(monkeypatch, prepare_failure):
+    from fastapi import BackgroundTasks
+    marker = main._memorize_lock_key("TestOwner", "TestSoul")
+    monkeypatch.setitem(main._FORCED_MEMORIZE_INFLIGHT, marker, True)
+    async def prepare(*_args, **kwargs):
+        assert kwargs["endpoint_ctx"].run_memorize_segments.keywords["batch_owned"] is True
+        if prepare_failure:
+            raise ValueError("Preparation failed")
+        return main.JSONResponse({"status": "nothing_to_memorize"})
+    monkeypatch.setattr(main._memorize_endpoint, "memorize_endpoint", prepare)
+    payload = {"user_id": "TestOwner", "soul_id": "TestSoul", "conversation_id": "import:dm:test"}
+    try:
+        if prepare_failure:
+            with pytest.raises(ValueError, match="Preparation failed"):
+                await main._memorize_owned(payload, BackgroundTasks(), True, admitted=True, historical=True, batch_owned=True)
+        else:
+            await main._memorize_owned(payload, BackgroundTasks(), True, admitted=True, historical=True, batch_owned=True)
+        assert main._FORCED_MEMORIZE_INFLIGHT[marker] is True
+    finally:
+        await main._finish_memorize_claim(marker, not prepare_failure)
+    assert marker not in main._FORCED_MEMORIZE_INFLIGHT
 
 
 def test_parse_as_of_datetime_accepts_iso_date_and_datetime():
@@ -4551,7 +4596,8 @@ def test_auto_consolidation_policy() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fail", [False, True])
 @pytest.mark.parametrize("sql_import", [False, True])
-async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeypatch, fail, sql_import):
+@pytest.mark.parametrize("batch_owned", [False, True])
+async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeypatch, fail, sql_import, batch_owned):
     from fastapi import BackgroundTasks
     from app.db import sqlite_connect, sqlite_ensure_conversation_state_schema
     from app.services import state as state_module, soul_state
@@ -4599,6 +4645,8 @@ async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeyp
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
     monkeypatch.setattr(main, "_run_consolidation_task", lambda *_a, **_kw: pytest.fail("no normal schedule during import"))
     key = main._memorize_lock_key(scope["user_id"], scope["soul_id"])
+    if batch_owned:
+        main._FORCED_MEMORIZE_INFLIGHT[key] = True
     with pytest.raises(HTTPException):
         main._require_soul_active(scope["user_id"], scope["soul_id"])
     tasks = BackgroundTasks()
@@ -4612,13 +4660,16 @@ async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeyp
              "app_label": "Replika", "source_day": "2024-01-01"},
         ] if sql_import else [{"role": "user", "content": "Earlier"},
                               {"role": "assistant", "content": "Old reply"}]),
-    }, tasks, True, historical=True, retry=True)
+    }, tasks, True, historical=True, retry=True, admitted=batch_owned, batch_owned=batch_owned)
     assert response.status_code == 202
     if fail:
         with pytest.raises(RuntimeError, match="Import extraction failed"):
             await tasks()
     else:
         await tasks()
+    if batch_owned:
+        assert main._FORCED_MEMORIZE_INFLIGHT[key] is True
+        await main._finish_memorize_claim(key, not fail)
     assert key not in main._FORCED_MEMORIZE_INFLIGHT
     state = load(cid, **scope)[0]
     assert state["pending_segment_ids"] == ["ordinary"] and state["digest_cursor"] == 10

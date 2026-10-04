@@ -14,7 +14,7 @@ mcp-memu-server/
 ├── app/db.py                # SQLite helpers, schema ensures, JSON marshalling
 ├── app/models/base.py       # Declarative ORM base
 ├── app/services/consolidation.py # Shared runner, read-only prompt preparation, Resource-owned segment reconstruction and selected prior context
-├── app/services/memorize_endpoint.py
+├── app/services/memorize_endpoint.py # Shared extraction; private batch-owned handoff leaves claim release to the outer import task
 ├── app/services/activity_messages.py
 ├── app/services/whatsapp_outbounds.py
 ├── app/services/free_turn.py

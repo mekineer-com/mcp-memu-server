@@ -15,6 +15,8 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
+from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
@@ -2102,7 +2104,9 @@ async def _run_consolidation_task(
     progress_key: str | None = None,
     memorize_progress: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    if (uid, soul_id) in _CONSOLIDATION_RUNNING:
+    if (uid, soul_id) in _CONSOLIDATION_RUNNING or (
+        not historical and _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, soul_id)) is True
+    ):
         return {"ok": True, "status": "skipped"}
     if progress_key and memorize_progress is not None:
         _memorize_endpoint._set_memorize_progress(
@@ -2253,7 +2257,8 @@ async def _run_memorize_segments(
     cross_memorize: bool = False,
     final_cursors: dict[str, dict[str, Any]] | None = None,
     historical: bool = False,
-) -> None:
+    batch_owned: bool = False,
+) -> bool:
     success = False
     try:
         success = await _memorize_endpoint.run_memorize_segments(
@@ -2277,8 +2282,10 @@ async def _run_memorize_segments(
             final_cursors=final_cursors,
             historical=historical,
         )
+        return success
     finally:
-        await _finish_memorize_claim(_memorize_lock_key(uid, soul_id), success)
+        if not batch_owned:
+            await _finish_memorize_claim(_memorize_lock_key(uid, soul_id), success)
 
 
 # ---- Memorize endpoint ----
@@ -2294,7 +2301,7 @@ async def _memorize_admitted(payload: dict[str, Any], background_tasks: Backgrou
 
 async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool,
                           *, tail: bool = False, rebuild: bool = False, admitted: bool = False, retry: bool = False,
-                          historical: bool = False):
+                          historical: bool = False, batch_owned: bool = False):
     safe = _safe_payload(payload)
     if not _extract_conversation_id(safe):
         raise HTTPException(status_code=400, detail="conversation_id is required")
@@ -2331,13 +2338,16 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
                     updates={"memorize_failure": {**failure, "paused": True}},
                 )
             _require_soul_active(uid, sid)
+        endpoint_ctx = _make_memorize_endpoint_context()
+        if batch_owned:
+            endpoint_ctx = replace(endpoint_ctx, run_memorize_segments=partial(_run_memorize_segments, batch_owned=True))
         return await _memorize_endpoint.memorize_endpoint(
             safe, background_tasks, force, tail=tail, rebuild=rebuild,
-            endpoint_ctx=_make_memorize_endpoint_context(),
+            endpoint_ctx=endpoint_ctx,
             historical=historical,
         )
     finally:
-        if not any(task.func is _run_memorize_segments for task in background_tasks.tasks):
+        if not batch_owned and not any(task.func is _run_memorize_segments for task in background_tasks.tasks):
             await _finish_memorize_claim(marker, False)
 
 
@@ -2450,6 +2460,8 @@ def _consolidation_request_context(
     soul_id = str(scope.get("soul_id") or "").strip()
     if not uid or not soul_id:
         raise HTTPException(status_code=400, detail="user_id and soul_id required")
+    if _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, soul_id)) is True:
+        raise HTTPException(status_code=409, detail="Import batch is running")
     safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
     safe["conversation_id"] = cid
     return cid, safe, uid, soul_id, _get_service_from_payload(safe)
@@ -3529,9 +3541,9 @@ def _auto_memorize_scope(
 
 async def _finish_memorize_claim(marker: str, success: bool) -> None:
     with _STATE_LOCK:
-        _FORCED_MEMORIZE_INFLIGHT.pop(marker, None)
+        historical = _FORCED_MEMORIZE_INFLIGHT.pop(marker, None) is True
         recheck = _FORCED_MEMORIZE_RECHECK.pop(marker, None)
-    if not success or recheck is None:
+    if (not success and not historical) or recheck is None:
         return
 
     cid = str(recheck["conversation_id"])

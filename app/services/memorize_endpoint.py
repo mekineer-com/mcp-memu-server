@@ -175,7 +175,7 @@ class MemorizeEndpointContext:
     clear_cached_services: Callable[[], None]
     consolidation_running: dict[tuple[str, str], bool]
     get_storage_dir: Callable[[dict[str, Any]], Path]
-    run_memorize_segments: Callable[..., Awaitable[None]]
+    run_memorize_segments: Callable[..., Awaitable[bool]]
     run_consolidation_task: Callable[..., Awaitable[dict[str, Any]]]
     get_config: Callable[[], dict[str, Any]]
 
