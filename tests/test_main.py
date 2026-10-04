@@ -4205,20 +4205,28 @@ async def test_auto_memorize_failure_rechecks_only_after_historical_work(
 
 
 @pytest.mark.asyncio
-async def test_historical_claim_blocks_ordinary_consolidation_before_progress(monkeypatch):
+@pytest.mark.parametrize("historical_claim", [False, True])
+async def test_busy_consolidation_closes_progress_before_pipeline(monkeypatch, historical_claim):
     marker = main._memorize_lock_key("TestOwner", "TestSoul")
-    monkeypatch.setitem(main._FORCED_MEMORIZE_INFLIGHT, marker, True)
+    if historical_claim:
+        monkeypatch.setitem(main._FORCED_MEMORIZE_INFLIGHT, marker, True)
+    else:
+        monkeypatch.setitem(main._CONSOLIDATION_RUNNING, ("TestOwner", "TestSoul"), True)
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: pytest.fail("busy admission must precede service lookup"))
+    monkeypatch.setattr(main, "_make_consolidation_deps", lambda: pytest.fail("busy handoff must not start the pipeline"))
     progress = {marker: {"active": True, "phase": "accepted"}}
     result = await main._run_consolidation_task(
         object(), conversation_id="chat:test", uid="TestOwner", soul_id="TestSoul",
         force=True, progress_key=marker, memorize_progress=progress,
     )
-    assert result["status"] == "skipped" and progress[marker] == {"active": True, "phase": "accepted"}
-    for endpoint in (main.force_consolidation, main.retry_consolidation):
-        with pytest.raises(HTTPException) as refused:
-            await endpoint("chat:test", {"user_id": "TestOwner", "soul_id": "TestSoul"})
-        assert refused.value.status_code == 409
+    assert result["status"] == "skipped"
+    assert progress[marker]["active"] is False
+    assert progress[marker]["last_result"] == "skipped"
+    if historical_claim:
+        for endpoint in (main.force_consolidation, main.retry_consolidation):
+            with pytest.raises(HTTPException) as refused:
+                await endpoint("chat:test", {"user_id": "TestOwner", "soul_id": "TestSoul"})
+            assert refused.value.status_code == 409
 
 
 @pytest.mark.asyncio

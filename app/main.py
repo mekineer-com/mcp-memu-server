@@ -2105,8 +2105,18 @@ async def _run_consolidation_task(
     memorize_progress: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if (uid, soul_id) in _CONSOLIDATION_RUNNING or (
-        not historical and _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, soul_id)) is True
+        _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, soul_id)) is True
     ):
+        if (
+            progress_key and memorize_progress is not None
+            and memorize_progress.get(progress_key, {}).get("phase") != "consolidating"
+        ):
+            _memorize_endpoint._set_memorize_progress(
+                memorize_progress,
+                progress_key,
+                active=False,
+                last_result="skipped",
+            )
         return {"ok": True, "status": "skipped"}
     if progress_key and memorize_progress is not None:
         _memorize_endpoint._set_memorize_progress(
