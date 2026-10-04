@@ -20,6 +20,12 @@ def _endpoint(path):
     return next(route.endpoint for route in main.app.routes if getattr(route, "path", None) == path)
 
 
+def _guidance_schema(con):
+    sqlite_ensure_conversation_state_schema(con)
+    con.execute("CREATE TABLE resources (user_id TEXT, soul_id TEXT, conversation_id TEXT, "
+                "modality TEXT, source_start_day DATE, source_end_day DATE)")
+
+
 def test_registration_extends_history_without_resetting_progress(tmp_path, monkeypatch):
     source, db = tmp_path / "imports.db", tmp_path / "TestSoul.db"
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "label": "Replika"}
@@ -77,7 +83,7 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_kw: db)
     monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
     with sqlite3.connect(db) as con:
-        sqlite_ensure_conversation_state_schema(con)
+        _guidance_schema(con)
     rows, _, _ = chat_import.normalize_messages([
         {"id": str(i), "role": "user", "name": "TestSpeaker", "content": f"stored {i}", "timestamp": "2025-01-01"}
         for i in range(3)])
@@ -126,6 +132,41 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
         validate(larger)
     with sqlite3.connect(source) as con:
         assert con.execute("SELECT COUNT(*) FROM imported_messages").fetchone()[0] == 3
+
+
+def test_import_guidance_is_selected_chat_only_including_all_history(tmp_path, monkeypatch):
+    source, db = tmp_path / "imports.db", tmp_path / "TestSoul.db"
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "label": "Replika"}
+    monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_kw: db)
+    rows, _, _ = chat_import.normalize_messages([
+        {"id": str(i), "role": "user", "content": "fictional", "timestamp": day}
+        for i, day in enumerate(("2020-01-01", "2025-01-01", "2025-03-01", "2025-02-01"))])
+    upload = chat_import.store_upload(source, **scope, messages=rows, history_count=1)
+    cid = upload["conversation_id"]
+    with sqlite3.connect(db) as con:
+        _guidance_schema(con)
+        con.executemany("INSERT INTO resources VALUES (?, ?, ?, ?, ?, ?)", [
+            ("TestOwner", "TestSoul", cid, "conversation", "2024-01-01", "2024-02-01"),
+            ("TestOwner", "TestSoul", cid, "conversation", "2024-03-01", "2024-04-01"),
+            ("TestOwner", "TestSoul", "whatsapp:dm:other", "conversation", "2000-01-01", "2030-01-01"),
+            ("OtherOwner", "TestSoul", cid, "conversation", "2000-01-01", "2030-01-01"),
+            ("TestOwner", "OtherSoul", cid, "conversation", "2000-01-01", "2030-01-01"),
+            ("TestOwner", "TestSoul", cid, "image", "2000-01-01", "2030-01-01"),
+        ])
+    _endpoint("/imports/register")(ImportScope(**scope))
+    main._write_conversation_state(cid, user_id="TestOwner", soul_id="TestSoul",
+        updates={"digest_cursor": 1, "last_memorize_at": "2025-01-02T12:00:00Z"})
+    # All-history guidance must not build a turn or call a model.
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: pytest.fail("Unpaid guidance called service"))
+    validate = _endpoint("/imports/validate")
+    result = validate(ImportPreview(**scope, conversation_id=cid, current_messages=[]))
+    assert result == {"ok": True, "estimated_tokens": 0, "input_budget": None,
+        "pending_start_day": "2025-02-01", "processed_start_day": "2024-01-01", "processed_end_day": "2024-04-01"}
+    main._write_conversation_state(cid, user_id="TestOwner", soul_id="TestSoul", updates={"digest_cursor": 3})
+    assert validate(ImportPreview(**scope, conversation_id=cid, current_messages=[]))["pending_start_day"] is None
+    other = validate(ImportPreview(**{**scope, "label": "Nomi"}, conversation_id="import:dm:new", current_messages=[]))
+    assert other["pending_start_day"] is other["processed_start_day"] is other["processed_end_day"] is None
 
 
 @pytest.mark.asyncio

@@ -225,14 +225,29 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         cid = chat["conversation_id"] if chat else request.conversation_id
         if cid != request.conversation_id:
             raise HTTPException(status_code=409, detail="Use the existing chat for this app label")
-        if not request.current_messages:
-            return {"ok": True, "estimated_tokens": 0, "input_budget": None}
-        state, card, _ = runtime._load_turn_state_and_soul_card(cid, **scoped)
+        state, card, path = runtime._load_turn_state_and_soul_card(cid, **scoped)
         cursor = effective_digest_cursor_from_row(state)
         stored = conversation_sources.load_import_tail(
             **scoped, conversation_id=cid, since_cursor=cursor, recent_fallback_messages=8,
             include_floor_without_new=True, import_state=state.get("import_state"),
         ) if chat else []
+        stored_pending = [row for row in stored if row["source_conversation_index"] > cursor]
+        pending_days = [row["source_day"] for row in stored_pending]
+        guidance = {"pending_start_day": min(pending_days, default=None),
+                    "processed_start_day": None, "processed_end_day": None}
+        if path is not None and path.exists():
+            con = runtime._sqlite_connect(path)
+            try:
+                bounds = con.execute(
+                    "SELECT MIN(source_start_day), MAX(source_end_day) FROM resources "
+                    "WHERE user_id = ? AND soul_id = ? AND conversation_id = ? AND modality = 'conversation'",
+                    (scoped["user_id"], scoped["soul_id"], cid),
+                ).fetchone()
+                guidance.update(processed_start_day=bounds[0], processed_end_day=bounds[1])
+            finally:
+                con.close()
+        if not request.current_messages:
+            return {"ok": True, "estimated_tokens": 0, "input_budget": None, **guidance}
         proposed = []
         for item in request.current_messages:
             try:
@@ -249,7 +264,7 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
                 "received_at": item.timestamp, "source_conversation_index": item.position,
                 "conversation_id": cid, "source_conversation_id": cid, "app_label": label,
                 "chat_name": (chat["title"] if chat else request.title) or label})
-        pending = [row for row in stored if row["source_conversation_index"] > cursor] + proposed
+        pending = stored_pending + proposed
         floor = [row for row in stored if row["source_conversation_index"] <= cursor]
         needed = max(0, 8 - len(pending))
         displayed = runtime._load_cross_tail_for_ai(**scoped, conversation_id="")
@@ -278,4 +293,4 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         estimated = estimate_prompt_tokens(system) + estimate_prompt_tokens(user)
         if estimated > allowance:
             raise HTTPException(status_code=400, detail="The current chat suffix exceeds the model context; move more messages to history")
-        return {"ok": True, "estimated_tokens": estimated, "input_budget": allowance}
+        return {"ok": True, "estimated_tokens": estimated, "input_budget": allowance, **guidance}

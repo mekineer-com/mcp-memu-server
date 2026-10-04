@@ -60,7 +60,7 @@ mcp-memu-server/
 | `/admin/shutdown/status` | GET | Shutdown progress + active request counts |
 | `/memorize` | POST | Extract memories from conversation. `force=true` bypasses sleep-gap; `rebuild=true` archives the DB and resets cursor (implies force), returning HTTP 409 while the same owner and Soul consolidate. Auto-memorize also fires inside `/conversation/{id}/turn`. |
 | `/imports/register` | POST | Register/reuse a stored imported chat by owner, Soul and app label; extend only its historical bound without resetting cursors, queues or errors. No model call. |
-| `/imports/validate` | POST | Check proposed new current rows against stored display floors, cross-chat/activity context and known Soul state with the actual turn allowance. No model call, source insertion or Memorize scheduling. |
+| `/imports/validate` | POST | Check proposed new current rows against stored display floors, cross-chat/activity context and known Soul state with the actual turn allowance. Also return selected-chat pending-start and processed-date bounds, including All-history previews. No model call, source insertion or Memorize scheduling. |
 | `/imports/process`, `/imports/retry` | POST | Start one tracked historical batch, returning promptly. Reuse bounded source reads, extraction and one consolidation; failed work requires explicit Retry. |
 | `/imports/status` | GET | Scoped imported-chat checkpoint, error and existing per-Soul progress; no separate job ledger. |
 | `/memorize/progress` | GET | Live memorize batch progress |
