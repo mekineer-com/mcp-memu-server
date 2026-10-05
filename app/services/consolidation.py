@@ -793,6 +793,8 @@ def gather_consolidation_inputs(
             raise HTTPException(status_code=404, detail="conversation state not found")
         if historical and state["import_state"] is None:
             raise ValueError("historical consolidation requires registered import state")
+        if (_soul_state.read(con).get("memorize_failure") or {}).get("segment_work"):
+            return {"status": "skip", "reason": "memorize_postprocessing_pending"}
 
         pending_by_conversation: dict[str, list[str]] = {}
         excluded_segment_ids: list[str] = []
@@ -802,6 +804,8 @@ def gather_consolidation_inputs(
             (soul_id, user_id),
         ).fetchall():
             record = normalize_import_state(json.loads(row["import_state"]) if row["import_state"] else None)
+            if record and record.get("segment_work"):
+                return {"status": "skip", "reason": "memorize_postprocessing_pending"}
             if historical:
                 pending_ids = record["pending_segment_ids"] if record else []
             else:

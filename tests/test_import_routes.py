@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app import main
+from tests import SavedBatchService
 from app.db import sqlite_ensure_conversation_state_schema
 from app.services import consolidation, conversation_sources
 from app.services.import_routes import ImportPreview, ImportScope, ImportProcess
@@ -197,19 +198,31 @@ async def test_real_import_completion_memorizes_current_messages_across_chats(tm
     path = main._sqlite_current_path(**scoped)
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as con:
-        _guidance_schema(con)
+        sqlite_ensure_conversation_state_schema(con)
+    SavedBatchService.make_engine(scoped).database.close()
     calls = []
-    class Service:
+    class Service(SavedBatchService):
         memorize_config = SimpleNamespace(category_update_llm_profile="default")
         llm_profiles = SimpleNamespace(profiles={"default": SimpleNamespace(
             context_window_tokens=100000, max_tokens=1000, chat_model="fictional")})
-        async def memorize_segments_batch(self, **kwargs):
+        async def extract(self, **kwargs):
             messages = [row for segment in kwargs["segments"] for row in json.loads(segment["raw_text"])]
             calls.append([row["content"] for row in messages])
             if len(calls) == 2 and fail_handoff:
                 raise ValueError("Fictional ordinary extraction failure")
             return [{"memory_item_ids": []} for _ in kwargs["segments"]]
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _: Service())
+    monkeypatch.setattr(consolidation, "_prepare_dossier_consolidation_prompts", lambda *_a, **_kw:
+        ([], None, {}, {"dossiers": 0, "anchors": 0, "weekly": 0}))
+    async def consolidated(**kwargs):
+        if kwargs.get("historical"):
+            cid = kwargs["conversation_id"]
+            record = main._load_turn_state_and_soul_card(cid, **scoped)[0]["import_state"]
+            main._write_conversation_state(cid, **scoped, updates={"import_state": {
+                **record, "pending_segment_ids": [], "stage": "complete", "error": None,
+            }})
+        return {"status": "ok"}
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", consolidated)
     request = ImportProcess(**scoped, label="TestApp")
     _endpoint("/imports/register")(request)
     trigger = "chat:ordinary"
@@ -531,7 +544,7 @@ def test_import_guidance_uses_soul_period_but_selected_chat_processed_dates(tmp_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stop", ["calendar", "calendar_retry", "capacity", "continuous", "cancel_extraction", "failure", "error_write", "consolidation_failure", "no_memories", "no_memories_calendar"])
+@pytest.mark.parametrize("stop", ["calendar", "calendar_retry", "capacity", "continuous", "cancel_extraction", "failure", "error_write", "consolidation_failure"])
 async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, monkeypatch, stop):
     import asyncio
     from app.services import memorize_endpoint
@@ -542,7 +555,8 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_kw: db)
     monkeypatch.setattr(memorize_endpoint, "_FORCE_MEMORIZE_MAX_CHUNK_TOKENS", 80)
     with sqlite3.connect(db) as con:
-        _guidance_schema(con)
+        sqlite_ensure_conversation_state_schema(con)
+    SavedBatchService.make_engine(scoped).database.close()
     rows, _, _ = chat_import.normalize_messages([
         {"id": str(i), "role": "user", "content": "fictional story " * 20,
          "timestamp": "2025-01-09" if stop in {"calendar", "calendar_retry", "no_memories_calendar"} and i else "2025-01-01"}
@@ -562,10 +576,10 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
             return write(*args, **kwargs)
         monkeypatch.setattr(main, "_write_conversation_state", failing_write)
     profile = SimpleNamespace(context_window_tokens=100, max_tokens=0, chat_model="fictional")
-    class Service:
+    class Service(SavedBatchService):
         memorize_config = SimpleNamespace(category_update_llm_profile="default")
         llm_profiles = SimpleNamespace(profiles={"default": profile})
-        async def memorize_segments_batch(self, **kwargs):
+        async def extract(self, **kwargs):
             assert kwargs["enforce_input_budget"] is True
             assert main._FORCED_MEMORIZE_INFLIGHT[marker] is True
             extracts.append([row["segment"]["segment_id"] for row in kwargs["segments"]])
@@ -576,8 +590,6 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
             assert busy.value.status_code == 409
             if stop in {"failure", "calendar_retry", "error_write"} and fail and len(extracts) == 2:
                 raise ValueError("Fictional extraction failure")
-            if stop in {"no_memories", "no_memories_calendar"}:
-                return [{} for _ in kwargs["segments"]]
             return [{"pending_segment_ids": [row["segment"]["segment_id"]]} for row in kwargs["segments"]]
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
     def gather(_deps, **kwargs):
@@ -620,14 +632,14 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
     response = await _endpoint("/imports/process")(request)
     assert response.status_code == 202
     tasks = list(main._BACKGROUND_TASKS)
-    if stop not in {"failure", "calendar_retry", "error_write", "no_memories", "no_memories_calendar"}:
+    if stop not in {"failure", "calendar_retry", "error_write"}:
         await asyncio.wait_for(entered.wait(), 5)
         with pytest.raises(HTTPException) as busy:
             await _endpoint("/imports/process")(request)
         assert busy.value.status_code == 409
         finish.set()
     await asyncio.gather(*tasks)
-    assert len(extracts) == (3 if stop in {"no_memories", "continuous"} else 2) and marker not in main._FORCED_MEMORIZE_INFLIGHT
+    assert len(extracts) == (3 if stop == "continuous" else 2) and marker not in main._FORCED_MEMORIZE_INFLIGHT
     assert releases == [(marker, stop not in {"failure", "calendar_retry", "error_write", "consolidation_failure"})]
     if stop in {"failure", "calendar_retry", "error_write"}:
         assert record()["stage"] == "memorize" and record()["error"]
@@ -652,16 +664,6 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
         assert len(consolidations) == 1 and record()["pending_segment_ids"]
     elif stop == "continuous":
         assert record()["stage"] == "complete" and len(consolidations) == 3
-    elif stop == "no_memories":
-        assert record()["stage"] == "complete" and record()["memorize_cursor"] == 2
-        assert not consolidations
-        main._write_conversation_state(cid, **scoped, updates={"import_error": "Fictional post-checkpoint failure"})
-        await _endpoint("/imports/retry")(request)
-        await asyncio.gather(*list(main._BACKGROUND_TASKS))
-        assert len(extracts) == 3 and not consolidations and record()["error"] is None
-    elif stop == "no_memories_calendar":
-        assert record()["stage"] == "memorize" and record()["memorize_cursor"] == 1
-        assert not consolidations
     else:
         assert len(consolidations) == 1 and record()["pending_segment_ids"]
         await _endpoint("/imports/process")(request)

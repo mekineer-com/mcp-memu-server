@@ -14,7 +14,7 @@ mcp-memu-server/
 ├── app/db.py                # SQLite helpers, schema ensures, JSON marshalling
 ├── app/models/base.py       # Declarative ORM base
 ├── app/services/consolidation.py # Shared runner, read-only prompt preparation, Resource-owned segment reconstruction and selected prior context
-├── app/services/memorize_endpoint.py # Shared extraction; private batch-owned handoff leaves claim release to the outer import task
+├── app/services/memorize_endpoint.py # Shared extraction with same-transaction checkpoint/phase publication; private handoff leaves claim release to the outer import task
 ├── app/services/activity_messages.py
 ├── app/services/whatsapp_outbounds.py
 ├── app/services/free_turn.py
@@ -30,7 +30,7 @@ mcp-memu-server/
 ├── app/services/graph_routes.py   # Graph/query read HTTP routes; scoped resolver supplied by main
 ├── app/services/entity_routes.py  # Entity HTTP routes and private helpers; scoped resolver supplied by main
 ├── app/services/review_routes.py  # Review routes; category prose/title/description snapshot + revision checked in the caller-owned write transaction
-├── app/services/state.py # Transactional import progress/wait patches preserve registration bounds; ordinary cursors remain separate
+├── app/services/state.py # Caller-transactional phase/checkpoint patches and fresh Memorize failure preservation; ordinary/import cursors remain separate
 ├── app/services/soul_summaries.py # SQL-only summary writes; shared journal finishing after caller commit
 ├── app/services/soul_state.py # Shared Soul state, durable Memorize failure and common activity-pause predicate
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start

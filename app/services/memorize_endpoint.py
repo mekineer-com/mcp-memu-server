@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import sqlite3
 import time as _time
 import traceback
 from collections.abc import Awaitable, Callable
@@ -15,7 +16,7 @@ from fastapi.responses import JSONResponse
 from app.config import validate_soul_id
 from app.services.conversation_id import canonical_conversation_id
 from app.services.payload import message_ts_ms
-from app.services.state import effective_digest_cursor_from_row
+from app.services.state import conversation_state_from_row, conversation_state_row, effective_digest_cursor_from_row
 
 
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
@@ -96,6 +97,8 @@ class SegmentMemorizeJob(TypedDict):
     segment_end_index: int
     segment_id: str | None
     memory_producing: bool
+    consumed_background_summary_ids: list[str]
+    durable_range: tuple[int, int] | None
 
 
 MemorizeSegment = tuple[
@@ -312,7 +315,6 @@ async def run_memorize_segments(
     cached_retrieval_ids: list[str] = []
     cached_prior_context_ids: list[str] = []
     conversation_rolling_summary: str | None = None
-    consumed_background_summary_ids: set[str] = set()
     latest_display_ranges: dict[str, tuple[int, int]] = {}
     created_segment_paths: list[Path] = []
     reserved_manifest_ranges = [
@@ -323,7 +325,6 @@ async def run_memorize_segments(
     total_segments = 0
     had_existing_pending = False
     consolidation_started = False
-    durable_segments_committed = False
     terminal_result: str = "success"
     failure_record: dict[str, Any] | None = None
     rolling_summaries_raw = safe.get("_background_rolling_summaries")
@@ -331,6 +332,27 @@ async def run_memorize_segments(
         rolling_summaries_raw if not historical and isinstance(rolling_summaries_raw, dict) else {}
     )
     run_started_at = datetime.now(UTC).isoformat()
+    segment_jobs: list[SegmentMemorizeJob] = []
+    def release_uncommitted():
+        if not created_segment_paths:
+            return
+        urls = [str(path) for path in created_segment_paths]
+        with svc._sqlite_write_session(svc.database) as session:
+            committed = {row[0] for row in session.connection().exec_driver_sql(
+                "SELECT url FROM resources WHERE user_id = ? AND soul_id = ? "
+                f"AND url IN ({','.join('?' for _ in urls)})",
+                (uid, soul_id, *urls),
+            )}
+        for path in created_segment_paths:
+            if str(path) not in committed:
+                path.unlink(missing_ok=True)
+        kept_ranges = {job["durable_range"] for job in segment_jobs
+                       if job["segment_resource_url"] in committed}
+        if conversation_id:
+            _remove_manifest_ranges(segments_dir.parent / "manifest.json",
+                [span for span in reserved_manifest_ranges if span not in kept_ranges])
+        created_segment_paths.clear()
+
     try:
         if historical and (not conversation_id or cross_memorize or final_cursors):
             raise ValueError("historical Memorize requires one registered import source")
@@ -360,7 +382,6 @@ async def run_memorize_segments(
 
         # Phase 2: persist each memorize segment as a single file and feed one
         # synthetic segment payload per segment into batch memorize.
-        segment_jobs: list[SegmentMemorizeJob] = []
         cancelled = False
         for _seg_idx, (
             _segment_resource_url,
@@ -402,6 +423,7 @@ async def run_memorize_segments(
                 if durable_range is not None
                 else None
             )
+            consumed_background_summary_ids: set[str] = set()
             segment_background_rows: list[dict[str, Any]] = []
             seen_background_sources: set[str] = set()
             if conversation_rolling_summary and conversation_id and not cross_memorize:
@@ -458,8 +480,122 @@ async def run_memorize_segments(
                     "segment_end_index": segment_end_index,
                     "segment_id": segment_id,
                     "memory_producing": memory_producing,
+                    "consumed_background_summary_ids": list(consumed_background_summary_ids),
+                    "durable_range": durable_range,
                 }
             )
+
+        if cross_memorize and len(segment_jobs) > 1:
+            raise RuntimeError("Cross Memorize requires one segment job")
+        jobs_by_url = {job["segment_resource_url"]: job for job in segment_jobs}
+        prepared_positions = {}
+        for cid, checkpoint in (final_cursors or {}).items():
+            producing = checkpoint.get("memory_producing")
+            if not isinstance(producing, bool):
+                raise RuntimeError(f"memorize checkpoint missing captured policy for {cid}")
+            source_id = str(checkpoint.get("source_message_id") or "").strip()
+            if source_id and checkpoint.get("ts") is not None:
+                payload_position = run_ctx.resolve_web_source_checkpoint(cid, source_id)
+                if payload_position is None:
+                    raise RuntimeError(f"WhatsApp web_source checkpoint disappeared for {cid}")
+                row, _, _ = run_ctx.load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
+                prefix = "digest" if producing else "rolling_summary"
+                saved_id = str(row.get(f"{prefix}_cursor_source_message_id") or "").strip()
+                saved_position = run_ctx.resolve_web_source_checkpoint(cid, saved_id) if saved_id else None
+                prepared_positions[cid] = (payload_position, saved_id, saved_position)
+
+        def patch_phase(session, url, phase):
+            job = jobs_by_url[url]
+            con = session.connection().connection.driver_connection
+            previous_factory = con.row_factory
+            try:
+                con.row_factory = sqlite3.Row
+                ctx.write_conversation_state(
+                    conversation_id, user_id=uid, soul_id=soul_id, connection=con,
+                    updates={("import_segment_work" if historical else "memorize_segment_work"):
+                             {job["segment_id"]: phase}},
+                )
+            finally:
+                con.row_factory = previous_factory
+
+
+        def publish_segment(session, url, ids):
+            nonlocal processed_end_cursor, latest_display_ranges
+            job = jobs_by_url[url]
+            con = session.connection().connection.driver_connection
+            previous_factory = con.row_factory
+            try:
+                con.row_factory = sqlite3.Row
+                now_iso = datetime.now(UTC).isoformat()
+                if job["memory_producing"]:
+                    if ids != [job["segment_id"]]:
+                        raise RuntimeError("Segment publication requires its own pending ID")
+                    patch_phase(session, url, "dedupe")
+                if conversation_id and not cross_memorize:
+                    fresh = conversation_state_from_row(conversation_state_row(
+                        con, conversation_id, user_id=uid, soul_id=soul_id,
+                    )) or {}
+                    producing = job["memory_producing"]
+                    field = "digest_cursor" if producing else "rolling_summary_cursor_id"
+                    cursor = fresh["import_state"]["memorize_cursor"] if historical else int(fresh.get(field) or 0)
+                    processed_end_cursor = max(processed_end_cursor, cursor, job["segment_end_index"])
+                    if historical:
+                        updates = {"import_memorize_cursor": processed_end_cursor,
+                                   "append_import_pending_segment_ids": ids}
+                    else:
+                        updates = _cursor_updates_for_unit(
+                            memory_producing=producing,
+                            cursor=processed_end_cursor if cursor <= job["segment_end_index"] else None,
+                            now_iso=now_iso, pending_segment_ids=ids,
+                        )
+                    ctx.write_conversation_state(conversation_id, user_id=uid, soul_id=soul_id,
+                                                 updates=updates, connection=con)
+                if cross_memorize:
+                    latest_display_ranges = _segment_display_ranges(job["segment_messages"])
+                if conversation_id and ids and conversation_id not in (final_cursors or {}) and cross_memorize:
+                    ctx.write_conversation_state(
+                        conversation_id, user_id=uid, soul_id=soul_id, connection=con,
+                        updates=_cursor_updates_for_unit(memory_producing=True, cursor=None,
+                                                        now_iso=now_iso, pending_segment_ids=ids),
+                    )
+                for cid, checkpoint in (final_cursors or {}).items():
+                    producing = checkpoint["memory_producing"]
+                    source_id = str(checkpoint.get("source_message_id") or "").strip()
+                    source_ts = checkpoint.get("ts")
+                    cursor = max(0, int(checkpoint["cursor"]))
+                    fresh = conversation_state_from_row(conversation_state_row(
+                        con, cid, user_id=uid, soul_id=soul_id,
+                    )) or {}
+                    if cid in prepared_positions:
+                        payload_position, saved_id, saved_position = prepared_positions[cid]
+                        prefix = "digest" if producing else "rolling_summary"
+                        if str(fresh.get(f"{prefix}_cursor_source_message_id") or "").strip() != saved_id:
+                            raise RuntimeError(f"WhatsApp cursor changed during Memorize for {cid}")
+                        field = "digest_cursor" if producing else "rolling_summary_cursor_id"
+                        fresh_position = (saved_position if saved_position is not None
+                                          else (-1 if producing else 0) if saved_id
+                                          else int(fresh.get(field) or 0))
+                        cursor = payload_position if payload_position > fresh_position else None
+                    updates = _cursor_updates_for_unit(
+                        memory_producing=producing, cursor=cursor, now_iso=now_iso,
+                        source_message_id=source_id, source_ts=source_ts,
+                        pending_segment_ids=ids if cid == conversation_id else None,
+                    )
+                    if producing and cross_memorize:
+                        display = latest_display_ranges.get(cid)
+                        updates.update(last_display_segment_start_index=display[0] if display else None,
+                                       last_display_segment_end_index=display[1] if display else None,
+                                       last_display_segment_at=now_iso if display else None)
+                    if updates:
+                        ctx.write_conversation_state(cid, user_id=uid, soul_id=soul_id,
+                                                     updates=updates, connection=con)
+                for cid in job["consumed_background_summary_ids"]:
+                    ctx.write_conversation_state(
+                        cid, user_id=uid, soul_id=soul_id, connection=con,
+                        updates={"rolling_summary": None, "rolling_summary_updated_at": None},
+                    )
+            finally:
+                con.row_factory = previous_factory
 
         total_segments = len(segment_jobs)
         _set_memorize_progress(
@@ -526,6 +662,8 @@ async def run_memorize_segments(
                         current=current,
                         total=total,
                     ),
+                    on_segment_saved=publish_segment,
+                    on_dedupe_complete=lambda session, url: patch_phase(session, url, "review"),
                     **({"enforce_input_budget": True} if historical else {}),
                 )
                 if len(batch_results) != len(segment_jobs):
@@ -560,185 +698,35 @@ async def run_memorize_segments(
                             pending_segment_ids.extend(result_pending)
                         if cross_memorize and segment_job["memory_producing"]:
                             latest_display_ranges = _segment_display_ranges(segment_job["segment_messages"])
-                    segment_end_index = segment_job["segment_end_index"]
-                    if conversation_id and not cross_memorize:
-                        # Re-acquire to write cursor; skip if a concurrent runner already advanced past us.
+                    if not segment_job["memory_producing"]:
                         async with mem_lock:
-                            fresh_row, _, _ = run_ctx.load_turn_state_and_soul_card(
-                                conversation_id,
-                                user_id=uid,
-                                soul_id=soul_id,
-                            )
-                            memory_producing = segment_job["memory_producing"]
-                            cursor_field = "digest_cursor" if memory_producing else "rolling_summary_cursor_id"
-                            fresh_cursor = (fresh_row["import_state"]["memorize_cursor"] if historical
-                                            else int(fresh_row.get(cursor_field) or 0))
-                            if fresh_cursor <= segment_end_index:
-                                processed_end_cursor = max(processed_end_cursor, segment_end_index)
-                                # per-segment advance — crash recovery needs the cursor to move
-                                # only after the whole segment completes.
-                                if historical:
-                                    updates = {"import_memorize_cursor": processed_end_cursor,
-                                               "append_import_pending_segment_ids": pending_segment_ids,
-                                               "import_error": None}
-                                else:
-                                    updates = _cursor_updates_for_unit(
-                                        memory_producing=memory_producing,
-                                        cursor=processed_end_cursor,
-                                        now_iso=datetime.now(UTC).isoformat(),
-                                        pending_segment_ids=pending_segment_ids if memory_producing else None,
-                                    )
-                                ctx.write_conversation_state(
-                                    conversation_id,
-                                    soul_id=soul_id,
-                                    user_id=uid,
-                                    updates=updates,
-                                )
-                                if memory_producing and pending_segment_ids:
-                                    created_segment_paths.remove(Path(segment_job["segment_resource_url"]))
-                                    durable_segments_committed = True
-                            else:
-                                # Another runner advanced the cursor past this segment; honour the further value.
-                                processed_end_cursor = max(processed_end_cursor, fresh_cursor)
+                            with svc._sqlite_write_session(svc.database) as session:
+                                session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                                publish_segment(session, segment_job["segment_resource_url"], [])
+                                session.commit()
+                created_segment_paths.clear()
 
         # Phase 3: final state flush + bookkeeping under lock.
         async with mem_lock:
             if terminal_result == "cancelled":
-                for segment_path in created_segment_paths:
-                    segment_path.unlink(missing_ok=True)
-                created_segment_paths.clear()
-                if conversation_id:
-                    _remove_manifest_ranges(segments_dir.parent / "manifest.json", reserved_manifest_ranges)
-            # Publish the original owner's history before advancing other chats.
-            if not historical and conversation_id and has_results and pending_segment_ids and conversation_id not in (final_cursors or {}):
-                ctx.write_conversation_state(
-                    conversation_id,
-                    soul_id=soul_id,
-                    user_id=uid,
-                    updates=_cursor_updates_for_unit(
-                        memory_producing=True,
-                        cursor=None,
-                        now_iso=datetime.now(UTC).isoformat(),
-                        pending_segment_ids=pending_segment_ids,
-                    ),
+                release_uncommitted()
+            if has_results and cross_memorize:
+                run_ctx.clear_last_display_segments_for_nonparticipants(
+                    user_id=uid, soul_id=soul_id,
+                    participant_conversation_ids=set(latest_display_ranges), run_started_at=run_started_at,
                 )
-                created_segment_paths.clear()
-                durable_segments_committed = True
-            if has_results and final_cursors:
-                now_iso = datetime.now(UTC).isoformat()
-                if cross_memorize:
-                    run_ctx.clear_last_display_segments_for_nonparticipants(
-                        user_id=uid,
-                        soul_id=soul_id,
-                        participant_conversation_ids=set(latest_display_ranges),
-                        run_started_at=run_started_at,
-                    )
-                for fc_cid, checkpoint in final_cursors.items():
-                    fc_cursor = max(0, int(checkpoint["cursor"]))
-                    checkpoint_memory_producing = checkpoint.get("memory_producing")
-                    if not isinstance(checkpoint_memory_producing, bool):
-                        raise RuntimeError(f"memorize checkpoint missing captured policy for {fc_cid}")
-                    source_id = str(checkpoint.get("source_message_id") or "").strip()
-                    source_ts = checkpoint.get("ts")
-                    web_source = bool(source_id and source_ts is not None)
-                    fresh_row, _, _ = run_ctx.load_turn_state_and_soul_card(
-                        fc_cid,
-                        user_id=uid,
-                        soul_id=soul_id,
-                    )
-                    if web_source:
-                        payload_position = run_ctx.resolve_web_source_checkpoint(fc_cid, source_id)
-                        if payload_position is None:
-                            raise RuntimeError(
-                                f"WhatsApp web_source checkpoint disappeared for {fc_cid}; "
-                                "repair the conversation cursor before retrying"
-                            )
-                        fresh_id_field = (
-                            "digest_cursor_source_message_id"
-                            if checkpoint_memory_producing
-                            else "rolling_summary_cursor_source_message_id"
-                        )
-                        fresh_cursor_field = (
-                            "digest_cursor" if checkpoint_memory_producing else "rolling_summary_cursor_id"
-                        )
-                        fresh_source_id = str(fresh_row.get(fresh_id_field) or "").strip()
-                        if fresh_source_id:
-                            fresh_position = run_ctx.resolve_web_source_checkpoint(
-                                fc_cid,
-                                fresh_source_id,
-                            )
-                            if fresh_position is None:
-                                fresh_position = -1 if checkpoint_memory_producing else 0
-                        else:
-                            fresh_position = int(fresh_row.get(fresh_cursor_field) or 0)
-                        if payload_position <= fresh_position:
-                            updates = _cursor_updates_for_unit(
-                                memory_producing=checkpoint_memory_producing,
-                                cursor=None,
-                                now_iso=now_iso,
-                                pending_segment_ids=(pending_segment_ids if fc_cid == conversation_id else None),
-                            )
-                            if updates:
-                                ctx.write_conversation_state(
-                                    fc_cid,
-                                    soul_id=soul_id,
-                                    user_id=uid,
-                                    updates=updates,
-                                )
-                                if fc_cid == conversation_id and pending_segment_ids:
-                                    created_segment_paths.clear()
-                                    durable_segments_committed = True
-                            continue
-                        fc_cursor = payload_position
-                    updates = _cursor_updates_for_unit(
-                        memory_producing=checkpoint_memory_producing,
-                        cursor=fc_cursor,
-                        now_iso=now_iso,
-                        source_message_id=source_id,
-                        source_ts=source_ts,
-                        pending_segment_ids=(pending_segment_ids if fc_cid == conversation_id else None),
-                    )
-                    display_range = latest_display_ranges.get(fc_cid)
-                    if checkpoint_memory_producing and cross_memorize and display_range is not None:
-                        updates["last_display_segment_start_index"] = display_range[0]
-                        updates["last_display_segment_end_index"] = display_range[1]
-                        updates["last_display_segment_at"] = now_iso
-                    elif checkpoint_memory_producing and cross_memorize:
-                        updates["last_display_segment_start_index"] = None
-                        updates["last_display_segment_end_index"] = None
-                        updates["last_display_segment_at"] = None
-                    ctx.write_conversation_state(
-                        fc_cid,
-                        soul_id=soul_id,
-                        user_id=uid,
-                        updates=updates,
-                    )
-                    if fc_cid == conversation_id and pending_segment_ids:
-                        created_segment_paths.clear()
-                        durable_segments_committed = True
-            if conversation_id and has_memory_results:
-                # Pending ids now reference these files; the failure path must not unlink them
-                # or consolidation would reject the whole pending list as missing history.
-                created_segment_paths.clear()
-                durable_segments_committed = True
-            if has_memory_results:
-                for bg_cid in consumed_background_summary_ids:
-                    ctx.write_conversation_state(
-                        bg_cid,
-                        soul_id=soul_id,
-                        user_id=uid,
-                        updates={
-                            "rolling_summary": None,
-                            "rolling_summary_updated_at": None,
-                        },
-                    )
+            if historical and has_results and not cancelled:
+                ctx.write_conversation_state(
+                    conversation_id, user_id=uid, soul_id=soul_id,
+                    updates={"import_error": None, "import_segment_work": {}, "finish_segment_work": True},
+                )
 
             if failure_record is not None and not cancelled:
                 if failure_record["paused"] and not run_ctx.memorize_targets_complete(uid, soul_id, failure_record["targets"]):
                     raise RuntimeError("Failed Memorize still has unfinished source checkpoints; restore the source and Retry.")
                 ctx.write_conversation_state(
                     conversation_id, user_id=uid, soul_id=soul_id,
-                    updates={"memorize_failure": None},
+                    updates={"memorize_failure": None, "finish_segment_work": True},
                 )
                 failure_record = None
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
@@ -807,32 +795,24 @@ async def run_memorize_segments(
                 )
         return terminal_result != "cancelled"
     except Exception as exc:
-        if historical and conversation_id:
-            ctx.write_conversation_state(conversation_id, user_id=uid, soul_id=soul_id,
-                updates={"import_stage": "memorize", "import_error": f"Memorize failed: {exc}"[:300]})
-        elif failure_record is not None:
-            ctx.write_conversation_state(
-                conversation_id, user_id=uid, soul_id=soul_id,
-                updates={"memorize_failure": {**failure_record, "paused": True, "error": f"Memorize failed: {exc}"[:300]}},
+        try:
+            if historical and conversation_id:
+                ctx.write_conversation_state(conversation_id, user_id=uid, soul_id=soul_id,
+                    updates={"import_stage": "memorize", "import_error": f"Memorize failed: {exc}"[:300]})
+            elif failure_record is not None:
+                ctx.write_conversation_state(
+                    conversation_id, user_id=uid, soul_id=soul_id,
+                    updates={"memorize_failure": {**failure_record, "paused": True, "error": f"Memorize failed: {exc}"[:300]}},
+                )
+        finally:
+            release_uncommitted()
+            _set_memorize_progress(
+                ctx.memorize_progress,
+                progress_key,
+                active=False,
+                last_result="failure",
+                error=f"{type(exc).__name__}: {exc}",
             )
-        for segment_path in created_segment_paths:
-            try:
-                segment_path.unlink(missing_ok=True)
-            except OSError:
-                ctx.logger.warning("failed to remove failed memorize segment file %s", segment_path)
-        if conversation_id and not durable_segments_committed:
-            try:
-                async with mem_lock:
-                    _remove_manifest_ranges(segments_dir.parent / "manifest.json", reserved_manifest_ranges)
-            except (OSError, ValueError, json.JSONDecodeError):
-                ctx.logger.exception("failed to release memorize manifest ranges")
-        _set_memorize_progress(
-            ctx.memorize_progress,
-            progress_key,
-            active=False,
-            last_result="failure",
-            error=f"{type(exc).__name__}: {exc}",
-        )
         # pending_segment_ids stays untouched: any stored ids are from committed runs
         # (files intact) and clearing them would silently orphan those segments
         # from consolidation forever.

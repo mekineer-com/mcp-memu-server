@@ -10,6 +10,7 @@ import pytest
 from fastapi import BackgroundTasks, HTTPException
 
 from app import main
+from tests import SavedBatchService
 from app.services import soul_state
 from app.services import consolidation, service_factory
 
@@ -23,8 +24,8 @@ async def test_registered_import_handoff_keeps_history_out_of_normal_memorize(mo
         "stage": "memorize", "error": None,
     }})
     calls = []
-    class Service:
-        async def memorize_segments_batch(self, **kwargs):
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
             calls.append(kwargs)
             return [{"pending_segment_ids": [row["segment"]["segment_id"]]} for row in kwargs["segments"]]
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
@@ -201,8 +202,8 @@ async def test_cross_checkpoint_failure_retains_published_history_and_retry_uses
     payload = main._build_cross_conversation_payload(first, uid, sid, {}, history, -1)
     real_write = main._write_conversation_state
     calls = []
-    class Service:
-        async def memorize_segments_batch(self, **kwargs):
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
             calls.append(kwargs)
             return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
     def write(cid, **kwargs):
@@ -217,12 +218,16 @@ async def test_cross_checkpoint_failure_retains_published_history_and_retry_uses
     with pytest.raises(RuntimeError, match="Checkpoint failed"):
         await tasks()
     state, _, _ = main._load_turn_state_and_soul_card(first, user_id=uid, soul_id=sid)
-    assert state["pending_segment_ids"]
-    assert all(Path(segment["local_path"]).is_file() for segment in calls[0]["segments"])
+    assert not state["pending_segment_ids"]
+    assert not any(Path(segment["local_path"]).is_file() for segment in calls[0]["segments"])
     assert main._paid_work_state(uid, sid)["memorize_failure"]
     monkeypatch.setattr(main, "_write_conversation_state", real_write)
     reader = main._cross_history._load_tail_for_source_conversation
-    monkeypatch.setattr(main._cross_history, "_load_tail_for_source_conversation", lambda **kwargs: [] if kwargs["conversation_id"] == second else reader(**kwargs))
+    def unavailable_second(**kwargs):
+        if kwargs["conversation_id"] == second:
+            raise FileNotFoundError("Fictional source unavailable")
+        return reader(**kwargs)
+    monkeypatch.setattr(main._cross_history, "_load_tail_for_source_conversation", unavailable_second)
     with pytest.raises(HTTPException, match="unavailable"):
         await main.retry_memorize(uid, sid, BackgroundTasks())
     assert len(calls) == 1 and second in main._paid_work_state(uid, sid)["memorize_failure"]["targets"]
@@ -256,8 +261,8 @@ async def test_cross_checkpoint_failure_retains_published_history_and_retry_uses
     with pytest.raises(RuntimeError, match="Later checkpoint failed"):
         await tasks()
     state, _, _ = main._load_turn_state_and_soul_card(first, user_id=uid, soul_id=sid)
-    assert calls[-1]["segments"][0]["segment"]["segment_id"] in state["pending_segment_ids"]
-    assert all(Path(segment["local_path"]).is_file() for segment in calls[-1]["segments"])
+    assert calls[-1]["segments"][0]["segment"]["segment_id"] not in state["pending_segment_ids"]
+    assert not any(Path(segment["local_path"]).is_file() for segment in calls[-1]["segments"])
     monkeypatch.setattr(main, "_write_conversation_state", real_write)
     tasks = BackgroundTasks()
     await main.retry_memorize(uid, sid, tasks)
@@ -283,8 +288,8 @@ async def test_retry_assembles_remaining_activity_under_original_owner(monkeypat
     main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={"memorize_failure": {
         "conversation_id": cid, "error": "Failed", "paused": True, "targets": targets,
     }})
-    class Service:
-        async def memorize_segments_batch(self, **kwargs):
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
             assert kwargs["conversation_id"] == cid
             assert "Completed a fictional task" in kwargs["segments"][0]["raw_text"]
             return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
@@ -319,8 +324,8 @@ async def test_context_only_remainder_recovers_existing_failure_without_creating
             "memorize_failure": {"conversation_id": cid, "error": "Failed", "paused": True, "targets": targets},
             "last_consolidation_error": "Reflection failed", "last_consolidation_error_at": datetime.now(UTC).isoformat(),
         })
-    class Service:
-        async def memorize_segments_batch(self, **kwargs):
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
             failure = main._paid_work_state(uid, sid)["memorize_failure"]
             assert (failure is not None and failure["paused"]) if recovering else failure is None
             assert all(segment["segment"]["context_only"] for segment in kwargs["segments"])
@@ -350,8 +355,8 @@ async def test_direct_checkpoint_cannot_commit_without_pending_bookkeeping(monke
                 "BEGIN SELECT RAISE(ABORT, 'Bookkeeping failed'); END")
     con.commit()
     con.close()
-    class Service:
-        async def memorize_segments_batch(self, **kwargs):
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
             return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: Service())
     tasks = BackgroundTasks()
@@ -373,8 +378,8 @@ async def test_automatic_admission_reaches_real_endpoint_once(monkeypatch, cance
     marker = main._memorize_lock_key(uid, sid)
     calls = []
 
-    class Service:
-        async def memorize_segments_batch(self, **kwargs):
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
             calls.append(kwargs)
             assert marker in main._FORCED_MEMORIZE_INFLIGHT
             assert main._paid_work_state(uid, sid)["memorize_failure"]
@@ -447,8 +452,8 @@ async def test_retry_stays_paused_and_duplicate_is_refused(monkeypatch):
     monkeypatch.setattr(main, "_build_cross_conversation_payload", lambda *_args, **_kwargs: payload)
     entered, release = asyncio.Event(), asyncio.Event()
     calls = []
-    class Service:
-        async def memorize_segments_batch(self, **kwargs):
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
             calls.append(kwargs)
             entered.set()
             await release.wait()
@@ -569,17 +574,23 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
     main._write_conversation_state(cid, **scope, updates={})
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
-    resources = []
-    async def batch(**kwargs):
-        for segment in kwargs["segments"]:
-            resource = svc.database.resource_repo.create_resource(
-                url=segment["resource_url"], local_path=segment["local_path"], modality="conversation",
-                caption=None, embedding=None, user_data=scope, conversation_id=cid,
-                segment_id=segment["segment"]["segment_id"],
-            )
-            resources.append(resource.id)
-        return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
-    svc.memorize_segments_batch = batch
+    routes = []
+    class Router:
+        chat_model = "fictional-router"
+        async def chat(self, prompt):
+            routes.append(prompt)
+            return json.dumps({"episodes": [{"title": "Fictional garden", "episode_summary": "A garden.",
+                "episode_item": "A fictional garden project.", "categories": ["Garden"], "day": self.day}],
+                "excluded_types": []})
+    route = svc._route_segment
+    async def routed(text, types, **kwargs):
+        kwargs["llm_client"].day = kwargs["source_days"][0]
+        return await route(text, types, **kwargs)
+    monkeypatch.setattr(svc, "_route_segment", routed)
+    monkeypatch.setattr(svc, "_generate_entries_from_text", AsyncMock(return_value=[]))
+    monkeypatch.setattr(svc, "_select_chat_client", lambda *_a, **_kw: Router())
+    monkeypatch.setattr(svc, "_select_embedding_client", lambda *_a, **_kw: SimpleNamespace(
+        embed=AsyncMock(side_effect=lambda texts: [[1.0, 0.0] for _ in texts])))
     writer = main._write_conversation_state
     def fail_second(*args, **kwargs):
         if kwargs["updates"].get("digest_cursor") == 1:
@@ -598,9 +609,13 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
     with pytest.raises(RuntimeError, match="Second publication"):
         await run([0, 1])
     assert [file.name for file in segments_dir.iterdir()] == ["2020-01-01.json"]
+    assert len(svc.database.resource_repo.list_resources(scope)) == 1
+    state, _, _ = main._load_turn_state_and_soul_card(cid, **scope)
+    assert state["digest_cursor"] == 0 and state["pending_segment_ids"] == [f"{cid}:0-0"]
+    assert state["memorize_failure"]["segment_work"] == {f"{cid}:0-0": "review"}
     monkeypatch.setattr(main, "_write_conversation_state", writer)
     await run([1])
-    assert resources[1] == resources[2]
+    assert len(routes) == 3 and len(svc.database.resource_repo.list_resources(scope)) == 2
     assert len(list(segments_dir.iterdir())) == 2
 
 
@@ -622,3 +637,37 @@ async def test_no_new_tail_still_checks_pending_consolidation_with_a_recent_cloc
     schedule.assert_awaited_once()
     assert schedule.await_args.kwargs["conversation_id"] == cid
     assert not schedule.await_args.kwargs.get("force", False)
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_consolidation_defers_scoped_unfinished_memorize(historical):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "chat:unfinished"
+    updates = {"pending_segment_ids": [f"{cid}:older"]}
+    if historical:
+        updates["import_state"] = {"history_end_index": 2, "memorize_cursor": 0,
+            "stage": "consolidation", "error": "Failed", "pending_segment_ids": [f"{cid}:0-0"],
+            "segment_work": {f"{cid}:0-0": "review"}}
+    else:
+        updates["memorize_failure"] = {"conversation_id": cid, "error": "Failed", "paused": True,
+            "targets": {cid: {"cursor": 0}}, "segment_work": {f"{cid}:0-0": "dedupe"}}
+    main._write_conversation_state(cid, **scope, updates=updates)
+    result = consolidation.gather_consolidation_inputs(
+        main._make_consolidation_deps(), conversation_id=cid, **scope, force=True, historical=historical,
+    )
+    assert result == {"status": "skip", "reason": "memorize_postprocessing_pending"}
+    other = {**scope, "soul_id": "OtherSoul"}
+    main._write_conversation_state(cid, **other, updates={})
+    assert consolidation.gather_consolidation_inputs(
+        main._make_consolidation_deps(), conversation_id=cid, **other, force=True,
+    )["reason"] == "no_pending_segments"
+    if not historical:
+        main._write_conversation_state(cid, **scope, updates={"memorize_failure": {
+            "conversation_id": "chat:later-source", "error": "Later source failure", "paused": True, "targets": {},
+        }})
+        failure = main._paid_work_state(**scope)["memorize_failure"]
+        assert failure["segment_work"] == updates["memorize_failure"]["segment_work"]
+        assert failure["targets"] == {cid: {"cursor": 0}}
+        assert failure["conversation_id"] == cid
+        with pytest.raises(RuntimeError, match="postprocessing is still unfinished"):
+            main._write_conversation_state(cid, **scope, updates={"memorize_failure": None})

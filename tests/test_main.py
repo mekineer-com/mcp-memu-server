@@ -13,6 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from app import main
+from tests import SavedBatchService
 from app.services import consolidation, conversation_sources, crud_endpoints, retrieve_orchestration, segment, service_factory
 from memu.app.dossier import DossierRevisionStaleError
 from memu.app.graph import DossierMembershipConflictError, EntityActionConflictError, EntityMergeConflictError
@@ -4496,8 +4497,8 @@ async def test_run_memorize_segments_records_failure_progress_on_exception(tmp_p
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
 
-    class _FailingService:
-        async def memorize_segments_batch(self, **_kwargs):
+    class _FailingService(SavedBatchService):
+        async def extract(self, **_kwargs):
             raise RuntimeError("boom")
 
     user_id = "u"
@@ -4541,8 +4542,8 @@ async def test_run_memorize_segments_batches_one_job_per_persisted_segment(tmp_p
     segments_dir.mkdir()
     captured: dict[str, Any] = {}
 
-    class _FakeService:
-        async def memorize_segments_batch(self, **kwargs):
+    class _FakeService(SavedBatchService):
+        async def extract(self, **kwargs):
             captured.update(kwargs)
             return [{} for _ in kwargs["segments"]]
 
@@ -4634,8 +4635,8 @@ async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeyp
         con.row_factory = sqlite3.Row
         before = soul_state.read(con)
     paths = []
-    class Service:
-        async def memorize_segments_batch(self, **kwargs):
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
             assert kwargs["enforce_input_budget"] is True
             paths.extend(Path(row["local_path"]) for row in kwargs["segments"])
             if sql_import:
@@ -4700,8 +4701,8 @@ async def test_run_memorize_segments_preserves_pending_ids_on_extraction_failure
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
 
-    class _FailingService:
-        async def memorize_segments_batch(self, **_kwargs):
+    class _FailingService(SavedBatchService):
+        async def extract(self, **_kwargs):
             raise RuntimeError("boom")
 
     user_id = "u"
@@ -4773,8 +4774,8 @@ async def test_run_memorize_segments_ignores_cancel_after_batch_extraction(
     main._MEMORIZE_PROGRESS.pop(key, None)
     main._MEMORIZE_CANCEL.discard(key)
 
-    class _FakeService:
-        async def memorize_segments_batch(self, **kwargs):
+    class _FakeService(SavedBatchService):
+        async def extract(self, **kwargs):
             main._MEMORIZE_CANCEL.add(key)
             return [
                 {"pending_segment_ids": ["cid-1:0-0"]},
@@ -4841,8 +4842,8 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
 
-    class _FakeService:
-        async def memorize_segments_batch(self, **_kwargs):
+    class _FakeService(SavedBatchService):
+        async def extract(self, **_kwargs):
             return [{"pending_segment_ids": ["trigger:0-1"]}]
 
     state_rows: dict[str, dict[str, Any]] = {
@@ -4873,6 +4874,8 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
             state_rows[cid]["rolling_summary"] = None
         return dict(state_rows[cid]), tmp_path / "Echo.db"
 
+    for cid, initial in state_rows.items():
+        main._write_conversation_state(cid, user_id="u", soul_id="s", updates=initial)
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
     monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
     monkeypatch.setattr(
@@ -4961,8 +4964,8 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
 
-    class _FakeService:
-        async def memorize_segments_batch(self, **_kwargs):
+    class _FakeService(SavedBatchService):
+        async def extract(self, **_kwargs):
             return [{"pending_segment_ids": ["trigger:0-1"]}]
 
     state_rows: dict[str, dict[str, Any]] = {
@@ -5059,8 +5062,8 @@ async def test_run_memorize_segments_fresh_background_context_does_not_write_rol
     segments_dir.mkdir()
     captured_segments: list[dict[str, Any]] = []
 
-    class _FakeService:
-        async def memorize_segments_batch(self, *, segments: list[dict[str, Any]], **_kwargs):
+    class _FakeService(SavedBatchService):
+        async def extract(self, *, segments: list[dict[str, Any]], **_kwargs):
             captured_segments.extend(segments)
             return [{"pending_segment_ids": ["trigger:0-1"]}]
 
@@ -5166,8 +5169,8 @@ async def test_context_only_segment_advances_cursor_without_memory_work(
         }
     }
 
-    class _FakeService:
-        async def memorize_segments_batch(self, *, segments: list[dict[str, Any]], **_kwargs):
+    class _FakeService(SavedBatchService):
+        async def extract(self, *, segments: list[dict[str, Any]], **_kwargs):
             captured_paths.extend(Path(segment["resource_url"]) for segment in segments)
             captured_payloads.extend(segment["segment"] for segment in segments)
             return [
@@ -5276,8 +5279,8 @@ async def test_non_cross_context_only_advances_only_rolling_cursor(
         "pending_segment_ids": [],
     }
 
-    class _FakeService:
-        async def memorize_segments_batch(self, **_kwargs):
+    class _FakeService(SavedBatchService):
+        async def extract(self, **_kwargs):
             return [{"pending_segment_ids": []}]
 
     def fake_load(*_args, **_kwargs):
@@ -5330,8 +5333,8 @@ async def test_context_only_web_checkpoint_ignores_live_policy_reread(
     segments_dir.mkdir()
     writes: list[dict[str, Any]] = []
 
-    class _FakeService:
-        async def memorize_segments_batch(self, **_kwargs):
+    class _FakeService(SavedBatchService):
+        async def extract(self, **_kwargs):
             return [{"pending_segment_ids": []}]
 
     def fake_load(cid: str, **_kwargs):
@@ -5349,6 +5352,9 @@ async def test_context_only_web_checkpoint_ignores_live_policy_reread(
         writes.append(dict(updates))
         return dict(updates), tmp_path / "TestSoul.db"
 
+    initial = fake_load("background")[0]
+    initial["rolling_summary_cursor_ts"] = 5
+    main._write_conversation_state("background", user_id="test-user", soul_id="TestSoul", updates=initial)
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load)
     monkeypatch.setattr(main, "_write_conversation_state", fake_write)
     monkeypatch.setattr(main, "_resolve_web_source_checkpoint", lambda _cid, source_id: int(source_id.rsplit("-", 1)[1]))
