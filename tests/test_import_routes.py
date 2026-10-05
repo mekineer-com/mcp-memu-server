@@ -486,10 +486,11 @@ def test_import_guidance_uses_soul_period_but_selected_chat_processed_dates(tmp_
     for memorize_chat in (True, False):
         main._write_conversation_state(other_cid, user_id="TestOwner", soul_id="TestSoul",
                                        updates={"memorize_chat": memorize_chat})
-        snapshot.write_text("{", encoding="utf-8")
-        for missing in (False, True):
-            if missing:
+        for raw in ("{", "[]", '{"history":{}}', None):
+            if raw is None:
                 snapshot.unlink()
+            else:
+                snapshot.write_text(raw, encoding="utf-8")
             with pytest.raises(HTTPException) as refused:
                 validate(ImportPreview(**scope, conversation_id=cid, current_messages=[]))
             assert refused.value.status_code == 409 and other_cid in refused.value.detail and "unavailable" in refused.value.detail

@@ -1020,10 +1020,10 @@ def load_chat_snapshot_tail(
         raise FileNotFoundError(f"{source_label} snapshot missing: {path}")
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
-        raise RuntimeError(f"{source_label} snapshot must be an object: {path}")
+        raise ValueError(f"{source_label} snapshot must be an object: {path}")
     history = raw.get("history")
     if not isinstance(history, list):
-        raise RuntimeError(f"{source_label} snapshot history must be a list: {path}")
+        raise ValueError(f"{source_label} snapshot history must be a list: {path}")
     chat_name = str(raw.get("chat_name") or "").strip()
     all_rows: list[dict[str, Any]] = []
     for idx, item in enumerate(history):
