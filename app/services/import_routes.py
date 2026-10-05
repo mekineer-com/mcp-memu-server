@@ -34,6 +34,7 @@ class ImportScope(BaseModel):
 class ImportPreview(ImportScope):
     conversation_id: str
     title: str | None = None
+    history_end_index: int = Field(default=0, ge=0)
     current_messages: list[ImportMessage]
 
 
@@ -203,21 +204,25 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         try:
             con.row_factory = runtime.sqlite3.Row
             runtime._sqlite_ensure_conversation_state_schema(con)
-            con.execute("BEGIN IMMEDIATE")
-            state = runtime._conversation_state_from_row(
-                runtime._conversation_state_row(con, cid, **scoped))
-            record = state.get("import_state") if state else None
-            if record is None:
-                prior_segments = con.execute(
-                    "SELECT 1 FROM resources WHERE user_id = ? AND soul_id = ? AND modality = 'conversation' LIMIT 1",
-                    (scoped["user_id"], scoped["soul_id"]),
-                ).fetchone()
-                end = 0 if prior_segments else chat["history_end_index"]
-                record = {"history_end_index": end, "memorize_cursor": -1, "pending_segment_ids": [],
-                          "stage": "memorize" if end else "complete", "error": None}
-            result, _ = runtime._write_conversation_state(
-                cid, **scoped, updates={"import_state": record}, connection=con)
-            con.commit()
+            with runtime._STATE_LOCK:
+                con.execute("BEGIN IMMEDIATE")
+                state = runtime._conversation_state_from_row(
+                    runtime._conversation_state_row(con, cid, **scoped))
+                record = state.get("import_state") if state else None
+                if record is None:
+                    if runtime._memorize_lock_key(**scoped) in runtime._FORCED_MEMORIZE_INFLIGHT or (
+                            scoped["user_id"], scoped["soul_id"]) in runtime._CONSOLIDATION_RUNNING:
+                        raise HTTPException(status_code=409, detail="Memory work is still running; register when it finishes")
+                    prior_segments = con.execute(
+                        "SELECT 1 FROM resources WHERE user_id = ? AND soul_id = ? AND modality = 'conversation' LIMIT 1",
+                        (scoped["user_id"], scoped["soul_id"]),
+                    ).fetchone()
+                    end = 0 if prior_segments else chat["history_end_index"]
+                    record = {"history_end_index": end, "memorize_cursor": -1, "pending_segment_ids": [],
+                              "stage": "memorize" if end else "complete", "error": None}
+                result, _ = runtime._write_conversation_state(
+                    cid, **scoped, updates={"import_state": record}, connection=con)
+                con.commit()
             return {"conversation_id": cid, "import_state": result["import_state"]}
         finally:
             con.close()
@@ -253,10 +258,13 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
                 guidance["pending_start_day"] = min(
                     (day.date().isoformat() for cid, tail in tails.items() if not cid.startswith("activity:")
                      for row in tail if (day := _message_happened_at(row)) is not None), default=None)
-                guidance["deferred_history"] = bool(con.execute(
-                    "SELECT 1 FROM resources WHERE user_id = ? AND soul_id = ? AND modality = 'conversation' LIMIT 1",
-                    (scoped["user_id"], scoped["soul_id"]),
-                ).fetchone())
+                history_end = max(request.history_end_index, chat["history_end_index"] if chat else 0)
+                record = state.get("import_state")
+                guidance["deferred_history"] = history_end > record["history_end_index"] if record is not None else (
+                    history_end > 0 and bool(con.execute(
+                        "SELECT 1 FROM resources WHERE user_id = ? AND soul_id = ? AND modality = 'conversation' LIMIT 1",
+                        (scoped["user_id"], scoped["soul_id"]),
+                    ).fetchone()))
             finally:
                 con.close()
         if not request.current_messages:

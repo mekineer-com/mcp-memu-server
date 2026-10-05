@@ -82,6 +82,35 @@ async def test_registration_uses_segments_not_incidental_memories(tmp_path, monk
             await _endpoint("/imports/process")(ImportScope(**scope))
 
 
+@pytest.mark.parametrize("running", ["memorize", "consolidation"])
+def test_first_registration_waits_for_memory_work(tmp_path, monkeypatch, running):
+    source, db = tmp_path / "imports.db", tmp_path / "TestSoul.db"
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "label": "Replika"}
+    monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_kw: db)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: None)
+    with sqlite3.connect(db) as con:
+        _guidance_schema(con)
+    rows, _, _ = chat_import.normalize_messages([{"id": "one", "role": "user", "content": "fictional",
+                                                 "timestamp": "2025-01-01"}])
+    chat = chat_import.store_upload(source, **scope, messages=rows, history_count=1)
+    marker = main._memorize_lock_key("TestOwner", "TestSoul")
+    claims = {marker: False} if running == "memorize" else {("TestOwner", "TestSoul"): False}
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT" if running == "memorize" else "_CONSOLIDATION_RUNNING", claims)
+    register = _endpoint("/imports/register")
+    with pytest.raises(HTTPException) as refused:
+        register(ImportScope(**scope))
+    assert refused.value.status_code == 409
+    state, _, _ = main._load_turn_state_and_soul_card(chat["conversation_id"], user_id="TestOwner", soul_id="TestSoul")
+    assert state["import_state"] is None
+    claims.clear()
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO resources VALUES ('TestOwner', 'TestSoul', 'chat:earlier', 'conversation', '2024-01-01', '2024-01-01')")
+    assert register(ImportScope(**scope))["import_state"]["history_end_index"] == 0
+    claims[marker if running == "memorize" else ("TestOwner", "TestSoul")] = False
+    assert register(ImportScope(**scope))["import_state"]["history_end_index"] == 0
+
+
 def test_registration_keeps_first_file_bound_without_resetting_progress(tmp_path, monkeypatch):
     source, db = tmp_path / "imports.db", tmp_path / "TestSoul.db"
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "label": "Replika"}
@@ -97,6 +126,10 @@ def test_registration_keeps_first_file_bound_without_resetting_progress(tmp_path
     result = register(request)
     assert result["import_state"] == {"history_end_index": 2, "memorize_cursor": -1,
         "pending_segment_ids": [], "stage": "memorize", "error": None}
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+    preview = _endpoint("/imports/validate")(ImportPreview(**scope, conversation_id=upload["conversation_id"],
+        current_messages=[], history_end_index=6))
+    assert preview["deferred_history"] is True  # Prospective later history, before any segment exists.
     saved = {**result["import_state"], "memorize_cursor": 1, "pending_segment_ids": ["test-segment"],
              "stage": "consolidation", "error": "Historical failure"}
     main._write_conversation_state(upload["conversation_id"], user_id="TestOwner", soul_id="TestSoul",
