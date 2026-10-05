@@ -208,9 +208,10 @@ async def run_import(runtime: Any, *, scoped: dict, chat: dict, retry: bool) -> 
     finally:
         runtime._MEMORIZE_CANCEL.discard(marker)
         await runtime._finish_memorize_claim(marker, success)
-    if success:
-        current = runtime._load_turn_state_and_soul_card(chat["conversation_id"], **scoped)[0]["import_state"]
-    if success and current["stage"] == "complete" and current.get("ordinary_waiting"):
+    if not success or runtime._SHUTDOWN_STATE["draining"]:
+        return
+    current = runtime._load_turn_state_and_soul_card(chat["conversation_id"], **scoped)[0]["import_state"]
+    if current["stage"] == "complete" and current.get("ordinary_waiting"):
         with runtime._STATE_LOCK:
             runtime._FORCED_MEMORIZE_INFLIGHT[marker] = False
         await run_waiting_memorize(runtime, scoped=scoped, import_cid=chat["conversation_id"])
@@ -239,7 +240,7 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
             raise HTTPException(status_code=409, detail="No eligible history to process")
         marker = runtime._memorize_lock_key(**scoped)
         with runtime._STATE_LOCK:
-            if import_task(runtime, marker) or marker in runtime._FORCED_MEMORIZE_INFLIGHT or (scoped["user_id"], scoped["soul_id"]) in runtime._CONSOLIDATION_RUNNING:
+            if marker in runtime._FORCED_MEMORIZE_INFLIGHT or (scoped["user_id"], scoped["soul_id"]) in runtime._CONSOLIDATION_RUNNING:
                 raise HTTPException(status_code=409, detail="Memory work is still running")
             if bool(record["error"]) != retry:
                 raise HTTPException(status_code=409, detail="Retry the failed import" if record["error"] else "No failed import to retry")

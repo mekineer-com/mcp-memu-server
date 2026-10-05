@@ -838,7 +838,9 @@ async def run_memorize_segments(
         # from consolidation forever.
         raise
     finally:
-        ctx.memorize_cancel.discard(progress_key)
+        # The outer import task owns cancellation across historical batches.
+        if not historical:
+            ctx.memorize_cancel.discard(progress_key)
 
 
 def chat_storage_hash(uid: str, soul_id: str, key: str) -> str:
