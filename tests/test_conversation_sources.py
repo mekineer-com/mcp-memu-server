@@ -258,6 +258,13 @@ def test_mentra_snapshot_uses_sequence_cursor_and_honest_record_labels(tmp_path:
     snapshot_path = next((tmp_path / "transcripts").rglob("latest_history.json"))
     envelope = json.loads(snapshot_path.read_text())
     assert envelope["updated_at"].endswith("Z")
+    envelope["history"][0]["received_at"] = "not-a-date"
+    snapshot_path.write_text(json.dumps(envelope))
+    with pytest.raises(ValueError, match="invalid received_at"):
+        conversation_sources.load_mentra_tail(
+            storage_dir=tmp_path, user_id="Fictional User", soul_id="Codexia",
+            conversation_id="mentra:test-device", since_cursor=0, recent_fallback_messages=0,
+        )
 
 
 def test_mentra_storage_dir_stays_with_openalma_apps() -> None:
