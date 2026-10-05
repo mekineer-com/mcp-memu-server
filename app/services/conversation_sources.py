@@ -47,16 +47,31 @@ def import_chat_info(*, user_id: str, soul_id: str, label: str) -> dict[str, Any
     with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as con:
         con.row_factory = sqlite3.Row
         chat = con.execute(
-            "SELECT * FROM imported_chats WHERE user_id = ? AND soul_id = ? AND label = ?",
-            (user_id, soul_id, label),
+            "SELECT * FROM imported_chats WHERE user_id = ? AND soul_id = ?",
+            (user_id, soul_id),
         ).fetchone()
-        if chat is None:
+        if chat is None or chat["label"].casefold() != label.strip().casefold():
             return None
         end = con.execute(
             "SELECT COALESCE(MAX(position) + 1, 0) FROM imported_messages WHERE chat_id = ? AND historical = 1",
             (chat["chat_id"],),
         ).fetchone()[0]
         return {**dict(chat), "conversation_id": f"import:dm:{chat['chat_id']}", "history_end_index": end}
+
+
+def import_processed_days(*, user_id: str, soul_id: str, label: str, cursor: int,
+                          import_state: dict[str, Any] | None) -> tuple[str | None, str | None]:
+    chat = import_chat_info(user_id=user_id, soul_id=soul_id, label=label)
+    if chat is None:
+        return None, None
+    record = normalize_import_state(import_state)
+    with closing(sqlite3.connect(f"{import_source_path().resolve().as_uri()}?mode=ro", uri=True)) as con:
+        return tuple(con.execute(
+            "SELECT MIN(source_day), MAX(source_day) FROM imported_messages WHERE chat_id = ? AND "
+            "((historical = 0 AND position <= ?) OR (historical = 1 AND position <= ? AND position < ?))",
+            (chat["chat_id"], cursor, record["memorize_cursor"] if record else -1,
+             record["history_end_index"] if record else 0),
+        ).fetchone())
 
 
 def _import_source_message(row: sqlite3.Row, chat: sqlite3.Row, conversation_id: str) -> dict[str, Any]:

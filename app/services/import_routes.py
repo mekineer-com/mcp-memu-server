@@ -13,6 +13,7 @@ from memu.app.dossier_revision import estimate_prompt_tokens
 from app.services import consolidation, conversation_sources, memorize_endpoint
 from app.services.consolidation import consolidation_input_budget
 from app.services.state import effective_digest_cursor_from_row
+from app.services.segment import _message_happened_at
 
 
 class ImportMessage(BaseModel):
@@ -157,6 +158,8 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
 
     def start(request: ImportScope, *, retry: bool):
         scoped, chat, record = registered(request)
+        if record["stage"] == "complete":
+            raise HTTPException(status_code=409, detail="No eligible history to process")
         marker = runtime._memorize_lock_key(**scoped)
         with runtime._STATE_LOCK:
             if marker in runtime._FORCED_MEMORIZE_INFLIGHT or (scoped["user_id"], scoped["soul_id"]) in runtime._CONSOLIDATION_RUNNING:
@@ -182,6 +185,7 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         scoped, chat, record = registered(ImportScope(user_id=user_id, soul_id=soul_id, label=label))
         marker = runtime._memorize_lock_key(**scoped)
         return {"conversation_id": chat["conversation_id"], "import_state": record,
+                "deferred_history": chat["history_end_index"] > record["history_end_index"],
                 "running": marker in runtime._FORCED_MEMORIZE_INFLIGHT,
                 "progress": runtime._MEMORIZE_PROGRESS.get(marker, {"active": False})}
 
@@ -192,6 +196,7 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         if chat is None:
             raise HTTPException(status_code=404, detail="Store the imported chat before registering it")
         cid = chat["conversation_id"]
+        runtime._get_service_from_payload({"user": scoped})
         path = runtime._sqlite_current_path(**scoped)
         runtime._sqlite_ensure_nonempty(path)
         con = runtime._sqlite_connect(path)
@@ -203,12 +208,13 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
                 runtime._conversation_state_row(con, cid, **scoped))
             record = state.get("import_state") if state else None
             if record is None:
-                end = chat["history_end_index"]
+                prior_segments = con.execute(
+                    "SELECT 1 FROM resources WHERE user_id = ? AND soul_id = ? AND modality = 'conversation' LIMIT 1",
+                    (scoped["user_id"], scoped["soul_id"]),
+                ).fetchone()
+                end = 0 if prior_segments else chat["history_end_index"]
                 record = {"history_end_index": end, "memorize_cursor": -1, "pending_segment_ids": [],
                           "stage": "memorize" if end else "complete", "error": None}
-            elif chat["history_end_index"] > record["history_end_index"]:
-                record = {**record, "history_end_index": chat["history_end_index"],
-                          "stage": "memorize" if record["stage"] == "complete" else record["stage"]}
             result, _ = runtime._write_conversation_state(
                 cid, **scoped, updates={"import_state": record}, connection=con)
             con.commit()
@@ -223,6 +229,7 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
             raise HTTPException(status_code=400, detail="An imported-chat identity is required")
         chat = conversation_sources.import_chat_info(**scoped, label=label)
         cid = chat["conversation_id"] if chat else request.conversation_id
+        label = chat["label"] if chat else label
         if cid != request.conversation_id:
             raise HTTPException(status_code=409, detail="Use the existing chat for this app label")
         svc = runtime._get_service_from_payload({"user": scoped})
@@ -233,18 +240,23 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
             include_floor_without_new=True, import_state=state.get("import_state"),
         ) if chat else []
         stored_pending = [row for row in stored if row["source_conversation_index"] > cursor]
-        pending_days = [row["source_day"] for row in stored_pending]
-        guidance = {"pending_start_day": min(pending_days, default=None),
-                    "processed_start_day": None, "processed_end_day": None}
+        processed = conversation_sources.import_processed_days(
+            **scoped, label=label, cursor=cursor, import_state=state.get("import_state"))
+        guidance = {"pending_start_day": None,
+                    "processed_start_day": processed[0], "processed_end_day": processed[1],
+                    "deferred_history": False}
         if path is not None and path.exists():
             con = runtime._sqlite_connect(path)
             try:
-                bounds = con.execute(
-                    "SELECT MIN(source_start_day), MAX(source_end_day) FROM resources "
-                    "WHERE user_id = ? AND soul_id = ? AND conversation_id = ? AND modality = 'conversation'",
-                    (scoped["user_id"], scoped["soul_id"], cid),
-                ).fetchone()
-                guidance.update(processed_start_day=bounds[0], processed_end_day=bounds[1])
+                con.row_factory = runtime.sqlite3.Row
+                tails = runtime._load_cross_memorize_tails_from_sources(con, **scoped)
+                guidance["pending_start_day"] = min(
+                    (day.date().isoformat() for cid, tail in tails.items() if not cid.startswith("activity:")
+                     for row in tail if (day := _message_happened_at(row)) is not None), default=None)
+                guidance["deferred_history"] = bool(con.execute(
+                    "SELECT 1 FROM resources WHERE user_id = ? AND soul_id = ? AND modality = 'conversation' LIMIT 1",
+                    (scoped["user_id"], scoped["soul_id"]),
+                ).fetchone())
             finally:
                 con.close()
         if not request.current_messages:

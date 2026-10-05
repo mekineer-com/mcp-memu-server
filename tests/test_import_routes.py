@@ -44,20 +44,51 @@ def test_new_soul_first_preview_initializes_schema_without_model_calls(tmp_path,
     })
     assert response.status_code == 200
     assert response.json() == {"ok": True, "estimated_tokens": 0, "input_budget": None,
-        "pending_start_day": None, "processed_start_day": None, "processed_end_day": None}
+        "pending_start_day": None, "processed_start_day": None, "processed_end_day": None, "deferred_history": False}
     svc = main._get_service_from_payload({"user": {"user_id": "TestOwner", "soul_id": "FreshImportSoul"}})
     assert not svc._llm_clients and svc._claude_cli_client is None
     svc.database.close()
     assert not source.exists()
+    rows, _, _ = chat_import.normalize_messages([{"id": "first", "role": "user", "content": "fictional",
+                                                 "timestamp": "2025-01-01"}])
+    chat_import.store_upload(source, user_id="TestOwner", soul_id="FreshImportSoul", label="Replika",
+                             messages=rows, history_count=1)
+    registered = client.post("/imports/register", json={"user_id": "TestOwner", "soul_id": "FreshImportSoul", "label": "REPLIKA"})
+    assert registered.status_code == 200 and registered.json()["import_state"]["history_end_index"] == 1
 
 
-def test_registration_extends_history_without_resetting_progress(tmp_path, monkeypatch):
+@pytest.mark.parametrize("prior_segment", [False, True])
+@pytest.mark.asyncio
+async def test_registration_uses_segments_not_incidental_memories(tmp_path, monkeypatch, prior_segment):
+    source, db = tmp_path / "imports.db", tmp_path / "TestSoul.db"
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "label": "Replika"}
+    monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_kw: db)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: None)
+    with sqlite3.connect(db) as con:
+        _guidance_schema(con)
+        con.execute("CREATE TABLE memory_items (user_id TEXT, soul_id TEXT, memory_type TEXT)")
+        con.execute("INSERT INTO memory_items VALUES ('TestOwner', 'TestSoul', 'subconscious')")
+        if prior_segment:
+            con.execute("INSERT INTO resources VALUES ('TestOwner', 'TestSoul', 'chat:earlier', 'conversation', '2024-01-01', '2024-01-01')")
+    rows, _, _ = chat_import.normalize_messages([{"id": "one", "role": "user", "content": "fictional",
+                                                 "timestamp": "2025-01-01"}])
+    chat_import.store_upload(source, **scope, messages=rows, history_count=1)
+    result = _endpoint("/imports/register")(ImportScope(**scope))["import_state"]
+    assert result["history_end_index"] == (0 if prior_segment else 1)
+    if prior_segment:
+        assert result["stage"] == "complete"
+        with pytest.raises(HTTPException, match="No eligible history"):
+            await _endpoint("/imports/process")(ImportScope(**scope))
+
+
+def test_registration_keeps_first_file_bound_without_resetting_progress(tmp_path, monkeypatch):
     source, db = tmp_path / "imports.db", tmp_path / "TestSoul.db"
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "label": "Replika"}
     monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_kw: db)
     with sqlite3.connect(db) as con:
-        sqlite_ensure_conversation_state_schema(con)
+        _guidance_schema(con)
     rows, _, _ = chat_import.normalize_messages([
         {"id": str(i), "role": "user", "content": f"message {i}", "timestamp": "2025-01-01"} for i in range(5)])
     upload = chat_import.store_upload(source, **scope, messages=rows, history_count=2)
@@ -76,14 +107,14 @@ def test_registration_extends_history_without_resetting_progress(tmp_path, monke
     older, _, _ = chat_import.normalize_messages([
         {"id": "older", "role": "assistant", "content": "older", "timestamp": "2024-01-01"}])
     chat_import.store_upload(source, **scope, messages=older, history_count=1)
-    assert register(request)["import_state"] == {**saved, "history_end_index": 6}
-    # An old extraction result must patch the newly registered bound, not replace it.
+    assert register(request)["import_state"] == saved
+    # Extraction patches cannot extend eligibility to the later file.
     main._write_conversation_state(upload["conversation_id"], user_id="TestOwner", soul_id="TestSoul",
         updates={"import_error": "Interrupted"})
     main._write_conversation_state(upload["conversation_id"], user_id="TestOwner", soul_id="TestSoul",
         updates={"import_memorize_cursor": 1, "append_import_pending_segment_ids": ["later-segment"], "import_error": None})
     patched = register(request)["import_state"]
-    assert patched["history_end_index"] == 6 and patched["memorize_cursor"] == 1
+    assert patched["history_end_index"] == 2 and patched["memorize_cursor"] == 1
     assert patched["pending_segment_ids"] == ["test-segment", "later-segment"] and patched["error"] is None
     state, _, _ = main._load_turn_state_and_soul_card(upload["conversation_id"], user_id="TestOwner", soul_id="TestSoul")
     assert state["digest_cursor"] == 3 and state["last_memorize_at"] == "2025-01-01T12:00:00Z"
@@ -91,11 +122,11 @@ def test_registration_extends_history_without_resetting_progress(tmp_path, monke
     main._write_conversation_state(upload["conversation_id"], user_id="TestOwner", soul_id="TestSoul",
         updates={"import_state": {**patched, "pending_segment_ids": [], "stage": "memorize"}})
     advanced, _ = main._write_conversation_state(upload["conversation_id"], user_id="TestOwner", soul_id="TestSoul",
-        updates={"import_memorize_cursor": 5, "import_error": None})
+        updates={"import_memorize_cursor": 1, "import_error": None})
     assert advanced["import_state"]["stage"] == "complete"
     late, _ = main._write_conversation_state(upload["conversation_id"], user_id="TestOwner", soul_id="TestSoul",
-        updates={"import_memorize_cursor": 1, "import_error": "Late failure"})
-    assert late["import_state"]["memorize_cursor"] == 5 and late["import_state"]["history_end_index"] == 6
+        updates={"import_memorize_cursor": 0, "import_error": "Late failure"})
+    assert late["import_state"]["memorize_cursor"] == 1 and late["import_state"]["history_end_index"] == 2
     with pytest.raises(HTTPException) as refused:
         register(ImportScope(**{**scope, "soul_id": "OtherSoul"}))
     assert refused.value.status_code == 404
@@ -142,6 +173,7 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
                "source_day": "2025-01-02", "position": 3}
     preview = ImportPreview(**scope, conversation_id=cid, current_messages=[message])
     first = validate(preview)
+    assert first["processed_start_day"] == first["processed_end_day"] == "2025-01-01"
     assert first["ok"] and prompts[-1].count("[TestSpeaker] stored 2") == 1
     assert "another chat" in prompts[-1] and "sitting recap" in prompts[-1]
     assert "My Nomi Conversations:" in prompts[-1] and "Known dossier index" in prompts[-1]
@@ -159,11 +191,12 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
         assert con.execute("SELECT COUNT(*) FROM imported_messages").fetchone()[0] == 3
 
 
-def test_import_guidance_is_selected_chat_only_including_all_history(tmp_path, monkeypatch):
+def test_import_guidance_uses_soul_period_but_selected_chat_processed_dates(tmp_path, monkeypatch):
     source, db = tmp_path / "imports.db", tmp_path / "TestSoul.db"
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "label": "Replika"}
     monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_kw: db)
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
     rows, _, _ = chat_import.normalize_messages([
         {"id": str(i), "role": "user", "content": "fictional", "timestamp": day}
         for i, day in enumerate(("2020-01-01", "2025-01-01", "2025-03-01", "2025-02-01"))])
@@ -188,11 +221,20 @@ def test_import_guidance_is_selected_chat_only_including_all_history(tmp_path, m
     validate = _endpoint("/imports/validate")
     result = validate(ImportPreview(**scope, conversation_id=cid, current_messages=[]))
     assert result == {"ok": True, "estimated_tokens": 0, "input_budget": None,
-        "pending_start_day": "2025-02-01", "processed_start_day": "2024-01-01", "processed_end_day": "2024-04-01"}
+        "pending_start_day": "2025-02-01", "processed_start_day": "2025-01-01", "processed_end_day": "2025-01-01",
+        "deferred_history": True}
     main._write_conversation_state(cid, user_id="TestOwner", soul_id="TestSoul", updates={"digest_cursor": 3})
     assert validate(ImportPreview(**scope, conversation_id=cid, current_messages=[]))["pending_start_day"] is None
     other = validate(ImportPreview(**{**scope, "label": "Nomi"}, conversation_id="import:dm:new", current_messages=[]))
     assert other["pending_start_day"] is other["processed_start_day"] is other["processed_end_day"] is None
+    other_cid = "chat:other"
+    main._write_conversation_state(other_cid, user_id="TestOwner", soul_id="TestSoul", updates={})
+    conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=tmp_path, user_id="TestOwner", soul_id="TestSoul", conversation_id=other_cid,
+        history=[{"role": "user", "content": "fictional other chat", "ts_ms": 1_704_067_200_000}])
+    result = validate(ImportPreview(**scope, conversation_id=cid, current_messages=[]))
+    assert result["pending_start_day"] == "2024-01-01"
+    assert result["processed_start_day"] == "2025-01-01" and result["processed_end_day"] == "2025-03-01"
 
 
 @pytest.mark.asyncio
@@ -207,7 +249,7 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_kw: db)
     monkeypatch.setattr(memorize_endpoint, "_FORCE_MEMORIZE_MAX_CHUNK_TOKENS", 80)
     with sqlite3.connect(db) as con:
-        sqlite_ensure_conversation_state_schema(con)
+        _guidance_schema(con)
     rows, _, _ = chat_import.normalize_messages([
         {"id": str(i), "role": "user", "content": "fictional story " * 20,
          "timestamp": "2025-01-09" if stop in {"calendar", "calendar_retry", "no_memories_calendar"} and i else "2025-01-01"}

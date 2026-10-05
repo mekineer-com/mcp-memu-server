@@ -35,6 +35,7 @@ def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path
         {"id": "older", "role": "assistant", "name": "TestCompanion", "content": "older history", "timestamp": "2024-01-01"}])
     chat_import.store_upload(source, **scope, messages=older, history_count=1)
     monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
+    assert conversation_sources.import_chat_info(**{**scope, "label": "KINDROID"})["conversation_id"] == cid
     record = {"history_end_index": 2, "memorize_cursor": 0, "stage": "memorize",
               "pending_segment_ids": [], "error": None}
     kwargs = {"user_id": "TestOwner", "soul_id": "TestSoul", "conversation_id": cid,
@@ -106,10 +107,10 @@ def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path
         "id": "native-customer", "meta": {"nature": "Customer", "timestamp": "2025-01-01"},
         "content": {"type": "text", "text": "The owner shared a thought"},
     }])
-    native_chat = chat_import.store_upload(source, **{**scope, "label": "Replika"}, messages=native, history_count=0)
+    native_chat = chat_import.store_upload(source, **scope, messages=native, history_count=0)
     owner_rows = _normalize_conversation(conversation_sources.load_import_tail(
         user_id="TestOwner", soul_id="TestSoul", conversation_id=native_chat["conversation_id"],
-        since_cursor=-1, recent_fallback_messages=0))
+        since_cursor=native_chat["messages"][0]["position"] - 1, recent_fallback_messages=0))
     assert owner_rows[0]["name"] == "TestOwner" and owner_rows[0]["source_owner_id"] == "TestOwner"
     owner_map = _build_speaker_map(owner_rows, scope)
     owner_memory = _attribute_memory(memory._replace(source_role="user"), owner_map)
