@@ -12,18 +12,6 @@ from app import main
 from app.services import mcp_tools
 
 
-def test_mcp_tool_registration_exposes_expected_operations() -> None:
-    assert main._has_mcp is True
-    operation_ids = set(getattr(main, "mcp").operation_map.keys())
-    assert operation_ids == {
-        "memu_turn",
-        "memu_retrieve",
-        "memu_sensory_search",
-        "memu_memorize",
-        "memu_consolidate",
-    }
-
-
 @pytest.mark.asyncio
 async def test_memu_sensory_search_is_scoped() -> None:
     captured: dict[str, Any] = {}

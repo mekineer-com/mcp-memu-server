@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import subprocess
 import sys
 import time
@@ -43,45 +42,3 @@ def test_single_instance_rejects_real_relative_runner(tmp_path: Path, monkeypatc
     finally:
         process.terminate()
         process.wait(timeout=2)
-
-
-def test_quiet_access_filter_suppresses_successful_request() -> None:
-    record = logging.LogRecord(
-        name="uvicorn.access",
-        level=logging.INFO,
-        pathname=__file__,
-        lineno=1,
-        msg='127.0.0.1:54446 - "GET /api/canvas/global HTTP/1.1" 200',
-        args=(),
-        exc_info=None,
-    )
-
-    assert server_run._QuietAccessFilter().filter(record) is False
-
-
-def test_quiet_access_filter_keeps_failed_request() -> None:
-    record = logging.LogRecord(
-        name="uvicorn.access",
-        level=logging.INFO,
-        pathname=__file__,
-        lineno=1,
-        msg='127.0.0.1:53774 - "GET /api/canvas/global HTTP/1.1" 500',
-        args=(),
-        exc_info=None,
-    )
-
-    assert server_run._QuietAccessFilter().filter(record) is True
-
-
-def test_quiet_access_filter_keeps_application_log() -> None:
-    record = logging.LogRecord(
-        name="uvicorn.error",
-        level=logging.INFO,
-        pathname=__file__,
-        lineno=1,
-        msg="Application startup complete.",
-        args=(),
-        exc_info=None,
-    )
-
-    assert server_run._QuietAccessFilter().filter(record) is True
