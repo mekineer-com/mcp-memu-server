@@ -249,7 +249,7 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
             con = runtime._sqlite_connect(path)
             try:
                 con.row_factory = runtime.sqlite3.Row
-                tails = runtime._load_cross_memorize_tails_from_sources(con, **scoped)
+                tails = runtime._load_cross_memorize_tails_from_sources(con, **scoped, strict=True)
                 guidance["pending_start_day"] = min(
                     (day.date().isoformat() for cid, tail in tails.items() if not cid.startswith("activity:")
                      for row in tail if (day := _message_happened_at(row)) is not None), default=None)

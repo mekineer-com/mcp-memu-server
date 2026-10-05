@@ -792,6 +792,7 @@ def _load_cross_memorize_tails_from_sources(
     user_id: str,
     soul_id: str,
     exclude_conversation_id: str | None = None,
+    strict: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
     storage_dir, hermes_home_path, sessions_index_path, state_db_path = _m()._resolve_cross_source_paths()
     excluded_id = str(exclude_conversation_id or "").strip()
@@ -916,6 +917,8 @@ def _load_cross_memorize_tails_from_sources(
             tails[cid] = tail
         except Exception as exc:
             _m().logger.error("cross-memorize source read failed for conversation_id=%s: %s", cid, exc)
+            if strict:
+                raise
             is_lid_gap = "LID↔phone mapping gap" in str(exc)
             if _message_log.derive_source_label(cid).startswith("whatsapp:") and not is_lid_gap:
                 raise RuntimeError(f"WhatsApp web_source read failed for {cid}: {exc}") from exc
