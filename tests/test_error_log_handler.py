@@ -2,8 +2,6 @@
 to the root logger so errors from all modules land in errors.log."""
 from __future__ import annotations
 
-import logging
-import logging.handlers
 from pathlib import Path
 
 import pytest
@@ -54,34 +52,6 @@ def test_error_handler_wired_to_root_logger(tmp_path: Path) -> None:
     stream_cfg = log_cfg.get("loggers", {}).get("memu.llm.http_client", {})
     assert stream_cfg.get("level") == "INFO"
     assert "memu_file" in (stream_cfg.get("handlers") or [])
-
-
-def test_error_handler_writes_errors_to_file(tmp_path: Path) -> None:
-    """An ERROR log message reaches errors.log when the handler is attached."""
-    errors_log = tmp_path / "errors.log"
-
-    handler = logging.handlers.RotatingFileHandler(
-        filename=str(errors_log),
-        maxBytes=512_000,
-        backupCount=2,
-        encoding="utf-8",
-    )
-    handler.setLevel(logging.ERROR)
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    handler.setFormatter(formatter)
-
-    test_logger = logging.getLogger("test_error_log_handler_sentinel")
-    test_logger.addHandler(handler)
-    test_logger.setLevel(logging.DEBUG)
-    try:
-        test_logger.error("sentinel error message for test")
-        handler.flush()
-    finally:
-        test_logger.removeHandler(handler)
-        handler.close()
-
-    content = errors_log.read_text(encoding="utf-8")
-    assert "sentinel error message for test" in content
 
 
 def test_resolve_errors_log_path_migrates_legacy_logs_subfolder(

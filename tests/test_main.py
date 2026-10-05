@@ -317,6 +317,7 @@ def test_turn_state_write_consumes_prior_context_after_successful_turn(monkeypat
         lambda *_a, **_k: (
             {
                 "prior_context": "APImw memory line",
+                "apimw_message_to_self": "old whisper",
                 "memory_cache": [],
                 "intentions_active": [],
             },
@@ -345,6 +346,7 @@ def test_turn_state_write_consumes_prior_context_after_successful_turn(monkeypat
     )
 
     assert captured["prior_context"] is None
+    assert captured["apimw_message_to_self"] is None
     assert captured["undo_snapshot"]["annulment_memory_ids"] == []
     assert state["prior_context"] is None
     assert memory_ids == []
@@ -2495,10 +2497,6 @@ def test_resolve_profile_if_configured_defaults_when_step_profile_missing():
 def test_resolve_profile_if_configured_uses_named_step_profile():
     svc = SimpleNamespace(llm_profiles=SimpleNamespace(profiles={"default": {}, "memory_extract": {}}))
     assert main._resolve_profile_if_configured(svc, "memory_extract") == "memory_extract"
-
-
-def test_imports():
-    assert hasattr(main, "app")
 
 
 def test_run_retrieve_reports_rag_method(monkeypatch: pytest.MonkeyPatch):
@@ -6317,7 +6315,8 @@ async def test_apimw_persist_remaps_numbered_prior_context_ids(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
-async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("message", ["remember the quiet signal", "x" * 500])
+async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest.MonkeyPatch, message):
     captured_updates: dict[str, object] = {}
     captured_item: dict[str, object] = {}
 
@@ -6334,7 +6333,7 @@ async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest
     monkeypatch.setattr(main, "_write_conversation_state", _fake_write_conversation_state)
 
     async def _embed(texts: list[str], profile: str) -> list[list[float]]:
-        assert texts == ["remember the quiet signal"]
+        assert texts == [message]
         assert profile == "embedding"
         return [[0.1, 0.2]]
 
@@ -6347,21 +6346,22 @@ async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest
             embed=_embed,
             database=SimpleNamespace(memory_item_repo=SimpleNamespace(create_item=_create_item)),
         ),
-        result_json={"message_to_self": "remember the quiet signal"},
+        result_json={"message_to_self": message},
         items_by_id={},
         id_map={},
         scope={"user_id": "u", "soul_id": "s"},
-        conversation_id="whatsapp:group:18322935409-1579788049@g.us:222685531500721@lid",
+        conversation_id="whatsapp:group:test-group@g.us:test-sender@lid",
         user_id="u",
         soul_id="s",
     )
 
-    assert captured_updates["apimw_message_to_self"] == "[subconscious] remember the quiet signal"
+    assert captured_updates["apimw_message_to_self"] == f"[subconscious] {message}"
     assert captured_item["memory_type"] == "subconscious"
-    assert captured_item["summary"] == "remember the quiet signal"
+    assert captured_item["summary"] == message
+    assert captured_item["embedding"] == [0.1, 0.2]
     assert captured_item["extra"] == {"apimw_message_to_self": True}
-    assert captured_item["conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
-    assert captured_item["user_data"]["conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
+    assert captured_item["conversation_id"] == "whatsapp:group:test-group@g.us"
+    assert captured_item["user_data"]["conversation_id"] == "whatsapp:group:test-group@g.us"
 
 
 @pytest.mark.asyncio
@@ -6437,50 +6437,6 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
-async def test_apimw_persist_message_to_self_not_truncated(monkeypatch: pytest.MonkeyPatch):
-    long_text = "x" * 500
-    captured_updates: dict[str, object] = {}
-    captured_item: dict[str, object] = {}
-
-    monkeypatch.setattr(
-        main,
-        "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"prior_context": ""}, None, None),
-    )
-
-    def _fake_write(conversation_id, soul_id, user_id, updates):
-        captured_updates.update(updates)
-        return {"conversation_id": conversation_id, **updates}, Path("/tmp/fake.json")
-
-    monkeypatch.setattr(main, "_write_conversation_state", _fake_write)
-
-    async def _embed(texts, profile):
-        return [[0.1] * len(texts[0])]
-
-    def _create_item(**kwargs):
-        captured_item.update(kwargs)
-        return SimpleNamespace(id="subconscious_x")
-
-    await main._apimw_persist(
-        svc=SimpleNamespace(
-            embed=_embed,
-            database=SimpleNamespace(memory_item_repo=SimpleNamespace(create_item=_create_item)),
-        ),
-        result_json={"message_to_self": long_text},
-        items_by_id={},
-        id_map={},
-        scope={"user_id": "u", "soul_id": "s"},
-        conversation_id="c",
-        user_id="u",
-        soul_id="s",
-    )
-
-    assert captured_updates["apimw_message_to_self"] == f"[subconscious] {long_text}"
-    assert captured_item["summary"] == long_text
-    assert len(captured_item["summary"]) == 500
-
-
-@pytest.mark.asyncio
 async def test_apimw_persist_skips_when_prior_context_changed(monkeypatch: pytest.MonkeyPatch):
     writes: list[dict[str, object]] = []
 
@@ -6508,38 +6464,6 @@ async def test_apimw_persist_skips_when_prior_context_changed(monkeypatch: pytes
     )
 
     assert writes == []
-
-
-def test_turn_state_write_clears_one_shot_message_to_self(monkeypatch: pytest.MonkeyPatch):
-    captured_updates: dict[str, object] = {}
-
-    monkeypatch.setattr(
-        main,
-        "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: (
-            {
-                "memory_cache": [],
-                "intentions_active": [],
-                "apimw_message_to_self": "old whisper",
-            },
-            None,
-            None,
-        ),
-    )
-    monkeypatch.setattr(
-        main,
-        "_write_conversation_state",
-        lambda conversation_id, soul_id, user_id, updates: captured_updates.update(updates) or ({"ok": True}, Path("/tmp/fake.db")),
-    )
-
-    main._turn_state_write(
-        "c", "u", "s", "", [], [],
-        svc=SimpleNamespace(graph_delete_memories=lambda *_a, **_k: None),
-        scope={"user_id": "u", "soul_id": "s"},
-        prepared_annulments=[],
-    )
-
-    assert captured_updates["apimw_message_to_self"] is None
 
 
 @pytest.mark.asyncio
