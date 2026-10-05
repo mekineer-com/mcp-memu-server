@@ -397,6 +397,19 @@ async def test_automatic_admission_reaches_real_endpoint_once(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_automatic_admission_failure_before_jobs_pauses_and_exposes_retry(monkeypatch):
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:failed-admission"
+    async def fail(*_args):
+        raise ValueError("Fictional source error")
+    monkeypatch.setattr(main, "_memorize_admitted", fail)
+    assert await main._run_forced_memorize_from_turn({
+        "user": {"user_id": uid, "soul_id": sid}, "conversation_id": cid,
+    }) is False
+    assert main._paid_work_state(uid, sid)["memorize_failure"]["conversation_id"] == cid
+    assert main._soul_activity_pause(uid, sid)
+
+
+@pytest.mark.asyncio
 async def test_retry_of_completed_targets_clears_only_memorize(monkeypatch):
     uid, sid, cid = "TestOwner", "TestSoul", "chat:saved-chat"
     failure = {"conversation_id": cid, "error": "Failed", "paused": True, "targets": {cid: {"cursor": 0}}}

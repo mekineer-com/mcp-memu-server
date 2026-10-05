@@ -33,6 +33,7 @@ from app.main import app
 def _healthy_paid_state(monkeypatch):
     # These file/archive tests use fake DB bytes; pause behavior has real-DB checks.
     monkeypatch.setattr(main_module, "_paid_work_state", lambda *_args: main_module._soul_state.defaults())
+    monkeypatch.setattr(main_module, "_soul_import_state", lambda *_args: (None, {}))
 
 
 def _state_response() -> dict:

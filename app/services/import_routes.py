@@ -38,6 +38,50 @@ class ImportPreview(ImportScope):
     current_messages: list[ImportMessage]
 
 
+async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str, retry: bool = False) -> None:
+    uid, sid = scoped["user_id"], scoped["soul_id"]
+    marker = runtime._memorize_lock_key(uid, sid)
+    success = False
+    payload = None
+    try:
+        _cid, record = runtime._soul_import_state(uid, sid)
+        cid = record["ordinary_waiting"]
+        state = runtime._paid_work_state(uid, sid)
+        failure = state.get("memorize_failure")
+        if runtime._soul_state.consolidation_failure(state) or (failure and not retry):
+            return
+        if failure and runtime._memorize_targets_complete(uid, sid, failure["targets"]):
+            runtime._write_conversation_state(cid, **scoped, updates={"memorize_failure": None})
+            await runtime._run_consolidation_task(
+                runtime._get_service_from_payload({"user": scoped}), conversation_id=cid,
+                soul_id=sid, uid=uid, progress_key=marker, memorize_progress=runtime._MEMORIZE_PROGRESS,
+            )
+            success = True
+        else:
+            payload = runtime._saved_memorize_payload(cid, uid, sid, failure)
+            tasks = BackgroundTasks()
+            await runtime._memorize_owned(payload, tasks, True, admitted=True, batch_owned=True,
+                                          import_handoff=True, retry=bool(failure))
+            success = True
+            for task in tasks.tasks:
+                if not await task.func(*task.args, **task.kwargs):
+                    success = False
+                    break
+        if success:
+            runtime._write_conversation_state(import_cid, **scoped, updates={"import_ordinary_waiting": None})
+    except (Exception, asyncio.CancelledError) as exc:
+        runtime.logger.exception("Post-import Memorize did not complete for %s", sid)
+        if not runtime._paid_work_state(uid, sid).get("memorize_failure"):
+            runtime._write_conversation_state(cid, **scoped, updates={"memorize_failure": {
+                "conversation_id": cid, "paused": True, "error": f"Memorize failed: {exc}"[:300],
+                "targets": (payload or {}).get("_final_cursors") or {},
+            }})
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+    finally:
+        await runtime._finish_memorize_claim(marker, success)
+
+
 async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: bool = False) -> None:
     cid = chat["conversation_id"]
     uid, sid = scoped["user_id"], scoped["soul_id"]
@@ -138,6 +182,11 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
     finally:
         runtime._MEMORIZE_CANCEL.discard(marker)
         await runtime._finish_memorize_claim(marker, success)
+        current = record()
+        if success and current["stage"] == "complete" and current.get("ordinary_waiting"):
+            with runtime._STATE_LOCK:
+                runtime._FORCED_MEMORIZE_INFLIGHT[marker] = False
+            await run_waiting_memorize(runtime, scoped=scoped, import_cid=cid)
 
 
 def register_import_routes(app: FastAPI, *, runtime: Any) -> None:

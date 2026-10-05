@@ -4163,7 +4163,7 @@ async def test_auto_memorize_collision_rechecks_latest_scope_after_success(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("historical", [False, True])
-async def test_auto_memorize_failure_rechecks_only_after_historical_work(
+async def test_auto_memorize_failure_does_not_release_ordinary_work(
     monkeypatch: pytest.MonkeyPatch,
     historical: bool,
 ) -> None:
@@ -4195,7 +4195,7 @@ async def test_auto_memorize_failure_rechecks_only_after_historical_work(
         await asyncio.gather(*list(main._BACKGROUND_TASKS))
         await asyncio.sleep(0)
 
-        assert prepares == int(historical)
+        assert prepares == 0
         assert marker not in main._FORCED_MEMORIZE_INFLIGHT
         assert marker not in main._FORCED_MEMORIZE_RECHECK
     finally:

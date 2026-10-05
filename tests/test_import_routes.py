@@ -1,3 +1,5 @@
+import asyncio
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -24,6 +26,127 @@ def _guidance_schema(con):
     sqlite_ensure_conversation_state_schema(con)
     con.execute("CREATE TABLE resources (user_id TEXT, soul_id TEXT, conversation_id TEXT, "
                 "modality TEXT, source_start_day DATE, source_end_day DATE)")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "empty", "failure", "unavailable"])
+async def test_import_wait_survives_batches_and_hands_off_to_saved_cross_chat(monkeypatch, outcome):
+    scoped = {"user_id": "TestOwner", "soul_id": "ImportSoul"}
+    cid, trigger = "import:dm:wait", "chat:trigger"
+    marker = main._memorize_lock_key(**scoped)
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_RECHECK", {})
+    main._write_conversation_state(cid, **scoped, updates={"import_state": {
+        "history_end_index": 4, "memorize_cursor": -1, "pending_segment_ids": [],
+        "stage": "memorize", "error": None,
+    }})
+    assert main._soul_activity_pause(**scoped) is None
+    response = await main._memorize_owned({"user": scoped, "conversation_id": trigger,
+                                          "conversation": []}, main.BackgroundTasks(), True)
+    assert response.status_code == 202 and json.loads(response.body)["status"] == "waiting_for_import"
+    scope = main._auto_memorize_scope(trigger, *scoped.values(), {}, [])
+    assert main._schedule_auto_memorize({"not": "executed"}, scope) == "coalesced"
+    assert main._soul_import_state(**scoped)[1]["ordinary_waiting"] == trigger
+    assert main._soul_activity_pause(**scoped) == "Waiting for import before Memorize."
+    assert main._soul_activity_pause("TestOwner", "OtherSoul") is None
+    main._FORCED_MEMORIZE_INFLIGHT[marker] = True
+    await main._finish_memorize_claim(marker, True)
+    assert main._soul_activity_pause(**scoped)
+    with pytest.raises(HTTPException, match="Finish the import"):
+        await main.retry_memorize(**scoped, background_tasks=main.BackgroundTasks())
+    main._write_conversation_state(cid, **scoped, updates={"import_memorize_cursor": 3})
+    def assemble(actual_cid, uid, sid, failure):
+        assert (actual_cid, uid, sid) == (trigger, *scoped.values())
+        if outcome == "unavailable":
+            raise ValueError("Source unavailable")
+        return {"user": scoped, "conversation_id": trigger, "conversation": [
+            {"content": "from trigger"}, {"content": "from another chat"}]}
+    monkeypatch.setattr(main, "_saved_memorize_payload", assemble)
+    async def execute(payload, tasks, force, **kwargs):
+        assert kwargs == {"admitted": True, "batch_owned": True, "import_handoff": True, "retry": False}
+        assert main._soul_activity_pause(**scoped)
+        assert main._soul_activity_pause(**scoped, import_handoff=True) is None
+        async def finish():
+            return outcome == "success"
+        if outcome != "empty":
+            tasks.add_task(finish)
+    monkeypatch.setattr(main, "_memorize_owned", execute)
+    tasks = main.BackgroundTasks()
+    assert (await main.retry_memorize(**scoped, background_tasks=tasks))["status"] == "accepted"
+    await tasks()
+    assert marker not in main._FORCED_MEMORIZE_INFLIGHT
+    assert bool(main._soul_import_state(**scoped)[1]["ordinary_waiting"]) == (outcome in {"failure", "unavailable"})
+    assert bool(main._soul_activity_pause(**scoped)) == (outcome in {"failure", "unavailable"})
+
+
+def test_import_interruption_marker_only_pauses_when_not_running(monkeypatch):
+    scoped = {"user_id": "TestOwner", "soul_id": "ImportSoul"}
+    marker = main._memorize_lock_key(**scoped)
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {marker: True})
+    main._write_conversation_state("import:dm:failure", **scoped, updates={"import_state": {
+        "history_end_index": 1, "memorize_cursor": -1, "pending_segment_ids": [],
+        "stage": "memorize", "error": "Interrupted",
+    }})
+    assert main._soul_activity_pause(**scoped) is None
+    main._FORCED_MEMORIZE_INFLIGHT.clear()
+    assert main._soul_activity_pause(**scoped) == "Import failed. Retry in Echo."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_handoff", [False, True])
+async def test_real_import_completion_memorizes_current_messages_across_chats(tmp_path, monkeypatch, fail_handoff):
+    source = tmp_path / "imports.db"
+    scoped = {"user_id": "TestOwner", "soul_id": "ImportSoul"}
+    monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_RECHECK", {})
+    monkeypatch.setattr(main, "_BACKGROUND_TASKS", set())
+    rows, _, _ = chat_import.normalize_messages([
+        {"id": "past", "role": "user", "content": "Past story", "timestamp": "2025-01-01"},
+        {"id": "current", "role": "user", "content": "Current imported story", "timestamp": "2026-01-01"},
+    ])
+    chat_import.store_upload(source, **scoped, label="TestApp", messages=rows, history_count=1)
+    path = main._sqlite_current_path(**scoped)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as con:
+        _guidance_schema(con)
+    calls = []
+    class Service:
+        memorize_config = SimpleNamespace(category_update_llm_profile="default")
+        llm_profiles = SimpleNamespace(profiles={"default": SimpleNamespace(
+            context_window_tokens=100000, max_tokens=1000, chat_model="fictional")})
+        async def memorize_segments_batch(self, **kwargs):
+            messages = [row for segment in kwargs["segments"] for row in json.loads(segment["raw_text"])]
+            calls.append([row["content"] for row in messages])
+            if len(calls) == 2 and fail_handoff:
+                raise ValueError("Fictional ordinary extraction failure")
+            return [{"memory_item_ids": []} for _ in kwargs["segments"]]
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: Service())
+    request = ImportScope(**scoped, label="TestApp")
+    _endpoint("/imports/register")(request)
+    trigger = "chat:ordinary"
+    main._write_conversation_state(trigger, **scoped, updates={})
+    conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=main._get_storage_dir(main._CONFIG), **scoped, conversation_id=trigger,
+        history=[{"role": "user", "content": "Current other chat", "received_at": "2026-01-01T12:00:00Z"}])
+    assert main._schedule_auto_memorize({}, main._auto_memorize_scope(trigger, *scoped.values(), {}, [])) == "coalesced"
+    assert (await main.diag_memorize_pending(**scoped))["retry_operation"] == "import"
+    assert (await _endpoint("/imports/process")(request)).status_code == 202
+    await asyncio.gather(*list(main._BACKGROUND_TASKS))
+    assert calls == [["Past story"], ["Current imported story", "Current other chat"]]
+    imported = main._soul_import_state(**scoped)[1]
+    assert imported["stage"] == "complete" and bool(imported["ordinary_waiting"]) == fail_handoff
+    assert bool(main._soul_activity_pause(**scoped)) == fail_handoff
+    assert bool(main._paid_work_state(**scoped)["memorize_failure"]) == fail_handoff
+    assert (await main.diag_memorize_pending(**scoped))["retry_operation"] == ("memorize" if fail_handoff else None)
+    assert not main._FORCED_MEMORIZE_INFLIGHT
+    if fail_handoff:
+        tasks = main.BackgroundTasks()
+        await main.retry_memorize(**scoped, background_tasks=tasks)
+        await tasks()
+        assert len(calls) == 3 and calls[-1] == calls[1]
+        assert main._soul_import_state(**scoped)[1]["ordinary_waiting"] is None
+        assert main._soul_activity_pause(**scoped) is None
 
 
 def test_new_soul_first_preview_initializes_schema_without_model_calls(tmp_path, monkeypatch):

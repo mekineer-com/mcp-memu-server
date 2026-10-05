@@ -223,7 +223,7 @@ _estimate_unmemorized_tokens = _memorize_endpoint.estimate_unmemorized_tokens
 # ==== Memorize background orchestration ====
 
 async def _run_forced_memorize_from_turn(payload: dict[str, Any]) -> bool:
-    return await _memorize_endpoint.run_forced_memorize_from_turn(
+    success = await _memorize_endpoint.run_forced_memorize_from_turn(
         payload,
         memorize_handler=_memorize_admitted,
         logger=logger,
@@ -231,6 +231,15 @@ async def _run_forced_memorize_from_turn(payload: dict[str, Any]) -> bool:
         memorize_lock_key=_memorize_lock_key,
         write_conversation_state=_write_conversation_state,
     )
+    scope = _extract_scope(payload) or {}
+    uid, sid = str(scope.get("user_id") or ""), str(scope.get("soul_id") or "")
+    if not success and not _paid_work_state(uid, sid).get("memorize_failure"):
+        cid = _extract_conversation_id(payload)
+        _write_conversation_state(cid, user_id=uid, soul_id=sid, updates={"memorize_failure": {
+            "conversation_id": cid, "paused": True, "error": "Memorize failed. Retry in launcher.",
+            "targets": payload.get("_final_cursors") or {},
+        }})
+    return success
 
 
 def _has_category_content(c: dict[str, Any]) -> bool:
@@ -1664,16 +1673,43 @@ def _paid_work_state(user_id: str, soul_id: str) -> dict[str, Any]:
         con.close()
 
 
-def _soul_activity_pause(user_id: str, soul_id: str, state: dict[str, Any] | None = None) -> str | None:
-    return _soul_state.activity_pause(
+def _soul_import_state(user_id: str, soul_id: str) -> tuple[str | None, dict[str, Any]]:
+    path = _sqlite_current_path(user_id, soul_id)
+    if path is None or not path.exists():
+        return None, {}
+    con = _sqlite_connect(path)
+    try:
+        if not con.execute("SELECT 1 FROM sqlite_master WHERE name = 'conversations'").fetchone():
+            return None, {}
+        row = con.execute(
+            "SELECT conversation_id, import_state FROM conversations WHERE user_id = ? AND soul_id = ? "
+            "AND conversation_id LIKE 'import:dm:%' AND import_state IS NOT NULL",
+            (user_id, soul_id),
+        ).fetchone()
+        return (row[0], json.loads(row[1])) if row else (None, {})
+    finally:
+        con.close()
+
+
+def _soul_activity_pause(user_id: str, soul_id: str, state: dict[str, Any] | None = None,
+                         *, import_handoff: bool = False) -> str | None:
+    reason = _soul_state.activity_pause(
         _paid_work_state(user_id, soul_id) if state is None else state,
         memorize_running=_FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(user_id, soul_id)) is False,
         consolidation_running=_CONSOLIDATION_RUNNING.get((user_id, soul_id)) is False,
     )
+    if reason:
+        return reason
+    _cid, record = _soul_import_state(user_id, soul_id)
+    if record.get("error") and _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(user_id, soul_id)) is not True:
+        return "Import failed. Retry in Echo."
+    if record.get("ordinary_waiting") and not import_handoff:
+        return "Waiting for import before Memorize." if record["stage"] != "complete" else "Waiting for Memorize after import."
+    return None
 
 
-def _require_soul_active(user_id: str, soul_id: str) -> None:
-    reason = _soul_activity_pause(user_id, soul_id)
+def _require_soul_active(user_id: str, soul_id: str, *, import_handoff: bool = False) -> None:
+    reason = _soul_activity_pause(user_id, soul_id, import_handoff=import_handoff)
     if reason:
         raise HTTPException(status_code=409, detail={
             "code": "soul_paused", "soul_id": soul_id,
@@ -2312,7 +2348,7 @@ async def _memorize_admitted(payload: dict[str, Any], background_tasks: Backgrou
 
 async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool,
                           *, tail: bool = False, rebuild: bool = False, admitted: bool = False, retry: bool = False,
-                          historical: bool = False, batch_owned: bool = False):
+                          historical: bool = False, batch_owned: bool = False, import_handoff: bool = False):
     safe = _safe_payload(payload)
     if not _extract_conversation_id(safe):
         raise HTTPException(status_code=400, detail="conversation_id is required")
@@ -2322,17 +2358,28 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
     safe["user"] = {**(safe.get("user") or {}), "user_id": uid, "soul_id": sid}
     marker = _memorize_lock_key(uid, sid)
+    source = _message_log.derive_source_label(_extract_conversation_id(safe))
+    if source not in {"whatsapp:dm", "whatsapp:group", "sillytavern", "atomic", "mentra", "replika", "import"}:
+        if admitted and not batch_owned:
+            await _finish_memorize_claim(marker, False)
+        raise HTTPException(status_code=400, detail="Memorize requires a saved chat source with a supported history reader")
     if not retry and not admitted:
-        _require_soul_active(uid, sid)
+        _require_soul_active(uid, sid, import_handoff=import_handoff)
     if not admitted:
         with _STATE_LOCK:
+            import_cid, imported = _soul_import_state(uid, sid)
+            if not historical and imported and imported["stage"] != "complete":
+                if rebuild:
+                    raise HTTPException(status_code=409, detail="Finish the import before rebuilding the Soul")
+                if retry:
+                    raise HTTPException(status_code=409, detail="Finish the import in Echo before retrying Memorize")
+                _write_conversation_state(import_cid, user_id=uid, soul_id=sid,
+                    updates={"import_ordinary_waiting": _extract_conversation_id(safe)})
+                return JSONResponse(status_code=202, content={"status": "waiting_for_import"})
             if marker in _FORCED_MEMORIZE_INFLIGHT:
                 raise HTTPException(status_code=409, detail="Memorize is already running")
             _FORCED_MEMORIZE_INFLIGHT[marker] = historical
     try:
-        source = _message_log.derive_source_label(_extract_conversation_id(safe))
-        if source not in {"whatsapp:dm", "whatsapp:group", "sillytavern", "atomic", "mentra", "replika", "import"}:
-            raise HTTPException(status_code=400, detail="Memorize requires a saved chat source with a supported history reader")
         if retry and not historical:
             failure = _paid_work_state(uid, sid).get("memorize_failure")
             if not failure:
@@ -2348,7 +2395,7 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
                     failure["conversation_id"], user_id=uid, soul_id=sid,
                     updates={"memorize_failure": {**failure, "paused": True}},
                 )
-            _require_soul_active(uid, sid)
+            _require_soul_active(uid, sid, import_handoff=import_handoff)
         endpoint_ctx = _make_memorize_endpoint_context()
         if batch_owned:
             endpoint_ctx = replace(endpoint_ctx, run_memorize_segments=partial(_run_memorize_segments, batch_owned=True))
@@ -2395,6 +2442,17 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
     user_id, soul_id = str(scope.get("user_id") or ""), str(scope.get("soul_id") or "")
     if not user_id or not soul_id:
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
+    import_cid, imported = _soul_import_state(user_id, soul_id)
+    if imported.get("ordinary_waiting"):
+        if imported["stage"] != "complete" or imported.get("error"):
+            raise HTTPException(status_code=409, detail="Finish the import in Echo before retrying Memorize")
+        with _STATE_LOCK:
+            if _memorize_lock_key(user_id, soul_id) in _FORCED_MEMORIZE_INFLIGHT:
+                raise HTTPException(status_code=409, detail="Memorize is already running")
+            _FORCED_MEMORIZE_INFLIGHT[_memorize_lock_key(user_id, soul_id)] = False
+        background_tasks.add_task(_import_routes.run_waiting_memorize, sys.modules[__name__],
+                                  scoped={"user_id": user_id, "soul_id": soul_id}, import_cid=import_cid, retry=True)
+        return {"ok": True, "status": "accepted"}
     failure = _paid_work_state(user_id, soul_id).get("memorize_failure")
     if not failure:
         raise HTTPException(status_code=409, detail="No failed Memorize is ready to retry")
@@ -2410,9 +2468,14 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
             progress_key=marker, memorize_progress=_MEMORIZE_PROGRESS,
         )
         return {"ok": True, "status": "already_memorized"}
+    payload = _saved_memorize_payload(cid, user_id, soul_id, failure)
+    return await _memorize_owned(payload, background_tasks, True, retry=True)
+
+
+def _saved_memorize_payload(cid: str, user_id: str, soul_id: str, failure: dict | None = None) -> dict:
     state, _, _ = _load_turn_state_and_soul_card(cid, user_id=user_id, soul_id=soul_id)
     storage, hermes, sessions, channels = _resolve_cross_source_paths()
-    memory_producing = failure["targets"].get(cid, {}).get("memory_producing", state.get("memorize_chat", True))
+    memory_producing = (failure or {}).get("targets", {}).get(cid, {}).get("memory_producing", state.get("memorize_chat", True))
     prefix = "digest" if memory_producing else "rolling_summary"
     saved_cursor = _effective_digest_cursor_from_row(state) if memory_producing else int(state.get("rolling_summary_cursor_id") or 0)
     cursor, floor, web_source = _resolve_source_cursor(
@@ -2431,8 +2494,11 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
         trigger_web_source=web_source,
     )
     if payload is None:
+        if not history and failure is None:
+            return {"conversation_id": cid, "user": {"user_id": user_id, "soul_id": soul_id},
+                    "conversation": [], "_cross_memorize": True}
         raise HTTPException(status_code=409, detail=f"Chat source {cid} is unavailable; restore it before retrying Memorize")
-    return await _memorize_owned(payload, background_tasks, True, retry=True)
+    return payload
 
 
 @app.get("/memorize/progress", operation_id="memorize_progress")
@@ -3432,7 +3498,15 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
     pause_reason = _soul_activity_pause(uid, sid, soul_status)
     memory_failure = soul_status.get("memorize_failure")
     memory_running = _memorize_lock_key(uid, sid) in _FORCED_MEMORIZE_INFLIGHT
-    retry_operation = ("memorize" if memory_failure and (memory_failure.get("paused") or not memory_running)
+    _import_cid, imported = _soul_import_state(uid, sid)
+    retry_operation = ("import" if imported and (
+                           (imported.get("error") and _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, sid)) is not True)
+                           or (imported.get("ordinary_waiting") and imported["stage"] != "complete"))
+                       else "memorize" if memory_failure and (memory_failure.get("paused") or not memory_running)
+                       else "consolidation" if _soul_state.activity_pause(
+                           soul_status, memorize_running=_FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, sid)) is False,
+                           consolidation_running=_CONSOLIDATION_RUNNING.get((uid, sid)) is False)
+                       else "memorize" if imported.get("ordinary_waiting")
                        else "consolidation" if pause_reason else None)
     return {
         "soul_id": sid, "paused": bool(pause_reason), "pause_reason": pause_reason,
@@ -3532,6 +3606,10 @@ def _prepare_auto_memorize(
             code="forced_memorize_source_failed",
             detail=f"{type(exc).__name__}: {exc}",
         )
+        _write_conversation_state(cid, user_id=uid, soul_id=soul_id, updates={"memorize_failure": {
+            "conversation_id": cid, "paused": True, "error": f"Memorize source unavailable: {exc}"[:300],
+            "targets": {},
+        }})
         return unmemorized_tokens, None
 
 
@@ -3555,7 +3633,7 @@ async def _finish_memorize_claim(marker: str, success: bool) -> None:
     with _STATE_LOCK:
         historical = _FORCED_MEMORIZE_INFLIGHT.pop(marker, None) is True
         recheck = _FORCED_MEMORIZE_RECHECK.pop(marker, None)
-    if (not success and not historical) or recheck is None:
+    if historical or not success or recheck is None:
         return
 
     cid = str(recheck["conversation_id"])
@@ -3585,6 +3663,11 @@ def _schedule_auto_memorize(
 ) -> Literal["launched", "coalesced"]:
     marker = _memorize_lock_key(str(scope["user_id"]), str(scope["soul_id"]))
     with _STATE_LOCK:
+        import_cid, imported = _soul_import_state(str(scope["user_id"]), str(scope["soul_id"]))
+        if imported and imported["stage"] != "complete":
+            _write_conversation_state(import_cid, user_id=str(scope["user_id"]), soul_id=str(scope["soul_id"]),
+                                      updates={"import_ordinary_waiting": str(scope["conversation_id"])})
+            return "coalesced"
         if marker in _FORCED_MEMORIZE_INFLIGHT:
             _FORCED_MEMORIZE_RECHECK[marker] = {
                 **scope,

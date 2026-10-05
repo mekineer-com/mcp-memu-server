@@ -36,6 +36,8 @@ def normalize_import_state(value: Any) -> dict[str, Any] | None:
         raise ValueError("import_state has an invalid stage")
     if value.get("error") is not None and not isinstance(value["error"], str):
         raise ValueError("import_state error must be text or null")
+    if value.get("ordinary_waiting") is not None and not isinstance(value["ordinary_waiting"], str):
+        raise ValueError("import_state ordinary_waiting must be text or null")
     return {**value, "pending_segment_ids": normalize_text_list(value.get("pending_segment_ids"))}
 
 
@@ -222,7 +224,7 @@ def write_conversation_state(
     owns_connection = connection is None
     raw_updates = dict(updates) if updates else {}
     patch_import = any(key in raw_updates for key in (
-        "import_memorize_cursor", "append_import_pending_segment_ids", "import_error", "import_stage"))
+        "import_memorize_cursor", "append_import_pending_segment_ids", "import_error", "import_stage", "import_ordinary_waiting"))
     if owns_connection:
         sqlite_ensure_nonempty(db_path)
     con = connection or sqlite_connect(db_path)
@@ -308,6 +310,8 @@ INSERT OR IGNORE INTO conversations (
                 "error": raw_updates.pop("import_error", record.get("error")),
                 "stage": (("consolidation" if pending else "complete" if cursor == record["history_end_index"] - 1 else "memorize")
                           if advancing else raw_updates.pop("import_stage", record["stage"]))}
+            if "import_ordinary_waiting" in raw_updates:
+                field_updates["import_state"]["ordinary_waiting"] = raw_updates.pop("import_ordinary_waiting")
 
         for cursor, source_id, source_ts in (
             ("digest_cursor", "digest_cursor_source_message_id", "digest_cursor_ts"),

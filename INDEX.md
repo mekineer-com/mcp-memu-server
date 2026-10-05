@@ -19,7 +19,7 @@ mcp-memu-server/
 ├── app/services/whatsapp_outbounds.py
 ├── app/services/free_turn.py
 ├── app/services/cross_history.py
-├── app/services/import_routes.py # Unpaid imported-source registration + known-context suffix validation
+├── app/services/import_routes.py # Imported-source admission, bounded history and saved cross-chat Memorize handoff
 ├── app/services/conversation_sources.py # Client-owned source reads; import SQL selects immutable mode/position, bounded historical reads and indexed current floors
 ├── app/services/conversation_id.py
 ├── app/services/apimw.py
@@ -30,7 +30,7 @@ mcp-memu-server/
 ├── app/services/graph_routes.py   # Graph/query read HTTP routes; scoped resolver supplied by main
 ├── app/services/entity_routes.py  # Entity HTTP routes and private helpers; scoped resolver supplied by main
 ├── app/services/review_routes.py  # Review routes; category prose/title/description snapshot + revision checked in the caller-owned write transaction
-├── app/services/state.py # Import progress patches lock/read/update the fresh record so registration bounds cannot be overwritten; ordinary cursors and Soul pause remain separate
+├── app/services/state.py # Transactional import progress/wait patches preserve registration bounds; ordinary cursors remain separate
 ├── app/services/soul_summaries.py # SQL-only summary writes; shared journal finishing after caller commit
 ├── app/services/soul_state.py # Shared Soul state, durable Memorize failure and common activity-pause predicate
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
@@ -63,6 +63,7 @@ mcp-memu-server/
 | `/imports/validate` | POST | Validate new current rows against the actual turn allowance. Return the complete Soul-wide pending period, selected-source processed dates and prospective deferred-history status against the fixed bound. Unreadable sources fail validation. No model call, source insertion or Memorize scheduling. |
 | `/imports/process`, `/imports/retry` | POST | Start one tracked historical batch, returning promptly. Reuse bounded source reads, extraction and one consolidation; failed work requires explicit Retry. |
 | `/imports/status` | GET | Scoped imported-chat checkpoint, error and existing per-Soul progress; no separate job ledger. |
+| `/memorize/retry` | POST | Retry failed ordinary Memorize or a completed import's waiting handoff. Unfinished import history must finish in Echo first. |
 | `/memorize/progress` | GET | Live memorize batch progress |
 | `/memorize/cancel` | POST | Cancel the running memorize batch |
 | `/retrieve` | POST | Query memories. Optional `as_of` for temporal triple filtering. |
