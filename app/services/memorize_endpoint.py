@@ -334,15 +334,16 @@ async def run_memorize_segments(
     run_started_at = datetime.now(UTC).isoformat()
     segment_jobs: list[SegmentMemorizeJob] = []
     def release_uncommitted():
-        if not created_segment_paths:
-            return
-        urls = [str(path) for path in created_segment_paths]
-        with svc._sqlite_write_session(svc.database) as session:
-            committed = {row[0] for row in session.connection().exec_driver_sql(
-                "SELECT url FROM resources WHERE user_id = ? AND soul_id = ? "
-                f"AND url IN ({','.join('?' for _ in urls)})",
-                (uid, soul_id, *urls),
-            )}
+        urls = list({str(path) for path in created_segment_paths}
+                    | {job["segment_resource_url"] for job in segment_jobs if job["memory_producing"]})
+        committed = set()
+        if urls:
+            with svc._sqlite_write_session(svc.database) as session:
+                committed = {row[0] for row in session.connection().exec_driver_sql(
+                    "SELECT url FROM resources WHERE user_id = ? AND soul_id = ? "
+                    f"AND url IN ({','.join('?' for _ in urls)})",
+                    (uid, soul_id, *urls),
+                )}
         for path in created_segment_paths:
             if str(path) not in committed:
                 path.unlink(missing_ok=True)

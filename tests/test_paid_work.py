@@ -671,3 +671,24 @@ def test_consolidation_defers_scoped_unfinished_memorize(historical):
         assert failure["conversation_id"] == cid
         with pytest.raises(RuntimeError, match="postprocessing is still unfinished"):
             main._write_conversation_state(cid, **scope, updates={"memorize_failure": None})
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_segment_file_releases_manifest_reservation(tmp_path):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "chat:early-cancel"
+    main._write_conversation_state(cid, **scope, updates={})
+    segments = tmp_path / "segments"
+    segments.mkdir()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"segments": [{"start": 0, "end": 0}]}))
+    key = main._memorize_lock_key(**scope)
+    main._MEMORIZE_CANCEL.add(key)
+    assert not await main._run_memorize_segments(
+        memorize_segments=[("unused", [{"role": "user", "content": "Fictional story"}], 0, 0, (0, 0))],
+        svc=object(), scope=scope, conversation_id=cid, soul_id=scope["soul_id"], uid=scope["user_id"],
+        processed_cursor=-1, safe={}, resource_url="unused", chat_key=None, merged_len=1,
+        force=True, sleep_stats=None, segments_dir=segments,
+    )
+    assert json.loads(manifest.read_text())["segments"] == []
+    assert not list(segments.iterdir())
