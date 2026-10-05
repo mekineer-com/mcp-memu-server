@@ -631,6 +631,10 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
     elif stop == "no_memories":
         assert record()["stage"] == "complete" and record()["memorize_cursor"] == 2
         assert not consolidations
+        main._write_conversation_state(cid, **scoped, updates={"import_error": "Fictional post-checkpoint failure"})
+        await _endpoint("/imports/retry")(request)
+        await asyncio.gather(*list(main._BACKGROUND_TASKS))
+        assert len(extracts) == 3 and not consolidations and record()["error"] is None
     elif stop == "no_memories_calendar":
         assert record()["stage"] == "memorize" and record()["memorize_cursor"] == 1
         assert not consolidations

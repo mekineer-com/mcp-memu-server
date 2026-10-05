@@ -236,7 +236,7 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
 
     def start(request: ImportProcess, *, retry: bool):
         scoped, chat, record = registered(request)
-        if record["stage"] == "complete":
+        if record["stage"] == "complete" and not (retry and record["error"]):
             raise HTTPException(status_code=409, detail="No eligible history to process")
         marker = runtime._memorize_lock_key(**scoped)
         with runtime._STATE_LOCK:
