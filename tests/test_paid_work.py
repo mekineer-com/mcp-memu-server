@@ -593,7 +593,7 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
         embed=AsyncMock(side_effect=lambda texts: [[1.0, 0.0] for _ in texts])))
     writer = main._write_conversation_state
     def fail_second(*args, **kwargs):
-        if kwargs["updates"].get("digest_cursor") == 1:
+        if kwargs["updates"].get("digest_cursor") == 2:
             raise RuntimeError("Second publication failed")
         return writer(*args, **kwargs)
     monkeypatch.setattr(main, "_write_conversation_state", fail_second)
@@ -601,7 +601,8 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
     messages = [[{"role": "user", "content": word, "ts_ms": 1_577_836_800_000}] for word in ("First", "Second")]
     async def run(indices):
         await main._run_memorize_segments(
-            memorize_segments=[("unused", messages[i], i, i, (i, i)) for i in indices],
+            memorize_segments=[("unused", [{**messages[0][0], "memorize_chat": False}], 0, 0, None)]
+                + [("unused", messages[i], i + 1, i + 1, (i, i)) for i in indices],
             svc=svc, scope=scope, conversation_id=cid, soul_id=sid, uid=uid,
             processed_cursor=-1, safe={}, resource_url="unused", chat_key=None, merged_len=2,
             force=True, sleep_stats=None, segments_dir=segments_dir,
@@ -611,12 +612,14 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
     assert [file.name for file in segments_dir.iterdir()] == ["2020-01-01.json"]
     assert len(svc.database.resource_repo.list_resources(scope)) == 1
     state, _, _ = main._load_turn_state_and_soul_card(cid, **scope)
-    assert state["digest_cursor"] == 0 and state["pending_segment_ids"] == [f"{cid}:0-0"]
+    assert state["digest_cursor"] == 1 and state["pending_segment_ids"] == [f"{cid}:0-0"]
     assert state["memorize_failure"]["segment_work"] == {f"{cid}:0-0": "review"}
     monkeypatch.setattr(main, "_write_conversation_state", writer)
     await run([1])
     assert len(routes) == 3 and len(svc.database.resource_repo.list_resources(scope)) == 2
     assert len(list(segments_dir.iterdir())) == 2
+    state, _, _ = main._load_turn_state_and_soul_card(cid, **scope)
+    assert state["rolling_summary_cursor_id"] == 0 and state["digest_cursor"] == 2
 
 
 @pytest.mark.asyncio
@@ -651,7 +654,11 @@ def test_consolidation_defers_scoped_unfinished_memorize(historical):
     else:
         updates["memorize_failure"] = {"conversation_id": cid, "error": "Failed", "paused": True,
             "targets": {cid: {"cursor": 0}}, "segment_work": {f"{cid}:0-0": "dedupe"}}
+    if not historical:
+        work = updates["memorize_failure"].pop("segment_work")
     main._write_conversation_state(cid, **scope, updates=updates)
+    if not historical:
+        main._write_conversation_state(cid, **scope, updates={"memorize_segment_work": work})
     result = consolidation.gather_consolidation_inputs(
         main._make_consolidation_deps(), conversation_id=cid, **scope, force=True, historical=historical,
     )
@@ -666,7 +673,7 @@ def test_consolidation_defers_scoped_unfinished_memorize(historical):
             "conversation_id": "chat:later-source", "error": "Later source failure", "paused": True, "targets": {},
         }})
         failure = main._paid_work_state(**scope)["memorize_failure"]
-        assert failure["segment_work"] == updates["memorize_failure"]["segment_work"]
+        assert failure["segment_work"] == work
         assert failure["targets"] == {cid: {"cursor": 0}}
         assert failure["conversation_id"] == cid
         with pytest.raises(RuntimeError, match="postprocessing is still unfinished"):

@@ -3596,10 +3596,15 @@ async def test_build_cross_conversation_payload_keeps_background_tail_without_ro
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("claim", ["idle", "same_soul", "other_soul"])
 async def test_run_background_rollup_for_conversation_updates_summary_and_cursor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    claim: str,
 ) -> None:
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
+    if claim != "idle":
+        main._FORCED_MEMORIZE_INFLIGHT[main._memorize_lock_key("u1", "Echo" if claim == "same_soul" else "OtherSoul")] = False
     db_path = tmp_path / "Echo.db"
     db_path.write_text("", encoding="utf-8")
     monkeypatch.setattr(
@@ -3623,7 +3628,7 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
         lambda **_kwargs: [
             {
                 "role": "user",
-                "speaker": "Marcos",
+                "speaker": "TestOwner",
                 "content": "first",
                 "source_message_id": "msg-11",
                 "ts_ms": 1_000,
@@ -3633,7 +3638,7 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
             },
             {
                 "role": "user",
-                "speaker": "Marcos",
+                "speaker": "TestOwner",
                 "content": "second",
                 "source_message_id": "msg-12",
                 "ts_ms": 2_000,
@@ -3678,6 +3683,9 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
         safe_payload={},
         service=_FakeSvc(),
     )
+    if claim == "same_soul":
+        assert status == "skipped_memorize_running" and not captured_updates
+        return
     assert status == "rolled_up"
     assert captured_updates["rolling_summary"] == "rolled summary"
     assert captured_updates["rolling_summary_cursor_id"] == 12
@@ -4493,7 +4501,8 @@ def test_build_retrieve_soul_context_queries_appends_current_locator() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_segments_records_failure_progress_on_exception(tmp_path):
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_run_memorize_segments_records_failure_progress_on_exception(tmp_path, monkeypatch, cleanup_fails):
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
 
@@ -4507,8 +4516,12 @@ async def test_run_memorize_segments_records_failure_progress_on_exception(tmp_p
     main._MEMORIZE_PROGRESS.pop(key, None)
     main._MEMORIZE_CANCEL.discard(key)
     main._FORCED_MEMORIZE_INFLIGHT[key] = False
+    if cleanup_fails:
+        def fail_cleanup(*_a, **_kw):
+            raise OSError("Fictional cleanup failure")
+        monkeypatch.setattr(main._memorize_endpoint, "_remove_manifest_ranges", fail_cleanup)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(OSError if cleanup_fails else RuntimeError):
         await main._run_memorize_segments(
             memorize_segments=main._memorize_endpoint._offset_memorize_segments(
                 [("/tmp/day.json", [{"role": "user", "content": "x"}], 0, 0)],
@@ -4531,6 +4544,7 @@ async def test_run_memorize_segments_records_failure_progress_on_exception(tmp_p
 
     row = main._MEMORIZE_PROGRESS.get(key) or {}
     assert row.get("active") is False
+    assert row.get("error") == "RuntimeError: boom"
     assert row.get("last_result") == "failure"
     assert "RuntimeError: boom" in str(row.get("error") or "")
     assert key not in main._MEMORIZE_CANCEL

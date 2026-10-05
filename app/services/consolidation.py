@@ -793,7 +793,8 @@ def gather_consolidation_inputs(
             raise HTTPException(status_code=404, detail="conversation state not found")
         if historical and state["import_state"] is None:
             raise ValueError("historical consolidation requires registered import state")
-        if (_soul_state.read(con).get("memorize_failure") or {}).get("segment_work"):
+        soul_state = _soul_state.read(con)
+        if (soul_state.get("memorize_failure") or {}).get("segment_work"):
             return {"status": "skip", "reason": "memorize_postprocessing_pending"}
 
         pending_by_conversation: dict[str, list[str]] = {}
@@ -826,7 +827,6 @@ def gather_consolidation_inputs(
         if not pending_by_conversation:
             return {"status": "skip", "reason": "no_pending_segments"}
         now = datetime.now(UTC)
-        soul_state = _soul_state.read(con)
         last_error_at = parse_iso_datetime(soul_state.get("last_consolidation_error_at"))
         last_success_at = parse_iso_datetime(soul_state.get("last_consolidation_at"))
         if (
@@ -1581,6 +1581,8 @@ async def _run_consolidation_pipeline_once(
                     force=force, historical=True,
                     selected_segments={(row["conversation_id"], row["segment_id"]) for row in ordered_segments},
                 )
+                if prep.get("status") == "skip":
+                    return {"status": "skipped", "reason": prep.get("reason")}
                 failure_conversation_ids = [
                     cid for cid, segment_ids in prep["selected_segment_ids_by_conversation"].items() if segment_ids
                 ]

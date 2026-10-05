@@ -309,8 +309,6 @@ async def run_memorize_segments(
     mem_lock = ctx.get_memorize_lock(progress_key)
     has_results = False
     has_memory_results = False
-    pending_segment_ids: list[str] = []
-    processed_end_cursor = processed_cursor
     soul_card_for_memorize: str | None = None
     cached_retrieval_ids: list[str] = []
     cached_prior_context_ids: list[str] = []
@@ -488,7 +486,7 @@ async def run_memorize_segments(
 
         if cross_memorize and len(segment_jobs) > 1:
             raise RuntimeError("Cross Memorize requires one segment job")
-        jobs_by_url = {job["segment_resource_url"]: job for job in segment_jobs}
+        jobs_by_url = {job["segment_resource_url"]: job for job in segment_jobs if job["memory_producing"]}
         prepared_positions = {}
         for cid, checkpoint in (final_cursors or {}).items():
             producing = checkpoint.get("memory_producing")
@@ -520,9 +518,8 @@ async def run_memorize_segments(
                 con.row_factory = previous_factory
 
 
-        def publish_segment(session, url, ids):
-            nonlocal processed_end_cursor, latest_display_ranges
-            job = jobs_by_url[url]
+        def publish_job(session, job, ids):
+            nonlocal latest_display_ranges
             con = session.connection().connection.driver_connection
             previous_factory = con.row_factory
             try:
@@ -531,7 +528,7 @@ async def run_memorize_segments(
                 if job["memory_producing"]:
                     if ids != [job["segment_id"]]:
                         raise RuntimeError("Segment publication requires its own pending ID")
-                    patch_phase(session, url, "dedupe")
+                    patch_phase(session, job["segment_resource_url"], "dedupe")
                 if conversation_id and not cross_memorize:
                     fresh = conversation_state_from_row(conversation_state_row(
                         con, conversation_id, user_id=uid, soul_id=soul_id,
@@ -539,7 +536,7 @@ async def run_memorize_segments(
                     producing = job["memory_producing"]
                     field = "digest_cursor" if producing else "rolling_summary_cursor_id"
                     cursor = fresh["import_state"]["memorize_cursor"] if historical else int(fresh.get(field) or 0)
-                    processed_end_cursor = max(processed_end_cursor, cursor, job["segment_end_index"])
+                    processed_end_cursor = max(cursor, job["segment_end_index"])
                     if historical:
                         updates = {"import_memorize_cursor": processed_end_cursor,
                                    "append_import_pending_segment_ids": ids}
@@ -564,10 +561,10 @@ async def run_memorize_segments(
                     source_id = str(checkpoint.get("source_message_id") or "").strip()
                     source_ts = checkpoint.get("ts")
                     cursor = max(0, int(checkpoint["cursor"]))
-                    fresh = conversation_state_from_row(conversation_state_row(
-                        con, cid, user_id=uid, soul_id=soul_id,
-                    )) or {}
                     if cid in prepared_positions:
+                        fresh = conversation_state_from_row(conversation_state_row(
+                            con, cid, user_id=uid, soul_id=soul_id,
+                        )) or {}
                         payload_position, saved_id, saved_position = prepared_positions[cid]
                         prefix = "digest" if producing else "rolling_summary"
                         if str(fresh.get(f"{prefix}_cursor_source_message_id") or "").strip() != saved_id:
@@ -663,7 +660,7 @@ async def run_memorize_segments(
                         current=current,
                         total=total,
                     ),
-                    on_segment_saved=publish_segment,
+                    on_segment_saved=lambda session, url, ids: publish_job(session, jobs_by_url[url], ids),
                     on_dedupe_complete=lambda session, url: patch_phase(session, url, "review"),
                     **({"enforce_input_budget": True} if historical else {}),
                 )
@@ -696,14 +693,11 @@ async def run_memorize_segments(
                             raise RuntimeError("context-only memorize unit returned pending segment ids")
                         if segment_job["memory_producing"]:
                             has_memory_results = True
-                            pending_segment_ids.extend(result_pending)
-                        if cross_memorize and segment_job["memory_producing"]:
-                            latest_display_ranges = _segment_display_ranges(segment_job["segment_messages"])
                     if not segment_job["memory_producing"]:
                         async with mem_lock:
                             with svc._sqlite_write_session(svc.database) as session:
                                 session.connection().exec_driver_sql("BEGIN IMMEDIATE")
-                                publish_segment(session, segment_job["segment_resource_url"], [])
+                                publish_job(session, segment_job, [])
                                 session.commit()
                 created_segment_paths.clear()
 
@@ -806,7 +800,6 @@ async def run_memorize_segments(
                     updates={"memorize_failure": {**failure_record, "paused": True, "error": f"Memorize failed: {exc}"[:300]}},
                 )
         finally:
-            release_uncommitted()
             _set_memorize_progress(
                 ctx.memorize_progress,
                 progress_key,
@@ -814,6 +807,8 @@ async def run_memorize_segments(
                 last_result="failure",
                 error=f"{type(exc).__name__}: {exc}",
             )
+            async with mem_lock:
+                release_uncommitted()
         # pending_segment_ids stays untouched: any stored ids are from committed runs
         # (files intact) and clearing them would silently orphan those segments
         # from consolidation forever.

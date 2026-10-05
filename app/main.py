@@ -333,6 +333,8 @@ async def _run_background_rollup_for_conversation(
 
     state_lock = _get_memorize_lock(_memorize_lock_key(uid, sid))
     async with state_lock:
+        if _memorize_lock_key(uid, sid) in _FORCED_MEMORIZE_INFLIGHT:
+            return "skipped_memorize_running"
         state_row, _, db_path = _load_turn_state_and_soul_card(
             cid,
             user_id=uid,

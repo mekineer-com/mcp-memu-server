@@ -132,10 +132,6 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
             if current["memorize_cursor"] <= previous_cursor:
                 raise RuntimeError("Import extraction did not advance its source checkpoint")
             days.update(date.fromisoformat(row["source_day"]) for row in rows)
-            if not current["pending_segment_ids"]:
-                if (max(days) - min(days)).days >= runtime._consolidation_interval_days_from_cfg(runtime._CONFIG):
-                    break
-                continue
             phase = "consolidation"
             pairs = {(cid, segment_id) for segment_id in current["pending_segment_ids"]}
             async with lock:

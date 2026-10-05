@@ -205,8 +205,7 @@ def patch_memorize_failure(
     segment_work: Mapping[str, str] | None = None, finish: bool = False,
 ) -> Any:
     current = _soul_state.read(con).get("memorize_failure")
-    initial = current if current is not None else replacement if isinstance(replacement, dict) else {}
-    work = dict(initial.get("segment_work") or {})
+    work = dict((current or {}).get("segment_work") or {})
     if segment_work is not None:
         if current is None:
             raise RuntimeError("Segment publication requires a Memorize failure record")
