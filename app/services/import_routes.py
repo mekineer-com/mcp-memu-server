@@ -305,7 +305,7 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
                         "SELECT 1 FROM resources WHERE user_id = ? AND soul_id = ? AND modality = 'conversation' LIMIT 1",
                         (scoped["user_id"], scoped["soul_id"]),
                     ).fetchone()
-                    end = 0 if prior_segments else chat["history_end_index"]
+                    end = 0 if prior_segments else chat["initial_history_end_index"]
                     record = {"history_end_index": end, "memorize_cursor": -1, "pending_segment_ids": [],
                               "stage": "memorize" if end else "complete", "error": None}
                 result, _ = runtime._write_conversation_state(

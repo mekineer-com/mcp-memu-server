@@ -909,6 +909,13 @@ INSERT INTO memory_items (
     assert all(text in prepared[2] for text in ("older imported history", "message 0", "message 1", "a separate platform"))
     assert svc.excluded_segment_ids == [historical_id]
     assert [call[3]["excluded_segment_ids"] for call in svc.calls if call[0] == "prepare"] == [[historical_id]]
+    queries = []
+    original_connect = deps.sqlite_connect
+    def trace_connect(path):
+        con = original_connect(path)
+        con.set_trace_callback(queries.append)
+        return con
+    deps = replace(deps, sqlite_connect=trace_connect)
     historical = gather_consolidation_inputs(
         deps, conversation_id="conv-a", soul_id=soul_id, user_id=user_id, historical=True,
         selected_segments={("conv-a", historical_id)},
@@ -916,6 +923,8 @@ INSERT INTO memory_items (
     assert historical["selected_segment_ids_by_conversation"] == {"conv-a": [historical_id]}
     assert [row["content"] for row in historical["current_chat_messages"]] == ["older imported history"]
     assert historical["prior_context_memory_items"] == []
+    assert any("segment_id IN" in query and "FROM resources" in query for query in queries)
+    assert not any("SELECT subject_id, predicate, object_id FROM triples" in query for query in queries)
 
     con = sqlite_connect(db_path)
     try:

@@ -244,6 +244,27 @@ async def test_real_import_completion_memorizes_current_messages_across_chats(tm
         await tasks()
         assert len(calls) == 2 and main._soul_activity_pause(**scoped) is None
 
+        competing = "atomic:competing"
+        main._write_conversation_state(competing, **scoped, updates={})
+        storage = main._get_storage_dir(main._CONFIG)
+        history = [{"role": "user", "content": "Pending competing chat", "received_at": "2026-01-02T12:00:00Z"}]
+        conversation_sources.persist_atomic_history_snapshot(storage_dir=storage, **scoped,
+            conversation_id=competing, history=history)
+        snapshot = conversation_sources._chat_snapshot_path(storage_dir=storage, **scoped,
+            conversation_id=competing, source_label="atomic")
+        snapshot.unlink()
+        main._write_conversation_state(chat["conversation_id"], **scoped, updates={"import_ordinary_waiting": trigger})
+        tasks = main.BackgroundTasks()
+        await main.retry_memorize(**scoped, background_tasks=tasks)
+        await tasks()
+        assert len(calls) == 2 and main._soul_import_state(**scoped)[1]["ordinary_waiting"] == trigger
+        conversation_sources.persist_atomic_history_snapshot(storage_dir=storage, **scoped,
+            conversation_id=competing, history=history)
+        tasks = main.BackgroundTasks()
+        await main.retry_memorize(**scoped, background_tasks=tasks)
+        await tasks()
+        assert calls[-1] == ["Pending competing chat"] and main._soul_activity_pause(**scoped) is None
+
 
 def test_new_soul_first_preview_initializes_schema_without_model_calls(tmp_path, monkeypatch):
     from app.services import owner
@@ -293,6 +314,9 @@ async def test_registration_uses_segments_not_incidental_memories(tmp_path, monk
     rows, _, _ = chat_import.normalize_messages([{"id": "one", "role": "user", "content": "fictional",
                                                  "timestamp": "2025-01-01"}])
     chat_import.store_upload(source, **scope, messages=rows, history_count=1)
+    later, _, _ = chat_import.normalize_messages([{"id": "later", "role": "user", "content": "later file",
+                                                 "timestamp": "2025-02-01"}])
+    chat_import.store_upload(source, **scope, messages=later, history_count=1)
     result = _endpoint("/imports/register")(ImportScope(**scope))["import_state"]
     assert result["history_end_index"] == (0 if prior_segment else 1)
     if prior_segment:

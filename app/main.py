@@ -2494,6 +2494,7 @@ def _saved_memorize_payload(cid: str, user_id: str, soul_id: str, failure: dict 
         cid, user_id, soul_id, {"memorize_chat": state.get("memorize_chat", True)}, history,
         saved_cursor, bool(state.get("memorize_chat", True)),
         trigger_web_source=web_source,
+        strict_sources=True,
     )
     if payload is None:
         if not history and failure is None:
@@ -3311,6 +3312,7 @@ def _build_cross_conversation_payload(
     digest_cursor: int,
     trigger_memorize_default: bool = True,
     trigger_web_source: bool = False,
+    strict_sources: bool = False,
 ) -> dict[str, Any] | None:
     """Merge unmemorized tails from all conversations into one memorize payload."""
     db_path = _sqlite_current_path(uid, soul_id)
@@ -3354,6 +3356,7 @@ def _build_cross_conversation_payload(
             user_id=uid,
             soul_id=soul_id,
             exclude_conversation_id=cid,
+            strict=strict_sources,
         )
         rolling_summaries = _read_background_rolling_summaries_from_conversations(
             con,

@@ -867,11 +867,11 @@ ORDER BY updated_at ASC, id ASC
             resources_by_segment: dict[str, list[sqlite3.Row]] = {sid: [] for sid in pending_segment_ids}
             for row in con.execute(
                 "SELECT segment_id, local_path, memory_prior_context FROM resources "
-                "WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND modality = 'conversation'",
-                (soul_id, user_id, pending_conversation_id),
+                "WHERE soul_id = ? AND user_id = ? AND conversation_id = ? AND modality = 'conversation' "
+                f"AND segment_id IN ({','.join('?' for _ in pending_segment_ids)})",
+                (soul_id, user_id, pending_conversation_id, *pending_segment_ids),
             ):
-                if row["segment_id"] in resources_by_segment:
-                    resources_by_segment[row["segment_id"]].append(row)
+                resources_by_segment[row["segment_id"]].append(row)
             selected_by_conversation[pending_conversation_id] = list(pending_segment_ids)
             for segment_id in pending_segment_ids:
                 resource_rows = resources_by_segment[segment_id]
@@ -1015,7 +1015,7 @@ WHERE id IN ({placeholders}) AND soul_id = ? AND user_id = ?
             if isinstance(item, dict)
         } | {str(item["id"]) for item in prior_context_memory_items})
         existing_memory_edges: list[dict[str, str]] = []
-        if evidence_ids:
+        if evidence_ids and not historical:
             evidence_id_set = set(evidence_ids)
             edge_rows = con.execute(
                 "SELECT subject_id, predicate, object_id FROM triples "

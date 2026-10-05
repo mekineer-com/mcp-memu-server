@@ -56,7 +56,14 @@ def import_chat_info(*, user_id: str, soul_id: str, label: str) -> dict[str, Any
             "SELECT COALESCE(MAX(position) + 1, 0) FROM imported_messages WHERE chat_id = ? AND historical = 1",
             (chat["chat_id"],),
         ).fetchone()[0]
-        return {**dict(chat), "conversation_id": f"import:dm:{chat['chat_id']}", "history_end_index": end}
+        first_end = con.execute(
+            "SELECT COALESCE(MAX(m.position) + 1, 0) FROM imported_messages m "
+            "JOIN (SELECT start_position, end_position FROM imported_files WHERE chat_id = ? "
+            "ORDER BY start_position LIMIT 1) f ON m.position >= f.start_position AND m.position < f.end_position "
+            "WHERE m.chat_id = ? AND m.historical = 1", (chat["chat_id"], chat["chat_id"]),
+        ).fetchone()[0]
+        return {**dict(chat), "conversation_id": f"import:dm:{chat['chat_id']}", "history_end_index": end,
+                "initial_history_end_index": first_end}
 
 
 def import_processed_days(*, user_id: str, soul_id: str, label: str, cursor: int,
