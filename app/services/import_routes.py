@@ -225,6 +225,7 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         cid = chat["conversation_id"] if chat else request.conversation_id
         if cid != request.conversation_id:
             raise HTTPException(status_code=409, detail="Use the existing chat for this app label")
+        svc = runtime._get_service_from_payload({"user": scoped})
         state, card, path = runtime._load_turn_state_and_soul_card(cid, **scoped)
         cursor = effective_digest_cursor_from_row(state)
         stored = conversation_sources.load_import_tail(
@@ -277,7 +278,6 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         cross = [row for row in displayed if row.get("conversation_id") != cid]
         block = runtime._format_all_chat_history_for_ai(
             current_history=history, cross_tail=cross, conversation_id=cid, soul_id=scoped["soul_id"])
-        svc = runtime._get_service_from_payload({"user": scoped})
         system = runtime._make_turn_system_prompt(
             scoped["soul_id"], soul_card=card, response_sentences=int(runtime._CONFIG.get("turn_response_sentences", 3)))
         user = runtime._build_turn_prompt(

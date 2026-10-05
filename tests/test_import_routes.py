@@ -26,6 +26,31 @@ def _guidance_schema(con):
                 "modality TEXT, source_start_day DATE, source_end_day DATE)")
 
 
+def test_new_soul_first_preview_initializes_schema_without_model_calls(tmp_path, monkeypatch):
+    from app.services import owner
+
+    owner.create_owner(main._CONFIG, "TestOwner")
+    source = tmp_path / "imports.db"
+    monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
+    client = TestClient(main.app, client=("127.0.0.1", 50000))
+    assert client.post("/souls", json={"soul_id": "FreshImportSoul", "use_existing": False}).status_code == 200
+    path = main._sqlite_current_path("TestOwner", "FreshImportSoul")
+    with sqlite3.connect(path) as con:
+        assert not con.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    monkeypatch.setattr(main, "_build_turn_prompt", lambda **_: pytest.fail("All-history preview built a turn"))
+    response = client.post("/imports/validate", json={
+        "user_id": "TestOwner", "soul_id": "FreshImportSoul", "label": "Replika",
+        "conversation_id": "import:dm:fresh", "current_messages": [],
+    })
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "estimated_tokens": 0, "input_budget": None,
+        "pending_start_day": None, "processed_start_day": None, "processed_end_day": None}
+    svc = main._get_service_from_payload({"user": {"user_id": "TestOwner", "soul_id": "FreshImportSoul"}})
+    assert not svc._llm_clients and svc._claude_cli_client is None
+    svc.database.close()
+    assert not source.exists()
+
+
 def test_registration_extends_history_without_resetting_progress(tmp_path, monkeypatch):
     source, db = tmp_path / "imports.db", tmp_path / "TestSoul.db"
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "label": "Replika"}
@@ -158,7 +183,8 @@ def test_import_guidance_is_selected_chat_only_including_all_history(tmp_path, m
     main._write_conversation_state(cid, user_id="TestOwner", soul_id="TestSoul",
         updates={"digest_cursor": 1, "last_memorize_at": "2025-01-02T12:00:00Z"})
     # All-history guidance must not build a turn or call a model.
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: pytest.fail("Unpaid guidance called service"))
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: None)
+    monkeypatch.setattr(main, "_build_turn_prompt", lambda **_: pytest.fail("All-history guidance built a turn"))
     validate = _endpoint("/imports/validate")
     result = validate(ImportPreview(**scope, conversation_id=cid, current_messages=[]))
     assert result == {"ok": True, "estimated_tokens": 0, "input_budget": None,
