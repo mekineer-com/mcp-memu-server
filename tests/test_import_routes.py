@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.db import sqlite_ensure_conversation_state_schema
 from app.services import consolidation, conversation_sources
-from app.services.import_routes import ImportPreview, ImportScope
+from app.services.import_routes import ImportPreview, ImportScope, ImportProcess
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "openalma" / "launcher"))
 import chat_import
@@ -26,6 +26,60 @@ def _guidance_schema(con):
     sqlite_ensure_conversation_state_schema(con)
     con.execute("CREATE TABLE resources (user_id TEXT, soul_id TEXT, conversation_id TEXT, "
                 "modality TEXT, source_start_day DATE, source_end_day DATE)")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["default", "continuous", "enable", "disable", "failure", "draining"])
+async def test_import_task_owns_continuation_and_releases_once(monkeypatch, mode):
+    from app.services import import_routes
+    scope = {"user_id": "TestOwner", "soul_id": "LoopSoul"}
+    cid = "import:dm:loop"
+    marker = main._memorize_lock_key(**scope)
+    monkeypatch.setattr(main, "_BACKGROUND_TASKS", set())
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
+    monkeypatch.setattr(main, "_SHUTDOWN_STATE", {"draining": False})
+    monkeypatch.setattr(conversation_sources, "import_chat_info", lambda **_: {"conversation_id": cid, "history_end_index": 3})
+    main._write_conversation_state(cid, **scope, updates={"import_state": {
+        "history_end_index": 3, "memorize_cursor": -1, "pending_segment_ids": [],
+        "stage": "memorize", "error": None,
+    }})
+    entered, finish = asyncio.Event(), asyncio.Event()
+    calls, releases = [], []
+    async def batch(_runtime, **kwargs):
+        calls.append(kwargs["retry"])
+        assert main._FORCED_MEMORIZE_INFLIGHT[marker] is True
+        if len(calls) == 1:
+            entered.set()
+            await finish.wait()
+        failed = mode == "failure"
+        main._write_conversation_state(cid, **scope, updates={
+            "import_memorize_cursor": len(calls) - 1,
+            "import_error": "Fictional failure" if failed else None,
+        })
+        return not failed
+    monkeypatch.setattr(import_routes, "run_import_batch", batch)
+    release = main._finish_memorize_claim
+    async def released(key, success):
+        releases.append(success)
+        await release(key, success)
+    monkeypatch.setattr(main, "_finish_memorize_claim", released)
+    request = ImportProcess(**scope, label="TestApp", continuous=mode not in {"default", "enable"})
+    await _endpoint("/imports/process")(request)
+    task = next(iter(main._BACKGROUND_TASKS))
+    await entered.wait()
+    assert _endpoint("/imports/status")(**scope, label="TestApp")["running"]
+    with pytest.raises(HTTPException, match="still running"):
+        await _endpoint("/imports/process")(request)
+    if mode in {"enable", "disable"}:
+        await _endpoint("/imports/continuation")(request.model_copy(update={"continuous": mode == "enable"}))
+    if mode == "draining":
+        main._SHUTDOWN_STATE["draining"] = True
+    finish.set()
+    await task
+    assert len(calls) == (3 if mode in {"continuous", "enable"} else 1)
+    assert releases == [mode != "failure"]
+    assert marker not in main._FORCED_MEMORIZE_INFLIGHT
+    assert not _endpoint("/imports/status")(**scope, label="TestApp")["running"]
 
 
 @pytest.mark.asyncio
@@ -149,7 +203,7 @@ async def test_real_import_completion_memorizes_current_messages_across_chats(tm
                 raise ValueError("Fictional ordinary extraction failure")
             return [{"memory_item_ids": []} for _ in kwargs["segments"]]
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _: Service())
-    request = ImportScope(**scoped, label="TestApp")
+    request = ImportProcess(**scoped, label="TestApp")
     _endpoint("/imports/register")(request)
     trigger = "chat:ordinary"
     main._write_conversation_state(trigger, **scoped, updates={})
@@ -237,7 +291,7 @@ async def test_registration_uses_segments_not_incidental_memories(tmp_path, monk
     if prior_segment:
         assert result["stage"] == "complete"
         with pytest.raises(HTTPException, match="No eligible history"):
-            await _endpoint("/imports/process")(ImportScope(**scope))
+            await _endpoint("/imports/process")(ImportProcess(**scope))
 
 
 @pytest.mark.parametrize("running", ["memorize", "consolidation"])
@@ -445,7 +499,7 @@ def test_import_guidance_uses_soul_period_but_selected_chat_processed_dates(tmp_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stop", ["calendar", "calendar_retry", "capacity", "failure", "error_write", "consolidation_failure", "no_memories", "no_memories_calendar"])
+@pytest.mark.parametrize("stop", ["calendar", "calendar_retry", "capacity", "continuous", "failure", "error_write", "consolidation_failure", "no_memories", "no_memories_calendar"])
 async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, monkeypatch, stop):
     import asyncio
     from app.services import memorize_endpoint
@@ -462,7 +516,7 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
          "timestamp": "2025-01-09" if stop in {"calendar", "calendar_retry", "no_memories_calendar"} and i else "2025-01-01"}
         for i in range(3)])
     stored = chat_import.store_upload(source, **scope, messages=rows, history_count=3)
-    request = ImportScope(**scope)
+    request = ImportProcess(**scope, continuous=stop == "continuous")
     _endpoint("/imports/register")(request)
     cid = stored["conversation_id"]
     marker = main._memorize_lock_key(**scoped)
@@ -500,7 +554,7 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
             for _owner, segment_id in pairs]}
     monkeypatch.setattr(consolidation, "gather_consolidation_inputs", gather)
     monkeypatch.setattr(consolidation, "_prepare_dossier_consolidation_prompts", lambda *_a, **kw:
-        ([], "", "", {"dossiers": 60 if stop in {"capacity", "consolidation_failure"} and len(kw["inputs"]["segment_inputs"]) >= 2 else 10}))
+        ([], "", "", {"dossiers": 60 if stop in {"capacity", "continuous", "consolidation_failure"} and len(kw["inputs"]["segment_inputs"]) >= 2 else 10}))
     def record():
         return main._load_turn_state_and_soul_card(cid, **scoped)[0]["import_state"]
     entered, finish = asyncio.Event(), asyncio.Event()
@@ -508,7 +562,8 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
         assert kwargs["historical"] and main._FORCED_MEMORIZE_INFLIGHT[marker] is True
         consolidations.append(kwargs["selected_segments"])
         assert kwargs["selected_segments"] == {(cid, segment_id) for segment_id in record()["pending_segment_ids"]}
-        assert (await main.memorize_cancel(scoped))["status"] == "cancel_requested"
+        if stop != "continuous":
+            assert (await main.memorize_cancel(scoped))["status"] == "cancel_requested"
         entered.set()
         await finish.wait()
         if stop == "consolidation_failure" and fail:
@@ -538,7 +593,7 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
         assert busy.value.status_code == 409
         finish.set()
     await asyncio.gather(*tasks)
-    assert len(extracts) == (3 if stop == "no_memories" else 2) and marker not in main._FORCED_MEMORIZE_INFLIGHT
+    assert len(extracts) == (3 if stop in {"no_memories", "continuous"} else 2) and marker not in main._FORCED_MEMORIZE_INFLIGHT
     assert releases == [(marker, stop not in {"failure", "calendar_retry", "error_write", "consolidation_failure"})]
     if stop in {"failure", "calendar_retry", "error_write"}:
         assert record()["stage"] == "memorize" and record()["error"]
@@ -559,6 +614,8 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
         await _endpoint("/imports/retry")(request)
         await asyncio.gather(*list(main._BACKGROUND_TASKS))
         assert len(extracts) == 2 and len(consolidations) == 2
+    elif stop == "continuous":
+        assert record()["stage"] == "complete" and len(consolidations) == 3
     elif stop == "no_memories":
         assert record()["stage"] == "complete" and record()["memorize_cursor"] == 2
         assert not consolidations

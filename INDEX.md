@@ -61,8 +61,9 @@ mcp-memu-server/
 | `/memorize` | POST | Extract memories from conversation. `force=true` bypasses sleep-gap; `rebuild=true` archives the DB and resets cursor (implies force), returning HTTP 409 while the same owner and Soul consolidate. Auto-memorize also fires inside `/conversation/{id}/turn`. |
 | `/imports/register` | POST | Register/reuse a stored imported chat. First registration fixes historical eligibility using scoped saved conversation segments; refuse it while memory work is running. Re-register never extends the bound or resets progress/errors. No model call. |
 | `/imports/validate` | POST | Validate new current rows against the actual turn allowance. Return the complete Soul-wide pending period, selected-source processed dates and prospective deferred-history status against the fixed bound. Unreadable sources fail validation. No model call, source insertion or Memorize scheduling. |
-| `/imports/process`, `/imports/retry` | POST | Start one tracked historical batch, returning promptly. Reuse bounded source reads, extraction and one consolidation; failed work requires explicit Retry. |
-| `/imports/status` | GET | Scoped imported-chat checkpoint, error and existing per-Soul progress; no separate job ledger. |
+| `/imports/process`, `/imports/retry` | POST | Start tracked historical work, returning promptly. Default one batch; `continuous=true` repeats successful bounded batches under one claim. Failure requires explicit Retry. |
+| `/imports/continuation` | POST | Change the running import task's continuation choice; the current batch finishes. No restart resumption or second busy registry. |
+| `/imports/status` | GET | Scoped imported-chat checkpoint, error, matching task activity/continuation and its progress; unrelated Soul work is not import activity. |
 | `/memorize/retry` | POST | Retry failed ordinary Memorize or a completed import's waiting handoff. Unfinished import history must finish in Echo first. |
 | `/memorize/progress` | GET | Live memorize batch progress |
 | `/memorize/cancel` | POST | Cancel the running memorize batch |

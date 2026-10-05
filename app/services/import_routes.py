@@ -31,6 +31,10 @@ class ImportScope(BaseModel):
     label: str
 
 
+class ImportProcess(ImportScope):
+    continuous: bool = False
+
+
 class ImportPreview(ImportScope):
     conversation_id: str
     title: str | None = None
@@ -83,7 +87,7 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str, r
         await runtime._finish_memorize_claim(marker, success)
 
 
-async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: bool = False) -> None:
+async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: bool = False) -> bool:
     cid = chat["conversation_id"]
     uid, sid = scoped["user_id"], scoped["soul_id"]
     marker = runtime._memorize_lock_key(uid, sid)
@@ -180,14 +184,36 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
             runtime.logger.exception("Failed to record import error for %s", cid)
         if isinstance(exc, asyncio.CancelledError):
             raise
+    return success
+
+
+def import_task(runtime: Any, marker: str) -> asyncio.Task | None:
+    return next((task for task in tuple(runtime._BACKGROUND_TASKS)
+                 if not task.done() and task.get_name() == f"import:{marker}"), None)
+
+
+async def run_import(runtime: Any, *, scoped: dict, chat: dict, retry: bool) -> None:
+    marker = runtime._memorize_lock_key(**scoped)
+    success = False
+    try:
+        while True:
+            success = False
+            success = await run_import_batch(runtime, scoped=scoped, chat=chat, retry=retry)
+            retry = False
+            current = runtime._load_turn_state_and_soul_card(chat["conversation_id"], **scoped)[0]["import_state"]
+            if (not success or current["stage"] == "complete" or
+                    not asyncio.current_task().import_continuous or runtime._SHUTDOWN_STATE["draining"] or
+                    marker in runtime._MEMORIZE_CANCEL):
+                break
     finally:
         runtime._MEMORIZE_CANCEL.discard(marker)
         await runtime._finish_memorize_claim(marker, success)
-        current = record()
-        if success and current["stage"] == "complete" and current.get("ordinary_waiting"):
-            with runtime._STATE_LOCK:
-                runtime._FORCED_MEMORIZE_INFLIGHT[marker] = False
-            await run_waiting_memorize(runtime, scoped=scoped, import_cid=cid)
+    if success:
+        current = runtime._load_turn_state_and_soul_card(chat["conversation_id"], **scoped)[0]["import_state"]
+    if success and current["stage"] == "complete" and current.get("ordinary_waiting"):
+        with runtime._STATE_LOCK:
+            runtime._FORCED_MEMORIZE_INFLIGHT[marker] = False
+        await run_waiting_memorize(runtime, scoped=scoped, import_cid=chat["conversation_id"])
 
 
 def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
@@ -207,38 +233,49 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
             raise HTTPException(status_code=409, detail="Register the imported chat first")
         return scoped, chat, state["import_state"]
 
-    def start(request: ImportScope, *, retry: bool):
+    def start(request: ImportProcess, *, retry: bool):
         scoped, chat, record = registered(request)
         if record["stage"] == "complete":
             raise HTTPException(status_code=409, detail="No eligible history to process")
         marker = runtime._memorize_lock_key(**scoped)
         with runtime._STATE_LOCK:
-            if marker in runtime._FORCED_MEMORIZE_INFLIGHT or (scoped["user_id"], scoped["soul_id"]) in runtime._CONSOLIDATION_RUNNING:
+            if import_task(runtime, marker) or marker in runtime._FORCED_MEMORIZE_INFLIGHT or (scoped["user_id"], scoped["soul_id"]) in runtime._CONSOLIDATION_RUNNING:
                 raise HTTPException(status_code=409, detail="Memory work is still running")
             if bool(record["error"]) != retry:
                 raise HTTPException(status_code=409, detail="Retry the failed import" if record["error"] else "No failed import to retry")
             runtime._FORCED_MEMORIZE_INFLIGHT[marker] = True
-        task = asyncio.create_task(run_import_batch(runtime, scoped=scoped, chat=chat, retry=retry))
+        task = asyncio.create_task(run_import(runtime, scoped=scoped, chat=chat, retry=retry), name=f"import:{marker}")
+        task.import_continuous = request.continuous
         runtime._BACKGROUND_TASKS.add(task)
         task.add_done_callback(runtime._BACKGROUND_TASKS.discard)
         return JSONResponse(status_code=202, content={"status": "accepted", "conversation_id": chat["conversation_id"]})
 
     @app.post("/imports/process", operation_id="process_import")
-    async def process(request: ImportScope):
+    async def process(request: ImportProcess):
         return start(request, retry=False)
 
     @app.post("/imports/retry", operation_id="retry_import")
-    async def retry(request: ImportScope):
+    async def retry(request: ImportProcess):
         return start(request, retry=True)
+
+    @app.post("/imports/continuation", operation_id="import_continuation")
+    async def continuation(request: ImportProcess):
+        scoped, _chat, _record = registered(request)
+        task = import_task(runtime, runtime._memorize_lock_key(**scoped))
+        if task is None:
+            raise HTTPException(status_code=409, detail="No import is running")
+        task.import_continuous = request.continuous
+        return {"continuous": task.import_continuous}
 
     @app.get("/imports/status", operation_id="import_status")
     def status(user_id: str, soul_id: str, label: str):
         scoped, chat, record = registered(ImportScope(user_id=user_id, soul_id=soul_id, label=label))
         marker = runtime._memorize_lock_key(**scoped)
+        task = import_task(runtime, marker)
         return {"conversation_id": chat["conversation_id"], "import_state": record,
                 "deferred_history": chat["history_end_index"] > record["history_end_index"],
-                "running": marker in runtime._FORCED_MEMORIZE_INFLIGHT,
-                "progress": runtime._MEMORIZE_PROGRESS.get(marker, {"active": False})}
+                "running": task is not None, "continuous": bool(task and task.import_continuous),
+                "progress": runtime._MEMORIZE_PROGRESS.get(marker, {"active": False}) if task else {"active": False}}
 
     @app.post("/imports/register", operation_id="register_import")
     def register(request: ImportScope):
