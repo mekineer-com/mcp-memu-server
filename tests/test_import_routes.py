@@ -55,10 +55,16 @@ async def test_import_wait_survives_batches_and_hands_off_to_saved_cross_chat(mo
     with pytest.raises(HTTPException, match="Finish the import"):
         await main.retry_memorize(**scoped, background_tasks=main.BackgroundTasks())
     main._write_conversation_state(cid, **scoped, updates={"import_memorize_cursor": 3})
+    main._FORCED_MEMORIZE_INFLIGHT[marker] = True
+    assert main._schedule_auto_memorize({}, scope) == "coalesced"
+    assert marker not in main._FORCED_MEMORIZE_RECHECK
+    await main._finish_memorize_claim(marker, True)
     def assemble(actual_cid, uid, sid, failure):
         assert (actual_cid, uid, sid) == (trigger, *scoped.values())
         if outcome == "unavailable":
             raise ValueError("Source unavailable")
+        if outcome == "empty":
+            return None
         return {"user": scoped, "conversation_id": trigger, "conversation": [
             {"content": "from trigger"}, {"content": "from another chat"}]}
     monkeypatch.setattr(main, "_saved_memorize_payload", assemble)
@@ -68,8 +74,7 @@ async def test_import_wait_survives_batches_and_hands_off_to_saved_cross_chat(mo
         assert main._soul_activity_pause(**scoped, import_handoff=True) is None
         async def finish():
             return outcome == "success"
-        if outcome != "empty":
-            tasks.add_task(finish)
+        tasks.add_task(finish)
     monkeypatch.setattr(main, "_memorize_owned", execute)
     tasks = main.BackgroundTasks()
     assert (await main.retry_memorize(**scoped, background_tasks=tasks))["status"] == "accepted"
@@ -77,6 +82,28 @@ async def test_import_wait_survives_batches_and_hands_off_to_saved_cross_chat(mo
     assert marker not in main._FORCED_MEMORIZE_INFLIGHT
     assert bool(main._soul_import_state(**scoped)[1]["ordinary_waiting"]) == (outcome in {"failure", "unavailable"})
     assert bool(main._soul_activity_pause(**scoped)) == (outcome in {"failure", "unavailable"})
+
+
+@pytest.mark.asyncio
+async def test_handoff_controls_follow_import_then_consolidation_before_memorize():
+    scoped = {"user_id": "TestOwner", "soul_id": "ImportSoul"}
+    cid, trigger = "import:dm:priority", "chat:trigger"
+    failure = {"conversation_id": trigger, "paused": True, "error": "Fictional Memorize failure", "targets": {}}
+    main._write_conversation_state(cid, **scoped, updates={"import_state": {
+        "history_end_index": 1, "memorize_cursor": -1, "pending_segment_ids": [],
+        "stage": "memorize", "error": None,
+    }, "memorize_failure": failure})
+    status = await main.diag_memorize_pending(**scoped)
+    assert status["retry_operation"] == "import" and status["pause_reason"] == "Waiting for import before Memorize."
+    main._write_conversation_state(cid, **scoped, updates={"import_memorize_cursor": 0,
+        "import_ordinary_waiting": trigger, "last_consolidation_error": "Fictional consolidation failure",
+        "last_consolidation_error_at": "2026-10-05T00:00:00Z"})
+    status = await main.diag_memorize_pending(**scoped)
+    assert status["retry_operation"] == "consolidation" and status["pause_reason"] == "Fictional consolidation failure"
+    with pytest.raises(HTTPException, match="Retry consolidation"):
+        await main.retry_memorize(**scoped, background_tasks=main.BackgroundTasks())
+    main._write_conversation_state(cid, **scoped, updates={"last_consolidation_error": None})
+    assert (await main.diag_memorize_pending(**scoped))["retry_operation"] == "memorize"
 
 
 def test_import_interruption_marker_only_pauses_when_not_running(monkeypatch):
@@ -105,7 +132,7 @@ async def test_real_import_completion_memorizes_current_messages_across_chats(tm
         {"id": "past", "role": "user", "content": "Past story", "timestamp": "2025-01-01"},
         {"id": "current", "role": "user", "content": "Current imported story", "timestamp": "2026-01-01"},
     ])
-    chat_import.store_upload(source, **scoped, label="TestApp", messages=rows, history_count=1)
+    chat = chat_import.store_upload(source, **scoped, label="TestApp", messages=rows, history_count=1)
     path = main._sqlite_current_path(**scoped)
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as con:
@@ -147,6 +174,14 @@ async def test_real_import_completion_memorizes_current_messages_across_chats(tm
         assert len(calls) == 3 and calls[-1] == calls[1]
         assert main._soul_import_state(**scoped)[1]["ordinary_waiting"] is None
         assert main._soul_activity_pause(**scoped) is None
+    else:
+        # The cursors committed, but the process stopped before clearing the wait.
+        main._write_conversation_state(chat["conversation_id"], **scoped,
+                                       updates={"import_ordinary_waiting": trigger})
+        tasks = main.BackgroundTasks()
+        await main.retry_memorize(**scoped, background_tasks=tasks)
+        await tasks()
+        assert len(calls) == 2 and main._soul_activity_pause(**scoped) is None
 
 
 def test_new_soul_first_preview_initializes_schema_without_model_calls(tmp_path, monkeypatch):

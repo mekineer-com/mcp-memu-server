@@ -365,7 +365,8 @@ async def test_direct_checkpoint_cannot_commit_without_pending_bookkeeping(monke
 
 
 @pytest.mark.asyncio
-async def test_automatic_admission_reaches_real_endpoint_once(monkeypatch):
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_automatic_admission_reaches_real_endpoint_once(monkeypatch, cancel):
     uid, sid, cid = "TestOwner", "TestSoul", "chat:saved-chat"
     main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={})
     monkeypatch.setattr(main, "_safe_payload", lambda payload: payload)
@@ -387,13 +388,16 @@ async def test_automatic_admission_reaches_real_endpoint_once(monkeypatch):
         "conversation": [{"role": "user", "content": "First"}, {"role": "assistant", "content": "Second"}],
     }
     main._FORCED_MEMORIZE_INFLIGHT[marker] = False
+    if cancel:
+        main._MEMORIZE_CANCEL.add(marker)
     try:
         await main._run_forced_memorize_from_turn(payload)
-        assert len(calls) == 1
+        assert len(calls) == int(not cancel)
         assert marker not in main._FORCED_MEMORIZE_INFLIGHT
         assert main._paid_work_state(uid, sid)["memorize_failure"] is None
     finally:
         main._FORCED_MEMORIZE_INFLIGHT.pop(marker, None)
+        main._MEMORIZE_CANCEL.discard(marker)
 
 
 @pytest.mark.asyncio

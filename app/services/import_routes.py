@@ -60,8 +60,9 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str, r
         else:
             payload = runtime._saved_memorize_payload(cid, uid, sid, failure)
             tasks = BackgroundTasks()
-            await runtime._memorize_owned(payload, tasks, True, admitted=True, batch_owned=True,
-                                          import_handoff=True, retry=bool(failure))
+            if payload is not None:
+                await runtime._memorize_owned(payload, tasks, True, admitted=True, batch_owned=True,
+                                              import_handoff=True, retry=bool(failure))
             success = True
             for task in tasks.tasks:
                 if not await task.func(*task.args, **task.kwargs):

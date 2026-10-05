@@ -243,9 +243,7 @@ async def run_forced_memorize_from_turn(
     try:
         background_tasks = BackgroundTasks()
         await memorize_handler(payload, background_tasks, True)
-        for task in background_tasks.tasks:
-            if await task.func(*task.args, **task.kwargs) is False:
-                return False
+        await background_tasks()
         return True
     except Exception as exc:
         logger.exception("forced memorize from turn failed")
