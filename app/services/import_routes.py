@@ -117,12 +117,10 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | 
         if isinstance(exc, asyncio.CancelledError):
             raise
     finally:
-        phase = runtime._MEMORIZE_PROGRESS.get(marker, {}).get("phase")
-        if phase != "consolidating" or (uid, sid) not in runtime._CONSOLIDATION_RUNNING:
+        if runtime._MEMORIZE_PROGRESS.get(marker, {}).get("phase") != "consolidating":
             memorize_endpoint._set_memorize_progress(
                 runtime._MEMORIZE_PROGRESS, marker, active=False,
-                **({"last_result": "success" if success else "failure"}
-                   if phase != "consolidating" or not success else {}),
+                last_result="success" if success else "failure",
             )
         runtime._MEMORIZE_CANCEL.discard(marker)
         await runtime._finish_memorize_claim(marker, success)

@@ -311,7 +311,7 @@ def test_new_soul_first_preview_initializes_schema_without_model_calls(tmp_path,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["due", "small_broken", "small_summed", "no_gap"])
+@pytest.mark.parametrize("mode", ["due", "small_broken", "small_summed", "no_gap", "turned_off", "turned_off_summed"])
 async def test_auto_memorize_during_import_preserves_eligibility_and_retry_admission(monkeypatch, mode):
     from app.services import import_routes
     scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
@@ -319,24 +319,31 @@ async def test_auto_memorize_during_import_preserves_eligibility_and_retry_admis
     main._write_conversation_state(import_cid, **scoped, updates={"import_state": {
         "history_end_index": 1, "memorize_cursor": -1, "pending_segment_ids": [],
         "stage": "memorize", "error": None}})
-    main._write_conversation_state(cid, **scoped, updates={})
+    main._write_conversation_state(cid, **scoped, updates={"memorize_chat": True})
     monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 100)
-    history = [{"role": "user", "content": "fictional " * (100 if mode == "due" else 10),
+    history = [{"role": "user", "content": "fictional " * (100 if mode == "due" or mode.startswith("turned_off") else 10),
                 "ts_ms": 1_735_689_600_000 + i * (1000 if mode == "no_gap" else 86_400_000)} for i in range(2)]
     calls = []
     def build(*_args, **_kwargs):
         calls.append(True)
+        if mode.startswith("turned_off"):
+            rows = [{**row, "memorize_chat": False} for row in history]
+            return {"conversation": rows + ([{"content": "fictional " * 100}]
+                if mode == "turned_off_summed" else [])}
         if mode != "small_summed":
             raise OSError("Fictional source unreadable")
         return {"conversation": history + [{"content": "fictional " * 100}]}
     monkeypatch.setattr(main, "_build_cross_conversation_payload", build)
     state = main._load_turn_state_and_soul_card(cid, **scoped)[0]
-    _tokens, payload = main._prepare_auto_memorize(cid, *scoped.values(), {}, state, history, dry_run=False)
+    safe = {"memorize_chat": False} if mode.startswith("turned_off") else {}
+    _tokens, payload = main._prepare_auto_memorize(cid, *scoped.values(), safe, state, history, dry_run=False)
+    if mode == "turned_off":
+        assert _tokens == 0
     if payload:
         assert main._schedule_auto_memorize(payload, main._auto_memorize_scope(
             cid, *scoped.values(), {}, history)) == "coalesced"
     waiting = main._soul_import_state(**scoped)[1].get("ordinary_waiting")
-    assert bool(waiting) == (mode in {"due", "small_summed"})
+    assert bool(waiting) == (mode in {"due", "small_summed", "turned_off_summed"})
     assert len(calls) == (0 if mode in {"due", "no_gap"} else 1)
     assert not main._paid_work_state(**scoped).get("memorize_failure")
     assert main._soul_activity_pause("TestOwner", "OtherSoul") is None

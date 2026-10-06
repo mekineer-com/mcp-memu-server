@@ -406,15 +406,24 @@ async def test_automatic_admission_reaches_real_endpoint_once(monkeypatch, cance
 
 
 @pytest.mark.asyncio
-async def test_automatic_admission_failure_before_jobs_pauses_and_exposes_retry(monkeypatch):
+@pytest.mark.parametrize("import_pending", [False, True])
+async def test_automatic_admission_failure_before_jobs_pauses_and_exposes_retry(monkeypatch, import_pending):
     uid, sid, cid = "TestOwner", "TestSoul", "chat:failed-admission"
+    if import_pending:
+        main._write_conversation_state("import:dm:history", user_id=uid, soul_id=sid, updates={"import_state": {
+            "history_end_index": 1, "memorize_cursor": -1, "pending_segment_ids": [],
+            "stage": "memorize", "error": None}})
     async def fail(*_args):
         raise ValueError("Fictional source error")
     monkeypatch.setattr(main, "_memorize_admitted", fail)
     assert await main._run_forced_memorize_from_turn({
         "user": {"user_id": uid, "soul_id": sid}, "conversation_id": cid,
     }) is False
-    assert main._paid_work_state(uid, sid)["memorize_failure"]["conversation_id"] == cid
+    if import_pending:
+        assert not main._paid_work_state(uid, sid).get("memorize_failure")
+        assert main._soul_import_state(uid, sid)[1]["ordinary_waiting"] == cid
+    else:
+        assert main._paid_work_state(uid, sid)["memorize_failure"]["conversation_id"] == cid
     assert main._soul_activity_pause(uid, sid)
 
 
@@ -516,15 +525,13 @@ async def test_recovery_cancel_flag_and_consolidation_interruption_preserve_targ
     async def review(state, context, **_kwargs):
         assert (await main.memorize_cancel(scoped))["status"] == "cancel_requested"
         return state
-    async def consolidate(*_args, **_kwargs):
-        main._memorize_endpoint._set_memorize_progress(main._MEMORIZE_PROGRESS,
-            main._memorize_lock_key(**scoped), active=True, phase="consolidating")
+    async def consolidate(**_kwargs):
         if cancel:
             raise asyncio.CancelledError()
         return {"status": "skipped"}
     monkeypatch.setattr(engine, "_memorize_persist_and_index", review)
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: engine)
-    monkeypatch.setattr(main, "_run_consolidation_task", consolidate)
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", consolidate)
     tasks = BackgroundTasks()
     await main.retry_memorize(**scoped, background_tasks=tasks)
     assert main._paid_work_state(**scoped)["memorize_failure"]["paused"]
@@ -570,6 +577,44 @@ async def test_recovery_dedupes_trailing_segment_before_soul_wide_review(monkeyp
         engine.generate_dynamic_category_review.assert_not_awaited()
     finally:
         engine.database.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_detached_consolidation_owns_terminal_progress_and_cancel_cleanup(monkeypatch, cancel):
+    scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    marker = main._memorize_lock_key(**scoped)
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def pipeline(**kwargs):
+        key = (kwargs["user_id"], kwargs["soul_id"])
+        main._CONSOLIDATION_RUNNING[key] = False
+        try:
+            entered.set()
+            await release.wait()
+            return {"status": "ok", "result": {}}
+        finally:
+            main._CONSOLIDATION_RUNNING.pop(key)
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", pipeline)
+    task = asyncio.create_task(main._run_consolidation_task(
+        object(), conversation_id="chat:detached", uid=scoped["user_id"], soul_id=scoped["soul_id"],
+        progress_key=marker, memorize_progress=main._MEMORIZE_PROGRESS))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert (await main.memorize_cancel(scoped))["status"] == "cancel_requested"
+        assert marker in main._MEMORIZE_CANCEL
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            release.set()
+            await task
+        assert marker not in main._MEMORIZE_CANCEL
+        assert not main._MEMORIZE_PROGRESS[marker]["active"]
+        assert main._MEMORIZE_PROGRESS[marker]["last_result"] == ("failure" if cancel else "success")
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio

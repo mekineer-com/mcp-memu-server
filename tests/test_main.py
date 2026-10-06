@@ -1717,6 +1717,8 @@ def test_conversation_state_schema_migrates_pending_segment_ids_from_old_name(
 @pytest.mark.parametrize(("historical", "force"), [(False, False), (False, True), (True, False)])
 async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.MonkeyPatch, historical, force) -> None:
     calls: list[int] = []
+    marker = main._memorize_lock_key("UserLoop", "SoulLoop")
+    monkeypatch.setattr(main, "_MEMORIZE_CANCEL", {marker})
 
     async def fake_pipeline_once(**_kwargs):
         assert _kwargs["running"] is main._CONSOLIDATION_RUNNING
@@ -1740,6 +1742,7 @@ async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.Mon
 
     assert out == {"ok": True, "status": "ok", "result": {}}
     assert len(calls) == 1
+    assert (marker in main._MEMORIZE_CANCEL) is historical
 
 
 @pytest.mark.asyncio
@@ -1921,12 +1924,15 @@ async def test_consolidation_pipeline_busy_caller_cannot_release_owner(
         assert key in main._CONSOLIDATION_RUNNING
         owner_progress = {"active": True, "phase": "consolidating", "current": 1, "total": 1}
         progress = {"owner": owner_progress.copy()}
+        marker = main._memorize_lock_key(*key)
+        monkeypatch.setattr(main, "_MEMORIZE_CANCEL", {marker})
         refused = await main._run_consolidation_task(
             object(), conversation_id="cid-owner", soul_id=key[1], uid=key[0],
             progress_key="owner", memorize_progress=progress,
         )
         assert refused == {"ok": True, "status": "skipped"}
         assert progress["owner"] == owner_progress
+        assert marker in main._MEMORIZE_CANCEL
         assert key in main._CONSOLIDATION_RUNNING
     finally:
         main._CONSOLIDATION_RUNNING.pop(key, None)

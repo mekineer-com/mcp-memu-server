@@ -2205,7 +2205,7 @@ async def _run_consolidation_task(
                 last_result="success",
             )
         return {"ok": True, "status": "ok", "result": out["result"]}
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:
         logger.exception("consolidation failed (non-fatal)")
         if progress_key and memorize_progress is not None:
             _memorize_endpoint._set_memorize_progress(
@@ -2215,7 +2215,12 @@ async def _run_consolidation_task(
                 last_result="failure",
                 error=f"{type(exc).__name__}: {exc}",
             )
+        if isinstance(exc, asyncio.CancelledError):
+            raise
         return {"ok": False, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        if not historical:
+            _MEMORIZE_CANCEL.discard(_memorize_lock_key(uid, soul_id))
 
 
 def _active_consolidation_failure(
@@ -3618,7 +3623,8 @@ def _prepare_auto_memorize(
         min_chunk_tokens=0,
     ):
         return unmemorized_tokens, None
-    if unmemorized_tokens >= _MIN_CHUNK_TOKENS and _defer_memorize_for_import(cid, uid, soul_id):
+    if (safe.get("memorize_chat") is not False and unmemorized_tokens >= _MIN_CHUNK_TOKENS
+            and _defer_memorize_for_import(cid, uid, soul_id)):
         return unmemorized_tokens, None
     try:
         payload = _build_cross_conversation_payload(
