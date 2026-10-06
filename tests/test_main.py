@@ -1714,8 +1714,8 @@ def test_conversation_state_schema_migrates_pending_segment_ids_from_old_name(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("historical", "force"), [(False, False), (False, True), (True, False)])
-async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.MonkeyPatch, historical, force) -> None:
+@pytest.mark.parametrize("force", [False, True])
+async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.MonkeyPatch, force) -> None:
     calls: list[int] = []
     marker = main._memorize_lock_key("UserLoop", "SoulLoop")
     monkeypatch.setattr(main, "_MEMORIZE_CANCEL", {marker})
@@ -1724,7 +1724,6 @@ async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.Mon
         assert _kwargs["running"] is main._CONSOLIDATION_RUNNING
         assert _kwargs["load_cross_tail_for_ai"] is main._load_cross_tail_for_ai
         assert _kwargs["format_all_chat_history_for_ai"] is main._format_all_chat_history_for_ai
-        assert _kwargs["historical"] is historical
         assert _kwargs["force"] is force
         calls.append(len(calls) + 1)
         return {"status": "ok", "result": {}}
@@ -1736,13 +1735,12 @@ async def test_run_consolidation_task_runs_pipeline_once(monkeypatch: pytest.Mon
         conversation_id="cid-loop",
         soul_id="SoulLoop",
         uid="UserLoop",
-        historical=historical,
         force=force,
     )
 
     assert out == {"ok": True, "status": "ok", "result": {}}
     assert len(calls) == 1
-    assert (marker in main._MEMORIZE_CANCEL) is historical
+    assert marker in main._MEMORIZE_CANCEL
 
 
 @pytest.mark.asyncio
@@ -2106,18 +2104,35 @@ async def test_retry_consolidation_schedules_forced_background_run(
         ),
     )
 
-    async def fake_run(*_args, **kwargs):
-        calls.append(kwargs)
-        return {"ok": True, "status": "ok"}
+    marker = main._memorize_lock_key("User", "Soul")
+    entered, release = asyncio.Event(), asyncio.Event()
+    main._FORCED_MEMORIZE_INFLIGHT[marker] = False
+    main._MEMORIZE_PROGRESS[marker] = {"active": True, "phase": "memorizing"}
 
-    monkeypatch.setattr(main, "_run_consolidation_task", fake_run)
+    async def fake_run(**kwargs):
+        calls.append(kwargs)
+        entered.set()
+        await release.wait()
+        return {"status": "ok", "result": {}}
+
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", fake_run)
     response = await main.retry_consolidation(
         "cid", {"user": {"user_id": "User", "soul_id": "Soul"}}
     )
-    await asyncio.sleep(0)
-
-    assert response.status_code == 202
-    assert calls[0]["force"] is True
+    tasks = list(main._BACKGROUND_TASKS)
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert response.status_code == 202
+        assert calls[0]["force"] is True
+        assert (await main.memorize_cancel({"user_id": "User", "soul_id": "Soul"}))["status"] == "cancel_requested"
+        release.set()
+        await asyncio.gather(*tasks)
+        assert marker in main._MEMORIZE_CANCEL
+        assert marker in main._FORCED_MEMORIZE_INFLIGHT
+        assert main._MEMORIZE_PROGRESS[marker] == {"active": True, "phase": "memorizing"}
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio

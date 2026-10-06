@@ -481,7 +481,7 @@ async def test_retry_recovers_before_completed_shortcut_and_consolidation(monkey
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: engine)
     monkeypatch.setattr(main, "_saved_memorize_payload", lambda *_args: pytest.fail("Completed checkpoint must not extract"))
     consolidation = AsyncMock(return_value={"status": "skipped"})
-    monkeypatch.setattr(main, "_run_consolidation_task", consolidation)
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", consolidation)
     if waiting:
         assert (await main.diag_memorize_pending(**scoped))["retry_operation"] == "memorize"
     tasks = BackgroundTasks()
@@ -504,6 +504,9 @@ async def test_retry_recovers_before_completed_shortcut_and_consolidation(monkey
             assert main._soul_import_state(uid, sid)[1]["ordinary_waiting"] == cid
             assert (await main.diag_memorize_pending(**scoped))["retry_operation"] == "consolidation"
         assert consolidation.await_count == (0 if fail or waiting else 1)
+        if not fail and not waiting:
+            progress = main._MEMORIZE_PROGRESS[main._memorize_lock_key(uid, sid)]
+            assert not progress["active"] and progress["last_result"] == "skipped"
         assert main._memorize_lock_key(uid, sid) not in main._FORCED_MEMORIZE_INFLIGHT
     finally:
         release.set()
@@ -512,8 +515,8 @@ async def test_retry_recovers_before_completed_shortcut_and_consolidation(monkey
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cancel", [False, True])
-async def test_recovery_cancel_flag_and_consolidation_interruption_preserve_targets(monkeypatch, cancel):
+@pytest.mark.parametrize("outcome", ["success", "skipped", "failure", "cancel"])
+async def test_recovery_cancel_flag_and_consolidation_interruption_preserve_targets(monkeypatch, outcome):
     scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     cid = "chat:completed-review"
     targets = {cid: {"cursor": 0}}
@@ -526,9 +529,11 @@ async def test_recovery_cancel_flag_and_consolidation_interruption_preserve_targ
         assert (await main.memorize_cancel(scoped))["status"] == "cancel_requested"
         return state
     async def consolidate(**_kwargs):
-        if cancel:
+        if outcome == "cancel":
             raise asyncio.CancelledError()
-        return {"status": "skipped"}
+        if outcome == "failure":
+            raise RuntimeError("Reflection failed")
+        return {"status": "ok", "result": {}} if outcome == "success" else {"status": "skipped"}
     monkeypatch.setattr(engine, "_memorize_persist_and_index", review)
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: engine)
     monkeypatch.setattr(main, "_run_consolidation_pipeline_once", consolidate)
@@ -536,7 +541,7 @@ async def test_recovery_cancel_flag_and_consolidation_interruption_preserve_targ
     await main.retry_memorize(**scoped, background_tasks=tasks)
     assert main._paid_work_state(**scoped)["memorize_failure"]["paused"]
     try:
-        if cancel:
+        if outcome == "cancel":
             with pytest.raises(asyncio.CancelledError):
                 await tasks()
             assert main._paid_work_state(**scoped)["memorize_failure"]["targets"] == targets
@@ -548,6 +553,13 @@ async def test_recovery_cancel_flag_and_consolidation_interruption_preserve_targ
         marker = main._memorize_lock_key(**scoped)
         assert marker not in main._MEMORIZE_CANCEL and marker not in main._FORCED_MEMORIZE_INFLIGHT
         assert not main._MEMORIZE_PROGRESS[marker]["active"]
+        assert main._MEMORIZE_PROGRESS[marker]["last_result"] == (
+            "failure" if outcome in {"failure", "cancel"} else outcome
+        )
+        if outcome in {"failure", "cancel"}:
+            assert main._MEMORIZE_PROGRESS[marker]["error"].startswith(
+                "RuntimeError: Reflection failed" if outcome == "failure" else "CancelledError:"
+            )
     finally:
         engine.database.close()
 

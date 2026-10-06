@@ -2142,7 +2142,6 @@ async def _run_consolidation_task(
     soul_id: str,
     uid: str,
     force: bool = False,
-    historical: bool = False,
     selected_segments: set[tuple[str, str]] | None = None,
     progress_key: str | None = None,
     memorize_progress: dict[str, dict[str, Any]] | None = None,
@@ -2171,9 +2170,9 @@ async def _run_consolidation_task(
             current=1,
             total=1,
         )
-    deps = _make_consolidation_deps()
-    state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
     try:
+        deps = _make_consolidation_deps()
+        state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
         out = await _run_consolidation_pipeline_once(
             svc=svc,
             deps=deps,
@@ -2185,7 +2184,6 @@ async def _run_consolidation_task(
             soul_id=soul_id,
             user_id=uid,
             force=force,
-            historical=historical,
             selected_segments=selected_segments,
         )
         if out.get("status") == "skipped":
@@ -2219,8 +2217,8 @@ async def _run_consolidation_task(
             raise
         return {"ok": False, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
     finally:
-        if not historical:
-            _MEMORIZE_CANCEL.discard(_memorize_lock_key(uid, soul_id))
+        if progress_key and memorize_progress is not None:
+            _MEMORIZE_CANCEL.discard(progress_key)
 
 
 def _active_consolidation_failure(

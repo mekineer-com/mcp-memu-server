@@ -72,6 +72,7 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | 
     uid, sid = scoped["user_id"], scoped["soul_id"]
     marker = runtime._memorize_lock_key(uid, sid)
     success = False
+    consolidation_started = False
     payload = None
     try:
         state = runtime._paid_work_state(uid, sid)
@@ -85,8 +86,10 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | 
             return
         if failure and runtime._memorize_targets_complete(uid, sid, failure["targets"]):
             runtime._write_conversation_state(cid, **scoped, updates={"memorize_failure": None})
+            svc = runtime._get_service_from_payload({"user": scoped})
+            consolidation_started = True
             await runtime._run_consolidation_task(
-                runtime._get_service_from_payload({"user": scoped}), conversation_id=cid,
+                svc, conversation_id=cid,
                 soul_id=sid, uid=uid, progress_key=marker, memorize_progress=runtime._MEMORIZE_PROGRESS,
             )
             success = True
@@ -117,7 +120,7 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | 
         if isinstance(exc, asyncio.CancelledError):
             raise
     finally:
-        if runtime._MEMORIZE_PROGRESS.get(marker, {}).get("phase") != "consolidating":
+        if not consolidation_started and runtime._MEMORIZE_PROGRESS.get(marker, {}).get("phase") != "consolidating":
             memorize_endpoint._set_memorize_progress(
                 runtime._MEMORIZE_PROGRESS, marker, active=False,
                 last_result="success" if success else "failure",
