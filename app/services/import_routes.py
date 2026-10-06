@@ -42,17 +42,53 @@ class ImportPreview(ImportScope):
     current_messages: list[ImportMessage]
 
 
-async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str, retry: bool = False) -> None:
+async def recover_memorize(runtime: Any, *, scoped: dict, cid: str, historical: bool = False) -> None:
+    state, _card, _path = runtime._load_turn_state_and_soul_card(cid, **scoped)
+    record = state["import_state"] if historical else runtime._paid_work_state(**scoped).get("memorize_failure")
+    work = (record or {}).get("segment_work", {})
+    if not work:
+        return
+    if not historical:
+        runtime._write_conversation_state(cid, **scoped, updates={"memorize_failure": {**record, "paused": True}})
+    marker = runtime._memorize_lock_key(**scoped)
+    svc = runtime._get_service_from_payload({"user": scoped})
+    for index, (segment_id, phase) in enumerate(work.items(), start=1):
+        memorize_endpoint._set_memorize_progress(
+            runtime._MEMORIZE_PROGRESS, marker, active=True, phase="memorizing", current=index, total=len(work),
+        )
+        def deduped(session, segment_id=segment_id):
+            con = session.connection().connection.driver_connection
+            previous_factory = con.row_factory
+            try:
+                con.row_factory = runtime.sqlite3.Row
+                runtime._write_conversation_state(cid, **scoped, connection=con, updates={
+                    "import_segment_work" if historical else "memorize_segment_work": {segment_id: "review"},
+                })
+            finally:
+                con.row_factory = previous_factory
+        await svc.resume_memorize_segment(
+            segment_id=segment_id, phase=phase, user=scoped, on_dedupe_complete=deduped,
+            enforce_input_budget=historical,
+        )
+    runtime._write_conversation_state(cid, **scoped, updates={
+        "import_segment_work" if historical else "memorize_segment_work": {}, "finish_segment_work": True,
+    })
+
+
+async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | None = None, retry: bool = False) -> None:
     uid, sid = scoped["user_id"], scoped["soul_id"]
     marker = runtime._memorize_lock_key(uid, sid)
     success = False
     payload = None
     try:
-        _cid, record = runtime._soul_import_state(uid, sid)
-        cid = record["ordinary_waiting"]
         state = runtime._paid_work_state(uid, sid)
         failure = state.get("memorize_failure")
-        if runtime._soul_state.consolidation_failure(state) or (failure and not retry):
+        cid = runtime._soul_import_state(uid, sid)[1]["ordinary_waiting"] if import_cid else failure["conversation_id"]
+        if failure and retry:
+            await recover_memorize(runtime, scoped=scoped, cid=cid)
+            state = runtime._paid_work_state(uid, sid)
+            failure = state.get("memorize_failure")
+        if (import_cid and runtime._soul_state.consolidation_failure(state)) or (failure and not retry):
             return
         if failure and runtime._memorize_targets_complete(uid, sid, failure["targets"]):
             runtime._write_conversation_state(cid, **scoped, updates={"memorize_failure": None})
@@ -63,6 +99,8 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str, r
             success = True
         else:
             payload = runtime._saved_memorize_payload(cid, uid, sid, failure)
+            if payload is None and failure:
+                raise RuntimeError("Failed Memorize still has unfinished source checkpoints; restore the source and Retry.")
             tasks = BackgroundTasks()
             if payload is not None:
                 await runtime._memorize_owned(payload, tasks, True, admitted=True, batch_owned=True,
@@ -72,18 +110,25 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str, r
                 if not await task.func(*task.args, **task.kwargs):
                     success = False
                     break
-        if success:
+        if success and import_cid:
             runtime._write_conversation_state(import_cid, **scoped, updates={"import_ordinary_waiting": None})
     except (Exception, asyncio.CancelledError) as exc:
-        runtime.logger.exception("Post-import Memorize did not complete for %s", sid)
-        if not runtime._paid_work_state(uid, sid).get("memorize_failure"):
-            runtime._write_conversation_state(cid, **scoped, updates={"memorize_failure": {
+        success = False
+        runtime.logger.exception("Saved-chat Memorize did not complete for %s", sid)
+        failure = runtime._paid_work_state(uid, sid).get("memorize_failure")
+        runtime._write_conversation_state(cid, **scoped, updates={"memorize_failure": {
+                **(failure or {}),
                 "conversation_id": cid, "paused": True, "error": f"Memorize failed: {exc}"[:300],
-                "targets": (payload or {}).get("_final_cursors") or {},
-            }})
+                "targets": (failure or {}).get("targets") or (payload or {}).get("_final_cursors") or {},
+        }})
         if isinstance(exc, asyncio.CancelledError):
             raise
     finally:
+        if runtime._MEMORIZE_PROGRESS.get(marker, {}).get("phase") != "consolidating":
+            memorize_endpoint._set_memorize_progress(
+                runtime._MEMORIZE_PROGRESS, marker, active=False,
+                last_result="success" if success else "failure",
+            )
         await runtime._finish_memorize_claim(marker, success)
 
 
@@ -97,6 +142,8 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
         state, _card, _path = runtime._load_turn_state_and_soul_card(cid, **scoped)
         return state["import_state"]
     try:
+        if retry:
+            await recover_memorize(runtime, scoped=scoped, cid=cid, historical=True)
         current = record()
         pending_first = bool(current["pending_segment_ids"]) and not (
             retry and current["error"] and current["stage"] == "memorize"
@@ -188,6 +235,11 @@ def import_task(runtime: Any, marker: str) -> asyncio.Task | None:
                  if not task.done() and task.get_name() == f"import:{marker}"), None)
 
 
+def import_retry_running(runtime: Any, marker: str) -> bool:
+    task = import_task(runtime, marker)
+    return bool(task and task.import_retry)
+
+
 async def run_import(runtime: Any, *, scoped: dict, chat: dict, retry: bool) -> None:
     marker = runtime._memorize_lock_key(**scoped)
     success = False
@@ -195,6 +247,8 @@ async def run_import(runtime: Any, *, scoped: dict, chat: dict, retry: bool) -> 
         while True:
             success = False
             success = await run_import_batch(runtime, scoped=scoped, chat=chat, retry=retry)
+            if success:
+                asyncio.current_task().import_retry = False
             retry = False
             current = runtime._load_turn_state_and_soul_card(chat["conversation_id"], **scoped)[0]["import_state"]
             if (not success or current["stage"] == "complete" or
@@ -236,6 +290,8 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
             raise HTTPException(status_code=409, detail="No eligible history to process")
         marker = runtime._memorize_lock_key(**scoped)
         with runtime._STATE_LOCK:
+            if runtime._paid_work_state(**scoped).get("memorize_failure"):
+                raise HTTPException(status_code=409, detail="Retry Memorize before processing an import")
             if marker in runtime._FORCED_MEMORIZE_INFLIGHT or (scoped["user_id"], scoped["soul_id"]) in runtime._CONSOLIDATION_RUNNING:
                 raise HTTPException(status_code=409, detail="Memory work is still running")
             if bool(record["error"]) != retry:
@@ -243,6 +299,7 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
             runtime._FORCED_MEMORIZE_INFLIGHT[marker] = True
         task = asyncio.create_task(run_import(runtime, scoped=scoped, chat=chat, retry=retry), name=f"import:{marker}")
         task.import_continuous = request.continuous
+        task.import_retry = retry
         runtime._BACKGROUND_TASKS.add(task)
         task.add_done_callback(runtime._BACKGROUND_TASKS.discard)
         return JSONResponse(status_code=202, content={"status": "accepted", "conversation_id": chat["conversation_id"]})
@@ -294,6 +351,8 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
                     runtime._conversation_state_row(con, cid, **scoped))
                 record = state.get("import_state") if state else None
                 if record is None:
+                    if runtime._soul_state.read(con).get("memorize_failure"):
+                        raise HTTPException(status_code=409, detail="Retry Memorize before registering an import")
                     if runtime._memorize_lock_key(**scoped) in runtime._FORCED_MEMORIZE_INFLIGHT or (
                             scoped["user_id"], scoped["soul_id"]) in runtime._CONSOLIDATION_RUNNING:
                         raise HTTPException(status_code=409, detail="Memory work is still running; register when it finishes")

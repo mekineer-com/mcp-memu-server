@@ -311,8 +311,9 @@ def test_new_soul_first_preview_initializes_schema_without_model_calls(tmp_path,
 
 
 @pytest.mark.parametrize("prior_segment", [False, True])
+@pytest.mark.parametrize("failed", [False, True])
 @pytest.mark.asyncio
-async def test_registration_uses_segments_not_incidental_memories(tmp_path, monkeypatch, prior_segment):
+async def test_registration_uses_segments_not_incidental_memories(tmp_path, monkeypatch, prior_segment, failed):
     source, db = tmp_path / "imports.db", tmp_path / "TestSoul.db"
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "label": "Replika"}
     monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
@@ -330,12 +331,77 @@ async def test_registration_uses_segments_not_incidental_memories(tmp_path, monk
     later, _, _ = chat_import.normalize_messages([{"id": "later", "role": "user", "content": "later file",
                                                  "timestamp": "2025-02-01"}])
     chat_import.store_upload(source, **scope, messages=later, history_count=1)
+    scoped = {key: scope[key] for key in ("user_id", "soul_id")}
+    failure = {"conversation_id": "chat:failed", "paused": True, "error": "Memorize failed", "targets": {}}
+    if failed:
+        main._write_conversation_state("chat:failed", **scoped, updates={"memorize_failure": failure})
+        with pytest.raises(HTTPException, match="Retry Memorize"):
+            _endpoint("/imports/register")(ImportScope(**scope))
+        main._write_conversation_state("chat:failed", **scoped, updates={"memorize_failure": None})
     result = _endpoint("/imports/register")(ImportScope(**scope))["import_state"]
     assert result["history_end_index"] == (0 if prior_segment else 1)
     if prior_segment:
         assert result["stage"] == "complete"
         with pytest.raises(HTTPException, match="No eligible history"):
             await _endpoint("/imports/process")(ImportProcess(**scope))
+    elif failed:
+        main._write_conversation_state("chat:failed", **scoped, updates={"memorize_failure": failure})
+        with pytest.raises(HTTPException, match="Retry Memorize"):
+            await _endpoint("/imports/process")(ImportProcess(**scope))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["dedupe", "review"])
+@pytest.mark.parametrize("fail", [False, True])
+async def test_import_retry_recovers_zero_item_segment_before_pending_shortcut(monkeypatch, phase, fail):
+    scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "import:dm:zero"
+    main._write_conversation_state(cid, **scoped, updates={"import_state": {
+        "history_end_index": 1, "memorize_cursor": 0, "pending_segment_ids": ["saved"],
+        "stage": "consolidation", "error": "Review failed"}})
+    main._write_conversation_state(cid, **scoped, updates={"import_segment_work": {"saved": phase}})
+    engine = SavedBatchService.make_engine(scoped)
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def review(state, context, *, enforce_input_budget):
+        assert enforce_input_budget and not state["items"]
+        assert main._soul_activity_pause(**scoped) == "Import failed. Retry in Echo."
+        entered.set()
+        await release.wait()
+        if fail:
+            raise RuntimeError("Review still failed")
+        return state
+    monkeypatch.setattr(engine, "_memorize_persist_and_index", review)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: engine)
+    monkeypatch.setattr(conversation_sources, "import_chat_info", lambda **_kw: {
+        "conversation_id": cid, "label": "TestApp", "title": None})
+    monkeypatch.setattr(conversation_sources, "load_import_tail", lambda **_kw: pytest.fail("Recovery must precede remaining history"))
+    calls = []
+    async def consolidate(**kwargs):
+        record = main._soul_import_state(**scoped)[1]
+        assert not record.get("segment_work") and record["error"] == "Review failed"
+        calls.append(kwargs)
+        main._write_conversation_state(cid, **scoped, updates={"import_state": {
+            **record, "pending_segment_ids": [], "error": None, "stage": "complete"}})
+        return {"status": "ok"}
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", consolidate)
+    tasks = main._BACKGROUND_TASKS
+    try:
+        response = await _endpoint("/imports/retry")(ImportProcess(**scoped, label="TestApp"))
+        assert response.status_code == 202
+        task = next(task for task in tasks if task.get_name() == f"import:{main._memorize_lock_key(**scoped)}")
+        await asyncio.wait_for(entered.wait(), 2)
+        assert main._soul_activity_pause("TestOwner", "OtherSoul") is None
+        release.set()
+        await task
+        record = main._soul_import_state(**scoped)[1]
+        assert bool(record.get("segment_work")) == fail
+        assert bool(calls) != fail
+        assert bool(record["error"]) == fail
+        assert main._memorize_lock_key(**scoped) not in main._FORCED_MEMORIZE_INFLIGHT
+    finally:
+        release.set()
+        await asyncio.gather(*tuple(tasks), return_exceptions=True)
+        engine.database.close()
 
 
 @pytest.mark.parametrize("running", ["memorize", "consolidation"])

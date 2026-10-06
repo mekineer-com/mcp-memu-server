@@ -19,7 +19,7 @@ mcp-memu-server/
 ├── app/services/whatsapp_outbounds.py
 ├── app/services/free_turn.py
 ├── app/services/cross_history.py
-├── app/services/import_routes.py # Imported-source admission, bounded history and saved cross-chat Memorize handoff
+├── app/services/import_routes.py # Imported-source admission, bounded history, saved-segment recovery and shared cross-chat Memorize Retry/handoff
 ├── app/services/conversation_sources.py # Client-owned source reads; import SQL selects immutable mode/position, bounded historical reads and indexed current floors
 ├── app/services/conversation_id.py
 ├── app/services/apimw.py

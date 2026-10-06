@@ -47,5 +47,9 @@ class SavedBatchService:
     def database(self):
         return self.engine.database
 
+    async def resume_memorize_segment(self, **kwargs):
+        self.engine = self.make_engine(kwargs["user"])
+        await self.engine.resume_memorize_segment(**kwargs)
+
     def _sqlite_write_session(self, store):
         return self.engine._sqlite_write_session(store)

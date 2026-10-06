@@ -1703,7 +1703,10 @@ def _soul_activity_pause(user_id: str, soul_id: str, state: dict[str, Any] | Non
     if reason:
         return reason
     _cid, record = _soul_import_state(user_id, soul_id)
-    if record.get("error") and _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(user_id, soul_id)) is not True:
+    if record.get("error") and (
+        _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(user_id, soul_id)) is not True
+        or _import_routes.import_retry_running(sys.modules[__name__], _memorize_lock_key(user_id, soul_id))
+    ):
         return "Import failed. Retry in Echo."
     if record.get("ordinary_waiting") and not import_handoff:
         return "Waiting for import before Memorize." if record["stage"] != "complete" else "Waiting for Memorize after import."
@@ -2445,10 +2448,11 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
     if not user_id or not soul_id:
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
     import_cid, imported = _soul_import_state(user_id, soul_id)
+    failure = _paid_work_state(user_id, soul_id).get("memorize_failure")
     if imported.get("ordinary_waiting"):
         if imported["stage"] != "complete" or imported.get("error"):
             raise HTTPException(status_code=409, detail="Finish the import in Echo before retrying Memorize")
-        if _soul_state.consolidation_failure(_paid_work_state(user_id, soul_id)):
+        if _soul_state.consolidation_failure(_paid_work_state(user_id, soul_id)) and not (failure or {}).get("segment_work"):
             raise HTTPException(status_code=409, detail="Retry consolidation before the waiting Memorize")
         with _STATE_LOCK:
             if _memorize_lock_key(user_id, soul_id) in _FORCED_MEMORIZE_INFLIGHT:
@@ -2457,13 +2461,23 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
         background_tasks.add_task(_import_routes.run_waiting_memorize, sys.modules[__name__],
                                   scoped={"user_id": user_id, "soul_id": soul_id}, import_cid=import_cid, retry=True)
         return {"ok": True, "status": "accepted"}
-    failure = _paid_work_state(user_id, soul_id).get("memorize_failure")
     if not failure:
         raise HTTPException(status_code=409, detail="No failed Memorize is ready to retry")
     marker = _memorize_lock_key(user_id, soul_id)
     if marker in _FORCED_MEMORIZE_INFLIGHT:
         raise HTTPException(status_code=409, detail="Memorize is already running")
     cid = failure["conversation_id"]
+    if failure.get("segment_work"):
+        with _STATE_LOCK:
+            _cid, current_import = _soul_import_state(user_id, soul_id)
+            if current_import and current_import["stage"] != "complete":
+                raise HTTPException(status_code=409, detail="Finish the import in Echo before retrying Memorize")
+            if marker in _FORCED_MEMORIZE_INFLIGHT:
+                raise HTTPException(status_code=409, detail="Memorize is already running")
+            _FORCED_MEMORIZE_INFLIGHT[marker] = False
+        background_tasks.add_task(_import_routes.run_waiting_memorize, sys.modules[__name__],
+                                  scoped={"user_id": user_id, "soul_id": soul_id}, retry=True)
+        return {"ok": True, "status": "accepted"}
     if _memorize_targets_complete(user_id, soul_id, failure["targets"]):
         _write_conversation_state(cid, user_id=user_id, soul_id=soul_id, updates={"memorize_failure": None})
         background_tasks.add_task(
@@ -3505,9 +3519,14 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
     memory_failure = soul_status.get("memorize_failure")
     memory_running = _memorize_lock_key(uid, sid) in _FORCED_MEMORIZE_INFLIGHT
     _import_cid, imported = _soul_import_state(uid, sid)
+    import_failed = imported.get("error") and (
+        _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, sid)) is not True
+        or _import_routes.import_retry_running(sys.modules[__name__], _memorize_lock_key(uid, sid))
+    )
     retry_operation = ("import" if imported and (
-                           (imported.get("error") and _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, sid)) is not True)
+                           import_failed
                            or ((imported.get("ordinary_waiting") or memory_failure) and imported["stage"] != "complete"))
+                       else "memorize" if memory_failure and memory_failure.get("segment_work")
                        else "consolidation" if imported.get("ordinary_waiting") and consolidation_error
                        else "memorize" if memory_failure and (memory_failure.get("paused") or not memory_running)
                        else "consolidation" if _soul_state.activity_pause(
@@ -3516,8 +3535,7 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
                        else "memorize" if imported.get("ordinary_waiting")
                        else "consolidation" if pause_reason else None)
     if retry_operation == "import":
-        pause_reason = ("Import failed. Retry in Echo." if imported.get("error")
-                        and _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, sid)) is not True
+        pause_reason = ("Import failed. Retry in Echo." if import_failed
                         else "Waiting for import before Memorize.")
     elif retry_operation == "consolidation" and imported.get("ordinary_waiting") and consolidation_error:
         pause_reason = consolidation_error
