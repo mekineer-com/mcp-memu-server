@@ -310,6 +310,46 @@ def test_new_soul_first_preview_initializes_schema_without_model_calls(tmp_path,
     assert registered.status_code == 200 and registered.json()["import_state"]["history_end_index"] == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["due", "small_broken", "small_summed", "no_gap"])
+async def test_auto_memorize_during_import_preserves_eligibility_and_retry_admission(monkeypatch, mode):
+    from app.services import import_routes
+    scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid, import_cid = "chat:trigger", "import:dm:history"
+    main._write_conversation_state(import_cid, **scoped, updates={"import_state": {
+        "history_end_index": 1, "memorize_cursor": -1, "pending_segment_ids": [],
+        "stage": "memorize", "error": None}})
+    main._write_conversation_state(cid, **scoped, updates={})
+    monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 100)
+    history = [{"role": "user", "content": "fictional " * (100 if mode == "due" else 10),
+                "ts_ms": 1_735_689_600_000 + i * (1000 if mode == "no_gap" else 86_400_000)} for i in range(2)]
+    calls = []
+    def build(*_args, **_kwargs):
+        calls.append(True)
+        if mode != "small_summed":
+            raise OSError("Fictional source unreadable")
+        return {"conversation": history + [{"content": "fictional " * 100}]}
+    monkeypatch.setattr(main, "_build_cross_conversation_payload", build)
+    state = main._load_turn_state_and_soul_card(cid, **scoped)[0]
+    _tokens, payload = main._prepare_auto_memorize(cid, *scoped.values(), {}, state, history, dry_run=False)
+    if payload:
+        assert main._schedule_auto_memorize(payload, main._auto_memorize_scope(
+            cid, *scoped.values(), {}, history)) == "coalesced"
+    waiting = main._soul_import_state(**scoped)[1].get("ordinary_waiting")
+    assert bool(waiting) == (mode in {"due", "small_summed"})
+    assert len(calls) == (0 if mode in {"due", "no_gap"} else 1)
+    assert not main._paid_work_state(**scoped).get("memorize_failure")
+    assert main._soul_activity_pause("TestOwner", "OtherSoul") is None
+    monkeypatch.setattr(conversation_sources, "import_chat_info", lambda **_kw: {
+        "conversation_id": import_cid, "label": "TestApp", "title": None})
+    async def finish(runtime, **_kwargs):
+        await runtime._finish_memorize_claim(runtime._memorize_lock_key(**scoped), True)
+    monkeypatch.setattr(import_routes, "run_import", finish)
+    response = await _endpoint("/imports/process")(ImportProcess(**scoped, label="TestApp"))
+    assert response.status_code == 202
+    await asyncio.gather(*tuple(main._BACKGROUND_TASKS))
+
+
 @pytest.mark.parametrize("prior_segment", [False, True])
 @pytest.mark.parametrize("failed", [False, True])
 @pytest.mark.asyncio
@@ -353,12 +393,13 @@ async def test_registration_uses_segments_not_incidental_memories(tmp_path, monk
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["dedupe", "review"])
 @pytest.mark.parametrize("fail", [False, True])
-async def test_import_retry_recovers_zero_item_segment_before_pending_shortcut(monkeypatch, phase, fail):
+@pytest.mark.parametrize("stage", ["memorize", "consolidation"])
+async def test_import_retry_recovers_zero_item_segment_before_pending_shortcut(monkeypatch, phase, fail, stage):
     scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     cid = "import:dm:zero"
     main._write_conversation_state(cid, **scoped, updates={"import_state": {
         "history_end_index": 1, "memorize_cursor": 0, "pending_segment_ids": ["saved"],
-        "stage": "consolidation", "error": "Review failed"}})
+        "stage": stage, "error": "Review failed"}})
     main._write_conversation_state(cid, **scoped, updates={"import_segment_work": {"saved": phase}})
     engine = SavedBatchService.make_engine(scoped)
     entered, release = asyncio.Event(), asyncio.Event()
@@ -374,11 +415,16 @@ async def test_import_retry_recovers_zero_item_segment_before_pending_shortcut(m
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: engine)
     monkeypatch.setattr(conversation_sources, "import_chat_info", lambda **_kw: {
         "conversation_id": cid, "label": "TestApp", "title": None})
-    monkeypatch.setattr(conversation_sources, "load_import_tail", lambda **_kw: pytest.fail("Recovery must precede remaining history"))
+    def tail(**_kwargs):
+        assert stage == "memorize"
+        assert not main._soul_import_state(**scoped)[1].get("segment_work")
+        return []
+    monkeypatch.setattr(conversation_sources, "load_import_tail", tail)
     calls = []
     async def consolidate(**kwargs):
         record = main._soul_import_state(**scoped)[1]
-        assert not record.get("segment_work") and record["error"] == "Review failed"
+        assert not record.get("segment_work")
+        assert record["error"] == ("Review failed" if stage == "consolidation" else None)
         calls.append(kwargs)
         main._write_conversation_state(cid, **scoped, updates={"import_state": {
             **record, "pending_segment_ids": [], "error": None, "stage": "complete"}})

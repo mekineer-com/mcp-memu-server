@@ -19,6 +19,22 @@ from app.services.payload import message_ts_ms
 from app.services.state import conversation_state_from_row, conversation_state_row, effective_digest_cursor_from_row
 
 
+def write_segment_phase(
+    write_conversation_state: Callable[..., Any], session: Any, *,
+    conversation_id: str, scope: dict[str, Any], segment_id: str, phase: str, historical: bool,
+) -> None:
+    con = session.connection().connection.driver_connection
+    previous_factory = con.row_factory
+    try:
+        con.row_factory = sqlite3.Row
+        write_conversation_state(
+            conversation_id, **scope, connection=con,
+            updates={"import_segment_work" if historical else "memorize_segment_work": {segment_id: phase}},
+        )
+    finally:
+        con.row_factory = previous_factory
+
+
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
     words = sum(len(str(m.get("content") or m.get("mes") or "").split()) for m in messages)
     return int(words / 0.75)
@@ -504,18 +520,9 @@ async def run_memorize_segments(
                 prepared_positions[cid] = (payload_position, saved_id, saved_position)
 
         def patch_phase(session, url, phase):
-            job = jobs_by_url[url]
-            con = session.connection().connection.driver_connection
-            previous_factory = con.row_factory
-            try:
-                con.row_factory = sqlite3.Row
-                ctx.write_conversation_state(
-                    conversation_id, user_id=uid, soul_id=soul_id, connection=con,
-                    updates={("import_segment_work" if historical else "memorize_segment_work"):
-                             {job["segment_id"]: phase}},
-                )
-            finally:
-                con.row_factory = previous_factory
+            write_segment_phase(ctx.write_conversation_state, session, conversation_id=conversation_id,
+                scope={"user_id": uid, "soul_id": soul_id}, segment_id=jobs_by_url[url]["segment_id"],
+                phase=phase, historical=historical)
 
 
         def publish_job(session, job, ids):

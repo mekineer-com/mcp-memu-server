@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from datetime import UTC, date, datetime
 from typing import Any, Literal
 
@@ -48,26 +49,18 @@ async def recover_memorize(runtime: Any, *, scoped: dict, cid: str, historical: 
     work = (record or {}).get("segment_work", {})
     if not work:
         return
-    if not historical:
-        runtime._write_conversation_state(cid, **scoped, updates={"memorize_failure": {**record, "paused": True}})
     marker = runtime._memorize_lock_key(**scoped)
     svc = runtime._get_service_from_payload({"user": scoped})
-    for index, (segment_id, phase) in enumerate(work.items(), start=1):
+    for index, (segment_id, phase) in enumerate(
+        sorted(work.items(), key=lambda row: row[1] != "dedupe"), start=1,
+    ):
         memorize_endpoint._set_memorize_progress(
             runtime._MEMORIZE_PROGRESS, marker, active=True, phase="memorizing", current=index, total=len(work),
         )
-        def deduped(session, segment_id=segment_id):
-            con = session.connection().connection.driver_connection
-            previous_factory = con.row_factory
-            try:
-                con.row_factory = runtime.sqlite3.Row
-                runtime._write_conversation_state(cid, **scoped, connection=con, updates={
-                    "import_segment_work" if historical else "memorize_segment_work": {segment_id: "review"},
-                })
-            finally:
-                con.row_factory = previous_factory
         await svc.resume_memorize_segment(
-            segment_id=segment_id, phase=phase, user=scoped, on_dedupe_complete=deduped,
+            segment_id=segment_id, phase=phase, user=scoped,
+            on_dedupe_complete=partial(memorize_endpoint.write_segment_phase, runtime._write_conversation_state,
+                conversation_id=cid, scope=scoped, segment_id=segment_id, phase="review", historical=historical),
             enforce_input_budget=historical,
         )
     runtime._write_conversation_state(cid, **scoped, updates={
@@ -99,8 +92,6 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | 
             success = True
         else:
             payload = runtime._saved_memorize_payload(cid, uid, sid, failure)
-            if payload is None and failure:
-                raise RuntimeError("Failed Memorize still has unfinished source checkpoints; restore the source and Retry.")
             tasks = BackgroundTasks()
             if payload is not None:
                 await runtime._memorize_owned(payload, tasks, True, admitted=True, batch_owned=True,
@@ -115,20 +106,25 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | 
     except (Exception, asyncio.CancelledError) as exc:
         success = False
         runtime.logger.exception("Saved-chat Memorize did not complete for %s", sid)
-        failure = runtime._paid_work_state(uid, sid).get("memorize_failure")
+        failure = runtime._paid_work_state(uid, sid).get("memorize_failure") or failure
         runtime._write_conversation_state(cid, **scoped, updates={"memorize_failure": {
                 **(failure or {}),
-                "conversation_id": cid, "paused": True, "error": f"Memorize failed: {exc}"[:300],
+                "conversation_id": cid, "paused": True,
+                "error": "Memorize interrupted. Retry required." if isinstance(exc, asyncio.CancelledError)
+                         else f"Memorize failed: {exc}"[:300],
                 "targets": (failure or {}).get("targets") or (payload or {}).get("_final_cursors") or {},
         }})
         if isinstance(exc, asyncio.CancelledError):
             raise
     finally:
-        if runtime._MEMORIZE_PROGRESS.get(marker, {}).get("phase") != "consolidating":
+        phase = runtime._MEMORIZE_PROGRESS.get(marker, {}).get("phase")
+        if phase != "consolidating" or (uid, sid) not in runtime._CONSOLIDATION_RUNNING:
             memorize_endpoint._set_memorize_progress(
                 runtime._MEMORIZE_PROGRESS, marker, active=False,
-                last_result="success" if success else "failure",
+                **({"last_result": "success" if success else "failure"}
+                   if phase != "consolidating" or not success else {}),
             )
+        runtime._MEMORIZE_CANCEL.discard(marker)
         await runtime._finish_memorize_claim(marker, success)
 
 

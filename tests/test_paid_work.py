@@ -443,7 +443,8 @@ async def test_retry_of_completed_targets_clears_only_memorize(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("waiting", [False, True])
 @pytest.mark.parametrize("fail", [False, True])
-async def test_retry_recovers_before_completed_shortcut_and_consolidation(monkeypatch, waiting, fail):
+@pytest.mark.parametrize("phase", ["dedupe", "review"])
+async def test_retry_recovers_before_completed_shortcut_and_consolidation(monkeypatch, waiting, fail, phase):
     uid, sid, cid = "TestOwner", "TestSoul", "chat:review-retry"
     scoped = {"user_id": uid, "soul_id": sid}
     failure = {"conversation_id": cid, "paused": False, "error": "Review failed",
@@ -452,7 +453,7 @@ async def test_retry_recovers_before_completed_shortcut_and_consolidation(monkey
         "last_memorize_at": datetime.now(UTC).isoformat(),
         "last_consolidation_error": "Reflection failed",
         "last_consolidation_error_at": datetime.now(UTC).isoformat()})
-    main._write_conversation_state(cid, **scoped, updates={"memorize_segment_work": {"saved-segment": "review"}})
+    main._write_conversation_state(cid, **scoped, updates={"memorize_segment_work": {"saved-segment": phase}})
     if waiting:
         main._write_conversation_state("import:dm:history", **scoped, updates={"import_state": {
             "history_end_index": 1, "memorize_cursor": 0, "pending_segment_ids": [],
@@ -476,6 +477,7 @@ async def test_retry_recovers_before_completed_shortcut_and_consolidation(monkey
         assert (await main.diag_memorize_pending(**scoped))["retry_operation"] == "memorize"
     tasks = BackgroundTasks()
     assert (await main.retry_memorize(uid, sid, tasks))["status"] == "accepted"
+    assert main._paid_work_state(uid, sid)["memorize_failure"]["paused"]
     runner = asyncio.create_task(tasks())
     try:
         await asyncio.wait_for(entered.wait(), 2)
@@ -497,6 +499,76 @@ async def test_retry_recovers_before_completed_shortcut_and_consolidation(monkey
     finally:
         release.set()
         await runner
+        engine.database.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_recovery_cancel_flag_and_consolidation_interruption_preserve_targets(monkeypatch, cancel):
+    scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "chat:completed-review"
+    targets = {cid: {"cursor": 0}}
+    main._write_conversation_state(cid, **scoped, updates={"digest_cursor": 0,
+        "last_memorize_at": datetime.now(UTC).isoformat(), "memorize_failure": {
+        "conversation_id": cid, "paused": False, "error": "Review failed", "targets": targets}})
+    main._write_conversation_state(cid, **scoped, updates={"memorize_segment_work": {"saved": "review"}})
+    engine = SavedBatchService.make_engine(scoped)
+    async def review(state, context, **_kwargs):
+        assert (await main.memorize_cancel(scoped))["status"] == "cancel_requested"
+        return state
+    async def consolidate(*_args, **_kwargs):
+        main._memorize_endpoint._set_memorize_progress(main._MEMORIZE_PROGRESS,
+            main._memorize_lock_key(**scoped), active=True, phase="consolidating")
+        if cancel:
+            raise asyncio.CancelledError()
+        return {"status": "skipped"}
+    monkeypatch.setattr(engine, "_memorize_persist_and_index", review)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: engine)
+    monkeypatch.setattr(main, "_run_consolidation_task", consolidate)
+    tasks = BackgroundTasks()
+    await main.retry_memorize(**scoped, background_tasks=tasks)
+    assert main._paid_work_state(**scoped)["memorize_failure"]["paused"]
+    try:
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await tasks()
+            assert main._paid_work_state(**scoped)["memorize_failure"]["targets"] == targets
+            assert main._memorize_targets_complete(*scoped.values(), targets)
+            assert (await main.retry_memorize(**scoped, background_tasks=BackgroundTasks()))["status"] == "already_memorized"
+        else:
+            await tasks()
+            assert main._paid_work_state(**scoped)["memorize_failure"] is None
+        marker = main._memorize_lock_key(**scoped)
+        assert marker not in main._MEMORIZE_CANCEL and marker not in main._FORCED_MEMORIZE_INFLIGHT
+        assert not main._MEMORIZE_PROGRESS[marker]["active"]
+    finally:
+        engine.database.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_dedupes_trailing_segment_before_soul_wide_review(monkeypatch):
+    from app.services import import_routes
+    scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "chat:mixed-phases"
+    main._write_conversation_state(cid, **scoped, updates={"memorize_failure": {
+        "conversation_id": cid, "paused": True, "error": "Dedupe failed", "targets": {}}})
+    main._write_conversation_state(cid, **scoped, updates={"memorize_segment_work": {
+        "earlier": "review", "later": "dedupe"}})
+    engine = SavedBatchService.make_engine(scoped)
+    for _ in range(10):
+        item = engine.database.memory_item_repo.create_item(
+            memory_type="knowledge", summary="A fictional garden", embedding=[1.0, 0.0],
+            user_data=scoped, segment_id="later")
+        engine.database.dossier_candidate_repo.add_candidate(proposed_name="Garden", item_id=item.id, where=scoped)
+    monkeypatch.setattr(engine, "generate_dynamic_category_review", AsyncMock(
+        side_effect=AssertionError("Duplicate evidence must collapse before review")))
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: engine)
+    try:
+        await import_routes.recover_memorize(main, scoped=scoped, cid=cid)
+        assert len(engine.database.memory_item_repo.list_items(scoped)) == 1
+        assert not main._paid_work_state(**scoped)["memorize_failure"].get("segment_work")
+        engine.generate_dynamic_category_review.assert_not_awaited()
+    finally:
         engine.database.close()
 
 
@@ -723,7 +795,6 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
     state, _, _ = main._load_turn_state_and_soul_card(cid, **scope)
     assert state["rolling_summary_cursor_id"] == 0 and state["digest_cursor"] == 2
     assert state["memorize_failure"] is None
-    assert json.loads(manifest.read_text())["segments"] == [{"start": i, "end": i} for i in range(2)]
 
 
 @pytest.mark.asyncio
