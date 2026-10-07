@@ -16,6 +16,7 @@ from app.services.state import normalize_import_state
 
 _NUMERIC_LIKE_RE = re.compile(r"^[0-9+\-() .]+$")
 _ST_SNAPSHOT_FILE = "latest_history.json"
+MENTRA_CONVERSATION_ID = "mentra:iris"
 _CHAT_SNAPSHOT_DIRS = {
     "sillytavern": "st_chats",
     "atomic": "atomic_chats",

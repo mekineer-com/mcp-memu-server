@@ -78,17 +78,17 @@ mcp-memu-server/
 | `/integration/mentra/health` | GET | Bearer-authenticated Mentra ingress health check; disabled by default |
 | `/integration/mentra/installation/seen` | POST | Record an installed Iris build only when its user matches the shared owner |
 | `/integration/mentra/host/seen` | POST | Record OpenAlma Mentra's own installation ID, native host version and default name before Iris exists; preserve renamed labels |
-| `/mentra/installations` | POST | Loopback-only stock ID/name reservation; reuse an unreported pending reservation |
+| `/mentra/installations` | POST | Loopback-only fresh stock ID/name reservation; existing-row actions retain that row's ID |
 | `/mentra/installations/{device_session_id}` | PATCH / DELETE | Loopback-only Rename / Forget metadata, through the existing JSON writer/lock; Forget refuses an active sitting and never deletes chats |
 | `/integration/mentra/earcons/{name}.wav` | GET | Serve a bundled audio cue; public, unauthenticated |
 | `/integration/mentra/status` | GET | Bearer-authenticated installation discovery, scoped active lease, global busy/start claims, and latest-sitting transcript gap. Remains readable when Mentra is disabled so existing leases cannot disappear from Stop protection; new starts still return 404. Static earcons remain public. |
-| `/integration/mentra/session/start` | POST | Authenticated soul bootstrap plus constrained Gemini Live token; refuses paused Souls before bootstrap/token; returns a fresh sitting ID and next device-conversation transcript sequence |
+| `/integration/mentra/session/start` | POST | Authenticated soul bootstrap plus constrained Gemini Live token; refuses paused Souls before bootstrap/token; returns a fresh sitting ID and next shared `mentra:iris` transcript sequence. Same installation can replace its own lease; another installation cannot take over |
 | `/integration/mentra/session/{id}/token` | POST | Mint a fresh constrained Gemini token for the unchanged active sitting before a replacement socket |
 | `/integration/mentra/session/{id}/heartbeat` / `end` | POST | Renew or release one sitting-scoped Mentra lease; heartbeat includes nullable `pause_reason` and repeats each image-processing failure until that image succeeds or the sitting ends. Existing token renewal, append and End remain available while paused |
 | `/integration/mentra/session/{id}/recall` | POST | Sitting-scoped, read-only forced retrieve over the cursor-bounded Mentra tail; returns compact ID-free context for Gemini `SILENT` delivery |
 | `/integration/mentra/session/{id}/snapshot` | POST | Accept one durable image snapshot for background processing |
 | `/integration/mentra/session/{id}/snapshot/replay` | POST | Replay a stored snapshot that failed its first processing attempt |
-| `/integration/mentra/session/{id}/snapshot/finalize` | POST | Finalize a snapshot into memory; unavailable unless Gemini embedding config and DB profile are both active |
+| `/integration/mentra/session/{id}/snapshot/finalize` | POST | Finalize a snapshot only after its exact assistant `caption_event_id` is saved in the scoped Iris history; discarded captions return `discarded: true` without memory work. Gemini embedding config and DB profile remain required for eligible images |
 | `/integration/mentra/session/{id}/transcripts/append` | POST | Redacted-validation, contiguous/idempotent transcript, gap, or sitting-summary append into the atomic Mentra snapshot; conversational rows queue shared auto-memorize while gap markers never enter AI history |
 | `/integration/atomic/session_start` | POST | Atomic session bootstrap: paused Souls refused before session/history writes; stripped retrieve snapshot → seeds `chat:atomic-<uuid>` |
 | `/integration/atomic/session_end` | POST | Atomic session close: persists transcript, then atomically records the activity recap and End marker |
@@ -139,6 +139,10 @@ mcp-memu-server/
 | `/diag`, `/diag/calls`, `/diag/http`, `/diag/sqlite/*` | GET | Diagnostic pages. Read-only — never use for DB bootstrap. |
 | `/diag/memorize/pending` | GET | Scoped Soul memorize pressure: unmemorized tokens vs threshold, sleep-gap status and existing historical import-claim activity |
 
+Iris history, media and Memorize use one `conversation_sources.MENTRA_CONVERSATION_ID`
+(`mentra:iris`) within each existing owner/Soul scope. App IDs identify installations
+and sitting ownership, not separate chats. No old-chat conversion or fallback reader.
+
 ### Soul Setup Contract
 
 `GET /souls` returns exact `*.db` filename stems except the configured base DB and
@@ -159,9 +163,8 @@ Exact-name chat directories intentionally replace old sanitized-name directories
 
 Picker integration: keep installation records unchanged. Call scoped Mentra status
 with the selected user/soul/device to retain gap visibility after the lease ends.
-Unscoped status still falls back to the original installed soul after lease release;
-host-wide latest-gap discovery would need to select from existing transcript
-snapshot metadata, not introduce another registry.
+Unscoped status lists installations and owner-scoped live sittings; it does not
+guess a chat from the last reporting app.
 
 ## Extracted Modules
 

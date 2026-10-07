@@ -22,6 +22,7 @@ from pydantic import (
     BaseModel,
     BeforeValidator,
     ConfigDict,
+    Field,
     StrictInt,
     field_validator,
     model_validator,
@@ -254,6 +255,7 @@ class MentraSnapshotRequest(MentraImageRequest):
 
 class MentraSnapshotFinalizeRequest(MentraImageRequest):
     caption: str
+    caption_event_id: str = Field(min_length=1, max_length=256)
 
     @field_validator("caption")
     @classmethod
@@ -464,9 +466,9 @@ async def _private_model(request: Request, model: type[BaseModel], detail: str) 
         raise HTTPException(status_code=422, detail=detail) from None
 
 
-def _media_directory(root: Path, *, user_id: str, soul_id: str, active: _Lease) -> Path:
+def _media_directory(root: Path, *, user_id: str, soul_id: str) -> Path:
     scope_key = hashlib.sha256(
-        f"{user_id}\0{soul_id}\0mentra:{active.device_session_id}".encode()
+        f"{user_id}\0{soul_id}\0{conversation_sources.MENTRA_CONVERSATION_ID}".encode()
     ).hexdigest()[:24]
     return root / "mentra_media" / scope_key
 
@@ -857,16 +859,15 @@ def register_mentra_routes(
             transcript_gap = conflict_key in _transcript_conflicts
             if _image_finalize_errors.get(conflict_key):
                 status_error = "Photo memory processing failed"
-        history_device = active.device_session_id if active else device_session_id
         history_soul = active_soul if active else soul_id
-        if get_storage_dir is not None and user_id and history_soul and history_device:
+        if get_storage_dir is not None and user_id and history_soul:
             try:
                 history = await asyncio.to_thread(
                     conversation_sources.load_mentra_history_snapshot,
                     storage_dir=get_storage_dir(),
                     user_id=user_id,
                     soul_id=history_soul,
-                    conversation_id=f"mentra:{history_device}",
+                    conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
                 )
                 sitting_id = active.sitting_id if active else (
                     str(history[-1].get("event_id") or "").rsplit(":", 1)[0] if history else ""
@@ -967,7 +968,7 @@ def register_mentra_routes(
         if isinstance(warning_seconds, bool) or not isinstance(warning_seconds, int) or warning_seconds < 0:
             reject_start(503, "Mentra session warning must be a non-negative integer")
         lease_key = body.soul_id
-        conversation_id = f"mentra:{body.device_session_id}"
+        conversation_id = conversation_sources.MENTRA_CONVERSATION_ID
         sitting_id = secrets.token_urlsafe(18)
         storage_dir = get_storage_dir()
 
@@ -1215,10 +1216,10 @@ def register_mentra_routes(
         if load_current_history is None or conversation_retrieve is None:
             raise HTTPException(status_code=503, detail="Mentra recall is not configured")
 
-        active = await _require_active_lease(
+        await _require_active_lease(
             soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
         )
-        conversation_id = f"mentra:{active.device_session_id}"
+        conversation_id = conversation_sources.MENTRA_CONVERSATION_ID
 
         scope = {
             "user_id": body.user_id,
@@ -1310,7 +1311,7 @@ def register_mentra_routes(
             raise HTTPException(status_code=503, detail="Mentra snapshot storage is not configured")
         body = await _private_model(request, MentraSnapshotRequest, "Invalid snapshot")
         assert isinstance(body, MentraSnapshotRequest)
-        active = await _require_active_lease(
+        await _require_active_lease(
             soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
         )
         try:
@@ -1323,7 +1324,7 @@ def register_mentra_routes(
         extension = "jpg" if body.mime_type == "image/jpeg" else "png"
         root = get_resource_storage_dir()
         target = _media_directory(
-            root, user_id=body.user_id, soul_id=body.soul_id, active=active
+            root, user_id=body.user_id, soul_id=body.soul_id
         ) / f"{body.image_id}.{extension}"
         media_ref = str(target.relative_to(root))
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1367,11 +1368,11 @@ def register_mentra_routes(
             raise HTTPException(status_code=503, detail="Mentra snapshot storage is not configured")
         body = await _private_model(request, MentraImageRequest, "Invalid snapshot replay")
         assert isinstance(body, MentraImageRequest)
-        active = await _require_active_lease(
+        await _require_active_lease(
             soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
         )
         directory = _media_directory(
-            get_resource_storage_dir(), user_id=body.user_id, soul_id=body.soul_id, active=active
+            get_resource_storage_dir(), user_id=body.user_id, soul_id=body.soul_id
         )
         matches = _image_files(directory, body.image_id)
         if len(matches) != 1:
@@ -1391,6 +1392,7 @@ def register_mentra_routes(
         if (
             get_service_from_scope is None
             or get_resource_storage_dir is None
+            or get_storage_dir is None
             or background_tasks is None
             or get_soul_lock is None
         ):
@@ -1399,13 +1401,21 @@ def register_mentra_routes(
             request, MentraSnapshotFinalizeRequest, "Invalid snapshot finalization"
         )
         assert isinstance(body, MentraSnapshotFinalizeRequest)
-        _require_image_embedding_config(get_config())
-        active = await _require_active_lease(
+        await _require_active_lease(
             soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
         )
+        history = conversation_sources.load_mentra_history_snapshot(
+            storage_dir=get_storage_dir(), user_id=body.user_id, soul_id=body.soul_id,
+            conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
+        )
+        if not any(row.get("event_id") == body.caption_event_id
+                   and row.get("role") == "assistant" and row.get("event_kind") == "transcript"
+                   and row.get("content") == body.caption for row in history):
+            return {"ok": True, "queued": False, "discarded": True}
+        _require_image_embedding_config(get_config())
         root = get_resource_storage_dir()
         media_dir = _media_directory(
-            root, user_id=body.user_id, soul_id=body.soul_id, active=active
+            root, user_id=body.user_id, soul_id=body.soul_id
         )
         matches = _image_files(media_dir, body.image_id)
         if len(matches) != 1:
@@ -1414,7 +1424,7 @@ def register_mentra_routes(
         scope = {
             "user_id": body.user_id,
             "soul_id": body.soul_id,
-            "conversation_id": f"mentra:{active.device_session_id}",
+            "conversation_id": conversation_sources.MENTRA_CONVERSATION_ID,
         }
         service = get_service_from_scope(scope)
         resource_scope = {"user_id": body.user_id, "soul_id": body.soul_id}
@@ -1533,10 +1543,10 @@ def register_mentra_routes(
         except ValueError:
             raise HTTPException(status_code=422, detail="Invalid transcript batch") from None
 
-        active = await _require_active_lease(
+        await _require_active_lease(
             soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
         )
-        conversation_id = f"mentra:{active.device_session_id}"
+        conversation_id = conversation_sources.MENTRA_CONVERSATION_ID
         memorize_check_queued = False
         async with get_soul_lock(body.user_id, body.soul_id):
             storage_dir = get_storage_dir()

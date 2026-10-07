@@ -16,7 +16,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app.services import mentra_routes, owner
+from app.services import conversation_sources, mentra_routes, owner
 from app.services.mentra_routes import register_mentra_routes
 
 
@@ -559,7 +559,7 @@ def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcrip
         storage_dir=tmp_path,
         user_id=START["user_id"],
         soul_id=START["soul_id"],
-        conversation_id="mentra:phone-1",
+        conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
         since_cursor=-1,
         recent_fallback_messages=0,
     )
@@ -568,7 +568,13 @@ def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcrip
     assert client.post(
         f"/integration/mentra/session/{sitting_id}/end", json=scope, headers=AUTH
     ).status_code == 200
-    assert client.get(status + "&device_session_id=phone-1", headers=AUTH).json()["state"] == "transcript_gap"
+    for device_id in ("phone-1", "phone-2"):
+        assert client.get(status + f"&device_session_id={device_id}", headers=AUTH).json()["state"] == "transcript_gap"
+    assert client.get(
+        "/integration/mentra/status",
+        params={**scope, "soul_id": "TestSoul", "device_session_id": "phone-2"},
+        headers=AUTH,
+    ).json()["transcript_gap"] is False
     unscoped = client.get("/integration/mentra/status", headers=AUTH).json()
     assert unscoped["state"] == "ready"
     assert unscoped["installed_soul"] is None
@@ -690,10 +696,11 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
     response = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
     assert response.status_code == 200
     body = response.json()
+    assert conversation_sources.MENTRA_CONVERSATION_ID == "mentra:iris"
     assert body == {
         "ok": True,
         "session_id": "sitting-1",
-        "conversation_id": "mentra:phone-1",
+        "conversation_id": conversation_sources.MENTRA_CONVERSATION_ID,
         "next_transcript_sequence": 1,
         "model": "gemini-2.5-flash-native-audio-preview-12-2025",
         "voice": "Kore",
@@ -708,8 +715,8 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
         "session_warning_seconds": 0,
     }
     assert calls["anchors"] == {"user_id": "Fictional User", "soul_id": "Codexia"}
-    assert calls["state"][0][0] == "mentra:phone-1"
-    assert calls["cross"][0]["conversation_id"] == "mentra:phone-1"
+    assert calls["state"][0][0] == conversation_sources.MENTRA_CONVERSATION_ID
+    assert calls["cross"][0]["conversation_id"] == conversation_sources.MENTRA_CONVERSATION_ID
     prompt = calls["token"][0]["system_instruction"]
     assert calls["prompts"] == [(prompt, body["model"])]
     headings = [
@@ -995,7 +1002,7 @@ def test_replacement_start_rejects_context_that_changed_during_mint(
                 storage_dir=tmp_path,
                 user_id=START["user_id"],
                 soul_id=START["soul_id"],
-                conversation_id="mentra:phone-1",
+                conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
                 history=[
                     {
                         "event_id": "sitting-1:1",
@@ -1045,10 +1052,14 @@ def test_second_start_is_rejected_while_same_soul_start_is_in_progress(
     client, calls, _ = _session_app(monkeypatch, tmp_path)
     mentra_routes._start_claims[START["soul_id"]] = ("in-progress", "phone-1")
 
-    response = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
-
-    assert response.status_code == 409
+    for device_session_id in ("phone-1", "phone-2"):
+        response = client.post(
+            "/integration/mentra/session/start",
+            json={**START, "device_session_id": device_session_id}, headers=AUTH,
+        )
+        assert response.status_code == 409
     assert calls["service"] == 0
+    assert calls["token"] == []
 
 
 def test_cancelled_start_always_releases_in_progress_claim(
@@ -1116,7 +1127,7 @@ def test_recall_is_sitting_scoped_read_only_compact_and_unlocked(
         "retrieve_ms": 123,
     }
     conversation_id, payload = calls["recalls"][0]
-    assert conversation_id == "mentra:phone-1"
+    assert conversation_id == conversation_sources.MENTRA_CONVERSATION_ID
     assert payload["history"][0]["content"] == "A fictional current-chat line."
     assert payload["force_retrieve"] is True
     assert payload["_read_only_retrieve"] is True
@@ -1301,7 +1312,9 @@ def test_transcript_append_is_contiguous_idempotent_and_initializes_state(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    client, calls, _ = _session_app(
+        monkeypatch, tmp_path, token_results=["token-1", "token-2", "token-3", "token-4"],
+    )
     sitting_id = client.post(
         "/integration/mentra/session/start", json=START, headers=AUTH
     ).json()["session_id"]
@@ -1349,7 +1362,7 @@ def test_transcript_append_is_contiguous_idempotent_and_initializes_state(
 
     assert first.json() == {
         "ok": True,
-        "conversation_id": "mentra:phone-1",
+        "conversation_id": conversation_sources.MENTRA_CONVERSATION_ID,
         "ack_sequence": 2,
         "accepted": 2,
         "duplicates": 0,
@@ -1364,12 +1377,84 @@ def test_transcript_append_is_contiguous_idempotent_and_initializes_state(
         storage_dir=tmp_path,
         user_id=START["user_id"],
         soul_id=START["soul_id"],
-        conversation_id="mentra:phone-1",
+        conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
     )
     assert [row["sequence"] for row in history] == [1, 2, 3]
     assert all(row["received_at"].endswith("Z") for row in history)
     assert len(calls["state_writes"]) == 3
     assert calls["state_writes"][0][1]["updates"] == {"memorize_chat": True}
+    original_history = history
+
+    session_id = restarted.json()["session_id"]
+    client.post(
+        f"/integration/mentra/session/{session_id}/end", json=scope, headers=AUTH,
+    ).raise_for_status()
+    second_phone = client.post(
+        "/integration/mentra/session/start",
+        json={**START, "device_session_id": "phone-2"}, headers=AUTH,
+    )
+    second_phone.raise_for_status()
+    assert second_phone.json()["conversation_id"] == conversation_sources.MENTRA_CONVERSATION_ID
+    assert second_phone.json()["next_transcript_sequence"] == 4
+    second_id = second_phone.json()["session_id"]
+    event = {**events[1], "event_id": f"{second_id}:4", "sequence": 4}
+    appended = client.post(
+        f"/integration/mentra/session/{second_id}/transcripts/append",
+        json={**scope, "events": [event]}, headers=AUTH,
+    )
+    appended.raise_for_status()
+    assert appended.json()["ack_sequence"] == 4
+    assert calls["state_writes"][-1][0][0] == conversation_sources.MENTRA_CONVERSATION_ID
+    assert calls["state"][-1] == (conversation_sources.MENTRA_CONVERSATION_ID, scope)
+    assert calls["cross"][-1] == {**scope, "conversation_id": conversation_sources.MENTRA_CONVERSATION_ID}
+    client.post(
+        f"/integration/mentra/session/{second_id}/recall",
+        json={**scope, "query": "A fictional shared memory."}, headers=AUTH,
+    ).raise_for_status()
+    assert calls["recalls"][-1][0] == conversation_sources.MENTRA_CONVERSATION_ID
+    assert calls["current"]["conversation_id"] == conversation_sources.MENTRA_CONVERSATION_ID
+    history = conversation_sources.load_mentra_history_snapshot(
+        storage_dir=tmp_path, **scope,
+        conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
+    )
+    assert [row["sequence"] for row in history] == [1, 2, 3, 4]
+    assert history[:3] == original_history
+
+    other_scope = {**scope, "soul_id": "TestSoul"}
+    other = client.post(
+        "/integration/mentra/session/start", json={**START, **other_scope}, headers=AUTH,
+    )
+    other.raise_for_status()
+    assert other.json()["conversation_id"] == conversation_sources.MENTRA_CONVERSATION_ID
+    assert other.json()["next_transcript_sequence"] == 1
+    other_id = other.json()["session_id"]
+    assert client.post(
+        f"/integration/mentra/session/{second_id}/heartbeat", json=other_scope, headers=AUTH,
+    ).status_code == 404
+    client.post(
+        f"/integration/mentra/session/{other_id}/transcripts/append",
+        json={**other_scope, "events": [{**events[0], "event_id": f"{other_id}:1"}]},
+        headers=AUTH,
+    ).raise_for_status()
+    other_history = conversation_sources.load_mentra_history_snapshot(
+        storage_dir=tmp_path, **other_scope,
+        conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
+    )
+    assert [row["event_id"] for row in other_history] == [f"{other_id}:1"]
+    assert conversation_sources.load_mentra_history_snapshot(
+        storage_dir=tmp_path, **scope,
+        conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
+    ) == history
+    assert conversation_sources.load_mentra_history_snapshot(
+        storage_dir=tmp_path, **{**scope, "user_id": "Another Fictional User"},
+        conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
+    ) == []
+    snapshots = [json.loads(path.read_text())
+                 for path in (tmp_path / "transcripts").rglob("latest_history.json")]
+    assert len(snapshots) == 2
+    assert {snapshot["conversation_id"] for snapshot in snapshots} == {
+        conversation_sources.MENTRA_CONVERSATION_ID,
+    }
 
 
 def test_transcript_append_queues_shared_auto_memorize_only_for_new_rows(
@@ -1418,7 +1503,7 @@ def test_transcript_append_queues_shared_auto_memorize_only_for_new_rows(
     assert len(calls["memorize_checks"]) == 1
     assert len(scheduled) == 1
     assert scheduled[0][0] is payload
-    assert scheduled[0][1:4] == ("mentra:phone-1", START["user_id"], START["soul_id"])
+    assert scheduled[0][1:4] == (conversation_sources.MENTRA_CONVERSATION_ID, START["user_id"], START["soul_id"])
     projected = calls["memorize_checks"][0][0][5]
     assert [row["source_conversation_index"] for row in projected] == [1, 2]
     assert all(isinstance(row["ts_ms"], int) for row in projected)
@@ -1648,6 +1733,36 @@ def test_snapshot_is_atomic_idempotent_scoped_and_redacted(
     assert large.status_code == 200
     assert (tmp_path / "resources" / large.json()["media_ref"]).stat().st_size == 1024 * 1024 + 1
 
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    client.post(
+        f"/integration/mentra/session/{sitting_id}/end", json=scope, headers=AUTH,
+    ).raise_for_status()
+    second = client.post(
+        "/integration/mentra/session/start",
+        json={**START, "device_session_id": "phone-2"}, headers=AUTH,
+    )
+    second.raise_for_status()
+    second_base = f"/integration/mentra/session/{second.json()['session_id']}/snapshot"
+    shared = client.post(second_base, json=payload, headers=AUTH)
+    assert shared.json() == {**stored.json(), "duplicate": True}
+    assert client.post(
+        f"{second_base}/replay", json={**scope, "image_id": "image-1"}, headers=AUTH,
+    ).json() == replay.json()
+
+    other_scope = {**scope, "soul_id": "TestSoul"}
+    other = client.post(
+        "/integration/mentra/session/start", json={**START, **other_scope}, headers=AUTH,
+    )
+    other.raise_for_status()
+    other_base = f"/integration/mentra/session/{other.json()['session_id']}/snapshot"
+    assert client.post(
+        f"{other_base}/replay", json={**other_scope, "image_id": "image-1"}, headers=AUTH,
+    ).status_code == 404
+    isolated = client.post(other_base, json={**payload, **other_scope}, headers=AUTH)
+    isolated.raise_for_status()
+    assert isolated.json()["duplicate"] is False
+    assert isolated.json()["media_ref"] != stored.json()["media_ref"]
+
 
 def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
     monkeypatch: pytest.MonkeyPatch,
@@ -1669,22 +1784,54 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
         },
         headers=AUTH,
     )
-    mentra_routes._image_finalize_errors[
-        (scope["user_id"], scope["soul_id"], sitting_id)
-    ] = {"mentra_media/phone-1/older.png"}
+    caption_event = {
+        "event_id": f"{sitting_id}:1", "sequence": 1,
+        "event_kind": "transcript", "role": "assistant",
+        "content": "A fictional magenta square.", "status": "complete",
+    }
+    client.post(
+        f"/integration/mentra/session/{sitting_id}/transcripts/append",
+        json={**scope, "events": [caption_event, {
+            **caption_event, "event_id": f"{sitting_id}:2", "sequence": 2,
+            "content": "A conflicting caption.",
+        }]}, headers=AUTH,
+    ).raise_for_status()
+    conflicting_caption_id = f"{sitting_id}:2"
+    client.post(
+        f"/integration/mentra/session/{sitting_id}/end", json=scope, headers=AUTH,
+    ).raise_for_status()
+    recovered = client.post(
+        "/integration/mentra/session/start",
+        json={**START, "device_session_id": "phone-2"}, headers=AUTH,
+    )
+    recovered.raise_for_status()
+    sitting_id = recovered.json()["session_id"]
+    base = f"/integration/mentra/session/{sitting_id}/snapshot"
+    mentra_routes._image_finalize_errors[(scope["user_id"], scope["soul_id"], sitting_id)] = {
+        "mentra_media/fictional-scope/older.png"
+    }
+    payload = {
+        **scope, "image_id": "image-2", "caption": caption_event["content"],
+        "caption_event_id": caption_event["event_id"],
+    }
+    assert client.post(
+        f"{base}/finalize", json={key: value for key, value in payload.items()
+                                  if key != "caption_event_id"}, headers=AUTH,
+    ).status_code == 422
     finalized = client.post(
         f"{base}/finalize",
-        json={**scope, "image_id": "image-2", "caption": "A fictional magenta square."},
+        json=payload,
         headers=AUTH,
     )
     retry = client.post(
         f"{base}/finalize",
-        json={**scope, "image_id": "image-2", "caption": "A fictional magenta square."},
+        json=payload,
         headers=AUTH,
     )
     conflict = client.post(
         f"{base}/finalize",
-        json={**scope, "image_id": "image-2", "caption": "A conflicting caption."},
+        json={**payload, "caption": "A conflicting caption.",
+              "caption_event_id": conflicting_caption_id},
         headers=AUTH,
     )
 
@@ -1695,6 +1842,9 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
     assert len(calls["image_memorize"]) == 1
     assert calls["image_memorize"][0]["modality"] == "image"
     assert calls["image_memorize"][0]["caption"] == "A fictional magenta square."
+    assert calls["image_memorize"][0]["user"] == {
+        **scope, "conversation_id": conversation_sources.MENTRA_CONVERSATION_ID,
+    }
     assert calls["image_lock_during_memorize"] is True
     assert not mentra_routes._lease_lock.locked()
     assert client.post(
@@ -1704,6 +1854,71 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
         "pause_reason": None,
         "background_error": "Photo memory processing failed; the original remains saved.",
     }
+
+
+@pytest.mark.parametrize("mismatch", ["missing", "event_id", "role", "event_kind", "content", "soul", "owner"])
+def test_snapshot_finalize_discards_caption_without_exact_scoped_history(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    client, calls, config = _session_app(monkeypatch, tmp_path)
+    sitting_id = client.post(
+        "/integration/mentra/session/start", json=START, headers=AUTH,
+    ).json()["session_id"]
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    caption = "A fictional discarded photo caption."
+    caption_id = f"{sitting_id}:1"
+    row = {
+        "event_id": caption_id, "sequence": 1,
+        "event_kind": "transcript", "role": "assistant", "content": caption,
+        "transcript_status": "complete", "received_at": "2026-10-07T10:00:00.000Z",
+    }
+    saved_scope = dict(scope)
+    if mismatch == "event_id":
+        row["event_id"] = f"{sitting_id}:2"
+    elif mismatch == "role":
+        row["role"] = "user"
+    elif mismatch == "event_kind":
+        row["event_kind"] = "sitting_summary"
+    elif mismatch == "content":
+        row["content"] = "A different fictional caption."
+    elif mismatch == "soul":
+        saved_scope["soul_id"] = "TestSoul"
+    elif mismatch == "owner":
+        saved_scope["user_id"] = "Another Fictional User"
+    if mismatch != "missing":
+        conversation_sources.persist_mentra_history_snapshot(
+            storage_dir=tmp_path, **saved_scope,
+            conversation_id=conversation_sources.MENTRA_CONVERSATION_ID, history=[row],
+        )
+
+    service_calls = calls["service"]
+    config["llm"]["embedding"] = {}
+
+    def unexpected_work(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("discarded captions must not start config/media/model work")
+
+    monkeypatch.setattr(mentra_routes, "_require_image_embedding_config", unexpected_work)
+    monkeypatch.setattr(mentra_routes, "_media_directory", unexpected_work)
+    payload = {
+        **scope, "image_id": "discarded-image", "caption": caption,
+        "caption_event_id": caption_id,
+    }
+    assert client.post(
+        "/integration/mentra/session/wrong/snapshot/finalize", json=payload, headers=AUTH,
+    ).status_code == 404
+    response = client.post(
+        f"/integration/mentra/session/{sitting_id}/snapshot/finalize",
+        json=payload, headers=AUTH,
+    )
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "queued": False, "discarded": True}
+    assert calls["service"] == service_calls
+    assert calls["image_memorize"] == []
+    assert calls["image_resources"] == {}
+    assert mentra_routes._image_finalize_tasks == {}
+    assert calls["background_errors"] == []
 
 
 def test_snapshot_finalize_rejects_non_multimodal_runtime(
@@ -1726,11 +1941,20 @@ def test_snapshot_finalize_rejects_non_multimodal_runtime(
         },
         headers=AUTH,
     )
+    client.post(
+        f"/integration/mentra/session/{sitting_id}/transcripts/append",
+        json={**scope, "events": [{
+            "event_id": f"{sitting_id}:1", "sequence": 1,
+            "event_kind": "transcript", "role": "assistant",
+            "content": "A fictional image.", "status": "complete",
+        }]}, headers=AUTH,
+    ).raise_for_status()
     config["llm"]["embedding"] = {}
 
     response = client.post(
         f"{base}/finalize",
-        json={**scope, "image_id": "image-disabled", "caption": "A fictional image."},
+        json={**scope, "image_id": "image-disabled", "caption": "A fictional image.",
+              "caption_event_id": f"{sitting_id}:1"},
         headers=AUTH,
     )
     assert response.status_code == 503
@@ -1759,9 +1983,18 @@ def test_snapshot_finalize_failure_keeps_bytes_and_reports_error(
         },
         headers=AUTH,
     )
+    client.post(
+        f"/integration/mentra/session/{sitting_id}/transcripts/append",
+        json={**scope, "events": [{
+            "event_id": f"{sitting_id}:1", "sequence": 1,
+            "event_kind": "transcript", "role": "assistant",
+            "content": "A fictional failed image.", "status": "complete",
+        }]}, headers=AUTH,
+    ).raise_for_status()
     finalized = client.post(
         f"{base}/finalize",
-        json={**scope, "image_id": "image-3", "caption": "A fictional failed image."},
+        json={**scope, "image_id": "image-3", "caption": "A fictional failed image.",
+              "caption_event_id": f"{sitting_id}:1"},
         headers=AUTH,
     )
 
@@ -1813,7 +2046,7 @@ def test_image_transcript_event_round_trips_media_reference(
         storage_dir=tmp_path,
         user_id=START["user_id"],
         soul_id=START["soul_id"],
-        conversation_id="mentra:phone-1",
+        conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
         since_cursor=-1,
         recent_fallback_messages=0,
     )
