@@ -863,7 +863,6 @@ def _chat_snapshot_path(
         soul_id,
         conversation_id,
     )
-    chat_dir.mkdir(parents=True, exist_ok=True)
     return (chat_dir / _ST_SNAPSHOT_FILE).resolve()
 
 
@@ -895,6 +894,7 @@ def persist_chat_history_snapshot(
         conversation_id=conversation_id,
         source_label=source_label,
     )
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp_name: str | None = None
     try:
         with tempfile.NamedTemporaryFile(

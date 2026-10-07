@@ -210,6 +210,11 @@ def test_atomic_snapshot_blank_speakers_fall_back_to_scope_names(tmp_path: Path)
 
 
 def test_mentra_snapshot_uses_sequence_cursor_and_honest_record_labels(tmp_path: Path) -> None:
+    assert conversation_sources.load_mentra_history_snapshot(
+        storage_dir=tmp_path, user_id="Fictional User", soul_id="Codexia",
+        conversation_id="mentra:test-device",
+    ) == []
+    assert list(tmp_path.iterdir()) == []
     history = [
         {
             "event_id": "fictional-sitting:1",
