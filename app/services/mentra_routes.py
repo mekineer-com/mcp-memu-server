@@ -29,7 +29,7 @@ from pydantic import (
 
 from app.config import validate_soul_id
 from app.services import conversation_sources, turn_contract
-from app.services.owner import register_owner_routes, require_owner
+from app.services.owner import read_owner, register_owner_routes, require_local_owner_access, require_owner
 from app.services.souls import register_soul_routes
 
 
@@ -118,12 +118,14 @@ class MentraSessionStart(BaseModel):
 
 class MentraInstallationSeen(BaseModel):
     user_id: str
-    soul_id: SoulId
+    soul_id: SoulId | None = None
     device_session_id: str
     package_name: str
     version: str
+    host_package: Literal["com.mentra.mentra.openalma"] | None = None
+    host_version: str | None = None
 
-    @field_validator("user_id", "soul_id")
+    @field_validator("user_id")
     @classmethod
     def validate_identity(cls, value: str) -> str:
         value = value.strip()
@@ -146,9 +148,11 @@ class MentraInstallationSeen(BaseModel):
             raise ValueError("unsupported Mentra package")
         return value
 
-    @field_validator("version")
+    @field_validator("version", "host_version")
     @classmethod
-    def validate_version(cls, value: str) -> str:
+    def validate_version(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         value = value.strip()
         if not value or len(value) > 64 or not value.isprintable():
             raise ValueError("must be 1-64 printable characters")
@@ -162,12 +166,9 @@ class MentraHostSeen(BaseModel):
     device_session_id: str
     host_package: Literal["com.mentra.mentra.openalma"]
     host_version: str
-    protocol_version: Literal[1]
-    capabilities: list[
-        Literal["automatic_iris_install", "iris_profile_handoff", "iris_install_ack"]
-    ]
+    default_name: str
 
-    @field_validator("user_id")
+    @field_validator("user_id", "default_name")
     @classmethod
     def validate_user_id(cls, value: str) -> str:
         value = value.strip()
@@ -191,11 +192,15 @@ class MentraHostSeen(BaseModel):
             raise ValueError("must be 1-128 letters, numbers, dots, underscores, or hyphens")
         return value
 
-    @field_validator("capabilities")
+class MentraInstallationName(BaseModel):
+    display_name: str
+
+    @field_validator("display_name")
     @classmethod
-    def validate_capabilities(cls, value: list[str]) -> list[str]:
-        if len(value) > 3 or len(set(value)) != len(value):
-            raise ValueError("must contain at most three unique capabilities")
+    def validate_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 128 or not value.isprintable():
+            raise ValueError("must be 1-128 printable characters")
         return value
 
 
@@ -621,9 +626,6 @@ def _write_installations(
 def _installation_status(storage_dir: Path, device_session_id: str) -> dict[str, Any]:
     records = _load_installations(storage_dir).get(_IRIS_PACKAGE, {})
     record = records.get(device_session_id) if device_session_id else None
-    if record is None and not device_session_id and records:
-        installed = [value for value in records.values() if value.get("seen_at") is not None]
-        record = max(installed, key=lambda value: float(value["seen_at"]), default=None)
     return {
         "installed_package": record.get("package_name") if record else None,
         "installed_version": record.get("version") if record else None,
@@ -632,6 +634,9 @@ def _installation_status(storage_dir: Path, device_session_id: str) -> dict[str,
         "installed_user": record.get("user_id") if record else None,
         "installed_device": record.get("device_session_id") if record else None,
         "host": record.get("host") if record else None,
+        "installations": [
+            {"device_session_id": key, **value} for key, value in records.items()
+        ],
     }
 
 
@@ -691,6 +696,60 @@ def register_mentra_routes(
         dependencies=[Depends(require_bearer)],
     )
 
+    @app.post("/mentra/installations", dependencies=[Depends(require_local_owner_access)])
+    async def reserve_installation() -> dict[str, Any]:
+        if get_storage_dir is None:
+            raise HTTPException(status_code=503, detail="Mentra installation storage is not configured")
+        user_id = read_owner(get_config())
+        if not user_id:
+            raise HTTPException(status_code=409, detail="Establish the OpenAlma owner first")
+        async with _installation_lock:
+            storage_dir = get_storage_dir()
+            installations = _load_installations(storage_dir)
+            records = installations.setdefault(_IRIS_PACKAGE, {})
+            for key, record in records.items():
+                if not record.get("seen_at") and not record.get("host"):
+                    return {"device_session_id": key, **record}
+            used = {record.get("display_name") for record in records.values()}
+            number = 1
+            while f"stock_{number:02d}" in used:
+                number += 1
+            key = f"stock-{secrets.token_urlsafe(18)}"
+            record = {"device_session_id": key, "user_id": user_id, "display_name": f"stock_{number:02d}"}
+            records[key] = record
+            _write_installations(storage_dir, installations)
+            return dict(record)
+
+    @app.patch("/mentra/installations/{device_session_id}", dependencies=[Depends(require_local_owner_access)])
+    async def rename_installation(device_session_id: str, body: MentraInstallationName) -> dict[str, str]:
+        if get_storage_dir is None:
+            raise HTTPException(status_code=503, detail="Mentra installation storage is not configured")
+        async with _installation_lock:
+            storage_dir = get_storage_dir()
+            installations = _load_installations(storage_dir)
+            record = installations.get(_IRIS_PACKAGE, {}).get(device_session_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="Installation not found")
+            record["display_name"] = body.display_name
+            _write_installations(storage_dir, installations)
+            return {"device_session_id": device_session_id, "display_name": body.display_name}
+
+    @app.delete("/mentra/installations/{device_session_id}", dependencies=[Depends(require_local_owner_access)])
+    async def forget_installation(device_session_id: str) -> dict[str, bool]:
+        if get_storage_dir is None:
+            raise HTTPException(status_code=503, detail="Mentra installation storage is not configured")
+        async with _lease_lock:
+            if any(lease.device_session_id == device_session_id and lease.expires_at > time.monotonic()
+                   for lease in _leases.values()):
+                raise HTTPException(status_code=409, detail="Stop Iris first")
+            async with _installation_lock:
+                storage_dir = get_storage_dir()
+                installations = _load_installations(storage_dir)
+                if installations.get(_IRIS_PACKAGE, {}).pop(device_session_id, None) is None:
+                    raise HTTPException(status_code=404, detail="Installation not found")
+                _write_installations(storage_dir, installations)
+        return {"ok": True}
+
     @app.post(
         "/integration/mentra/installation/seen", tags=["integration"], dependencies=auth
     )
@@ -707,9 +766,12 @@ def register_mentra_routes(
                 body.device_session_id, {}
             )
             record.update({
-                **body.model_dump(),
+                **body.model_dump(exclude={"host_package", "host_version"}),
                 "seen_at": time.time(),
             })
+            if body.host_package:
+                record["host"] = {**record.get("host", {}), "host_package": body.host_package,
+                                  "host_version": body.host_version}
             _write_installations(storage_dir, installations)
         return {"package_name": body.package_name, "version": body.version}
 
@@ -723,8 +785,6 @@ def register_mentra_routes(
         host = {
             "host_package": body.host_package,
             "host_version": body.host_version,
-            "protocol_version": body.protocol_version,
-            "capabilities": body.capabilities,
             "seen_at": time.time(),
         }
         async with _installation_lock:
@@ -734,6 +794,7 @@ def register_mentra_routes(
                 body.device_session_id, {}
             )
             record["host"] = host
+            record.setdefault("display_name", body.default_name)
             _write_installations(storage_dir, installations)
         return host
 
@@ -763,9 +824,7 @@ def register_mentra_routes(
         config = get_config().get("mentra") or {}
         unscoped = not user_id
         if unscoped:
-            user_id = installation["installed_user"] or ""
-            soul_id = installation["installed_soul"] or ""
-            device_session_id = installation["installed_device"] or device_session_id
+            user_id = read_owner(get_config()) or ""
 
         missing = [
             field
@@ -779,16 +838,15 @@ def register_mentra_routes(
                     _leases.pop(key, None)
                     _transcript_conflicts.pop((lease.user_id, key, lease.sitting_id), None)
                     _image_finalize_errors.pop((lease.user_id, key, lease.sitting_id), None)
-            active_pair = next(
-                (
-                    (key, lease)
-                    for key, lease in _leases.items()
-                    if lease.user_id == user_id
-                    and (unscoped or key == soul_id)
-                    and (not device_session_id or lease.device_session_id == device_session_id)
-                ),
-                None,
-            )
+            active_pairs = [
+                (key, lease) for key, lease in _leases.items()
+                if lease.user_id == user_id and (unscoped or key == soul_id)
+                and (not device_session_id or lease.device_session_id == device_session_id)
+            ]
+            active_pair = active_pairs[0] if active_pairs else None
+            sessions = [{"device_session_id": lease.device_session_id, "soul_id": key,
+                         "expires_in": max(0, int(lease.expires_at - now)), "mode": lease.mode}
+                        for key, lease in active_pairs]
             busy = bool(_leases or _start_claims)
 
         active_soul, active = active_pair if active_pair else ("", None)
@@ -835,6 +893,7 @@ def register_mentra_routes(
             "detail": detail,
             "active": active is not None,
             "busy": busy,
+            "sessions": sessions,
             "transcript_gap": transcript_gap,
             **installation,
             **(

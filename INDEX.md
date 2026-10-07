@@ -25,7 +25,7 @@ mcp-memu-server/
 ├── app/services/apimw.py
 ├── app/services/sqlite_scope.py
 ├── app/services/souls.py
-├── app/services/owner.py          # One create-once OpenAlma user identity
+├── app/services/owner.py          # One create-once OpenAlma user identity; shared loopback setup guard
 ├── app/services/crud_endpoints.py
 ├── app/services/graph_routes.py   # Graph/query read HTTP routes; scoped resolver supplied by main
 ├── app/services/entity_routes.py  # Entity HTTP routes and private helpers; scoped resolver supplied by main
@@ -77,7 +77,9 @@ mcp-memu-server/
 | `/integration/memu/sensory-search` | POST | Scoped explicit visual-memory candidate search over separate media and caption lanes |
 | `/integration/mentra/health` | GET | Bearer-authenticated Mentra ingress health check; disabled by default |
 | `/integration/mentra/installation/seen` | POST | Record an installed Iris build only when its user matches the shared owner |
-| `/integration/mentra/host/seen` | POST | Record bounded OpenAlma Mentra host capabilities for one device while preserving Iris installation fields |
+| `/integration/mentra/host/seen` | POST | Record OpenAlma Mentra's own installation ID, native host version and default name before Iris exists; preserve renamed labels |
+| `/mentra/installations` | POST | Loopback-only stock ID/name reservation; reuse an unreported pending reservation |
+| `/mentra/installations/{device_session_id}` | PATCH / DELETE | Loopback-only Rename / Forget metadata, through the existing JSON writer/lock; Forget refuses an active sitting and never deletes chats |
 | `/integration/mentra/earcons/{name}.wav` | GET | Serve a bundled audio cue; public, unauthenticated |
 | `/integration/mentra/status` | GET | Bearer-authenticated installation discovery, scoped active lease, global busy/start claims, and latest-sitting transcript gap. Remains readable when Mentra is disabled so existing leases cannot disappear from Stop protection; new starts still return 404. Static earcons remain public. |
 | `/integration/mentra/session/start` | POST | Authenticated soul bootstrap plus constrained Gemini Live token; refuses paused Souls before bootstrap/token; returns a fresh sitting ID and next device-conversation transcript sequence |

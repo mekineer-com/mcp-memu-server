@@ -1873,10 +1873,7 @@ def _load_mentra_cross_chat_context(
     )
 
 
-async def _require_local_owner_access(request: Request) -> None:
-    host = request.client.host if request.client is not None else ""
-    if host not in {"127.0.0.1", "::1"}:
-        raise HTTPException(status_code=403, detail="Owner setup is available only on this computer")
+_require_local_owner_access = _owner.require_local_owner_access
 
 
 _souls.register_soul_routes(app, get_config=lambda: _CONFIG)

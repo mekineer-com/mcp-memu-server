@@ -387,19 +387,14 @@ def test_mentra_host_capability_merges_with_installation(
         "device_session_id": START["device_session_id"],
         "host_package": "com.mentra.mentra.openalma",
         "host_version": "3.2.0",
-        "protocol_version": 1,
-        "capabilities": [
-            "automatic_iris_install",
-            "iris_profile_handoff",
-            "iris_install_ack",
-        ],
+        "default_name": "Test Phone",
     }
     endpoint = "/integration/mentra/host/seen"
     assert client.post(endpoint, json=host).status_code == 401
     assert client.post(
         endpoint,
         headers=AUTH,
-        json={**host, "capabilities": ["unknown"]},
+        json={**host, "default_name": ""},
     ).status_code == 422
     assert client.post(
         endpoint,
@@ -420,8 +415,11 @@ def test_mentra_host_capability_merges_with_installation(
         params={"device_session_id": START["device_session_id"]},
     ).json()
     assert scoped["installed_package"] is None
-    assert scoped["host"]["capabilities"] == host["capabilities"]
+    assert scoped["installations"][0]["display_name"] == "Test Phone"
     assert client.get("/integration/mentra/status", headers=AUTH).json()["host"] is None
+    local = TestClient(client.app, client=("127.0.0.1", 12345))
+    local.patch(f"/mentra/installations/{START['device_session_id']}",
+                json={"display_name": "My fork"}).raise_for_status()
 
     installation = {
         **{key: START[key] for key in ("user_id", "soul_id", "device_session_id")},
@@ -447,6 +445,39 @@ def test_mentra_host_capability_merges_with_installation(
     ).json()
     assert merged["installed_version"] == "0.1.0"
     assert merged["host"]["host_version"] == "3.2.1"
+    assert merged["installations"][0]["display_name"] == "My fork"
+
+
+def test_installation_metadata_is_local_and_keeps_names(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    remote, _, _ = _session_app(monkeypatch, tmp_path)
+    endpoint = "/mentra/installations"
+    assert remote.post(endpoint).status_code == 403
+    client = TestClient(remote.app, client=("127.0.0.1", 12345))
+    first = client.post(endpoint).json()
+    assert first["display_name"] == "stock_01"
+    assert client.post(endpoint).json() == first
+    key = first["device_session_id"]
+    client.post("/integration/mentra/installation/seen", headers=AUTH, json={
+        "user_id": START["user_id"], "device_session_id": key,
+        "package_name": "com.openalma.mentra", "version": "0.1.0",
+    }).raise_for_status()
+    second = client.post(endpoint).json()
+    assert second["display_name"] == "stock_02"
+    assert second["device_session_id"] != key
+    client.patch(f"{endpoint}/{key}", json={"display_name": "My app"}).raise_for_status()
+    status = client.get("/integration/mentra/status", headers=AUTH).json()
+    assert status["installed_device"] is None
+    assert status["installations"][0]["display_name"] == "My app"
+    client.delete(f"{endpoint}/{second['device_session_id']}").raise_for_status()
+    assert len(client.get("/integration/mentra/status", headers=AUTH).json()["installations"]) == 1
+    sitting = client.post("/integration/mentra/session/start", headers=AUTH,
+                          json={**START, "device_session_id": key}).json()["session_id"]
+    assert client.delete(f"{endpoint}/{key}").status_code == 409
+    client.post(f"/integration/mentra/session/{sitting}/end", headers=AUTH,
+                json={"user_id": START["user_id"], "soul_id": START["soul_id"]}).raise_for_status()
+    client.delete(f"{endpoint}/{key}").raise_for_status()
 
 
 def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcript(
@@ -514,15 +545,17 @@ def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcrip
     assert client.get(status + "&device_session_id=phone-1", headers=AUTH).json()["state"] == "transcript_gap"
     unscoped = client.get("/integration/mentra/status", headers=AUTH).json()
     assert unscoped["state"] == "ready"
-    assert unscoped["installed_soul"] == "Original Installed Soul"
+    assert unscoped["installed_soul"] is None
+    assert unscoped["installations"][0]["soul_id"] == "Original Installed Soul"
     client.post("/integration/mentra/installation/seen", headers=AUTH, json={
         "user_id": START["user_id"], "soul_id": START["soul_id"],
         "device_session_id": START["device_session_id"],
         "package_name": "com.openalma.mentra", "version": "0.1.1",
     }).raise_for_status()
     unscoped = client.get("/integration/mentra/status", headers=AUTH).json()
-    assert unscoped["state"] == "transcript_gap"
-    assert unscoped["installed_soul"] == START["soul_id"]
+    assert unscoped["state"] == "ready"
+    assert unscoped["installed_soul"] is None
+    assert unscoped["installations"][0]["soul_id"] == START["soul_id"]
     next_sitting = client.post(
         "/integration/mentra/session/start", json=START, headers=AUTH
     ).json()["session_id"]
@@ -556,8 +589,10 @@ def test_mentra_status_discovery_auth_and_global_busy(monkeypatch: pytest.Monkey
     }).raise_for_status()
     client.post("/integration/mentra/session/start", json=START, headers=AUTH).raise_for_status()
     discovered = client.get(path, headers=AUTH).json()
-    assert discovered["installed_user"] == START["user_id"]
-    assert discovered["installed_device"] == START["device_session_id"]
+    assert discovered["installed_user"] is None
+    assert discovered["installations"][0]["user_id"] == START["user_id"]
+    assert discovered["installed_device"] is None
+    assert discovered["sessions"][0]["device_session_id"] == START["device_session_id"]
     assert discovered["active"] is True and discovered["busy"] is True
     other = client.get(path + "?device_session_id=other-phone", headers=AUTH).json()
     assert other["active"] is False and other["busy"] is True

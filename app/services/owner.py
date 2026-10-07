@@ -7,10 +7,16 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from app.config import sqlite_dir_from_cfg
+
+
+async def require_local_owner_access(request: Request) -> None:
+    host = request.client.host if request.client is not None else ""
+    if host not in {"127.0.0.1", "::1"}:
+        raise HTTPException(status_code=403, detail="Owner setup is available only on this computer")
 
 
 class OwnerIdentityError(RuntimeError):
