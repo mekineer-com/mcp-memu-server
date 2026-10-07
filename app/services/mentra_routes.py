@@ -29,7 +29,7 @@ from pydantic import (
 
 from app.config import validate_soul_id
 from app.services import conversation_sources, turn_contract
-from app.services.owner import read_owner, register_owner_routes, require_local_owner_access, require_owner
+from app.services.owner import read_owner, require_local_owner_access, require_owner
 from app.services.souls import register_soul_routes
 
 
@@ -690,12 +690,9 @@ def register_mentra_routes(
         prefix="/integration/mentra",
         dependencies=[Depends(require_bearer)],
     )
-    register_owner_routes(
-        app,
-        get_config=get_config,
-        prefix="/integration/mentra",
-        dependencies=[Depends(require_bearer)],
-    )
+    @app.get("/integration/mentra/owner", dependencies=[Depends(require_bearer)])
+    def mentra_owner() -> dict[str, str | None]:
+        return {"user_id": read_owner(get_config())}
 
     @app.post("/mentra/installations", dependencies=[Depends(require_local_owner_access)])
     async def reserve_installation() -> dict[str, Any]:
@@ -708,9 +705,6 @@ def register_mentra_routes(
             storage_dir = get_storage_dir()
             installations = _load_installations(storage_dir)
             records = installations.setdefault(_IRIS_PACKAGE, {})
-            for key, record in records.items():
-                if not record.get("seen_at") and not record.get("host"):
-                    return {"device_session_id": key, **record}
             used = {record.get("display_name") for record in records.values()}
             number = 1
             while f"stock_{number:02d}" in used:
@@ -822,6 +816,7 @@ def register_mentra_routes(
                 "installed_user": None,
                 "installed_device": None,
                 "host": None,
+                "installations": [],
             }
         )
         config = get_config().get("mentra") or {}
@@ -851,6 +846,8 @@ def register_mentra_routes(
                          "expires_in": max(0, int(lease.expires_at - now)), "mode": lease.mode}
                         for key, lease in active_pairs]
             busy = bool(_leases or _start_claims)
+            starting = any((not device_session_id or claim[1] == device_session_id)
+                           and (unscoped or key == soul_id) for key, claim in _start_claims.items())
 
         active_soul, active = active_pair if active_pair else ("", None)
         transcript_gap = False
@@ -896,6 +893,7 @@ def register_mentra_routes(
             "state": state,
             "detail": detail,
             "active": active is not None,
+            "starting": starting,
             "busy": busy,
             "sessions": sessions,
             "transcript_gap": transcript_gap,

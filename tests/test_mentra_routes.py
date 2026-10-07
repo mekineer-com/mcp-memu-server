@@ -451,13 +451,17 @@ def test_mentra_host_capability_merges_with_installation(
 def test_installation_metadata_is_local_and_keeps_names(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
+    random_id = mentra_routes.secrets.token_urlsafe
     remote, _, _ = _session_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(mentra_routes.secrets, "token_urlsafe", random_id)
     endpoint = "/mentra/installations"
     assert remote.post(endpoint).status_code == 403
     client = TestClient(remote.app, client=("127.0.0.1", 12345))
     first = client.post(endpoint).json()
     assert first["display_name"] == "stock_01"
-    assert client.post(endpoint).json() == first
+    another = client.post(endpoint).json()
+    assert another["device_session_id"] != first["device_session_id"]
+    client.delete(f"{endpoint}/{another['device_session_id']}").raise_for_status()
     key = first["device_session_id"]
     client.post("/integration/mentra/installation/seen", headers=AUTH, json={
         "user_id": START["user_id"], "device_session_id": key,
@@ -486,7 +490,9 @@ def test_installation_metadata_is_local_and_keeps_names(
         starting = pool.submit(client.post, "/integration/mentra/session/start", headers=AUTH,
                                json={**START, "device_session_id": key})
         try:
-            assert entered.wait(2)
+            assert entered.wait(2), starting.result(timeout=2).text
+            assert client.get(f"/integration/mentra/status?device_session_id={key}", headers=AUTH).json()["starting"] is True
+            assert client.get(f"/integration/mentra/status?device_session_id={other}", headers=AUTH).json()["starting"] is False
             assert client.delete(f"{endpoint}/{key}").status_code == 409
             client.delete(f"{endpoint}/{other}").raise_for_status()
         finally:

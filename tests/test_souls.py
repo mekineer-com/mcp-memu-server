@@ -114,7 +114,7 @@ def test_mentra_alias_is_authenticated_and_uses_same_contract(tmp_path):
     owner_alias = "/integration/mentra/owner"
     assert client.get(owner_alias).status_code == 401
     assert client.get(owner_alias, headers=auth).json() == {"user_id": "Marcos"}
-    assert client.post(owner_alias, json={"user_id": "Other"}, headers=auth).status_code == 409
+    assert client.post(owner_alias, json={"user_id": "Other"}, headers=auth).status_code == 405
 
 
 def test_concurrent_creation_never_overwrites(tmp_path):

@@ -118,7 +118,7 @@ mcp-memu-server/
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or remove Relationship properties from one stable `entity:<entities.id>` reference |
 | `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot; reject concurrent self-description changes before saving |
 | `/owner` | GET/POST | Loopback-only read/create contract for the one OpenAlma user identity |
-| `/integration/mentra/owner` | GET/POST | Bearer-authenticated Iris alias of the same owner contract |
+| `/integration/mentra/owner` | GET | Iris discovery of the shared owner; creation belongs to the launcher's loopback `/owner` route |
 | `/pending` | GET | Review queue: unapproved memories/dossiers and persistent narrative self |
 | `/soul-summary/{kind}` | PATCH | Journal and approve an Atomic manual correction with snapshot guard |
 | `/soul-summary/{kind}/approve` | POST | Approve the displayed soul-summary value with snapshot guard |
