@@ -472,8 +472,26 @@ def test_installation_metadata_is_local_and_keeps_names(
     assert status["installations"][0]["display_name"] == "My app"
     client.delete(f"{endpoint}/{second['device_session_id']}").raise_for_status()
     assert len(client.get("/integration/mentra/status", headers=AUTH).json()["installations"]) == 1
-    sitting = client.post("/integration/mentra/session/start", headers=AUTH,
-                          json={**START, "device_session_id": key}).json()["session_id"]
+    entered, release = Event(), Event()
+    mint = mentra_routes._mint_gemini_token
+
+    async def waiting_mint(**kwargs: Any) -> str:
+        entered.set()
+        assert await asyncio.to_thread(release.wait, 2)
+        return await mint(**kwargs)
+
+    monkeypatch.setattr(mentra_routes, "_mint_gemini_token", waiting_mint)
+    other = client.post(endpoint).json()["device_session_id"]
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        starting = pool.submit(client.post, "/integration/mentra/session/start", headers=AUTH,
+                               json={**START, "device_session_id": key})
+        try:
+            assert entered.wait(2)
+            assert client.delete(f"{endpoint}/{key}").status_code == 409
+            client.delete(f"{endpoint}/{other}").raise_for_status()
+        finally:
+            release.set()
+        sitting = starting.result(timeout=2).json()["session_id"]
     assert client.delete(f"{endpoint}/{key}").status_code == 409
     client.post(f"/integration/mentra/session/{sitting}/end", headers=AUTH,
                 json={"user_id": START["user_id"], "soul_id": START["soul_id"]}).raise_for_status()
@@ -529,6 +547,8 @@ def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcrip
     }
     assert client.post(append, json={**scope, "events": [gap]}, headers=AUTH).status_code == 200
     assert client.get(status, headers=AUTH).json()["state"] == "transcript_gap"
+    device_status = client.get("/integration/mentra/status?device_session_id=phone-1", headers=AUTH).json()
+    assert device_status["state"] == "transcript_gap" and device_status["transcript_gap"] is True
     tail = mentra_routes.conversation_sources.load_mentra_tail(
         storage_dir=tmp_path,
         user_id=START["user_id"],
@@ -580,7 +600,7 @@ def test_mentra_status_discovery_auth_and_global_busy(monkeypatch: pytest.Monkey
     empty = client.get(path, headers=AUTH).json()
     assert empty["installed_package"] is None
     assert empty["active"] is False and empty["busy"] is False
-    mentra_routes._start_claims["Other Soul"] = "pending-sitting"
+    mentra_routes._start_claims["Other Soul"] = ("pending-sitting", "other-phone")
     assert client.get(path, headers=AUTH).json()["busy"] is True
     mentra_routes._start_claims.clear()
     client.post("/integration/mentra/installation/seen", headers=AUTH, json={
@@ -1005,11 +1025,11 @@ def test_replacement_start_rejects_context_that_changed_during_mint(
 
 
 def test_failed_start_claim_cleanup_cannot_remove_newer_claim() -> None:
-    mentra_routes._start_claims["Codexia"] = "newer-sitting"
+    mentra_routes._start_claims["Codexia"] = ("newer-sitting", "phone-1")
 
     asyncio.run(mentra_routes._release_start_claim_if_owned("Codexia", "older-sitting"))
 
-    assert mentra_routes._start_claims["Codexia"] == "newer-sitting"
+    assert mentra_routes._start_claims["Codexia"] == ("newer-sitting", "phone-1")
 
 
 def test_second_start_is_rejected_while_same_soul_start_is_in_progress(
@@ -1017,7 +1037,7 @@ def test_second_start_is_rejected_while_same_soul_start_is_in_progress(
     tmp_path: Path,
 ) -> None:
     client, calls, _ = _session_app(monkeypatch, tmp_path)
-    mentra_routes._start_claims[START["soul_id"]] = "in-progress"
+    mentra_routes._start_claims[START["soul_id"]] = ("in-progress", "phone-1")
 
     response = client.post("/integration/mentra/session/start", json=START, headers=AUTH)
 

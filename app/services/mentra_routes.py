@@ -77,7 +77,7 @@ class _Lease(NamedTuple):
 
 
 _leases: dict[str, _Lease] = {}
-_start_claims: dict[str, str] = {}
+_start_claims: dict[str, tuple[str, str]] = {}  # sitting_id, device_session_id
 _lease_lock = asyncio.Lock()
 _image_finalize_tasks: dict[tuple[str, str, str], tuple[str, asyncio.Task[Any]]] = {}
 _image_finalize_errors: dict[tuple[str, str, str], set[str]] = {}
@@ -436,7 +436,8 @@ def _merge_transcript_events(
 
 async def _release_start_claim_if_owned(lease_key: str, sitting_id: str) -> None:
     async with _lease_lock:
-        if _start_claims.get(lease_key) == sitting_id:
+        claim = _start_claims.get(lease_key)
+        if claim and claim[0] == sitting_id:
             _start_claims.pop(lease_key, None)
 
 
@@ -740,7 +741,9 @@ def register_mentra_routes(
             raise HTTPException(status_code=503, detail="Mentra installation storage is not configured")
         async with _lease_lock:
             if any(lease.device_session_id == device_session_id and lease.expires_at > time.monotonic()
-                   for lease in _leases.values()):
+                   for lease in _leases.values()) or any(
+                       claim[1] == device_session_id for claim in _start_claims.values()
+                   ):
                 raise HTTPException(status_code=409, detail="Stop Iris first")
             async with _installation_lock:
                 storage_dir = get_storage_dir()
@@ -858,13 +861,14 @@ def register_mentra_routes(
             if _image_finalize_errors.get(conflict_key):
                 status_error = "Photo memory processing failed"
         history_device = active.device_session_id if active else device_session_id
-        if get_storage_dir is not None and user_id and soul_id and history_device:
+        history_soul = active_soul if active else soul_id
+        if get_storage_dir is not None and user_id and history_soul and history_device:
             try:
                 history = await asyncio.to_thread(
                     conversation_sources.load_mentra_history_snapshot,
                     storage_dir=get_storage_dir(),
                     user_id=user_id,
-                    soul_id=active_soul if active else soul_id,
+                    soul_id=history_soul,
                     conversation_id=f"mentra:{history_device}",
                 )
                 sitting_id = active.sitting_id if active else (
@@ -981,7 +985,7 @@ def register_mentra_routes(
                 reject_start(409, "Another Mentra session is active")
             if lease_key in _start_claims:
                 reject_start(409, "Mentra session start is already in progress")
-            _start_claims[lease_key] = sitting_id
+            _start_claims[lease_key] = (sitting_id, body.device_session_id)
         timings["setupMs"] = int((time.monotonic() - phase_started) * 1000)
 
         try:
