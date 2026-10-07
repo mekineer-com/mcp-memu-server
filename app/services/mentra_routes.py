@@ -626,6 +626,15 @@ def _write_installations(
                 pass
 
 
+def _stock_name(records: dict[str, dict[str, Any]]) -> str:
+    used = {record.get("display_name") for record in records.values()}
+    for number in range(1, 100):
+        name = f"stock_{number:02d}"
+        if name not in used:
+            return name
+    raise HTTPException(status_code=409, detail="All stock_01 through stock_99 names are in use")
+
+
 def _installation_status(storage_dir: Path, device_session_id: str) -> dict[str, Any]:
     records = _load_installations(storage_dir).get(_IRIS_PACKAGE, {})
     record = records.get(device_session_id) if device_session_id else None
@@ -691,12 +700,8 @@ def register_mentra_routes(
             storage_dir = get_storage_dir()
             installations = _load_installations(storage_dir)
             records = installations.setdefault(_IRIS_PACKAGE, {})
-            used = {record.get("display_name") for record in records.values()}
-            number = 1
-            while f"stock_{number:02d}" in used:
-                number += 1
             key = f"stock-{secrets.token_urlsafe(18)}"
-            record = {"device_session_id": key, "user_id": user_id, "display_name": f"stock_{number:02d}"}
+            record = {"device_session_id": key, "user_id": user_id, "display_name": _stock_name(records)}
             records[key] = record
             _write_installations(storage_dir, installations)
             return dict(record)
@@ -745,9 +750,10 @@ def register_mentra_routes(
         async with _installation_lock:
             storage_dir = get_storage_dir()
             installations = _load_installations(storage_dir)
-            record = installations.setdefault(_IRIS_PACKAGE, {}).setdefault(
-                body.device_session_id, {}
-            )
+            records = installations.setdefault(_IRIS_PACKAGE, {})
+            record = records.setdefault(body.device_session_id, {})
+            if not body.host_package and not record.get("host") and "display_name" not in record:
+                record["display_name"] = _stock_name(records)
             record.update({
                 **body.model_dump(exclude={"host_package", "host_version"}),
                 "seen_at": time.time(),

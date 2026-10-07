@@ -462,11 +462,26 @@ def test_installation_metadata_is_local_and_keeps_names(
     assert second["display_name"] == "stock_02"
     assert second["device_session_id"] != key
     client.patch(f"{endpoint}/{key}", json={"display_name": "My app"}).raise_for_status()
+    client.post("/integration/mentra/installation/seen", json={
+        "user_id": START["user_id"], "device_session_id": key,
+        "package_name": "com.openalma.mentra", "version": "0.1.1",
+    }).raise_for_status()
     status = client.get("/integration/mentra/status").json()
     assert status["installed_device"] is None
     assert status["installations"][0]["display_name"] == "My app"
     client.delete(f"{endpoint}/{second['device_session_id']}").raise_for_status()
     assert len(client.get("/integration/mentra/status").json()["installations"]) == 1
+    report = {"user_id": START["user_id"], "device_session_id": "unreserved-stock",
+              "package_name": "com.openalma.mentra", "version": "0.1.1"}
+    client.post("/integration/mentra/installation/seen", json=report).raise_for_status()
+    client.post("/integration/mentra/installation/seen", json=report).raise_for_status()
+    names = {r["device_session_id"]: r["display_name"] for r in client.get("/integration/mentra/status").json()["installations"]}
+    assert names["unreserved-stock"] == "stock_01"
+    used = {str(i): {"display_name": f"stock_{i:02d}"} for i in range(1, 99)}
+    assert mentra_routes._stock_name(used) == "stock_99"
+    used["99"] = {"display_name": "stock_99"}
+    with pytest.raises(HTTPException, match="stock_99"):
+        mentra_routes._stock_name(used)
     entered, release = Event(), Event()
     mint = mentra_routes._mint_gemini_token
 
