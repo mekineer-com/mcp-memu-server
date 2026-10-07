@@ -36,12 +36,11 @@ def test_mask_noop_on_empty_key() -> None:
     assert masked["llm"]["api_key"] == ""
 
 
-def test_mentra_secrets_are_always_redacted() -> None:
+def test_mentra_gemini_key_is_always_redacted() -> None:
     cfg = {
         "llm": {"api_key": "llm-secret"},
         "mentra": {
             "gemini_api_key": "gemini-secret",
-            "integration_bearer_token": "bearer-secret",
         },
     }
 
@@ -49,4 +48,3 @@ def test_mentra_secrets_are_always_redacted() -> None:
 
     assert masked["llm"]["api_key"] == "llm-secret"
     assert masked["mentra"]["gemini_api_key"] == "***"
-    assert masked["mentra"]["integration_bearer_token"] == "***"

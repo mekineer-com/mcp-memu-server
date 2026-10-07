@@ -138,14 +138,18 @@ Paths used to read cross-channel history. Defaults point to the sibling
 
 ## `mentra`
 
+Iris requires a trusted private connection, not a public endpoint. Devices allowed
+to reach this endpoint can access the Soul's Iris data; trust the permitted devices
+and network access rules. Keep MCP on loopback behind the configured narrow Mentra
+ingress. Gemini credentials and constrained provider session tokens remain required.
+
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `false` | Allow new Iris/Mentra sessions. Existing status and cleanup paths remain available. |
-| `public_base_url` | `""` | Public OpenAlma URL used by launcher/distribution integration. |
+| `enabled` | `false` | Enable Mentra discovery and session routes. Status remains readable when disabled to protect active sittings from Stop; static earcons stay public. |
+| `public_base_url` | `""` | OpenAlma URL reachable over the trusted private connection, used by launcher/distribution integration. |
 | `gemini_api_key` | `""` | Gemini Live credential used to mint constrained session tokens. |
 | `model` | current Gemini native-audio preview model | Gemini Live model. |
 | `voice` | `"Kore"` | Gemini Live output voice. |
-| `integration_bearer_token` | `""` | Shared bearer token for Iris integration endpoints. |
 | `session_warning_seconds` | `0` | Client warning lead time before a session limit; `0` disables the warning. |
 
 ## Claude Code backend

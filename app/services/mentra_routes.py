@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal, NamedTuple
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import (
     BaseModel,
@@ -669,30 +669,14 @@ def register_mentra_routes(
         if not (get_config().get("mentra") or {}).get("enabled"):
             raise HTTPException(status_code=404, detail="Not Found")
 
-    async def require_bearer(authorization: str | None = Header(default=None)) -> None:
-        config = get_config().get("mentra") or {}
-        expected = str(config.get("integration_bearer_token") or "")
-        if not expected:
-            raise HTTPException(status_code=503, detail="Mentra bearer credential is not configured")
-
-        scheme, _, supplied = (authorization or "").partition(" ")
-        if scheme.lower() != "bearer" or not secrets.compare_digest(
-            supplied.encode(), expected.encode()
-        ):
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid Mentra bearer credential",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-    auth = [Depends(require_enabled), Depends(require_bearer)]
+    enabled = [Depends(require_enabled)]
     register_soul_routes(
         app,
         get_config=get_config,
         prefix="/integration/mentra",
-        dependencies=[Depends(require_bearer)],
+        dependencies=enabled,
     )
-    @app.get("/integration/mentra/owner", dependencies=[Depends(require_bearer)])
+    @app.get("/integration/mentra/owner", dependencies=enabled)
     def mentra_owner() -> dict[str, str | None]:
         return {"user_id": read_owner(get_config())}
 
@@ -750,7 +734,7 @@ def register_mentra_routes(
         return {"ok": True}
 
     @app.post(
-        "/integration/mentra/installation/seen", tags=["integration"], dependencies=auth
+        "/integration/mentra/installation/seen", tags=["integration"], dependencies=enabled
     )
     async def mentra_installation_seen(body: MentraInstallationSeen) -> dict[str, str]:
         if get_storage_dir is None:
@@ -774,7 +758,7 @@ def register_mentra_routes(
             _write_installations(storage_dir, installations)
         return {"package_name": body.package_name, "version": body.version}
 
-    @app.post("/integration/mentra/host/seen", tags=["integration"], dependencies=auth)
+    @app.post("/integration/mentra/host/seen", tags=["integration"], dependencies=enabled)
     async def mentra_host_seen(body: MentraHostSeen) -> dict[str, Any]:
         if get_storage_dir is None:
             raise HTTPException(
@@ -797,7 +781,7 @@ def register_mentra_routes(
             _write_installations(storage_dir, installations)
         return host
 
-    @app.get("/integration/mentra/status", tags=["integration"], dependencies=[Depends(require_bearer)])
+    @app.get("/integration/mentra/status", tags=["integration"])
     async def mentra_status(
         user_id: str = "", soul_id: str = "", device_session_id: str = ""
     ) -> dict[str, Any]:
@@ -828,7 +812,7 @@ def register_mentra_routes(
 
         missing = [
             field
-            for field in ("integration_bearer_token", "gemini_api_key", "model", "voice")
+            for field in ("gemini_api_key", "model", "voice")
             if not str(config.get(field) or "").strip()
         ]
         now = time.monotonic()
@@ -912,11 +896,11 @@ def register_mentra_routes(
     ) -> FileResponse:
         return FileResponse(_EARCON_DIR / f"{name}.wav", media_type="audio/wav")
 
-    @app.get("/integration/mentra/health", tags=["integration"], dependencies=auth)
+    @app.get("/integration/mentra/health", tags=["integration"], dependencies=enabled)
     async def mentra_health() -> dict[str, bool]:
         return {"ok": True}
 
-    @app.post("/integration/mentra/session/start", tags=["integration"], dependencies=auth)
+    @app.post("/integration/mentra/session/start", tags=["integration"], dependencies=enabled)
     async def mentra_session_start(body: MentraSessionStart) -> dict[str, Any]:
         started_at = time.monotonic()
         phase_started = started_at
@@ -1122,7 +1106,7 @@ def register_mentra_routes(
     @app.post(
         "/integration/mentra/session/{session_id}/token",
         tags=["integration"],
-        dependencies=auth,
+        dependencies=enabled,
     )
     async def mentra_session_token(
         session_id: str, body: MentraSessionScope
@@ -1188,7 +1172,7 @@ def register_mentra_routes(
     @app.post(
         "/integration/mentra/session/{session_id}/heartbeat",
         tags=["integration"],
-        dependencies=auth,
+        dependencies=enabled,
     )
     async def mentra_session_heartbeat(session_id: str, body: MentraSessionScope) -> dict[str, Any]:
         await _require_active_lease(
@@ -1208,7 +1192,7 @@ def register_mentra_routes(
     @app.post(
         "/integration/mentra/session/{sitting_id}/recall",
         tags=["integration"],
-        dependencies=auth,
+        dependencies=enabled,
     )
     async def mentra_recall(
         sitting_id: str, body: MentraRecallRequest
@@ -1304,7 +1288,7 @@ def register_mentra_routes(
     @app.post(
         "/integration/mentra/session/{sitting_id}/snapshot",
         tags=["integration"],
-        dependencies=auth,
+        dependencies=enabled,
     )
     async def mentra_snapshot(sitting_id: str, request: Request) -> dict[str, Any]:
         if get_resource_storage_dir is None:
@@ -1361,7 +1345,7 @@ def register_mentra_routes(
     @app.post(
         "/integration/mentra/session/{sitting_id}/snapshot/replay",
         tags=["integration"],
-        dependencies=auth,
+        dependencies=enabled,
     )
     async def mentra_snapshot_replay(sitting_id: str, request: Request) -> dict[str, Any]:
         if get_resource_storage_dir is None:
@@ -1386,7 +1370,7 @@ def register_mentra_routes(
     @app.post(
         "/integration/mentra/session/{sitting_id}/snapshot/finalize",
         tags=["integration"],
-        dependencies=auth,
+        dependencies=enabled,
     )
     async def mentra_snapshot_finalize(sitting_id: str, request: Request) -> dict[str, Any]:
         if (
@@ -1504,7 +1488,7 @@ def register_mentra_routes(
     @app.post(
         "/integration/mentra/session/{session_id}/end",
         tags=["integration"],
-        dependencies=auth,
+        dependencies=enabled,
     )
     async def mentra_session_end(session_id: str, body: MentraSessionScope) -> dict[str, bool]:
         key = body.soul_id
@@ -1525,7 +1509,7 @@ def register_mentra_routes(
     @app.post(
         "/integration/mentra/session/{sitting_id}/transcripts/append",
         tags=["integration"],
-        dependencies=auth,
+        dependencies=enabled,
     )
     async def mentra_transcripts_append(sitting_id: str, request: Request) -> dict[str, Any]:
         if (

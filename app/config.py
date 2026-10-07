@@ -116,7 +116,6 @@ def default_config() -> dict[str, Any]:
             "gemini_api_key": "",
             "model": "gemini-2.5-flash-native-audio-preview-12-2025",
             "voice": "Kore",
-            "integration_bearer_token": "",
             "session_warning_seconds": 0,
         },
         "categories": {
@@ -305,10 +304,8 @@ def mask_config(cfg: dict[str, Any], *, include_llm_secret: bool = False) -> dic
     if not include_llm_secret and isinstance(key, str) and key:
         out["llm"]["api_key"] = key[:4] + "..." + key[-4:]
     mentra = out.get("mentra")
-    if isinstance(mentra, dict):
-        for field in ("gemini_api_key", "integration_bearer_token"):
-            if mentra.get(field):
-                mentra[field] = "***"
+    if isinstance(mentra, dict) and mentra.get("gemini_api_key"):
+        mentra["gemini_api_key"] = "***"
     return out
 
 

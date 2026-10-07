@@ -75,14 +75,14 @@ mcp-memu-server/
 | `/conversation/{id}/turn/undo` | POST | Undo latest turn, then independently best-effort delete its uncited annulment reflections |
 | `/integration/memu/turn` | POST | MCP single-call turn wrapper: retrieve then turn |
 | `/integration/memu/sensory-search` | POST | Scoped explicit visual-memory candidate search over separate media and caption lanes |
-| `/integration/mentra/health` | GET | Bearer-authenticated Mentra ingress health check; disabled by default |
+| `/integration/mentra/health` | GET | Keyless private-network Mentra ingress health check; enabled gate, disabled by default |
 | `/integration/mentra/installation/seen` | POST | Record an installed Iris build only when its user matches the shared owner |
 | `/integration/mentra/host/seen` | POST | Record OpenAlma Mentra's own installation ID, native host version and default name before Iris exists; preserve renamed labels |
 | `/mentra/installations` | POST | Loopback-only fresh stock ID/name reservation; existing-row actions retain that row's ID |
 | `/mentra/installations/{device_session_id}` | PATCH / DELETE | Loopback-only Rename / Forget metadata, through the existing JSON writer/lock; Forget refuses an active sitting and never deletes chats |
 | `/integration/mentra/earcons/{name}.wav` | GET | Serve a bundled audio cue; public, unauthenticated |
-| `/integration/mentra/status` | GET | Bearer-authenticated installation discovery, scoped active lease, global busy/start claims, and latest-sitting transcript gap. Remains readable when Mentra is disabled so existing leases cannot disappear from Stop protection; new starts still return 404. Static earcons remain public. |
-| `/integration/mentra/session/start` | POST | Authenticated soul bootstrap plus constrained Gemini Live token; refuses paused Souls before bootstrap/token; returns a fresh sitting ID and next shared `mentra:iris` transcript sequence. Same installation can replace its own lease; another installation cannot take over |
+| `/integration/mentra/status` | GET | Keyless installation discovery, scoped active lease, global busy/start claims, and latest-sitting transcript gap. Remains readable when Mentra is disabled so existing leases cannot disappear from Stop protection; new starts still return 404. Static earcons remain public. |
+| `/integration/mentra/session/start` | POST | Enabled-gated scoped Soul bootstrap plus constrained Gemini Live token; refuses paused Souls before bootstrap/token; returns a fresh sitting ID and next shared `mentra:iris` transcript sequence. Same installation can replace its own lease; another installation cannot take over |
 | `/integration/mentra/session/{id}/token` | POST | Mint a fresh constrained Gemini token for the unchanged active sitting before a replacement socket |
 | `/integration/mentra/session/{id}/heartbeat` / `end` | POST | Renew or release one sitting-scoped Mentra lease; heartbeat includes nullable `pause_reason` and repeats each image-processing failure until that image succeeds or the sitting ends. Existing token renewal, append and End remain available while paused |
 | `/integration/mentra/session/{id}/recall` | POST | Sitting-scoped, read-only forced retrieve over the cursor-bounded Mentra tail; returns compact ID-free context for Gemini `SILENT` delivery |
@@ -118,7 +118,7 @@ mcp-memu-server/
 | `/souls/{soul_id}/relationships/{speaker_id}` | PATCH/DELETE | Update or remove Relationship properties from one stable `entity:<entities.id>` reference |
 | `/souls/{soul_id}/narrative_suggestion` | POST | Apply a soul-evaluated narrative change with history + old-self snapshot; reject concurrent self-description changes before saving |
 | `/owner` | GET/POST | Loopback-only read/create contract for the one OpenAlma user identity |
-| `/integration/mentra/owner` | GET | Iris discovery of the shared owner; creation belongs to the launcher's loopback `/owner` route |
+| `/integration/mentra/owner` | GET | Enabled-gated keyless Iris discovery of the shared owner; creation belongs to the launcher's loopback `/owner` route |
 | `/pending` | GET | Review queue: unapproved memories/dossiers and persistent narrative self |
 | `/soul-summary/{kind}` | PATCH | Journal and approve an Atomic manual correction with snapshot guard |
 | `/soul-summary/{kind}/approve` | POST | Approve the displayed soul-summary value with snapshot guard |
@@ -132,7 +132,7 @@ mcp-memu-server/
 | `/categories` | GET | List all categories |
 | `/categories/search` | POST | Search categories |
 | `/clear` | POST | Delete memories in scope |
-| `/souls` | GET/POST | Discover or create canonical scoped soul databases; Mentra bearer alias at `/integration/mentra/souls` |
+| `/souls` | GET/POST | Discover or create canonical scoped soul databases; enabled-gated keyless Mentra alias at `/integration/mentra/souls` |
 | `/integration/atomic/memories` | POST | Create one exact, approved human-authored `knowledge` memory for an owner+soul scope |
 | `/config` | GET/POST | Read or update runtime config |
 | `/reload` | POST | Reload config from disk |
@@ -149,7 +149,7 @@ and sitting ownership, not separate chats. No old-chat conversion or fallback re
 symlinks. `POST /souls` accepts `{soul_id, use_existing: bool}` and returns
 `{soul_id, created: bool}`.
 Both methods share their implementation with `/integration/mentra/souls`, whose
-only dependency is the configured bearer credential (independent of enabled).
+only dependency is Mentra's enabled gate, with no connection key.
 Local routes follow the trusted-local API convention.
 
 Only `POST /souls` publishes a regular-file soul database. Any scoped request for an unknown
@@ -176,7 +176,7 @@ guess a chat from the last reporting app.
 | `app/services/graph_edges.py` | Edge normalization + write/invalidate helpers (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`) |
 | `app/services/activity_messages.py` | `activity_messages` scoped-SQLite table for synthetic self-DM activity recaps (`My Activities:`); accepts a caller-owned transaction for Atomic End |
 | `app/services/whatsapp_outbounds.py` | `whatsapp_pending_outbounds` scoped-SQLite queue for WhatsApp replies/attachments |
-| `app/services/mentra_routes.py` | Authenticated Mentra boundary: sitting-scoped lease lifecycle, bootstrap/token mint, non-blocking recall, transcript append/ack, and durable image snapshot/finalize. Image finalize stays unavailable until Gemini embedding config and DB profile are both active. |
+| `app/services/mentra_routes.py` | Keyless private-network Mentra boundary: enabled-gated discovery/session work, always-readable status, sitting-scoped lease lifecycle, bootstrap/token mint, non-blocking recall, transcript append/ack, and durable image snapshot/finalize. Image finalize stays unavailable until Gemini embedding config and DB profile are both active. |
 | `app/services/memorize_endpoint.py` | `/memorize` core: segment-file persistence, forced-memorize runner, rolling-summary injection, sleep-gap/token chunking, progress/cancel. Historical mode uses registered import progress and original source positions, not filtered-list offsets, and enables engine-owned actual-model prompt budgets. Main's mode-aware claim distinguishes ordinary recovery from historical work. Listen-only segments advance source cursors without producing memory, consuming rolling summaries, or retaining segment files. |
 | `app/services/conversation_sources.py` | Source adapters: WhatsApp from `web_source.db`; ST/Atomic/Replika from resource chat snapshots (`st_chats` / `atomic_chats` / `replika_chats`); Mentra from `openalma/mentra/transcripts`. Handles atomic writes, cursor slicing, floor backfill, and role normalization. |
 | `app/services/import_routes.py` | Echo's scoped registration, unpaid current-tail validation, Process/Retry/status and bounded outer historical loop. Holds the existing claim through extraction plus one consolidation, resumes pending spans first, records the failed phase, and releases coalesced ordinary work. |

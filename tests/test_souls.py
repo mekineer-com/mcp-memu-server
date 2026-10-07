@@ -15,7 +15,7 @@ from app.services.mentra_routes import register_mentra_routes
 def client_for(tmp_path, *, with_owner=True):
     cfg = {
         "storage": {"metadata_store": {"dsn": f"sqlite:///{tmp_path / 'memu.db'}"}},
-        "mentra": {"enabled": False, "integration_bearer_token": "test-secret"},
+        "mentra": {"enabled": False},
     }
     app = FastAPI()
     souls.register_soul_routes(app, get_config=lambda: cfg)
@@ -96,25 +96,30 @@ def test_invalid_names_fail_without_creating_a_database(tmp_path, name):
     assert not list(tmp_path.glob("*.db"))
 
 
-def test_mentra_alias_is_authenticated_and_uses_same_contract(tmp_path):
-    client, _ = client_for(tmp_path, with_owner=False)
+def test_mentra_alias_requires_enabled_and_uses_same_contract(tmp_path):
+    client, cfg = client_for(tmp_path, with_owner=False)
     alias = "/integration/mentra/souls"
-    assert client.get(alias).status_code == 401
-    assert post(client, "Echo", path=alias).status_code == 401
-    auth = {"Authorization": "Bearer test-secret"}
-    assert post(client, "Echo", path=alias, headers=auth).status_code == 409
+    owner_alias = "/integration/mentra/owner"
+    assert client.get(alias).status_code == 404
+    assert post(client, "Echo", path=alias).status_code == 404
+    assert client.get(owner_alias).status_code == 404
+    cfg["mentra"]["enabled"] = True
+    assert post(client, "Echo", path=alias).status_code == 409
 
     assert client.get("/owner").json() == {"user_id": None}
-    assert client.post("/owner", json={"user_id": " Marcos "}).json() == {
-        "user_id": "Marcos",
+    assert client.post("/owner", json={"user_id": " Fictional User "}).json() == {
+        "user_id": "Fictional User",
         "created": True,
     }
-    assert post(client, "Echo", path=alias, headers=auth).json()["created"] is True
-    assert client.get(alias, headers=auth).json() == {"souls": ["Echo"]}
-    owner_alias = "/integration/mentra/owner"
-    assert client.get(owner_alias).status_code == 401
-    assert client.get(owner_alias, headers=auth).json() == {"user_id": "Marcos"}
-    assert client.post(owner_alias, json={"user_id": "Other"}, headers=auth).status_code == 405
+    assert post(client, "Echo", path=alias).json()["created"] is True
+    assert client.get(alias).json() == {"souls": ["Echo"]}
+    assert client.get(owner_alias).json() == {"user_id": "Fictional User"}
+    assert client.post(owner_alias, json={"user_id": "Other"}).status_code == 405
+    cfg["mentra"]["enabled"] = False
+    assert client.get(alias).status_code == 404
+    assert post(client, "Another Soul", path=alias).status_code == 404
+    assert client.get(owner_alias).status_code == 404
+    assert not (tmp_path / "Another Soul.db").exists()
 
 
 def test_concurrent_creation_never_overwrites(tmp_path):
