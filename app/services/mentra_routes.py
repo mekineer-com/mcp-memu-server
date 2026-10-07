@@ -1527,12 +1527,12 @@ def register_mentra_routes(
         except ValueError:
             raise HTTPException(status_code=422, detail="Invalid transcript batch") from None
 
-        await _require_active_lease(
-            soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
-        )
         conversation_id = conversation_sources.MENTRA_CONVERSATION_ID
         memorize_check_queued = False
         async with get_soul_lock(body.user_id, body.soul_id):
+            await _require_active_lease(
+                soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
+            )
             storage_dir = get_storage_dir()
             history = conversation_sources.load_mentra_history_snapshot(
                 storage_dir=storage_dir,

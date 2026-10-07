@@ -15,6 +15,7 @@ from typing import Any, Callable
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from app.services import conversation_sources, mentra_routes, owner
 from app.services.mentra_routes import register_mentra_routes
@@ -95,6 +96,7 @@ def _session_app(
     writes = iter(state_results or [])
     sitting_ids = iter(("sitting-1", "sitting-2", "sitting-3", "sitting-4"))
     soul_lock = asyncio.Lock()
+    calls["soul_lock"] = soul_lock
 
     resources: dict[str, Any] = {}
     memory_items: dict[str, Any] = {}
@@ -768,8 +770,55 @@ def test_lease_resume_heartbeat_and_end_are_scoped(
 ) -> None:
     client, calls, _ = _session_app(monkeypatch, tmp_path)
 
-    first = client.post("/integration/mentra/session/start", json=START)
-    resumed = client.post("/integration/mentra/session/start", json=START)
+    async def replace_with_waiting_append():
+        async with AsyncClient(
+            transport=ASGITransport(app=client.app), base_url="http://test"
+        ) as async_client:
+            first = await async_client.post("/integration/mentra/session/start", json=START)
+            batch = {
+                "user_id": START["user_id"],
+                "soul_id": START["soul_id"],
+                "events": [{
+                    "event_id": "sitting-1:1",
+                    "sequence": 1,
+                    "event_kind": "transcript",
+                    "role": "user",
+                    "content": "A fictional waiting line.",
+                    "status": "complete",
+                }],
+            }
+            lock = calls["soul_lock"]
+            async with lock:
+                replacement = asyncio.create_task(async_client.post(
+                    "/integration/mentra/session/start", json=START
+                ))
+                await asyncio.sleep(0)
+                assert len(lock._waiters) == 1
+                old_append = asyncio.create_task(async_client.post(
+                    "/integration/mentra/session/sitting-1/transcripts/append", json=batch
+                ))
+                await asyncio.sleep(0)
+                assert len(lock._waiters) == 2
+            resumed = await replacement
+            assert resumed.status_code == 200
+            assert resumed.json()["next_transcript_sequence"] == 1
+            assert (await old_append).status_code == 404
+            assert calls["state_writes"] == []
+            assert conversation_sources.load_mentra_history_snapshot(
+                storage_dir=tmp_path,
+                user_id=START["user_id"],
+                soul_id=START["soul_id"],
+                conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
+            ) == []
+            batch["events"][0]["event_id"] = "sitting-2:1"
+            appended = await async_client.post(
+                "/integration/mentra/session/sitting-2/transcripts/append", json=batch
+            )
+            assert appended.status_code == 200
+            assert appended.json()["ack_sequence"] == 1
+            return first, resumed
+
+    first, resumed = asyncio.run(asyncio.wait_for(replace_with_waiting_append(), timeout=5))
     assert first.status_code == resumed.status_code == 200
     assert first.json()["session_id"] == "sitting-1"
     assert resumed.json()["session_id"] == "sitting-2"
