@@ -439,6 +439,26 @@ def test_mentra_host_capability_merges_with_installation(
     assert merged["installations"][0]["display_name"] == "My fork"
 
 
+def test_forget_waits_for_host_reports_to_stop(monkeypatch, tmp_path):
+    remote, _, _ = _session_app(monkeypatch, tmp_path)
+    client = TestClient(remote.app, client=("127.0.0.1", 12345))
+    now = 1000
+    monkeypatch.setattr(mentra_routes.time, "time", lambda: now)
+    host = {"user_id": START["user_id"], "device_session_id": "fork-phone",
+            "host_package": "com.mentra.mentra.openalma", "host_version": "3.2.1",
+            "default_name": "Test Phone"}
+    endpoint = "/mentra/installations/fork-phone"
+    client.post("/integration/mentra/host/seen", json=host).raise_for_status()
+    assert client.get("/integration/mentra/status").json()["installations"][0]["host_reporting"]
+    assert client.delete(endpoint).status_code == 409
+    now += 15
+    assert not client.get("/integration/mentra/status").json()["installations"][0]["host_reporting"]
+    client.delete(endpoint).raise_for_status()
+    assert not client.get("/integration/mentra/status").json()["installations"]
+    client.post("/integration/mentra/host/seen", json=host).raise_for_status()
+    assert client.get("/integration/mentra/status").json()["installations"][0]["host_reporting"]
+
+
 def test_installation_metadata_is_local_and_keeps_names(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

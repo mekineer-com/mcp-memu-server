@@ -635,6 +635,11 @@ def _stock_name(records: dict[str, dict[str, Any]]) -> str:
     raise HTTPException(status_code=409, detail="All stock_01 through stock_99 names are in use")
 
 
+def _host_reporting(record: dict[str, Any]) -> bool:
+    seen_at = (record.get("host") or {}).get("seen_at")
+    return seen_at is not None and time.time() - seen_at < 15
+
+
 def _installation_status(storage_dir: Path, device_session_id: str) -> dict[str, Any]:
     records = _load_installations(storage_dir).get(_IRIS_PACKAGE, {})
     record = records.get(device_session_id) if device_session_id else None
@@ -647,7 +652,8 @@ def _installation_status(storage_dir: Path, device_session_id: str) -> dict[str,
         "installed_device": record.get("device_session_id") if record else None,
         "host": record.get("host") if record else None,
         "installations": [
-            {"device_session_id": key, **value} for key, value in records.items()
+            {"device_session_id": key, **value, "host_reporting": _host_reporting(value)}
+            for key, value in records.items()
         ],
     }
 
@@ -733,6 +739,9 @@ def register_mentra_routes(
             async with _installation_lock:
                 storage_dir = get_storage_dir()
                 installations = _load_installations(storage_dir)
+                record = installations.get(_IRIS_PACKAGE, {}).get(device_session_id)
+                if record and _host_reporting(record):
+                    raise HTTPException(status_code=409, detail="Close the app and wait 15 seconds before forgetting it")
                 if installations.get(_IRIS_PACKAGE, {}).pop(device_session_id, None) is None:
                     raise HTTPException(status_code=404, detail="Installation not found")
                 _write_installations(storage_dir, installations)
