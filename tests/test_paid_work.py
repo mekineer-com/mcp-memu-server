@@ -872,7 +872,6 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
     assert state["memorize_failure"]["segment_work"] == {f"{cid}:0-0": "review"}
     monkeypatch.setattr(main, "_write_conversation_state", writer)
     svc.database.close()
-    svc.database.resource_repo.resources.clear()
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: svc)
     monkeypatch.setattr(main, "_saved_memorize_payload", lambda *_args: {"user": scope, "conversation_id": cid})
     async def remainder(payload, tasks, force, **kwargs):

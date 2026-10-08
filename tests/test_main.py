@@ -200,7 +200,7 @@ async def test_category_review_failure_rolls_back_prose_revision_and_cache(monke
         payload["title"] = "Changed title"
     with pytest.raises(RuntimeError, match="failed"):
         await _route_endpoint("memory_graph_category_update")("c1", "TestOwner", "TestSoul", payload)
-    assert store.memory_category_repo.categories["c1"] == before
+    assert store.memory_category_repo.list_categories(scope)["c1"] == before
     assert journals == []
     with store._sessions.session() as session:
         assert session.connection().connection.driver_connection.row_factory is None

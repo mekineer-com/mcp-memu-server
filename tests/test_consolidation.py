@@ -1539,7 +1539,7 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
                 format_all_chat_history_for_ai=lambda **_kw: pytest.fail("must fail before context/model work"),
                 conversation_id="chat", **scope,
             )
-    cached_before = {key: value.model_dump() for key, value in store.categories.items()}
+    categories_before = store.memory_category_repo.list_categories(scope)
     journals.clear()
     window = {"active": False, "expect_begin": False, "checkout_begin": False}
     bad_commits = []
@@ -1603,7 +1603,7 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
         write_consolidation_outputs(replace(deps, sqlite_connect=guarded_connect, write_conversation_state=fail_at_end),
             svc, inputs=inputs, llm_results=results, conversation_id="chat", **scope)
     assert snapshot() == before
-    assert {key: value.model_dump() for key, value in store.categories.items()} == cached_before
+    assert store.memory_category_repo.list_categories(scope) == categories_before
     assert journals == [] and bad_commits == []
     assert first_statements == ["BEGIN IMMEDIATE"]
     assert svc.list_due_dossiers(scope, segment_ids=["chat:0-1"]) == []
@@ -1621,7 +1621,7 @@ async def test_consolidation_shared_transaction_rolls_back_and_retries(tmp_path,
     assert first_statements == ["BEGIN IMMEDIATE", "BEGIN IMMEDIATE"]
     assert [row["edited_by"] for row in journals] == ["anchor_revision", "anchor_revision", "consolidation"]
     for role, anchor in anchors.items():
-        assert store.categories[anchor.id].summary == "## Identity\nRevised prose."
+        assert store.memory_category_repo.list_categories(scope)[anchor.id].summary == "## Identity\nRevised prose."
     assert ordinary.id in {row.id for row in svc.list_due_dossiers(scope, segment_ids=["chat:2-3"])}
     with sqlite_connect(path) as con:
         con.row_factory = sqlite3.Row
