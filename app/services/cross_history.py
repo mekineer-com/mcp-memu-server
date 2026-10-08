@@ -22,6 +22,7 @@ from app.services.payload import (
     _normalize_turn_history,
     _parse_turn_ts_ms,
     _pick_str,
+    message_ts_ms,
 )
 from app.services.state import (
     effective_digest_cursor_from_row as _effective_digest_cursor_from_row,
@@ -705,16 +706,36 @@ def _format_all_chat_history_for_ai(
     self_turn_directive: str | None = None,
     mark_current_chat: bool = True,
 ) -> str:
-    if not mark_current_chat and len({
-        str(row.get("conversation_id") or row.get("source_conversation_id") or conversation_id)
-        for row in (current_history or []) if isinstance(row, dict)
-    }) > 1:
-        return _m()._format_cross_tail_for_ai([
-            *(cross_tail or []),
-            *_current_chat_rows_for_grouped_render(current_history or [], conversation_id=conversation_id),
-        ], soul_id=soul_id)
-    cross_text = _m()._format_cross_tail_for_ai(cross_tail or [], soul_id=soul_id) if cross_tail else ""
     history_rows = current_history or []
+    if not mark_current_chat:
+        history_rows = _current_chat_rows_for_grouped_render(history_rows, conversation_id=conversation_id)
+        selected_sources = {
+            _source_conversation_key(str(row.get("source_conversation_id") or row.get("conversation_id") or ""))
+            for row in history_rows
+        }
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        # Selected evidence wins over its display-floor copy; unidentified rows stay.
+        for row in [*history_rows, *_current_chat_rows_for_grouped_render(cross_tail or [], conversation_id=None)]:
+            cid = _source_conversation_key(str(row.get("source_conversation_id") or row.get("conversation_id") or ""))
+            row["conversation_id"] = cid
+            keys = {
+                (cid, field, str(row[field]))
+                for field in ("source_message_id", "source_conversation_index")
+                if cid and row.get(field) is not None and str(row[field]).strip()
+            }
+            if keys.isdisjoint(seen):
+                merged.append(row)
+            seen.update(keys)
+        merged.sort(key=lambda row: (
+            message_ts_ms(row) if message_ts_ms(row) is not None else float("inf"),
+            int(row.get("source_conversation_index") or 0),
+        ))
+        if len(selected_sources) > 1:
+            return _m()._format_cross_tail_for_ai(merged, soul_id=soul_id)
+        history_rows = [row for row in merged if row["conversation_id"] in selected_sources]
+        cross_tail = [row for row in merged if row["conversation_id"] not in selected_sources]
+    cross_text = _m()._format_cross_tail_for_ai(cross_tail or [], soul_id=soul_id) if cross_tail else ""
     if not history_rows:
         if current_user_text or self_turn_directive:
             return _m()._build_conversations_block(

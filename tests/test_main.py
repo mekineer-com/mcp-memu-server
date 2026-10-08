@@ -1557,37 +1557,73 @@ def test_format_all_chat_history_for_ai_merges_current_and_cross_chats() -> None
     assert "[Marcos] current hello" in rendered
 
 
-def test_format_all_chat_history_for_ai_can_render_without_current_chat_marker() -> None:
+@pytest.mark.parametrize("multiple_selected_chats", [False, True])
+@pytest.mark.parametrize("identity_fields", ["index", "id", "both"])
+def test_format_all_chat_history_for_ai_can_render_without_current_chat_marker(
+    monkeypatch, multiple_selected_chats, identity_fields,
+) -> None:
+    monkeypatch.setattr("app.services.message_log._load_whatsapp_directory_names", lambda: {})
+    primary_id = "whatsapp:group:fictional@g.us"
+    foreign_id = "sillytavern:fictional"
+
+    def row(cid, index, content, timestamp):
+        message = {"conversation_id": cid, "source_conversation_id": cid, "role": "user",
+                   "speaker": "FictionalUser", "content": content, "received_at": timestamp}
+        if identity_fields in {"index", "both"}:
+            message["source_conversation_index"] = index
+        if identity_fields in {"id", "both"}:
+            message["source_message_id"] = f"message-{index}"
+        return message
+
+    selected = row(primary_id, 0, "window hello", "2026-01-01T02:00:00+02:00")
+    newer = row(primary_id, 1, "newer primary", "2026-01-01T00:01:00Z")
+    older_foreign = row(foreign_id, 0, "older foreign", "2026-01-01T00:00:00Z")
+    foreign = row(foreign_id, 1, "cross hello", "2026-01-01T00:00:00Z")
+    newer_foreign = row(foreign_id, 2, "newer foreign", "2026-01-01T00:01:00Z")
+    newer_foreign.pop("received_at")
+    newer_foreign["ts_ms"] = 1_767_225_660_000
+    repeated = row(foreign_id, 3, "cross hello", "2026-01-01T00:02:00Z")
+    anonymous = {"conversation_id": foreign_id, "role": "user", "content": "unidentified evidence"}
+    history = [selected, *([foreign] if multiple_selected_chats else [])]
+    original_history = json.loads(json.dumps(history))
+    overlap = selected | {"conversation_id": f"{primary_id}:thread", "source_conversation_id": f"{primary_id}:thread"}
+    stale_copy = overlap | {"content": "display-floor copy"}
+    if identity_fields == "both":
+        overlap.pop("source_conversation_index")
+        stale_copy.pop("source_message_id")
     rendered = main._format_all_chat_history_for_ai(
-        current_history=[
-            {
-                "role": "user",
-                "name": "Marcos",
-                "content": "window hello",
-                "ts_ms": 1_770_000_000_000,
-            }
-        ],
-        cross_tail=[
-            {
-                "conversation_id": "sillytavern:Siri",
-                "role": "assistant",
-                "speaker": "Siri",
-                "chat_name": "Siri",
-                "content": "cross hello",
-                "received_at": "2026-05-08T11:00:00+00:00",
-            }
-        ],
-        conversation_id="whatsapp:group:family@g.us",
-        soul_id="Siri",
-        chat_label="[group][Household Group]",
+        current_history=history,
+        cross_tail=[repeated, newer, overlap, stale_copy, newer_foreign, older_foreign, foreign, anonymous, dict(anonymous)],
+        conversation_id=primary_id,
+        soul_id="TestSoul",
+        chat_label="[group][Fictional Group]",
         mark_current_chat=False,
     )
 
     assert "current chat" not in rendered
-    assert "[group][Household Group]" in rendered
-    assert "[Marcos] window hello" in rendered
-    assert "[dm][Siri]" in rendered
-    assert "[Siri] cross hello" in rendered
+    assert rendered.count("window hello") == 1
+    assert "display-floor copy" not in rendered
+    assert rendered.count("cross hello") == 2
+    assert rendered.count("unidentified evidence") == 2
+    assert rendered.index("window hello") < rendered.index("newer primary")
+    assert rendered.index("cross hello") < rendered.index("newer foreign") < rendered.rindex("cross hello")
+    if identity_fields != "id":
+        assert rendered.index("older foreign") < rendered.index("cross hello")
+    if not multiple_selected_chats:
+        assert "[group][Fictional Group]" in rendered
+    assert history == original_history
+
+
+def test_format_all_chat_history_marked_render_leaves_tail_rows_unchanged(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.message_log._load_whatsapp_directory_names", lambda: {})
+    foreign = {"conversation_id": "sillytavern:foreign", "source_conversation_index": 0,
+               "role": "user", "content": "Fictional floor evidence"}
+    rendered = main._format_all_chat_history_for_ai(
+        current_history=[{"role": "user", "content": "Fictional current evidence"}],
+        cross_tail=[foreign, dict(foreign)], conversation_id="sillytavern:primary", soul_id="TestSoul",
+    )
+    assert rendered.count("Fictional floor evidence") == 2
+    assert rendered.count("current chat") == 1
 
 
 def test_format_all_chat_history_for_ai_uses_current_user_name_not_prior_speaker() -> None:
