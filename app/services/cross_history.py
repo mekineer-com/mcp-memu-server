@@ -11,7 +11,6 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from app.config import validate_soul_id
 from app.services import conversation_sources as _conversation_sources
 from app.services import memorize_endpoint as _memorize_endpoint
 from app.services import message_log as _message_log
@@ -479,14 +478,19 @@ def _load_tail_for_source_conversation(
 
 def _latest_saved_segment_display_ranges(
     *,
+    user_id: str,
     soul_id: str,
+    conversation_ids: list[str],
 ) -> dict[str, tuple[int, int]]:
     chats_dir = (_m()._get_storage_dir(_m()._CONFIG) / "st_chats").resolve()
-    agent_slug = validate_soul_id(soul_id)
-    if not chats_dir.exists() or not agent_slug:
-        return {}
     segment_paths = sorted(
-        chats_dir.glob(f"{agent_slug}_*/segments/*.json"),
+        (
+            path
+            for cid in conversation_ids
+            for path in (_memorize_endpoint.resolve_chat_storage_dir(
+                chats_dir, user_id, soul_id, cid,
+            )[0] / "segments").glob("*.json")
+        ),
         key=lambda path: path.stat().st_mtime if path.exists() else 0.0,
         reverse=True,
     )
@@ -565,7 +569,9 @@ def _load_cross_tail_from_sources(
             ):
                 if resource_display_ranges is None:
                     resource_display_ranges = _m()._latest_saved_segment_display_ranges(
+                        user_id=user_id,
                         soul_id=soul_id,
+                        conversation_ids=[row["conversation_id"] for row in cursor_rows],
                     )
                 fallback_range = resource_display_ranges.get(cid)
                 if fallback_range is not None:

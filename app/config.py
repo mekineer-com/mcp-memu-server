@@ -420,6 +420,8 @@ def sqlite_dsn_for_scope(cfg: dict[str, Any], base_dsn: str, scope: dict[str, An
     configured_path = sqlite_file_from_dsn(normalize_sqlite_dsn(configured_dsn)) if configured_dsn else None
     if configured_path is not None and db_path.resolve() == configured_path.resolve():
         raise SoulIdError("Soul name is reserved by the base database")
+    if db_path.resolve() == procedural_db_path(cfg).resolve():
+        raise SoulIdError("Soul name is reserved by the procedural database")
     if db_path.is_symlink():
         raise SoulIdError("Soul database must not be a symlink")
     if not db_path.exists():

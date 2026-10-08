@@ -77,14 +77,35 @@ def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_: soul_db)
     monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
     monkeypatch.setattr(main, "_get_storage_dir", lambda *_: tmp_path)
-    artifacts = tmp_path / "st_chats" / "TestSoul_import-test" / "segments"
+    from app.services import memorize_endpoint
+    chat_dir = memorize_endpoint.resolve_chat_storage_dir(
+        tmp_path / "st_chats", "TestOwner", "TestSoul", cid,
+    )[0]
+    artifacts = chat_dir / "segments"
     artifacts.mkdir(parents=True)
     ordinary_file, historical_file = artifacts / "ordinary.json", artifacts / "historical.json"
     ordinary_file.write_text(json.dumps(current))
     historical_file.write_text(json.dumps([selected[-1]]))
     os.utime(ordinary_file, (10, 10))
     os.utime(historical_file, (20, 20))
-    assert main._latest_saved_segment_display_ranges(soul_id="TestSoul") == {cid: (3, 4)}
+    chat_dir.joinpath("manifest.json").write_text(json.dumps({"source": {"conversation_id": cid}}))
+    other_dir = memorize_endpoint.resolve_chat_storage_dir(
+        tmp_path / "st_chats", "TestOwner", "TestSoul_Work", cid,
+    )[0]
+    other_dir.joinpath("segments").mkdir(parents=True)
+    other_dir.joinpath("manifest.json").write_text(json.dumps({"source": {"conversation_id": cid}}))
+    other_dir.joinpath("segments", "other.json").write_text(json.dumps([
+        {**current[0], "source_conversation_index": 90},
+    ]))
+    lookup = {"user_id": "TestOwner", "soul_id": "TestSoul", "conversation_ids": [cid]}
+    assert main._latest_saved_segment_display_ranges(**lookup) == {cid: (3, 4)}
+    assert memorize_endpoint.find_chat_dir_for_conversation(
+        tmp_path / "st_chats", "TestOwner", "TestSoul", cid,
+    ) == chat_dir
+    chat_dir.joinpath("manifest.json").unlink()
+    assert memorize_endpoint.find_chat_dir_for_conversation(
+        tmp_path / "st_chats", "TestOwner", "TestSoul", cid,
+    ) is None
     with sqlite3.connect(soul_db) as con:
         con.row_factory = sqlite3.Row
         displayed = cross_history._load_cross_tail_from_sources(con, user_id="TestOwner", soul_id="TestSoul")
@@ -94,6 +115,9 @@ def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path
     payload = main._build_cross_conversation_payload(cid, "TestOwner", "TestSoul", {}, current, 2)
     assert [m["source_conversation_index"] for m in payload["conversation"]] == [3, 4]
     assert payload["_final_cursors"][cid]["cursor"] == 4
+    ordinary_file.unlink()
+    historical_file.unlink()
+    assert main._latest_saved_segment_display_ranges(**lookup) == {}
     with pytest.raises(ValueError, match="does not belong"):
         conversation_sources.load_import_tail(**{**kwargs, "soul_id": "OtherSoul"}, since_cursor=-1)
     long, _, _ = chat_import.normalize_messages([

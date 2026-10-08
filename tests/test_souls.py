@@ -22,7 +22,7 @@ def client_for(tmp_path, *, with_owner=True):
     owner.register_owner_routes(app, get_config=lambda: cfg)
     register_mentra_routes(app, get_config=lambda: cfg, get_activity_pause=lambda *_args: None)
     if with_owner:
-        owner.create_owner(cfg, "Marcos")
+        owner.create_owner(cfg, "TestOwner")
     return TestClient(app), cfg
 
 
@@ -31,46 +31,52 @@ def post(client, name, consent=False, path="/souls", headers=None):
 
 
 def test_exact_names_discovery_and_confirmation(tmp_path, monkeypatch):
-    client, _ = client_for(tmp_path)
-    names = ["Siri", "Henrietta Jones", "Henrietta_Jones", "Écho!"]
+    client, cfg = client_for(tmp_path)
+    names = ["TestSoul", "Henrietta Jones", "Henrietta_Jones", "Écho!"]
     for name in names:
         assert post(client, f" {name} ").json() == {"soul_id": name, "created": True}
         assert (tmp_path / f"{name}.db").exists()
         assert post(client, name).json()["detail"]["reason"] == "existing_exact"
         assert post(client, name, True).json() == {"soul_id": name, "created": False}
-    siri_bytes = (tmp_path / "Siri.db").read_bytes()
-    assert post(client, "Siri", True).json()["created"] is False
-    assert (tmp_path / "Siri.db").read_bytes() == siri_bytes
+    soul_bytes = (tmp_path / "TestSoul.db").read_bytes()
+    assert post(client, "TestSoul", True).json()["created"] is False
+    assert (tmp_path / "TestSoul.db").read_bytes() == soul_bytes
 
     (tmp_path / "memu.db").write_bytes(b"base")
     assert post(client, "memu", True).status_code == 409
-    (tmp_path / "Linked.db").symlink_to(tmp_path / "Siri.db")
+    (tmp_path / "Linked.db").symlink_to(tmp_path / "TestSoul.db")
     assert post(client, "Linked", True).status_code == 409
     (tmp_path / "Unreadable.db").write_bytes(b"not sqlite")
+    cfg["procedural"] = {"db_path": str(tmp_path / "Reference.db")}
+    (tmp_path / "Reference.db").write_bytes(b"procedural")
+    assert post(client, "Reference", True).status_code == 409
+    with pytest.raises(config.SoulIdError, match="procedural database"):
+        config.sqlite_dsn_for_scope(cfg, cfg["storage"]["metadata_store"]["dsn"],
+                                   {"user_id": "TestOwner", "soul_id": "Reference"})
     monkeypatch.setattr(sqlite3, "connect", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("discovery opened a DB")))
     assert client.get("/souls").json() == {"souls": sorted(names + ["Unreadable"])}
-    chat_dir, _, _ = memorize_endpoint.resolve_chat_storage_dir(tmp_path, "Marcos", "Henrietta Jones", "chat")
+    chat_dir, _, _ = memorize_endpoint.resolve_chat_storage_dir(tmp_path, "TestOwner", "Henrietta Jones", "chat")
     assert chat_dir.name.startswith("Henrietta Jones_")
-    assert config.soul_gen_config_path({}, "Marcos", "Henrietta Jones").name == "Marcos__Henrietta Jones.gen.json"
+    assert config.soul_gen_config_path({}, "TestOwner", "Henrietta Jones").name == "TestOwner__Henrietta Jones.gen.json"
 
 
 def test_soul_names_are_unique_ignoring_case(tmp_path):
     client, cfg = client_for(tmp_path)
-    assert post(client, "Siri").status_code == 200
+    assert post(client, "TestSoul").status_code == 200
 
-    conflict = post(client, "siri")
+    conflict = post(client, "testSoul")
     assert conflict.status_code == 409
-    assert conflict.json()["detail"] == "Soul name is already taken as 'Siri'"
-    with pytest.raises(config.SoulNameConflictError, match="taken as 'Siri'"):
+    assert conflict.json()["detail"] == "Soul name is already taken as 'TestSoul'"
+    with pytest.raises(config.SoulNameConflictError, match="taken as 'TestSoul'"):
         config.sqlite_dsn_for_scope(
             cfg,
             cfg["storage"]["metadata_store"]["dsn"],
-            {"user_id": "Marcos", "soul_id": "siri"},
+            {"user_id": "TestOwner", "soul_id": "testSoul"},
         )
-    assert not (tmp_path / "siri.db").exists()
+    assert not (tmp_path / "testSoul.db").exists()
 
 
-@pytest.mark.parametrize("name", ["Marcos", "marcos"])
+@pytest.mark.parametrize("name", ["TestOwner", "testowner"])
 def test_soul_name_must_differ_from_owner(tmp_path, name):
     client, _ = client_for(tmp_path)
     response = post(client, name)
@@ -80,8 +86,8 @@ def test_soul_name_must_differ_from_owner(tmp_path, name):
 
 
 def test_windows_sqlite_dsn_keeps_drive_path_shape():
-    assert config.sqlite_dsn_from_path(PureWindowsPath("C:/Users/Test/Siri.db")) == (
-        "sqlite:///C:/Users/Test/Siri.db"
+    assert config.sqlite_dsn_from_path(PureWindowsPath("C:/Users/Test/TestSoul.db")) == (
+        "sqlite:///C:/Users/Test/TestSoul.db"
     )
 
 
@@ -160,7 +166,7 @@ def test_non_file_soul_occupant_is_rejected(tmp_path):
         config.sqlite_dsn_for_scope(
             cfg,
             cfg["storage"]["metadata_store"]["dsn"],
-            {"user_id": "Marcos", "soul_id": "Occupied Soul"},
+            {"user_id": "TestOwner", "soul_id": "Occupied Soul"},
         )
     assert occupant.is_dir()
 
@@ -184,7 +190,7 @@ def test_concurrent_case_variants_publish_only_one_soul(tmp_path, monkeypatch):
     dsn = config.sqlite_dsn_for_scope(
         cfg,
         cfg["storage"]["metadata_store"]["dsn"],
-        {"user_id": "Marcos", "soul_id": winner},
+        {"user_id": "TestOwner", "soul_id": winner},
     )
     assert config.sqlite_file_from_dsn(dsn) == tmp_path / f"{winner}.db"
 
@@ -204,12 +210,12 @@ def test_unknown_scoped_soul_is_rejected_without_publication(tmp_path):
     _, cfg = client_for(tmp_path)
     base = cfg["storage"]["metadata_store"]["dsn"]
     with pytest.raises(config.SoulIdError, match="does not exist"):
-        config.sqlite_dsn_for_scope(cfg, base, {"user_id": "Marcos", "soul_id": "First Soul"})
+        config.sqlite_dsn_for_scope(cfg, base, {"user_id": "TestOwner", "soul_id": "First Soul"})
     assert not (tmp_path / "First Soul.db").exists()
     with pytest.raises(config.SoulIdError, match="reserved"):
-        config.sqlite_dsn_for_scope(cfg, base, {"user_id": "Marcos", "soul_id": "memu"})
+        config.sqlite_dsn_for_scope(cfg, base, {"user_id": "TestOwner", "soul_id": "memu"})
     with pytest.raises(HTTPException) as reserved:
-        main._get_service_from_payload({"user": {"user_id": "Marcos", "soul_id": "memu"}})
+        main._get_service_from_payload({"user": {"user_id": "TestOwner", "soul_id": "memu"}})
     assert reserved.value.status_code == 422
 
 
@@ -225,7 +231,7 @@ def test_invalid_scope_is_a_client_error_and_free_turn_skips_base_db(tmp_path):
     assert invalid.value.status_code == 422
 
     base = tmp_path / "memu.db"
-    soul = tmp_path / "Siri.db"
+    soul = tmp_path / "TestSoul.db"
     base.touch()
     soul.touch()
     assert free_turn._free_turn_followup_db_paths(

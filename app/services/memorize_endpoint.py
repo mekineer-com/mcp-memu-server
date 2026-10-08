@@ -1112,68 +1112,7 @@ def find_chat_dir_for_conversation(
     if (primary_dir / "manifest.json").exists():
         return primary_dir
 
-    agent_slug = validate_soul_id(soul_id)
-    for manifest_path in sorted(chats_dir.glob(f"{agent_slug}_*/manifest.json")):
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        source = manifest.get("source") if isinstance(manifest, dict) else {}
-        if not isinstance(source, dict):
-            continue
-        source_conversation_id = str(
-            source.get("conversation_id")
-            or source.get("conversationId")
-            or ""
-        ).strip()
-        if source_conversation_id == conversation_id:
-            return manifest_path.parent
     return None
-
-
-_MIN_HISTORY_MESSAGES_FOR_CONTINUITY = 8  # 4 turns × (user + soul)
-
-
-def slice_history_after_last_memorized_segment(
-    history: list[dict[str, Any]],
-    *,
-    chats_dir: Path,
-    uid: str,
-    soul_id: str,
-    conversation_id: str,
-) -> list[dict[str, Any]]:
-    if not isinstance(history, list) or not history:
-        return history
-    min_recent_start = max(0, len(history) - _MIN_HISTORY_MESSAGES_FOR_CONTINUITY)
-    chat_dir = find_chat_dir_for_conversation(
-        chats_dir,
-        uid,
-        soul_id,
-        conversation_id,
-    )
-    if chat_dir is None:
-        return history[min_recent_start:]
-    manifest_path = (chat_dir / "manifest.json").resolve()
-    if not manifest_path.exists():
-        return history[min_recent_start:]
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return history[min_recent_start:]
-    segments = manifest.get("segments") if isinstance(manifest, dict) else None
-    if not isinstance(segments, list) or not segments:
-        return history[min_recent_start:]
-    last = segments[-1]
-    if not isinstance(last, dict):
-        return history[min_recent_start:]
-    try:
-        tail_start = int(last.get("end", -1)) + 1
-    except (TypeError, ValueError):
-        return history[min_recent_start:]
-    # Include the last memorized segment's successor + enough recent messages
-    # for continuity, whichever reaches further back.
-    tail_start = max(0, min(tail_start, min_recent_start))
-    return history[tail_start:]
 
 
 def unmemorized_sleep_gap_detected(

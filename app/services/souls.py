@@ -16,6 +16,7 @@ from app.config import (
     SoulIdError,
     SoulNameConflictError,
     normalize_sqlite_dsn,
+    procedural_db_path,
     sqlite_dir_from_cfg,
     sqlite_file_from_dsn,
     sqlite_path_for_scope,
@@ -53,6 +54,8 @@ def _path(config: dict[str, Any], soul_id: str) -> Path:
     base_path = sqlite_file_from_dsn(_base_dsn(config))
     if base_path is not None and path.resolve() == base_path.resolve():
         raise HTTPException(status_code=409, detail="Soul name is reserved by the base database")
+    if path.resolve() == procedural_db_path(config).resolve():
+        raise HTTPException(status_code=409, detail="Soul name is reserved by the procedural database")
     if path.is_symlink():
         raise HTTPException(status_code=409, detail="A symlink occupies this soul name")
     if path.exists() and not path.is_file():
@@ -81,6 +84,7 @@ def publish_soul_db(path: Path) -> bool:
 def list_souls(config: dict[str, Any]) -> list[str]:
     directory = sqlite_dir_from_cfg(config, _base_dsn(config))
     base_path = sqlite_file_from_dsn(_base_dsn(config))
+    procedural_path = procedural_db_path(config).resolve()
     try:
         return sorted(
             path.stem
@@ -89,6 +93,7 @@ def list_souls(config: dict[str, Any]) -> list[str]:
             and not path.is_symlink()
             and path.is_file()
             and (base_path is None or path.resolve() != base_path.resolve())
+            and path.resolve() != procedural_path
         )
     except FileNotFoundError:
         return []
