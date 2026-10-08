@@ -187,6 +187,7 @@ def _normalize_conversation(conv: Any) -> Any:
                             "app_label",
                             "source_day",
                             "source_message_id",
+                            "source_ref",
                             "source_owner_id",
                             "historical",
                         )
@@ -297,6 +298,8 @@ def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
             "conversation_id",
             "source_conversation_id",
             "source_label",
+            "source_ref",
+            "source_owner_id",
             "chat_name",
             "event_id",
             "event_kind",
