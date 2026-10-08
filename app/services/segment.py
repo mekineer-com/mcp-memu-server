@@ -30,11 +30,11 @@ def parse_segment_range(segment_id: str) -> tuple[int, int]:
 
 def _message_happened_at(msg: dict[str, Any]) -> datetime | None:
     if msg.get("source_day"):
-        return datetime.fromisoformat(msg["source_day"]).replace(tzinfo=UTC)
+        return datetime.fromisoformat(msg["source_day"]).astimezone()
     ts_ms = message_ts_ms(msg)
     if ts_ms is None:
         return None
-    return datetime.fromtimestamp(ts_ms / 1000.0, UTC)
+    return datetime.fromtimestamp(ts_ms / 1000.0, UTC).astimezone()
 
 
 def build_segment_inputs(

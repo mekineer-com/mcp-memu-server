@@ -616,6 +616,7 @@ async def run_memorize_segments(
             if progress_key in ctx.memorize_cancel:
                 ctx.memorize_cancel.discard(progress_key)
                 ctx.logger.info("memorize cancelled before batch extraction")
+                cancelled = True
                 terminal_result = "cancelled"
             else:
                 if historical:
@@ -733,7 +734,7 @@ async def run_memorize_segments(
                 failure_record = None
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).
             should_consolidate = (
-                not historical and conversation_id
+                not cancelled and not historical and conversation_id
                 and _auto_consolidation_enabled(force=force, cross_memorize=cross_memorize)
                 and (has_memory_results or had_existing_pending)
             )
@@ -755,7 +756,7 @@ async def run_memorize_segments(
             ctx.record_call(
                 "memorize",
                 safe,
-                ok=True,
+                ok=not cancelled,
                 info={
                     "resource_url": resource_url,
                     "conversationId": conversation_id,
@@ -1533,12 +1534,15 @@ def memorize_cancel_endpoint(
     memorize_lock_key: Callable[[str, str], str],
     memorize_progress: dict[str, dict[str, Any]],
     memorize_cancel: set[str],
+    memorize_inflight: dict[str, bool],
 ) -> dict[str, Any]:
     uid = str(payload.get("user_id") or "").strip()
     sid = str(payload.get("soul_id") or "").strip()
     key = memorize_lock_key(uid, sid)
     row = memorize_progress.get(key) or {}
     if bool(row.get("active")):
+        if row.get("phase") != "accepted" and memorize_inflight.get(key) is not True:
+            return {"ok": False, "status": "cancel_too_late"}
         memorize_cancel.add(key)
         return {"ok": True, "status": "cancel_requested"}
     return {"ok": False, "status": "no_active_memorize"}

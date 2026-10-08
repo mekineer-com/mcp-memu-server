@@ -2123,6 +2123,7 @@ async def test_retry_consolidation_schedules_forced_background_run(
     entered, release = asyncio.Event(), asyncio.Event()
     main._FORCED_MEMORIZE_INFLIGHT[marker] = False
     main._MEMORIZE_PROGRESS[marker] = {"active": True, "phase": "memorizing"}
+    main._MEMORIZE_CANCEL.add(marker)
 
     async def fake_run(**kwargs):
         calls.append(kwargs)
@@ -2139,7 +2140,7 @@ async def test_retry_consolidation_schedules_forced_background_run(
         await asyncio.wait_for(entered.wait(), 2)
         assert response.status_code == 202
         assert calls[0]["force"] is True
-        assert (await main.memorize_cancel({"user_id": "User", "soul_id": "Soul"}))["status"] == "cancel_requested"
+        assert (await main.memorize_cancel({"user_id": "User", "soul_id": "Soul"}))["status"] == "cancel_too_late"
         release.set()
         await asyncio.gather(*tasks)
         assert marker in main._MEMORIZE_CANCEL

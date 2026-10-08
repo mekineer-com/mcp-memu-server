@@ -94,8 +94,6 @@ def build_prompt_override_payload(retrieve_out: dict[str, Any]) -> dict[str, Any
         prompt_override_payload["retrieve_ms"] = int(retrieve_ms)
     if retrieve_out.get("turn_prompt_active_since") is not None:
         prompt_override_payload["active_since"] = retrieve_out.get("turn_prompt_active_since")
-    if retrieve_out.get("cross_conversation_history"):
-        prompt_override_payload["cross_conversation_history"] = retrieve_out.get("cross_conversation_history")
     return prompt_override_payload
 
 

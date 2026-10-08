@@ -2544,6 +2544,7 @@ async def memorize_cancel(payload: dict[str, Any] = Body(...)):
         memorize_lock_key=_memorize_lock_key,
         memorize_progress=_MEMORIZE_PROGRESS,
         memorize_cancel=_MEMORIZE_CANCEL,
+        memorize_inflight=_FORCED_MEMORIZE_INFLIGHT,
     )
 
 
@@ -3268,8 +3269,6 @@ async def conversation_retrieve(
                 out["turn_prompt_source"] = "conversation_retrieve"
             if current_whatsapp_active_since is not None:
                 out["turn_prompt_active_since"] = current_whatsapp_active_since
-            if safe.get("_cross_conversation_history"):
-                out["cross_conversation_history"] = safe.get("_cross_conversation_history")
             if is_live_turn:
                 out["turn_history"] = turn_history
 

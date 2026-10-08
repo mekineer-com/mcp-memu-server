@@ -2,6 +2,7 @@ import asyncio
 import json
 import sqlite3
 import tempfile
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -458,12 +459,21 @@ def test_format_segment_memory_items_for_prompt_shows_memory_ids() -> None:
     assert id_map == {"M7": "mem_1", "M9": "mem_2"}
 
 
-def test_build_segment_inputs_dates_received_at_only_rows() -> None:
-    messages = [{"role": "user", "content": "hi", "received_at": "2026-04-16T12:00:00Z"}]
-    rows = segment.build_segment_inputs(messages, ["cid:0-0"])
-
-    assert rows
-    assert rows[0]["happened_at"] == datetime(2026, 4, 16, 12, 0, tzinfo=UTC)
+def test_build_segment_inputs_dates_received_at_only_rows(monkeypatch) -> None:
+    if not hasattr(time, "tzset"):
+        pytest.skip("Timezone switching requires tzset")
+    try:
+        monkeypatch.setenv("TZ", "America/Lima")
+        time.tzset()
+        messages = [{"role": "user", "content": "hi", "received_at": "2026-04-17T02:00:00Z"}]
+        rows = segment.build_segment_inputs(messages, ["cid:0-0"])
+        assert rows[0]["happened_at"] == datetime(2026, 4, 17, 2, 0, tzinfo=UTC)
+        assert rows[0]["happened_at"].date().isoformat() == "2026-04-16"
+        messages[0]["source_day"] = "2026-04-17"
+        assert segment.build_segment_inputs(messages, ["cid:0-0"])[0]["happened_at"].date().isoformat() == "2026-04-17"
+    finally:
+        monkeypatch.undo()
+        time.tzset()
 
 
 def test_build_segment_inputs_rejects_range_past_stored_history() -> None:

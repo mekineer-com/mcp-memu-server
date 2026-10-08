@@ -2,6 +2,7 @@ import asyncio
 import json
 import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -638,7 +639,7 @@ def test_import_guidance_uses_soul_period_but_selected_chat_processed_dates(tmp_
         storage_dir=tmp_path, user_id="TestOwner", soul_id="TestSoul", conversation_id=other_cid,
         history=[{"role": "user", "content": "fictional other chat", "ts_ms": 1_704_067_200_000}])
     result = validate(ImportPreview(**scope, conversation_id=cid, current_messages=[]))
-    assert result["pending_start_day"] == "2024-01-01"
+    assert result["pending_start_day"] == datetime.fromtimestamp(1_704_067_200).date().isoformat()
     assert result["processed_start_day"] == "2025-01-01" and result["processed_end_day"] == "2025-03-01"
     snapshot = conversation_sources._chat_snapshot_path(
         storage_dir=tmp_path, user_id="TestOwner", soul_id="TestSoul", conversation_id=other_cid,

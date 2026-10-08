@@ -578,7 +578,8 @@ async def test_recovery_cancel_flag_and_consolidation_interruption_preserve_targ
     main._write_conversation_state(cid, **scoped, updates={"memorize_segment_work": {"saved": "review"}})
     engine = SavedBatchService.make_engine(scoped)
     async def review(state, context, **_kwargs):
-        assert (await main.memorize_cancel(scoped))["status"] == "cancel_requested"
+        assert (await main.memorize_cancel(scoped)) == {"ok": False, "status": "cancel_too_late"}
+        assert main._memorize_lock_key(**scoped) not in main._MEMORIZE_CANCEL
         return state
     async def consolidate(**_kwargs):
         if outcome == "cancel":
@@ -664,8 +665,8 @@ async def test_detached_consolidation_owns_terminal_progress_and_cancel_cleanup(
         progress_key=marker, memorize_progress=main._MEMORIZE_PROGRESS))
     try:
         await asyncio.wait_for(entered.wait(), 2)
-        assert (await main.memorize_cancel(scoped))["status"] == "cancel_requested"
-        assert marker in main._MEMORIZE_CANCEL
+        assert (await main.memorize_cancel(scoped)) == {"ok": False, "status": "cancel_too_late"}
+        assert marker not in main._MEMORIZE_CANCEL
         if cancel:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -964,21 +965,79 @@ def test_consolidation_defers_scoped_unfinished_memorize(historical):
 
 
 @pytest.mark.asyncio
-async def test_cancel_before_segment_file_releases_manifest_reservation(tmp_path):
+@pytest.mark.parametrize("historical", [False, True, None])
+@pytest.mark.parametrize("phase", ["accepted", "extracting", "persist", "memorizing", "consolidating", None])
+async def test_cancel_respects_ordinary_phase_and_import_claim(monkeypatch, historical, phase):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    marker = main._memorize_lock_key(**scope)
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {} if historical is None else {marker: historical})
+    monkeypatch.setattr(main, "_MEMORIZE_PROGRESS", {marker: {"active": True, "phase": phase}})
+    monkeypatch.setattr(main, "_MEMORIZE_CANCEL", set())
+    accepted = historical is True or phase == "accepted"
+    assert await main.memorize_cancel(scope) == {
+        "ok": accepted, "status": "cancel_requested" if accepted else "cancel_too_late",
+    }
+    assert (marker in main._MEMORIZE_CANCEL) == accepted
+    main._MEMORIZE_CANCEL.clear()
+    main._MEMORIZE_PROGRESS[marker]["active"] = False
+    assert await main.memorize_cancel(scope) == {"ok": False, "status": "no_active_memorize"}
+    assert not main._MEMORIZE_CANCEL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after_file", [False, True])
+@pytest.mark.parametrize("retry", [False, True])
+async def test_cancel_before_segment_file_releases_manifest_reservation(tmp_path, monkeypatch, after_file, retry):
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     cid = "chat:early-cancel"
-    main._write_conversation_state(cid, **scope, updates={})
+    failure = {"conversation_id": cid, "paused": True, "error": "Fictional extraction failed",
+               "targets": {cid: {"cursor": 0}}} if retry else None
+    main._write_conversation_state(cid, **scope, updates={
+        "append_pending_segment_ids": ["committed:0-0"], "memorize_failure": failure,
+    })
+    initial = main._load_turn_state_and_soul_card(cid, **scope)[0]
     segments = tmp_path / "segments"
     segments.mkdir()
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"segments": [{"start": 0, "end": 0}]}))
     key = main._memorize_lock_key(**scope)
-    main._MEMORIZE_CANCEL.add(key)
-    assert not await main._run_memorize_segments(
-        memorize_segments=[("unused", [{"role": "user", "content": "Fictional story"}], 0, 0, (0, 0))],
-        svc=object(), scope=scope, conversation_id=cid, soul_id=scope["soul_id"], uid=scope["user_id"],
-        processed_cursor=-1, safe={}, resource_url="unused", chat_key=None, merged_len=1,
-        force=True, sleep_stats=None, segments_dir=segments,
-    )
+    main._MEMORIZE_PROGRESS[key] = {"active": True, "phase": "accepted"}
+    if after_file:
+        write_text = Path.write_text
+        def write_then_cancel(path, *args, **kwargs):
+            result = write_text(path, *args, **kwargs)
+            if path.parent == segments:
+                main._MEMORIZE_CANCEL.add(key)
+            return result
+        monkeypatch.setattr(Path, "write_text", write_then_cancel)
+    else:
+        assert (await main.memorize_cancel(scope))["status"] == "cancel_requested"
+    svc = SavedBatchService()
+    svc.engine = svc.make_engine(scope)
+    svc.memorize_segments_batch = AsyncMock(side_effect=AssertionError("Cancelled extraction ran"))
+    consolidate = AsyncMock(return_value={"status": "ok"})
+    monkeypatch.setattr(main, "_run_consolidation_task", consolidate)
+    calls = []
+    monkeypatch.setattr(main, "_record_call", lambda *args, **kwargs: calls.append(kwargs))
+    try:
+        assert not await main._run_memorize_segments(
+            memorize_segments=[("unused", [{"role": "user", "content": "Fictional story"}], 0, 0, (0, 0))],
+            svc=svc, scope=scope, conversation_id=cid, soul_id=scope["soul_id"], uid=scope["user_id"],
+            processed_cursor=-1, safe={}, resource_url="unused", chat_key=None, merged_len=1,
+            force=False, sleep_stats=None, segments_dir=segments,
+        )
+        await asyncio.sleep(0)
+        svc.memorize_segments_batch.assert_not_called()
+        consolidate.assert_not_called()
+        state = main._load_turn_state_and_soul_card(cid, **scope)[0]
+        assert state["digest_cursor"] == initial["digest_cursor"]
+        assert state["pending_segment_ids"] == ["committed:0-0"]
+        assert state["memorize_failure"] == initial["memorize_failure"]
+        assert main._MEMORIZE_PROGRESS[key]["last_result"] == "cancelled"
+        assert not main._MEMORIZE_PROGRESS[key]["active"]
+        assert key not in main._MEMORIZE_CANCEL
+        assert calls and calls[-1]["ok"] is False
+    finally:
+        svc.engine.database.close()
     assert json.loads(manifest.read_text())["segments"] == []
     assert not list(segments.iterdir())
