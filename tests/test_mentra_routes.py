@@ -2188,19 +2188,31 @@ def test_token_mint_uses_measured_constrained_wire(
 
 
 def test_partial_mentra_config_update_preserves_omitted_fields(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     from app import main
 
     config = copy.deepcopy(main._CONFIG)
     config["mentra"] = _configured()["mentra"]
+    on_disk = copy.deepcopy(config)
+    on_disk["mentra"]["public_base_url"] = "http://new-server.invalid"
+    on_disk["unrelated_on_disk"] = "keep"
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(on_disk), encoding="utf-8")
     saved: dict[str, Any] = {}
     monkeypatch.setattr(main, "_CONFIG", config)
+    monkeypatch.setattr(main, "_config_path", lambda: path)
     monkeypatch.setattr(main, "_save_config", lambda value: saved.update(value))
     monkeypatch.setattr(main, "_clear_cached_services", lambda: None)
 
     response = TestClient(main.app).post("/config", json={"mentra": {"enabled": False}})
 
     assert response.status_code == 200
-    assert saved["mentra"] == {**_configured()["mentra"], "enabled": False}
+    assert saved["mentra"] == {**on_disk["mentra"], "enabled": False}
+    assert saved["unrelated_on_disk"] == "keep"
     assert response.json()["config"]["mentra"]["gemini_api_key"] == "***"
+
+    path.write_text("{broken", encoding="utf-8")
+    saved.clear()
+    assert TestClient(main.app).post("/config", json={"mentra": {"enabled": True}}).status_code == 400
+    assert not saved

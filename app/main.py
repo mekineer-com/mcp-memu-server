@@ -1941,9 +1941,10 @@ async def set_config(req: Request):
         body = await req.json()
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="Config must be a JSON object")
+        current = json.loads(_config_path().read_text(encoding="utf-8"))
         incoming_mentra = body.get("mentra")
         if isinstance(incoming_mentra, dict):
-            current_mentra = _CONFIG.get("mentra")
+            current_mentra = current.get("mentra")
             body = {
                 **body,
                 "mentra": {
@@ -1951,7 +1952,7 @@ async def set_config(req: Request):
                     **incoming_mentra,
                 },
             }
-        merged = {**_CONFIG, **body}
+        merged = {**current, **body}
         _save_config(merged)
         _CONFIG = merged
         _refresh_runtime_limits()
