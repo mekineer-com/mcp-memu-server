@@ -497,9 +497,16 @@ def test_installation_metadata_is_local_and_keeps_names(
     client.post("/integration/mentra/installation/seen", json=report).raise_for_status()
     names = {r["device_session_id"]: r["display_name"] for r in client.get("/integration/mentra/status").json()["installations"]}
     assert names["unreserved-stock"] == "stock_01"
-    used = {str(i): {"display_name": f"stock_{i:02d}"} for i in range(1, 99)}
+    waiting = [client.post(endpoint).json() for _ in range(2)]
+    assert waiting[0]["display_name"] == waiting[1]["display_name"] == "stock_02"
+    for reservation in reversed(waiting):
+        client.post("/integration/mentra/installation/seen", json={**report,
+                    "device_session_id": reservation["device_session_id"]}).raise_for_status()
+    names = {r["device_session_id"]: r["display_name"] for r in client.get("/integration/mentra/status").json()["installations"]}
+    assert [names[r["device_session_id"]] for r in reversed(waiting)] == ["stock_02", "stock_03"]
+    used = {str(i): {"display_name": f"stock_{i:02d}", "package_name": "com.openalma.mentra"} for i in range(1, 99)}
     assert mentra_routes._stock_name(used) == "stock_99"
-    used["99"] = {"display_name": "stock_99"}
+    used["99"] = {"display_name": "stock_99", "package_name": "com.openalma.mentra"}
     with pytest.raises(HTTPException, match="stock_99"):
         mentra_routes._stock_name(used)
     entered, release = Event(), Event()

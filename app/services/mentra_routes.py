@@ -627,7 +627,7 @@ def _write_installations(
 
 
 def _stock_name(records: dict[str, dict[str, Any]]) -> str:
-    used = {record.get("display_name") for record in records.values()}
+    used = {record.get("display_name") for record in records.values() if record.get("package_name") or record.get("host")}
     for number in range(1, 100):
         name = f"stock_{number:02d}"
         if name not in used:
@@ -761,7 +761,7 @@ def register_mentra_routes(
             installations = _load_installations(storage_dir)
             records = installations.setdefault(_IRIS_PACKAGE, {})
             record = records.setdefault(body.device_session_id, {})
-            if not body.host_package and not record.get("host") and "display_name" not in record:
+            if not body.host_package and not record.get("host") and not record.get("package_name"):
                 record["display_name"] = _stock_name(records)
             record.update({
                 **body.model_dump(exclude={"host_package", "host_version"}),
