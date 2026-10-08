@@ -149,6 +149,9 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
         svc = runtime._get_service_from_payload({"user": scoped})
         deps = runtime._make_consolidation_deps()
         profile = runtime._resolve_profile_if_configured(svc, "consolidation")
+        revision_profile = consolidation.preflight_consolidation_profiles(svc, profile)
+        for name in (revision_profile, profile):
+            consolidation_input_budget(svc, name)
         days: set[date] = set()
         while not pending_first:
             phase = "memorize"
@@ -213,7 +216,7 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
         success = True
         memorize_endpoint._set_memorize_progress(runtime._MEMORIZE_PROGRESS, marker, active=False, last_result="success")
     except (Exception, asyncio.CancelledError) as exc:
-        error = "Import interrupted. Retry required." if isinstance(exc, asyncio.CancelledError) else f"{type(exc).__name__}: {exc}"
+        error = "Import interrupted. Retry required." if isinstance(exc, asyncio.CancelledError) else str(exc)
         runtime.logger.exception("Import batch failed for %s", cid)
         memorize_endpoint._set_memorize_progress(
             runtime._MEMORIZE_PROGRESS, marker, active=False, last_result="failure", error=error,

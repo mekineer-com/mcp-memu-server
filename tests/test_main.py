@@ -1805,7 +1805,7 @@ async def test_consolidation_pipeline_records_preflight_error_and_releases_claim
             user_id="UserOwner",
         )
 
-    assert recorded[0]["error"].startswith("HTTPException:")
+    assert recorded[0]["error"] == "500: preflight failed"
     assert ("UserOwner", "SoulOwner") not in main._CONSOLIDATION_RUNNING
 
 
@@ -1854,7 +1854,7 @@ async def test_consolidation_pipeline_records_failure_and_releases_claim(
             user_id="UserOwner",
         )
 
-    assert recorded[0]["error"].startswith("RuntimeError:")
+    assert recorded[0]["error"] == "reflection failed"
     assert ("UserOwner", "SoulOwner") not in main._CONSOLIDATION_RUNNING
 
 
@@ -1896,7 +1896,7 @@ async def test_consolidation_pipeline_records_gather_failure_and_releases_claim(
             user_id="UserOwner",
         )
 
-    assert recorded[0]["error"].startswith("HTTPException:")
+    assert recorded[0]["error"] == "400: segment history is damaged"
     assert ("UserOwner", "SoulOwner") not in main._CONSOLIDATION_RUNNING
 
 

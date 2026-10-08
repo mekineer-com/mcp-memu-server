@@ -409,6 +409,8 @@ async def test_import_retry_recovers_zero_item_segment_before_pending_shortcut(m
         "stage": stage, "error": "Review failed"}})
     main._write_conversation_state(cid, **scoped, updates={"import_segment_work": {"saved": phase}})
     engine = SavedBatchService.make_engine(scoped)
+    for profile in engine.llm_profiles.profiles.values():
+        profile.context_window_tokens = 1_000_000
     entered, release = asyncio.Event(), asyncio.Event()
     async def review(state, context, *, enforce_input_budget):
         assert enforce_input_budget and not state["items"]
@@ -663,7 +665,7 @@ def test_import_guidance_uses_soul_period_but_selected_chat_processed_dates(tmp_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stop", ["calendar", "calendar_retry", "capacity", "continuous", "cancel_extraction", "failure", "error_write", "consolidation_failure"])
+@pytest.mark.parametrize("stop", ["calendar", "calendar_retry", "capacity", "continuous", "cancel_extraction", "failure", "error_write", "consolidation_failure", "missing_capacity"])
 async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, monkeypatch, stop):
     import asyncio
     from app.services import memorize_endpoint
@@ -690,11 +692,13 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
     if stop == "error_write":
         write = main._write_conversation_state
         def failing_write(*args, **kwargs):
-            if str(kwargs.get("updates", {}).get("import_error", "")).startswith("ValueError:"):
+            if str(kwargs.get("updates", {}).get("import_error", "")).startswith("Fictional"):
                 raise sqlite3.OperationalError("Fictional error-write lock")
             return write(*args, **kwargs)
         monkeypatch.setattr(main, "_write_conversation_state", failing_write)
     profile = SimpleNamespace(context_window_tokens=100, max_tokens=0, chat_model="fictional")
+    if stop == "missing_capacity":
+        profile.context_window_tokens = None
     class Service(SavedBatchService):
         memorize_config = SimpleNamespace(category_update_llm_profile="default")
         llm_profiles = SimpleNamespace(profiles={"default": profile})
@@ -751,6 +755,13 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
     response = await _endpoint("/imports/process")(request)
     assert response.status_code == 202
     tasks = list(main._BACKGROUND_TASKS)
+    if stop == "missing_capacity":
+        await asyncio.gather(*tasks)
+        assert not extracts and not consolidations
+        assert record()["error"] == "context_window_tokens is required for model fictional"
+        assert record()["memorize_cursor"] == -1 and releases == [(marker, False)]
+        assert marker not in main._FORCED_MEMORIZE_INFLIGHT
+        return
     if stop not in {"failure", "calendar_retry", "error_write"}:
         await asyncio.wait_for(entered.wait(), 5)
         with pytest.raises(HTTPException) as busy:

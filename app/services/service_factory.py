@@ -252,6 +252,11 @@ def _validated_step_models(
         if key not in _VALID_STEP_MODEL_KEYS:
             logger.warning("ignoring unrecognized llm.%s key: %s", setting, key)
             continue
+        if setting == "step_context_window_tokens" and raw_value is not None and raw_value != "":
+            if type(raw_value) is not int or raw_value <= 0:
+                raise HTTPException(
+                    status_code=500, detail=f"llm.{setting}.{key} must be a positive integer",
+                )
         model_name = str(raw_value or "").strip()
         if not model_name:
             continue

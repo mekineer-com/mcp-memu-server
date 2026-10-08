@@ -154,6 +154,13 @@ def test_validated_step_models_warns_on_unknown_key(caplog: pytest.LogCaptureFix
 
     assert out == {"preprocess": "gpt-4o-mini" if setting == "step_models" else "200000"}
     assert f"ignoring unrecognized llm.{setting} key: typo_step" in caplog.text
+    if setting == "step_context_window_tokens":
+        for invalid in (0, -1, "not-a-number", True, 1.5):
+            with pytest.raises(HTTPException, match="llm.step_context_window_tokens.preprocess must be a positive integer"):
+                service_factory._validated_step_models(
+                    {"preprocess": invalid}, llm_profiles=llm_profiles,
+                    logger=logging.getLogger("test.step_models"), setting=setting,
+                )
 
 
 def test_validated_step_models_raises_when_profile_missing() -> None:

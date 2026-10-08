@@ -57,12 +57,6 @@ if TYPE_CHECKING:
     from memu.app import MemoryService
 
 
-class ConsolidationSourceError(HTTPException):
-    def __init__(self, conversation_id: str, *, status_code: int, detail: str):
-        super().__init__(status_code=status_code, detail=detail)
-        self.conversation_id = conversation_id
-
-
 @dataclass(frozen=True)
 class ConsolidationDeps:
     sqlite_current_path: Callable[[str, str], Path | None]
@@ -866,7 +860,7 @@ ORDER BY updated_at ASC, id ASC
         for pending_conversation_id, pending_segment_ids in pending_by_conversation.items():
             chat_dir = deps.find_chat_dir_for_conversation(chats_dir, user_id, soul_id, pending_conversation_id)
             if chat_dir is None:
-                raise ConsolidationSourceError(pending_conversation_id, status_code=404, detail=f"conversation resource not found: {pending_conversation_id}")
+                raise HTTPException(status_code=404, detail=f"conversation resource not found: {pending_conversation_id}")
             segments_dir = chat_dir / "segments"
             resources_by_segment: dict[str, list[sqlite3.Row]] = {sid: [] for sid in pending_segment_ids}
             for row in con.execute(
@@ -881,23 +875,23 @@ ORDER BY updated_at ASC, id ASC
                 resource_rows = resources_by_segment[segment_id]
                 paths = {Path(str(row["local_path"] or "").replace("\\", "/")).name for row in resource_rows}
                 if len(paths) != 1 or not next(iter(paths)):
-                    raise ConsolidationSourceError(pending_conversation_id, status_code=400, detail=f"segment resource ownership missing or ambiguous: {segment_id}")
+                    raise HTTPException(status_code=400, detail=f"segment resource ownership missing or ambiguous: {segment_id}")
                 ep_file = segments_dir / next(iter(paths))
                 try:
                     messages = json.loads(ep_file.read_text(encoding="utf-8"))
                 except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                    raise ConsolidationSourceError(pending_conversation_id, status_code=400, detail=f"segment history unreadable: {ep_file}") from exc
+                    raise HTTPException(status_code=400, detail=f"segment history unreadable: {ep_file}") from exc
                 if not isinstance(messages, list):
-                    raise ConsolidationSourceError(pending_conversation_id, status_code=400, detail=f"segment history is not a message list: {ep_file}")
+                    raise HTTPException(status_code=400, detail=f"segment history is not a message list: {ep_file}")
                 if any(not isinstance(message, dict) for message in messages):
-                    raise ConsolidationSourceError(pending_conversation_id, status_code=400, detail=f"segment history contains a non-message row: {ep_file}")
+                    raise HTTPException(status_code=400, detail=f"segment history contains a non-message row: {ep_file}")
                 try:
                     start, end = parse_segment_range(segment_id)
                     if len(messages) != end - start + 1:
                         raise ValueError(f"segment range does not match stored history: {segment_id}")
                     entry = build_segment_inputs(messages, [segment_id], start_offset=start)[0]
                 except ValueError as exc:
-                    raise ConsolidationSourceError(pending_conversation_id, status_code=400, detail=str(exc)) from exc
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
                 selected_resource_rows.extend(resource_rows)
                 current_chat_messages.extend(_messages_for_segment_inputs(messages, [entry], start_offset=start))
                 entry["conversation_id"] = pending_conversation_id
@@ -1513,7 +1507,6 @@ async def _run_consolidation_pipeline_once(
                 error="Consolidation was interrupted. Retry required.",
             )
     running[run_key] = historical
-    failure_conversation_ids = [] if historical else [conversation_id]
     try:
         async with state_lock:
             prep = gather_consolidation_inputs(
@@ -1527,10 +1520,6 @@ async def _run_consolidation_pipeline_once(
             )
         if prep.get("status") == "skip":
             return {"status": "skipped", "reason": prep.get("reason")}
-        if historical:
-            failure_conversation_ids = [
-                cid for cid, segment_ids in prep["selected_segment_ids_by_conversation"].items() if segment_ids
-            ]
         _consolidation_database_path(svc, prep)
         consolidation_profile = _service_factory._resolve_profile_if_configured(svc, "consolidation")
         preflight_consolidation_profiles(svc, consolidation_profile)
@@ -1573,7 +1562,17 @@ async def _run_consolidation_pipeline_once(
                 ) for stage, tokens in prepared[3].items()):
                     break
                 if len(ordered_segments) <= 1:
-                    raise ValueError("No whole historical segment fits the configured consolidation context")
+                    stage, tokens, name, budget = next(
+                        (stage, tokens, name, consolidation_input_budget(svc, name))
+                        for stage, tokens in prepared[3].items()
+                        for name in [revision_profile if stage == "dossiers" else consolidation_profile]
+                        if tokens > consolidation_input_budget(svc, name)
+                    )
+                    raise ValueError(
+                        f"No whole historical segment fits: {stage} needs about {tokens} input tokens; "
+                        f"profile {name or 'default'} allows {budget}. Increase its context_window_tokens "
+                        "to the model's actual capacity or choose a larger-context model."
+                    )
                 # ponytail: linear prefix shrink; optimize only if large imports make preparation slow.
                 ordered_segments = ordered_segments[:-1]
                 prep = gather_consolidation_inputs(
@@ -1583,9 +1582,6 @@ async def _run_consolidation_pipeline_once(
                 )
                 if prep.get("status") == "skip":
                     return {"status": "skipped", "reason": prep.get("reason")}
-                failure_conversation_ids = [
-                    cid for cid, segment_ids in prep["selected_segment_ids_by_conversation"].items() if segment_ids
-                ]
                 prep["all_chat_history"] = format_all_chat_history_for_ai(
                     current_history=prep["current_chat_messages"], cross_tail=[],
                     conversation_id=conversation_id, soul_id=soul_id, mark_current_chat=False,
@@ -1593,13 +1589,13 @@ async def _run_consolidation_pipeline_once(
         async with state_lock:
             old_error = _soul_state.consolidation_failure(prep.get("state", {}))
             if historical or old_error is None or old_error == _soul_state.CONSOLIDATION_UNFINISHED:
-                for failure_cid in failure_conversation_ids:
-                    _record_consolidation_failure(
-                        deps=deps, soul_id=soul_id, user_id=user_id,
-                        historical=historical, conversation_id=failure_cid,
-                        error=("Consolidation was interrupted. Retry in progress."
-                               if old_error else _soul_state.CONSOLIDATION_UNFINISHED),
-                    )
+                _record_consolidation_failure(
+                    deps=deps, soul_id=soul_id, user_id=user_id,
+                    historical=historical, conversation_id=conversation_id,
+                    error=("Import interrupted. Retry required." if historical else
+                           "Consolidation was interrupted. Retry in progress."
+                           if old_error else _soul_state.CONSOLIDATION_UNFINISHED),
+                )
         await prepare_dossier_consolidation_context(
             svc,
             inputs=prep,
@@ -1628,20 +1624,14 @@ async def _run_consolidation_pipeline_once(
             )
         return {"status": "ok", "result": result}
     except Exception as exc:
-        if historical and isinstance(exc, ConsolidationSourceError):
-            failure_conversation_ids = [exc.conversation_id]
         db_path = deps.sqlite_current_path(user_id, soul_id)
-        if db_path is not None and db_path.exists():
+        if not historical and db_path is not None and db_path.exists():
             try:
                 async with state_lock:
-                    for failure_cid in failure_conversation_ids:
-                        _record_consolidation_failure(
-                            deps=deps,
-                            soul_id=soul_id,
-                            user_id=user_id,
-                            error=f"{type(exc).__name__}: {str(exc)[:260]}",
-                            historical=historical, conversation_id=failure_cid,
-                        )
+                    _record_consolidation_failure(
+                        deps=deps, soul_id=soul_id, user_id=user_id,
+                        error=str(exc)[:260], conversation_id=conversation_id,
+                    )
             except Exception:
                 log.exception(
                     "failed to record consolidation error state for %s",

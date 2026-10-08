@@ -1141,32 +1141,27 @@ CREATE TABLE resources (
 
     broken = {"history_end_index": segment_end + 1, "memorize_cursor": segment_end,
               "pending_segment_ids": [segment_id], "stage": "consolidation", "error": None}
-    unrelated = {"history_end_index": 1, "memorize_cursor": 0,
-                 "pending_segment_ids": ["requester:0-0"], "stage": "consolidation", "error": "Unrelated failure"}
     deps.write_conversation_state(cid, soul_id=soul_id, user_id=user_id,
                                   updates={"import_state": broken, "pending_segment_ids": ["ordinary-next"]})
-    deps.write_conversation_state("requester", soul_id=soul_id, user_id=user_id, updates={"import_state": unrelated})
     with sqlite_connect(db_path) as con:
         con.row_factory = sqlite3.Row
         before = _soul_state.read(con)
     running = {}
-    with pytest.raises(consolidation.ConsolidationSourceError, match=error_text) as source_error:
+    with pytest.raises(HTTPException, match=error_text):
         await consolidation._run_consolidation_pipeline_once(
             svc=object(), deps=deps, state_lock=asyncio.Lock(), running=running,
             load_cross_tail_for_ai=lambda **_kw: pytest.fail("gather failure must precede prompt/model work"),
             format_all_chat_history_for_ai=lambda **_kw: pytest.fail("gather failure must precede prompt/model work"),
-            conversation_id="requester", soul_id=soul_id, user_id=user_id, historical=True,
+            conversation_id=cid, soul_id=soul_id, user_id=user_id, historical=True,
         )
-    assert source_error.value.conversation_id == cid and running == {}
+    assert running == {}
     with sqlite_connect(db_path) as con:
         con.row_factory = sqlite3.Row
         assert _soul_state.read(con) == before
         current = conversation_state_from_row(conversation_state_row(con, cid, soul_id=soul_id, user_id=user_id))
         assert current["pending_segment_ids"] == ["ordinary-next"]
         record = current["import_state"]
-        assert {**record, "error": None} == broken and error_text in record["error"]
-        requester = conversation_state_from_row(conversation_state_row(con, "requester", soul_id=soul_id, user_id=user_id))
-        assert requester["import_state"] == unrelated
+        assert record == broken  # The import caller owns failure reporting.
 
 
 def _make_consolidation_deps(db_path: Path, tmp_dir: Path) -> ConsolidationDeps:
@@ -1246,17 +1241,6 @@ async def test_historical_runner_failure_is_import_only(tmp_path, monkeypatch, o
     with sqlite_connect(path) as con:
         con.row_factory = sqlite3.Row
         before = _soul_state.read(con)
-    write_state = deps.write_conversation_state
-    def register_before_error_write(cid, **kwargs):
-        updates = kwargs.get("updates", {})
-        if "import_error" in updates or (updates.get("import_state") or {}).get("error"):
-            # Registration commits in the old error handler's read/write gap.
-            write_state(cid, **scope, updates={"import_state": {
-                "history_end_index": 6, "memorize_cursor": 1,
-                "pending_segment_ids": ["historical"], "stage": "consolidation", "error": None,
-            }})
-        return write_state(cid, **kwargs)
-    deps = replace(deps, write_conversation_state=register_before_error_write)
     svc = _DossierContextService()
     svc.database = _make_svc_stub(path).database
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_: path)
@@ -1290,24 +1274,22 @@ async def test_historical_runner_failure_is_import_only(tmp_path, monkeypatch, o
         state = conversation_state_from_row(conversation_state_row(con, "chat", **scope))
         assert state["pending_segment_ids"] == ["ordinary"]
         assert state["import_state"]["pending_segment_ids"] == ["historical"]
-        assert state["import_state"]["history_end_index"] == 6
-        assert "Import model call failed" in state["import_state"]["error"]
+        assert state["import_state"]["history_end_index"] == 2
+        assert state["import_state"]["error"] == "Import interrupted. Retry required."
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fail", [False, True])
-async def test_historical_consolidation_only_changes_contributing_imports(tmp_path, monkeypatch, fail):
+async def test_historical_consolidation_only_changes_its_import(tmp_path, monkeypatch, fail):
     path = tmp_path / "test.db"
     with sqlite_connect(path) as con:
         sqlite_ensure_conversation_state_schema(con)
     deps = _make_consolidation_deps(path, tmp_path)
     scope = {"soul_id": "TestSoul", "user_id": "TestOwner"}
-    untouched = {"history_end_index": 2, "memorize_cursor": -1, "pending_segment_ids": [],
-                 "stage": "memorize", "error": "Extraction failed"}
-    contributor = {**untouched, "memorize_cursor": 1, "pending_segment_ids": ["other:0-1"],
+    contributor = {"history_end_index": 2, "memorize_cursor": 1, "pending_segment_ids": ["other:0-1"],
                    "stage": "consolidation", "error": None}
-    for cid, record in (("requester", untouched), ("other", contributor)):
-        deps.write_conversation_state(cid, **scope, updates={"import_state": record})
+    deps.write_conversation_state("other", **scope, updates={"import_state": contributor})
+    deps.write_conversation_state("ordinary", **scope, updates={"pending_segment_ids": ["ordinary:0-1"]})
     svc = _DossierContextService()
     stub = _make_svc_stub(path)
     svc.database, svc._sqlite_write_session = stub.database, stub._sqlite_write_session
@@ -1321,25 +1303,26 @@ async def test_historical_consolidation_only_changes_contributing_imports(tmp_pa
         "selected_segment_ids_by_conversation": {"other": ["other:0-1"]},
     })
     async def llm(*_a, **_kw):
-        assert record("requester") == untouched
-        assert record("other")["error"]
+        assert record("other")["error"] == "Import interrupted. Retry required."
         if fail:
             raise RuntimeError("Selected import failed")
         return _base_llm_results()
     monkeypatch.setattr(consolidation, "run_consolidation_llm", llm)
     kwargs = dict(svc=svc, deps=deps, state_lock=asyncio.Lock(), running={},
                   load_cross_tail_for_ai=lambda **_kw: [], format_all_chat_history_for_ai=lambda **_kw: "",
-                  conversation_id="requester", historical=True, **scope)
+                  conversation_id="other", historical=True, **scope)
     if fail:
         with pytest.raises(RuntimeError, match="Selected import failed"):
             await consolidation._run_consolidation_pipeline_once(**kwargs)
         assert record("other")["pending_segment_ids"] == contributor["pending_segment_ids"]
-        assert "Selected import failed" in record("other")["error"]
+        assert record("other")["error"] == "Import interrupted. Retry required."
     else:
         result = await consolidation._run_consolidation_pipeline_once(**kwargs)
         assert result["status"] == "ok" and record("other")["stage"] == "complete"
         assert record("other")["pending_segment_ids"] == [] and record("other")["error"] is None
-    assert record("requester") == untouched
+    with sqlite_connect(path) as con:
+        con.row_factory = sqlite3.Row
+        assert conversation_state_from_row(conversation_state_row(con, "ordinary", **scope))["pending_segment_ids"] == ["ordinary:0-1"]
 
 
 @pytest.mark.asyncio
@@ -1351,7 +1334,7 @@ async def test_historical_selection_shrinks_whole_prefix_before_any_model_call(t
     svc = _DossierContextService(due_ids=("first",))
     svc.database = _make_svc_stub(path).database
     segments = [{
-        "conversation_id": f"import-{i}", "segment_id": f"import-{i}:0-0",
+        "conversation_id": "import:dm:example", "segment_id": f"import:dm:example:{i}-{i}",
         "memory_summaries": [{"id": f"memory-{i}", "memory_ref": i + 1, "memory_type": "knowledge",
                               "summary": f"Evidence {i}: " + "Detail. " * 500}],
     } for i in range(3)]
@@ -1359,18 +1342,13 @@ async def test_historical_selection_shrinks_whole_prefix_before_any_model_call(t
         return {**_inputs(), "status": "ready", "historical": True, "db_path": path,
                 "segment_inputs": rows, "current_chat_messages": [],
                 "selected_segment_ids": [row["segment_id"] for row in rows],
-                "selected_segment_ids_by_conversation": {row["conversation_id"]: [row["segment_id"]] for row in rows}}
+                "selected_segment_ids_by_conversation": {"import:dm:example": [row["segment_id"] for row in rows]}}
     deps = _make_consolidation_deps(path, tmp_path)
     scope = {"soul_id": "TestSoul", "user_id": "TestUser"}
-    records = {}
-    for row in segments:
-        record = {"history_end_index": 1, "memorize_cursor": 0, "stage": "consolidation", "error": None,
-                  "pending_segment_ids": [row["segment_id"]]}
-        records[row["conversation_id"]] = record
-        deps.write_conversation_state(row["conversation_id"], **scope, updates={"import_state": record})
-    unrelated = {"history_end_index": 1, "memorize_cursor": -1, "stage": "memorize",
-                 "error": "Unrelated failure", "pending_segment_ids": []}
-    deps.write_conversation_state("requester", **scope, updates={"import_state": unrelated,
+    original = {"history_end_index": 3, "memorize_cursor": 2, "stage": "consolidation", "error": None,
+                "pending_segment_ids": [row["segment_id"] for row in segments]}
+    deps.write_conversation_state("import:dm:example", **scope, updates={"import_state": original})
+    deps.write_conversation_state("ordinary", **scope, updates={
         "last_consolidation_error": "Ordinary failed", "last_consolidation_error_at": "2026-01-01T00:00:00+00:00"})
     with sqlite_connect(path) as con:
         con.row_factory = sqlite3.Row
@@ -1397,31 +1375,24 @@ async def test_historical_selection_shrinks_whole_prefix_before_any_model_call(t
     })
     kwargs = dict(svc=svc, deps=deps, state_lock=asyncio.Lock(), running={},
                   load_cross_tail_for_ai=lambda **_kw: [], format_all_chat_history_for_ai=lambda **_kw: "A lived span.",
-                  conversation_id="requester", historical=True, **scope)
+                  conversation_id="import:dm:example", historical=True, **scope)
     if fits:
         result = await consolidation._run_consolidation_pipeline_once(**kwargs)
-        assert result["result"]["consumed_segment_ids"] == ["import-0:0-0"]
+        assert result["result"]["consumed_segment_ids"] == [segments[0]["segment_id"]]
         assert [call for call in svc.calls if call[0] == "chat"] == [("chat", "dossiers"), ("chat", "anchors")]
     else:
         error_text = "No whole historical segment" if anchor_capacity is not None else "context_window_tokens is required"
         with pytest.raises(ValueError, match=error_text):
             await consolidation._run_consolidation_pipeline_once(**kwargs)
         assert not [call for call in svc.calls if call[0] in {"chat", "apply"}]
-    assert captures == [["import-0:0-0", "import-1:0-0", "import-2:0-0"], ["import-0:0-0", "import-1:0-0"], ["import-0:0-0"]]
+    assert captures == [[row["segment_id"] for row in segments[:count]] for count in (3, 2, 1)]
     assert kwargs["running"] == {}
     with sqlite_connect(path) as con:
         con.row_factory = sqlite3.Row
         assert _soul_state.read(con) == ordinary_before
-        requester = conversation_state_from_row(conversation_state_row(con, "requester", **scope))
-        assert requester["import_state"] == unrelated
-        for cid, original in records.items():
-            record = conversation_state_from_row(conversation_state_row(con, cid, **scope))["import_state"]
-            if cid == "import-0":
-                assert record["error"] and {**record, "error": None} == original
-                if not fits:
-                    assert error_text in record["error"]
-            else:
-                assert record == original
+        record = conversation_state_from_row(conversation_state_row(con, "import:dm:example", **scope))["import_state"]
+        assert {**record, "error": None} == original
+        assert record["error"] == ("Import interrupted. Retry required." if fits else None)
 
 
 @pytest.mark.asyncio
