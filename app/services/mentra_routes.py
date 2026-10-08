@@ -125,6 +125,7 @@ class MentraInstallationSeen(BaseModel):
     version: str
     host_package: Literal["com.mentra.mentra.openalma"] | None = None
     host_version: str | None = None
+    installation_ticket: str | None = None
 
     @field_validator("user_id")
     @classmethod
@@ -142,6 +143,11 @@ class MentraInstallationSeen(BaseModel):
             raise ValueError("must be 1-128 letters, numbers, dots, underscores, or hyphens")
         return value
 
+    @field_validator("installation_ticket")
+    @classmethod
+    def validate_installation_ticket(cls, value: str | None) -> str | None:
+        return cls.validate_device_session_id(value) if value is not None else None
+
     @field_validator("package_name")
     @classmethod
     def validate_package_name(cls, value: str) -> str:
@@ -158,6 +164,16 @@ class MentraInstallationSeen(BaseModel):
         if not value or len(value) > 64 or not value.isprintable():
             raise ValueError("must be 1-64 printable characters")
         return value
+
+
+class MentraInstallationTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    device_session_id: str = ""
+
+    @field_validator("device_session_id")
+    @classmethod
+    def validate_target(cls, value: str) -> str:
+        return MentraInstallationSeen.validate_device_session_id(value) if value else ""
 
 
 class MentraHostSeen(BaseModel):
@@ -696,7 +712,7 @@ def register_mentra_routes(
         return {"user_id": read_owner(get_config())}
 
     @app.post("/mentra/installations", dependencies=[Depends(require_local_owner_access)])
-    async def reserve_installation() -> dict[str, Any]:
+    async def reserve_installation(body: MentraInstallationTarget | None = None) -> dict[str, Any]:
         if get_storage_dir is None:
             raise HTTPException(status_code=503, detail="Mentra installation storage is not configured")
         user_id = read_owner(get_config())
@@ -706,11 +722,18 @@ def register_mentra_routes(
             storage_dir = get_storage_dir()
             installations = _load_installations(storage_dir)
             records = installations.setdefault(_IRIS_PACKAGE, {})
-            key = f"stock-{secrets.token_urlsafe(18)}"
-            record = {"device_session_id": key, "user_id": user_id, "display_name": _stock_name(records)}
+            target = body.device_session_id if body else ""
+            selected = records.get(target) if target else None
+            if target and (not selected or selected.get("user_id") != user_id
+                           or selected.get("host") or not selected.get("package_name")):
+                raise HTTPException(status_code=409, detail="Choose an installed stock app")
+            key = f"ticket-{secrets.token_urlsafe(18)}"
+            record = {"installation_ticket": key, "target_device_session_id": target,
+                      "user_id": user_id,
+                      "display_name": selected["display_name"] if selected else _stock_name(records)}
             records[key] = record
             _write_installations(storage_dir, installations)
-            return dict(record)
+            return {**record, "device_session_id": target}
 
     @app.patch("/mentra/installations/{device_session_id}", dependencies=[Depends(require_local_owner_access)])
     async def rename_installation(device_session_id: str, body: MentraInstallationName) -> dict[str, str]:
@@ -760,11 +783,28 @@ def register_mentra_routes(
             storage_dir = get_storage_dir()
             installations = _load_installations(storage_dir)
             records = installations.setdefault(_IRIS_PACKAGE, {})
-            record = records.setdefault(body.device_session_id, {})
+            record = records.get(body.device_session_id, {})
+            if "target_device_session_id" in record:
+                raise HTTPException(status_code=409, detail="Setup ticket is not an app ID")
+            if body.installation_ticket:
+                if body.host_package or record.get("host") or (
+                    record and record.get("user_id") != body.user_id
+                ):
+                    raise HTTPException(status_code=409, detail="Setup ticket requires the same stock app owner")
+                pending = records.get(body.installation_ticket)
+                if pending and "target_device_session_id" in pending:
+                    target = pending["target_device_session_id"]
+                    if pending.get("user_id") != body.user_id or (target and target != body.device_session_id):
+                        raise HTTPException(status_code=409, detail="Setup ticket does not match this app")
+                    records.pop(body.installation_ticket)
+                    record["installation_ticket"] = body.installation_ticket
+                elif record.get("installation_ticket") != body.installation_ticket:
+                    raise HTTPException(status_code=409, detail="Setup ticket is unavailable or already used")
+            records[body.device_session_id] = record
             if not body.host_package and not record.get("host") and not record.get("package_name"):
                 record["display_name"] = _stock_name(records)
             record.update({
-                **body.model_dump(exclude={"host_package", "host_version"}),
+                **body.model_dump(exclude={"host_package", "host_version", "installation_ticket"}),
                 "seen_at": time.time(),
             })
             if body.host_package:

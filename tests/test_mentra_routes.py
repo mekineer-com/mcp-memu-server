@@ -471,16 +471,29 @@ def test_installation_metadata_is_local_and_keeps_names(
     first = client.post(endpoint).json()
     assert first["display_name"] == "stock_01"
     another = client.post(endpoint).json()
-    assert another["device_session_id"] != first["device_session_id"]
-    client.delete(f"{endpoint}/{another['device_session_id']}").raise_for_status()
-    key = first["device_session_id"]
-    client.post("/integration/mentra/installation/seen", json={
+    assert another["installation_ticket"] != first["installation_ticket"]
+    assert first["device_session_id"] == ""
+    client.delete(f"{endpoint}/{another['installation_ticket']}").raise_for_status()
+    key = "stock-app-one"
+    first_report = {
         "user_id": START["user_id"], "device_session_id": key,
         "package_name": "com.openalma.mentra", "version": "0.1.0",
-    }).raise_for_status()
+        "installation_ticket": first["installation_ticket"],
+    }
+    seen = "/integration/mentra/installation/seen"
+    assert client.post(seen, json={**first_report, "device_session_id": first["installation_ticket"]}).status_code == 409
+    async def claim_from_two_apps():
+        async with AsyncClient(transport=ASGITransport(app=remote.app), base_url="http://test") as requester:
+            return await asyncio.gather(
+                requester.post(seen, json=first_report),
+                requester.post(seen, json={**first_report, "device_session_id": "copied-profile"}),
+            )
+    assert [r.status_code for r in asyncio.run(claim_from_two_apps())] == [200, 409]
+    client.post(seen, json=first_report).raise_for_status()
+    assert client.post(seen, json={**first_report, "device_session_id": "copied-profile"}).status_code == 409
     second = client.post(endpoint).json()
     assert second["display_name"] == "stock_02"
-    assert second["device_session_id"] != key
+    assert second["installation_ticket"] != first["installation_ticket"]
     client.patch(f"{endpoint}/{key}", json={"display_name": "My app"}).raise_for_status()
     client.post("/integration/mentra/installation/seen", json={
         "user_id": START["user_id"], "device_session_id": key,
@@ -489,7 +502,16 @@ def test_installation_metadata_is_local_and_keeps_names(
     status = client.get("/integration/mentra/status").json()
     assert status["installed_device"] is None
     assert status["installations"][0]["display_name"] == "My app"
-    client.delete(f"{endpoint}/{second['device_session_id']}").raise_for_status()
+    receipt = next(r for r in status["installations"] if r["device_session_id"] == key)
+    assert receipt["installation_ticket"] == first["installation_ticket"]
+    client.post(seen, json=first_report).raise_for_status()
+    update = client.post(endpoint, json={"device_session_id": key}).json()
+    assert update["device_session_id"] == key
+    update_report = {**first_report, "version": "0.1.1", "installation_ticket": update["installation_ticket"]}
+    assert client.post(seen, json={**update_report, "device_session_id": "wrong-update-app"}).status_code == 409
+    client.post(seen, json=update_report).raise_for_status()
+    assert client.get(f"/integration/mentra/status?device_session_id={key}").json()["installations"][0]["display_name"] == "My app"
+    client.delete(f"{endpoint}/{second['installation_ticket']}").raise_for_status()
     assert len(client.get("/integration/mentra/status").json()["installations"]) == 1
     report = {"user_id": START["user_id"], "device_session_id": "unreserved-stock",
               "package_name": "com.openalma.mentra", "version": "0.1.1"}
@@ -499,11 +521,12 @@ def test_installation_metadata_is_local_and_keeps_names(
     assert names["unreserved-stock"] == "stock_01"
     waiting = [client.post(endpoint).json() for _ in range(2)]
     assert waiting[0]["display_name"] == waiting[1]["display_name"] == "stock_02"
-    for reservation in reversed(waiting):
+    for index, reservation in enumerate(reversed(waiting)):
         client.post("/integration/mentra/installation/seen", json={**report,
-                    "device_session_id": reservation["device_session_id"]}).raise_for_status()
+                    "device_session_id": f"stock-waiting-{index}",
+                    "installation_ticket": reservation["installation_ticket"]}).raise_for_status()
     names = {r["device_session_id"]: r["display_name"] for r in client.get("/integration/mentra/status").json()["installations"]}
-    assert [names[r["device_session_id"]] for r in reversed(waiting)] == ["stock_02", "stock_03"]
+    assert [names[f"stock-waiting-{index}"] for index in range(2)] == ["stock_02", "stock_03"]
     used = {str(i): {"display_name": f"stock_{i:02d}", "package_name": "com.openalma.mentra"} for i in range(1, 99)}
     assert mentra_routes._stock_name(used) == "stock_99"
     used["99"] = {"display_name": "stock_99", "package_name": "com.openalma.mentra"}
@@ -518,7 +541,7 @@ def test_installation_metadata_is_local_and_keeps_names(
         return await mint(**kwargs)
 
     monkeypatch.setattr(mentra_routes, "_mint_gemini_token", waiting_mint)
-    other = client.post(endpoint).json()["device_session_id"]
+    other = client.post(endpoint).json()["installation_ticket"]
     with ThreadPoolExecutor(max_workers=1) as pool:
         starting = pool.submit(client.post, "/integration/mentra/session/start",
                                json={**START, "device_session_id": key})

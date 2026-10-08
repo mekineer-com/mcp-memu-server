@@ -76,9 +76,9 @@ mcp-memu-server/
 | `/integration/memu/turn` | POST | MCP single-call turn wrapper: retrieve then turn |
 | `/integration/memu/sensory-search` | POST | Scoped explicit visual-memory candidate search over separate media and caption lanes |
 | `/integration/mentra/health` | GET | Keyless private-network Mentra ingress health check; enabled gate, disabled by default |
-| `/integration/mentra/installation/seen` | POST | Record an installed Iris build only when its user matches the shared owner |
+| `/integration/mentra/installation/seen` | POST | Record an installed Iris build for the shared owner; optional stock setup ticket is consumed with its first app report, allowing same-ID repeats only |
 | `/integration/mentra/host/seen` | POST | Record OpenAlma Mentra's own installation ID, native host version and default name before Iris exists; preserve renamed labels |
-| `/mentra/installations` | POST | Loopback-only fresh stock ID/name reservation; existing-row actions retain that row's ID |
+| `/mentra/installations` | POST | Loopback-only stock setup ticket reservation; optional `device_session_id` binds an Update ticket to an existing stock app, preserving its ID/name |
 | `/mentra/installations/{device_session_id}` | PATCH / DELETE | Loopback-only Rename / Forget metadata, through the existing JSON writer/lock; Forget refuses an active sitting and never deletes chats |
 | `/integration/mentra/earcons/{name}.wav` | GET | Serve a bundled audio cue; public, unauthenticated |
 | `/integration/mentra/status` | GET | Keyless installation discovery, scoped active lease, global busy/start claims, and latest-sitting transcript gap. Remains readable when Mentra is disabled so existing leases cannot disappear from Stop protection; new starts still return 404. Static earcons remain public. |
