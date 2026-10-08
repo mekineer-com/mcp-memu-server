@@ -410,11 +410,9 @@ def _prepare_dossier_consolidation_prompts(
     scope = {"soul_id": soul_id, "user_id": user_id}
     prompt_context = _build_consolidation_prompt_context(inputs, soul_id=soul_id)
     inputs["reflection_prompt_context"] = prompt_context
-    evidence_scope = (
-        {"segment_ids": inputs["selected_segment_ids"]}
-        if inputs.get("historical") else
-        {"excluded_segment_ids": inputs.get("excluded_segment_ids", [])}
-    )
+    evidence_scope = {"excluded_segment_ids": inputs.get("excluded_segment_ids", [])}
+    if inputs.get("historical"):
+        evidence_scope["segment_ids"] = inputs["selected_segment_ids"]
     bundles = [
         svc.prepare_dossier_revision(
             dossier.id,
@@ -809,6 +807,12 @@ def gather_consolidation_inputs(
                     excluded_segment_ids.extend(record["pending_segment_ids"])
             if historical and selected_segments is not None:
                 pending_ids = [sid for sid in pending_ids if (row["conversation_id"], sid) in selected_segments]
+            if historical:
+                excluded_segment_ids.extend(
+                    sid for sid in deps.normalize_text_list(row["pending_segment_ids"])
+                    + (record["pending_segment_ids"] if record else [])
+                    if sid not in pending_ids
+                )
             if not pending_ids:
                 continue
             owner = str(row["conversation_id"] or "").strip()

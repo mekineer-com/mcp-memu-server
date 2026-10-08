@@ -909,6 +909,10 @@ INSERT INTO memory_items (
     assert all(text in prepared[2] for text in ("older imported history", "message 0", "message 1", "a separate platform"))
     assert svc.excluded_segment_ids == [historical_id]
     assert [call[3]["excluded_segment_ids"] for call in svc.calls if call[0] == "prepare"] == [[historical_id]]
+    deps.write_conversation_state("conv-a", soul_id=soul_id, user_id=user_id, updates={"import_state": {
+        "history_end_index": 3, "memorize_cursor": 2,
+        "pending_segment_ids": [historical_id, "conv-a:2-2"], "stage": "consolidation", "error": None,
+    }})
     queries = []
     original_connect = deps.sqlite_connect
     def trace_connect(path):
@@ -916,10 +920,23 @@ INSERT INTO memory_items (
         con.set_trace_callback(queries.append)
         return con
     deps = replace(deps, sqlite_connect=trace_connect)
-    historical = gather_consolidation_inputs(
-        deps, conversation_id="conv-a", soul_id=soul_id, user_id=user_id, historical=True,
-        selected_segments={("conv-a", historical_id)},
-    )
+    for prefix in ([historical_id, "conv-a:2-2"], [historical_id]):
+        historical = gather_consolidation_inputs(
+            deps, conversation_id="conv-a", soul_id=soul_id, user_id=user_id, historical=True,
+            selected_segments={("conv-a", sid) for sid in prefix},
+        )
+        excluded = {"conv-a:0-0", historical_id, "conv-a:2-2", "conv-b:0-0"} - set(prefix)
+        assert set(historical["excluded_segment_ids"]) == excluded
+        svc = _DossierContextService(due_ids=("first",))
+        historical["state"] = {**_inputs()["state"], **historical["state"]}
+        prepared = consolidation._prepare_dossier_consolidation_prompts(
+            svc, inputs=historical, soul_id=soul_id, user_id=user_id,
+        )
+        assert set(svc.excluded_segment_ids) == excluded
+        context = next(call[3] for call in svc.calls if call[0] == "prepare")
+        assert context["segment_ids"] == prefix
+        assert set(context["excluded_segment_ids"]) == excluded
+        assert prepared[3]["weekly"] == 0
     assert historical["selected_segment_ids_by_conversation"] == {"conv-a": [historical_id]}
     assert [row["content"] for row in historical["current_chat_messages"]] == ["older imported history"]
     assert historical["prior_context_memory_items"] == []
