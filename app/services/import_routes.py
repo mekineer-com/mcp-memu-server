@@ -139,19 +139,24 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
         state, _card, _path = runtime._load_turn_state_and_soul_card(cid, **scoped)
         return state["import_state"]
     try:
-        if retry:
-            await recover_memorize(runtime, scoped=scoped, cid=cid, historical=True)
         current = record()
-        pending_first = bool(current["pending_segment_ids"]) and not (
+        phase = "consolidation" if current["pending_segment_ids"] and not (
             retry and current["error"] and current["stage"] == "memorize"
-        )
-        phase = "consolidation" if pending_first else "memorize"
+        ) else "memorize"
         svc = runtime._get_service_from_payload({"user": scoped})
         deps = runtime._make_consolidation_deps()
         profile = runtime._resolve_profile_if_configured(svc, "consolidation")
         revision_profile = consolidation.preflight_consolidation_profiles(svc, profile)
         for name in (revision_profile, profile):
             consolidation_input_budget(svc, name)
+        if retry:
+            phase = "memorize"
+            await recover_memorize(runtime, scoped=scoped, cid=cid, historical=True)
+        current = record()
+        pending_first = bool(current["pending_segment_ids"]) and not (
+            retry and current["error"] and current["stage"] == "memorize"
+        )
+        phase = "consolidation" if pending_first else "memorize"
         days: set[date] = set()
         while not pending_first:
             phase = "memorize"

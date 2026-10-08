@@ -697,11 +697,12 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
             return write(*args, **kwargs)
         monkeypatch.setattr(main, "_write_conversation_state", failing_write)
     profile = SimpleNamespace(context_window_tokens=100, max_tokens=0, chat_model="fictional")
+    profiles = {"default": profile}
     if stop == "missing_capacity":
-        profile.context_window_tokens = None
+        profiles["consolidation"] = SimpleNamespace(context_window_tokens=None, max_tokens=0, chat_model="fictional")
     class Service(SavedBatchService):
         memorize_config = SimpleNamespace(category_update_llm_profile="default")
-        llm_profiles = SimpleNamespace(profiles={"default": profile})
+        llm_profiles = SimpleNamespace(profiles=profiles)
         async def extract(self, **kwargs):
             assert kwargs["enforce_input_budget"] is True
             assert main._FORCED_MEMORIZE_INFLIGHT[marker] is True
@@ -756,11 +757,30 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
     assert response.status_code == 202
     tasks = list(main._BACKGROUND_TASKS)
     if stop == "missing_capacity":
+        recoveries = []
+        async def resume(**kwargs):
+            recoveries.append(kwargs)
+        monkeypatch.setattr(Service, "resume_memorize_segment", staticmethod(resume))
         await asyncio.gather(*tasks)
-        assert not extracts and not consolidations
+        assert not recoveries and not extracts and not consolidations
         assert record()["error"] == "context_window_tokens is required for model fictional"
+        assert record()["stage"] == "memorize"
         assert record()["memorize_cursor"] == -1 and releases == [(marker, False)]
         assert marker not in main._FORCED_MEMORIZE_INFLIGHT
+        for stage in ("memorize", "consolidation"):
+            main._write_conversation_state(cid, **scoped, updates={
+                "import_state": {**record(), "stage": stage, "pending_segment_ids": ["saved"],
+                                 "segment_work": {"saved": "review"}},
+            })
+            response = await _endpoint("/imports/retry")(request)
+            assert response.status_code == 202
+            await asyncio.gather(*list(main._BACKGROUND_TASKS))
+            assert not recoveries and not extracts and not consolidations
+            assert record()["stage"] == stage
+            assert record()["error"] == "context_window_tokens is required for model fictional"
+            assert record()["segment_work"] == {"saved": "review"}
+            assert record()["pending_segment_ids"] == ["saved"] and record()["memorize_cursor"] == -1
+            assert releases[-1] == (marker, False) and marker not in main._FORCED_MEMORIZE_INFLIGHT
         return
     if stop not in {"failure", "calendar_retry", "error_write"}:
         await asyncio.wait_for(entered.wait(), 5)
