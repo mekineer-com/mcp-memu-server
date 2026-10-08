@@ -101,6 +101,8 @@ def test_background_error_fields_round_trip_through_state() -> None:
             con.row_factory = sqlite3.Row
             row = conversation_state_row(con, cid)
             assert row is not None
+            sqlite_ensure_conversation_state_schema(con)
+            assert tuple(conversation_state_row(con, cid)) == tuple(row)
             loaded = conversation_state_from_row(row)
         finally:
             con.close()

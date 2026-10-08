@@ -90,9 +90,6 @@ CREATE TABLE IF NOT EXISTS life_goals (
 )
 """
     )
-    intention_cols = set(sqlite_table_columns(con, "intentions"))
-    if "resolution_note" not in intention_cols:
-        con.execute("ALTER TABLE intentions ADD COLUMN resolution_note TEXT")
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_intentions_soul_user ON intentions(soul_id, user_id, status)"
     )
@@ -133,49 +130,6 @@ CREATE TABLE IF NOT EXISTS conversations (
 )
 """
     )
-    conversation_cols = set(sqlite_table_columns(con, "conversations"))
-    if "memorize_chat" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN memorize_chat INTEGER DEFAULT 1")
-    if "import_state" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN import_state JSON")
-    if "pending_segment_ids" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN pending_segment_ids JSON DEFAULT '[]'")
-        if "pending_episode_ids" in conversation_cols:
-            con.execute(
-                """
-                UPDATE conversations
-                SET pending_segment_ids = pending_episode_ids
-                WHERE pending_episode_ids IS NOT NULL
-                  AND trim(CAST(pending_episode_ids AS TEXT)) != ''
-                  AND (pending_segment_ids IS NULL OR pending_segment_ids = '[]')
-                """
-            )
-    if "rolling_summary" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary TEXT")
-    if "digest_cursor_source_message_id" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN digest_cursor_source_message_id TEXT")
-    if "digest_cursor_ts" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN digest_cursor_ts INTEGER")
-    if "rolling_summary_cursor_id" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary_cursor_id INTEGER")
-    if "rolling_summary_cursor_source_message_id" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary_cursor_source_message_id TEXT")
-    if "rolling_summary_cursor_ts" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary_cursor_ts INTEGER")
-    if "rolling_summary_updated_at" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN rolling_summary_updated_at DATETIME")
-    if "last_display_segment_start_index" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN last_display_segment_start_index INTEGER")
-    if "last_display_segment_end_index" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN last_display_segment_end_index INTEGER")
-    if "last_display_segment_at" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN last_display_segment_at DATETIME")
-    if "atomic_session_started_at" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN atomic_session_started_at DATETIME")
-    if "atomic_session_ended_at" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN atomic_session_ended_at DATETIME")
-    if "undo_snapshot" not in conversation_cols:
-        con.execute("ALTER TABLE conversations ADD COLUMN undo_snapshot JSON")
     sqlite_ensure_soul_tables(con)
     con.commit()
 

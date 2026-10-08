@@ -1707,46 +1707,25 @@ def test_format_all_chat_history_for_ai_uses_current_chat_name_without_label() -
     assert "integrity:32bfed88-ee89-4053-81f8-3dba8b973857" not in rendered
 
 
-def test_conversation_state_schema_migrates_pending_segment_ids_from_old_name(
+def test_conversation_state_schema_preserves_pending_segment_ids(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "state.db"
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
+        main._sqlite_ensure_conversation_state_schema(con)
         con.execute(
-            """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                soul_id TEXT,
-                user_id TEXT,
-                pending_episode_ids JSON DEFAULT '[]',
-                memorize_chat INTEGER DEFAULT 1,
-                digest_cursor INTEGER DEFAULT 0,
-                rolling_summary TEXT,
-                rolling_summary_cursor_id INTEGER,
-                rolling_summary_updated_at DATETIME,
-                prior_context TEXT,
-                last_memorize_at DATETIME,
-                updated_at DATETIME,
-                last_background_error TEXT,
-                last_background_error_at DATETIME,
-                last_consolidation_error TEXT,
-                last_consolidation_error_at DATETIME
-            )
-            """
-        )
-        con.execute(
-            "INSERT INTO conversations (conversation_id, pending_episode_ids) VALUES (?, ?)",
-            ("cid-old", json.dumps(["cid-old:0-1"])),
+            "INSERT INTO conversations (conversation_id, pending_segment_ids) VALUES (?, ?)",
+            ("cid-current", json.dumps(["cid-current:0-1"])),
         )
 
         main._sqlite_ensure_conversation_state_schema(con)
         assert "undo_snapshot" in main._sqlite_table_columns(con, "conversations")
-        row = main._conversation_state_row(con, "cid-old")
+        row = main._conversation_state_row(con, "cid-current")
         state = main._conversation_state_from_row(row)
 
     assert state is not None
-    assert state["pending_segment_ids"] == ["cid-old:0-1"]
+    assert state["pending_segment_ids"] == ["cid-current:0-1"]
 
 
 @pytest.mark.asyncio

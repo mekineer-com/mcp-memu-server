@@ -34,10 +34,7 @@ mcp-memu-server/
 ├── app/services/soul_summaries.py # SQL-only summary writes; shared journal finishing after caller commit
 ├── app/services/soul_state.py # Shared Soul state, durable Memorize failure and common activity-pause predicate
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
-├── migrate_category_taxonomy.py # Offline inventory/discover/apply/validate migration; explicit DB only, same embedding-profile gate as server
-├── migrate_multimodal_embeddings.py # Offline Gemini embedding rebuild; same llm.embedding.api_key as server; publishes only after validation
-├── migrate_release.py       # Rerunnable release schema/data migration over stopped soul DBs
-├── embedding_bakeoff.py         # Offline embedding-quality comparison runner
+├── _archive/database-tools/ # Historical one-time tools and release migration reference; not part of runtime or active tests
 ├── config.json              # Runtime config (llm, storage, listen, dossier policy, memu path)
 ├── config.example.json      # Minimal installable template
 ├── config.json.md           # Complete setting reference
@@ -229,8 +226,7 @@ from memu.prompts.memory_type import ...  # type prompts
 | Modify life goals (long-term) | `app/services/consolidation.py` — `intentions_life_goals` table |
 | Modify DB schema/helpers | `app/db.py` |
 | Change config shape | `config.json` + `app/config.py` |
-| Migrate legacy categories to dossiers | `migrate_category_taxonomy.py` + archived `_archive/_discourse/260813 nomi-fication/PLAN_category_taxonomy_slice_G_migration.md` |
-| Build Gemini embedding replacement | `migrate_multimodal_embeddings.py` (source read-only; publishes a new DB only after full validation) |
+| Historical database tools | `_archive/database-tools/` (reference only; includes taxonomy migration, embedding rebuild/bakeoff and release migration runner with their tests) |
 
 ## Config (`config.json`)
 

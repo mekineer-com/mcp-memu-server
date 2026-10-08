@@ -293,14 +293,6 @@ async def test_diag_pending_ensures_state_schema_with_supplied_user_id(
 ) -> None:
     db_path = tmp_path / "Echo.db"
     con = main._sqlite_connect(db_path)
-    con.execute(
-        "CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY, soul_id TEXT, user_id TEXT, "
-        "digest_cursor INTEGER, last_memorize_at DATETIME)"
-    )
-    con.execute(
-        "INSERT INTO conversations (conversation_id, soul_id, user_id, digest_cursor) VALUES ('c1', 'Echo', 'u1', 0)"
-    )
-    con.commit()
     con.close()
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_k: db_path)
 
