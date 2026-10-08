@@ -36,28 +36,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     table_exists = con.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'soul_state'"
     ).fetchone() is not None
-    existing_cols = (
-        {row[1] for row in con.execute("PRAGMA table_info(soul_state)").fetchall()}
-        if table_exists
-        else set()
-    )
-    added_columns = {
-        "apimw_message_to_self": "TEXT",
-        "narrative_self_previous": "TEXT",
-        "narrative_self_approved": "TEXT",
-        "summaries_revision": "INTEGER NOT NULL DEFAULT 0",
-        "last_consolidation_error": "TEXT",
-        "last_consolidation_error_at": "DATETIME",
-        "memorize_failure": "TEXT",
-    }
     missing_row = table_exists and con.execute("SELECT COUNT(*) FROM soul_state").fetchone()[0] == 0
-    needs_migration = (
-        not table_exists
-        or missing_row
-        or any(name not in existing_cols for name in added_columns)
-    )
-    owns_migration = needs_migration and not con.in_transaction
-    if owns_migration:
+    owns_initialization = (not table_exists or missing_row) and not con.in_transaction
+    if owns_initialization:
         con.execute("BEGIN")
 
     con.execute("""
@@ -72,25 +53,19 @@ CREATE TABLE IF NOT EXISTS soul_state (
     retrieve_rewrite_angle INTEGER DEFAULT 0,
     retrieval_ids_since_consolidation JSON DEFAULT '[]',
     prior_context_ids_since_consolidation JSON DEFAULT '[]',
+    apimw_message_to_self TEXT,
     last_consolidation_at DATETIME,
     last_consolidation_error TEXT,
     last_consolidation_error_at DATETIME,
     memorize_failure TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )""")
-    cols = {row[1] for row in con.execute("PRAGMA table_info(soul_state)").fetchall()}
-    for name, definition in added_columns.items():
-        if name in cols:
-            continue
-        con.execute(f"ALTER TABLE soul_state ADD COLUMN {name} {definition}")
-        if name == "narrative_self_approved":
-            con.execute("UPDATE soul_state SET narrative_self_approved = narrative_self")
     if con.execute("SELECT COUNT(*) FROM soul_state").fetchone()[0] == 0:
         con.execute(
             "INSERT INTO soul_state (id, intentions_active, updated_at) VALUES (1, '[]', ?)",
             (datetime.now(UTC).isoformat(),),
         )
-    if owns_migration:
+    if owns_initialization:
         con.commit()
 
 

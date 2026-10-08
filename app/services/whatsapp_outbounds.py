@@ -45,10 +45,6 @@ CREATE TABLE IF NOT EXISTS whatsapp_pending_outbounds (
 )
 """
     )
-    try:
-        con.execute("ALTER TABLE whatsapp_pending_outbounds ADD COLUMN media_path TEXT")
-    except sqlite3.OperationalError:
-        pass  # column already exists
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_whatsapp_pending_outbounds_claim "
         "ON whatsapp_pending_outbounds(status, created_at)"

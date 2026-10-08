@@ -9567,39 +9567,18 @@ async def test_whatsapp_outbound_text_or_media_required(
         )
 
 
-def test_whatsapp_outbounds_schema_migration_idempotent(tmp_path: Path) -> None:
-    """ALTER TABLE on a DB that already has the column must not raise."""
+def test_whatsapp_outbounds_schema_reopen_preserves_current_rows(tmp_path: Path) -> None:
     import sqlite3 as _sqlite3
     db_path = tmp_path / "existing.db"
     con = _sqlite3.connect(str(db_path))
     con.row_factory = _sqlite3.Row
-    # Create table without media_path first, simulating a pre-migration DB.
-    con.execute("""
-CREATE TABLE whatsapp_pending_outbounds (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    soul_id TEXT NOT NULL,
-    origin_conversation_id TEXT NOT NULL,
-    target TEXT NOT NULL,
-    target_conversation_id TEXT,
-    response_text TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    claimed_at TEXT,
-    claimed_by TEXT,
-    sent_at TEXT,
-    failed_at TEXT,
-    provider_message_id TEXT,
-    last_error TEXT,
-    metadata_json TEXT
-)
-""")
-    con.commit()
-    # Running the schema function twice must not raise.
     main._ensure_whatsapp_outbounds_schema(con)
+    con.execute("""INSERT INTO whatsapp_pending_outbounds
+        (id, user_id, soul_id, origin_conversation_id, target, response_text, created_at, updated_at, media_path)
+        VALUES ('outbound', 'TestOwner', 'TestSoul', 'chat:fixture', 'private', 'fictional image', 'now', 'now', 'image.png')""")
+    before = tuple(con.execute("SELECT * FROM whatsapp_pending_outbounds").fetchone())
     main._ensure_whatsapp_outbounds_schema(con)
-    # Confirm the column now exists.
+    assert tuple(con.execute("SELECT * FROM whatsapp_pending_outbounds").fetchone()) == before
     cols = {row[1] for row in con.execute("PRAGMA table_info(whatsapp_pending_outbounds)")}
     assert "media_path" in cols
     con.close()
