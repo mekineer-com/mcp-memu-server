@@ -8,12 +8,14 @@ import pytest
 from app import main
 from app.services.turn_contract import (
     _parse_attachment,
+    _split_markdown_sections,
     build_conversations_block,
     build_turn_prompt,
     format_relative_time_label,
     make_turn_identity_prompt,
     make_turn_system_prompt,
     parse_turn_contract,
+    resolve_current_chat_heading,
 )
 
 
@@ -65,6 +67,83 @@ def test_current_marker_stays_on_requester_with_foreign_source_rows(monkeypatch)
     assert "Primary evidence" in rendered and rendered.count("Foreign evidence") == 1
     assert "[dm][primary] ← current chat" in rendered
     assert "[dm][foreign] ← current chat" not in rendered
+
+
+@pytest.mark.parametrize("with_activity", [False, True])
+@pytest.mark.parametrize("conversation_id", ["sillytavern:primary", "whatsapp:dm:fictional", "mentra:test-device"])
+def test_cross_replika_context_survives_current_chat_merge(monkeypatch, with_activity, conversation_id) -> None:
+    monkeypatch.setattr("app.services.message_log._load_whatsapp_directory_names", lambda: {})
+    cross_rows = [{
+        "conversation_id": "replika:dm:Echo:archive", "role": "assistant", "speaker": "TestSoul",
+        "content": "Imported first line\nImported second line", "source_day": "2026-01-01",
+    }]
+    if with_activity:
+        cross_rows.append({"conversation_id": "activity:dm:TestSoul", "role": "assistant",
+                           "content": "Fictional activity"})
+    cross = main._format_cross_tail_for_ai(cross_rows, soul_id="TestSoul")
+    rendered = main._format_all_chat_history_for_ai(
+        current_history=[{"role": "user", "content": "Current evidence"}],
+        cross_tail=cross_rows, conversation_id=conversation_id, soul_id="TestSoul",
+    )
+    assert cross in rendered
+    sections = dict(_split_markdown_sections(rendered))
+    assert "Imported second line" in sections["My Replika Conversation:"]
+    assert rendered.count("Imported first line\nImported second line") == 1
+    assert rendered.count("These conversations took place outside OpenAlma.") == 1
+    assert rendered.count("current chat") == 1
+    assert "[dm][Echo] ← current chat" not in rendered
+
+
+@pytest.mark.parametrize("mark_current_chat", [False, True])
+@pytest.mark.parametrize("conversation_id,section", [
+    ("replika:dm:Echo:archive", "My Replika Conversation:"),
+    ("import:dm:archive", "My FictionalApp Conversations:"),
+])
+def test_imported_current_history_preserves_heading_and_context(monkeypatch, mark_current_chat, conversation_id, section) -> None:
+    monkeypatch.setattr("app.services.message_log._load_whatsapp_directory_names", lambda: {})
+    rows = [{"conversation_id": conversation_id, "role": "assistant", "speaker": "TestSoul",
+             "chat_name": "Echo", "app_label": "FictionalApp", "source_day": "2026-01-01",
+             "content": "Imported first line\nImported second line"}]
+    expected = main._format_cross_tail_for_ai(rows, soul_id="TestSoul")
+    if mark_current_chat:
+        expected = expected.replace("[dm][Echo]", "[dm][Echo] ← current chat", 1)
+    rendered = main._format_all_chat_history_for_ai(
+        current_history=rows, cross_tail=[], conversation_id=conversation_id,
+        soul_id="TestSoul", mark_current_chat=mark_current_chat,
+    )
+    assert rendered == expected
+    assert rendered.count(section) == 1
+
+
+@pytest.mark.parametrize("mark_current_chat", [False, True])
+@pytest.mark.parametrize("conversation_id,section,heading", [
+    ("replika:dm:Echo:archive", "My Replika Conversation:", "[dm][Echo]"),
+    ("chat:atomic-Echo", "My Atomic Conversations:", "[dm][Echo]"),
+    ("mentra:test-device", "My Smartglasses Conversations:", "[dm][Smartglasses]"),
+    (None, "My SillyTavern Conversations:", "[dm][sillytavern]"),
+])
+def test_empty_current_history_uses_shared_heading_mapping(monkeypatch, mark_current_chat, conversation_id, section, heading) -> None:
+    monkeypatch.setattr("app.services.message_log._load_whatsapp_directory_names", lambda: {})
+    rendered = build_conversations_block(
+        history=[], conversation_id=conversation_id, soul_name="TestSoul",
+        self_turn_directive="Fictional wake", mark_current_chat=mark_current_chat,
+    )
+    marker = " ← current chat" if mark_current_chat else ""
+    assert rendered == f"{section}\n\n{heading}{marker}\n(none)"
+    assert resolve_current_chat_heading(conversation_id=conversation_id) == f"{heading} ← current chat"
+
+
+def test_empty_current_history_keeps_directory_heading(tmp_path, monkeypatch) -> None:
+    (tmp_path / "channel_directory.json").write_text(json.dumps({
+        "platforms": {"whatsapp": [{"id": "fictional-contact", "name": "Fictional Contact", "type": "dm"}]},
+    }))
+    monkeypatch.setitem(main._CONFIG, "hermes", {"home": str(tmp_path)})
+    rendered = build_conversations_block(
+        history=[], conversation_id="whatsapp:dm:fictional-contact", soul_name="TestSoul",
+        self_turn_directive="Fictional wake",
+    )
+    assert "[dm][Fictional Contact] ← current chat" in rendered
+    assert "__memu_heading_probe__" not in rendered
 
 
 def test_parse_turn_contract_valid_json():

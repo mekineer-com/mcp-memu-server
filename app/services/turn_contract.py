@@ -13,7 +13,12 @@ _SIRI_WORKSPACE = Path("~/Desktop/siri")
 from app.services import message_log as _message_log
 from app.services.intention_state import MAX_MEMORY_CACHE_ENTRIES, _text, format_intentions_for_prompt, normalize_memory_cache
 from app.services.payload import strip_markdown_code_fence
-from memu.utils.conversation import format_relative_time_label
+from memu.utils.conversation import (
+    _conversation_heading,
+    _conversation_kind_and_key,
+    _conversation_section_title,
+    format_relative_time_label,
+)
 
 _logger = logging.getLogger("uvicorn.error")
 
@@ -188,7 +193,7 @@ def _resolve_current_chat_heading_from_grouped_renderer(
         return _append_current_chat_marker(explicit) if mark_current_chat else explicit
     cid = _text(conversation_id)
     if not cid:
-        return resolve_current_chat_heading(chat_label, conversation_id)
+        return resolve_current_chat_heading(chat_label, conversation_id, mark_current_chat=mark_current_chat)
     rendered = _message_log.format_merged_history(
         [{"conversation_id": cid, "role": "system", "content": "__memu_heading_probe__"}],
         soul_name=soul_name,
@@ -202,7 +207,7 @@ def _resolve_current_chat_heading_from_grouped_renderer(
             heading = _text(line)
             if heading and "__memu_heading_probe__" not in heading:
                 return _append_current_chat_marker(heading) if mark_current_chat else heading
-    return resolve_current_chat_heading(chat_label, conversation_id)
+    return resolve_current_chat_heading(chat_label, conversation_id, mark_current_chat=mark_current_chat)
 
 
 def _render_current_chat_block(
@@ -590,43 +595,22 @@ def _dedupe_prior_context(prior_context: str | None, blocked_terms: set[str]) ->
 
 
 def _section_title_from_conversation_id(conversation_id: str | None) -> str:
-    cid = _text(conversation_id)
-    if cid.startswith("chat:atomic-"):
-        return "My Atomic Conversations:"
-    if cid.startswith("mentra:"):
-        return "My Smartglasses Conversations:"
-    if cid.startswith(("sillytavern", "integrity:", "chat:")):
-        return "My SillyTavern Conversations:"
-    if cid.startswith("whatsapp:"):
-        return "My WhatsApp Conversations:"
-    return "My SillyTavern Conversations:"
+    kind, _key = _conversation_kind_and_key(_text(conversation_id))
+    return _conversation_section_title(kind)
 
 
 def _conversation_heading_from_conversation_id(conversation_id: str | None) -> str:
-    cid = _text(conversation_id)
-    if cid.startswith("whatsapp:group:"):
-        key = _text(cid[len("whatsapp:group:"):]) or "group"
-        return f"[group][{key}]"
-    if cid.startswith("whatsapp:dm:"):
-        key = _text(cid[len("whatsapp:dm:"):]) or "contact"
-        return f"[dm][{key}]"
-    if cid.startswith("sillytavern:"):
-        key = _text(cid[len("sillytavern:"):]) or "sillytavern"
-        return f"[dm][{key}]"
-    if cid == "sillytavern":
-        return "[dm][sillytavern]"
-    if cid.startswith("mentra:"):
-        return "[dm][Smartglasses]"
-    return f"[dm][{cid or 'sillytavern'}]"
+    return _conversation_heading(*_conversation_kind_and_key(_text(conversation_id)))
 
 
 def resolve_current_chat_heading(
     chat_label: str | None = None,
     conversation_id: str | None = None,
+    *,
+    mark_current_chat: bool = True,
 ) -> str:
-    return _append_current_chat_marker(
-        _text(chat_label) or _conversation_heading_from_conversation_id(conversation_id),
-    )
+    heading = _text(chat_label) or _conversation_heading_from_conversation_id(conversation_id)
+    return _append_current_chat_marker(heading) if mark_current_chat else heading
 
 
 def _append_current_chat_marker(heading: str) -> str:
@@ -648,7 +632,7 @@ def _split_markdown_sections(text: str) -> list[tuple[str, list[str]]]:
     for line in raw.splitlines():
         stripped = line.strip()
         if stripped == "My Activities:" or (
-            stripped.startswith("My ") and stripped.endswith("Conversations:")
+            stripped.startswith("My ") and stripped.endswith(("Conversation:", "Conversations:"))
         ):
             if current_header is not None:
                 sections.append((current_header, current_lines))
