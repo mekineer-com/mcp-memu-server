@@ -3632,6 +3632,7 @@ def _prepare_auto_memorize(
             digest_cursor,
             True,
             trigger_web_source=trigger_web_source,
+            strict_sources=True,
         )
         if payload is None:
             return unmemorized_tokens, None

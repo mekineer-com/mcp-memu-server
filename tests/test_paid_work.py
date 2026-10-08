@@ -409,22 +409,74 @@ async def test_automatic_admission_reaches_real_endpoint_once(monkeypatch, cance
 @pytest.mark.parametrize("import_pending", [False, True])
 async def test_automatic_admission_failure_before_jobs_pauses_and_exposes_retry(monkeypatch, import_pending):
     uid, sid, cid = "TestOwner", "TestSoul", "chat:failed-admission"
+    unreadable = "chat:unreadable-source"
+    storage = main._get_storage_dir(main._CONFIG)
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (storage, None, None, None))
+    history = [{"role": "user", "content": "Fictional source", "ts_ms": 1_577_836_800_000}]
+    for source_cid in (cid, unreadable):
+        main._write_conversation_state(source_cid, user_id=uid, soul_id=sid, updates={"memorize_chat": True})
+        main._conversation_sources.persist_sillytavern_history_snapshot(
+            storage_dir=storage, user_id=uid, soul_id=sid, conversation_id=source_cid, history=history,
+        )
+    source = dict(storage_dir=storage, user_id=uid, soul_id=sid,
+                  conversation_id=unreadable, source_label="sillytavern")
+    main._conversation_sources._chat_snapshot_path(**source).write_text("{unreadable")
+    with pytest.raises(json.JSONDecodeError):
+        main._conversation_sources.load_chat_snapshot_tail(**source, since_cursor=-1, recent_fallback_messages=0)
+    other_before, _, _ = main._load_turn_state_and_soul_card(cid, user_id=uid, soul_id="OtherSoul")
+    before = {source_cid: main._load_turn_state_and_soul_card(source_cid, user_id=uid, soul_id=sid)[0]
+              for source_cid in (cid, unreadable)}
+    extract = AsyncMock(return_value=[{}])
+    service = SavedBatchService()
+    monkeypatch.setattr(service, "extract", extract, raising=False)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: service)
+    monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
+    monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 1)
+    monkeypatch.setattr(main, "_unmemorized_sleep_gap_detected", lambda *_args, **_kwargs: True)
     if import_pending:
         main._write_conversation_state("import:dm:history", user_id=uid, soul_id=sid, updates={"import_state": {
             "history_end_index": 1, "memorize_cursor": -1, "pending_segment_ids": [],
             "stage": "memorize", "error": None}})
-    async def fail(*_args):
-        raise ValueError("Fictional source error")
-    monkeypatch.setattr(main, "_memorize_admitted", fail)
-    assert await main._run_forced_memorize_from_turn({
-        "user": {"user_id": uid, "soul_id": sid}, "conversation_id": cid,
-    }) is False
+    _, payload = main._prepare_auto_memorize(cid, uid, sid, {}, before[cid], history, dry_run=False)
     if import_pending:
+        assert payload is None
         assert not main._paid_work_state(uid, sid).get("memorize_failure")
         assert main._soul_import_state(uid, sid)[1]["ordinary_waiting"] == cid
-    else:
-        assert main._paid_work_state(uid, sid)["memorize_failure"]["conversation_id"] == cid
+        main._write_conversation_state("import:dm:history", user_id=uid, soul_id=sid, updates={
+            "import_memorize_cursor": 0, "import_stage": "complete",
+        })
+        marker = main._memorize_lock_key(uid, sid)
+        main._FORCED_MEMORIZE_INFLIGHT[marker] = False
+        await main._import_routes.run_waiting_memorize(main, scoped={"user_id": uid, "soul_id": sid},
+                                                    import_cid="import:dm:history")
+        assert marker not in main._FORCED_MEMORIZE_INFLIGHT
+    elif payload is not None:
+        await main._run_forced_memorize_from_turn(payload)
+    other_after, _, _ = main._load_turn_state_and_soul_card(cid, user_id=uid, soul_id="OtherSoul")
+    assert other_after == other_before
+    assert main._soul_activity_pause(uid, "OtherSoul") is None
+    extract.assert_not_awaited()
+    assert payload is None
+    for source_cid in (cid, unreadable):
+        after, _, _ = main._load_turn_state_and_soul_card(source_cid, user_id=uid, soul_id=sid)
+        for field in ("digest_cursor", "rolling_summary_cursor_id", "last_memorize_at", "pending_segment_ids"):
+            assert after[field] == before[source_cid][field]
+    failure = main._paid_work_state(uid, sid)["memorize_failure"]
+    assert failure["conversation_id"] == cid and failure["paused"]
+    assert unreadable in failure["error"]
     assert main._soul_activity_pause(uid, sid)
+    with pytest.raises(HTTPException) as blocked:
+        main._require_soul_active(uid, sid)
+    assert blocked.value.detail["code"] == "soul_paused"
+    tasks = BackgroundTasks()
+    if import_pending:
+        assert (await main.retry_memorize(uid, sid, tasks))["status"] == "accepted"
+        await tasks()
+    else:
+        with pytest.raises(HTTPException, match="unavailable"):
+            await main.retry_memorize(uid, sid, tasks)
+    extract.assert_not_awaited()
+    assert main._paid_work_state(uid, sid)["memorize_failure"]["paused"]
 
 
 @pytest.mark.asyncio
