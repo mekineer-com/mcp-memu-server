@@ -26,7 +26,7 @@ def _endpoint(path):
 def _guidance_schema(con):
     sqlite_ensure_conversation_state_schema(con)
     con.execute("CREATE TABLE resources (user_id TEXT, soul_id TEXT, conversation_id TEXT, "
-                "modality TEXT, source_start_day DATE, source_end_day DATE)")
+                "modality TEXT)")
 
 
 @pytest.mark.asyncio
@@ -371,7 +371,7 @@ async def test_registration_uses_segments_not_incidental_memories(tmp_path, monk
         con.execute("CREATE TABLE memory_items (user_id TEXT, soul_id TEXT, memory_type TEXT)")
         con.execute("INSERT INTO memory_items VALUES ('TestOwner', 'TestSoul', 'subconscious')")
         if prior_segment:
-            con.execute("INSERT INTO resources VALUES ('TestOwner', 'TestSoul', 'chat:earlier', 'conversation', '2024-01-01', '2024-01-01')")
+            con.execute("INSERT INTO resources VALUES ('TestOwner', 'TestSoul', 'chat:earlier', 'conversation')")
     rows, _, _ = chat_import.normalize_messages([{"id": "one", "role": "user", "content": "fictional",
                                                  "timestamp": "2025-01-01"}])
     chat_import.store_upload(source, **scope, messages=rows, history_count=1)
@@ -482,7 +482,7 @@ def test_first_registration_waits_for_memory_work(tmp_path, monkeypatch, running
     assert state["import_state"] is None
     claims.clear()
     with sqlite3.connect(db) as con:
-        con.execute("INSERT INTO resources VALUES ('TestOwner', 'TestSoul', 'chat:earlier', 'conversation', '2024-01-01', '2024-01-01')")
+        con.execute("INSERT INTO resources VALUES ('TestOwner', 'TestSoul', 'chat:earlier', 'conversation')")
     assert register(ImportScope(**scope))["import_state"]["history_end_index"] == 0
     claims[marker if running == "memorize" else ("TestOwner", "TestSoul")] = False
     assert register(ImportScope(**scope))["import_state"]["history_end_index"] == 0
@@ -614,14 +614,9 @@ def test_import_guidance_uses_soul_period_but_selected_chat_processed_dates(tmp_
     cid = upload["conversation_id"]
     with sqlite3.connect(db) as con:
         _guidance_schema(con)
-        con.executemany("INSERT INTO resources VALUES (?, ?, ?, ?, ?, ?)", [
-            ("TestOwner", "TestSoul", cid, "conversation", "2024-01-01", "2024-02-01"),
-            ("TestOwner", "TestSoul", cid, "conversation", "2024-03-01", "2024-04-01"),
-            ("TestOwner", "TestSoul", "whatsapp:dm:other", "conversation", "2000-01-01", "2030-01-01"),
-            ("OtherOwner", "TestSoul", cid, "conversation", "2000-01-01", "2030-01-01"),
-            ("TestOwner", "OtherSoul", cid, "conversation", "2000-01-01", "2030-01-01"),
-            ("TestOwner", "TestSoul", cid, "image", "2000-01-01", "2030-01-01"),
-        ])
+        # An existing conversation segment makes the upload deferred history.
+        con.execute("INSERT INTO resources VALUES (?, ?, ?, ?)",
+                    ("TestOwner", "TestSoul", cid, "conversation"))
     _endpoint("/imports/register")(ImportScope(**scope))
     main._write_conversation_state(cid, user_id="TestOwner", soul_id="TestSoul",
         updates={"digest_cursor": 1, "last_memorize_at": "2025-01-02T12:00:00Z"})
