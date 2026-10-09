@@ -498,10 +498,13 @@ def _prepare_dossier_consolidation_prompts(
 def _check_consolidation_capacity(svc: MemoryService, stage: str, tokens: int, profile: str | None) -> None:
     budget = consolidation_input_budget(svc, profile)
     if tokens > budget:
+        cli = getattr(svc, "_claude_code", False)
+        source = "Claude Code" if cli else f"profile {profile or 'default'}"
+        setting = "claude_code_context_window_tokens" if cli else "context_window_tokens"
         raise ValueError(
             f"{stage} consolidation prompt exceeds provider-safe token limit: "
-            f"needs about {tokens:,} input tokens; profile {profile or 'default'} allows {budget:,}. "
-            "Set context_window_tokens to the model's actual capacity or choose a larger-context model."
+            f"needs about {tokens:,} input tokens; {source} allows {budget:,}. "
+            f"Set {setting} to the model's actual capacity or choose a larger-context model."
         )
 
 
@@ -1579,10 +1582,13 @@ async def _run_consolidation_pipeline_once(
                         for name in [revision_profile if stage == "dossiers" else consolidation_profile]
                         if tokens > consolidation_input_budget(svc, name)
                     )
+                    cli = getattr(svc, "_claude_code", False)
+                    source = "Claude Code" if cli else f"profile {name or 'default'}"
+                    setting = "claude_code_context_window_tokens" if cli else "context_window_tokens"
                     raise ValueError(
                         f"No whole historical segment fits: {stage} needs about {tokens} input tokens; "
-                        f"profile {name or 'default'} allows {budget}. Increase its context_window_tokens "
-                        "to the model's actual capacity or choose a larger-context model."
+                        f"{source} allows {budget}. Set {setting} to the model's actual capacity "
+                        "or choose a larger-context model."
                     )
                 # ponytail: linear prefix shrink; optimize only if large imports make preparation slow.
                 ordered_segments = ordered_segments[:-1]

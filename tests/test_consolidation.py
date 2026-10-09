@@ -169,10 +169,15 @@ async def test_dossier_context_uses_one_holistic_call_and_preserves_due_order(du
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("over_budget", [False, True])
-async def test_dry_prompt_preparation_is_reused_without_model_calls_or_rebuilding(monkeypatch, over_budget):
+@pytest.mark.parametrize("cli", [False, True])
+async def test_dry_prompt_preparation_is_reused_without_model_calls_or_rebuilding(monkeypatch, over_budget, cli):
     svc = _DossierContextService(due_ids=("first", "second"))
     if over_budget:
         svc.llm_profiles.profiles["revision"].context_window_tokens = 8010
+    if cli:
+        svc._claude_code = True
+        svc._claude_code_model = "TestCLIModel"
+        svc._claude_code_context_window_tokens = 10 if over_budget else 1_000_000
     inputs = _inputs()
     prepared = consolidation._prepare_dossier_consolidation_prompts(
         svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser",
@@ -186,7 +191,8 @@ async def test_dry_prompt_preparation_is_reused_without_model_calls_or_rebuildin
                 svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser", prepared=prepared,
             )
         assert f"needs about {prepared[3]['dossiers']:,} input tokens" in str(error.value)
-        assert "profile revision allows 8" in str(error.value)
+        assert f"{'Claude Code' if cli else 'profile revision'} allows 8" in str(error.value)
+        assert f"Set {'claude_code_context_window_tokens' if cli else 'context_window_tokens'}" in str(error.value)
         assert "actual capacity or choose a larger-context model" in str(error.value)
         assert not [call for call in svc.calls if call[0] in {"chat", "apply", "prepare_anchor"}]
         return
