@@ -908,7 +908,7 @@ async def test_atomic_prompt_log_pretty_logs_unescaped_content(
 async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    class _FakeSvc(AnchorService):
+    class _FakeSvc:
         async def graph_search(self, query: str, **kwargs: Any) -> dict[str, Any]:
             captured["query"] = query
             captured.update(kwargs)
@@ -951,7 +951,7 @@ async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: py
 async def test_atomic_canvas_source_threads_scope_and_edges(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    class _FakeSvc(AnchorService):
+    class _FakeSvc:
         def graph_atomic_canvas_source(self, **kwargs: Any) -> dict[str, Any]:
             captured.update(kwargs)
             return {
@@ -975,7 +975,7 @@ async def test_atomic_canvas_source_threads_scope_and_edges(monkeypatch: pytest.
 async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[tuple[str, dict[str, Any]]] = []
 
-    class _FakeSvc(AnchorService):
+    class _FakeSvc:
         def graph_atomic_entities(self, **kwargs: Any) -> dict[str, Any]:
             captured.append(("list", kwargs))
             return {"entities": [{"id": "e1", "name": "ExampleEntity"}], "total_count": 1}
@@ -1079,7 +1079,7 @@ async def test_atomic_entity_update_rejects_description_only(
 
 @pytest.mark.asyncio
 async def test_atomic_entity_merge_maps_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _FakeSvc(AnchorService):
+    class _FakeSvc:
         def graph_merge_entities(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
             raise EntityMergeConflictError({"id": "e1"}, {"id": "e2"}, ["states differ"])
 
@@ -1094,7 +1094,7 @@ async def test_atomic_entity_merge_maps_conflict(monkeypatch: pytest.MonkeyPatch
 
 @pytest.mark.asyncio
 async def test_atomic_entity_action_maps_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _FakeSvc(AnchorService):
+    class _FakeSvc:
         def graph_delete_entity(self, *_args: Any, **_kwargs: Any) -> None:
             raise EntityActionConflictError(["Graph references: 1"])
 
@@ -1118,7 +1118,7 @@ async def test_atomic_entities_require_scope() -> None:
 async def test_atomic_canvas_source_threads_atom_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    class _FakeSvc(AnchorService):
+    class _FakeSvc:
         def graph_atomic_canvas_source(self, **kwargs: Any) -> dict[str, Any]:
             captured.update(kwargs)
             return {"atoms": [], "edges": [], "count": 0, "total_count": 0}
@@ -1138,7 +1138,7 @@ async def test_atomic_canvas_source_threads_atom_ids(monkeypatch: pytest.MonkeyP
 async def test_atomic_canvas_source_post_threads_atom_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    class _FakeSvc(AnchorService):
+    class _FakeSvc:
         def graph_atomic_canvas_source(self, **kwargs: Any) -> dict[str, Any]:
             captured.update(kwargs)
             return {"atoms": [], "edges": [], "count": 0, "total_count": 0}
@@ -1166,7 +1166,7 @@ async def test_atomic_canvas_source_requires_scope() -> None:
 async def test_atomic_neighborhood_threads_scope_and_404(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    class _FakeSvc(AnchorService):
+    class _FakeSvc:
         def graph_atomic_neighborhood(self, item_id: str, **kwargs: Any) -> dict[str, Any] | None:
             captured["item_id"] = item_id
             captured.update(kwargs)
@@ -1201,7 +1201,7 @@ async def test_atomic_neighborhood_threads_scope_and_404(monkeypatch: pytest.Mon
 async def test_atomic_similar_threads_scope_and_404(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    class _FakeSvc(AnchorService):
+    class _FakeSvc:
         def graph_atomic_similar(self, item_id: str, **kwargs: Any) -> list[dict[str, Any]] | None:
             captured["item_id"] = item_id
             captured.update(kwargs)
@@ -3843,7 +3843,7 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
         ],
     )
 
-    class _FakeSvc(AnchorService):
+    class _FakeSvc:
         async def summarize_background_chat_rollup(
             self,
             *,
@@ -7191,7 +7191,7 @@ def _patch_turn_dependencies(
     db_path: Path,
     captured: dict[str, Any],
 ) -> None:
-    class _FakeSvc(AnchorService):
+    class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"ok",'
@@ -9796,7 +9796,7 @@ def _make_turn_monkeypatches(
 ) -> None:
     """Shared setup for conversation_turn attachment tests."""
 
-    class _FakeSvc(AnchorService):
+    class _FakeSvc:
         async def chat(self, *_args, **_kwargs) -> str:
             return chat_response
 
