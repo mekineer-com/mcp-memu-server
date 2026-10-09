@@ -282,7 +282,7 @@ def _load_background_rollup_tail(
             state_db_path=state_db_path,
         )
         web_source_db_path, reply_prefix = _resolve_whatsapp_web_source_config()
-        assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
+        assistant_speakers = _conversation_sources.load_whatsapp_assistant_source_speakers(
             conversation_id=conversation_id,
             hermes_home=hermes_home_path,
             sessions_index_path=sessions_index_path,
@@ -299,7 +299,7 @@ def _load_background_rollup_tail(
                 (value for value in (active_since, min_timestamp) if value is not None),
                 default=None,
             ),
-            assistant_source_message_ids=assistant_ids,
+            assistant_source_speakers=assistant_speakers,
         )
         _stamp_assistant_display_name(tail, soul_id)
         return tail
@@ -405,7 +405,7 @@ async def _run_background_rollup_for_conversation(
         )
         summary_input = [
             {
-                "role": str(msg.get("role") or "user"),
+                "role": str(msg.get("role") or "unknown"),
                 "name": str(msg.get("speaker") or "").strip() or None,
                 "content": str(msg.get("content") or ""),
                 "source_label": msg.get("source_label"),

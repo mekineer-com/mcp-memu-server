@@ -348,20 +348,20 @@ def _is_gateway_notice(content: str) -> bool:
     return any(text.startswith(prefix) for prefix in _GATEWAY_NOTICE_PREFIXES)
 
 
-def load_whatsapp_assistant_source_message_ids(
+def load_whatsapp_assistant_source_speakers(
     *,
     conversation_id: str,
     hermes_home: Path | None = None,
     sessions_index_path: Path | None = None,
     state_db_path: Path | None = None,
-) -> set[str]:
+) -> dict[str, str]:
     sessions_path, db_path = _resolve_hermes_paths(
         hermes_home=hermes_home,
         sessions_index_path=sessions_index_path,
         state_db_path=state_db_path,
     )
     if not sessions_path.exists() or not db_path.exists():
-        return set()
+        return {}
     entries, _chat_type = _collect_whatsapp_session_entries(
         _load_sessions_index(sessions_path),
         conversation_id=conversation_id,
@@ -373,21 +373,28 @@ def load_whatsapp_assistant_source_message_ids(
     ]
     session_ids = _expand_session_ids_with_lineage(db_path, session_ids)
     if not session_ids:
-        return set()
+        return {}
 
     placeholders = ",".join("?" for _ in session_ids)
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     try:
         rows = con.execute(
-            f"SELECT source_message_id FROM messages "
+            f"SELECT source_message_id, sender_id, sender_name FROM messages "
             f"WHERE session_id IN ({placeholders}) AND role = 'assistant' "
             "AND source_message_id IS NOT NULL AND TRIM(source_message_id) != ''",
             session_ids,
         ).fetchall()
     finally:
         con.close()
-    return {str(row["source_message_id"] or "").strip() for row in rows if str(row["source_message_id"] or "").strip()}
+    speakers = {}
+    for row in rows:
+        name = str(row["sender_name"] or "").strip()
+        sender_id = str(row["sender_id"] or "").strip()
+        speakers[str(row["source_message_id"]).strip()] = name or (
+            sender_id.removeprefix("soul:") if sender_id.startswith("soul:") else ""
+        )
+    return speakers
 
 
 def _to_iso_utc(value: Any) -> str:
@@ -420,14 +427,21 @@ def _resolve_whatsapp_row_speaker(
     return str(session_user_name or "").strip()
 
 
-def _strip_soul_prefix(body: str, soul_id: str, reply_prefix: str = "") -> tuple[bool, str]:
+def _strip_soul_prefix(body: str, soul_id: str, reply_prefix: str = "") -> tuple[str, str]:
     text = str(body or "")
     soul = str(soul_id or "").strip()
     prefix = str(reply_prefix or "").replace("\\n", "\n")
-    if prefix.strip() and text.startswith(prefix):
-        return True, text[len(prefix):].strip()
+    # A configured prefix belongs to its named speaker, not the requesting Soul.
+    named_prefix = re.match(r"^\s*(?:✦\s*)?\*{0,2}([^:\[\]\n]+?)\*{0,2}\s*:\s*$", prefix)
+    if not named_prefix:
+        named_prefix = re.match(r"^\s*\[([^\]\n]+)\]\s*$", prefix)
+    if prefix.strip() and text.startswith(prefix) and named_prefix:
+        return named_prefix[1].strip(), text[len(prefix):].strip()
+    match = re.match(r"^\s*✦\s*\*{0,2}([^:\[\]\n]+?)\*{0,2}\s*:\s*", text)
+    if match:
+        return match[1].strip(), text[match.end():].strip()
     if not soul:
-        return False, text
+        return "", text
     escaped = re.escape(soul)
     patterns = [
         rf"^\s*(?:✦\s*)?\*{{0,2}}{escaped}\*{{0,2}}\s*:\s*",
@@ -436,8 +450,8 @@ def _strip_soul_prefix(body: str, soul_id: str, reply_prefix: str = "") -> tuple
     for pattern in patterns:
         match = re.match(pattern, text, flags=re.IGNORECASE)
         if match:
-            return True, text[match.end():].strip()
-    return False, text
+            return soul, text[match.end():].strip()
+    return "", text
 
 
 def _contact_name(row: sqlite3.Row, prefix: str) -> str:
@@ -577,7 +591,7 @@ def _web_source_row_to_tail(
     chat_name: str,
     soul_id: str,
     reply_prefix: str,
-    assistant_source_message_ids: set[str],
+    assistant_source_speakers: dict[str, str],
     contact_map: dict[str, str],
     source_ref_map: dict[str, str],
 ) -> dict[str, Any] | None:
@@ -587,13 +601,16 @@ def _web_source_row_to_tail(
     resolved_chat_name = _contact_name(row, "chat") or chat_name
     from_me = bool(row["from_me"])
     source_message_id = str(row["msg_key"] or "")
-    is_soul = _source_id_matches_any(source_message_id, assistant_source_message_ids)
-    prefix_is_soul, stripped = _strip_soul_prefix(body, soul_id, reply_prefix)
-    is_soul = is_soul or prefix_is_soul
-    if from_me and is_soul:
-        role = "assistant"
+    matched_id = next(
+        (key for key in assistant_source_speakers if _source_id_matches_any(source_message_id, {key})),
+        None,
+    )
+    prefix_speaker, stripped = _strip_soul_prefix(body, soul_id, reply_prefix)
+    saved_speaker = assistant_source_speakers.get(matched_id, "")
+    if from_me and (matched_id is not None or prefix_speaker):
+        speaker = saved_speaker or prefix_speaker
+        role = "assistant" if speaker == soul_id else ""
         content = stripped or body
-        speaker = soul_id
     else:
         role = "user"
         content = body
@@ -640,7 +657,7 @@ def load_whatsapp_web_source_tail(
     hermes_home: Path | None = None,
     web_source_db_path: Path | None = None,
     min_timestamp: float | None = None,
-    assistant_source_message_ids: set[str] | None = None,
+    assistant_source_speakers: dict[str, str] | None = None,
     include_floor_without_new: bool = False,
 ) -> list[dict[str, Any]]:
     return _load_whatsapp_web_source_tail(
@@ -653,7 +670,7 @@ def load_whatsapp_web_source_tail(
         hermes_home=hermes_home,
         web_source_db_path=web_source_db_path,
         min_timestamp=min_timestamp,
-        assistant_source_message_ids=assistant_source_message_ids,
+        assistant_source_speakers=assistant_source_speakers,
         include_floor_without_new=include_floor_without_new,
     )
 
@@ -667,7 +684,7 @@ def load_whatsapp_web_source_tail_after_rowid(
     hermes_home: Path | None = None,
     web_source_db_path: Path | None = None,
     min_timestamp: float | None = None,
-    assistant_source_message_ids: set[str] | None = None,
+    assistant_source_speakers: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     return _load_whatsapp_web_source_tail(
         conversation_id=conversation_id,
@@ -679,7 +696,7 @@ def load_whatsapp_web_source_tail_after_rowid(
         hermes_home=hermes_home,
         web_source_db_path=web_source_db_path,
         min_timestamp=min_timestamp,
-        assistant_source_message_ids=assistant_source_message_ids,
+        assistant_source_speakers=assistant_source_speakers,
     )
 
 
@@ -694,7 +711,7 @@ def _load_whatsapp_web_source_tail(
     hermes_home: Path | None,
     web_source_db_path: Path | None,
     min_timestamp: float | None,
-    assistant_source_message_ids: set[str] | None,
+    assistant_source_speakers: dict[str, str] | None,
     include_floor_without_new: bool = False,
 ) -> list[dict[str, Any]]:
     db_path = _web_source_db_path(hermes_home=hermes_home, web_source_db_path=web_source_db_path)
@@ -776,11 +793,6 @@ def _load_whatsapp_web_source_tail(
     source_ref_map = _load_whatsapp_source_ref_map(db_path)
 
     chat_name = str(conversation_id).split(":", 2)[-1].strip() or "contact"
-    assistant_ids = {
-        str(value or "").strip()
-        for value in (assistant_source_message_ids or set())
-        if str(value or "").strip()
-    }
     all_rows = [
         item
         for row in rows
@@ -791,7 +803,7 @@ def _load_whatsapp_web_source_tail(
             chat_name=chat_name,
             soul_id=soul_id,
             reply_prefix=reply_prefix,
-            assistant_source_message_ids=assistant_ids,
+            assistant_source_speakers=assistant_source_speakers or {},
             contact_map=contact_map,
             source_ref_map=source_ref_map,
         ))

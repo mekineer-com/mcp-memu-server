@@ -693,7 +693,7 @@ def test_whatsapp_tail_projects_one_source_ref_for_phone_and_lid_aliases(tmp_pat
         soul_id="TestSoul",
         reply_prefix="",
         web_source_db_path=web_db,
-        assistant_source_message_ids={"soul-message-id"},
+        assistant_source_speakers={"soul-message-id": "TestSoul"},
     )
 
     assert [row.get("source_ref") for row in rows] == [
@@ -775,7 +775,7 @@ def test_load_whatsapp_web_source_tail_does_not_require_matching_prefix(tmp_path
     assert [(row.get("role"), row["content"]) for row in rows] == [("user", "plain from me")]
 
 
-def test_load_whatsapp_web_source_tail_uses_assistant_source_message_ids(tmp_path: Path) -> None:
+def test_load_whatsapp_web_source_tail_uses_assistant_source_speakers(tmp_path: Path) -> None:
     web_db = tmp_path / "web_source.db"
     _write_web_source_db(
         web_db,
@@ -793,15 +793,109 @@ def test_load_whatsapp_web_source_tail_uses_assistant_source_message_ids(tmp_pat
         conversation_id="whatsapp:dm:15133278228",
         since_cursor=-1,
         recent_fallback_messages=0,
-        soul_id="Siri",
+        soul_id="Ardent",
         reply_prefix="",
         web_source_db_path=web_db,
-        assistant_source_message_ids={"SENT-ID"},
+        assistant_source_speakers={"SENT-ID": "Ardent"},
     )
 
     assert [(row["role"], row["speaker"], row["content"]) for row in rows] == [
-        ("assistant", "Siri", "plain sent reply")
+        ("assistant", "Ardent", "plain sent reply")
     ]
+
+
+@pytest.mark.parametrize("reply_prefix,caption_prefix", [
+    ("✦ *Beacon*: ", "✦ *Beacon*: "),
+    ("[Beacon] ", "[Beacon] "),
+    ("✦ *Ardent*: ", "✦ *Beacon*: "),
+])
+def test_whatsapp_soul_switch_keeps_speakers_across_readers(tmp_path, monkeypatch, reply_prefix, caption_prefix):
+    from app import main
+    from app.db import sqlite_ensure_conversation_state_schema
+    from app.services.payload import _normalize_conversation
+    from memu.app.memorize import StructuredMemoryEntry
+    from memu.app.memorize_speakers import _attribute_memory, _build_speaker_map
+    from memu.utils.conversation import format_grouped_chat_history
+
+    cid = "whatsapp:dm:19990000001"
+    sessions = tmp_path / "sessions.json"
+    sessions.write_text(json.dumps({"agent:main:whatsapp:dm:19990000001": {
+        "session_id": "current", "platform": "whatsapp", "origin": {
+            "platform": "whatsapp", "chat_type": "dm", "chat_id": "19990000001@s.whatsapp.net"}}}))
+    channels = tmp_path / "state.db"
+    with sqlite3.connect(channels) as con:
+        con.executescript("CREATE TABLE sessions (id TEXT, parent_session_id TEXT);"
+                         "CREATE TABLE souls (soul_id TEXT, active_since REAL);"
+                         "CREATE TABLE messages (session_id TEXT, role TEXT, source_message_id TEXT, "
+                         "sender_id TEXT, sender_name TEXT);")
+        con.executemany("INSERT INTO sessions VALUES (?, ?)", [("current", "previous"), ("previous", None)])
+        con.execute("INSERT INTO souls VALUES ('Ardent', 100)")
+        con.executemany("INSERT INTO messages VALUES (?, 'assistant', ?, ?, ?)", [
+            ("previous", "A1", "soul:Ardent", "Ardent"),
+            ("current", "B1", "soul:Beacon", "Beacon"),
+            ("current", "B2", "soul:Beacon", None),
+            ("current", "A2", "soul:Ardent", None),
+            ("current", "UNKNOWN", None, None),
+        ])
+    web = tmp_path / "web_source.db"
+    texts = ["owner message", "first A", "✦ *Ardent*: first B", "middle B fragment", caption_prefix + "B caption", "A returns",
+             "unidentified assistant", "✦ *Ardent*: quoted prefix from contact"]
+    keys = ["OWNER", "A1", "B1", "B2", "B3", "A2", "UNKNOWN", "INBOUND"]
+    _write_web_source_db(web, messages=[{
+        "msg_key": "true_19990000001_c_us_" + key, "timestamp": 100 + i,
+        "body": text, "from_me": key != "INBOUND", "chat_id": "19990000001@c.us",
+        "from_id": "19990000002@c.us",
+    } for i, (key, text) in enumerate(zip(keys, texts))], contacts=[{
+        "contact_id": "19990000002@c.us", "contact_local_id": "19990000002", "name": "Orion"}])
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, tmp_path, sessions, channels))
+    monkeypatch.setattr(main, "_resolve_whatsapp_web_source_config", lambda: (web, reply_prefix))
+
+    live = main._load_current_whatsapp_history_from_source(cid, "Ardent", active_since=100)
+    background = main._load_background_rollup_tail(conversation_id=cid, user_id="Orion", soul_id="Ardent",
+                                                  rolling_summary_cursor_id=0)
+    memorize = main._load_tail_for_source_conversation(
+        conversation_id=cid, user_id="Orion", soul_id="Ardent", since_cursor=-1,
+        recent_fallback_messages=0, storage_dir=tmp_path, hermes_home_path=tmp_path,
+        sessions_index_path=sessions, state_db_path=channels)
+    scope_db = tmp_path / "Ardent.db"
+    with sqlite3.connect(scope_db) as con:
+        sqlite_ensure_conversation_state_schema(con)
+    state.write_conversation_state(cid, sqlite_current_path=lambda *_: scope_db,
+                                   user_id="Orion", soul_id="Ardent", updates={"memorize_chat": False})
+    with sqlite3.connect(scope_db) as con:
+        con.row_factory = sqlite3.Row
+        cross_background = main._load_cross_memorize_tails_from_sources(con, user_id="Orion", soul_id="Ardent")[cid]
+    for rows in (live, background, memorize, cross_background):
+        assert [row.get("role") for row in rows] == ["user", "assistant", None, None, None, "assistant", None, None]
+        assert [row["speaker"] for row in rows[:6]] == ["Orion", "Ardent", "Beacon", "Beacon", "Beacon", "Ardent"]
+        assert rows[4]["content"] == "B caption"
+        assert [row["source_conversation_index"] for row in rows] == list(range(1, 9))
+        assert [row["source_message_id"] for row in rows] == ["true_19990000001_c_us_" + key for key in keys]
+        rendered = format_grouped_chat_history(rows, soul_name="Ardent")
+        assert "[Beacon] first B" in rendered and "[Beacon] middle B fragment" in rendered
+        assert "[Ardent] A returns" in rendered and "[Orion] owner message" in rendered
+        normalized = _normalize_conversation(rows)
+        scope = {"user_id": "Orion", "soul_id": "Ardent"}
+        speaker_map = _build_speaker_map(normalized, scope, {"beacon": "entity:test-beacon"})
+        assert speaker_map[0] == ("user:orion", "Orion")
+        assert speaker_map[1] == ("soul:ardent", "Ardent")
+        assert all(speaker_map[i] == ("entity:test-beacon", "Beacon") for i in (2, 3, 4))
+        assert all(i not in _build_speaker_map(normalized, scope) for i in (2, 3, 4))
+        memory = StructuredMemoryEntry("social", "Beacon replied", [], "entity", None, [2, 3, 4], None)
+        attributed = _attribute_memory(memory, speaker_map)
+        assert (attributed.speaker_id, attributed.speaker_label) == ("entity:test-beacon", "Beacon")
+        assert _attribute_memory(memory, _build_speaker_map(normalized, scope)).speaker_id is None
+
+    # Floors retain the switched-Soul period; rowid summaries resume without renumbering.
+    speakers = conversation_sources.load_whatsapp_assistant_source_speakers(
+        conversation_id=cid, sessions_index_path=sessions, state_db_path=channels)
+    kwargs = dict(conversation_id=cid, soul_id="Ardent", reply_prefix=reply_prefix,
+                  web_source_db_path=web, assistant_source_speakers=speakers)
+    floor = conversation_sources.load_whatsapp_web_source_tail(
+        **kwargs, since_cursor=8, recent_fallback_messages=8, include_floor_without_new=True)
+    assert [row["source_conversation_index"] for row in floor] == list(range(1, 9))
+    resumed = conversation_sources.load_whatsapp_web_source_tail_after_rowid(**kwargs, after_rowid=3)
+    assert [row["source_conversation_index"] for row in resumed] == list(range(4, 9))
 
 
 def test_load_whatsapp_web_source_tail_does_not_substring_match_assistant_ids(tmp_path: Path) -> None:
@@ -825,7 +919,7 @@ def test_load_whatsapp_web_source_tail_does_not_substring_match_assistant_ids(tm
         soul_id="Siri",
         reply_prefix="",
         web_source_db_path=web_db,
-        assistant_source_message_ids={"SENT-ID"},
+        assistant_source_speakers={"SENT-ID": "Ardent"},
     )
 
     assert [(row.get("role"), row["speaker"], row["content"]) for row in rows] == [
@@ -894,7 +988,7 @@ def test_load_whatsapp_web_source_tail_omits_revoked_rows(tmp_path: Path) -> Non
     assert [row["content"] for row in rows] == ["kept message"]
 
 
-def test_load_whatsapp_assistant_source_message_ids_reads_state_db(tmp_path: Path) -> None:
+def test_load_whatsapp_assistant_source_speakers_reads_state_db(tmp_path: Path) -> None:
     sessions_path = tmp_path / "sessions.json"
     state_db_path = tmp_path / "state.db"
     sessions_path.write_text(
@@ -918,24 +1012,27 @@ def test_load_whatsapp_assistant_source_message_ids_reads_state_db(tmp_path: Pat
         con.execute(
             "CREATE TABLE messages ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, "
-            "content TEXT, source_message_id TEXT)"
+            "content TEXT, source_message_id TEXT, sender_id TEXT, sender_name TEXT)"
         )
         con.executemany(
-            "INSERT INTO messages (session_id, role, content, source_message_id) VALUES (?, ?, ?, ?)",
+            "INSERT INTO messages (session_id, role, content, source_message_id, sender_id, sender_name) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             [
-                ("s1", "assistant", "sent", "SENT-ID"),
-                ("s1", "user", "inbound", "USER-ID"),
+                ("s1", "assistant", "sent", "SENT-ID", "soul:Beacon", "Beacon"),
+                ("s1", "assistant", "id-only", "ID-ONLY", "soul:Beacon", None),
+                ("s1", "assistant", "unknown", "UNKNOWN-ID", None, None),
+                ("s1", "user", "inbound", "USER-ID", "Orion", "Orion"),
             ],
         )
         con.commit()
     finally:
         con.close()
 
-    assert conversation_sources.load_whatsapp_assistant_source_message_ids(
+    assert conversation_sources.load_whatsapp_assistant_source_speakers(
         conversation_id="whatsapp:dm:15133278228",
         sessions_index_path=sessions_path,
         state_db_path=state_db_path,
-    ) == {"SENT-ID"}
+    ) == {"SENT-ID": "Beacon", "ID-ONLY": "Beacon", "UNKNOWN-ID": ""}
 
 
 def test_load_soul_active_since_reads_channels_state_db(tmp_path: Path) -> None:

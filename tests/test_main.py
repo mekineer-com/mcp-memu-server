@@ -3455,8 +3455,8 @@ def test_load_background_rollup_tail_uses_assistant_source_ids_for_web_source(
     monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: 100.0)
     monkeypatch.setattr(
         main._conversation_sources,
-        "load_whatsapp_assistant_source_message_ids",
-        lambda **_kwargs: {"ASSISTANT-ID"},
+        "load_whatsapp_assistant_source_speakers",
+        lambda **_kwargs: {"ASSISTANT-ID": "Beacon"},
     )
     captured: dict[str, Any] = {}
 
@@ -3480,7 +3480,7 @@ def test_load_background_rollup_tail_uses_assistant_source_ids_for_web_source(
     )
 
     assert rows[0]["speaker"] == "Echo"
-    assert captured["assistant_source_message_ids"] == {"ASSISTANT-ID"}
+    assert captured["assistant_source_speakers"] == {"ASSISTANT-ID": "Beacon"}
     assert captured["after_rowid"] == 10
     assert captured["min_timestamp"] == 100.0
 
@@ -3674,8 +3674,7 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
                 "received_at": "2026-05-01T00:01:00+00:00",
             },
             {
-                "role": "user",
-                "speaker": "TestOwner",
+                "speaker": "Beacon",
                 "content": "second",
                 "source_message_id": "msg-12",
                 "ts_ms": 2_000,
@@ -3696,6 +3695,8 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
         ) -> str:
             assert prior_summary == "old summary"
             assert len(messages) == 2
+            assert messages[0]["role"] == "user"
+            assert messages[1]["role"] == "unknown" and messages[1]["name"] == "Beacon"
             assert soul_name == "Echo"
             return "rolled summary"
 

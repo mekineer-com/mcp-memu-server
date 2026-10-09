@@ -229,7 +229,7 @@ def _load_current_whatsapp_history_from_source(
         return None
     _storage_dir, hermes_home_path, sessions_index_path, state_db_path = _m()._resolve_cross_source_paths()
     web_source_db_path, reply_prefix = _m()._resolve_whatsapp_web_source_config()
-    assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
+    assistant_speakers = _conversation_sources.load_whatsapp_assistant_source_speakers(
         conversation_id=conversation_id,
         hermes_home=hermes_home_path,
         sessions_index_path=sessions_index_path,
@@ -244,7 +244,7 @@ def _load_current_whatsapp_history_from_source(
         hermes_home=hermes_home_path,
         web_source_db_path=web_source_db_path,
         min_timestamp=active_since,
-        assistant_source_message_ids=assistant_ids,
+        assistant_source_speakers=assistant_speakers,
     )
     if not external_message_id or not exclude_external_message:
         return rows
@@ -407,7 +407,7 @@ def _load_tail_for_source_conversation(
             default=None,
         )
         web_source_db_path, reply_prefix = _m()._resolve_whatsapp_web_source_config()
-        assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
+        assistant_speakers = _conversation_sources.load_whatsapp_assistant_source_speakers(
             conversation_id=conversation_id,
             hermes_home=hermes_home_path,
             sessions_index_path=sessions_index_path,
@@ -422,7 +422,7 @@ def _load_tail_for_source_conversation(
             hermes_home=hermes_home_path,
             web_source_db_path=web_source_db_path,
             min_timestamp=timestamp_floor,
-            assistant_source_message_ids=assistant_ids,
+            assistant_source_speakers=assistant_speakers,
             include_floor_without_new=include_floor_without_new,
         )
     if source_label == "sillytavern":
@@ -899,7 +899,7 @@ def _load_cross_memorize_tails_from_sources(
                     rolling=True,
                     hermes_home_path=hermes_home_path,
                 )
-                assistant_ids = _conversation_sources.load_whatsapp_assistant_source_message_ids(
+                assistant_speakers = _conversation_sources.load_whatsapp_assistant_source_speakers(
                     conversation_id=cid,
                     hermes_home=hermes_home_path,
                     sessions_index_path=sessions_index_path,
@@ -916,7 +916,7 @@ def _load_cross_memorize_tails_from_sources(
                         (value for value in (active_since, checkpoint_floor) if value is not None),
                         default=None,
                     ),
-                    assistant_source_message_ids=assistant_ids,
+                    assistant_source_speakers=assistant_speakers,
                 )
             elif source_label == "sillytavern":
                 tail = _conversation_sources.load_sillytavern_tail(
