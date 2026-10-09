@@ -46,9 +46,10 @@ class _DossierContextService:
         self.calls: list[tuple] = []
         self.prompts: list[str] = []
 
-    def list_due_dossiers(self, scope, *, segment_ids=None, excluded_segment_ids=()):
+    def list_due_dossiers(self, scope, *, segment_ids=None, excluded_segment_ids=(), include_reviewed_changes=False):
         self.calls.append(("due", scope, segment_ids))
         self.excluded_segment_ids = list(excluded_segment_ids)
+        self.include_reviewed_changes = include_reviewed_changes
         return self.due
 
     def prepare_dossier_revision(self, dossier_id, scope, **context):
@@ -180,10 +181,13 @@ async def test_dry_prompt_preparation_is_reused_without_model_calls_or_rebuildin
     assert set(prepared[3]) == {"dossiers", "anchors", "weekly"}
     assert prepared[3]["dossiers"] == consolidation.estimate_prompt_tokens(prepared[1] + "\n" + prepared[2])
     if over_budget:
-        with pytest.raises(ValueError, match="provider-safe"):
+        with pytest.raises(ValueError, match="provider-safe") as error:
             await prepare_dossier_consolidation_context(
                 svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser", prepared=prepared,
             )
+        assert f"needs about {prepared[3]['dossiers']:,} input tokens" in str(error.value)
+        assert "profile revision allows 8" in str(error.value)
+        assert "actual capacity or choose a larger-context model" in str(error.value)
         assert not [call for call in svc.calls if call[0] in {"chat", "apply", "prepare_anchor"}]
         return
     await prepare_dossier_consolidation_context(
@@ -918,6 +922,7 @@ INSERT INTO memory_items (
     prepared = consolidation._prepare_dossier_consolidation_prompts(svc, inputs=ordinary, soul_id=soul_id, user_id=user_id)
     assert all(text in prepared[2] for text in ("older imported history", "message 0", "message 1", "a separate platform"))
     assert svc.excluded_segment_ids == [historical_id]
+    assert svc.include_reviewed_changes is True
     assert [call[3]["excluded_segment_ids"] for call in svc.calls if call[0] == "prepare"] == [[historical_id]]
     deps.write_conversation_state("conv-a", soul_id=soul_id, user_id=user_id, updates={"import_state": {
         "history_end_index": 3, "memorize_cursor": 2,
@@ -943,6 +948,7 @@ INSERT INTO memory_items (
             svc, inputs=historical, soul_id=soul_id, user_id=user_id,
         )
         assert set(svc.excluded_segment_ids) == excluded
+        assert svc.include_reviewed_changes is False
         context = next(call[3] for call in svc.calls if call[0] == "prepare")
         assert context["segment_ids"] == prefix
         assert set(context["excluded_segment_ids"]) == excluded
