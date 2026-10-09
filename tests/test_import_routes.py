@@ -569,8 +569,10 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
     monkeypatch.setattr(main, "_load_activity_tail_for_ai", lambda *_a, **_kw: [{
         "conversation_id": "activity:dm:TestSoul", "role": "assistant", "content": "sitting recap " * 200}])
     profile = SimpleNamespace(context_window_tokens=100000, max_tokens=1000, chat_model="fictional-model")
+    anchors = [SimpleNamespace(anchor_role="soul", summary="I paint coastal sketches."),
+               SimpleNamespace(anchor_role="user", summary="My human prefers early walks.")]
     svc = SimpleNamespace(_claude_code=False, llm_profiles=SimpleNamespace(profiles={"default": profile}),
-                          build_dossier_index=lambda _: "Known dossier index")
+                          list_active_dossiers=lambda _: anchors, build_dossier_index=lambda _, **_kw: "Known dossier index")
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _: svc)
     prompts = []
     build = main._build_turn_prompt
@@ -591,9 +593,14 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
     client = TestClient(main.app)
     response = client.post("/imports/validate", json=preview.model_dump(mode="json"))
     assert response.status_code == 200 and response.json()["ok"]
+    anchors[0].summary += " sensory details" * 4000
+    assert validate(preview)["estimated_tokens"] > first["estimated_tokens"]
     invalid = {**preview.model_dump(mode="json"), "current_messages": [{**message, "role": "system"}]}
     assert client.post("/imports/validate", json=invalid).status_code == 422
     profile.context_window_tokens = 1000 + (first["estimated_tokens"] + 10) * 5 // 4
+    with pytest.raises(HTTPException, match="context"):
+        validate(preview)
+    anchors[0].summary = "I paint coastal sketches."
     larger = ImportPreview(**scope, conversation_id=cid,
                           current_messages=[{**message, "content": "additional words " * 100}])
     with pytest.raises(HTTPException, match="context"):

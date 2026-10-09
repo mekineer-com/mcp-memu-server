@@ -446,11 +446,14 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         cross = [row for row in displayed if row.get("conversation_id") != cid]
         block = runtime._format_all_chat_history_for_ai(
             current_history=history, cross_tail=cross, conversation_id=cid, soul_id=scoped["soul_id"])
+        dossiers = svc.list_active_dossiers(scoped)
+        anchors = runtime._render_anchor_context({row.anchor_role: row for row in dossiers if row.anchor_role})
         system = runtime._make_turn_system_prompt(
-            scoped["soul_id"], soul_card=card, response_sentences=int(runtime._CONFIG.get("turn_response_sentences", 3)))
+            scoped["soul_id"], anchor_context=anchors, soul_card=card,
+            response_sentences=int(runtime._CONFIG.get("turn_response_sentences", 3)))
         user = runtime._build_turn_prompt(
             user_message="", history=history, prior_context=state.get("prior_context"), retrieve_rag=None,
-            all_categories_summary=svc.build_dossier_index(scoped), memory_cache=state.get("memory_cache"),
+            all_categories_summary=svc.build_dossier_index(scoped, dossiers=dossiers), memory_cache=state.get("memory_cache"),
             intentions_active=state.get("intentions_active"), apimw_message_to_self=state.get("apimw_message_to_self"),
             conversations_block=block, conversation_id=cid,
             response_sentences=int(runtime._CONFIG.get("turn_response_sentences", 3)))

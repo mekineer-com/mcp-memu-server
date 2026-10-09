@@ -2,6 +2,7 @@ import logging
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,7 @@ from app.services.turn_contract import (
     make_turn_system_prompt,
     parse_turn_contract,
     resolve_current_chat_heading,
+    render_anchor_context,
 )
 
 
@@ -576,7 +578,7 @@ def test_build_turn_prompt_keeps_current_platform_section_last():
 
 def test_make_turn_system_prompt_includes_time_anchor() -> None:
     prompt = make_turn_system_prompt(
-        "Codexia",
+        "Codexia", anchor_context="",
         now=datetime(2026, 4, 8, 9, 30, tzinfo=timezone.utc),
     )
     assert "Today is " in prompt
@@ -584,25 +586,36 @@ def test_make_turn_system_prompt_includes_time_anchor() -> None:
 
 
 def test_turn_identity_prompt_excludes_protocol() -> None:
-    identity = make_turn_identity_prompt("Siri", soul_card="SOUL CARD")
+    anchors = render_anchor_context({
+        "soul": SimpleNamespace(summary="I paint coastal sketches.", description="unused"),
+        "user": SimpleNamespace(summary="", description="My human prefers early walks."),
+    })
+    identity = make_turn_identity_prompt("TestSoul", anchor_context=anchors, soul_card="SOUL CARD")
 
-    assert identity in make_turn_system_prompt("Siri", soul_card="SOUL CARD")
+    system = make_turn_system_prompt("TestSoul", anchor_context=anchors, soul_card="SOUL CARD")
+    assert identity in system
+    assert system.count("I paint coastal sketches.") == 1
+    assert system.count("My human prefers early walks.") == 1
+    assert system.index("SOUL CARD") < system.index("My Identity and Lived Experience:") < system.index("My Protocol:")
     assert "My Protocol:" not in identity
+    assert render_anchor_context({}) == ""
+    assert "The User's" not in render_anchor_context({"soul": "coastal sketches"})
+    assert render_anchor_context({"soul": "coastal sketches"}, markdown=True).startswith("## My Identity and Lived Experience\n")
 
 
 def test_make_turn_system_prompt_hides_activity_recap_by_default() -> None:
-    prompt = make_turn_system_prompt("Siri")
+    prompt = make_turn_system_prompt("Siri", anchor_context="")
     assert "activity_recap" not in prompt
 
 
 def test_make_turn_system_prompt_can_include_activity_recap_for_self_turns() -> None:
-    prompt = make_turn_system_prompt("Siri", include_activity_recap=True)
+    prompt = make_turn_system_prompt("Siri", anchor_context="", include_activity_recap=True)
     assert "- activity_recap: null or string" in prompt
     assert '"activity_recap": null | "first-person activity recap"' in prompt
 
 
 def test_make_turn_system_prompt_forbids_public_response_when_requested() -> None:
-    prompt = make_turn_system_prompt("Siri", allow_public_response=False)
+    prompt = make_turn_system_prompt("Siri", anchor_context="", allow_public_response=False)
     assert '"response_target": null | "private"' in prompt
     assert '"respond"' not in prompt
     assert '"listen"' not in prompt
@@ -1127,5 +1140,5 @@ def test_parse_turn_contract_drops_bad_attachment(tmp_path: Path, caplog) -> Non
 
 
 def test_make_turn_system_prompt_mentions_attachment() -> None:
-    prompt = make_turn_system_prompt("Siri")
+    prompt = make_turn_system_prompt("Siri", anchor_context="")
     assert "attachment" in prompt

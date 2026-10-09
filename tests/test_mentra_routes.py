@@ -91,6 +91,15 @@ def _session_app(
         "prompts": [],
         "image_memorize": [],
         "background_errors": [],
+        "working_state": {"memory_cache": [], "intentions_active": []},
+        "narrative": "I value continuity.",
+        "anchor_rows": {
+            "soul": SimpleNamespace(summary="I am Codexia.", description="soul"),
+            "user": SimpleNamespace(summary="The user likes careful work.", description="user"),
+        },
+        "category_index": "- Fictional Places: A remembered coast.",
+        "embeddings": [],
+        "deleted_memories": [],
     }
     results = iter(token_results or ["ephemeral-1", "ephemeral-2", "ephemeral-3"])
     writes = iter(state_results or [])
@@ -101,6 +110,7 @@ def _session_app(
     resources: dict[str, Any] = {}
     memory_items: dict[str, Any] = {}
     calls["image_resources"] = resources
+    calls["memory_items"] = memory_items
 
     class ResourceRepo:
         def list_resources(self, _scope: dict[str, str]) -> dict[str, Any]:
@@ -111,8 +121,13 @@ def _session_app(
             return {
                 key: item
                 for key, item in memory_items.items()
-                if item.resource_id == where["resource_id"]
+                if getattr(item, "resource_id", None) == where["resource_id"]
             }
+
+        def create_item(self, **kwargs: Any) -> Any:
+            item = SimpleNamespace(id=f"reflection-{len(memory_items) + 1}", **kwargs)
+            memory_items[item.id] = item
+            return item
 
     class Service:
         database = SimpleNamespace(
@@ -121,10 +136,23 @@ def _session_app(
 
         async def ensure_dossier_anchors(self, scope: dict[str, str]) -> dict[str, Any]:
             calls["anchors"] = dict(scope)
-            return {
-                "soul": SimpleNamespace(summary="I am Codexia.", description="soul"),
-                "user": SimpleNamespace(summary="The user likes careful work.", description="user"),
-            }
+            return calls["anchor_rows"]
+
+        def build_dossier_index(self, scope: dict[str, str]) -> str:
+            calls["index_scope"] = dict(scope)
+            return calls["category_index"]
+
+        async def embed(self, summaries: list[str], **kwargs: Any) -> list[list[float]]:
+            assert not soul_lock.locked()
+            calls["embeddings"].append((summaries, kwargs))
+            if calls.get("embedding_hook"):
+                await calls["embedding_hook"]()
+            return [[0.5] for _ in summaries]
+
+        def graph_delete_memories(self, ids: list[str], **kwargs: Any) -> None:
+            calls["deleted_memories"].append((ids, kwargs))
+            for memory_id in ids:
+                memory_items.pop(memory_id)
 
         async def memorize(self, **kwargs: Any) -> dict[str, Any]:
             calls["image_memorize"].append(copy.deepcopy(kwargs))
@@ -149,7 +177,7 @@ def _session_app(
 
     def load_state(conversation_id: str, **scope: str) -> tuple[dict[str, Any], str, None]:
         calls["state"].append((conversation_id, scope))
-        return {}, "I value continuity.", None
+        return copy.deepcopy(calls["working_state"]), calls["narrative"], None
 
     def load_cross(**kwargs: str) -> str:
         calls["cross"].append(kwargs)
@@ -201,6 +229,20 @@ def _session_app(
         result = next(writes, None)
         if isinstance(result, Exception):
             raise result
+        calls["working_state"].update(copy.deepcopy(kwargs["updates"]))
+
+    async def prepare_annulments(**kwargs: Any) -> list[dict[str, Any]]:
+        from app import main
+
+        return await main._prepare_annulment_memories(**kwargs)
+
+    def save_annulments(**kwargs: Any) -> list[str]:
+        from app import main
+
+        assert soul_lock.locked()
+        with monkeypatch.context() as patch:
+            patch.setattr(main, "_write_conversation_state", write_state)
+            return main._save_actual_annulments(**kwargs)
 
     def prepare(*args: Any, **kwargs: Any) -> tuple[int, dict[str, Any] | None]:
         calls["memorize_checks"].append((args, kwargs))
@@ -235,6 +277,8 @@ def _session_app(
         get_storage_dir=lambda: tmp_path,
         get_soul_lock=test_soul_lock,
         write_conversation_state=write_state,
+        prepare_annulment_memories=prepare_annulments,
+        save_actual_annulments=save_annulments,
         prepare_auto_memorize=prepare,
         schedule_auto_memorize=schedule,
         get_resource_storage_dir=lambda: tmp_path / "resources",
@@ -257,6 +301,8 @@ def test_mentra_health_requires_enabled_and_earcons_remain_public() -> None:
     for path in ("/installation/seen", "/host/seen", "/session/start",
                  "/session/missing/token", "/session/missing/heartbeat",
                  "/session/missing/end", "/session/missing/recall",
+                 "/session/missing/working-state", "/session/missing/working-thought",
+                 "/session/missing/annul-intention",
                  "/session/missing/snapshot", "/session/missing/snapshot/replay",
                  "/session/missing/snapshot/finalize", "/session/missing/transcripts/append"):
         assert client.post(f"/integration/mentra{path}", json={}).status_code == 404
@@ -774,14 +820,19 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
     assert calls["prompts"] == [(prompt, body["model"])]
     headings = [
         "Today is server time.",
-        "My narrative self:",
-        "My identity and lived experience:",
-        "The user's identity and lived experience:",
-        "Recent conversations and activities:",
+        "## My Narrative Self",
+        "## My Identity and Lived Experience",
+        "## The User's Identity and Lived Experience",
+        "## My Categories",
+        "## Recent Conversations and Activities",
         "Use recall_memory when relevant context is missing.",
         "Speak naturally and concisely",
     ]
     assert [prompt.index(text) for text in headings] == sorted(prompt.index(text) for text in headings)
+    assert calls["index_scope"] == calls["anchors"]
+    assert prompt.count(calls["category_index"]) == 1
+    assert prompt.count("I am Codexia.") == prompt.count("The user likes careful work.") == 1
+    assert "My Working Thoughts" not in prompt and "My Intentions" not in prompt
     serialized = json.dumps(body)
     assert "permanent-secret" not in serialized
     assert "I am Codexia" not in serialized
@@ -799,6 +850,239 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
         "tokenMs",
         "totalMs",
     }
+
+
+def test_bootstrap_omits_empty_sections_and_uses_shared_anchor_renderer():
+    prompt = mentra_routes._build_bootstrap_instruction(
+        identity="A fictional identity.", narrative="", anchors={"user": "A fictional user fact."},
+        all_categories_summary="", chats="",
+    )
+    assert "## The User's Identity and Lived Experience\nA fictional user fact." in prompt
+    for absent in ("## My Narrative Self", "## My Identity and Lived Experience", "## My Categories",
+                   "## Recent Conversations and Activities"):
+        assert absent not in prompt
+    assert 'If a write reports "busy, not saved", nothing was saved.' in prompt
+    assert "If you never hear back, it may have been saved" in prompt
+
+
+def test_live_working_state_is_fresh_and_thought_write_is_bounded(monkeypatch, tmp_path):
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    calls["working_state"] = {
+        "memory_cache": [f"Fictional thought {i}" for i in range(7)],
+        "intentions_active": [{"id": "learn-tides", "text": "Learn fictional tides."}],
+        "prior_context": "Keep prior context.", "undo": "Keep undo.",
+    }
+    sitting = client.post("/integration/mentra/session/start", json=START).json()["session_id"]
+    root = f"/integration/mentra/session/{sitting}"
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    prompt = calls["token"][0]["system_instruction"]
+    assert "Fictional thought" not in prompt and "Learn fictional tides" not in prompt
+    read = client.post(f"{root}/working-state", json=scope)
+    assert read.json() == {
+        "ok": True, "working_thoughts": calls["working_state"]["memory_cache"],
+        "intentions": calls["working_state"]["intentions_active"],
+    }
+    assert client.post(f"{root}/working-thought", json={**scope, "thought": "x" * 601}).json() == {
+        "ok": True, "status": "saved",
+    }
+    current = client.post(f"{root}/working-state", json=scope).json()
+    assert current["working_thoughts"] == [f"Fictional thought {i}" for i in range(1, 7)] + ["x" * 600]
+    assert calls["working_state"]["prior_context"] == "Keep prior context."
+    assert calls["working_state"]["undo"] == "Keep undo."
+    assert set(calls["state_writes"][-1][1]["updates"]) == {"memory_cache"}
+    assert calls["state_writes"][-1][0] == (conversation_sources.MENTRA_CONVERSATION_ID,)
+    assert calls["state_writes"][-1][1]["user_id"] == START["user_id"]
+    assert calls["state_writes"][-1][1]["soul_id"] == START["soul_id"]
+    assert calls["embeddings"] == [] and calls["memorize_checks"] == []
+
+
+@pytest.mark.parametrize("status", ["completed", "deleted"])
+def test_annul_intention_records_only_actual_removal(monkeypatch, tmp_path, status):
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    calls["working_state"]["intentions_active"] = [
+        {"id": "learn-tides", "text": "Learn fictional tides."},
+        {"id": "paint-coast", "text": "Paint a fictional coast."},
+    ]
+    client.post("/integration/mentra/session/start", json=START)
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    path = "/integration/mentra/session/sitting-1/annul-intention"
+    body = {**scope, "intention_id": "learn-tides", "status": status, "note": "A fictional reason."}
+    response = client.post(path, json=body)
+    assert response.json() == {"ok": True, "status": "removed", "memory_ids": ["reflection-1"]}
+    item = calls["memory_items"]["reflection-1"]
+    assert f'as {status}. Note: A fictional reason.' in item.summary
+    assert item.user_data == scope and item.conversation_id == conversation_sources.MENTRA_CONVERSATION_ID
+    assert calls["embeddings"][0][1] == {"profile": "embedding"}
+    assert calls["working_state"]["intentions_active"] == [{"id": "paint-coast", "text": "Paint a fictional coast."}]
+    assert set(calls["state_writes"][-1][1]["updates"]) == {"intentions_active"}
+    assert client.post(path, json=body).json()["status"] == "not_found"
+    assert len(calls["embeddings"]) == len(calls["state_writes"]) == len(calls["memory_items"]) == 1
+
+
+@pytest.mark.parametrize("tool,arguments", [
+    ("working-thought", {"thought": "A fictional hypothesis."}),
+    ("annul-intention", {"intention_id": "learn-tides", "status": "completed"}),
+])
+def test_live_write_save_failure_keeps_state_and_releases_lock(monkeypatch, tmp_path, tool, arguments):
+    client, calls, _ = _session_app(
+        monkeypatch, tmp_path, state_results=[RuntimeError("fictional save failure")],
+        raise_server_exceptions=False,
+    )
+    calls["working_state"]["intentions_active"] = [{"id": "learn-tides", "text": "Learn fictional tides."}]
+    before = copy.deepcopy(calls["working_state"])
+    client.post("/integration/mentra/session/start", json=START)
+    response = client.post(f"/integration/mentra/session/sitting-1/{tool}", json={
+        "user_id": START["user_id"], "soul_id": START["soul_id"], **arguments,
+    })
+    assert response.status_code == 500
+    assert calls["working_state"] == before and not calls["soul_lock"].locked()
+    assert calls["memory_items"] == {}
+    if tool == "annul-intention":
+        assert calls["deleted_memories"] == [(["reflection-1"], {
+            "where": {"user_id": START["user_id"], "soul_id": START["soul_id"]},
+        })]
+
+
+def test_live_tools_reject_wrong_scope_ended_sitting_pause_and_invalid_arguments(monkeypatch, tmp_path):
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    client.post("/integration/mentra/session/start", json=START)
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    tools = [("working-state", {}), ("working-thought", {"thought": "Fictional thought."}),
+             ("annul-intention", {"intention_id": "learn-tides", "status": "deleted"})]
+    for tool, arguments in tools:
+        assert client.post(f"/integration/mentra/session/wrong/{tool}", json={**scope, **arguments}).status_code == 404
+        assert client.post(f"/integration/mentra/session/sitting-1/{tool}", json={
+            **scope, **arguments, "soul_id": "Another Fictional Soul",
+        }).status_code == 404
+        assert client.post(f"/integration/mentra/session/sitting-1/{tool}", json={
+            **scope, **arguments, "user_id": "Another Fictional User",
+        }).status_code == 404
+        calls["pause_reason"] = "Fictional pause."
+        paused = client.post(f"/integration/mentra/session/sitting-1/{tool}", json={**scope, **arguments})
+        assert paused.status_code == 409 and paused.json()["detail"]["code"] == "soul_paused"
+        calls["pause_reason"] = None
+    for tool, arguments in [("working-state", {"unexpected": True}), ("working-thought", {"thought": "  "}),
+                            ("annul-intention", {"intention_id": "learn-tides", "status": "active"})]:
+        assert client.post(f"/integration/mentra/session/sitting-1/{tool}", json={**scope, **arguments}).status_code == 422
+    client.post("/integration/mentra/session/sitting-1/end", json=scope)
+    for tool, arguments in tools:
+        assert client.post(f"/integration/mentra/session/sitting-1/{tool}", json={**scope, **arguments}).status_code == 404
+    assert calls["state_writes"] == calls["embeddings"] == []
+
+
+def test_live_writes_return_busy_without_preparation_and_bound_admission(monkeypatch, tmp_path):
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    client.post("/integration/mentra/session/start", json=START)
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    busy = {"ok": False, "status": "busy", "message": "busy, not saved"}
+
+    async def contend():
+        async with AsyncClient(transport=ASGITransport(app=client.app), base_url="http://test") as http:
+            async with calls["soul_lock"]:
+                for tool, args in [("working-thought", {"thought": "Fictional thought."}),
+                                   ("annul-intention", {"intention_id": "learn-tides", "status": "completed"})]:
+                    result = await http.post(f"/integration/mentra/session/sitting-1/{tool}", json={**scope, **args})
+                    assert result.json() == busy
+                assert (await http.post("/integration/mentra/session/sitting-1/working-state", json=scope)).status_code == 200
+
+    asyncio.run(asyncio.wait_for(contend(), timeout=2))
+    assert calls["state_writes"] == calls["embeddings"] == []
+
+    async def delayed_acquire():
+        await asyncio.sleep(1)
+        raise AssertionError("admission must be bounded")
+
+    monkeypatch.setattr(calls["soul_lock"], "acquire", delayed_acquire)
+    monkeypatch.setattr(mentra_routes, "_RECALL_TIMEOUT_SECONDS", 0.01)
+    assert client.post("/integration/mentra/session/sitting-1/working-thought", json={
+        **scope, "thought": "Fictional thought.",
+    }).json() == busy
+    assert not calls["soul_lock"].locked() and calls["state_writes"] == []
+
+
+@pytest.mark.parametrize("change,expected", [("stop", 404), ("pause", 409), ("remove", 200), ("busy", 200)])
+def test_annulment_rechecks_after_embedding(monkeypatch, tmp_path, change, expected):
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    calls["working_state"]["intentions_active"] = [{"id": "learn-tides", "text": "Learn fictional tides."}]
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+
+    async def run():
+        async with AsyncClient(transport=ASGITransport(app=client.app), base_url="http://test") as http:
+            async def change_during_embedding():
+                assert not calls["soul_lock"].locked()
+                if change == "stop":
+                    assert (await http.post("/integration/mentra/session/sitting-1/end", json=scope)).status_code == 200
+                    # A replacement sitting must not authorize the old request.
+                    assert (await http.post("/integration/mentra/session/start", json=START)).status_code == 200
+                elif change == "pause":
+                    calls["pause_reason"] = "Fictional pause during embedding."
+                elif change == "remove":
+                    calls["working_state"]["intentions_active"] = []
+                else:
+                    await calls["soul_lock"].acquire()
+
+            calls["embedding_hook"] = change_during_embedding
+            assert (await http.post("/integration/mentra/session/start", json=START)).status_code == 200
+            return await http.post("/integration/mentra/session/sitting-1/annul-intention", json={
+                **scope, "intention_id": "learn-tides", "status": "completed",
+            })
+
+    response = asyncio.run(asyncio.wait_for(run(), timeout=3))
+    assert response.status_code == expected
+    if change in {"remove", "busy"}:
+        assert response.json()["status"] == {"remove": "not_found", "busy": "busy"}[change]
+    if change == "busy":
+        calls["soul_lock"].release()
+    assert len(calls["embeddings"]) == 1
+    assert calls["state_writes"] == [] and calls["memory_items"] == {}
+    assert not calls["soul_lock"].locked()
+
+
+@pytest.mark.parametrize("change,expected", [("stop", 404), ("pause", 409)])
+def test_thought_rechecks_lease_and_pause_after_lock_admission(monkeypatch, tmp_path, change, expected):
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    client.post("/integration/mentra/session/start", json=START)
+    original_acquire = calls["soul_lock"].acquire
+
+    async def acquire_and_change():
+        result = await original_acquire()
+        if change == "stop":
+            mentra_routes._leases.clear()
+        else:
+            calls["pause_reason"] = "Fictional pause during admission."
+        return result
+
+    monkeypatch.setattr(calls["soul_lock"], "acquire", acquire_and_change)
+    result = client.post("/integration/mentra/session/sitting-1/working-thought", json={
+        "user_id": START["user_id"], "soul_id": START["soul_id"], "thought": "Fictional thought.",
+    })
+    assert result.status_code == expected
+    assert not calls["soul_lock"].locked() and calls["state_writes"] == []
+
+
+def test_lost_write_response_does_not_undo_or_replay_and_can_be_read(monkeypatch, tmp_path):
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    client.post("/integration/mentra/session/start", json=START)
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+
+    async def lose_response(asgi_scope, receive, send):
+        async def drop(_message):
+            raise asyncio.CancelledError()
+
+        await client.app(asgi_scope, receive, drop)
+
+    async def run():
+        async with AsyncClient(transport=ASGITransport(app=lose_response), base_url="http://test") as http:
+            with pytest.raises(asyncio.CancelledError):
+                await http.post("/integration/mentra/session/sitting-1/working-thought", json={
+                    **scope, "thought": "A fictional surviving thought.",
+                })
+
+    asyncio.run(run())
+    assert len(calls["state_writes"]) == 1 and not calls["soul_lock"].locked()
+    result = client.post("/integration/mentra/session/sitting-1/working-state", json=scope)
+    assert result.json()["working_thoughts"] == ["A fictional surviving thought."]
+    assert len(calls["state_writes"]) == 1
 
 
 def test_recall_preserves_structured_pause_through_real_server_wrapper(monkeypatch, tmp_path):
@@ -901,12 +1185,19 @@ def test_lease_resume_heartbeat_and_end_are_scoped(
 
     scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
     lease_before_refresh = mentra_routes._leases[START["soul_id"]]
+    calls["narrative"] = "A changed fictional narrative."
+    calls["anchor_rows"] = {"soul": "A changed fictional anchor.", "user": "A changed user anchor."}
+    calls["category_index"] = "- Changed Category: New description."
+    state_reads_before_refresh = len(calls["state"])
     refreshed = client.post(
         "/integration/mentra/session/sitting-2/token", json=scope
     )
     assert refreshed.status_code == 200
     assert refreshed.json() == {"ephemeral_token": "ephemeral-3"}
     assert mentra_routes._leases[START["soul_id"]] == lease_before_refresh
+    assert len(calls["state"]) == state_reads_before_refresh
+    assert "changed fictional" not in calls["token"][-1]["system_instruction"]
+    assert "Changed Category" not in calls["token"][-1]["system_instruction"]
     assert calls["token"][-1] == {
         "api_key": "permanent-secret",
         "model": "gemini-2.5-flash-native-audio-preview-12-2025",
@@ -2181,22 +2472,19 @@ def test_token_mint_uses_measured_constrained_wire(
         "proactivity,historyConfig"
     )
     assert setup["model"] == "models/gemini-2.5-flash-native-audio-preview-12-2025"
-    assert setup["tools"] == [
-        {
-            "functionDeclarations": [
-                {
-                    "name": "recall_memory",
-                    "description": mentra_routes._RECALL_TOOL_DESCRIPTION,
-                    "behavior": "NON_BLOCKING",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {"query": {"type": "STRING"}},
-                        "required": ["query"],
-                    },
-                }
-            ]
-        }
+    declarations = setup["tools"][0]["functionDeclarations"]
+    assert [tool["name"] for tool in declarations] == [
+        "recall_memory", "read_working_state", "save_working_thought", "annul_intention",
     ]
+    assert all(tool["behavior"] == "NON_BLOCKING" for tool in declarations)
+    assert declarations[0]["description"] == mentra_routes._RECALL_TOOL_DESCRIPTION
+    assert declarations[0]["parameters"] == {
+        "type": "OBJECT", "properties": {"query": {"type": "STRING"}}, "required": ["query"],
+    }
+    assert declarations[1]["parameters"] == {"type": "OBJECT", "properties": {}}
+    assert declarations[2]["parameters"]["required"] == ["thought"]
+    assert declarations[3]["parameters"]["required"] == ["intention_id", "status"]
+    assert declarations[3]["parameters"]["properties"]["status"]["enum"] == ["completed", "deleted"]
     assert setup["realtimeInputConfig"] == {
         "automaticActivityDetection": activity_detection,
     }

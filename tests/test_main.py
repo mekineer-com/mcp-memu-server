@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from app import main
-from tests import SavedBatchService
+from tests import AnchorService, SavedBatchService
 from app.services import consolidation, conversation_sources, crud_endpoints, retrieve_orchestration, segment, service_factory
 from memu.app.dossier import DossierRevisionStaleError
 from memu.app.graph import DossierMembershipConflictError, EntityActionConflictError, EntityMergeConflictError
@@ -620,7 +620,7 @@ async def test_conversation_turn_dry_run_skips_annulment_memory_persistence(
 ) -> None:
     db_path = tmp_path / "DryRun.db"
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args: object, **_kwargs: object) -> str:
             return (
                 '{"working_thought":null,"annulments":[{"intention_id":"a","status":"completed"}],'
@@ -678,6 +678,14 @@ async def test_conversation_turn_dry_run_skips_annulment_memory_persistence(
 
 @pytest.mark.asyncio
 async def test_atomic_session_start_returns_context_without_turn_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    anchors = [
+        SimpleNamespace(anchor_role="soul", summary="I paint coastal sketches."),
+        SimpleNamespace(anchor_role="user", summary="My human prefers early walks."),
+    ]
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: SimpleNamespace(
+        list_active_dossiers=lambda _scope: anchors,
+        build_dossier_index=lambda _scope, **_kw: "- Sketches: our coast walks",
+    ))
     state_row = {
         "digest_cursor": 0,
         "digest_cursor_source_message_id": None,
@@ -708,7 +716,7 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
 
     captured: dict[str, Any] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         assert safe.get("_read_only_retrieve") is True
         assert safe.get("mental_health_addon") is False
         captured["safe"] = safe
@@ -743,6 +751,9 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
     assert state_writes[0]["atomic_session_ended_at"] is None
     snapshot = str(out["snapshot_text"])
     assert "Fictional Soul card" in snapshot
+    assert snapshot.count("I paint coastal sketches.") == 1
+    assert snapshot.count("My human prefers early walks.") == 1
+    assert "My Categories:\n- Sketches: our coast walks" in snapshot
     assert "retrieved category summary" in snapshot
     assert "My Memories:" not in snapshot
     assert "stale retrieved item" not in snapshot
@@ -764,6 +775,78 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
     }
     assert captured["safe"]["chat_name"] == "Fictional User"
     assert captured["safe"]["chat_type"] == "dm"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("card", [None, "Character-card voice"])
+async def test_prepared_reply_keeps_anchors_when_character_card_overrides_narrative(monkeypatch, card):
+    anchors = [SimpleNamespace(anchor_role="soul", summary="I paint coastal sketches."),
+               SimpleNamespace(anchor_role="user", summary="My human prefers early walks.")]
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: SimpleNamespace(
+        list_active_dossiers=lambda _scope: anchors,
+        build_dossier_index=lambda _scope, **_kw: "- Sketches: coast walks",
+    ))
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", lambda *args, **kwargs: (
+        {"memory_cache": [], "intentions_active": []}, "Narrative voice", None,
+    ))
+
+    async def retrieve(payload, **kwargs):
+        assert kwargs["anchor_context"].count("coastal sketches") == 1
+        return {"ok": True, "result": {}, "memory_cache": [], "intentions_active": []}
+
+    monkeypatch.setattr(main, "_run_retrieve", retrieve)
+    result = await main.conversation_retrieve("chat:fictional", {
+        "user": {"user_id": "TestOwner", "soul_id": "TestSoul"}, "query": "sketches",
+        "message": "sketches", "history": [], "build_turn_prompt": True, "soul_card": card,
+    })
+    system = result["turn_system_prompt"]
+    assert (card or "Narrative voice") in system
+    if card:
+        assert "Narrative voice" not in system
+    assert system.count("I paint coastal sketches.") == 1
+    assert system.count("My human prefers early walks.") == 1
+    assert "My Categories:\n- Sketches: coast walks" in result["turn_user_prompt"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prepared", [False, True])
+async def test_reply_fallback_adds_anchors_but_prepared_prompt_is_unchanged(monkeypatch, prepared):
+    captured = {"reads": 0}
+
+    class Service(AnchorService):
+        anchors = {"soul": "I paint coastal sketches.", "user": "My human prefers early walks."}
+
+        def _get_database(self):
+            captured["reads"] += 1
+            return super()._get_database()
+
+        async def chat(self, prompt, **kwargs):
+            captured["system"] = kwargs["system_prompt"]
+            return '{"response_target":"respond","response":"hello","rehearsal":"hello","annulments":[]}'
+
+    service = Service()
+    original = "Prepared voice\n\n" + main._render_anchor_context(service.anchors)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: service)
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *args, **kwargs: {})
+    monkeypatch.setattr(main, "_turn_state_read", lambda *args, **kwargs: (
+        {"digest_cursor": 0}, "Narrative voice", None, [], [], 0, None,
+    ))
+    monkeypatch.setitem(main._CONFIG, "claude_code", False)
+    result = await main.conversation_turn("chat:fictional", {
+        "user": {"user_id": "TestOwner", "soul_id": "TestSoul"}, "message": "hello",
+        "history": [], "dry_run": True, "prompt_override_payload": {
+            "user_prompt": "hello", "system_prompt": original if prepared else "",
+            "retrieve_rag": {}, "memory_cache": [], "intentions_active": [],
+        },
+    })
+    assert result["ok"]
+    assert captured["reads"] == (0 if prepared else 1)
+    assert captured["system"].count("I paint coastal sketches.") == 1
+    assert captured["system"].count("My human prefers early walks.") == 1
+    if prepared:
+        assert captured["system"] == original
+    else:
+        assert "Narrative voice" in captured["system"]
 
 
 @pytest.mark.asyncio
@@ -825,7 +908,7 @@ async def test_atomic_prompt_log_pretty_logs_unescaped_content(
 async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def graph_search(self, query: str, **kwargs: Any) -> dict[str, Any]:
             captured["query"] = query
             captured.update(kwargs)
@@ -868,7 +951,7 @@ async def test_atomic_memory_search_threads_scope_and_since_days(monkeypatch: py
 async def test_atomic_canvas_source_threads_scope_and_edges(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         def graph_atomic_canvas_source(self, **kwargs: Any) -> dict[str, Any]:
             captured.update(kwargs)
             return {
@@ -892,7 +975,7 @@ async def test_atomic_canvas_source_threads_scope_and_edges(monkeypatch: pytest.
 async def test_atomic_entities_threads_scope_and_returns_detail(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[tuple[str, dict[str, Any]]] = []
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         def graph_atomic_entities(self, **kwargs: Any) -> dict[str, Any]:
             captured.append(("list", kwargs))
             return {"entities": [{"id": "e1", "name": "ExampleEntity"}], "total_count": 1}
@@ -996,7 +1079,7 @@ async def test_atomic_entity_update_rejects_description_only(
 
 @pytest.mark.asyncio
 async def test_atomic_entity_merge_maps_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         def graph_merge_entities(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
             raise EntityMergeConflictError({"id": "e1"}, {"id": "e2"}, ["states differ"])
 
@@ -1011,7 +1094,7 @@ async def test_atomic_entity_merge_maps_conflict(monkeypatch: pytest.MonkeyPatch
 
 @pytest.mark.asyncio
 async def test_atomic_entity_action_maps_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         def graph_delete_entity(self, *_args: Any, **_kwargs: Any) -> None:
             raise EntityActionConflictError(["Graph references: 1"])
 
@@ -1035,7 +1118,7 @@ async def test_atomic_entities_require_scope() -> None:
 async def test_atomic_canvas_source_threads_atom_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         def graph_atomic_canvas_source(self, **kwargs: Any) -> dict[str, Any]:
             captured.update(kwargs)
             return {"atoms": [], "edges": [], "count": 0, "total_count": 0}
@@ -1055,7 +1138,7 @@ async def test_atomic_canvas_source_threads_atom_ids(monkeypatch: pytest.MonkeyP
 async def test_atomic_canvas_source_post_threads_atom_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         def graph_atomic_canvas_source(self, **kwargs: Any) -> dict[str, Any]:
             captured.update(kwargs)
             return {"atoms": [], "edges": [], "count": 0, "total_count": 0}
@@ -1083,7 +1166,7 @@ async def test_atomic_canvas_source_requires_scope() -> None:
 async def test_atomic_neighborhood_threads_scope_and_404(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         def graph_atomic_neighborhood(self, item_id: str, **kwargs: Any) -> dict[str, Any] | None:
             captured["item_id"] = item_id
             captured.update(kwargs)
@@ -1118,7 +1201,7 @@ async def test_atomic_neighborhood_threads_scope_and_404(monkeypatch: pytest.Mon
 async def test_atomic_similar_threads_scope_and_404(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         def graph_atomic_similar(self, item_id: str, **kwargs: Any) -> list[dict[str, Any]] | None:
             captured["item_id"] = item_id
             captured.update(kwargs)
@@ -1410,7 +1493,7 @@ async def test_conversation_retrieve_read_only_skips_sillytavern_snapshot(
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("snapshot write must be suppressed")),
     )
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         return {
             "ok": True,
             "result": {},
@@ -1437,7 +1520,7 @@ async def test_conversation_retrieve_read_only_skips_sillytavern_snapshot(
 
 @pytest.mark.asyncio
 async def test_run_retrieve_read_only_skips_state_write_and_procedural_ingest(tmp_path: Path) -> None:
-    class FakeService:
+    class FakeService(AnchorService):
         async def retrieve(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
             return {"needs_retrieval": True, "mental_health_query": "grounding"}
 
@@ -1493,7 +1576,7 @@ async def test_run_retrieve_reads_soul_state_before_conversation_exists(tmp_path
     database = tmp_path / "FictionalSoul.db"
     database.touch()
 
-    class FakeService:
+    class FakeService(AnchorService):
         async def retrieve(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
             return {"items": []}
 
@@ -2537,14 +2620,88 @@ def test_resolve_profile_if_configured_uses_named_step_profile():
     assert main._resolve_profile_if_configured(svc, "memory_extract") == "memory_extract"
 
 
-def test_run_retrieve_reports_rag_method(monkeypatch: pytest.MonkeyPatch):
-    class _FakeSvc:
+@pytest.mark.parametrize("identity", [
+    {"where": {"user_id": "TestOwner", "soul_id": "TestSoul"}},
+    {"user": {"user_id": "TestOwner"}, "soul_id": "TestSoul"},
+])
+def test_run_retrieve_reports_rag_method(monkeypatch: pytest.MonkeyPatch, identity):
+    class _FakeSvc(AnchorService):
         async def retrieve(self, *_args, **_kwargs):
             return {"items": []}
 
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
-    out = asyncio.run(main._run_retrieve({"query": "hello", "user": {"user_id": "u", "soul_id": "s"}}))
+    def service(payload):
+        assert payload["user"] == {"user_id": "TestOwner", "soul_id": "TestSoul"}
+        return _FakeSvc()
+
+    monkeypatch.setattr(main, "_get_service_from_payload", service)
+    out = asyncio.run(main._run_retrieve({"query": "hello", **identity}))
     assert out["method"] == "rag"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["conversation", "direct"])
+@pytest.mark.parametrize("selector", ["where", "scope", "top"])
+@pytest.mark.parametrize("key", ["user_id", "soul_id"])
+async def test_retrieval_rejects_conflicting_identity_before_service_access(monkeypatch, endpoint, selector, key):
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: pytest.fail("conflicting scope reached service"))
+    identity = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    payload = {"query": "sketches", "message": "sketches", "user": identity}
+    if selector == "top":
+        payload[key] = "OtherOwner" if key == "user_id" else "OtherSoul"
+    else:
+        payload[selector] = {**identity, key: "OtherOwner" if key == "user_id" else "OtherSoul"}
+    with pytest.raises(HTTPException, match=f"Conflicting {key}") as failure:
+        if endpoint == "conversation":
+            await main.conversation_retrieve("chat:fictional", payload)
+        else:
+            await main.retrieve(payload)
+    assert failure.value.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["shared", "direct", "mcp"])
+@pytest.mark.parametrize("identity_shape", ["absent", "string", "mapping", "already"])
+async def test_retrieval_anchors_cover_supplied_queries_without_mutation(monkeypatch, endpoint, identity_shape):
+    anchors = {"soul": "I paint coastal sketches.", "user": "My human prefers early walks."}
+    block = main._render_anchor_context(anchors)
+    captured = {}
+
+    class Service(AnchorService):
+        async def retrieve(self, queries, **kwargs):
+            captured.update(queries=queries, scope=kwargs["where"])
+            return {"items": []}
+
+    service = Service()
+    service.anchors = anchors
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: service)
+    queries = [{"role": "message", "content": {"text": "coastal sketches"}}]
+    if identity_shape != "absent":
+        content = {"text": "Caller identity", "tag": "preserved"} if identity_shape == "mapping" else "Caller identity"
+        if identity_shape == "already":
+            content += "\n\n" + block
+        queries.insert(0, {"role": "identity_context", "content": content})
+    before = json.loads(json.dumps(queries))
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    payload = {"user": scope, "queries": queries, "_read_only_retrieve": True}
+    if endpoint == "shared":
+        await main._run_retrieve(payload)
+    elif endpoint == "direct":
+        await main.retrieve(payload)
+    else:
+        await main.mcp_memu_retrieve(main._mcp_tools.MemuRetrieveRequest(**scope, queries=queries))
+    assert queries == before
+    assert captured["scope"] == scope
+    result = captured["queries"]
+    assert result[-1] == before[-1]
+    assert [query["role"] for query in result] == ["identity_context", "message"]
+    text = result[0]["content"]
+    if isinstance(text, dict):
+        if identity_shape == "mapping":
+            assert text["tag"] == "preserved"
+        text = text["text"]
+    assert text.count(anchors["soul"]) == text.count(anchors["user"]) == 1
+    if identity_shape != "absent":
+        assert text.startswith("Caller identity")
 
 
 def test_prompt_log_before_only_sets_timer(caplog: pytest.LogCaptureFixture) -> None:
@@ -2628,7 +2785,7 @@ def test_run_retrieve_forwards_mental_health_toggle(
 ):
     captured: dict[str, Any] = {}
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def retrieve(self, *_args, **kwargs):
             captured.update(kwargs)
             return {"items": []}
@@ -2661,7 +2818,7 @@ def test_run_retrieve_uses_config_mental_health_default(
 ):
     captured: dict[str, Any] = {}
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def retrieve(self, *_args, **kwargs):
             captured.update(kwargs)
             return {"items": []}
@@ -2685,7 +2842,7 @@ def test_run_retrieve_forwards_force_retrieve(
 ):
     captured: dict[str, Any] = {}
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def retrieve(self, *_args, **kwargs):
             captured.update(kwargs)
             return {"items": []}
@@ -2712,6 +2869,7 @@ async def test_apimw_retrieve_items_sets_force_retrieve_and_item_count(monkeypat
         payload: dict[str, Any],
         *,
         conversation_id: str | None = None,
+        anchor_context: str | None = None,
     ) -> dict[str, Any]:
         captured_payload.update(payload)
         return {"result": {"items": []}}
@@ -2781,7 +2939,7 @@ async def test_apimw_random_items_request_active_only(monkeypatch: pytest.Monkey
 
 
 def test_run_retrieve_rejects_non_boolean_force_retrieve(monkeypatch: pytest.MonkeyPatch):
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def retrieve(self, *_args, **_kwargs):
             return {"items": []}
 
@@ -3685,7 +3843,7 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
         ],
     )
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def summarize_background_chat_rollup(
             self,
             *,
@@ -4342,6 +4500,8 @@ def test_build_retrieve_soul_context_queries_includes_full_history() -> None:
         message="current",
         history=history,
         state_row={"memory_cache": [], "intentions_active": []},
+        anchor_context="My Identity and Lived Experience:\ncoastal sketches",
+        all_categories_summary="- Sketches: coast walks",
     )
     history_rows = [q for q in queries if isinstance(q, dict) and q.get("role") == "history"]
     assert len(history_rows) == 1
@@ -4349,6 +4509,8 @@ def test_build_retrieve_soul_context_queries_includes_full_history() -> None:
     assert "[user] current" in text
     assert "[user] msg 1" in text
     assert "[user] msg 15" in text
+    assert queries[0]["content"]["text"].count("coastal sketches") == 1
+    assert queries[1]["content"]["text"] == "My Categories:\n- Sketches: coast walks"
 
 
 def test_build_retrieve_soul_context_queries_uses_full_history_for_apimw_rewrite() -> None:
@@ -4378,7 +4540,7 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
     monkeypatch.setattr(
         main,
         "_get_service_from_payload",
-        lambda *_a, **_k: SimpleNamespace(build_dossier_index=lambda _scope: "- Joy: Alive"),
+        lambda *_a, **_k: SimpleNamespace(list_active_dossiers=lambda _scope: [], build_dossier_index=lambda _scope, **_kw: "- Joy: Alive"),
     )
     monkeypatch.setattr(main, "_apimw_memory_count_from_cfg", lambda *_a, **_k: 5)
     monkeypatch.setattr(main, "_apimw_random_count_from_cfg", lambda *_a, **_k: 0)
@@ -6466,7 +6628,7 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
     }
     assert items_by_id["mem_one"]["summary"] == "Marcos likes continuity."
     assert id_map == {"1": "mem_one"}
-    assert captured["user_prompt"].startswith("# Dossier Index\n- SoulA carries one integrated self-summary.")
+    assert captured["user_prompt"].startswith("My Categories:\n# Dossier Index\n- SoulA carries one integrated self-summary.")
     assert "Identity: # Identity" not in captured["user_prompt"]
     assert "# Identity" not in captured["user_prompt"]
     assert "Summaries:" not in captured["user_prompt"]
@@ -6566,7 +6728,7 @@ async def test_conversation_retrieve_preserves_prebuilt_queries_without_cutoff(
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -6617,7 +6779,7 @@ async def test_conversation_retrieve_uses_payload_history_for_primary_chat_queri
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -6693,7 +6855,7 @@ async def test_conversation_retrieve_turn_prompt_reuses_first_floored_history(
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
         return {
             "ok": True,
@@ -6804,7 +6966,7 @@ async def test_conversation_retrieve_filters_whatsapp_history_before_prompt(
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -6869,7 +7031,7 @@ async def test_conversation_retrieve_rebuilds_prebuilt_queries_when_cutoff_activ
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -6939,7 +7101,7 @@ async def test_live_conversation_retrieve_degrades_source_history_load_failure(
     )
     captured: dict[str, Any] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, Any], *, conversation_id: str | None = None) -> dict[str, Any]:
+    async def _fake_run_retrieve(safe: dict[str, Any], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, Any]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -7000,7 +7162,7 @@ async def test_live_conversation_retrieve_degrades_active_since_filter_failure(
     )
     captured: dict[str, Any] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, Any], *, conversation_id: str | None = None) -> dict[str, Any]:
+    async def _fake_run_retrieve(safe: dict[str, Any], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, Any]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -7029,7 +7191,7 @@ def _patch_turn_dependencies(
     db_path: Path,
     captured: dict[str, Any],
 ) -> None:
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"ok",'
@@ -7164,7 +7326,7 @@ async def test_conversation_turn_accepts_generated_prompt_with_matching_cutoff(
 ) -> None:
     db_path = tmp_path / "Cutoff.db"
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"ok",'
@@ -7239,7 +7401,7 @@ async def test_conversation_retrieve_uses_same_payload_history_for_turn_prompt(
         lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         return {
             "ok": True,
             "result": {},
@@ -7298,7 +7460,7 @@ async def test_conversation_retrieve_preserves_history_already_floored_by_source
     captured: dict[str, Any] = {}
 
     async def _fake_run_retrieve(
-        safe: dict[str, object], *, conversation_id: str | None = None
+        safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None
     ) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
@@ -7414,7 +7576,7 @@ async def test_conversation_retrieve_uses_sillytavern_floor_after_memorize(
         ),
     )
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -7453,7 +7615,7 @@ async def test_conversation_retrieve_does_not_consume_prior_context(
         ),
     )
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         return {
             "ok": True,
             "result": {},
@@ -7510,7 +7672,7 @@ async def test_conversation_retrieve_sillytavern_floor_is_not_a_cap(
         ),
     )
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -7582,7 +7744,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -7670,7 +7832,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_without_memorize_cursor
         ]
 
     monkeypatch.setattr(main, "_load_current_whatsapp_history_from_source", _fake_load_current_whatsapp_history_from_source)
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -7780,7 +7942,7 @@ async def test_conversation_retrieve_uses_live_message_to_trigger_floor_without_
     monkeypatch.setattr(main, "_load_current_whatsapp_history_from_source", _fake_load_current_whatsapp_history_from_source)
     monkeypatch.setattr(main, "_load_cross_tail_from_sources", lambda *_a, **_k: [])
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -7858,7 +8020,7 @@ async def test_conversation_retrieve_preserves_source_indexes_for_primary_floor(
     monkeypatch.setattr(main, "_load_current_whatsapp_history_from_source", _fake_load_current_whatsapp_history_from_source)
     monkeypatch.setattr(main, "_load_cross_tail_from_sources", lambda *_a, **_k: [])
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -7951,7 +8113,7 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -8022,7 +8184,7 @@ async def test_conversation_retrieve_does_not_persist_current_user_message(
         lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -8071,7 +8233,7 @@ async def test_conversation_retrieve_writes_sillytavern_snapshot_not_messages_ta
     )
     monkeypatch.setattr(main, "_get_storage_dir", lambda *_a, **_k: storage_dir)
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -8151,7 +8313,7 @@ async def test_conversation_retrieve_includes_sillytavern_cross_tail_from_snapsh
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -8215,7 +8377,7 @@ async def test_conversation_retrieve_preserves_caller_queries(
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -8255,7 +8417,7 @@ async def test_conversation_turn_does_not_persist_messages_to_table(
     finally:
         con.close()
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"ok",'
@@ -8330,7 +8492,7 @@ async def test_conversation_turn_persists_completed_sillytavern_snapshot(
     finally:
         con.close()
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"ok",'
@@ -8416,7 +8578,7 @@ async def test_conversation_turn_keeps_response_when_chat_name_differs(
     finally:
         con.close()
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"answering",'
@@ -8490,7 +8652,7 @@ async def test_conversation_turn_private_response_not_persisted_in_origin_chat(
     finally:
         con.close()
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"ok",'
@@ -8568,7 +8730,7 @@ async def test_conversation_turn_observe_mode_forbids_public_response(
 
     captured: dict[str, str] = {}
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args, **kwargs) -> str:
             captured["system_prompt"] = str(kwargs.get("system_prompt") or "")
             return (
@@ -8638,7 +8800,7 @@ async def test_conversation_turn_does_not_retry_parse_failure(
     finally:
         con.close()
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         def __init__(self) -> None:
             self.calls = 0
 
@@ -8703,7 +8865,7 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize(
     db_path = tmp_path / "SoulTest.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         def __init__(self) -> None:
             self.chat_calls: list[dict[str, object]] = []
 
@@ -8763,8 +8925,12 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize(
 async def test_free_turn_chain_applies_annulments(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[dict[str, Any]] = []
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
+        anchors = {"soul": "I paint coastal sketches.", "user": "My human prefers early walks."}
+
         async def chat(self, *_args, **_kwargs) -> str:
+            assert _kwargs["system_prompt"].count(self.anchors["soul"]) == 1
+            assert _kwargs["system_prompt"].count(self.anchors["user"]) == 1
             return (
                 '{"working_thought":null,"annulments":['
                 '{"intention_id":"finish-task","status":"completed"}],'
@@ -8797,6 +8963,42 @@ async def test_free_turn_chain_applies_annulments(monkeypatch: pytest.MonkeyPatc
     assert captured[0]["annulments"] == [
         {"intention_id": "finish-task", "status": "completed", "note": ""}
     ]
+
+
+@pytest.mark.asyncio
+async def test_free_turn_setup_failure_releases_existing_marker(monkeypatch):
+    marker = "TestOwner::TestSoul"
+    main._FREE_TURN_INFLIGHT.add(marker)
+
+    class Service(AnchorService):
+        def _get_database(self):
+            raise RuntimeError("anchor read failed")
+
+        async def chat(self, *args, **kwargs):
+            pytest.fail("setup failed before generation")
+
+    await main._run_free_turn_chain(
+        marker=marker, service=Service(), user_id="TestOwner", soul_id="TestSoul",
+        conversation_id="chat:fictional", session_id="test-session", initial_reason="sketch",
+        initial_contract={}, safe_payload={}, soul_card=None,
+    )
+    assert marker not in main._FREE_TURN_INFLIGHT
+
+
+def test_shared_annulment_save_failure_removes_completion_memories(monkeypatch):
+    removed = []
+    service = SimpleNamespace(graph_delete_memories=lambda ids, **kwargs: removed.append((ids, kwargs)))
+    monkeypatch.setattr(main, "_persist_actual_annulments", lambda **kwargs: (
+        [], [{"item": {"id": "finish-sketch"}}], ["completion-memory"],
+    ))
+    monkeypatch.setattr(main, "_write_conversation_state", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("state save failed")))
+    with pytest.raises(RuntimeError, match="state save failed"):
+        main._save_actual_annulments(
+            service=service, user_id="TestOwner", soul_id="TestSoul", conversation_id="mentra:iris",
+            current_intentions=[{"id": "finish-sketch", "text": "Finish my sketch"}],
+            annulment_ids=["finish-sketch"], prepared=[],
+        )
+    assert removed == [(["completion-memory"], {"where": {"user_id": "TestOwner", "soul_id": "TestSoul"}})]
 
 
 def test_free_turn_prompt_uses_observe_for_listen_only_policy() -> None:
@@ -8918,7 +9120,7 @@ async def test_free_turn_chain_queues_whatsapp_outbound(
     db_path = tmp_path / "SiriTest.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"continued",'
@@ -8970,7 +9172,7 @@ async def test_free_turn_chain_extracts_json_contract_after_prose(
     db_path = tmp_path / "SiriTest.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 "Good. Research is saved. I'll message him privately.\n\n"
@@ -9023,7 +9225,7 @@ async def test_free_turn_chain_ignores_non_whatsapp_outbound(
     db_path = tmp_path / "SiriTest.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"continued",'
@@ -9402,7 +9604,7 @@ async def test_conversation_turn_allows_respond_when_chat_name_missing_and_logs_
     finally:
         con.close()
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"replying",'
@@ -9594,7 +9796,7 @@ def _make_turn_monkeypatches(
 ) -> None:
     """Shared setup for conversation_turn attachment tests."""
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args, **_kwargs) -> str:
             return chat_response
 

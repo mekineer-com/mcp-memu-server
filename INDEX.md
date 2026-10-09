@@ -83,6 +83,9 @@ mcp-memu-server/
 | `/integration/mentra/session/{id}/token` | POST | Mint a fresh constrained Gemini token for the unchanged active sitting before a replacement socket |
 | `/integration/mentra/session/{id}/heartbeat` / `end` | POST | Renew or release one sitting-scoped Mentra lease; heartbeat includes nullable `pause_reason` and repeats each image-processing failure until that image succeeds or the sitting ends. Existing token renewal, append and End remain available while paused |
 | `/integration/mentra/session/{id}/recall` | POST | Sitting-scoped, read-only forced retrieve over the cursor-bounded Mentra tail; returns compact ID-free context for Gemini `SILENT` delivery |
+| `/integration/mentra/session/{id}/working-state` | POST | Read current working thoughts and intentions for the active Soul/sitting; no bootstrap snapshot |
+| `/integration/mentra/session/{id}/working-thought` | POST | Append a bounded working thought through the existing Soul lock and state writer; busy returns not saved |
+| `/integration/mentra/session/{id}/annul-intention` | POST | Remove a current intention using shared completion-memory/state-save cleanup; recheck the sitting after preparation, never automatically replay |
 | `/integration/mentra/session/{id}/snapshot` | POST | Accept one durable image snapshot for background processing |
 | `/integration/mentra/session/{id}/snapshot/replay` | POST | Replay a stored snapshot that failed its first processing attempt |
 | `/integration/mentra/session/{id}/snapshot/finalize` | POST | Finalize a snapshot only after its exact assistant `caption_event_id` is saved in the scoped Iris history; discarded captions return `discarded: true` without memory work. Gemini embedding config and DB profile remain required for eligible images |

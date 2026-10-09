@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from types import SimpleNamespace
 
 from app import main
 from memu.app.service import MemoryService
@@ -7,6 +8,15 @@ from memu.app.service import MemoryService
 class _TestScope(BaseModel):
     user_id: str | None = None
     soul_id: str | None = None
+
+
+class AnchorService:
+    anchors = {}
+
+    def _get_database(self):
+        return SimpleNamespace(memory_category_repo=SimpleNamespace(
+            list_anchor_categories=lambda _scope: self.anchors,
+        ))
 
 
 class SavedBatchService:

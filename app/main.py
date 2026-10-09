@@ -132,6 +132,7 @@ from app.services.turn_contract import (
     make_turn_identity_prompt as _make_turn_identity_prompt,
     make_turn_system_prompt as _make_turn_system_prompt,
     parse_turn_contract as _parse_turn_contract,
+    render_anchor_context as _render_anchor_context,
 )
 
 
@@ -1578,6 +1579,41 @@ def _persist_actual_annulments(
     return next_intentions, removed, memory_ids
 
 
+def _save_actual_annulments(
+    *,
+    service: MemoryService,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+    current_intentions: list[dict[str, str]],
+    annulment_ids: list[str],
+    prepared: list[dict[str, Any]],
+) -> list[str]:
+    scope = {"user_id": user_id, "soul_id": soul_id}
+    next_intentions, removed, memory_ids = _persist_actual_annulments(
+        svc=service,
+        scope=scope,
+        conversation_id=conversation_id,
+        current_intentions=current_intentions,
+        annulment_ids=annulment_ids,
+        prepared=prepared,
+    )
+    if not removed:
+        return []
+    try:
+        _write_conversation_state(
+            conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={"intentions_active": next_intentions},
+        )
+    except Exception:
+        if memory_ids:
+            service.graph_delete_memories(memory_ids, where=scope)
+        raise
+    return memory_ids
+
+
 async def _apply_free_turn_annulments(
     *,
     service: MemoryService,
@@ -1598,7 +1634,6 @@ async def _apply_free_turn_annulments(
         intentions_before=state_before.get("intentions_active"),
         annulments=annulments,
     )
-    scope = {"user_id": user_id, "soul_id": soul_id}
     state_lock = _get_memorize_lock(_memorize_lock_key(user_id, soul_id))
     async with state_lock:
         latest, _, _ = _load_turn_state_and_soul_card(
@@ -1606,28 +1641,15 @@ async def _apply_free_turn_annulments(
             user_id=user_id,
             soul_id=soul_id,
         )
-        next_intentions, removed, memory_ids = _persist_actual_annulments(
-            svc=service,
-            scope=scope,
+        return _save_actual_annulments(
+            service=service,
+            user_id=user_id,
+            soul_id=soul_id,
             conversation_id=conversation_id,
             current_intentions=_validate_intentions(latest.get("intentions_active")),
             annulment_ids=[row["intention_id"] for row in annulments],
             prepared=prepared,
         )
-        if not removed:
-            return []
-        try:
-            _write_conversation_state(
-                conversation_id,
-                soul_id=soul_id,
-                user_id=user_id,
-                updates={"intentions_active": next_intentions},
-            )
-        except Exception:
-            if memory_ids:
-                service.graph_delete_memories(memory_ids, where=scope)
-            raise
-    return memory_ids
 
 
 # ==== Retrieve & APIMW pipeline ====
@@ -1636,6 +1658,7 @@ async def _run_retrieve(
     payload: dict[str, Any],
     *,
     conversation_id: str | None = None,
+    anchor_context: str | None = None,
 ) -> dict[str, Any]:
     scope = _extract_retrieve_where(_safe_payload(payload)) or {}
     uid, sid = str(scope.get("user_id") or ""), str(scope.get("soul_id") or "")
@@ -1645,6 +1668,7 @@ async def _run_retrieve(
     return await _retrieve_orchestration._run_retrieve(
         payload,
         conversation_id=conversation_id,
+        anchor_context=anchor_context,
         safe_payload=_safe_payload,
         extract_conversation_id=_extract_conversation_id,
         get_service_from_payload=_get_service_from_payload,
@@ -1912,6 +1936,8 @@ _mentra_routes.register_mentra_routes(
     get_resource_storage_dir=lambda: _get_storage_dir(_CONFIG),
     background_tasks=_BACKGROUND_TASKS,
     set_background_error=_set_background_error,
+    prepare_annulment_memories=_prepare_annulment_memories,
+    save_actual_annulments=_save_actual_annulments,
 )
 
 
@@ -3015,7 +3041,7 @@ async def conversation_retrieve(
         raise HTTPException(status_code=400, detail="conversation_id is required")
     try:
         safe = _safe_payload(payload)
-        scope = _extract_scope(safe)
+        scope = _extract_retrieve_where(safe) or {}
         uid = str(scope.get("user_id") or "").strip()
         soul_id = str(scope.get("soul_id") or "").strip()
         build_atomic_snapshot = bool(safe.get("build_atomic_snapshot", False))
@@ -3023,9 +3049,9 @@ async def conversation_retrieve(
             safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
             safe["conversation_id"] = cid
         svc = _get_service_from_payload(safe) if uid and soul_id else None
-        all_categories_summary = (
-            svc.build_dossier_index({"user_id": uid, "soul_id": soul_id}) if svc is not None else ""
-        )
+        dossiers = svc.list_active_dossiers(scope) if svc is not None else []
+        anchor_context = _render_anchor_context({row.anchor_role: row for row in dossiers if row.anchor_role})
+        all_categories_summary = svc.build_dossier_index(scope, dossiers=dossiers) if svc is not None else ""
         message = _pick_str(safe, "message", "query") or ""
         self_turn_directive = _pick_str(safe, "self_turn_directive") or ""
         self_turn_label = _pick_str(safe, "self_turn_label") or ""
@@ -3147,6 +3173,7 @@ async def conversation_retrieve(
                 history=history_for_ai,
                 state_row=state_row or {},
                 all_categories_summary=all_categories_summary,
+                anchor_context=anchor_context,
                 conversation_id=cid,
                 chat_label=chat_label_for_prompt,
                 conversations_block=all_chat_history_for_ai or None,
@@ -3154,7 +3181,7 @@ async def conversation_retrieve(
                 self_turn_label=self_turn_label or None,
             )
 
-        out = await _run_retrieve(safe, conversation_id=cid)
+        out = await _run_retrieve(safe, conversation_id=cid, anchor_context=anchor_context)
 
         if build_atomic_snapshot:
             scope = _extract_scope(safe)
@@ -3187,6 +3214,7 @@ async def conversation_retrieve(
                     atomic_retrieve_rag = {**atomic_retrieve_rag, "items": []}
                 system_base = _make_turn_identity_prompt(
                     soul_id,
+                    anchor_context=anchor_context,
                     soul_card=soul_card,
                 )
                 context_block = _build_turn_context_block(
@@ -3243,6 +3271,7 @@ async def conversation_retrieve(
 
                 out["turn_system_prompt"] = _make_turn_system_prompt(
                     soul_id,
+                    anchor_context=anchor_context,
                     soul_card=soul_card,
                     response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
                     allow_public_response=bool(safe.get("allow_public_response", True)),
@@ -3975,8 +4004,14 @@ async def conversation_turn(
         turn_temperature: float = float(generation_config.get("temperature", 0.2))
         turn_response_format: Any = {"type": "json_object"}
 
+        memory_service = _get_service_from_payload(safe)
         turn_system_prompt = override_system_prompt or _make_turn_system_prompt(
             soul_id,
+            anchor_context=_render_anchor_context(
+                memory_service._get_database().memory_category_repo.list_anchor_categories(
+                    {"user_id": uid, "soul_id": soul_id}
+                )
+            ),
             soul_card=soul_card,
             response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
             allow_public_response=allow_public_response,
@@ -3984,7 +4019,6 @@ async def conversation_turn(
         )
         turn_user_prompt = override_user_prompt
 
-        memory_service = _get_service_from_payload(safe)
         generation_metadata = _turn_generation_metadata(safe)
         turn_started_at = time.monotonic()
         turn_contract: dict[str, Any] | None = None

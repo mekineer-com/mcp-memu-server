@@ -14,7 +14,7 @@ from typing import Any
 from app.config import sqlite_file_from_dsn
 
 from app.services.conversation_id import canonical_conversation_id
-from app.services.turn_contract import _conversation_heading_from_conversation_id
+from app.services.turn_contract import _conversation_heading_from_conversation_id, render_anchor_context
 
 
 def _build_free_turn_prompt(
@@ -133,14 +133,19 @@ async def _run_free_turn_chain(
 ) -> None:
     reason = initial_reason
     previous_contract = initial_contract
-    free_turn_system_prompt = make_turn_system_prompt(
-        soul_id,
-        soul_card=soul_card,
-        response_sentences=int(config.get("turn_response_sentences", 3)),
-        allow_public_response=False,
-        include_activity_recap=True,
-    )
     try:
+        free_turn_system_prompt = make_turn_system_prompt(
+            soul_id,
+            anchor_context=render_anchor_context(
+                service._get_database().memory_category_repo.list_anchor_categories(
+                    {"user_id": user_id, "soul_id": soul_id}
+                )
+            ),
+            soul_card=soul_card,
+            response_sentences=int(config.get("turn_response_sentences", 3)),
+            allow_public_response=False,
+            include_activity_recap=True,
+        )
         for continuation_index in range(1, 4):
             require_soul_active(user_id, soul_id)
             prompt = _build_free_turn_prompt(

@@ -13,11 +13,12 @@ from app.services.intention_state import (
     validate_intentions as _validate_intentions,
     normalize_memory_cache as _normalize_memory_cache_impl,
 )
-from app.services.payload import _canonicalize_scope_where, _extract_scope
+from app.services.payload import _canonicalize_scope_where, _extract_scope, _pick_str
 from app.services.turn_contract import (
     build_conversations_block,
     format_time_anchor as _format_time_anchor,
     format_working_thoughts_lines as _format_working_thoughts_lines,
+    render_anchor_context,
 )
 
 
@@ -56,7 +57,14 @@ def _extract_retrieve_where(payload: dict[str, Any]) -> dict[str, Any] | None:
         raise HTTPException(status_code=400, detail="'scope' must be an object")
     if scope is None:
         scope = payload.get("user") if isinstance(payload.get("user"), dict) else (_extract_scope(payload) or None)
-    return _canonicalize_scope_where(scope)
+    scope = _canonicalize_scope_where({**_extract_scope(payload), **(scope or {})}) or None
+    for selector in (payload, payload.get("user"), payload.get("scope"), payload.get("where")):
+        if isinstance(selector, dict):
+            for key in ("user_id", "soul_id"):
+                value = _pick_str(selector, key)
+                if value and scope and scope.get(key) and value != scope[key]:
+                    raise HTTPException(status_code=400, detail=f"Conflicting {key} selectors")
+    return scope
 
 
 def _extract_retrieve_queries(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -121,6 +129,7 @@ def _build_retrieve_soul_context_queries(
     history: list[dict[str, Any]],
     state_row: dict[str, Any],
     all_categories_summary: str | None = None,
+    anchor_context: str = "",
     identity_mode: str = "retrieve",
     conversation_id: str | None = None,
     chat_label: str | None = None,
@@ -135,11 +144,13 @@ def _build_retrieve_soul_context_queries(
 
     soul_context_for_retrieve: list[dict[str, Any]] = []
     identity_context = _build_retrieve_identity_context(soul_id, apimw=(identity_mode == "apimw"))
+    if anchor_context:
+        identity_context = f"{identity_context}\n\n{anchor_context}"
     if identity_context:
         soul_context_for_retrieve.append({"role": "identity_context", "content": {"text": identity_context}})
     all_cats_summary = str(all_categories_summary or "").strip()
     if all_cats_summary:
-        soul_context_for_retrieve.append({"role": "all_categories_summary", "content": {"text": all_cats_summary}})
+        soul_context_for_retrieve.append({"role": "all_categories_summary", "content": {"text": f"My Categories:\n{all_cats_summary}"}})
 
     if conversations_block is not None:
         history_text = str(conversations_block or "").strip()
@@ -197,15 +208,31 @@ async def _run_retrieve(
     procedural_should_ingest: Callable[[Any, Any], bool],
     config: dict[str, Any],
     logger: Any,
+    anchor_context: str | None = None,
 ) -> dict[str, Any]:
     safe = safe_payload(payload)
     scoped_conversation_id = str(conversation_id or extract_conversation_id(safe) or "").strip() or None
     if scoped_conversation_id:
         safe["conversation_id"] = scoped_conversation_id
 
-    svc = get_service_from_payload(safe)
     scope = _extract_retrieve_where(safe)
+    safe["user"] = {"user_id": scope["user_id"], "soul_id": scope["soul_id"]}
+    svc = get_service_from_payload(safe)
     memu_queries = _extract_retrieve_queries(safe)
+    if anchor_context is None:
+        anchor_context = render_anchor_context(svc._get_database().memory_category_repo.list_anchor_categories(scope))
+    if anchor_context:
+        memu_queries = list(memu_queries)
+        identity_index = next((i for i, query in enumerate(memu_queries) if str(query.get("role", "")).lower() == "identity_context"), None)
+        if identity_index is None:
+            memu_queries.insert(0, {"role": "identity_context", "content": {"text": anchor_context}})
+        else:
+            identity = memu_queries[identity_index]
+            content = identity["content"]
+            text = content if isinstance(content, str) else str(content.get("text") or "")
+            if anchor_context not in text:
+                enriched = f"{text}\n\n{anchor_context}"
+                memu_queries[identity_index] = {**identity, "content": enriched if isinstance(content, str) else {**content, "text": enriched}}
     force_retrieve = _extract_force_retrieve(safe)
     trace_id = _extract_trace_id(safe)
     as_of = parse_as_of_datetime(safe.get("as_of"))

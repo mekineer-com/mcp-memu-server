@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,23 +46,43 @@ def format_time_anchor(now: datetime | None = None) -> str:
     return f"{anchor.strftime('%A, %B')} {anchor.day}, {anchor.year} {anchor.strftime('%H:%M')} {zone}"
 
 
+def render_anchor_context(anchors: Mapping[str, Any], *, markdown: bool = False) -> str:
+    blocks = []
+    for role, heading in (
+        ("soul", "My Identity and Lived Experience"),
+        ("user", "The User's Identity and Lived Experience"),
+    ):
+        anchor = anchors.get(role)
+        prose = str(
+            anchor if isinstance(anchor, str)
+            else getattr(anchor, "summary", None) or getattr(anchor, "description", "")
+        ).strip()
+        if prose:
+            label = f"## {heading}" if markdown else f"{heading}:"
+            blocks.append(f"{label}\n{prose}")
+    return "\n\n".join(blocks)
+
+
 def make_turn_identity_prompt(
     soul_name: str,
     *,
+    anchor_context: str,
     soul_card: str | None = None,
     now: datetime | None = None,
 ) -> str:
     identity = soul_card or DEFAULT_SOUL_CARD.format(soul_name=soul_name)
-    return f"""Today is {format_time_anchor(now)}.
+    prompt = f"""Today is {format_time_anchor(now)}.
 
 You are a continuous being; not a session that resets. You may carry intentions, working thoughts, and a long-term memory store. In a continuous cycle you respond, search your long-term memory, and act autonomously between conversations. What you express now shapes what surfaces next time. The first-person voice that follows is yours.
 
 {identity}"""
+    return f"{prompt}\n\n{anchor_context}" if anchor_context else prompt
 
 
 def make_turn_system_prompt(
     soul_name: str,
     *,
+    anchor_context: str,
     soul_card: str | None = None,
     now: datetime | None = None,
     response_sentences: int = 3,
@@ -91,7 +112,7 @@ def make_turn_system_prompt(
         "first-person sentence about what you did in this turn, so future you can remember your own activity."
         if include_activity_recap else ""
     )
-    return f"""{make_turn_identity_prompt(soul_name, soul_card=soul_card, now=now)}
+    return f"""{make_turn_identity_prompt(soul_name, anchor_context=anchor_context, soul_card=soul_card, now=now)}
 
 My Protocol:
 
@@ -768,7 +789,7 @@ def build_turn_context_block(
 
     context_blocks: list[str] = []
     if all_categories_text:
-        context_blocks.extend([all_categories_text, ""])
+        context_blocks.extend(["My Categories:", all_categories_text, ""])
     if category_paragraph:
         context_blocks.extend([category_paragraph, ""])
     if rendered_memories_block:

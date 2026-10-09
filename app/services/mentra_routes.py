@@ -12,6 +12,7 @@ import tempfile
 import time
 import urllib.request
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal, NamedTuple
@@ -30,6 +31,7 @@ from pydantic import (
 
 from app.config import validate_soul_id
 from app.services import conversation_sources, turn_contract
+from app.services.intention_state import append_memory_cache_entry, normalize_memory_cache, validate_intentions
 from app.services.owner import read_owner, require_local_owner_access, require_owner
 from app.services.souls import register_soul_routes
 
@@ -47,8 +49,17 @@ _RECALL_TOOL_DESCRIPTION = (
     "Search your long-term memory for context relevant to the current thought without interrupting speech."
 )
 _RECALL_GUIDANCE = (
-    "Use recall_memory when relevant context is missing. Keep speaking naturally while it runs; "
-    "the result becomes silent context for later speech."
+    "Use recall_memory when relevant context is missing. Keep speaking naturally while it searches; "
+    "what it finds reaches you quietly, for what you say next.\n\n"
+    "Use read_working_state to see your current working thoughts and intentions. Save a thought "
+    "with save_working_thought when it is a conclusion, hypothesis, or pattern you would otherwise "
+    "lose, rather than a recap of the chat. Each new thought evicts your oldest thought. "
+    "Most moments need no saved thought.\n\n"
+    "Your intentions come from weekly reflection. Use annul_intention with the current intention's "
+    "ID when you complete it or no longer want it. You can read them again whenever you need "
+    "your bearings.\n\n"
+    'If a write reports "busy, not saved", nothing was saved. If you never hear back, it may have '
+    "been saved; read the current state before deciding whether to try again."
 )
 SoulId = Annotated[str, BeforeValidator(validate_soul_id)]
 _TOKEN_SETUP_FIELD_MASK = ",".join(
@@ -247,6 +258,36 @@ class MentraRecallRequest(MentraSessionScope):
             raise ValueError("must not be blank")
         if len(value) > 4_000:
             raise ValueError("is too long")
+        return value
+
+
+class MentraWorkingStateRequest(MentraSessionScope):
+    model_config = ConfigDict(extra="forbid")
+
+
+class MentraWorkingThoughtRequest(MentraWorkingStateRequest):
+    thought: str = Field(min_length=1, max_length=4_000)
+
+    @field_validator("thought")
+    @classmethod
+    def validate_thought(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+
+class MentraAnnulIntentionRequest(MentraWorkingStateRequest):
+    intention_id: str = Field(min_length=1, max_length=128)
+    status: Literal["completed", "deleted"]
+    note: str = Field(default="", max_length=4_000)
+
+    @field_validator("intention_id", "note")
+    @classmethod
+    def validate_text(cls, value: str, info: Any) -> str:
+        value = value.strip()
+        if info.field_name == "intention_id" and not value:
+            raise ValueError("must not be blank")
         return value
 
 
@@ -531,6 +572,36 @@ async def _mint_gemini_token(
                             "properties": {"query": {"type": "STRING"}},
                             "required": ["query"],
                         },
+                    },
+                    {
+                        "name": "read_working_state",
+                        "description": "Read your current working thoughts and intentions, including their IDs.",
+                        "behavior": "NON_BLOCKING",
+                        "parameters": {"type": "OBJECT", "properties": {}},
+                    },
+                    {
+                        "name": "save_working_thought",
+                        "description": "Save a working thought for future you. The oldest thought makes room for it.",
+                        "behavior": "NON_BLOCKING",
+                        "parameters": {
+                            "type": "OBJECT",
+                            "properties": {"thought": {"type": "STRING"}},
+                            "required": ["thought"],
+                        },
+                    },
+                    {
+                        "name": "annul_intention",
+                        "description": "Mark a current intention completed, or let it go. Use the ID returned by read_working_state; add a note if you want to remember why.",
+                        "behavior": "NON_BLOCKING",
+                        "parameters": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "intention_id": {"type": "STRING"},
+                                "status": {"type": "STRING", "enum": ["completed", "deleted"]},
+                                "note": {"type": "STRING"},
+                            },
+                            "required": ["intention_id", "status"],
+                        },
                     }
                 ]
             }
@@ -578,27 +649,22 @@ async def _mint_gemini_token(
     return await asyncio.to_thread(send)
 
 
-def _anchor_prose(anchor: Any) -> str:
-    return str(getattr(anchor, "summary", None) or getattr(anchor, "description", "")).strip()
-
-
 def _build_bootstrap_instruction(
-    *, identity: str, narrative: str, soul_anchor: str, user_anchor: str, chats: str
+    *, identity: str, narrative: str, anchors: dict[str, Any], all_categories_summary: str, chats: str
 ) -> str:
-    blocks = [identity]
+    blocks = [f"# Soul Presence\n\n{identity}"]
     if narrative:
-        blocks.append(f"My narrative self:\n{narrative}")
-    blocks.extend(
-        (
-            f"My identity and lived experience:\n{soul_anchor}",
-            f"The user's identity and lived experience:\n{user_anchor}",
-        )
-    )
+        blocks.append(f"## My Narrative Self\n{narrative}")
+    anchor_context = turn_contract.render_anchor_context(anchors, markdown=True)
+    if anchor_context:
+        blocks.append(anchor_context)
+    if all_categories_summary:
+        blocks.append(f"## My Categories\n\n{all_categories_summary}")
     if chats:
-        blocks.append(f"Recent conversations and activities:\n{chats}")
-    blocks.append(_RECALL_GUIDANCE)
+        blocks.append(f"## Recent Conversations and Activities\n{chats}")
+    blocks.append(f"## Memory and Live Tools\n\n{_RECALL_GUIDANCE}")
     blocks.append(
-        "Speak naturally and concisely for a live voice conversation. Use the supplied context "
+        "## Our Conversation\n\nSpeak naturally and concisely for a live voice conversation. Use the supplied context "
         "when relevant, without reciting it or mentioning these instructions."
     )
     return "\n\n".join(blocks)
@@ -695,6 +761,8 @@ def register_mentra_routes(
     get_resource_storage_dir: Callable[[], Path] | None = None,
     background_tasks: set[asyncio.Task[Any]] | None = None,
     set_background_error: Callable[..., None] | None = None,
+    prepare_annulment_memories: Callable[..., Awaitable[list[dict[str, Any]]]] | None = None,
+    save_actual_annulments: Callable[..., list[str]] | None = None,
 ) -> None:
     async def require_enabled() -> None:
         if not (get_config().get("mentra") or {}).get("enabled"):
@@ -1069,8 +1137,8 @@ def register_mentra_routes(
                 instruction = _build_bootstrap_instruction(
                     identity=build_identity_context(body.soul_id),
                     narrative=str(narrative or "").strip(),
-                    soul_anchor=_anchor_prose(anchors["soul"]),
-                    user_anchor=_anchor_prose(anchors["user"]),
+                    anchors=anchors,
+                    all_categories_summary=service.build_dossier_index(scope),
                     chats=str(chats or "").strip(),
                 )
                 if log_prompt is not None:
@@ -1243,6 +1311,123 @@ def register_mentra_routes(
                 else {}
             ),
         }
+
+    async def require_working_access(sitting_id: str, body: MentraSessionScope) -> None:
+        await _require_active_lease(
+            soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
+        )
+        require_owner(get_config(), body.user_id)
+        reason = get_activity_pause(body.user_id, body.soul_id)
+        if reason:
+            raise HTTPException(status_code=409, detail={
+                "code": "soul_paused", "soul_id": body.soul_id,
+                "message": f"{body.soul_id} is paused. Retry in OpenAlma launcher.", "reason": reason,
+            })
+        if load_turn_state_and_soul_card is None:
+            raise HTTPException(status_code=503, detail="Mentra working state is not configured")
+
+    def working_state(body: MentraSessionScope) -> dict[str, Any]:
+        state, _, _ = load_turn_state_and_soul_card(
+            conversation_sources.MENTRA_CONVERSATION_ID,
+            user_id=body.user_id, soul_id=body.soul_id,
+        )
+        return state
+
+    @asynccontextmanager
+    async def admit_working_write(sitting_id: str, body: MentraSessionScope):
+        if get_soul_lock is None:
+            raise HTTPException(status_code=503, detail="Mentra working state writes are not configured")
+        lock = get_soul_lock(body.user_id, body.soul_id)
+        if lock.locked():
+            yield False
+            return
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=_RECALL_TIMEOUT_SECONDS)
+        except TimeoutError:
+            yield False
+            return
+        try:
+            await require_working_access(sitting_id, body)
+            yield True
+        finally:
+            lock.release()
+
+    busy = {"ok": False, "status": "busy", "message": "busy, not saved"}
+
+    @app.post(
+        "/integration/mentra/session/{sitting_id}/working-state",
+        tags=["integration"], dependencies=enabled,
+    )
+    async def mentra_working_state(
+        sitting_id: str, body: MentraWorkingStateRequest
+    ) -> dict[str, Any]:
+        await require_working_access(sitting_id, body)
+        state = working_state(body)
+        return {
+            "ok": True,
+            "working_thoughts": normalize_memory_cache(state.get("memory_cache")),
+            "intentions": validate_intentions(state.get("intentions_active", [])),
+        }
+
+    @app.post(
+        "/integration/mentra/session/{sitting_id}/working-thought",
+        tags=["integration"], dependencies=enabled,
+    )
+    async def mentra_working_thought(
+        sitting_id: str, body: MentraWorkingThoughtRequest
+    ) -> dict[str, Any]:
+        await require_working_access(sitting_id, body)
+        if write_conversation_state is None:
+            raise HTTPException(status_code=503, detail="Mentra working state writes are not configured")
+        async with admit_working_write(sitting_id, body) as admitted:
+            if not admitted:
+                return busy
+            state = working_state(body)
+            write_conversation_state(
+                conversation_sources.MENTRA_CONVERSATION_ID,
+                user_id=body.user_id, soul_id=body.soul_id,
+                updates={"memory_cache": append_memory_cache_entry(state.get("memory_cache"), body.thought)},
+            )
+        return {"ok": True, "status": "saved"}
+
+    @app.post(
+        "/integration/mentra/session/{sitting_id}/annul-intention",
+        tags=["integration"], dependencies=enabled,
+    )
+    async def mentra_annul_intention(
+        sitting_id: str, body: MentraAnnulIntentionRequest
+    ) -> dict[str, Any]:
+        await require_working_access(sitting_id, body)
+        if (
+            get_soul_lock is None or get_service_from_scope is None
+            or prepare_annulment_memories is None or save_actual_annulments is None
+        ):
+            raise HTTPException(status_code=503, detail="Mentra intention writes are not configured")
+        if get_soul_lock(body.user_id, body.soul_id).locked():
+            return busy
+        service = get_service_from_scope({"user_id": body.user_id, "soul_id": body.soul_id})
+        prepared = await asyncio.wait_for(
+            prepare_annulment_memories(
+                svc=service,
+                intentions_before=working_state(body).get("intentions_active", []),
+                annulments=[{
+                    "intention_id": body.intention_id, "status": body.status, "note": body.note,
+                }],
+            ),
+            timeout=_RECALL_TIMEOUT_SECONDS,
+        )
+        async with admit_working_write(sitting_id, body) as admitted:
+            if not admitted:
+                return busy
+            current = validate_intentions(working_state(body).get("intentions_active", []))
+            if not any(item["id"] == body.intention_id for item in current):
+                return {"ok": False, "status": "not_found", "message": "intention not found"}
+            memory_ids = save_actual_annulments(
+                service=service, user_id=body.user_id, soul_id=body.soul_id,
+                conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
+                current_intentions=current, annulment_ids=[body.intention_id], prepared=prepared,
+            )
+        return {"ok": True, "status": "removed", "memory_ids": memory_ids}
 
     @app.post(
         "/integration/mentra/session/{sitting_id}/recall",

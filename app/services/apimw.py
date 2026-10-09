@@ -58,6 +58,7 @@ async def _apimw_retrieve_items(
     apimw_k: int,
     trace_id: str,
     all_categories_summary: str = "",
+    anchor_context: str = "",
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     retrieve_queries = _m()._build_retrieve_soul_context_queries(
         soul_id=soul_id,
@@ -65,6 +66,7 @@ async def _apimw_retrieve_items(
         history=history,
         state_row=state_row,
         all_categories_summary=all_categories_summary,
+        anchor_context=anchor_context,
         identity_mode="apimw",
         conversation_id=conversation_id,
         conversations_block=conversations_block,
@@ -83,7 +85,7 @@ async def _apimw_retrieve_items(
         "trace_id": trace_id,
     }
     _m().logger.info("apimw retrieve for %s", conversation_id)
-    retrieve_out = await _m()._run_retrieve(retrieve_payload, conversation_id=conversation_id)
+    retrieve_out = await _m()._run_retrieve(retrieve_payload, conversation_id=conversation_id, anchor_context=anchor_context)
     retrieve_result_data = retrieve_out.get("result") or {}
     retrieved_items = [item for item in (retrieve_result_data.get("items") or []) if isinstance(item, dict)]
     _m().logger.info("apimw retrieved %d items for %s", len(retrieved_items), conversation_id)
@@ -105,6 +107,7 @@ async def _apimw_collect_memory_items(
     scope: dict[str, str],
     trace_id: str,
     all_categories_summary: str = "",
+    anchor_context: str = "",
 ) -> list[dict[str, Any]]:
     _retrieve_result, retrieved_items = await _m()._apimw_retrieve_items(
         payload,
@@ -114,6 +117,7 @@ async def _apimw_collect_memory_items(
         history=history,
         state_row=state_row,
         all_categories_summary=all_categories_summary,
+        anchor_context=anchor_context,
         conversation_id=conversation_id,
         apimw_k=apimw_k,
         trace_id=trace_id,
@@ -173,6 +177,7 @@ async def _apimw_synthesize(
     conversation_id: str,
     scope: dict[str, str],
     all_categories_summary: str = "",
+    anchor_context: str = "",
     llm_profile: str | None = None,
     trace_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]], dict[str, str]]:
@@ -216,7 +221,8 @@ async def _apimw_synthesize(
 
     apimw_system_prompt = (
         f"Today is {_m()._format_time_anchor()}.\n\n"
-        "You are your soul's subconscious: a background process that runs between your turns. "
+        + (f"{anchor_context}\n\n" if anchor_context else "")
+        + "You are your soul's subconscious: a background process that runs between your turns. "
         "You have just searched your long-term memory, and now you'll want to guide yourself by surfacing the memories most relevant to the conversation. "
         "When you respond, you'll have the same context: your summary, activities, conversations, working thoughts and intentions. "
         "You won't have the memories from the \"Memories List\", so surface what matters.\n\n"
@@ -356,7 +362,9 @@ async def _run_apimw(
         scope = {"user_id": user_id, "soul_id": soul_id}
         if _m()._soul_activity_pause(user_id, soul_id):
             return
-        all_categories_summary = svc.build_dossier_index(scope)
+        dossiers = svc.list_active_dossiers(scope)
+        anchor_context = _m()._render_anchor_context({row.anchor_role: row for row in dossiers if row.anchor_role})
+        all_categories_summary = svc.build_dossier_index(scope, dossiers=dossiers)
         apimw_item_top_k = _m()._apimw_memory_count_from_cfg(_m()._CONFIG)
         apimw_random_count = _m()._apimw_random_count_from_cfg(_m()._CONFIG)
 
@@ -388,6 +396,7 @@ async def _run_apimw(
             history=current_history,
             state_row=state_row,
             all_categories_summary=all_categories_summary,
+            anchor_context=anchor_context,
             conversation_id=conversation_id,
             soul_id=soul_id,
             apimw_k=apimw_item_top_k,
@@ -402,6 +411,7 @@ async def _run_apimw(
             combined_items=combined_items,
             state_row=state_row,
             all_categories_summary=all_categories_summary,
+            anchor_context=anchor_context,
             segment_text=segment_text,
             current_message_text=current_message_text,
             user_id=user_id,
