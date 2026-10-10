@@ -60,7 +60,7 @@ mcp-memu-server/
 | `/imports/validate` | POST | Validate new current rows against the actual turn allowance. Return the complete Soul-wide pending period, selected-source processed dates and prospective deferred-history status against the fixed bound. Unreadable sources fail validation. No model call, source insertion or Memorize scheduling. |
 | `/imports/process`, `/imports/retry` | POST | Start tracked historical work, returning promptly. Default one batch; `continuous=true` repeats successful bounded batches under one claim. Failure requires explicit Retry. |
 | `/imports/continuation` | POST | Change the running import task's continuation choice; the current batch finishes. No restart resumption or second busy registry. |
-| `/imports/status` | GET | Scoped imported-chat checkpoint, error, matching task activity/continuation and its progress; unrelated Soul work is not import activity. |
+| `/imports/status` | GET | Scoped imported-chat checkpoint, error, matching task activity/continuation and its progress; `followup_error` exposes failed memory work after historical completion. Unrelated Soul work is not import activity. |
 | `/memorize/retry` | POST | Retry failed ordinary Memorize or a completed import's waiting handoff. Unfinished import history must finish in Echo first. |
 | `/memorize/progress` | GET | Live memorize batch progress |
 | `/memorize/cancel` | POST | Cancel the running memorize batch |

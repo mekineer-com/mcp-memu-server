@@ -249,6 +249,9 @@ async def test_real_import_completion_memorizes_current_messages_across_chats(tm
     assert bool(main._paid_work_state(**scoped)["memorize_failure"]) == fail_handoff
     assert (await main.diag_memorize_pending(**scoped))["retry_operation"] == ("memorize" if fail_handoff else None)
     assert not main._FORCED_MEMORIZE_INFLIGHT
+    echo_status = _endpoint("/imports/status")(**scoped, label="TestApp")
+    assert bool(echo_status["followup_error"]) == fail_handoff
+    assert echo_status["import_state"]["stage"] == "complete" and echo_status["import_state"]["error"] is None
     if fail_handoff:
         tasks = main.BackgroundTasks()
         await main.retry_memorize(**scoped, background_tasks=tasks)
@@ -256,6 +259,7 @@ async def test_real_import_completion_memorizes_current_messages_across_chats(tm
         assert len(calls) == 3 and calls[-1] == calls[1]
         assert main._soul_import_state(**scoped)[1]["ordinary_waiting"] is None
         assert main._soul_activity_pause(**scoped) is None
+        assert _endpoint("/imports/status")(**scoped, label="TestApp")["followup_error"] is None
     else:
         # The cursors committed, but the process stopped before clearing the wait.
         main._write_conversation_state(chat["conversation_id"], **scoped,

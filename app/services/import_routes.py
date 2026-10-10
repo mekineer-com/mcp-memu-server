@@ -340,7 +340,15 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         scoped, chat, record = registered(ImportScope(user_id=user_id, soul_id=soul_id, label=label))
         marker = runtime._memorize_lock_key(**scoped)
         task = import_task(runtime, marker)
+        followup_error = None
+        if record["stage"] == "complete" and record.get("ordinary_waiting"):
+            followup_error = runtime._soul_state.activity_pause(
+                runtime._paid_work_state(**scoped),
+                memorize_running=runtime._FORCED_MEMORIZE_INFLIGHT.get(marker) is False,
+                consolidation_running=runtime._CONSOLIDATION_RUNNING.get((user_id, soul_id)) is False,
+            )
         return {"conversation_id": chat["conversation_id"], "import_state": record,
+                "followup_error": followup_error,
                 "deferred_history": chat["history_end_index"] > record["history_end_index"],
                 "running": task is not None, "continuous": bool(task and task.import_continuous),
                 "progress": memorize_endpoint.memorize_progress_endpoint(
