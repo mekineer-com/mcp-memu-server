@@ -16,6 +16,152 @@ from app.services import consolidation, service_factory
 
 
 @pytest.mark.asyncio
+async def test_frozen_batch_subtracts_current_checkpoints_without_reloading_text(monkeypatch):
+    uid, sid, first, other = "TestOwner", "TestSoul", "chat:captured-first", "chat:captured-other"
+    for cid, cursor in ((first, 0), (other, 1)):
+        main._write_conversation_state(cid, user_id=uid, soul_id=sid,
+            updates={"digest_cursor": cursor, "last_memorize_at": "2026-10-10T00:00:00Z"})
+    captured = [{"role": "user", "name": uid, "content": f"{cid}-{i}",
+                 "source_conversation_id": cid, "source_conversation_index": i,
+                 "memorize_chat": True} for cid in (first, other) for i in range(2)]
+    payload = {"user": {"user_id": uid, "soul_id": sid}, "conversation_id": first,
+        "conversation": captured, "_cross_memorize": True,
+        "_final_cursors": {cid: {"cursor": 1, "memory_producing": True} for cid in (first, other)}}
+    calls = []
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
+            calls.extend(json.loads(segment["raw_text"]) for segment in kwargs["segments"])
+            return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
+    monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock())
+    tasks = BackgroundTasks()
+    response = await main._memorize_owned(payload, tasks, True)
+    assert response.status_code == 202
+    main._conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=main._get_storage_dir(main._CONFIG), user_id=uid, soul_id=sid,
+        conversation_id=first, history=[{"content": "later edited/new source", "source_conversation_index": 99}],
+    )
+    await tasks()
+    assert [[row["content"] for row in segment] for segment in calls] == [[f"{first}-1"]]
+    tasks = BackgroundTasks()
+    response = await main._memorize_owned(payload, tasks, True)
+    assert json.loads(response.body)["status"] == "nothing_to_memorize"
+    assert tasks.tasks == [] and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_saved_publication_empty_rewind_works_while_processing_paused():
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:rewind-paused"
+    main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={
+        "digest_cursor": 9, "rolling_summary_cursor_id": 8, "last_memorize_at": "2026-10-10T00:00:00Z",
+        "memorize_failure": {"conversation_id": cid, "paused": True, "error": "failed", "targets": {cid: {"cursor": 9}}},
+    })
+    marker = main._memorize_lock_key(uid, sid)
+    bounds = {cid: {"end": 9, "ceiling": 9}}
+    main._MEMORIZE_PROGRESS[marker] = {"_st_cursor_ceiling": bounds}
+    try:
+        response = await main.memorize({"user": {"user_id": uid, "soul_id": sid},
+            "conversation_id": cid, "conversation": [], "source_message_count": 0, "intent": "publish_only"}, BackgroundTasks())
+        assert response["status"] == "published"
+        state, _, _ = main._load_turn_state_and_soul_card(cid, user_id=uid, soul_id=sid)
+        assert state["digest_cursor"] == state["rolling_summary_cursor_id"] == -1
+        assert state["last_memorize_at"] == "2026-10-10T00:00:00Z"
+        assert bounds[cid]["ceiling"] == -1
+        assert main._paid_work_state(uid, sid)["memorize_failure"]["targets"][cid]["cursor"] == 9
+        assert main._conversation_sources.load_sillytavern_tail(storage_dir=main._get_storage_dir(main._CONFIG),
+            user_id=uid, soul_id=sid, conversation_id=cid, since_cursor=-1, recent_fallback_messages=0) == []
+    finally:
+        main._MEMORIZE_PROGRESS.pop(marker, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("indexes,count", [([True], 2), ([2], 2), ([1, 0], 2), ([0, 0], 2), ([0], -1)])
+async def test_saved_publication_rejects_bad_coordinates(indexes, count):
+    with pytest.raises(HTTPException) as raised:
+        await main.memorize({"user": {"user_id": "TestOwner", "soul_id": "TestSoul"},
+            "conversation_id": "chat:invalid", "intent": "publish_only", "source_message_count": count,
+            "conversation": [{"content": "text", "source_conversation_index": i} for i in indexes]}, BackgroundTasks())
+    assert raised.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_exhausted_capture_preserves_unfinished_failure():
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:failed-target"
+    main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={
+        "digest_cursor": 3, "last_memorize_at": "2026-10-10T00:00:00Z",
+        "memorize_failure": {"conversation_id": cid, "paused": True, "error": "failed", "targets": {cid: {"cursor": 9}}},
+    })
+    with pytest.raises(HTTPException) as raised:
+        main._prepare_frozen_memorize({"conversation_id": cid, "conversation": [], "_final_cursors": {}}, uid, sid)
+    assert raised.value.status_code == 409
+    assert main._paid_work_state(uid, sid)["memorize_failure"]["targets"][cid]["cursor"] == 9
+
+
+@pytest.mark.asyncio
+async def test_rewind_prunes_old_waiting_capture_but_keeps_post_rewind_replacement(monkeypatch):
+    uid, sid, first, other = "TestOwner", "TestSoul", "chat:rewind-main", "chat:waiting-trigger"
+    calls, entered, release = [], asyncio.Event(), asyncio.Event()
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
+            calls.append([row for segment in kwargs["segments"] for row in json.loads(segment["raw_text"])])
+            if len(calls) == 1:
+                entered.set()
+                await release.wait()
+            return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
+    monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock())
+    monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 1)
+    monkeypatch.setattr(main, "_unmemorized_sleep_gap_detected", lambda *_a, **_k: True)
+    main._write_conversation_state(first, user_id=uid, soul_id=sid, updates={})
+    def row(cid, i, text):
+        return {"role": "user", "name": uid, "content": text, "ts_ms": 1000 + i * 1000,
+                "source_conversation_id": cid, "source_conversation_index": i, "memorize_chat": True}
+    original = [row(first, i, f"original-{i}") for i in range(4)]
+    async def publish(cid, rows, count, intent="publish_only"):
+        return await main.memorize({"user": {"user_id": uid, "soul_id": sid}, "conversation_id": cid,
+            "intent": intent, "conversation": rows, "source_message_count": count}, BackgroundTasks())
+    await publish(first, original, 4)
+    scope = main._auto_memorize_scope(first, uid, sid, {}, original)
+    capture = {"user": {"user_id": uid, "soul_id": sid}, "conversation_id": first,
+        "_cross_memorize": True, "conversation": original,
+        "_final_cursors": {first: {"cursor": 3, "memory_producing": True}}}
+    marker = main._memorize_lock_key(uid, sid)
+    try:
+        assert main._schedule_auto_memorize(capture, scope) == "launched"
+        await asyncio.wait_for(entered.wait(), 5)
+        extra = row(other, 0, "waiting chat content")
+        await publish(other, [extra], 1)
+        waiting = {**capture, "conversation_id": other, "conversation": original + [extra],
+            "_final_cursors": {first: {"cursor": 3, "memory_producing": True},
+                               other: {"cursor": 0, "memory_producing": True}}}
+        assert main._schedule_auto_memorize(waiting, main._auto_memorize_scope(other, uid, sid, {}, [])) == "coalesced"
+        await publish(first, original[:2], 2)
+        replacement = row(first, 2, "new replacement")
+        await publish(first, original[:2] + [replacement], 3)
+        release.set()
+        while main._BACKGROUND_TASKS:
+            await asyncio.wait_for(asyncio.gather(*list(main._BACKGROUND_TASKS)), 5)
+            await asyncio.sleep(0)
+        assert [[row["content"] for row in call] for call in calls] == [
+            [f"original-{i}" for i in range(4)], ["waiting chat content"],
+        ]
+        state, _, _ = main._load_turn_state_and_soul_card(first, user_id=uid, soul_id=sid)
+        assert state["digest_cursor"] == 1
+        assert (await publish(first, original[:2] + [replacement], 3, "automatic"))["status"] == "accepted"
+        while main._BACKGROUND_TASKS:
+            await asyncio.wait_for(asyncio.gather(*list(main._BACKGROUND_TASKS)), 5)
+            await asyncio.sleep(0)
+        assert [row["content"] for row in calls[-1]] == ["new replacement"]
+        state, _, _ = main._load_turn_state_and_soul_card(first, user_id=uid, soul_id=sid)
+        assert state["digest_cursor"] == 2
+    finally:
+        release.set()
+        await asyncio.gather(*list(main._BACKGROUND_TASKS), return_exceptions=True)
+        main._FORCED_MEMORIZE_INFLIGHT.pop(marker, None)
+        main._FORCED_MEMORIZE_RECHECK.pop(marker, None)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("tail", [False, True])
 async def test_registered_import_handoff_keeps_history_out_of_normal_memorize(monkeypatch, tail):
     uid, sid, cid = "TestOwner", "TestSoul", "replika:test-import"
@@ -154,7 +300,7 @@ async def test_memorize_uses_one_scope_for_admission_runner_and_release(monkeypa
     async def endpoint(payload, *_args, **_kwargs):
         assert payload["user"]["soul_id"] == sid
         assert main._memorize_lock_key(uid, sid) in main._FORCED_MEMORIZE_INFLIGHT
-        return {"ok": True}
+        return main.JSONResponse(content={"ok": True})
     monkeypatch.setattr(main._memorize_endpoint, "memorize_endpoint", endpoint)
     await main.memorize({"user_id": uid, "soul_id": sid,
                         "user": {"user_id": uid, "soul_id": "OtherSoul"}, "conversation_id": "chat:scope"}, BackgroundTasks(), True)

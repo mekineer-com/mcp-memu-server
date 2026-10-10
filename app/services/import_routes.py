@@ -104,6 +104,8 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | 
                 if not await task.func(*task.args, **task.kwargs):
                     success = False
                     break
+            if success and failure:
+                runtime._check_memorize_failure_targets(uid, sid)
         if success and import_cid:
             runtime._write_conversation_state(import_cid, **scoped, updates={"import_ordinary_waiting": None})
     except (Exception, asyncio.CancelledError) as exc:
@@ -334,7 +336,10 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         return {"conversation_id": chat["conversation_id"], "import_state": record,
                 "deferred_history": chat["history_end_index"] > record["history_end_index"],
                 "running": task is not None, "continuous": bool(task and task.import_continuous),
-                "progress": runtime._MEMORIZE_PROGRESS.get(marker, {"active": False}) if task else {"active": False}}
+                "progress": memorize_endpoint.memorize_progress_endpoint(
+                    scoped["user_id"], scoped["soul_id"], memorize_lock_key=runtime._memorize_lock_key,
+                    memorize_progress=runtime._MEMORIZE_PROGRESS,
+                ) if task else {"active": False}}
 
     @app.post("/imports/register", operation_id="register_import")
     def register(request: ImportScope):

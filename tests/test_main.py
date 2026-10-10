@@ -4105,7 +4105,7 @@ def test_load_cross_tail_from_sources_fails_loud_for_broken_web_source(
         con.close()
 
 
-def test_turn_state_read_marks_background_error_when_source_assembly_fails(
+def test_auto_memorize_marks_background_error_when_source_assembly_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -4132,21 +4132,18 @@ def test_turn_state_read_marks_background_error_when_source_assembly_fails(
             {"code": str(kwargs.get("code") or ""), "detail": str(kwargs.get("detail") or "")}
         ),
     )
-    _state, _card, _db, _cache, _intentions, _tokens, queued = main._turn_state_read(
-        "cid",
-        "u1",
-        "Echo",
-        {},
-        [],
-        False,
-        [{"role": "user", "content": "hello"}],
+    _tokens, queued = main._prepare_auto_memorize(
+        "cid", "u1", "Echo", {},
+        {"memorize_chat": True, "digest_cursor": -1, "last_memorize_at": None},
+        [{"role": "user", "content": "hello"}], dry_run=False,
     )
+
     assert queued is None
     assert captured["code"] == "forced_memorize_source_failed"
     assert "RuntimeError: boom" in captured["detail"]
 
 
-def test_turn_state_read_triggers_on_summed_primary_tails(monkeypatch: pytest.MonkeyPatch):
+def test_auto_memorize_triggers_on_summed_primary_tails(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 100)
     monkeypatch.setattr(
         main,
@@ -4167,14 +4164,10 @@ def test_turn_state_read_triggers_on_summed_primary_tails(monkeypatch: pytest.Mo
     }
     monkeypatch.setattr(main, "_build_cross_conversation_payload", lambda *_a, **_k: payload)
 
-    _state, _card, _db, _cache, _intentions, tokens, queued = main._turn_state_read(
-        "cid",
-        "u1",
-        "Echo",
-        {},
-        [],
-        False,
-        [{"role": "user", "content": "short current"}],
+    tokens, queued = main._prepare_auto_memorize(
+        "cid", "u1", "Echo", {},
+        {"memorize_chat": True, "digest_cursor": -1, "last_memorize_at": None},
+        [{"role": "user", "content": "short current"}], dry_run=False,
     )
 
     assert tokens >= 100
@@ -4323,7 +4316,7 @@ def test_real_mentra_projection_passes_shared_auto_memorize_gate(
 
 
 @pytest.mark.asyncio
-async def test_auto_memorize_collision_rechecks_latest_scope_after_success(
+async def test_auto_memorize_collision_runs_latest_frozen_capture_after_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     marker = main._memorize_lock_key("u1", "Echo")
@@ -4361,8 +4354,8 @@ async def test_auto_memorize_collision_rechecks_latest_scope_after_success(
                 break
             await asyncio.sleep(0)
 
-        assert runs == [{"run": "first"}, {"run": "recheck"}]
-        assert rechecked_history == [[{"content": "latest"}]]
+        assert [payload["run"] for payload in runs] == ["first", "ignored"]
+        assert rechecked_history == []
         assert marker not in main._FORCED_MEMORIZE_RECHECK
     finally:
         release.set()
@@ -5140,6 +5133,7 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
             "_background_rolling_summaries": {
                 "whatsapp:dm:bg-chat": {
                     "summary": "old rolled summary",
+                    "updated_at": "2026-05-01T00:00:00+00:00",
                     "source_label": "whatsapp:dm",
                 }
             }
@@ -5212,6 +5206,9 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
         state_rows.setdefault(cid, {}).update(updates)
         return dict(state_rows[cid]), tmp_path / "Echo.db"
 
+    main._write_conversation_state("whatsapp:dm:bg-chat", user_id="u", soul_id="s",
+        updates=state_rows["whatsapp:dm:bg-chat"])
+
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
     monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
 
@@ -5250,6 +5247,7 @@ async def test_run_memorize_segments_clears_consumed_segment_background_context_
             "_background_rolling_summaries": {
                 "whatsapp:dm:bg-chat": {
                     "summary": "old rolled summary",
+                    "updated_at": "2026-05-01T00:00:00+00:00",
                     "source_label": "whatsapp:dm",
                 }
             }
@@ -8219,7 +8217,7 @@ async def test_conversation_retrieve_does_not_persist_current_user_message(
 
 
 @pytest.mark.asyncio
-async def test_conversation_retrieve_writes_sillytavern_snapshot_not_messages_table(
+async def test_conversation_retrieve_preserves_saved_sillytavern_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -8251,12 +8249,16 @@ async def test_conversation_retrieve_writes_sillytavern_snapshot_not_messages_ta
         "query": "latest",
         "chat_name": "Echo",
         "history": [
-            {"role": "user", "name": "Marcos", "content": "m1"},
+            {"role": "user", "name": "TestOwner", "content": "m1"},
             {"role": "assistant", "name": "Echo", "content": "a1"},
         ],
         "queries": [{"role": "message", "content": {"text": "latest"}}],
     }
 
+    conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=storage_dir, user_id="u1", soul_id="Echo", conversation_id="integrity:chat-1",
+        history=[{"role": "user", "name": "TestOwner", "content": "actually saved"}],
+    )
     out = await main.conversation_retrieve("integrity:chat-1", payload)
     assert out["ok"] is True
 
@@ -8276,7 +8278,7 @@ async def test_conversation_retrieve_writes_sillytavern_snapshot_not_messages_ta
         since_cursor=-1,
         recent_fallback_messages=0,
     )
-    assert [row["content"] for row in snapshot_rows] == ["m1", "a1"]
+    assert [row["content"] for row in snapshot_rows] == ["actually saved"]
 
 
 @pytest.mark.asyncio
@@ -8486,11 +8488,11 @@ async def test_conversation_turn_does_not_persist_messages_to_table(
 
 
 @pytest.mark.asyncio
-async def test_conversation_turn_persists_completed_sillytavern_snapshot(
+async def test_conversation_turn_does_not_publish_unsaved_sillytavern_reply(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db_path = tmp_path / "Siri.db"
+    db_path = tmp_path / "TestSoul.db"
     con = main._sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
@@ -8536,14 +8538,14 @@ async def test_conversation_turn_persists_completed_sillytavern_snapshot(
     monkeypatch.setattr(main._conversation_sources, "persist_sillytavern_history_snapshot", _fake_persist_snapshot)
 
     payload = {
-        "user": {"user_id": "u1", "soul_id": "Siri", "conversation_id": "integrity:chat"},
+        "user": {"user_id": "u1", "soul_id": "TestSoul", "conversation_id": "integrity:chat"},
         "message": "current user",
         "message_ts_ms": 1_797_680_000_000,
         "message_source_id": "16",
-        "user_name": "Marcos",
-        "chat_name": "Siri",
+        "user_name": "TestOwner",
+        "chat_name": "TestSoul",
         "chat_type": "dm",
-        "history": [{"role": "soul", "content": "prior soul", "name": "Siri", "source_message_id": "15"}],
+        "history": [{"role": "soul", "content": "prior soul", "name": "TestSoul", "source_message_id": "15"}],
         "prompt_override_payload": {
             "user_prompt": "prompt",
             "system_prompt": "system",
@@ -8556,18 +8558,7 @@ async def test_conversation_turn_persists_completed_sillytavern_snapshot(
     out = await main.conversation_turn("integrity:chat", payload)
 
     assert out["ok"] is True
-    assert captured["conversation_id"] == "integrity:chat"
-    assert captured["chat_name"] == "Siri"
-    history = captured["history"]
-    assert isinstance(history, list)
-    assert [(row["role"], row["content"]) for row in history] == [
-        ("soul", "prior soul"),
-        ("user", "current user"),
-        ("soul", "current soul"),
-    ]
-    assert history[1]["source_message_id"] == "16"
-    assert history[1]["ts_ms"] == 1_797_680_000_000
-    assert history[2]["ts_ms"] > history[1]["ts_ms"]
+    assert captured == {}
 
 
 @pytest.mark.asyncio

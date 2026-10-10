@@ -21,6 +21,7 @@ import asyncio
 import json
 import sqlite3
 from datetime import UTC, datetime
+from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -29,6 +30,8 @@ from fastapi import BackgroundTasks, HTTPException
 from app import main as main_module
 from app.main import app
 from app.services import souls, owner
+from app.services import memorize_endpoint, state
+from tests import SavedBatchService
 
 
 @pytest.fixture(autouse=True)
@@ -317,6 +320,9 @@ def test_cross_memorize_endpoint_marks_manifest_range(
         {"role": "assistant", "name": "TestSoul", "content": "two"},
         {"role": "user", "name": "u1", "content": "three"},
     ]
+    for index, row in enumerate(payload["conversation"], 8):
+        row.update(source_conversation_id="chat:cid-cross", source_conversation_index=index)
+    payload["_final_cursors"] = {"chat:cid-cross": {"cursor": 10, "memory_producing": True}}
 
     resp = client.post("/memorize", json=payload)
 
@@ -329,8 +335,10 @@ def test_cross_memorize_endpoint_marks_manifest_range(
     ]
 
     payload["conversation"] = [
-        {"role": "user", "name": "u1", "content": "listen", "memorize_chat": False},
+        {"role": "user", "name": "u1", "content": "listen", "memorize_chat": False,
+         "source_conversation_id": "chat:cid-cross", "source_conversation_index": 11},
     ]
+    payload["_final_cursors"] = {"chat:cid-cross": {"cursor": 11, "memory_producing": False}}
     resp = client.post("/memorize", json=payload)
 
     assert resp.status_code == 202
@@ -495,6 +503,45 @@ def test_rebuild_preserves_display_name_with_real_service_reacquisition(client, 
     assert service.user_config.user_name == "DifferentHuman"
 
 
+@pytest.mark.parametrize("positions", [(0, 1, 2, 3), (0, 3, 7, 9)])
+def test_rebuild_includes_open_sleep_tail_with_original_positions_and_name(client, monkeypatch, positions):
+    uid, sid, cid = "TestOwner", "TestSoul", "chat:rebuild-sleep-tail"
+    owner.create_owner(main_module._CONFIG, uid)
+    souls.create_soul(main_module._CONFIG, souls.SoulCreate(soul_id=sid, use_existing=False, user_name="DifferentHuman"))
+    db_path = main_module._sqlite_current_path(uid, sid)
+    main_module._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={
+        "digest_cursor": positions[-1], "last_memorize_at": "2026-10-02T10:01:00+00:00",
+    })
+    times = ["2026-10-01T20:00:00+00:00", "2026-10-01T20:01:00+00:00",
+             "2026-10-02T10:00:00+00:00", "2026-10-02T10:01:00+00:00"]
+    rows = [{"role": "user" if i % 2 == 0 else "soul",
+             "name": "DifferentHuman" if i % 2 == 0 else sid, "content": f"fictional saved row {i}",
+             "source_conversation_index": position, "source_message_id": str(position),
+             "ts_ms": int(datetime.fromisoformat(timestamp).timestamp() * 1000)}
+            for i, (position, timestamp) in enumerate(zip(positions, times, strict=True))]
+    monkeypatch.setattr(memorize_endpoint, "server_timezone", lambda: UTC)
+    monkeypatch.setattr(main_module, "_MIN_CHUNK_TOKENS", 1)
+    monkeypatch.setattr(main_module, "_SLEEP_SPLIT_MIN_LULL_SECONDS", 3600)
+    assert memorize_endpoint.split_indices_by_sleep(rows, UTC, 3600)[0] == [2]
+    recorded = []
+
+    async def capture(**kwargs):
+        assert kwargs["svc"].user_config.user_name == "DifferentHuman"
+        recorded.extend(row for segment in kwargs["memorize_segments"] for row in segment[1])
+        return True
+
+    monkeypatch.setattr(memorize_endpoint, "run_memorize_segments", capture)
+    payload = _make_stub_payload(uid, sid, cid)
+    payload.update(conversation=rows, intent="manual", source_message_count=positions[-1] + 1, chat_name=sid)
+    response = client.post("/memorize?rebuild=true", json=payload)
+    assert response.status_code == 202, response.text
+    assert response.json()["expected_cursor"] == positions[-1]
+    for field in ("content", "name", "ts_ms", "source_conversation_index", "source_message_id"):
+        assert [row[field] for row in recorded] == [row[field] for row in rows]
+    archive, = db_path.parent.glob("TestSoul.bak-*")
+    assert souls.read_soul_name(archive) == souls.read_soul_name(db_path) == "DifferentHuman"
+
+
 def test_rebuild_refuses_missing_binding_before_archiving(client, monkeypatch, tmp_path):
     path = tmp_path / "Unbound.db"
     with sqlite3.connect(path) as con:
@@ -509,3 +556,311 @@ def test_rebuild_refuses_missing_binding_before_archiving(client, monkeypatch, t
     assert path.read_bytes() == before
     assert not list(tmp_path.glob("*.bak-*"))
     assert not list(tmp_path.glob("*-wal")) and not list(tmp_path.glob("*-shm"))
+
+
+@pytest.mark.asyncio
+async def test_frozen_preparation_uses_mutated_rows_under_existing_lock(monkeypatch, tmp_path):
+    original_files = set(tmp_path.iterdir())
+    lock = asyncio.Lock()
+    bounds = {"chat:frozen": {"end": 99, "ceiling": 99}}
+    progress = {"owner:soul": {"_st_cursor_ceiling": bounds}}
+    payload = _make_stub_payload("TestOwner", "TestSoul", "chat:frozen")
+    payload.update(_cross_memorize=True, _st_cursor_ceiling=bounds)
+    retained = [{"role": "user", "content": "captured survivor", "source_conversation_index": 7}]
+    final = {"chat:frozen": {"cursor": 7, "memory_producing": True}}
+    recorded = []
+
+    def prepare(safe, uid, sid):
+        assert lock.locked()
+        assert (uid, sid) == ("TestOwner", "TestSoul")
+        assert safe["_st_cursor_ceiling"] is bounds
+        assert set(tmp_path.iterdir()) == original_files
+        safe["conversation"] = retained
+        safe["_final_cursors"] = final
+        return True
+
+    async def run(**kwargs):
+        recorded.append(kwargs)
+
+    base = replace(main_module._make_memorize_context(),
+                   get_memorize_lock=lambda _key: lock, memorize_lock_key=lambda *_args: "owner:soul",
+                   memorize_progress=progress,
+                   write_conversation_state=lambda *_args, **_kwargs: (_state_response(), tmp_path / "state.db"))
+    endpoint = replace(main_module._make_memorize_endpoint_context(), base=base,
+                       safe_payload=lambda value: value, get_service_from_payload=lambda _safe: object(),
+                       get_storage_dir=lambda _cfg: tmp_path, run_memorize_segments=run,
+                       prepare_frozen_payload=prepare)
+    tasks = BackgroundTasks()
+    await lock.acquire()
+    pending = asyncio.create_task(memorize_endpoint.memorize_endpoint(payload, tasks, True, endpoint_ctx=endpoint))
+    await asyncio.sleep(0)
+    assert not pending.done()
+    bounds["chat:frozen"]["ceiling"] = 49
+    lock.release()
+    response = await pending
+    assert response.status_code == 202
+    assert response.background is tasks
+    await tasks()
+    assert recorded[0]["memorize_segments"][0][1][0]["content"] == "captured survivor"
+    assert recorded[0]["memorize_segments"][0][1][0]["source_conversation_index"] == 7
+    assert recorded[0]["final_cursors"] is final
+    assert recorded[0]["safe"]["_st_cursor_ceiling"] is bounds
+    assert progress["owner:soul"]["_st_cursor_ceiling"] is bounds
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic", [False, True])
+@pytest.mark.parametrize("unresolved", [False, True])
+@pytest.mark.parametrize("empty_original", [False, True])
+async def test_frozen_no_work_has_no_endpoint_mutations(tmp_path, automatic, unresolved, empty_original):
+    original_files = set(tmp_path.iterdir())
+    payload = _make_stub_payload("TestOwner", "TestSoul", "chat:empty")
+    payload.update(_cross_memorize=True, _automatic_memorize=automatic)
+    if empty_original:
+        payload["conversation"] = []
+    key = main_module._memorize_lock_key("TestOwner", "TestSoul")
+    bounds, processed = {}, []
+    progress = {key: {"active": True, "phase": "accepted", "_st_cursor_ceiling": bounds, "_processed_rows": processed}}
+    original_progress = dict(progress[key])
+
+    def prepare(safe, _uid, _sid):
+        safe["conversation"] = []
+        if unresolved:
+            raise HTTPException(status_code=409, detail="Unfinished source checkpoints")
+        return False
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("empty frozen work must not acquire services, write state, or normalize")
+
+    base = replace(main_module._make_memorize_context(), memorize_progress=progress,
+                   get_memorize_lock=lambda _key: asyncio.Lock(), write_conversation_state=forbidden)
+    endpoint = replace(main_module._make_memorize_endpoint_context(), base=base,
+                       safe_payload=lambda value: value, get_service_from_payload=forbidden,
+                       normalize_conversation=forbidden, get_storage_dir=lambda _cfg: tmp_path,
+                       prepare_frozen_payload=prepare)
+    tasks = BackgroundTasks()
+    if unresolved:
+        with pytest.raises(HTTPException, match="Unfinished source checkpoints"):
+            await memorize_endpoint.memorize_endpoint(payload, tasks, True, endpoint_ctx=endpoint)
+        assert progress[key] == original_progress
+    else:
+        response = await memorize_endpoint.memorize_endpoint(payload, tasks, True, endpoint_ctx=endpoint)
+        status = "deferred" if automatic else "nothing_to_memorize"
+        assert json.loads(response.body)["status"] == status
+        public = memorize_endpoint.memorize_progress_endpoint(
+            "TestOwner", "TestSoul", memorize_lock_key=base.memorize_lock_key, memorize_progress=progress,
+        )
+        assert public["active"] is False
+        assert public["last_result"] == status
+        assert "phase" not in public
+        assert "_st_cursor_ceiling" not in public
+        assert "_processed_rows" not in public
+        assert progress[key]["_st_cursor_ceiling"] is bounds
+        assert progress[key]["_processed_rows"] is processed
+    assert tasks.tasks == []
+    assert set(tmp_path.iterdir()) == original_files
+
+
+@pytest.mark.asyncio
+async def test_historical_endpoint_bypasses_frozen_preparation(tmp_path):
+    payload = _make_stub_payload("TestOwner", "TestSoul", "import:test")
+    imported = {"history_end_index": 2, "memorize_cursor": -1, "pending_segment_ids": []}
+    base = replace(main_module._make_memorize_context(),
+                   get_memorize_lock=lambda _key: asyncio.Lock(), memorize_progress={},
+                   write_conversation_state=lambda *_args, **_kwargs: ({"import_state": imported}, tmp_path / "state.db"))
+
+    def forbidden(*_args):
+        pytest.fail("historical preparation must not use ordinary frozen admission")
+
+    endpoint = replace(main_module._make_memorize_endpoint_context(), base=base,
+                       safe_payload=lambda value: value, get_service_from_payload=lambda _safe: object(),
+                       get_storage_dir=lambda _cfg: tmp_path, prepare_frozen_payload=forbidden)
+    tasks = BackgroundTasks()
+    response = await memorize_endpoint.memorize_endpoint(payload, tasks, True, endpoint_ctx=endpoint, historical=True)
+    assert response.status_code == 202
+    assert tasks.tasks[0].kwargs["historical"] is True
+    assert tasks.tasks[0].kwargs["memorize_segments"][0][2:4] == (0, 1)
+
+
+async def _run_disposable_segment(tmp_path, svc, rows, safe, final, *, progress=None):
+    progress = {} if progress is None else progress
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+
+    async def no_consolidation(*_args, **_kwargs):
+        return {}
+
+    background = set()
+    run_ctx = replace(main_module._make_memorize_run_context(),
+                      base=replace(main_module._make_memorize_context(), memorize_progress=progress),
+                      run_consolidation_task=no_consolidation, background_tasks_set=background)
+    producing = any(row.get("memorize_chat") is not False for row in rows)
+    result = await memorize_endpoint.run_memorize_segments(
+        memorize_segments=[("unused", rows, 0, len(rows) - 1, (0, len(rows) - 1) if producing else None)],
+        svc=svc, scope={"user_id": "TestOwner", "soul_id": "TestSoul"},
+        conversation_id="chat:frozen", soul_id="TestSoul", uid="TestOwner", processed_cursor=8,
+        safe=safe, resource_url=str(tmp_path), chat_key=None, merged_len=len(rows), force=True,
+        sleep_stats=None, segments_dir=segments_dir, cross_memorize=True, final_cursors=final, run_ctx=run_ctx,
+    )
+    if background:
+        await asyncio.gather(*background)
+    return result, progress
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("producing", [False, True])
+@pytest.mark.parametrize(("ceiling", "newer_cursor", "expected"), [(49, None, 49), (-1, None, -1), (49, 70, 70)])
+async def test_active_rewind_ceiling_survives_regrowth_and_committed_progress(tmp_path, producing, ceiling, newer_cursor, expected):
+    cid = "chat:frozen"
+    field = "digest_cursor" if producing else "rolling_summary_cursor_id"
+    stamp = "2026-10-01T00:00:00+00:00"
+    main_module._write_conversation_state(cid, user_id="TestOwner", soul_id="TestSoul",
+                                          updates={field: 8, "last_memorize_at": stamp})
+    bounds = {cid: {"end": 99, "ceiling": 99}}
+    key = main_module._memorize_lock_key("TestOwner", "TestSoul")
+    progress = {key: {"_st_cursor_ceiling": bounds}}
+    rows = [{"role": "user", "name": "TestOwner", "content": "original captured text",
+             "source_conversation_id": cid, "source_conversation_index": 99, "memorize_chat": producing}]
+
+    class Service(SavedBatchService):
+        async def memorize_segments_batch(self, **kwargs):
+            original = kwargs["on_segment_saved"]
+
+            def before_commit(session, url, ids):
+                original(session, url, ids)
+                assert "_processed_rows" not in progress[key]
+            kwargs["on_segment_saved"] = before_commit
+            return await super().memorize_segments_batch(**kwargs)
+
+        async def extract(self, **kwargs):
+            assert json.loads(kwargs["segments"][0]["raw_text"]) == rows
+            assert progress[key]["_st_cursor_ceiling"] is bounds
+            assert "_processed_rows" not in progress[key]
+            bounds[cid]["ceiling"] = ceiling
+            main_module._write_conversation_state(cid, user_id="TestOwner", soul_id="TestSoul",
+                                                  updates={field: ceiling if newer_cursor is None else newer_cursor})
+            # Saved length regrows to 60; the old bound stays 49 (or -1 for an empty rewind).
+            assert bounds[cid]["end"] == 99
+            return [{}]
+
+    service = Service()
+    success, progress = await _run_disposable_segment(tmp_path, service, rows, {"_st_cursor_ceiling": bounds},
+                                                     {cid: {"cursor": 99, "memory_producing": producing}}, progress=progress)
+    assert success
+    saved, _, _ = main_module._load_turn_state_and_soul_card(cid, user_id="TestOwner", soul_id="TestSoul")
+    assert saved[field] == expected
+    assert saved["digest_cursor"] == (expected if producing else 0)
+    assert saved["pending_segment_ids"] == (["chat:frozen:0-0"] if producing else [])
+    assert progress[key]["_processed_rows"] == rows
+    assert progress[key]["_st_cursor_ceiling"] is bounds
+    with service._sqlite_write_session(service.database) as session:
+        resources = session.connection().exec_driver_sql("SELECT url FROM resources").all()
+    assert len(resources) == int(producing)
+
+
+@pytest.mark.asyncio
+async def test_rolled_back_job_does_not_publish_processed_rows(tmp_path):
+    key = main_module._memorize_lock_key("TestOwner", "TestSoul")
+    progress = {}
+    rows = [{"role": "user", "content": "uncommitted text", "source_conversation_id": "chat:frozen",
+             "source_conversation_index": 99}]
+
+    class Service(SavedBatchService):
+        async def memorize_segments_batch(self, **kwargs):
+            original = kwargs["on_segment_saved"]
+
+            def abort(session, url, ids):
+                original(session, url, ids)
+                assert "_processed_rows" not in progress[key]
+                raise RuntimeError("disposable rollback")
+            kwargs["on_segment_saved"] = abort
+            return await super().memorize_segments_batch(**kwargs)
+
+        async def extract(self, **kwargs):
+            return [{}]
+
+    with pytest.raises(RuntimeError, match="disposable rollback"):
+        await _run_disposable_segment(tmp_path, Service(), rows, {},
+                                     {"chat:frozen": {"cursor": 99, "memory_producing": True}}, progress=progress)
+    assert "_processed_rows" not in progress[key]
+    assert not list((tmp_path / "segments").iterdir())
+    saved, _, _ = main_module._load_turn_state_and_soul_card("chat:frozen", user_id="TestOwner", soul_id="TestSoul")
+    assert saved["memorize_failure"]["targets"]["chat:frozen"]["cursor"] == 99
+    assert saved["pending_segment_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_rewind_commit_does_not_shorten_unresolved_failure_targets(tmp_path):
+    cid = "chat:frozen"
+    main_module._write_conversation_state(cid, user_id="TestOwner", soul_id="TestSoul", updates={
+        "digest_cursor": 49, "last_memorize_at": "2026-10-01T00:00:00+00:00",
+        "memorize_failure": {"conversation_id": cid, "error": "restore captured source", "paused": True,
+                             "targets": {cid: {"cursor": 99, "memory_producing": True}}},
+    })
+    rows = [{"role": "user", "content": "original captured text", "source_conversation_id": cid,
+             "source_conversation_index": 99}]
+
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
+            return [{}]
+
+    service = Service()
+    with pytest.raises(RuntimeError, match="unfinished source checkpoints"):
+        await _run_disposable_segment(tmp_path, service, rows,
+                                     {"_st_cursor_ceiling": {cid: {"end": 99, "ceiling": 49}}},
+                                     {cid: {"cursor": 99, "memory_producing": True}})
+    saved, _, _ = main_module._load_turn_state_and_soul_card(cid, user_id="TestOwner", soul_id="TestSoul")
+    assert saved["digest_cursor"] == 49
+    assert saved["memorize_failure"]["targets"][cid]["cursor"] == 99
+    assert saved["pending_segment_ids"] == ["chat:frozen:0-0"]
+    assert len(list((tmp_path / "segments").iterdir())) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("summary", "updated_at", "cleared"), [
+    ("captured summary", "2026-10-01T00:00:00+00:00", True),
+    ("new summary", "2026-10-01T00:00:00+00:00", False),
+    ("captured summary", "2026-10-02T00:00:00+00:00", False),
+])
+async def test_background_summary_cleanup_compares_fresh_text_and_timestamp(tmp_path, summary, updated_at, cleared):
+    cid = "chat:background"
+    stamp = "2026-10-01T00:00:00+00:00"
+    main_module._write_conversation_state(cid, user_id="TestOwner", soul_id="TestSoul", updates={
+        "rolling_summary": "captured summary", "rolling_summary_updated_at": stamp, "rolling_summary_cursor_id": 8,
+    })
+    rows = [
+        {"role": "user", "content": "primary", "source_conversation_id": "chat:frozen", "source_conversation_index": 0},
+        {"role": "user", "content": "background", "source_conversation_id": cid,
+         "source_conversation_index": 9, "memorize_chat": False},
+    ]
+
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
+            assert kwargs["segments"][0]["segment"]["segment_background_context_rows"][0]["summary"] == "captured summary"
+            main_module._write_conversation_state(cid, user_id="TestOwner", soul_id="TestSoul", updates={
+                "rolling_summary": summary, "rolling_summary_updated_at": updated_at,
+            })
+            return [{}]
+
+    await _run_disposable_segment(tmp_path, Service(), rows, {"_background_rolling_summaries": {
+        cid: {"summary": "captured summary", "updated_at": stamp},
+    }}, {"chat:frozen": {"cursor": 0, "memory_producing": True}, cid: {"cursor": 9, "memory_producing": False}})
+    saved, _, _ = main_module._load_turn_state_and_soul_card(cid, user_id="TestOwner", soul_id="TestSoul")
+    assert saved["rolling_summary"] == (None if cleared else summary)
+    assert saved["rolling_summary_updated_at"] == (None if cleared else updated_at)
+    assert saved["rolling_summary_cursor_id"] == 9
+
+
+def test_empty_rewind_round_trip_keeps_timestamp_and_row_zero_eligible():
+    cid = "chat:empty-rewind"
+    stamp = "2026-10-01T00:00:00+00:00"
+    write = lambda updates: main_module._write_conversation_state(
+        cid, user_id="TestOwner", soul_id="TestSoul", updates=updates,
+    )[0]
+    write({"digest_cursor": 8, "last_memorize_at": stamp})
+    empty = write({"digest_cursor": -1, "rolling_summary_cursor_id": -1})
+    assert empty["last_memorize_at"] == stamp
+    assert empty["digest_cursor"] == empty["rolling_summary_cursor_id"] == -1
+    assert state.effective_digest_cursor_from_row(empty) == -1
+    saved = write(memorize_endpoint._cursor_updates_for_unit(memory_producing=True, cursor=0, now_iso=stamp))
+    assert state.effective_digest_cursor_from_row(saved) == 0

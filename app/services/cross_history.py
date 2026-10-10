@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -322,62 +321,6 @@ def _stamp_assistant_display_name(messages: list[dict[str, Any]], soul_name: str
             continue
         msg["name"] = display
         msg["speaker"] = display
-
-
-def _persist_completed_sillytavern_turn_snapshot(
-    *,
-    safe: dict[str, Any],
-    history: list[dict[str, Any]],
-    conversation_id: str,
-    user_id: str,
-    soul_id: str,
-    message: str,
-    response_text: str,
-    response_target: str,
-) -> None:
-    if _message_log.derive_source_label(conversation_id) != "sillytavern":
-        return
-    completed = _normalize_conversation(history)
-    user_text = str(message or "").strip()
-    user_ts_ms = _parse_turn_ts_ms(safe.get("message_ts_ms"))
-    if user_ts_ms is None:
-        user_ts_ms = _parse_turn_ts_ms(safe.get("messageTsMs"))
-    if user_text:
-        user_row: dict[str, Any] = {
-            "role": "user",
-            "content": user_text,
-            "name": _pick_str(safe, "user_name") or "",
-            "source_message_id": _pick_str(safe, "message_source_id", "messageSourceId") or str(len(completed)),
-        }
-        if user_ts_ms is not None:
-            user_row["ts_ms"] = user_ts_ms
-        completed.append(user_row)
-
-    soul_text = str(response_text or "").strip()
-    if response_target == "respond" and soul_text:
-        soul_ts_ms = int(time.time() * 1000)
-        if user_ts_ms is not None and soul_ts_ms <= user_ts_ms:
-            soul_ts_ms = user_ts_ms + 1
-        completed.append(
-            {
-                "role": "soul",
-                "content": soul_text,
-                "name": _pick_str(safe, "chat_name") or soul_id,
-                "source_message_id": str(len(completed)),
-                "ts_ms": soul_ts_ms,
-            }
-        )
-
-    if not completed:
-        return
-    _conversation_sources.persist_sillytavern_history_snapshot(
-        storage_dir=_m()._get_storage_dir(_m()._CONFIG),
-        user_id=user_id,
-        soul_id=soul_id,
-        conversation_id=conversation_id,
-        history=completed,
-        chat_name=_pick_str(safe, "chat_name") or None,
-    )
 
 
 def _load_tail_for_source_conversation(
@@ -820,6 +763,7 @@ def _load_cross_memorize_tails_from_sources(
     soul_id: str,
     exclude_conversation_id: str | None = None,
     strict: bool = False,
+    filing_policy: dict[str, bool] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     storage_dir, hermes_home_path, sessions_index_path, state_db_path = _m()._resolve_cross_source_paths()
     excluded_id = str(exclude_conversation_id or "").strip()
@@ -847,7 +791,7 @@ def _load_cross_memorize_tails_from_sources(
                 if tail:
                     tails[cid] = tail
                 continue
-            memorize_chat = cid.startswith("mentra:") or _memorize_chat_from_row(row)
+            memorize_chat = (filing_policy or {}).get(cid, cid.startswith("mentra:") or _memorize_chat_from_row(row))
             if memorize_chat:
                 cursor = _effective_digest_cursor_from_row(row)
                 cursor, min_timestamp, _ = _resolve_source_cursor(

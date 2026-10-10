@@ -81,7 +81,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "soul_id": row["soul_id"],
         "user_id": row["user_id"],
         "memorize_chat": memorize_chat_from_row(row),
-        "digest_cursor": max(0, digest_cursor),
+        "digest_cursor": max(-1, digest_cursor),
         "digest_cursor_source_message_id": (
             str(row["digest_cursor_source_message_id"] or "").strip() or None
         ),
@@ -451,7 +451,7 @@ INSERT OR IGNORE INTO conversations (
 
         if "digest_cursor" in field_updates:
             try:
-                field_updates["digest_cursor"] = max(0, int(field_updates.get("digest_cursor") or 0))
+                field_updates["digest_cursor"] = max(-1, int(field_updates.get("digest_cursor") or 0))
             except (TypeError, ValueError, OverflowError) as exc:
                 raise HTTPException(status_code=400, detail="digest_cursor must be an integer") from exc
         if "rolling_summary_cursor_id" in field_updates:
@@ -460,7 +460,7 @@ INSERT OR IGNORE INTO conversations (
                 field_updates["rolling_summary_cursor_id"] = None
             else:
                 try:
-                    field_updates["rolling_summary_cursor_id"] = max(0, int(raw_cursor_id))
+                    field_updates["rolling_summary_cursor_id"] = max(-1, int(raw_cursor_id))
                 except (TypeError, ValueError, OverflowError) as exc:
                     raise HTTPException(status_code=400, detail="rolling_summary_cursor_id must be an integer") from exc
         if "rolling_summary" in field_updates:

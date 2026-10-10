@@ -887,6 +887,7 @@ def persist_chat_history_snapshot(
     history: list[dict[str, Any]],
     chat_name: str | None = None,
     source_label: str,
+    source_message_count: int | None = None,
 ) -> None:
     payload = {
         "conversation_id": str(conversation_id or "").strip(),
@@ -898,6 +899,7 @@ def persist_chat_history_snapshot(
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z"),
         "history": list(history or []),
+        **({"source_message_count": source_message_count} if source_message_count is not None else {}),
     }
     path = _chat_snapshot_path(
         storage_dir=storage_dir,
@@ -936,6 +938,7 @@ def persist_sillytavern_history_snapshot(
     conversation_id: str,
     history: list[dict[str, Any]],
     chat_name: str | None = None,
+    source_message_count: int | None = None,
 ) -> None:
     persist_chat_history_snapshot(
         storage_dir=storage_dir,
@@ -945,6 +948,7 @@ def persist_sillytavern_history_snapshot(
         history=history,
         chat_name=chat_name,
         source_label="sillytavern",
+        source_message_count=source_message_count,
     )
 
 

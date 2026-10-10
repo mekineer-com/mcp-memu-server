@@ -14,6 +14,7 @@ from collections import deque
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from dataclasses import replace
 from functools import partial
@@ -2107,9 +2108,6 @@ def _prepare_current_whatsapp_history(*args: Any, **kwargs: Any) -> Any:
 def _stamp_assistant_display_name(*args: Any, **kwargs: Any) -> Any:
     return _cross_history._stamp_assistant_display_name(*args, **kwargs)
 
-def _persist_completed_sillytavern_turn_snapshot(*args: Any, **kwargs: Any) -> Any:
-    return _cross_history._persist_completed_sillytavern_turn_snapshot(*args, **kwargs)
-
 def _load_tail_for_source_conversation(*args: Any, **kwargs: Any) -> Any:
     try:
         return _cross_history._load_tail_for_source_conversation(*args, **kwargs)
@@ -2315,6 +2313,7 @@ def _make_memorize_endpoint_context() -> _memorize_endpoint.MemorizeEndpointCont
         run_memorize_segments=_run_memorize_segments,
         run_consolidation_task=_run_consolidation_task,
         get_config=lambda: _CONFIG,
+        prepare_frozen_payload=_prepare_frozen_memorize,
     )
 
 
@@ -2373,6 +2372,60 @@ async def _run_memorize_segments(
 
 @app.post("/memorize", operation_id="memorize")
 async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool = False, tail: bool = False, rebuild: bool = False):
+    intent = payload.get("intent")
+    if intent is not None or "source_message_count" in payload:
+        if intent not in {"manual", "automatic", "publish_only"}:
+            raise HTTPException(status_code=400, detail="Invalid saved-source intent")
+        safe = _safe_payload(payload)
+        scope = _extract_scope(safe) or {}
+        uid, sid = str(scope.get("user_id") or ""), str(scope.get("soul_id") or "")
+        cid = _canonical_conversation_id(_extract_conversation_id(safe))
+        if not uid or not sid or _message_log.derive_source_label(cid) != "sillytavern":
+            raise HTTPException(status_code=400, detail="Saved ST publication requires a valid chat and Soul scope")
+        count, rows = safe.get("source_message_count"), safe.get("conversation")
+        if type(count) is not int or count < 0 or not isinstance(rows, list):
+            raise HTTPException(status_code=400, detail="Invalid saved ST source")
+        previous = -1
+        for row in rows:
+            index = row.get("source_conversation_index") if isinstance(row, dict) else None
+            if type(index) is not int or not previous < index < count:
+                raise HTTPException(status_code=400, detail="Saved ST positions must be ordered and within the source")
+            previous = index
+        db_path = _sqlite_current_path(uid, sid)
+        if db_path is None or not db_path.exists():
+            raise HTTPException(status_code=404, detail="Soul does not exist")
+        async with _get_memorize_lock(_memorize_lock_key(uid, sid)):
+            _conversation_sources.persist_sillytavern_history_snapshot(
+                storage_dir=_get_storage_dir(_CONFIG), user_id=uid, soul_id=sid,
+                conversation_id=cid, history=rows, chat_name=_pick_str(safe, "chat_name"),
+                source_message_count=count,
+            )
+            state, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=sid)
+            if not state.get("import_state"):
+                end = count - 1
+                updates = {}
+                if _effective_digest_cursor_from_row(state) > end:
+                    updates["digest_cursor"] = end
+                if state.get("rolling_summary_cursor_id") is not None and state["rolling_summary_cursor_id"] > end:
+                    updates["rolling_summary_cursor_id"] = end
+                if updates:
+                    _write_conversation_state(cid, user_id=uid, soul_id=sid, updates=updates)
+                marker = _memorize_lock_key(uid, sid)
+                active = _MEMORIZE_PROGRESS.get(marker, {}).get("_st_cursor_ceiling", {})
+                waiting = _FORCED_MEMORIZE_RECHECK.get(marker, {})
+                for bounds in (active, waiting.get("payload", {}).get("_st_cursor_ceiling", {})):
+                    if cid in bounds:
+                        bounds[cid]["ceiling"] = min(bounds[cid]["ceiling"], end)
+            if intent == "publish_only":
+                return {"ok": True, "status": "published"}
+            if intent == "automatic":
+                _tokens, capture = _prepare_auto_memorize(cid, uid, sid, safe, state, rows, dry_run=False)
+                if capture is None:
+                    imported = _soul_import_state(uid, sid)[1]
+                    return {"ok": True, "status": "waiting_for_import" if imported.get("ordinary_waiting") else "deferred"}
+                result = _schedule_auto_memorize(capture, _auto_memorize_scope(cid, uid, sid, safe, rows))
+                return {"ok": True, "status": "accepted" if result == "launched" else "coalesced"}
+        return await _memorize_owned(safe, background_tasks, force, tail=tail, rebuild=rebuild)
     return await _memorize_owned(payload, background_tasks, force, tail=tail, rebuild=rebuild)
 
 
@@ -2383,7 +2436,7 @@ async def _memorize_admitted(payload: dict[str, Any], background_tasks: Backgrou
 async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool,
                           *, tail: bool = False, rebuild: bool = False, admitted: bool = False, retry: bool = False,
                           historical: bool = False, batch_owned: bool = False, import_handoff: bool = False):
-    safe = _safe_payload(payload)
+    safe = _safe_payload(payload) if admitted else deepcopy(_safe_payload(payload))
     if not _extract_conversation_id(safe):
         raise HTTPException(status_code=400, detail="conversation_id is required")
     scope = _extract_scope(safe) or {}
@@ -2413,6 +2466,7 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
             if marker in _FORCED_MEMORIZE_INFLIGHT:
                 raise HTTPException(status_code=409, detail="Memorize is already running")
             _FORCED_MEMORIZE_INFLIGHT[marker] = historical
+    response = None
     try:
         if retry and not historical:
             failure = _paid_work_state(uid, sid).get("memorize_failure")
@@ -2433,14 +2487,34 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
         endpoint_ctx = _make_memorize_endpoint_context()
         if batch_owned:
             endpoint_ctx = replace(endpoint_ctx, run_memorize_segments=partial(_run_memorize_segments, batch_owned=True))
-        return await _memorize_endpoint.memorize_endpoint(
+        if not historical:
+            if safe.get("intent") == "manual" and not rebuild and not safe.get("_cross_memorize"):
+                state, _, _ = _load_turn_state_and_soul_card(_extract_conversation_id(safe), user_id=uid, soul_id=sid)
+                history = _normalize_conversation(safe.get("conversation") or [])
+                for index, row in enumerate(history):
+                    row.setdefault("source_conversation_index", index)
+                producing = safe.get("memorize_chat", state.get("memorize_chat", True)) is not False
+                cursor = (_effective_digest_cursor_from_row(state) if producing else
+                          int(state["rolling_summary_cursor_id"]) if state.get("rolling_summary_cursor_id") is not None else -1)
+                history = _conversation_sources.slice_tail_with_floor(history, since_cursor=cursor, recent_fallback_messages=0)
+                cross = _build_cross_conversation_payload(_extract_conversation_id(safe), uid, sid, safe, history, cursor,
+                                                        producing, strict_sources=True)
+                if cross is not None:
+                    safe = cross
+                else:
+                    _check_memorize_failure_targets(uid, sid)
+                    response = JSONResponse(content={"ok": True, "status": "nothing_to_memorize"})
+                    return response
+            _register_memorize_bounds(safe, marker)
+        response = await _memorize_endpoint.memorize_endpoint(
             safe, background_tasks, force, tail=tail, rebuild=rebuild,
             endpoint_ctx=endpoint_ctx,
             historical=historical,
         )
+        return response
     finally:
         if not batch_owned and not any(task.func is _run_memorize_segments for task in background_tasks.tasks):
-            await _finish_memorize_claim(marker, False)
+            await _finish_memorize_claim(marker, response is not None and response.status_code < 400)
 
 
 def _memorize_targets_complete(user_id: str, soul_id: str, targets: dict[str, Any]) -> bool:
@@ -2468,6 +2542,88 @@ def _memorize_targets_complete(user_id: str, soul_id: str, targets: dict[str, An
         return True
     finally:
         con.close()
+
+
+def _check_memorize_failure_targets(uid: str, sid: str) -> None:
+    failure = _paid_work_state(uid, sid).get("memorize_failure")
+    if failure and not _memorize_targets_complete(uid, sid, failure.get("targets") or {}):
+        raise HTTPException(status_code=409, detail="Saved source has not completed failed Memorize targets; Retry is still required")
+
+
+def _register_memorize_bounds(safe: dict[str, Any], marker: str, *, register: bool = True) -> None:
+    if "_st_cursor_ceiling" not in safe:
+        scope = _extract_scope(safe) or {}
+        uid, sid = str(scope.get("user_id") or ""), str(scope.get("soul_id") or "")
+        checkpoints = safe.get("_final_cursors") or {}
+        if not checkpoints:
+            cid = _extract_conversation_id(safe)
+            end = safe.get("source_message_count")
+            if type(end) is int:
+                checkpoints = {cid: {"cursor": end - 1}}
+        bounds = {}
+        for cid, checkpoint in checkpoints.items():
+            if _message_log.derive_source_label(cid) != "sillytavern":
+                continue
+            path = _conversation_sources._chat_snapshot_path(storage_dir=_get_storage_dir(_CONFIG),
+                user_id=uid, soul_id=sid, conversation_id=cid, source_label="sillytavern")
+            snapshot = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            count = snapshot.get("source_message_count")
+            end = count - 1 if type(count) is int else int(checkpoint["cursor"])
+            bounds[cid] = {"end": end, "ceiling": end}
+        safe["_st_cursor_ceiling"] = bounds
+    if register:
+        _MEMORIZE_PROGRESS.setdefault(marker, {})["_st_cursor_ceiling"] = safe["_st_cursor_ceiling"]
+
+
+def _prepare_frozen_memorize(safe: dict[str, Any], uid: str, sid: str) -> bool:
+    """Subtract fresh checkpoints without refreshing the captured conversation."""
+    grouped = {}
+    for row in safe.get("conversation") or []:
+        cid = str(row.get("source_conversation_id") or _extract_conversation_id(safe))
+        grouped.setdefault(cid, []).append(row)
+    retained, final = [], {}
+    _, hermes_home, _, _ = _resolve_cross_source_paths()
+    for cid, rows in grouped.items():
+        state, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=sid)
+        producing = (safe.get("_final_cursors", {}).get(cid) or {}).get("memory_producing", True)
+        prefix = "digest" if producing else "rolling_summary"
+        cursor = (_effective_digest_cursor_from_row(state) if producing else
+                  int(state["rolling_summary_cursor_id"]) if state.get("rolling_summary_cursor_id") is not None else -1)
+        cursor, floor, web = _resolve_source_cursor(cid, cursor, state.get(f"{prefix}_cursor_source_message_id"),
+            state.get(f"{prefix}_cursor_ts"), rolling=not producing, hermes_home_path=hermes_home)
+        if web:
+            for row in rows:
+                if int(row.get("source_conversation_index", 0)) < 0:
+                    continue
+                index = _resolve_web_source_checkpoint(cid, str(row.get("source_message_id") or ""))
+                if index is None:
+                    raise HTTPException(status_code=409, detail=f"Captured WhatsApp source is unavailable for {cid}")
+                row["source_conversation_index"] = index
+        if state.get("import_state") and not cid.startswith("import:dm:"):
+            cursor = max(cursor, state["import_state"]["history_end_index"] - 1)
+        context = [row for row in rows if int(row.get("source_conversation_index", 0)) < 0]
+        processing = [row for row in rows if int(row.get("source_conversation_index", 0)) >= 0]
+        tail = _conversation_sources.slice_tail_with_floor(processing, since_cursor=cursor, recent_fallback_messages=0)
+        if floor is not None:
+            tail = [row for row in tail if int(row.get("ts_ms") or 0) >= floor * 1000]
+        checkpoint = _source_cursor_checkpoint(tail, web_source=web)
+        if checkpoint:
+            final[cid] = {**checkpoint, "memory_producing": producing}
+            retained.extend(context + tail)
+    retained.sort(key=_cross_history.message_sort_key)
+    safe["conversation"] = retained
+    safe["_final_cursors"] = final
+    summaries = safe.get("_background_rolling_summaries") or {}
+    safe["_background_rolling_summaries"] = {cid: value for cid, value in summaries.items() if cid in final}
+    eligible = bool(final)
+    if eligible and safe.get("_automatic_memorize"):
+        cid = _extract_conversation_id(safe)
+        trigger = [row for row in retained if row.get("source_conversation_id") == cid and row.get("memorize_chat") is not False]
+        eligible = (_estimate_primary_memorize_tokens(retained) >= _MIN_CHUNK_TOKENS
+                    and _unmemorized_sleep_gap_detected(trigger, -1, safe, min_chunk_tokens=0))
+    if not eligible:
+        _check_memorize_failure_targets(uid, sid)
+    return eligible
 
 
 @app.post("/memorize/retry", operation_id="retry_memorize")
@@ -2529,7 +2685,8 @@ def _saved_memorize_payload(cid: str, user_id: str, soul_id: str, failure: dict 
     storage, hermes, sessions, channels = _resolve_cross_source_paths()
     memory_producing = (failure or {}).get("targets", {}).get(cid, {}).get("memory_producing", state.get("memorize_chat", True))
     prefix = "digest" if memory_producing else "rolling_summary"
-    saved_cursor = _effective_digest_cursor_from_row(state) if memory_producing else int(state.get("rolling_summary_cursor_id") or 0)
+    saved_cursor = (_effective_digest_cursor_from_row(state) if memory_producing else
+                    int(state["rolling_summary_cursor_id"]) if state.get("rolling_summary_cursor_id") is not None else -1)
     cursor, floor, web_source = _resolve_source_cursor(
         cid, saved_cursor, state.get(f"{prefix}_cursor_source_message_id"),
         state.get(f"{prefix}_cursor_ts"), rolling=not memory_producing, hermes_home_path=hermes,
@@ -2541,10 +2698,12 @@ def _saved_memorize_payload(cid: str, user_id: str, soul_id: str, failure: dict 
         import_state=state.get("import_state"),
     )
     payload = _build_cross_conversation_payload(
-        cid, user_id, soul_id, {"memorize_chat": state.get("memorize_chat", True)}, history,
-        saved_cursor, bool(state.get("memorize_chat", True)),
+        cid, user_id, soul_id, {"memorize_chat": memory_producing}, history,
+        saved_cursor, bool(memory_producing),
         trigger_web_source=web_source,
         strict_sources=True,
+        filing_policy={target_cid: target.get("memory_producing", True)
+                       for target_cid, target in (failure or {}).get("targets", {}).items()},
     )
     if payload is None:
         if not history and failure is None:
@@ -3086,20 +3245,6 @@ async def conversation_retrieve(
         state_row: dict[str, Any] | None = None
         cross_tail: list[dict[str, Any]] = []
         if uid and soul_id and retrieve_focus.strip():
-            if (
-                _message_log.derive_source_label(cid) == "sillytavern"
-                and history
-                and message.strip()
-                and not bool(safe.get("_read_only_retrieve", False))
-            ):
-                _conversation_sources.persist_sillytavern_history_snapshot(
-                    storage_dir=_get_storage_dir(_CONFIG),
-                    user_id=uid,
-                    soul_id=soul_id,
-                    conversation_id=cid,
-                    history=history,
-                    chat_name=_pick_str(safe, "chat_name") or None,
-                )
             state_row, _, _db_path = _load_turn_state_and_soul_card(
                 cid,
                 user_id=uid,
@@ -3365,6 +3510,7 @@ def _build_cross_conversation_payload(
     trigger_memorize_default: bool = True,
     trigger_web_source: bool = False,
     strict_sources: bool = False,
+    filing_policy: dict[str, bool] | None = None,
 ) -> dict[str, Any] | None:
     """Merge unmemorized tails from all conversations into one memorize payload."""
     db_path = _sqlite_current_path(uid, soul_id)
@@ -3409,6 +3555,7 @@ def _build_cross_conversation_payload(
             soul_id=soul_id,
             exclude_conversation_id=cid,
             strict=strict_sources,
+            **({"filing_policy": filing_policy} if filing_policy else {}),
         )
         rolling_summaries = _read_background_rolling_summaries_from_conversations(
             con,
@@ -3580,7 +3727,9 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         "retry_operation": retry_operation, "consolidation_running": consolidation_running,
         "memorize_failure": memory_failure, "memorize_running": memory_running,
         "import_running": _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, sid)) is True,
-        "progress": _MEMORIZE_PROGRESS.get(_memorize_lock_key(uid, sid), {}),
+        "progress": _memorize_endpoint.memorize_progress_endpoint(
+            uid, sid, memorize_lock_key=_memorize_lock_key, memorize_progress=_MEMORIZE_PROGRESS,
+        ),
         "summed_unmemorized_tokens": summed,
         "threshold": threshold,
         "pct": round(summed * 100 / threshold) if threshold else 0,
@@ -3611,6 +3760,7 @@ def _prepare_auto_memorize(
     history_full: list[dict[str, Any]],
     *,
     dry_run: bool,
+    capture: bool = True,
 ) -> tuple[int, dict[str, Any] | None]:
     if _soul_activity_pause(uid, soul_id, conversation_state):
         return 0, None
@@ -3649,6 +3799,8 @@ def _prepare_auto_memorize(
         return unmemorized_tokens, None
     if (safe.get("memorize_chat") is not False and unmemorized_tokens >= _MIN_CHUNK_TOKENS
             and _defer_memorize_for_import(cid, uid, soul_id)):
+        return unmemorized_tokens, None
+    if not capture:
         return unmemorized_tokens, None
     try:
         payload = _build_cross_conversation_payload(
@@ -3698,8 +3850,6 @@ def _auto_memorize_scope(
         "conversation_id": cid,
         "user_id": uid,
         "soul_id": soul_id,
-        "safe": safe,
-        "history_full": history_full,
     }
 
 
@@ -3707,29 +3857,23 @@ async def _finish_memorize_claim(marker: str, success: bool) -> None:
     with _STATE_LOCK:
         historical = _FORCED_MEMORIZE_INFLIGHT.pop(marker, None) is True
         recheck = _FORCED_MEMORIZE_RECHECK.pop(marker, None)
-    if historical or not success or recheck is None:
-        return
-
-    cid = str(recheck["conversation_id"])
-    uid = str(recheck["user_id"])
-    soul_id = str(recheck["soul_id"])
-    safe = dict(recheck["safe"])
-    history_full = list(recheck["history_full"])
-    async with _get_memorize_lock(marker):
-        conversation_state, _soul_card, _db_path = _load_turn_state_and_soul_card(
-            cid, user_id=uid, soul_id=soul_id
-        )
-        _tokens, next_payload = _prepare_auto_memorize(
-            cid,
-            uid,
-            soul_id,
-            safe,
-            conversation_state,
-            history_full,
-            dry_run=False,
-        )
-    if next_payload is not None:
-        _schedule_auto_memorize(next_payload, recheck)
+        progress = _MEMORIZE_PROGRESS.get(marker, {})
+        bounds = progress.pop("_st_cursor_ceiling", {})
+        processed = progress.pop("_processed_rows", [])
+        if historical or not success or recheck is None:
+            return
+        payload = recheck["payload"]
+        rewound = {cid for cid in recheck["pre_rewind"]
+                   if cid in bounds and bounds[cid]["ceiling"] < bounds[cid]["end"]}
+        if rewound:
+            def identity(row):
+                return tuple(row.get(key) for key in ("source_conversation_id", "source_conversation_index",
+                    "content", "ts_ms", "role", "name", "memorize_chat"))
+            committed = {identity(row) for row in processed if row.get("source_conversation_id") in rewound}
+            payload["conversation"] = [row for row in payload.get("conversation", [])
+                                       if row.get("source_conversation_id") not in rewound or identity(row) not in committed]
+    # Re-admit without an await gap, but do not reacquire the non-reentrant lock inside itself.
+    _schedule_auto_memorize(payload, recheck["scope"])
 
 
 def _defer_memorize_for_import(cid: str, uid: str, soul_id: str) -> bool:
@@ -3746,17 +3890,22 @@ def _schedule_auto_memorize(
     payload: dict[str, Any], scope: dict[str, Any]
 ) -> Literal["launched", "coalesced"]:
     marker = _memorize_lock_key(str(scope["user_id"]), str(scope["soul_id"]))
+    payload = deepcopy(payload)
+    payload["_automatic_memorize"] = True
+    _register_memorize_bounds(payload, marker, register=False)
     with _STATE_LOCK:
         if _defer_memorize_for_import(str(scope["conversation_id"]), str(scope["user_id"]), str(scope["soul_id"])):
             return "coalesced"
         if marker in _FORCED_MEMORIZE_INFLIGHT:
+            active = _MEMORIZE_PROGRESS.get(marker, {}).get("_st_cursor_ceiling", {})
             _FORCED_MEMORIZE_RECHECK[marker] = {
-                **scope,
-                "safe": dict(scope["safe"]),
-                "history_full": [dict(row) for row in scope["history_full"]],
+                "payload": payload, "scope": dict(scope),
+                "pre_rewind": [cid for cid, bound in active.items() if bound["ceiling"] == bound["end"]],
             }
             return "coalesced"
         _FORCED_MEMORIZE_INFLIGHT[marker] = False
+        _register_memorize_bounds(payload, marker)
+        _memorize_endpoint._set_memorize_progress(_MEMORIZE_PROGRESS, marker, active=True, phase="accepted", current=0, total=1)
     try:
         task = asyncio.create_task(_run_forced_memorize_from_turn(payload))
     except Exception:
@@ -3798,6 +3947,7 @@ def _turn_state_read(
         conversation_state,
         history_full,
         dry_run=dry_run,
+        capture=False,
     )
     return (
         conversation_state,
@@ -4154,18 +4304,6 @@ async def conversation_turn(
                     "conversation_turn: missing chat_name for respond; continuing without chat label"
                 )
 
-        if not dry_run:
-            _persist_completed_sillytavern_turn_snapshot(
-                safe=safe,
-                history=history_full,
-                conversation_id=cid,
-                user_id=uid,
-                soul_id=soul_id,
-                message=message,
-                response_text=response_text,
-                response_target=response_target,
-            )
-
         if attachment and not dry_run:
             if response_target in {"respond", "private"} and cid.startswith("whatsapp:"):
                 out_id = _insert_whatsapp_outbound(
@@ -4194,6 +4332,12 @@ async def conversation_turn(
                 )
 
         forced_memorize_scheduled = False
+        if not dry_run and _message_log.derive_source_label(cid) != "sillytavern":
+            async with _get_memorize_lock(_memorize_lock_key(uid, soul_id)):
+                state, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
+                _tokens, queued_memorize_payload = _prepare_auto_memorize(
+                    cid, uid, soul_id, safe, state, history_full, dry_run=False,
+                )
         if queued_memorize_payload is not None:
             forced_memorize_scheduled = (
                 _schedule_auto_memorize(

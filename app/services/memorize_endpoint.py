@@ -12,6 +12,7 @@ from typing import Any, TypedDict
 
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
+from sqlalchemy import event
 
 from app.config import validate_soul_id
 from app.services.conversation_id import canonical_conversation_id
@@ -143,7 +144,7 @@ def _cursor_updates_for_unit(
     updates: dict[str, Any] = {}
     if cursor is not None:
         prefix = "digest" if memory_producing else "rolling_summary"
-        updates[f"{prefix}_cursor" if memory_producing else "rolling_summary_cursor_id"] = max(0, cursor)
+        updates[f"{prefix}_cursor" if memory_producing else "rolling_summary_cursor_id"] = max(-1, cursor)
         updates[f"{prefix}_cursor_source_message_id"] = source_message_id or None
         updates[f"{prefix}_cursor_ts"] = int(source_ts) if source_message_id and source_ts is not None else None
     if memory_producing:
@@ -198,6 +199,7 @@ class MemorizeEndpointContext:
     run_memorize_segments: Callable[..., Awaitable[bool]]
     run_consolidation_task: Callable[..., Awaitable[dict[str, Any]]]
     get_config: Callable[[], dict[str, Any]]
+    prepare_frozen_payload: Callable[[dict[str, Any], str, str], bool] | None = None
 
 
 def _segment_display_ranges(
@@ -237,6 +239,10 @@ def _set_memorize_progress(
     error: str | None = None,
 ) -> None:
     row: dict[str, Any] = {"active": bool(active)}
+    previous = memorize_progress.get(key, {})
+    for private in ("_st_cursor_ceiling", "_processed_rows"):
+        if private in previous:
+            row[private] = previous[private]
     if phase:
         row["phase"] = str(phase)
     if current is not None:
@@ -346,6 +352,7 @@ async def run_memorize_segments(
     rolling_summaries: dict[str, dict[str, Any]] = (
         rolling_summaries_raw if not historical and isinstance(rolling_summaries_raw, dict) else {}
     )
+    cursor_ceilings = safe.get("_st_cursor_ceiling", {}) if not historical else {}
     run_started_at = datetime.now(UTC).isoformat()
     segment_jobs: list[SegmentMemorizeJob] = []
     def release_uncommitted():
@@ -543,15 +550,20 @@ async def run_memorize_segments(
                     )) or {}
                     producing = job["memory_producing"]
                     field = "digest_cursor" if producing else "rolling_summary_cursor_id"
-                    cursor = fresh["import_state"]["memorize_cursor"] if historical else int(fresh.get(field) or 0)
-                    processed_end_cursor = max(cursor, job["segment_end_index"])
+                    cursor = (fresh["import_state"]["memorize_cursor"] if historical else
+                              effective_digest_cursor_from_row(fresh or None) if producing else
+                              int(fresh[field]) if fresh.get(field) is not None else -1)
+                    end_cursor = job["segment_end_index"]
+                    if conversation_id in cursor_ceilings:
+                        end_cursor = min(end_cursor, cursor_ceilings[conversation_id]["ceiling"])
+                    processed_end_cursor = max(cursor, end_cursor)
                     if historical:
                         updates = {"import_memorize_cursor": processed_end_cursor,
                                    "append_import_pending_segment_ids": ids}
                     else:
                         updates = _cursor_updates_for_unit(
                             memory_producing=producing,
-                            cursor=processed_end_cursor if cursor <= job["segment_end_index"] else None,
+                            cursor=processed_end_cursor if cursor <= end_cursor else None,
                             now_iso=now_iso, pending_segment_ids=ids,
                         )
                     ctx.write_conversation_state(conversation_id, user_id=uid, soul_id=soul_id,
@@ -568,11 +580,11 @@ async def run_memorize_segments(
                     producing = checkpoint["memory_producing"]
                     source_id = str(checkpoint.get("source_message_id") or "").strip()
                     source_ts = checkpoint.get("ts")
-                    cursor = max(0, int(checkpoint["cursor"]))
+                    cursor = max(-1, int(checkpoint["cursor"]))
+                    fresh = conversation_state_from_row(conversation_state_row(
+                        con, cid, user_id=uid, soul_id=soul_id,
+                    )) or {}
                     if cid in prepared_positions:
-                        fresh = conversation_state_from_row(conversation_state_row(
-                            con, cid, user_id=uid, soul_id=soul_id,
-                        )) or {}
                         payload_position, saved_id, saved_position = prepared_positions[cid]
                         prefix = "digest" if producing else "rolling_summary"
                         if str(fresh.get(f"{prefix}_cursor_source_message_id") or "").strip() != saved_id:
@@ -582,6 +594,14 @@ async def run_memorize_segments(
                                           else (-1 if producing else 0) if saved_id
                                           else int(fresh.get(field) or 0))
                         cursor = payload_position if payload_position > fresh_position else None
+                    else:
+                        if cid in cursor_ceilings:
+                            cursor = min(cursor, cursor_ceilings[cid]["ceiling"])
+                        field = "digest_cursor" if producing else "rolling_summary_cursor_id"
+                        fresh_cursor = (effective_digest_cursor_from_row(fresh or None) if producing else
+                                        int(fresh[field]) if fresh.get(field) is not None else -1)
+                        if cursor < fresh_cursor:
+                            cursor = None
                     updates = _cursor_updates_for_unit(
                         memory_producing=producing, cursor=cursor, now_iso=now_iso,
                         source_message_id=source_id, source_ts=source_ts,
@@ -596,10 +616,22 @@ async def run_memorize_segments(
                         ctx.write_conversation_state(cid, user_id=uid, soul_id=soul_id,
                                                      updates=updates, connection=con)
                 for cid in job["consumed_background_summary_ids"]:
+                    fresh = conversation_state_from_row(conversation_state_row(
+                        con, cid, user_id=uid, soul_id=soul_id,
+                    )) or {}
+                    captured = rolling_summaries[cid]
+                    if (fresh.get("rolling_summary") != captured.get("summary")
+                            or fresh.get("rolling_summary_updated_at") != captured.get("updated_at")):
+                        continue
                     ctx.write_conversation_state(
                         cid, user_id=uid, soul_id=soul_id, connection=con,
                         updates={"rolling_summary": None, "rolling_summary_updated_at": None},
                     )
+                if not historical:
+                    # Publication runs before commit; rolled-back rows must not prune waiting work.
+                    event.listen(session, "after_commit", lambda _session: ctx.memorize_progress.setdefault(
+                        progress_key, {}
+                    ).setdefault("_processed_rows", []).extend(job["segment_messages"]), once=True)
             finally:
                 con.row_factory = previous_factory
 
@@ -1184,25 +1216,31 @@ async def memorize_endpoint(
             raise HTTPException(status_code=400, detail="Missing user.soul_id for per-soul DBs")
         scope = {**scope, "soul_id": soul_id}
 
-        conversation = safe.get("conversation")
-        if conversation is None:
-            conversation = safe.get("content")
-        if not isinstance(conversation, list) or not conversation:
-            raise HTTPException(status_code=400, detail="Missing or empty 'conversation' list")
-
-        indexed_source = not is_cross and any(
-            isinstance(message, dict) and "source_conversation_index" in message for message in conversation
-        )
-        if not is_cross:
-            conversation = [
-                {**message, "source_conversation_index": message.get("source_conversation_index", index)}
-                for index, message in enumerate(conversation) if isinstance(message, dict)
-            ]
-        conv_norm = endpoint_ctx.normalize_conversation(conversation)
-
         # scope is validated dict with non-empty soul_id above; no need to re-guard.
         uid = str(scope["user_id"])
         async with ctx.get_memorize_lock(ctx.memorize_lock_key(uid, soul_id)):
+            if not historical and is_cross and endpoint_ctx.prepare_frozen_payload is not None:
+                if not endpoint_ctx.prepare_frozen_payload(safe, uid, soul_id):
+                    status = "deferred" if safe.get("_automatic_memorize") else "nothing_to_memorize"
+                    _set_memorize_progress(ctx.memorize_progress, ctx.memorize_lock_key(uid, soul_id),
+                                           active=False, last_result=status)
+                    return JSONResponse(status_code=200, content={
+                        "ok": True, "status": status, "conversation_id": conversation_id,
+                    })
+            conversation = safe.get("conversation")
+            if conversation is None:
+                conversation = safe.get("content")
+            if not isinstance(conversation, list) or not conversation:
+                raise HTTPException(status_code=400, detail="Missing or empty 'conversation' list")
+            indexed_source = not is_cross and any(
+                isinstance(message, dict) and "source_conversation_index" in message for message in conversation
+            )
+            if not is_cross:
+                conversation = [
+                    {**message, "source_conversation_index": message.get("source_conversation_index", index)}
+                    for index, message in enumerate(conversation) if isinstance(message, dict)
+                ]
+            conv_norm = endpoint_ctx.normalize_conversation(conversation)
             if rebuild:
                 if (uid, soul_id) in endpoint_ctx.consolidation_running:
                     raise HTTPException(status_code=409, detail="cannot rebuild during consolidation")
@@ -1397,7 +1435,7 @@ async def memorize_endpoint(
                         continue
                     raw_memorize_segments.append((resource_url, seg_messages, effective_start, seg_end))
 
-            if force and not tail and not is_cross and not raw_memorize_segments:
+            if force and not tail and not is_cross and (rebuild or not raw_memorize_segments):
                 if isinstance(merged, list) and merged:
                     force_start = max(0, processed_cursor + 1)
                     if force_start < len(merged):
@@ -1527,6 +1565,8 @@ def memorize_progress_endpoint(
     if progress is None:
         return {"active": False}
     out = dict(progress)
+    out.pop("_st_cursor_ceiling", None)
+    out.pop("_processed_rows", None)
     out["active"] = bool(out.get("active", False))
     return out
 
