@@ -640,7 +640,7 @@ def _format_cross_tail_for_ai(cross_tail: list[dict[str, Any]], *, soul_id: str)
     ]
     activity_text = _message_log.format_merged_history(activity_tail, soul_name=soul_id) if activity_tail else ""
     chat_text = _message_log.format_merged_history(chat_tail, soul_name=soul_id) if chat_tail else ""
-    return "\n\n".join(part for part in (activity_text, chat_text) if part).strip()
+    return "\n\n".join(part for part in (activity_text, chat_text) if part)
 
 
 def _format_all_chat_history_for_ai(
@@ -682,14 +682,15 @@ def _format_all_chat_history_for_ai(
         ))
         if len(selected_sources) > 1:
             return _m()._format_cross_tail_for_ai(merged, soul_id=soul_id)
+        if selected_sources:
+            conversation_id = next(iter(selected_sources))
         history_rows = [row for row in merged if row["conversation_id"] in selected_sources]
         cross_tail = [row for row in merged if row["conversation_id"] not in selected_sources]
-    cross_text = _m()._format_cross_tail_for_ai(cross_tail or [], soul_id=soul_id) if cross_tail else ""
     if not history_rows:
         if current_user_text or self_turn_directive:
             return _m()._build_conversations_block(
                 history=[],
-                cross_conversation_history=cross_text,
+                cross_conversation_history=cross_tail,
                 conversation_id=conversation_id,
                 chat_label=chat_label,
                 soul_name=soul_id,
@@ -698,10 +699,10 @@ def _format_all_chat_history_for_ai(
                 self_turn_directive=self_turn_directive,
                 mark_current_chat=mark_current_chat,
             )
-        return cross_text
+        return _m()._format_cross_tail_for_ai(cross_tail or [], soul_id=soul_id)
     return _m()._build_conversations_block(
         history=history_rows,
-        cross_conversation_history=cross_text,
+        cross_conversation_history=cross_tail,
         conversation_id=conversation_id,
         chat_label=chat_label or _m()._chat_label_from_history(history_rows, conversation_id),
         soul_name=soul_id,

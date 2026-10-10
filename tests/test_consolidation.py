@@ -156,6 +156,13 @@ def _inputs() -> dict:
     }
 
 
+def test_consolidation_keeps_rendered_chat_whitespace() -> None:
+    inputs = _inputs()
+    inputs["all_chat_history"] = "My SillyTavern Conversations:\n\n[dm][fictional]\n[TestOwner]  START\n[x][y]\n END  \n\n"
+    context = consolidation._build_consolidation_prompt_context(inputs, soul_id="TestSoul")
+    assert context["conversation_history"] == inputs["all_chat_history"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("due_ids", [("first",), ("first", "second"), ("first", "second", "third")])
 async def test_dossier_context_uses_one_holistic_call_and_preserves_due_order(due_ids) -> None:

@@ -17,7 +17,6 @@ from app.services.payload import strip_markdown_code_fence
 from memu.utils.conversation import (
     _conversation_heading,
     _conversation_kind_and_key,
-    _conversation_section_title,
     format_relative_time_label,
 )
 
@@ -186,100 +185,10 @@ def _current_chat_rows_for_grouped_render(
     return rows
 
 
-def _label_current_chat_block(
-    block: str,
-    *,
-    chat_label: str | None,
-    mark_current_chat: bool,
-) -> str:
-    lines = block.splitlines()
-    for idx, line in enumerate(lines):
-        if not _text(line):
-            continue
-        heading = _text(chat_label) or line
-        lines[idx] = _append_current_chat_marker(heading) if mark_current_chat else heading
-        return "\n".join(lines).strip()
-    return block.strip()
-
-
-def _resolve_current_chat_heading_from_grouped_renderer(
-    *,
-    chat_label: str | None,
-    conversation_id: str | None,
-    soul_name: str | None,
-    mark_current_chat: bool = True,
-) -> str:
-    explicit = _text(chat_label)
-    if explicit:
-        return _append_current_chat_marker(explicit) if mark_current_chat else explicit
-    cid = _text(conversation_id)
-    if not cid:
-        return resolve_current_chat_heading(chat_label, conversation_id, mark_current_chat=mark_current_chat)
-    rendered = _message_log.format_merged_history(
-        [{"conversation_id": cid, "role": "system", "content": "__memu_heading_probe__"}],
-        soul_name=soul_name,
-    )
-    sections = _split_markdown_sections(rendered)
-    if sections:
-        _section_header, section_lines = sections[-1]
-        blocks = _split_conversation_blocks(section_lines)
-        current_block = blocks[-1] if blocks else "\n".join(section_lines).strip()
-        for line in current_block.splitlines():
-            heading = _text(line)
-            if heading and "__memu_heading_probe__" not in heading:
-                return _append_current_chat_marker(heading) if mark_current_chat else heading
-    return resolve_current_chat_heading(chat_label, conversation_id, mark_current_chat=mark_current_chat)
-
-
-def _render_current_chat_block(
-    history: list[dict[str, Any]],
-    *,
-    conversation_id: str | None,
-    chat_label: str | None,
-    soul_name: str | None,
-    mark_current_chat: bool = True,
-) -> tuple[str, str]:
-    rows = _current_chat_rows_for_grouped_render(history, conversation_id=conversation_id)
-    if mark_current_chat and conversation_id:
-        rows = [row for row in rows if row.get("conversation_id") == conversation_id]
-    if not rows:
-        heading = _resolve_current_chat_heading_from_grouped_renderer(
-            chat_label=chat_label,
-            conversation_id=conversation_id,
-            soul_name=soul_name,
-            mark_current_chat=mark_current_chat,
-        )
-        return _section_title_from_conversation_id(conversation_id), "\n".join(
-            part for part in (heading, "(none)") if part
-        )
-
-    rendered = _message_log.format_merged_history(rows, soul_name=soul_name)
-    sections = _split_markdown_sections(rendered)
-    if not sections:
-        heading = _resolve_current_chat_heading_from_grouped_renderer(
-            chat_label=chat_label,
-            conversation_id=conversation_id,
-            soul_name=soul_name,
-            mark_current_chat=mark_current_chat,
-        )
-        return _section_title_from_conversation_id(conversation_id), "\n".join(
-            part for part in (heading, rendered) if part
-        )
-
-    section_header, section_lines = sections[-1]
-    blocks = _split_conversation_blocks(section_lines)
-    current_block = blocks[-1] if blocks else "\n".join(section_lines).strip()
-    return section_header, _label_current_chat_block(
-        current_block,
-        chat_label=chat_label,
-        mark_current_chat=mark_current_chat,
-    )
-
-
 def build_conversations_block(
     *,
     history: list[dict[str, Any]],
-    cross_conversation_history: str | None = None,
+    cross_conversation_history: list[dict[str, Any]] | None = None,
     conversation_id: str | None = None,
     chat_label: str | None = None,
     soul_name: str | None = None,
@@ -309,20 +218,22 @@ def build_conversations_block(
         isinstance(item, dict) and bool(_text(item.get("content")))
         for item in history_for_render
     )
+    cross_rows = cross_conversation_history or []
     if not has_current_history and not directive_text:
-        return str(cross_conversation_history or "").strip()
+        return _message_log.format_merged_history(cross_rows, soul_name=soul_name)
 
-    current_section_header, current_chat_block = _render_current_chat_block(
-        history_for_render,
-        conversation_id=conversation_id,
-        chat_label=chat_label,
-        soul_name=soul_name,
+    rows = _current_chat_rows_for_grouped_render(history_for_render, conversation_id=conversation_id)
+    cid = _text(conversation_id) or (rows[-1].get("conversation_id") if rows else None) or "sillytavern"
+    for row in rows:
+        if not row.get("conversation_id"):
+            row["conversation_id"] = cid
+    if mark_current_chat:
+        rows = [row for row in rows if row["conversation_id"] == cid]
+    return _message_log.format_merged_history(
+        [*cross_rows, *rows], soul_name=soul_name,
+        current_conversation_id=cid,
+        current_chat_label=chat_label,
         mark_current_chat=mark_current_chat,
-    )
-    return _merge_current_into_conversations(
-        cross_conversation_history,
-        current_chat_block,
-        current_section_header,
     )
 
 
@@ -615,11 +526,6 @@ def _dedupe_prior_context(prior_context: str | None, blocked_terms: set[str]) ->
     return "\n".join(kept)
 
 
-def _section_title_from_conversation_id(conversation_id: str | None) -> str:
-    kind, _key = _conversation_kind_and_key(_text(conversation_id))
-    return _conversation_section_title(kind)
-
-
 def _conversation_heading_from_conversation_id(conversation_id: str | None) -> str:
     return _conversation_heading(*_conversation_kind_and_key(_text(conversation_id)))
 
@@ -643,98 +549,6 @@ def _append_current_chat_marker(heading: str) -> str:
     return f"{text} \u2190 current chat"
 
 
-def _split_markdown_sections(text: str) -> list[tuple[str, list[str]]]:
-    raw = _text(text)
-    if not raw:
-        return []
-    sections: list[tuple[str, list[str]]] = []
-    current_header: str | None = None
-    current_lines: list[str] = []
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if stripped == "My Activities:" or (
-            stripped.startswith("My ") and stripped.endswith(("Conversation:", "Conversations:"))
-        ):
-            if current_header is not None:
-                sections.append((current_header, current_lines))
-            current_header = stripped
-            current_lines = []
-            continue
-        if current_header is None:
-            continue
-        current_lines.append(line)
-    if current_header is not None:
-        sections.append((current_header, current_lines))
-    return sections
-
-
-def _split_conversation_blocks(lines: list[str]) -> list[str]:
-    blocks: list[str] = []
-    current: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            if current:
-                current.append("")
-            continue
-        if re.match(r"^\[[^\]]+\]\[[^\]]+\]", stripped) and current:
-            block = "\n".join(current).strip()
-            if block:
-                blocks.append(block)
-            current = [stripped]
-            continue
-        current.append(stripped)
-    block = "\n".join(current).strip()
-    if block:
-        blocks.append(block)
-    return blocks
-
-
-def _merge_current_into_conversations(
-    cross_conversation_text: str | None,
-    current_chat_block: str,
-    current_section_header: str,
-) -> str:
-    current_block = _text(current_chat_block)
-    cross_raw = _text(cross_conversation_text)
-    if not current_block:
-        return cross_raw
-
-    sections = _split_markdown_sections(cross_raw)
-    merged_map: dict[str, list[str]] = {}
-    order: list[str] = []
-    for header, body_lines in sections:
-        blocks = _split_conversation_blocks(body_lines)
-        if not blocks:
-            continue
-        if header not in merged_map:
-            merged_map[header] = []
-            order.append(header)
-        merged_map[header].extend(blocks)
-
-    if current_section_header not in merged_map:
-        merged_map[current_section_header] = []
-        order.append(current_section_header)
-    merged_map[current_section_header].append(current_block)
-
-    # Current chat includes the newest message being answered, so keep its
-    # platform section last for chronological read flow.
-    if current_section_header in order:
-        order = [h for h in order if h != current_section_header] + [current_section_header]
-
-    out_lines: list[str] = []
-    for idx, header in enumerate(order):
-        blocks = merged_map.get(header) or []
-        if not blocks:
-            continue
-        if idx > 0 and out_lines:
-            out_lines.append("")
-        out_lines.append(header)
-        out_lines.append("")
-        out_lines.append("\n\n".join(blocks))
-    return "\n".join(out_lines).strip()
-
-
 def build_turn_context_block(
     *,
     history: list[dict[str, Any]] | None,
@@ -744,7 +558,7 @@ def build_turn_context_block(
     memory_cache: Any,
     intentions_active: Any,
     apimw_message_to_self: str | None = None,
-    cross_conversation_history: str | None = None,
+    cross_conversation_history: list[dict[str, Any]] | None = None,
     conversations_block: str | None = None,
     chat_label: str | None = None,
     conversation_id: str | None = None,
@@ -804,7 +618,7 @@ def build_turn_context_block(
     # history → current turn → working thoughts/intentions → full new message.
     current_text = _text(current_user_text)
     directive_text = _text(self_turn_directive)
-    rendered_conversations_block = _text(conversations_block)
+    rendered_conversations_block = str(conversations_block or "")
     if not rendered_conversations_block:
         rendered_conversations_block = build_conversations_block(
             history=history or [],
@@ -845,7 +659,7 @@ def build_turn_prompt(
     memory_cache: Any,
     intentions_active: Any,
     apimw_message_to_self: str | None = None,
-    cross_conversation_history: str | None = None,
+    cross_conversation_history: list[dict[str, Any]] | None = None,
     conversations_block: str | None = None,
     chat_label: str | None = None,
     conversation_id: str | None = None,

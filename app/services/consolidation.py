@@ -732,7 +732,7 @@ def _build_consolidation_prompt_context(
         "narrative_self": narrative or "(none)",
         "life_goals": life_goals_text,
         "prior_context_memory_items": prior_context_text,
-        "conversation_history": str(inputs.get("all_chat_history") or "").strip() or "(none)",
+        "conversation_history": str(inputs.get("all_chat_history") or "") or "(none)",
         "segment_memory_items": segment_memory_items_text,
         "existing_memory_edges": existing_edges,
         "id_map": id_map,

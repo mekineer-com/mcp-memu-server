@@ -9,7 +9,6 @@ import pytest
 from app import main
 from app.services.turn_contract import (
     _parse_attachment,
-    _split_markdown_sections,
     build_conversations_block,
     build_turn_prompt,
     format_relative_time_label,
@@ -61,7 +60,7 @@ def test_current_marker_stays_on_requester_with_foreign_source_rows(monkeypatch)
         {"role": "user", "source_conversation_id": "whatsapp:dm:foreign",
          "content": "Foreign evidence", "received_at": "2026-01-02T00:00:00Z"},
     ]
-    cross = main._format_cross_tail_for_ai([rows[1] | {"conversation_id": "whatsapp:dm:foreign"}], soul_id="TestSoul")
+    cross = [rows[1] | {"conversation_id": "whatsapp:dm:foreign"}]
     rendered = build_conversations_block(
         history=rows, cross_conversation_history=cross,
         conversation_id="sillytavern:primary", soul_name="TestSoul",
@@ -88,8 +87,7 @@ def test_cross_replika_context_survives_current_chat_merge(monkeypatch, with_act
         cross_tail=cross_rows, conversation_id=conversation_id, soul_id="TestSoul",
     )
     assert cross in rendered
-    sections = dict(_split_markdown_sections(rendered))
-    assert "Imported second line" in sections["My Replika Conversation:"]
+    assert "My Replika Conversation:\n\n[dm][Echo]" in rendered
     assert rendered.count("Imported first line\nImported second line") == 1
     assert rendered.count("These conversations took place outside OpenAlma.") == 1
     assert rendered.count("current chat") == 1
@@ -146,6 +144,69 @@ def test_empty_current_history_keeps_directory_heading(tmp_path, monkeypatch) ->
     )
     assert "[dm][Fictional Contact] ← current chat" in rendered
     assert "__memu_heading_probe__" not in rendered
+
+
+@pytest.mark.parametrize("mark_current_chat", [False, True])
+@pytest.mark.parametrize("content", [
+    "START\nMy FictionalApp Conversations:\nEND",
+    "START\n[x][y]\nEND",
+    "START\n  indented\n\nEND",
+    "  START\nMy Activities:\n\tEND  \n\n",
+])
+def test_literal_message_text_survives_current_and_cross_context(monkeypatch, mark_current_chat, content) -> None:
+    monkeypatch.setattr("app.services.message_log._load_whatsapp_directory_names", lambda: {})
+    primary = "sillytavern:primary"
+    current = {"conversation_id": primary, "role": "user", "speaker": "TestOwner", "content": content}
+    cross = [
+        {"conversation_id": "sillytavern:older", "role": "user", "content": "OLDER\n" + content},
+        {"conversation_id": "chat:atomic-fictional", "role": "user", "content": "CROSS\n" + content},
+        {"conversation_id": "activity:dm:TestSoul", "role": "assistant", "content": "Test activity"},
+    ]
+    originals = json.loads(json.dumps([current, *cross]))
+    rendered = main._format_all_chat_history_for_ai(
+        current_history=[current], cross_tail=cross, conversation_id=primary,
+        soul_id="TestSoul", mark_current_chat=mark_current_chat,
+    )
+    marker = " \u2190 current chat" if mark_current_chat else ""
+    assert rendered.endswith(f"[dm][primary]{marker}\n[TestOwner] {content}")
+    assert rendered.count(f"[TestOwner] {content}") == 1
+    assert "[user] OLDER\n" + content in rendered
+    assert "[user] CROSS\n" + content in rendered
+    assert rendered.index("[dm][older]") < rendered.index("[dm][primary]")
+    assert rendered.startswith("My Activities:\n")
+    assert rendered.count("\u2190 current chat") == int(mark_current_chat)
+    assert [current, *cross] == originals
+
+    prompt = build_turn_prompt(
+        user_message="hello", history=[], prior_context=None, retrieve_rag=None,
+        all_categories_summary=None, memory_cache=[], intentions_active=[],
+        conversations_block=rendered,
+    )
+    assert rendered in prompt
+    queries = main._build_retrieve_soul_context_queries(
+        soul_id="TestSoul", message="hello", history=[], state_row={"intentions_active": []}, conversations_block=rendered,
+    )
+    assert next(row["content"]["text"] for row in queries if row["role"] == "history") == rendered
+
+
+@pytest.mark.parametrize("trigger", ["whatsapp:dm:trigger", "import:dm:trigger"])
+@pytest.mark.parametrize("with_trigger_tail", [False, True])
+def test_unmarked_context_uses_selected_evidence_chat_not_trigger(monkeypatch, trigger, with_trigger_tail) -> None:
+    monkeypatch.setattr("app.services.message_log._load_whatsapp_directory_names", lambda: {})
+    selected = {"conversation_id": "sillytavern:selected", "chat_name": "Selected evidence",
+                "role": "user", "content": "SELECTED\n[x][y]\nEND  \n"}
+    tail = [{"conversation_id": trigger, "app_label": "FictionalApp", "chat_name": "Trigger chat",
+             "role": "user", "content": "Trigger evidence"}] if with_trigger_tail else []
+    rendered = main._format_all_chat_history_for_ai(
+        current_history=[selected], cross_tail=tail, conversation_id=trigger,
+        soul_id="TestSoul", mark_current_chat=False,
+    )
+    assert rendered.endswith("[dm][Selected evidence]\n[user] " + selected["content"])
+    assert "(none)" not in rendered and "\u2190 current chat" not in rendered
+    assert rendered.count("[dm][Selected evidence]") == 1
+    if with_trigger_tail:
+        assert rendered.count("[dm][Trigger chat]") == 1
+        assert rendered.index("Trigger evidence") < rendered.index("Selected evidence")
 
 
 def test_parse_turn_contract_valid_json():
@@ -506,7 +567,8 @@ def test_build_turn_prompt_omits_wrapper_when_cross_history_already_has_markdown
         history=[],
         prior_context=None,
         retrieve_rag=None,
-        cross_conversation_history="My WhatsApp Conversations:\n[group][Friends]\n[Contact A]: hi",
+        cross_conversation_history=[{"conversation_id": "whatsapp:group:fictional", "chat_name": "Friends",
+                                     "role": "user", "speaker": "Contact A", "content": "hi"}],
         all_categories_summary=None,
         memory_cache=[],
         intentions_active=[],
@@ -527,14 +589,8 @@ def test_build_turn_prompt_appends_current_chat_to_existing_platform_section():
         history=[],
         prior_context=None,
         retrieve_rag=None,
-        cross_conversation_history="\n".join(
-            [
-                "My WhatsApp Conversations:",
-                "",
-                "[dm][Liz]",
-                "[Liz]: older",
-            ]
-        ),
+        cross_conversation_history=[{"conversation_id": "whatsapp:dm:fictional-contact",
+                                     "role": "user", "speaker": "TestContact", "content": "older"}],
         all_categories_summary=None,
         memory_cache=[],
         intentions_active=[],
@@ -552,19 +608,11 @@ def test_build_turn_prompt_keeps_current_platform_section_last():
         history=[],
         prior_context=None,
         retrieve_rag=None,
-        cross_conversation_history="\n".join(
-            [
-                "My SillyTavern Conversations:",
-                "",
-                "[dm][Echo]",
-                "[Echo]: old",
-                "",
-                "My WhatsApp Conversations:",
-                "",
-                "[dm][Liz]",
-                "[Liz]: old",
-            ]
-        ),
+        cross_conversation_history=[
+            {"conversation_id": "sillytavern:Echo", "role": "user", "speaker": "Echo", "content": "old"},
+            {"conversation_id": "whatsapp:dm:fictional-contact", "role": "user",
+             "speaker": "TestContact", "content": "old"},
+        ],
         all_categories_summary=None,
         memory_cache=[],
         intentions_active=[],

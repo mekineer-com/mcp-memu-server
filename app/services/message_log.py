@@ -87,11 +87,19 @@ def _load_whatsapp_directory_names() -> dict[str, str]:
     return out
 
 
-def format_merged_history(messages: list[dict[str, Any]], *, soul_name: str | None = None) -> str:
+def format_merged_history(
+    messages: list[dict[str, Any]], *, soul_name: str | None = None,
+    current_conversation_id: str | None = None,
+    current_chat_label: str | None = None,
+    mark_current_chat: bool = True,
+) -> str:
     """Format merged messages as grouped markdown for the soul's cross-chat context."""
     return format_grouped_chat_history(
         messages,
         whatsapp_names=_load_whatsapp_directory_names(),
         time_label_resolver=format_relative_time_label,
         soul_name=soul_name,
+        current_conversation_id=current_conversation_id,
+        current_chat_label=current_chat_label,
+        mark_current_chat=mark_current_chat,
     )

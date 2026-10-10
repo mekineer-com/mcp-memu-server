@@ -1250,7 +1250,10 @@ def test_atomic_source_label_and_heading() -> None:
     from app.services import turn_contract
 
     assert main._message_log.derive_source_label("chat:atomic-abc") == "atomic"
-    assert turn_contract._section_title_from_conversation_id("chat:atomic-abc") == "My Atomic Conversations:"
+    rendered = turn_contract.build_conversations_block(
+        history=[{"role": "user", "content": "Fictional evidence"}], conversation_id="chat:atomic-abc",
+    )
+    assert rendered.startswith("My Atomic Conversations:\n")
     assert main._message_log.derive_source_label("chat:plain") == "sillytavern"
 
 

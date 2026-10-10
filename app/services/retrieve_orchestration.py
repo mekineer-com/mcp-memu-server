@@ -153,7 +153,7 @@ def _build_retrieve_soul_context_queries(
         soul_context_for_retrieve.append({"role": "all_categories_summary", "content": {"text": f"My Categories:\n{all_cats_summary}"}})
 
     if conversations_block is not None:
-        history_text = str(conversations_block or "").strip()
+        history_text = str(conversations_block or "")
     else:
         history_text = build_conversations_block(
             history=history or [],
