@@ -810,7 +810,8 @@ async def test_prepared_reply_keeps_anchors_when_character_card_overrides_narrat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("prepared", [False, True])
-async def test_reply_fallback_adds_anchors_but_prepared_prompt_is_unchanged(monkeypatch, prepared):
+@pytest.mark.parametrize("claude_code", [False, True])
+async def test_reply_fallback_adds_anchors_but_prepared_prompt_is_unchanged(monkeypatch, prepared, claude_code):
     captured = {"reads": 0}
 
     class Service(AnchorService):
@@ -822,16 +823,18 @@ async def test_reply_fallback_adds_anchors_but_prepared_prompt_is_unchanged(monk
 
         async def chat(self, prompt, **kwargs):
             captured["system"] = kwargs["system_prompt"]
+            assert bool(kwargs.get("session_id")) == claude_code
             return '{"response_target":"respond","response":"hello","rehearsal":"hello","annulments":[]}'
 
     service = Service()
+    service._claude_code = claude_code
     original = "Prepared voice\n\n" + main._render_anchor_context(service.anchors)
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _: service)
     monkeypatch.setattr(main, "_load_soul_gen_config", lambda *args, **kwargs: {})
     monkeypatch.setattr(main, "_turn_state_read", lambda *args, **kwargs: (
         {"digest_cursor": 0}, "Narrative voice", None, [], [], 0, None,
     ))
-    monkeypatch.setitem(main._CONFIG, "claude_code", False)
+    monkeypatch.setitem(main._CONFIG, "claude_code", not claude_code)
     result = await main.conversation_turn("chat:fictional", {
         "user": {"user_id": "TestOwner", "soul_id": "TestSoul"}, "message": "hello",
         "history": [], "dry_run": True, "prompt_override_payload": {
@@ -840,6 +843,10 @@ async def test_reply_fallback_adds_anchors_but_prepared_prompt_is_unchanged(monk
         },
     })
     assert result["ok"]
+    assert result["generation_metadata"] == (
+        {"api": "claude_code", "model": "test-cli"} if claude_code
+        else {"api": "openai", "model": "test-api"}
+    )
     assert captured["reads"] == (0 if prepared else 1)
     assert captured["system"].count("I paint coastal sketches.") == 1
     assert captured["system"].count("My human prefers early walks.") == 1
@@ -2367,8 +2374,11 @@ def test_record_consolidation_failure_is_soul_level(
 @pytest.mark.asyncio
 async def test_turn_launch_apimw_tracks_background_task(monkeypatch: pytest.MonkeyPatch) -> None:
     release = asyncio.Event()
+    runtime = {"claude_code": False, "llm_profiles": {"default": {"chat_model": "test-api"}}}
 
     async def fake_run_apimw(*_args: object, **_kwargs: object) -> None:
+        assert _args[0]["claude_code"] is False
+        assert _args[0]["llm_profiles"] == runtime["llm_profiles"]
         await release.wait()
 
     monkeypatch.setattr(main, "_apimw_cadence_from_cfg", lambda *_a, **_k: 1)
@@ -2382,7 +2392,7 @@ async def test_turn_launch_apimw_tracks_background_task(monkeypatch: pytest.Monk
     monkeypatch.setattr(main, "_run_apimw", fake_run_apimw)
 
     before = set(main._BACKGROUND_TASKS)
-    status = main._turn_launch_apimw("cid-apimw-track", "u1", "Echo", {}, [])
+    status = main._turn_launch_apimw("cid-apimw-track", "u1", "Echo", runtime, [])
 
     created = set(main._BACKGROUND_TASKS) - before
     assert status == "started"
@@ -2578,16 +2588,11 @@ def test_merge_llm_profiles_rejects_null_profile_object():
 
 def test_turn_generation_metadata_uses_default_profile(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(main._CONFIG, "claude_code", False)
-    payload = {
-        "llm_profiles": {
-            "default": {
-                "provider": "nanogpt",
-                "chat_model": "mistralai/mistral-small-4-119b-2603",
-            }
-        }
-    }
+    service = SimpleNamespace(_claude_code=False, llm_profiles=SimpleNamespace(profiles={
+        "default": SimpleNamespace(provider="nanogpt", chat_model="mistralai/mistral-small-4-119b-2603"),
+    }))
 
-    assert main._turn_generation_metadata(payload) == {
+    assert main._turn_generation_metadata(service) == {
         "api": "nanogpt",
         "model": "mistralai/mistral-small-4-119b-2603",
     }
@@ -2597,7 +2602,7 @@ def test_turn_generation_metadata_prefers_claude_code(monkeypatch: pytest.Monkey
     monkeypatch.setitem(main._CONFIG, "claude_code", True)
     monkeypatch.setitem(main._CONFIG, "claude_code_model", "claude-sonnet-4-6")
 
-    assert main._turn_generation_metadata({"llm_profiles": {"default": {"provider": "nanogpt", "chat_model": "mistral"}}}) == {
+    assert main._turn_generation_metadata(SimpleNamespace(_claude_code=True, _claude_code_model="claude-sonnet-4-6")) == {
         "api": "claude_code",
         "model": "claude-sonnet-4-6",
     }
@@ -3144,12 +3149,14 @@ def test_build_cross_conversation_payload_uses_state_default_memorize_flag(
         "whatsapp:dm:123",
         "u1",
         "Echo",
-        {},
+        {"claude_code": False, "llm_profiles": {"default": {"chat_model": "test-api"}}},
         [{"role": "user", "content": "hello"}],
         -1,
         False,
     )
     assert isinstance(out, dict)
+    assert out["claude_code"] is False
+    assert out["llm_profiles"]["default"]["chat_model"] == "test-api"
     conversation = out.get("conversation")
     assert isinstance(conversation, list) and conversation
     assert conversation[0].get("memorize_chat") is False
@@ -7191,7 +7198,7 @@ def _patch_turn_dependencies(
     db_path: Path,
     captured: dict[str, Any],
 ) -> None:
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args, **_kwargs) -> str:
             return (
                 '{"working_thought":null,"annulments":[],"rehearsal":"ok",'
@@ -9271,17 +9278,21 @@ async def test_free_turn_chain_ignores_non_whatsapp_outbound(
     ]
 
 
-def test_free_turn_follow_up_payload_excludes_caller_timezone() -> None:
+def test_free_turn_follow_up_payload_excludes_caller_timezone_and_runtime_overrides() -> None:
     payload = main._free_turn_followup_payload(
         {
-            "user": {"user_id": "u1", "soul_id": "Siri"},
-            "chat_name": "Marcos",
+            "user": {"user_id": "TestOwner", "soul_id": "TestSoul"},
+            "chat_name": "Test chat",
+            "claude_code": False,
+            "llm_profiles": {"default": {"api_key": "test-key", "chat_model": "test-model"}},
             "time_zone": "America/Lima",
             "time_zone_offset_min": -300,
         }
     )
 
-    assert payload["chat_name"] == "Marcos"
+    assert payload["chat_name"] == "Test chat"
+    assert "claude_code" not in payload
+    assert "llm_profiles" not in payload
     assert "time_zone" not in payload
     assert "time_zone_offset_min" not in payload
 
@@ -9796,7 +9807,7 @@ def _make_turn_monkeypatches(
 ) -> None:
     """Shared setup for conversation_turn attachment tests."""
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def chat(self, *_args, **_kwargs) -> str:
             return chat_response
 

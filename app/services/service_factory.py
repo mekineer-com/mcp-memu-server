@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import HTTPException
 from memu.app import MemoryService
+from memu.app.settings import LLMConfig
 
 from app.config import SoulIdError
 
@@ -231,6 +232,17 @@ def _merge_llm_profiles(
                     detail=f"llm_profiles.{profile_name}.{field_name} cannot be null",
                 )
             merged_profile[field_name] = field_value
+        if isinstance(base, Mapping) and "api_key" not in client_profile:
+            original = LLMConfig(**base)
+            effective = LLMConfig(**merged_profile)
+            if original.api_key and (
+                effective.base_url != original.base_url
+                or effective.endpoint_overrides != original.endpoint_overrides
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"llm_profiles.{profile_name}.api_key is required when changing endpoints",
+                )
         merged[profile_name] = merged_profile
     return merged
 
@@ -292,6 +304,9 @@ def _get_service_from_payload(
     st_user_model: Any,
     logger: logging.Logger,
 ) -> MemoryService:
+    claude_code = payload.get("claude_code", bool(config.get("claude_code", False)))
+    if type(claude_code) is not bool:
+        raise HTTPException(status_code=400, detail="claude_code must be a Boolean")
     service_key_raw = _derive_service_key(payload, extract_scope=extract_scope)
 
     client_profiles = payload.get("llm_profiles") if isinstance(payload.get("llm_profiles"), dict) else {}
@@ -419,7 +434,7 @@ def _get_service_from_payload(
                 retrieve_config[profile_field] = cfg_key
     user_config = payload.get("user_config") or {}
 
-    sig = payload_signature(payload)
+    sig = payload_signature({**payload, "claude_code": claude_code})
     service_key = f"{service_key_raw}__{sig}"
     storage_fp = _service_storage_fingerprint(
         database_config if isinstance(database_config, dict) else None,
@@ -446,7 +461,7 @@ def _get_service_from_payload(
             memorize_config=memorize_config,
             retrieve_config=retrieve_config,
             user_config=user_config,
-            claude_code=bool(config.get("claude_code", False)),
+            claude_code=claude_code,
             claude_code_model=str(config.get("claude_code_model", "claude-opus-4-7")),
             claude_code_context_window_tokens=config.get("claude_code_context_window_tokens"),
             claude_code_effort=str(config.get("claude_code_effort", "medium")),

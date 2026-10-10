@@ -207,7 +207,7 @@ def _safe_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _payload_signature(payload: dict[str, Any]) -> str:
-    keys = ["llm_profiles", "database_config", "blob_config", "memorize_config", "retrieve_config", "user_config"]
+    keys = ["llm_profiles", "database_config", "blob_config", "memorize_config", "retrieve_config", "user_config", "claude_code"]
     snap = {k: payload.get(k) for k in keys if k in payload}
     raw = json.dumps(snap, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]

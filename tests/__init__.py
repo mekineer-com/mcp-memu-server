@@ -12,6 +12,11 @@ class _TestScope(BaseModel):
 
 class AnchorService:
     anchors = {}
+    _claude_code = False
+    _claude_code_model = "test-cli"
+    llm_profiles = SimpleNamespace(profiles={
+        "default": SimpleNamespace(provider="openai", chat_model="test-api"),
+    })
 
     def _get_database(self):
         return SimpleNamespace(memory_category_repo=SimpleNamespace(

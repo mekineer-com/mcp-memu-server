@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.config import database_config_from_cfg, default_llm_profiles_from_server_config
 from app.services import owner, service_factory, souls
+from app.services.payload import _payload_signature
 from app.services.consolidation import consolidation_input_budget
 from memu.app.settings import LLMConfig
 
@@ -175,7 +176,10 @@ def test_validated_step_models_raises_when_profile_missing() -> None:
         )
 
 
-def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("server_mode,request_mode", [
+    (False, None), (True, None), (True, False), (False, True),
+])
+def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytest.MonkeyPatch, server_mode, request_mode) -> None:
     captured: dict[str, object] = {}
 
     class _FakeService:
@@ -199,22 +203,23 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
             "background_extra_messages_tokens": 321,
             "semantic_dedupe_enabled": False,
         },
-        "claude_code": True,
+        "claude_code": server_mode,
         "claude_code_model": "claude-opus-4-7",
         "claude_code_context_window_tokens": 200_000,
         "claude_code_effort": "medium",
         "claude_code_permission_mode": "bypassPermissions",
-        "claude_code_settings": "/home/marcos/.config/memu/siri-claude-settings.json",
-        "claude_code_workspace": "/home/marcos/Desktop/siri",
+        "claude_code_settings": "/tmp/test-claude-settings.json",
+        "claude_code_workspace": "/tmp/test-soul",
         "claude_code_timeout_seconds": 3600,
     }
 
-    out = service_factory._get_service_from_payload(
-        {
-            "user": {"user_id": "u", "soul_id": "echo"},
-            "database_config": {},
-            "memorize_config": {"semantic_dedupe_similarity_threshold": "banana"},
-        },
+    payload = {
+        "user": {"user_id": "u", "soul_id": "echo"},
+        "database_config": {},
+        "memorize_config": {"semantic_dedupe_similarity_threshold": "banana"},
+        **({"claude_code": request_mode} if request_mode is not None else {}),
+    }
+    kwargs = dict(
         config=cfg,
         default_llm_profiles_from_server_config=lambda _cfg: {
             "default": {
@@ -238,7 +243,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         sqlite_dsn_for_scope=lambda _cfg, base, _scope: base,
         sqlite_file_from_dsn=lambda _dsn: None,
         extract_scope=lambda payload: payload.get("user"),
-        payload_signature=lambda _payload: "sig",
+        payload_signature=_payload_signature,
         min_chunk_tokens=4000,
         log_prompts=False,
         prompt_log_before=lambda *a, **k: None,
@@ -247,15 +252,17 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         st_user_model=_DummyUserModel,
         logger=logging.getLogger("test.service_factory"),
     )
+    out = service_factory._get_service_from_payload(payload, **kwargs)
 
     assert isinstance(out, _FakeService)
-    assert captured["claude_code"] is True
+    effective_mode = server_mode if request_mode is None else request_mode
+    assert captured["claude_code"] is effective_mode
     assert captured["claude_code_model"] == "claude-opus-4-7"
     assert captured["claude_code_context_window_tokens"] == 200_000
     assert captured["claude_code_effort"] == "medium"
     assert captured["claude_code_permission_mode"] == "bypassPermissions"
-    assert captured["claude_code_settings"] == "/home/marcos/.config/memu/siri-claude-settings.json"
-    assert captured["claude_code_workspace"] == "/home/marcos/Desktop/siri"
+    assert captured["claude_code_settings"] == "/tmp/test-claude-settings.json"
+    assert captured["claude_code_workspace"] == "/tmp/test-soul"
     assert captured["claude_code_timeout_seconds"] == 3600
     assert captured["memorize_config"]["min_chunk_tokens"] == 4000
     assert captured["memorize_config"]["background_extra_messages_tokens"] == 321
@@ -265,6 +272,36 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert "semantic_dedupe_similarity_threshold" not in captured["memorize_config"]
     assert captured["cutover_scope"] == {"user_id": "u", "soul_id": "echo"}
     assert captured["database_config"]["metadata_store"]["embedding_profile"] == "gemini-embedding-2:3072"
+
+    opposite_payload = {**payload, "claude_code": not effective_mode}
+    opposite = service_factory._get_service_from_payload(opposite_payload, **kwargs)
+    assert opposite is not out
+    assert captured["claude_code"] is not effective_mode
+    assert service_factory._get_service_from_payload(opposite_payload, **kwargs) is opposite
+    for invalid_mode in (None, "false", 0, 1):
+        with pytest.raises(HTTPException, match="claude_code must be a Boolean"):
+            service_factory._get_service_from_payload({**payload, "claude_code": invalid_mode}, **kwargs)
+
+
+def test_changed_endpoint_cannot_inherit_server_credentials():
+    defaults = {"default": {"base_url": "https://server.example/v1", "api_key": "server-key"}}
+    for override in (
+        {"base_url": "https://client.example/v1"},
+        {"endpoint_overrides": {"chat": "https://client.example/chat"}},
+        {"endpoint_overrides": {"summary": "https://client.example/summary"}},
+    ):
+        with pytest.raises(HTTPException, match="api_key is required when changing endpoints"):
+            service_factory._merge_llm_profiles(defaults, {"default": override})
+    with pytest.raises(HTTPException, match="api_key is required when changing endpoints"):
+        service_factory._merge_llm_profiles({"default": {
+            "provider": "openai", "base_url": "https://api.openai.com/v1", "api_key": "server-key",
+        }}, {"default": {"provider": "grok"}})
+    assert service_factory._merge_llm_profiles(defaults, {"default": {"chat_model": "client-model"}})["default"]["api_key"] == "server-key"
+    for key in ("client-key", ""):
+        merged = service_factory._merge_llm_profiles(defaults, {"default": {
+            "base_url": "https://client.example/v1", "api_key": key,
+        }})
+        assert merged["default"]["api_key"] == key
 
 
 def test_client_llm_profiles_suppress_server_step_model_routing(monkeypatch: pytest.MonkeyPatch) -> None:

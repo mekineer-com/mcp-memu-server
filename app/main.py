@@ -520,8 +520,8 @@ def _parse_free_turn_contract(raw: Any) -> dict[str, Any]:
     )
 
 
-def _turn_generation_metadata(payload: dict[str, Any]) -> dict[str, str]:
-    return _free_turn._turn_generation_metadata(payload, config=_CONFIG)
+def _turn_generation_metadata(service: Any) -> dict[str, str]:
+    return _free_turn._turn_generation_metadata(service)
 
 
 async def _run_free_turn_chain(
@@ -4019,10 +4019,10 @@ async def conversation_turn(
         )
         turn_user_prompt = override_user_prompt
 
-        generation_metadata = _turn_generation_metadata(safe)
+        generation_metadata = _turn_generation_metadata(memory_service)
         turn_started_at = time.monotonic()
         turn_contract: dict[str, Any] | None = None
-        use_claude_session = bool(_CONFIG.get("claude_code", False))
+        use_claude_session = memory_service._claude_code
         turn_session_id = str(uuid.uuid4()) if use_claude_session else None
         if turn_session_id:
             logger.info("conversation_turn: claude session_id=%s conversation_id=%s", turn_session_id, cid)

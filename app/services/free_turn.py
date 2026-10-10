@@ -89,15 +89,14 @@ def _parse_free_turn_contract(
     return contract
 
 
-def _turn_generation_metadata(payload: dict[str, Any], *, config: Mapping[str, Any]) -> dict[str, str]:
-    if bool(config.get("claude_code", False)):
-        model = str(config.get("claude_code_model") or "").strip()
+def _turn_generation_metadata(service: Any) -> dict[str, str]:
+    if service._claude_code:
+        model = str(service._claude_code_model or "").strip()
         return {"api": "claude_code", "model": model} if model else {"api": "claude_code"}
 
-    profiles = payload.get("llm_profiles") if isinstance(payload.get("llm_profiles"), dict) else {}
-    default_profile = profiles.get("default") if isinstance(profiles.get("default"), dict) else {}
-    api = str(default_profile.get("provider") or "").strip()
-    model = str(default_profile.get("chat_model") or "").strip()
+    default_profile = service.llm_profiles.profiles["default"]
+    api = str(default_profile.provider or "").strip()
+    model = str(default_profile.chat_model or "").strip()
     out: dict[str, str] = {}
     if api:
         out["api"] = api
