@@ -55,11 +55,11 @@ def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path
         assert json.loads(con.execute("SELECT raw_json FROM imported_messages WHERE position = 3").fetchone()[0])["id"] == "3"
     assert "import_metadata" not in normalized[0]
     speaker_map = _build_speaker_map(normalized, scope, {"testspeaker": "entity:test-guest"})
-    memory = StructuredMemoryEntry("social", "TestSpeaker shared a thought", [], "entity", None, [0], None)
+    memory = StructuredMemoryEntry("social", "TestSpeaker shared a thought", [], "peer", None, [0], None)
     attributed = _attribute_memory(memory, speaker_map)
     assert attributed.speaker_id == "entity:test-guest" and attributed.speaker_label == "TestSpeaker"
-    assert _build_speaker_map(normalized, scope) == {}
-    assert _build_speaker_map([{**normalized[0], "name": ""}], scope) == {}
+    assert _build_speaker_map(normalized, scope) == {i: ("", "TestSpeaker") for i in range(len(normalized))}
+    assert _build_speaker_map([{**normalized[0], "name": ""}], scope)[0][0] == ""
     assert normalized[0]["role"] == "user"
     assert _message_happened_at(normalized[0]).date().isoformat() == "2025-01-01"
     assert _extract_message_happened_at_map(json.dumps(normalized))[0].date().isoformat() == "2025-01-01"
@@ -880,8 +880,8 @@ def test_whatsapp_soul_switch_keeps_speakers_across_readers(tmp_path, monkeypatc
         assert speaker_map[0] == ("user:orion", "Orion")
         assert speaker_map[1] == ("soul:ardent", "Ardent")
         assert all(speaker_map[i] == ("entity:test-beacon", "Beacon") for i in (2, 3, 4))
-        assert all(i not in _build_speaker_map(normalized, scope) for i in (2, 3, 4))
-        memory = StructuredMemoryEntry("social", "Beacon replied", [], "entity", None, [2, 3, 4], None)
+        assert all(_build_speaker_map(normalized, scope)[i] == ("", "Beacon") for i in (2, 3, 4))
+        memory = StructuredMemoryEntry("social", "Beacon replied", [], "peer", None, [2, 3, 4], None)
         attributed = _attribute_memory(memory, speaker_map)
         assert (attributed.speaker_id, attributed.speaker_label) == ("entity:test-beacon", "Beacon")
         assert _attribute_memory(memory, _build_speaker_map(normalized, scope)).speaker_id is None
