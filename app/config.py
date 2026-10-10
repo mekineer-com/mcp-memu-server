@@ -2,7 +2,6 @@ import json
 import os
 import re
 import tempfile
-import traceback
 from pathlib import Path, PurePath
 from typing import Any
 
@@ -278,18 +277,11 @@ def load_config() -> dict[str, Any]:
         save_config(cfg)
         ensure_storage_paths(cfg)
         return cfg
-    try:
-        raw = p.read_text(encoding="utf-8")
-        cfg = json.loads(raw) if raw.strip() else default_config()
-        if not isinstance(cfg, dict):
-            cfg = default_config()
-        ensure_storage_paths(cfg)
-        return cfg
-    except (json.JSONDecodeError, OSError):
-        traceback.print_exc()
-        cfg = default_config()
-        ensure_storage_paths(cfg)
-        return cfg
+    cfg = json.loads(p.read_text(encoding="utf-8"))
+    if not isinstance(cfg, dict):
+        raise ValueError(f"Config must be a JSON object: {p}")
+    ensure_storage_paths(cfg)
+    return cfg
 
 
 def save_config(cfg: dict[str, Any]) -> None:

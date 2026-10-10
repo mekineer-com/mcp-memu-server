@@ -40,14 +40,12 @@ def _resolve_cfg_path(raw: str) -> Path:
 
 
 def _read_json(path: Path) -> dict:
-    try:
-        if not path.exists():
-            return {}
-        raw = path.read_text(encoding="utf-8")
-        data = json.loads(raw) if raw.strip() else {}
-        return data if isinstance(data, dict) else {}
-    except Exception:
+    if not path.exists():
         return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"Config must be a JSON object: {path}")
+    return data
 
 
 def _write_text(path: Path, text: str) -> None:

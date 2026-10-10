@@ -12,6 +12,7 @@ import pytest
 
 from app import config as app_config
 from app.config import default_config
+import run as server_run
 
 _ROOT = Path(__file__).resolve().parent.parent
 _EXAMPLE_CONFIG = _ROOT / "config.example.json"
@@ -92,6 +93,76 @@ def test_config_writes_are_atomic_and_private(operation: str, monkeypatch: pytes
     assert json.loads(path.read_text(encoding="utf-8")) == cfg
     if os.name == "posix":
         assert path.stat().st_mode & 0o777 == 0o600
+    assert list(path.parent.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_config_read_preserves_missing_bootstrap_and_valid_objects(existing, monkeypatch):
+    path = app_config.config_path()
+    cfg = {"llm": {"api_key": "fictional-key"}}
+    monkeypatch.setattr(app_config, "default_config", lambda: cfg)
+    initialized = []
+    monkeypatch.setattr(app_config, "ensure_storage_paths", initialized.append)
+    if existing:
+        path.parent.mkdir()
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+    assert server_run._read_json(path) == (cfg if existing else {})
+    assert path.exists() is existing
+    assert app_config.load_config() == cfg
+    assert initialized == [cfg]
+    assert server_run._read_json(path) == cfg
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loader", ["runtime", "runner", "reload"])
+@pytest.mark.parametrize("failure", ["malformed", "blank", "non_object", "unreadable", "encoding"])
+async def test_invalid_existing_config_fails_without_side_effects(loader, failure, monkeypatch):
+    from app import main
+
+    path = app_config.config_path()
+    path.parent.mkdir()
+    original = {
+        "malformed": b'{"llm":', "blank": b" \n", "non_object": b"[]",
+        "unreadable": b'{"llm":{"api_key":"fictional-key"}}', "encoding": b"\xff",
+    }[failure]
+    path.write_bytes(original)
+    error = {
+        "non_object": ValueError, "unreadable": PermissionError, "encoding": UnicodeDecodeError,
+    }.get(failure, json.JSONDecodeError)
+    if failure == "unreadable":
+        read_text = Path.read_text
+
+        def unreadable(self, *args, **kwargs):
+            if self == path:
+                raise PermissionError("fictional unreadable config")
+            return read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", unreadable)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid config must fail before storage/runtime/service initialization")
+
+    monkeypatch.setattr(app_config, "ensure_storage_paths", forbidden)
+    old_config = main._CONFIG
+    cache = {"fictional-service": object()}
+    monkeypatch.setattr(main._service_factory, "_SERVICES", cache)
+    monkeypatch.setattr(main, "_refresh_runtime_limits", forbidden)
+    monkeypatch.setattr(main, "_clear_cached_services", forbidden)
+    if loader == "runner":
+        monkeypatch.chdir(path.parent)
+        monkeypatch.setattr(server_run, "ROOT", path.parent)
+        monkeypatch.setattr(server_run, "_reexec_into_venv_if_requested", forbidden)
+    with pytest.raises(error):
+        if loader == "reload":
+            await main.reload_config()
+        elif loader == "runner":
+            server_run.main()
+        else:
+            app_config.load_config()
+    assert main._CONFIG is old_config
+    assert main._service_factory._SERVICES is cache
+    assert list(cache) == ["fictional-service"]
+    assert path.read_bytes() == original
     assert list(path.parent.iterdir()) == [path]
 
 
