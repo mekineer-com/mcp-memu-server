@@ -2255,6 +2255,11 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
     assert len(calls["image_memorize"]) == 1
     assert calls["image_memorize"][0]["modality"] == "image"
     assert calls["image_memorize"][0]["caption"] == "A fictional magenta square."
+    saved_history = conversation_sources.load_mentra_history_snapshot(
+        storage_dir=tmp_path, **scope, conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
+    )
+    saved_caption = next(row for row in saved_history if row.get("event_id") == caption_event["event_id"])
+    assert calls["image_memorize"][0]["source_timestamp"] == saved_caption["received_at"]
     assert calls["image_memorize"][0]["user"] == {
         **scope, "conversation_id": conversation_sources.MENTRA_CONVERSATION_ID,
     }

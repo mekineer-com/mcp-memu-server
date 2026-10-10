@@ -1643,9 +1643,10 @@ def register_mentra_routes(
             storage_dir=get_storage_dir(), user_id=body.user_id, soul_id=body.soul_id,
             conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
         )
-        if not any(row.get("event_id") == body.caption_event_id
-                   and row.get("role") == "assistant" and row.get("event_kind") == "transcript"
-                   and row.get("content") == body.caption for row in history):
+        caption_row = next((row for row in history if row.get("event_id") == body.caption_event_id
+                            and row.get("role") == "assistant" and row.get("event_kind") == "transcript"
+                            and row.get("content") == body.caption), None)
+        if caption_row is None:
             return {"ok": True, "queued": False, "discarded": True}
         _require_image_embedding_config(get_config())
         root = get_resource_storage_dir()
@@ -1695,6 +1696,7 @@ def register_mentra_routes(
                     modality="image",
                     user=scope,
                     caption=body.caption,
+                    source_timestamp=caption_row["received_at"],
                 )
 
         task = asyncio.create_task(memorize_image())
