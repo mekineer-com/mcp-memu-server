@@ -925,6 +925,7 @@ INSERT INTO memory_items (
         return
     with sqlite3.connect(db_path) as con:
         con.execute("UPDATE soul_state SET user_name = 'TestHuman' WHERE id = 1")
+        con.execute("UPDATE memory_items SET happened_at = NULL, created_at = '2026-01-01 00:00:00.123456' WHERE id = 'mem-0'")
     original_files = {path: path.read_bytes() for directory in chat_dirs.values()
                       for path in (directory / "segments").glob("*.json")}
     out = gather_consolidation_inputs(
@@ -956,6 +957,9 @@ INSERT INTO memory_items (
         assert rendered.index("older imported history") < rendered.index("message 0") < rendered.index("message 1")
     assert len(out["segment_inputs"][1]["memory_summaries"]) == 30
     assert [item["id"] for item in out["prior_context_memory_items"]] == ["mem-0"]
+    expected_creation = datetime(2026, 1, 1, microsecond=123456, tzinfo=UTC)
+    assert out["prior_context_memory_items"][0]["happened_at"] == expected_creation
+    assert out["segment_inputs"][1]["memory_summaries"][0]["happened_at"] == expected_creation
 
     dateless_file = chat_dirs["conv-b"] / "segments" / "segment_0.json"
     original = dateless_file.read_text()

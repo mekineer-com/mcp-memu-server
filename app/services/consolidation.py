@@ -941,7 +941,7 @@ ORDER BY created_at ASC, id ASC
                         "memory_ref": int(row["memory_ref"] or 0),
                         "summary": str(row["summary"] or "").strip(),
                         "memory_type": str(row["memory_type"] or "").strip(),
-                        "happened_at": row["happened_at"] or row["created_at"],
+                        "happened_at": row["happened_at"] or parse_iso_datetime(row["created_at"]),
                     }
                     for row in rows
                     if str(row["id"] or "").strip() and str(row["summary"] or "").strip()
@@ -1002,7 +1002,7 @@ WHERE id IN ({placeholders}) AND soul_id = ? AND user_id = ?
                     "memory_ref": int(row["memory_ref"] or 0),
                     "summary": summary,
                     "memory_type": str(row["memory_type"] or "").strip(),
-                    "happened_at": row["happened_at"] or row["created_at"],
+                    "happened_at": row["happened_at"] or parse_iso_datetime(row["created_at"]),
                 }
                 items_by_id[mid] = prior_entry
                 prior_context_memory_items.append(prior_entry)
