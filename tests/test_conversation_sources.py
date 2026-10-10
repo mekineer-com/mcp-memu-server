@@ -1138,9 +1138,11 @@ def test_load_sillytavern_tail_since_cursor_handles_sparse_indices(tmp_path: Pat
         soul_id="Echo",
         conversation_id="integrity:chat-a",
         history=[
-            {"role": "user", "name": "Marcos", "content": "one"},
-            {"role": "assistant", "name": "Echo", "content": ""},
-            {"role": "user", "name": "Marcos", "content": "three"},
+            {"role": "user", "name": "TestOwner", "content": "one", "source_conversation_index": 3,
+             "source_message_id": "3", "ts_ms": 1000},
+            {"role": "assistant", "name": "Echo", "content": "", "source_conversation_index": 5},
+            {"role": "user", "name": "OtherPersona", "content": "three", "source_conversation_index": 7,
+             "source_message_id": "7", "ts_ms": 2000},
         ],
         chat_name="Echo",
     )
@@ -1150,10 +1152,24 @@ def test_load_sillytavern_tail_since_cursor_handles_sparse_indices(tmp_path: Pat
         user_id="u1",
         soul_id="Echo",
         conversation_id="integrity:chat-a",
-        since_cursor=1,
+        since_cursor=3,
         recent_fallback_messages=0,
     )
     assert [row["content"] for row in rows] == ["three"]
+    assert rows[0]["source_conversation_index"] == 7
+    assert rows[0]["source_message_id"] == "7"
+    assert rows[0]["speaker"] == "OtherPersona"
+    assert rows[0]["received_at"] == "1970-01-01T00:00:02+00:00"
+
+
+@pytest.mark.parametrize("position", [-1, True, "7", 1.5, None])
+def test_sillytavern_snapshot_rejects_invalid_positions(tmp_path: Path, position) -> None:
+    scope = dict(storage_dir=tmp_path, user_id="TestOwner", soul_id="TestSoul", conversation_id="chat:fictional")
+    conversation_sources.persist_sillytavern_history_snapshot(
+        **scope, history=[{"content": "text", "source_conversation_index": position}],
+    )
+    with pytest.raises(ValueError, match="invalid source position"):
+        conversation_sources.load_sillytavern_tail(**scope, since_cursor=-1, recent_fallback_messages=0)
 
 
 def test_load_sillytavern_tail_raises_when_snapshot_missing(tmp_path: Path) -> None:

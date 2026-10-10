@@ -1065,7 +1065,11 @@ def load_chat_snapshot_tail(
         received_at = _to_iso_utc((float(ts_ms) / 1000.0) if isinstance(ts_ms, (int, float)) else "")
         if not received_at:
             received_at = str(item.get("received_at") or item.get("created_at") or "").strip()
-        source_index = item.get("sequence") if source_label == "mentra" else idx
+        source_index = (item.get("sequence") if source_label == "mentra"
+                        else item.get("source_conversation_index", idx) if source_label == "sillytavern"
+                        else idx)
+        if source_label == "sillytavern" and (type(source_index) is not int or source_index < 0):
+            raise ValueError(f"sillytavern snapshot row has invalid source position: {path}")
         if import_state is not None:
             in_history = source_index < import_state["history_end_index"]
             if in_history != historical:
@@ -1100,6 +1104,8 @@ def load_chat_snapshot_tail(
             for key in ("event_id", "sequence", "event_kind", "transcript_status", "media_ref"):
                 if item.get(key) is not None:
                     row[key] = item[key]
+        elif source_label == "sillytavern" and item.get("source_message_id") is not None:
+            row["source_message_id"] = item["source_message_id"]
         all_rows.append(row)
     return slice_tail_with_floor(
         all_rows,
