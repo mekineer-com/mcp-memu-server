@@ -1655,7 +1655,7 @@ async def _run_consolidation_pipeline_once(
                 async with state_lock:
                     _record_consolidation_failure(
                         deps=deps, soul_id=soul_id, user_id=user_id,
-                        error=str(exc)[:260], conversation_id=conversation_id,
+                        error=(str(exc) or type(exc).__name__)[:260], conversation_id=conversation_id,
                     )
             except Exception:
                 log.exception(

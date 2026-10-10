@@ -230,7 +230,7 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
         success = True
         memorize_endpoint._set_memorize_progress(runtime._MEMORIZE_PROGRESS, marker, active=False, last_result="success")
     except (Exception, asyncio.CancelledError) as exc:
-        error = "Import interrupted. Retry required." if isinstance(exc, asyncio.CancelledError) else str(exc)
+        error = "Import interrupted. Retry required." if isinstance(exc, asyncio.CancelledError) else (str(exc) or type(exc).__name__)
         runtime.logger.exception("Import batch failed for %s", cid)
         memorize_endpoint._set_memorize_progress(
             runtime._MEMORIZE_PROGRESS, marker, active=False, last_result="failure", error=error,

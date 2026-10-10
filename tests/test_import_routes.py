@@ -402,9 +402,9 @@ async def test_registration_uses_segments_not_incidental_memories(tmp_path, monk
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["dedupe", "review"])
-@pytest.mark.parametrize("fail", [False, True])
+@pytest.mark.parametrize("fail,error", [(False, ""), (True, "Review still failed"), (True, "")])
 @pytest.mark.parametrize("stage", ["memorize", "consolidation"])
-async def test_import_retry_recovers_zero_item_segment_before_pending_shortcut(monkeypatch, phase, fail, stage):
+async def test_import_retry_recovers_zero_item_segment_before_pending_shortcut(monkeypatch, phase, fail, error, stage):
     scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     cid = "import:dm:zero"
     main._write_conversation_state(cid, **scoped, updates={"import_state": {
@@ -421,7 +421,7 @@ async def test_import_retry_recovers_zero_item_segment_before_pending_shortcut(m
         entered.set()
         await release.wait()
         if fail:
-            raise RuntimeError("Review still failed")
+            raise RuntimeError(error)
         return state
     monkeypatch.setattr(engine, "_memorize_persist_and_index", review)
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: engine)
@@ -455,6 +455,9 @@ async def test_import_retry_recovers_zero_item_segment_before_pending_shortcut(m
         assert bool(record.get("segment_work")) == fail
         assert bool(calls) != fail
         assert bool(record["error"]) == fail
+        if fail:
+            assert record["error"] == (error or "RuntimeError")
+            assert main._soul_activity_pause(**scoped) == "Import failed. Retry in Echo."
         assert main._memorize_lock_key(**scoped) not in main._FORCED_MEMORIZE_INFLIGHT
     finally:
         release.set()

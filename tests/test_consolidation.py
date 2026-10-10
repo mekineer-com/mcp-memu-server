@@ -2079,13 +2079,13 @@ def test_write_consolidation_outputs_rolls_back_final_transaction() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["wait", "force", "time", "revision-size", "reflection-size", "cli-size", "too-large", "missing"])
+@pytest.mark.parametrize("mode", ["wait", "force", "time", "revision-size", "reflection-size", "cli-size", "too-large", "missing", "empty-error"])
 async def test_ordinary_automatic_consolidation_uses_time_or_actual_stage_capacity(tmp_path, monkeypatch, mode):
     from datetime import timedelta
     path = tmp_path / "cadence.db"
     deps = _make_consolidation_deps(path, tmp_path)
     scope = {"user_id": "TestUser", "soul_id": "TestSoul"}
-    last = (datetime.now(UTC) - timedelta(days=8 if mode == "time" else 0)).isoformat()
+    last = (datetime.now(UTC) - timedelta(days=8 if mode in {"time", "empty-error"} else 0)).isoformat()
     selected = {"chat-a": ["chat-a:0-0", "chat-a:1-1"], "chat-b": ["chat-b:0-0"]}
     for cid, ids in selected.items():
         deps.write_conversation_state(cid, **scope, updates={"pending_segment_ids": ids, "last_consolidation_at": last})
@@ -2135,7 +2135,13 @@ async def test_ordinary_automatic_consolidation_uses_time_or_actual_stage_capaci
     kwargs = dict(svc=svc, deps=deps, state_lock=asyncio.Lock(), running=running,
                   load_cross_tail_for_ai=lambda **_kw: [], format_all_chat_history_for_ai=lambda **_kw: "A lived span.",
                   conversation_id="chat-a", force=mode == "force", **scope)
-    if mode in {"too-large", "missing"}:
+    if mode == "empty-error":
+        async def fail_llm(*_args, **_kwargs):
+            raise TimeoutError()
+        monkeypatch.setattr(consolidation, "run_consolidation_llm", fail_llm)
+        with pytest.raises(TimeoutError):
+            await consolidation._run_consolidation_pipeline_once(**kwargs)
+    elif mode in {"too-large", "missing"}:
         with pytest.raises(ValueError, match="token limit" if mode == "too-large" else "context_window_tokens"):
             await consolidation._run_consolidation_pipeline_once(**kwargs)
     else:
@@ -2143,14 +2149,16 @@ async def test_ordinary_automatic_consolidation_uses_time_or_actual_stage_capaci
         assert result["status"] == ("skipped" if mode == "wait" else "ok")
     assert running == {} and len(gathers) == len(preparations) == 1
     model_calls = [call for call in svc.calls if call[0] == "chat"]
-    if mode in {"wait", "too-large", "missing"}:
-        assert model_calls == [] and applied == []
+    if mode in {"wait", "too-large", "missing", "empty-error"}:
+        assert model_calls == ([("chat", "dossiers")] if mode == "empty-error" else []) and applied == []
         with sqlite_connect(path) as con:
             con.row_factory = sqlite3.Row
             after = _soul_state.read(con)
             assert after["last_consolidation_at"] == before["last_consolidation_at"]
             assert after["memorize_failure"] is None
             assert bool(after["last_consolidation_error"]) == (mode != "wait")
+            if mode == "empty-error":
+                assert _soul_state.activity_pause(after, memorize_running=False, consolidation_running=False) == "TimeoutError"
             for cid, ids in selected.items():
                 assert conversation_state_from_row(conversation_state_row(con, cid, **scope))["pending_segment_ids"] == ids
     else:
