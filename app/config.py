@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import tempfile
 import traceback
 from pathlib import Path, PurePath
 from typing import Any
@@ -273,9 +274,8 @@ def ensure_storage_paths(cfg: dict[str, Any]) -> None:
 def load_config() -> dict[str, Any]:
     p = config_path()
     if not p.exists():
-        p.parent.mkdir(parents=True, exist_ok=True)
         cfg = default_config()
-        p.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        save_config(cfg)
         ensure_storage_paths(cfg)
         return cfg
     try:
@@ -295,7 +295,27 @@ def load_config() -> dict[str, Any]:
 def save_config(cfg: dict[str, Any]) -> None:
     p = config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    tmp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=p.parent,
+            prefix=f".{p.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_name = tmp.name
+            json.dump(cfg, tmp, indent=2)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, p)
+    finally:
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
 
 
 def mask_config(cfg: dict[str, Any], *, include_llm_secret: bool = False) -> dict[str, Any]:

@@ -1,14 +1,26 @@
-"""Checks for the minimal installable config example and server defaults."""
+"""Checks for the installable config example, defaults, and atomic saves."""
 
 from __future__ import annotations
 
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
+import pytest
+
+from app import config as app_config
 from app.config import default_config
 
 _ROOT = Path(__file__).resolve().parent.parent
 _EXAMPLE_CONFIG = _ROOT / "config.example.json"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_config_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app_config, "config_path", lambda: tmp_path / "config" / "config.json")
+    monkeypatch.setattr(app_config, "home_dir", lambda: tmp_path / "home")
 
 
 def test_example_is_valid_json_and_non_empty() -> None:
@@ -42,3 +54,95 @@ def test_default_mentra_contract_is_keyless_and_loopback() -> None:
     assert config["mentra"]["enabled"] is False
     assert "integration_bearer_token" not in config["mentra"]
     assert "gemini_api_key" in config["mentra"]
+
+
+@pytest.mark.parametrize("operation", ["create", "replace", "load"])
+def test_config_writes_are_atomic_and_private(operation: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = app_config.config_path()
+    cfg = {"llm": {"api_key": "fictional-key"}, "mentra": {"public_base_url": "http://phone.example.invalid"}}
+    original = b'{"llm": {"api_key": "fictional-old-key"}}'
+    if operation == "replace":
+        path.parent.mkdir()
+        path.write_bytes(original)
+        path.chmod(0o644)
+    staged_paths = []
+    real_replace = os.replace
+
+    def replace(src, dst):
+        staged = Path(src)
+        assert Path(dst) == path
+        assert staged.parent == path.parent
+        assert staged.read_text(encoding="utf-8") == json.dumps(cfg, indent=2)
+        if os.name == "posix":
+            assert staged.stat().st_mode & 0o777 == 0o600
+        if operation == "replace":
+            assert path.read_bytes() == original
+        else:
+            assert not path.exists()
+        staged_paths.append(staged)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(app_config.os, "replace", replace)
+    if operation == "load":
+        monkeypatch.setattr(app_config, "default_config", lambda: cfg)
+        assert app_config.load_config() == cfg
+    else:
+        app_config.save_config(cfg)
+    assert len(staged_paths) == 1
+    assert json.loads(path.read_text(encoding="utf-8")) == cfg
+    if os.name == "posix":
+        assert path.stat().st_mode & 0o777 == 0o600
+    assert list(path.parent.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("failure", ["serialize", "write", "fsync", "replace"])
+def test_failed_save_preserves_credentials_and_cleans_tempfile(failure: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = app_config.config_path()
+    path.parent.mkdir()
+    original = b'{"llm":{"api_key":"fictional-chat-key","embedding":{"api_key":"fictional-embedding-key"}},"mentra":{"gemini_api_key":"fictional-voice-key"}}'
+    path.write_bytes(original)
+    original_mode = path.stat().st_mode
+    cfg = {"llm": {"api_key": "fictional-new-key"}}
+    error = OSError
+    if failure == "serialize":
+        cfg["invalid"] = object()
+        error = TypeError
+    else:
+        def fail(*args, **kwargs):
+            if failure == "write":
+                args[1].write('{"llm":')
+            raise OSError("fictional save failure")
+
+        target, name = (app_config.json, "dump") if failure == "write" else (app_config.os, failure)
+        monkeypatch.setattr(target, name, fail)
+    with pytest.raises(error):
+        app_config.save_config(cfg)
+    assert path.read_bytes() == original
+    assert path.stat().st_mode == original_mode
+    assert list(path.parent.iterdir()) == [path]
+
+
+def test_overlapping_saves_use_distinct_tempfiles(monkeypatch: pytest.MonkeyPatch) -> None:
+    path = app_config.config_path()
+    configs = [
+        {"llm": {"api_key": "fictional-key"}, "mentra": {"public_base_url": f"http://phone-{number}.example.invalid"}}
+        for number in (1, 2)
+    ]
+    ready = Barrier(2)
+    staged_paths = []
+    real_replace = os.replace
+
+    def replace(src, dst):
+        staged = Path(src)
+        assert staged.parent == path.parent
+        assert json.loads(staged.read_text(encoding="utf-8")) in configs
+        staged_paths.append(staged)
+        ready.wait(timeout=5)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(app_config.os, "replace", replace)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(app_config.save_config, configs))
+    assert len(set(staged_paths)) == 2
+    assert json.loads(path.read_text(encoding="utf-8")) in configs
+    assert list(path.parent.iterdir()) == [path]
