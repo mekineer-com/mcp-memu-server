@@ -113,8 +113,6 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | 
                 if not await task.func(*task.args, **task.kwargs):
                     success = False
                     break
-            if success and failure:
-                runtime._check_memorize_failure_targets(uid, sid)
         if success and import_cid:
             runtime._write_conversation_state(import_cid, **scoped, updates={"import_ordinary_waiting": None})
     except (Exception, asyncio.CancelledError) as exc:

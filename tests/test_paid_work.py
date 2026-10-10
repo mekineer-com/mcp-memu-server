@@ -1057,9 +1057,13 @@ async def test_retry_validated_empty_source_preserves_unfinished_targets(monkeyp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("waiting", [False, True])
-@pytest.mark.parametrize("retained_source", ["chat", "activity"])
-async def test_retry_deleted_trigger_processes_retained_source_without_resurrection(monkeypatch, waiting, retained_source):
+@pytest.mark.parametrize("waiting, retained_source, late_failure", [
+    (False, "chat", False), (True, "chat", False),
+    (False, "activity", False), (True, "activity", False), (True, "chat", True),
+])
+async def test_retry_deleted_trigger_processes_retained_source_without_resurrection(
+    monkeypatch, waiting, retained_source, late_failure,
+):
     scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     uid, sid, deleted = scoped["user_id"], scoped["soul_id"], "chat:deleted-trigger"
     retained = "chat:retained" if retained_source == "chat" else main._activity_messages.activity_conversation_id(sid)
@@ -1088,6 +1092,16 @@ async def test_retry_deleted_trigger_processes_retained_source_without_resurrect
     service = Service()
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
     monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
+    later = {"conversation_id": retained, "error": "Later fictional source unavailable", "paused": True,
+             "targets": {retained: {"cursor": 1, "memory_producing": True}}}
+    if late_failure:
+        worker = main._run_memorize_segments
+        async def after_completed_worker(**kwargs):
+            success = await worker(**kwargs)
+            assert success and main._paid_work_state(**scoped)["memorize_failure"] is None
+            main._write_conversation_state(retained, **scoped, updates={"memorize_failure": later})
+            return success
+        monkeypatch.setattr(main, "_run_memorize_segments", after_completed_worker)
     try:
         if waiting:
             await main._import_routes.run_waiting_memorize(main, scoped=scoped, retry=True)
@@ -1096,7 +1110,11 @@ async def test_retry_deleted_trigger_processes_retained_source_without_resurrect
             await main.retry_memorize(**scoped, background_tasks=tasks)
             await tasks()
         assert [[row["content"] for row in rows] for rows in calls] == [["Fictional retained work"]]
-        assert main._paid_work_state(**scoped)["memorize_failure"] is None
+        assert main._paid_work_state(**scoped)["memorize_failure"] == (later if late_failure else None)
+        if late_failure:
+            state = main._load_turn_state_and_soul_card(retained, **scoped)[0]
+            assert state["digest_cursor"] == 0 and state["pending_segment_ids"]
+            assert not main._memorize_targets_complete(uid, sid, later["targets"])
         with main._sqlite_connect(path) as con:
             assert con.execute("SELECT conversation_id FROM conversations").fetchall() == [(retained,)]
     finally:
