@@ -1084,6 +1084,29 @@ def test_load_soul_active_since_reads_channels_state_db(tmp_path: Path) -> None:
     assert conversation_sources.load_soul_active_since(soul_id="Echo", state_db_path=state_db_path) is None
 
 
+@pytest.mark.parametrize("raw", [[], "invalid", None])
+def test_sessions_index_rejects_non_object_source_data(tmp_path: Path, raw) -> None:
+    path = tmp_path / "sessions.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="sessions index must be an object"):
+        conversation_sources._load_sessions_index(path)
+
+
+@pytest.mark.parametrize("raw, message", [
+    ([], "contacts object"), ({"contacts": []}, "contacts object"),
+    ({"contacts": {"one": []}}, "invalid contact"),
+    ({"contacts": {"one": {"preferred_jid": "15550000001@c.us", "aliases": "bad"}}}, "aliases must be a list"),
+    ({"contacts": {
+        "one": {"preferred_jid": "15550000001@c.us", "aliases": ["shared@lid"]},
+        "two": {"preferred_jid": "15550000002@c.us", "aliases": ["shared@lid"]},
+    }}, "multiple preferred JIDs"),
+])
+def test_contact_store_rejects_invalid_external_source_data(tmp_path: Path, raw, message) -> None:
+    (tmp_path / "contact_store.json").write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        conversation_sources._load_whatsapp_source_ref_map(tmp_path / "web_source.db")
+
+
 def test_load_soul_active_since_rejects_invalid_existing_value(tmp_path: Path) -> None:
     state_db_path = tmp_path / "state.db"
     con = sqlite3.connect(state_db_path)
@@ -1091,15 +1114,15 @@ def test_load_soul_active_since_rejects_invalid_existing_value(tmp_path: Path) -
         con.execute("CREATE TABLE souls (soul_id TEXT PRIMARY KEY, active_since REAL NOT NULL)")
         con.execute(
             "INSERT INTO souls (soul_id, active_since) VALUES (?, ?)",
-            ("Siri", "2026-06-03T00:00:00Z"),
+            ("TestSoul", "2026-06-03T00:00:00Z"),
         )
         con.commit()
     finally:
         con.close()
 
-    with pytest.raises(RuntimeError, match="invalid active_since"):
+    with pytest.raises(ValueError, match="invalid active_since"):
         conversation_sources.load_soul_active_since(
-            soul_id="Siri",
+            soul_id="TestSoul",
             state_db_path=state_db_path,
         )
 
@@ -1390,18 +1413,18 @@ def test_web_source_outdated_schema_raises(tmp_path: Path) -> None:
             INSERT INTO whatsapp_messages (
               msg_key, chat_id, chat_local_id, from_me, timestamp, type, source,
               first_seen_at, updated_at, raw_json
-            ) VALUES ('k1', '15133278228@c.us', '15133278228', 0, 100, 'chat', 'test', 100, 100, '{}');
+            ) VALUES ('k1', '15550000001@c.us', '15550000001', 0, 100, 'chat', 'test', 100, 100, '{}');
             """
         )
         con.commit()
     finally:
         con.close()
 
-    with pytest.raises(RuntimeError, match="reactions column missing"):
+    with pytest.raises(ValueError, match="reactions column missing"):
         conversation_sources.load_whatsapp_web_source_tail(
-            conversation_id="whatsapp:dm:15133278228",
+            conversation_id="whatsapp:dm:15550000001",
             since_cursor=-1,
             recent_fallback_messages=0,
-            soul_id="Siri",
+            soul_id="TestSoul",
             web_source_db_path=web_db,
         )

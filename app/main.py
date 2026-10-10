@@ -3698,7 +3698,16 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
     try:
         con.row_factory = sqlite3.Row
         _sqlite_ensure_conversation_state_schema(con)
-        tails = _load_cross_memorize_tails_from_sources(con, user_id=uid, soul_id=sid)
+        source_warning = None
+        try:
+            tails = _load_cross_memorize_tails_from_sources(con, user_id=uid, soul_id=sid, strict=True)
+        except HTTPException as exc:
+            cause = exc.__cause__
+            if (exc.status_code != 409 or isinstance(cause, sqlite3.ProgrammingError)
+                    or not isinstance(cause, (OSError, ValueError, sqlite3.DatabaseError))):
+                raise
+            source_warning = str(exc.detail)
+            tails = {}
         scope_sql = "soul_id = ?" + (" AND user_id = ?" if uid else "")
         scope_params = (sid, uid) if uid else (sid,)
         pending_rows = [
@@ -3728,7 +3737,7 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
             ts_ms = _parse_turn_ts_ms(msg.get("received_at"))
             if ts_ms is not None:
                 msg["ts_ms"] = ts_ms
-    summed = _estimate_primary_memorize_tokens(merged)
+    summed = _estimate_primary_memorize_tokens(merged) if source_warning is None else None
     threshold = _MIN_CHUNK_TOKENS
     now = datetime.now(UTC)
     last_consolidation_at = parse_iso_datetime(soul_status.get("last_consolidation_at"))
@@ -3794,9 +3803,11 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
             uid, sid, memorize_lock_key=_memorize_lock_key, memorize_progress=_MEMORIZE_PROGRESS,
         ),
         "summed_unmemorized_tokens": summed,
+        "source_warning": source_warning,
         "threshold": threshold,
-        "pct": round(summed * 100 / threshold) if threshold else 0,
-        "sleep_gap_ready": _unmemorized_sleep_gap_detected(merged, -1, {}, min_chunk_tokens=0),
+        "pct": (round(summed * 100 / threshold) if threshold else 0) if summed is not None else None,
+        "sleep_gap_ready": (_unmemorized_sleep_gap_detected(merged, -1, {}, min_chunk_tokens=0)
+                            if source_warning is None else None),
         "pending_consolidation_segments": pending_consolidation_segments,
         "last_consolidation_at": (
             last_consolidation_at.isoformat() if last_consolidation_at is not None else None

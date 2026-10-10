@@ -931,6 +931,94 @@ async def test_paused_atomic_session_creates_no_state_or_snapshot(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source, producing, error_type", [
+    (source, True, error_type)
+    for source in ("chat:unreadable-status", "whatsapp:dm:15550000001")
+    for error_type in (OSError, ValueError, sqlite3.DatabaseError, sqlite3.OperationalError)
+] + [("whatsapp:dm:15550000001", False, ValueError)])
+async def test_pending_status_keeps_recovery_visible_when_source_count_is_unknown(
+    tmp_path, monkeypatch, source, producing, error_type,
+):
+    scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    healthy = "chat:readable-status"
+    main._write_conversation_state(healthy, **scoped, updates={"pending_segment_ids": ["saved-one", "saved-two"]})
+    main._conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=main._get_storage_dir(main._CONFIG), **scoped, conversation_id=healthy,
+        history=[{"role": "user", "content": "Fictional readable pending evidence", "ts_ms": 1}],
+    )
+    main._write_conversation_state(source, **scoped, updates={"memorize_chat": producing, "memorize_failure": {
+        "conversation_id": source, "error": "Saved source failed", "paused": True,
+        "targets": {source: {"cursor": 1, "memory_producing": producing}}},
+        "last_consolidation_error": "Fictional consolidation failure",
+        "last_consolidation_error_at": datetime.now(UTC).isoformat()})
+    failure = main._paid_work_state(**scoped)["memorize_failure"]
+    reader = main._cross_history._load_tail_for_source_conversation
+    def broken(**kwargs):
+        if kwargs["conversation_id"] == source:
+            raise error_type("Fictional external source unreadable")
+        return reader(**kwargs)
+    monkeypatch.setattr(main._cross_history, "_load_tail_for_source_conversation", broken)
+    monkeypatch.setattr(main._cross_history, "_resolve_source_cursor", lambda cid, *_a, **_k:
+                        (-1, 123.0, True) if cid.startswith("whatsapp:") else (-1, None, False))
+    monkeypatch.setattr(main._cross_history, "_resolve_cross_source_paths", lambda: (
+        main._get_storage_dir(main._CONFIG), tmp_path / "hermes", tmp_path / "sessions.json", tmp_path / "state.db",
+    ))
+    if not producing:
+        monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: None)
+        monkeypatch.setattr(main, "_resolve_whatsapp_web_source_config", lambda: tmp_path / "web_source.db")
+        monkeypatch.setattr(main._conversation_sources, "load_whatsapp_assistant_source_speakers", lambda **_k: {})
+        def broken_background(**_kwargs):
+            assert _kwargs["min_timestamp"] == 123.0
+            assert _kwargs["web_source_db_path"] == tmp_path / "web_source.db"
+            raise ValueError("Fictional external source unreadable")
+        monkeypatch.setattr(main._conversation_sources, "load_whatsapp_web_source_tail_after_rowid", broken_background)
+    result = await main.diag_memorize_pending(**scoped)
+    assert result["paused"] and result["pause_reason"] == "Saved source failed"
+    assert result["memorize_failure"] == failure and result["retry_operation"] == "memorize"
+    assert source in result["source_warning"] and "Fictional external source unreadable" in result["source_warning"]
+    assert result["summed_unmemorized_tokens"] is result["pct"] is result["sleep_gap_ready"] is None
+    assert result["pending_consolidation_segments"] == 2 and result["retry_conversation_id"] == healthy
+    assert result["consolidation_state"] == "error"
+    assert "progress" in result and not result["memorize_running"] and not result["consolidation_running"]
+    with pytest.raises(HTTPException) as refused:
+        await main.retry_memorize(**scoped, background_tasks=BackgroundTasks())
+    assert refused.value.status_code == 409
+    if not producing:
+        with main._sqlite_connect(main._sqlite_current_path(**scoped)) as con:
+            con.row_factory = sqlite3.Row
+            with pytest.raises(HTTPException) as refused_background:
+                main._load_cross_memorize_tails_from_sources(con, **scoped, strict=True)
+        assert refused_background.value.status_code == 409
+        assert isinstance(refused_background.value.__cause__, ValueError)
+    assert main._paid_work_state(**scoped)["memorize_failure"] == failure
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [TypeError("bug"), KeyError("bug"), RuntimeError("invariant"),
+                                    sqlite3.ProgrammingError("bad binding"), HTTPException(409, "no source cause")])
+async def test_pending_status_does_not_mask_programming_or_unclassified_errors(monkeypatch, error):
+    scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "chat:status-bug"
+    main._write_conversation_state(cid, **scoped, updates={})
+    def broken(**_kwargs):
+        raise error
+    monkeypatch.setattr(main._cross_history, "_load_tail_for_source_conversation", broken)
+    with pytest.raises((type(error), HTTPException)) as raised:
+        await main.diag_memorize_pending(**scoped)
+    assert raised.value is error or raised.value.__cause__ is error
+
+
+@pytest.mark.asyncio
+async def test_pending_source_warning_does_not_create_a_processing_pause(monkeypatch):
+    scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    main._write_conversation_state("chat:missing-status", **scoped, updates={})
+    result = await main.diag_memorize_pending(**scoped)
+    assert result["source_warning"] and result["summed_unmemorized_tokens"] is None
+    assert not result["paused"] and result["retry_operation"] is None
+    assert main._paid_work_state(**scoped)["memorize_failure"] is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("waiting", [False, True])
 @pytest.mark.parametrize("source", ["empty", "missing", "corrupt", "shortened"])
 async def test_retry_validated_empty_source_preserves_unfinished_targets(monkeypatch, waiting, source):

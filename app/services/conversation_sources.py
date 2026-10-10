@@ -185,7 +185,7 @@ def _load_sessions_index(path: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"sessions index missing: {path}")
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
-        raise RuntimeError(f"sessions index must be an object: {path}")
+        raise ValueError(f"sessions index must be an object: {path}")
     return raw
 
 
@@ -221,7 +221,7 @@ def load_soul_active_since(
     try:
         return float(row[0])
     except (TypeError, ValueError) as exc:
-        raise RuntimeError(
+        raise ValueError(
             f"invalid active_since for soul {selected!r} in {db_path}: {row[0]!r}"
         ) from exc
 
@@ -463,24 +463,25 @@ def _load_whatsapp_source_ref_map(web_source_db_path: Path) -> dict[str, str]:
     path = web_source_db_path.with_name("contact_store.json")
     if not path.exists():
         return {}
-    contacts = json.loads(path.read_text(encoding="utf-8")).get("contacts")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    contacts = raw.get("contacts") if isinstance(raw, dict) else None
     if not isinstance(contacts, dict):
-        raise RuntimeError(f"WhatsApp contact store must contain a contacts object: {path}")
+        raise ValueError(f"WhatsApp contact store must contain a contacts object: {path}")
     source_refs: dict[str, str] = {}
     for record in contacts.values():
         if not isinstance(record, dict):
-            raise RuntimeError(f"WhatsApp contact store contains an invalid contact: {path}")
+            raise ValueError(f"WhatsApp contact store contains an invalid contact: {path}")
         preferred = _normalize_whatsapp_match_token(str(record.get("preferred_jid") or ""))
         if not preferred:
             continue
         aliases = record.get("aliases") or []
         if not isinstance(aliases, list):
-            raise RuntimeError(f"WhatsApp contact aliases must be a list: {path}")
+            raise ValueError(f"WhatsApp contact aliases must be a list: {path}")
         for value in [preferred, *aliases]:
             alias = _normalize_whatsapp_match_token(str(value or ""))
             owner = source_refs.get(alias)
             if owner and owner != preferred:
-                raise RuntimeError(f"WhatsApp alias {alias!r} has multiple preferred JIDs in {path}")
+                raise ValueError(f"WhatsApp alias {alias!r} has multiple preferred JIDs in {path}")
             if alias:
                 source_refs[alias] = preferred
     return source_refs
@@ -740,7 +741,7 @@ def _load_whatsapp_web_source_tail(
             for r in con.execute("PRAGMA table_info(whatsapp_messages)").fetchall()
         }
         if "reactions" not in msg_cols:
-            raise RuntimeError(
+            raise ValueError(
                 f"web_source.db schema is outdated — reactions column missing: {db_path}. "
                 "Restart the web-source daemon to apply the migration."
             )
