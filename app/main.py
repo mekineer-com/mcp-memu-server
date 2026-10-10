@@ -25,6 +25,9 @@ from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException, Requ
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from memu.app import MemoryService
+from memu.app.memorize import estimate_memorize_context_load
+from memu.app.settings import MemorizeConfig
+from memu.database.models import MemoryCategory
 from memu.app.graph import (
     MemoryCitationConflictError,
 )
@@ -3728,6 +3731,17 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
             str(pending_rows[0]["conversation_id"]) if pending_rows else None
         )
         soul_status = _soul_state.read(con)
+        context_load = None
+        if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'categories'").fetchone():
+            categories = [MemoryCategory.model_validate(dict(row)) for row in con.execute(
+                "SELECT id, name, description, summary, kind, anchor_role, last_evidence_at, "
+                "created_at, updated_at FROM categories WHERE user_id = ? AND soul_id = ?",
+                (uid, sid),
+            )]
+            context_load = estimate_memorize_context_load(
+                categories=categories, narrative_self=soul_status.get("narrative_self"),
+                memorize_config=MemorizeConfig(min_chunk_tokens=_MIN_CHUNK_TOKENS), user_id=uid,
+            )
     finally:
         con.close()
     merged = [msg for tail in tails.values() for msg in tail]
@@ -3803,6 +3817,7 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
             uid, sid, memorize_lock_key=_memorize_lock_key, memorize_progress=_MEMORIZE_PROGRESS,
         ),
         "summed_unmemorized_tokens": summed,
+        "context_load_tokens": context_load,
         "source_warning": source_warning,
         "threshold": threshold,
         "pct": (round(summed * 100 / threshold) if threshold else 0) if summed is not None else None,

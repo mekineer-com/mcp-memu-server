@@ -138,7 +138,7 @@ mcp-memu-server/
 | `/config` | GET/POST | Read or update runtime config |
 | `/reload` | POST | Reload config from disk |
 | `/diag`, `/diag/calls`, `/diag/http`, `/diag/sqlite/*` | GET | Diagnostic pages. Read-only — never use for DB bootstrap. |
-| `/diag/memorize/pending` | GET | Scoped Soul memorize pressure: unmemorized tokens vs threshold, sleep-gap status and existing historical import-claim activity |
+| `/diag/memorize/pending` | GET | Scoped Soul memorize pressure, read-only `context_load_tokens` forecast at the threshold, source warnings, recovery state and historical import-claim activity |
 
 Iris history, media and Memorize use one `conversation_sources.MENTRA_CONVERSATION_ID`
 (`mentra:iris`) within each existing owner/Soul scope. App IDs identify installations

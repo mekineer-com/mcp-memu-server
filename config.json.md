@@ -17,7 +17,7 @@ The default chat-generation profile.
 | `api_key` | `""` | API credential for chat generation. |
 | `base_url` | `"https://api.openai.com/v1"` | Provider API base URL. |
 | `chat_model` | `""` | Chat model used unless a step-specific model overrides it. Required for normal operation. |
-| `context_window_tokens` | `null` | Actual model's total input/output context size. Required for consolidation budgeting; set beside the model. Local metadata, not an API parameter. |
+| `context_window_tokens` | `null` | Actual model's total input/output context size. Required before paid Memorize and consolidation calls; set beside the model. Local metadata, not an API parameter. |
 | `temperature` | provider default | Default sampling temperature. Omit or use `null` to leave it to the provider. |
 | `max_tokens` | provider default | Default maximum generated tokens. Omit or use `null` to leave it to the provider. |
 | `endpoint_overrides` | `{}` | Nonstandard endpoint paths for an OpenAI-compatible provider. |
@@ -54,7 +54,9 @@ overrides need their own explicit capacity; the same model may inherit the
 default. Input allowance is 80% of (context size minus configured `max_tokens`),
 or 80% of context if no output cap is set. Each enabled stage must fit separately.
 The estimator is approximate; this is headroom, not guaranteed token accuracy.
-Edit these settings through the launcher's existing Edit Configs page.
+The Launcher Memorize section links to this config file and shows estimated
+Context load at the configured threshold. Actual prepared requests are checked
+separately; changing the model must not reuse another model's capacity.
 
 ### `llm.step_temperatures`
 
@@ -92,7 +94,7 @@ The stored embedding profile is managed by OpenAlma and is not a user setting.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `min_chunk_tokens` | `8000` | Unmemorized conversation size that triggers automatic memorization. `0` disables the size gate. |
+| `min_chunk_tokens` | `8000` | Unmemorized conversation size that triggers automatic memorization. Lowering it lowers the Launcher's projected Context load at 100%, not an existing backlog. Sleep-gap batches can exceed it. `0` disables the size gate. |
 | `background_summary_tokens` | `1000` | Target size of the rolling background summary. |
 | `background_extra_messages_tokens` | `100` | Recent-message allowance added around background summarization. |
 | `enable_confidence_normalization` | `false` | Normalize extracted confidence values within a batch. |
@@ -160,7 +162,7 @@ These are top-level keys rather than a nested object.
 | --- | --- | --- |
 | `claude_code` | `false` | Use Claude Code CLI instead of the HTTP chat backend. |
 | `claude_code_model` | `"claude-opus-4-7"` | Claude Code model. |
-| `claude_code_context_window_tokens` | `null` | Actual CLI model/account context size; required for CLI consolidation. API capacities/output caps do not apply to CLI calls. |
+| `claude_code_context_window_tokens` | `null` | Actual CLI model/account context size; required before paid CLI Memorize and consolidation calls. API capacities/output caps do not apply to CLI calls. |
 | `claude_code_effort` | `"medium"` | Claude Code effort level. |
 | `claude_code_permission_mode` | `"default"` | Claude Code permission mode. |
 | `claude_code_settings` | `""` | Optional Claude Code settings path or value. |

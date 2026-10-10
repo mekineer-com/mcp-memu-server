@@ -217,7 +217,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     payload = {
         "user": {"user_id": "u", "soul_id": "echo"},
         "database_config": {},
-        "memorize_config": {"semantic_dedupe_similarity_threshold": "banana"},
+        "memorize_config": {"semantic_dedupe_similarity_threshold": "banana", "enforce_input_budget": False},
         "user_config": {"user_name": "RequestNameMustNotWin"},
         **({"claude_code": request_mode} if request_mode is not None else {}),
     }
@@ -268,6 +268,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert captured["claude_code_workspace"] == "/tmp/test-soul"
     assert captured["claude_code_timeout_seconds"] == 3600
     assert captured["memorize_config"]["min_chunk_tokens"] == 4000
+    assert captured["memorize_config"]["enforce_input_budget"] is True
     assert captured["memorize_config"]["background_extra_messages_tokens"] == 321
     assert captured["memorize_config"]["dynamic_category_cluster_size"] == 10
     assert captured["memorize_config"]["category_summary_target_words"] == 275

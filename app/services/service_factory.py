@@ -393,6 +393,7 @@ def _get_service_from_payload(
             cats_cfg.get("category_summary_target_words", 300) or 300
         )
         memorize_config["min_chunk_tokens"] = min_chunk_tokens
+        memorize_config["enforce_input_budget"] = True
         mem_cfg = config.get("memorize") if isinstance(config.get("memorize"), dict) else {}
         embedding_profile = str(
             ((database_config or {}).get("metadata_store") or {}).get("embedding_profile") or ""

@@ -1019,6 +1019,52 @@ async def test_pending_source_warning_does_not_create_a_processing_pause(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_context_load_forecast_is_scoped_read_only_and_independent_of_backlog(monkeypatch):
+    scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    other = {**scoped, "soul_id": "OtherSoul"}
+    engines = []
+    for scope, words in ((scoped, 900), (other, 30)):
+        cid = "chat:forecast"
+        main._write_conversation_state(cid, **scope, updates={"narrative_self": "Fictional character."})
+        main._conversation_sources.persist_sillytavern_history_snapshot(
+            storage_dir=main._get_storage_dir(main._CONFIG), **scope, conversation_id=cid, history=[],
+        )
+        engine = SavedBatchService.make_engine(scope)
+        engines.append(engine)
+        repo = engine.database.memory_category_repo
+        for role in ("soul", "user"):
+            repo.get_or_create_category(name=f"{scope['soul_id']} {role}", description="Fictional anchor.",
+                embedding=[1.0, 0.0], user_data=scope, anchor_role=role)
+        category = repo.get_or_create_category(name="Fictional garden", description="A fictional topic.",
+            embedding=[1.0, 0.0], user_data=scope, kind="topic", last_evidence_at=datetime.now(UTC))
+        repo.update_category(category_id=category.id, summary="Fictional " * words)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a: pytest.fail("Status must not construct services"))
+    monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 8000)
+    try:
+        before = [engine.database.memory_category_repo.list_categories(scope)
+                  for engine, scope in zip(engines, (scoped, other), strict=True)]
+        high = (await main.diag_memorize_pending(**scoped))["context_load_tokens"]
+        small = (await main.diag_memorize_pending(**other))["context_load_tokens"]
+        assert high > small > 8000
+        monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 4000)
+        low = (await main.diag_memorize_pending(**scoped))["context_load_tokens"]
+        assert 4000 < low < high
+        path = main._conversation_sources._chat_snapshot_path(
+            storage_dir=main._get_storage_dir(main._CONFIG), **scoped,
+            conversation_id="chat:forecast", source_label="sillytavern",
+        )
+        path.unlink()
+        unreadable = await main.diag_memorize_pending(**scoped)
+        assert unreadable["summed_unmemorized_tokens"] is None
+        assert unreadable["context_load_tokens"] == low
+        assert [engine.database.memory_category_repo.list_categories(scope)
+                for engine, scope in zip(engines, (scoped, other), strict=True)] == before
+    finally:
+        for engine in engines:
+            engine.database.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("waiting", [False, True])
 @pytest.mark.parametrize("source", ["empty", "missing", "corrupt", "shortened"])
 async def test_retry_validated_empty_source_preserves_unfinished_targets(monkeypatch, waiting, source):
