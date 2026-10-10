@@ -331,6 +331,17 @@ def _load_tail_for_source_conversation(
     import_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     source_label = _message_log.derive_source_label(conversation_id)
+    if source_label == "activity":
+        con = _m()._sqlite_connect(_m()._sqlite_current_path(user_id, soul_id))
+        try:
+            con.row_factory = sqlite3.Row
+            return _m()._activity_messages.activity_message_rows(
+                con, user_id=user_id, soul_id=soul_id, since_cursor=since_cursor,
+                recent_fallback_messages=recent_fallback_messages,
+                include_floor_without_new=include_floor_without_new,
+            )
+        finally:
+            con.close()
     if source_label.startswith("whatsapp:"):
         active_since = _m()._load_soul_active_since(
             soul_id,

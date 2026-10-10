@@ -931,6 +931,160 @@ async def test_paused_atomic_session_creates_no_state_or_snapshot(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("waiting", [False, True])
+@pytest.mark.parametrize("source", ["empty", "missing", "corrupt", "shortened"])
+async def test_retry_validated_empty_source_preserves_unfinished_targets(monkeypatch, waiting, source):
+    scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    uid, sid, cid = scoped["user_id"], scoped["soul_id"], "chat:empty-retry"
+    targets = {cid: {"cursor": 1, "memory_producing": True}} if source == "shortened" else {}
+    main._write_conversation_state(cid, **scoped, updates={"memorize_failure": {
+        "conversation_id": cid, "paused": True, "error": "Source failed", "targets": targets}})
+    if source != "missing":
+        main._conversation_sources.persist_sillytavern_history_snapshot(
+            storage_dir=main._get_storage_dir(main._CONFIG), **scoped, conversation_id=cid, history=[],
+        )
+        if source == "corrupt":
+            path = main._conversation_sources._chat_snapshot_path(
+                storage_dir=main._get_storage_dir(main._CONFIG), **scoped,
+                conversation_id=cid, source_label="sillytavern",
+            )
+            path.write_text("{broken", encoding="utf-8")
+    consolidate = AsyncMock(return_value={"status": "skipped"})
+    monkeypatch.setattr(main, "_run_consolidation_task", consolidate)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: object())
+    if waiting:
+        await main._import_routes.run_waiting_memorize(main, scoped=scoped, retry=True)
+    elif source == "empty":
+        tasks = BackgroundTasks()
+        assert (await main.retry_memorize(**scoped, background_tasks=tasks))["status"] == "already_memorized"
+        await tasks()
+    else:
+        with pytest.raises((HTTPException, ValueError, OSError)):
+            await main.retry_memorize(**scoped, background_tasks=BackgroundTasks())
+    failure = main._paid_work_state(**scoped)["memorize_failure"]
+    assert bool(failure) == (source != "empty")
+    if failure:
+        assert failure["targets"] == targets and failure["paused"]
+    assert consolidate.await_count == (1 if source == "empty" else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("waiting", [False, True])
+@pytest.mark.parametrize("retained_source", ["chat", "activity"])
+async def test_retry_deleted_trigger_processes_retained_source_without_resurrection(monkeypatch, waiting, retained_source):
+    scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    uid, sid, deleted = scoped["user_id"], scoped["soul_id"], "chat:deleted-trigger"
+    retained = "chat:retained" if retained_source == "chat" else main._activity_messages.activity_conversation_id(sid)
+    main._write_conversation_state(deleted, **scoped, updates={"memorize_failure": {
+        "conversation_id": deleted, "paused": True, "error": "Failed", "targets": {deleted: {"cursor": 9}}}})
+    main._write_conversation_state(retained, **scoped, updates={})
+    path = main._sqlite_current_path(uid, sid)
+    with main._sqlite_connect(path) as con:
+        con.execute("DELETE FROM conversations WHERE conversation_id = ?", (deleted,))
+        if retained_source == "activity":
+            main._activity_messages.ensure_activity_messages_schema(con)
+            con.execute("INSERT INTO activity_messages (user_id, soul_id, conversation_id, speaker, content, received_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (uid, sid, retained, sid, "Fictional retained work", "2026-01-02T00:00:00Z"))
+    if retained_source == "chat":
+        main._conversation_sources.persist_sillytavern_history_snapshot(
+            storage_dir=main._get_storage_dir(main._CONFIG), **scoped, conversation_id=retained,
+            history=[{"role": "user", "content": "Fictional retained work", "ts_ms": 1}],
+        )
+    calls = []
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
+            assert main._paid_work_state(**scoped)["memorize_failure"]["conversation_id"] == deleted
+            calls.extend(json.loads(segment["raw_text"]) for segment in kwargs["segments"])
+            return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
+    service = Service()
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
+    monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
+    try:
+        if waiting:
+            await main._import_routes.run_waiting_memorize(main, scoped=scoped, retry=True)
+        else:
+            tasks = BackgroundTasks()
+            await main.retry_memorize(**scoped, background_tasks=tasks)
+            await tasks()
+        assert [[row["content"] for row in rows] for rows in calls] == [["Fictional retained work"]]
+        assert main._paid_work_state(**scoped)["memorize_failure"] is None
+        with main._sqlite_connect(path) as con:
+            assert con.execute("SELECT conversation_id FROM conversations").fetchall() == [(retained,)]
+    finally:
+        if hasattr(service, "engine"):
+            service.database.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("waiting", [False, True])
+@pytest.mark.parametrize("empty_targets", [False, True])
+async def test_retry_all_deleted_without_saved_work_needs_no_source_or_consolidation(monkeypatch, waiting, empty_targets):
+    scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "chat:deleted-empty"
+    main._write_conversation_state(cid, **scoped, updates={"memorize_failure": {
+        "conversation_id": cid, "paused": True, "error": "Failed",
+        "targets": {} if empty_targets else {cid: {"cursor": 9}}}})
+    with main._sqlite_connect(main._sqlite_current_path(**scoped)) as con:
+        con.execute("DELETE FROM conversations WHERE conversation_id = ?", (cid,))
+    monkeypatch.setattr(main, "_saved_memorize_payload", lambda *_a: pytest.fail("No registered source"))
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a: pytest.fail("No work to consolidate"))
+    if waiting:
+        await main._import_routes.run_waiting_memorize(main, scoped=scoped, retry=True)
+    else:
+        tasks = BackgroundTasks()
+        assert (await main.retry_memorize(**scoped, background_tasks=tasks))["status"] == "already_memorized"
+        assert tasks.tasks == []
+    assert main._paid_work_state(**scoped)["memorize_failure"] is None
+    assert main._retry_memorize_anchor(cid, **scoped) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_review", [False, True])
+async def test_retry_all_deleted_finishes_real_saved_work_without_recreating_chat(monkeypatch, fail_review):
+    scoped = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    uid, sid, cid = scoped["user_id"], scoped["soul_id"], "chat:deleted-saved"
+    main._write_conversation_state(cid, **scoped, updates={"memorize_failure": {
+        "conversation_id": cid, "paused": True, "error": "Dedupe failed", "targets": {cid: {"cursor": 1}}}})
+    main._write_conversation_state(cid, **scoped, updates={"memorize_segment_work": {"saved": "dedupe"}})
+    engine = SavedBatchService.make_engine(scoped)
+    item = engine.database.memory_item_repo.create_item(
+        memory_type="knowledge", summary="Fictional saved evidence", embedding=[1.0, 0.0],
+        user_data=scoped, segment_id="saved",
+    )
+    path = main._sqlite_current_path(uid, sid)
+    with main._sqlite_connect(path) as con:
+        con.execute("DELETE FROM conversations WHERE conversation_id = ?", (cid,))
+    async def review(state, _context, **_kwargs):
+        failure = main._paid_work_state(**scoped)["memorize_failure"]
+        assert failure["conversation_id"] == cid and failure["segment_work"] == {"saved": "review"}
+        assert [row.id for row in state["items"]] == [item.id]
+        if fail_review:
+            raise RuntimeError("Fictional review still failed")
+        return state
+    monkeypatch.setattr(engine, "_select_embedding_client", lambda *_a, **_kw: object())
+    monkeypatch.setattr(engine, "_memorize_persist_and_index", review)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: engine)
+    monkeypatch.setattr(main, "_saved_memorize_payload", lambda *_a: pytest.fail("No registered source to read"))
+    consolidate = AsyncMock()
+    monkeypatch.setattr(main, "_run_consolidation_task", consolidate)
+    try:
+        tasks = BackgroundTasks()
+        assert (await main.retry_memorize(**scoped, background_tasks=tasks))["status"] == "accepted"
+        await tasks()
+        failure = main._paid_work_state(**scoped)["memorize_failure"]
+        assert bool(failure) == fail_review
+        if failure:
+            assert failure["segment_work"] == {"saved": "review"}
+        assert engine.database.memory_item_repo.list_items(scoped)[item.id].summary == item.summary
+        with main._sqlite_connect(path) as con:
+            assert con.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == 0
+        consolidate.assert_not_awaited()
+    finally:
+        engine.database.close()
+
+
+@pytest.mark.asyncio
 async def test_retry_names_unreadable_source_without_clearing_failure(monkeypatch):
     uid, sid, cid = "TestOwner", "TestSoul", "chat:unreadable"
     main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={

@@ -43,9 +43,10 @@ class ImportPreview(ImportScope):
     current_messages: list[ImportMessage]
 
 
-async def recover_memorize(runtime: Any, *, scoped: dict, cid: str, historical: bool = False) -> None:
-    state, _card, _path = runtime._load_turn_state_and_soul_card(cid, **scoped)
-    record = state["import_state"] if historical else runtime._paid_work_state(**scoped).get("memorize_failure")
+async def recover_memorize(runtime: Any, *, scoped: dict, cid: str | None, historical: bool = False) -> None:
+    record = (runtime._load_turn_state_and_soul_card(cid, **scoped)[0]["import_state"] if historical
+              else runtime._paid_work_state(**scoped).get("memorize_failure"))
+    write_state = runtime._write_conversation_state if historical else runtime._write_retry_memorize_state
     work = (record or {}).get("segment_work", {})
     if not work:
         return
@@ -59,11 +60,11 @@ async def recover_memorize(runtime: Any, *, scoped: dict, cid: str, historical: 
         )
         await svc.resume_memorize_segment(
             segment_id=segment_id, phase=phase, user=scoped,
-            on_dedupe_complete=partial(memorize_endpoint.write_segment_phase, runtime._write_conversation_state,
+            on_dedupe_complete=partial(memorize_endpoint.write_segment_phase, write_state,
                 conversation_id=cid, scope=scoped, segment_id=segment_id, phase="review", historical=historical),
             enforce_input_budget=historical,
         )
-    runtime._write_conversation_state(cid, **scoped, updates={
+    write_state(cid, **scoped, updates={
         "import_segment_work" if historical else "memorize_segment_work": {}, "finish_segment_work": True,
     })
 
@@ -74,31 +75,39 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | 
     success = False
     consolidation_started = False
     payload = None
+    cid = None
     try:
         state = runtime._paid_work_state(uid, sid)
         failure = state.get("memorize_failure")
         cid = runtime._soul_import_state(uid, sid)[1]["ordinary_waiting"] if import_cid else failure["conversation_id"]
+        if failure:
+            cid = runtime._retry_memorize_anchor(cid, uid, sid)
         if failure and retry:
             await recover_memorize(runtime, scoped=scoped, cid=cid)
             state = runtime._paid_work_state(uid, sid)
             failure = state.get("memorize_failure")
         if (import_cid and runtime._soul_state.consolidation_failure(state)) or (failure and not retry):
             return
-        if failure and runtime._memorize_targets_complete(uid, sid, failure["targets"]):
-            runtime._write_conversation_state(cid, **scoped, updates={"memorize_failure": None})
-            svc = runtime._get_service_from_payload({"user": scoped})
-            consolidation_started = True
-            await runtime._run_consolidation_task(
-                svc, conversation_id=cid,
-                soul_id=sid, uid=uid, progress_key=marker, memorize_progress=runtime._MEMORIZE_PROGRESS,
-            )
+        complete = bool(failure) and runtime._memorize_targets_complete(uid, sid, failure["targets"])
+        if cid is not None and not (failure and cid == failure["conversation_id"] and complete):
+            payload = runtime._saved_memorize_payload(cid, uid, sid, failure)
+        if payload is None:
+            if failure:
+                if failure["targets"] and not complete:
+                    runtime._check_memorize_failure_targets(uid, sid)
+                runtime._write_retry_memorize_state(cid, **scoped, updates={"memorize_failure": None})
+            if failure and cid is not None:
+                svc = runtime._get_service_from_payload({"user": scoped})
+                consolidation_started = True
+                await runtime._run_consolidation_task(
+                    svc, conversation_id=cid,
+                    soul_id=sid, uid=uid, progress_key=marker, memorize_progress=runtime._MEMORIZE_PROGRESS,
+                )
             success = True
         else:
-            payload = runtime._saved_memorize_payload(cid, uid, sid, failure)
             tasks = BackgroundTasks()
-            if payload is not None:
-                await runtime._memorize_owned(payload, tasks, True, admitted=True, batch_owned=True,
-                                              import_handoff=True, retry=bool(failure))
+            await runtime._memorize_owned(payload, tasks, True, admitted=True, batch_owned=True,
+                                          import_handoff=True, retry=bool(failure))
             success = True
             for task in tasks.tasks:
                 if not await task.func(*task.args, **task.kwargs):
@@ -112,9 +121,9 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | 
         success = False
         runtime.logger.exception("Saved-chat Memorize did not complete for %s", sid)
         failure = runtime._paid_work_state(uid, sid).get("memorize_failure") or failure
-        runtime._write_conversation_state(cid, **scoped, updates={"memorize_failure": {
+        runtime._write_retry_memorize_state(cid, **scoped, updates={"memorize_failure": {
                 **(failure or {}),
-                "conversation_id": cid, "paused": True,
+                "conversation_id": (failure or {}).get("conversation_id") or cid, "paused": True,
                 "error": "Memorize interrupted. Retry required." if isinstance(exc, asyncio.CancelledError)
                          else f"Memorize failed: {exc}"[:300],
                 "targets": (failure or {}).get("targets") or (payload or {}).get("_final_cursors") or {},

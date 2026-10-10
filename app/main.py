@@ -121,6 +121,7 @@ from app.services.state import (
     conversation_state_from_row as _conversation_state_from_row_impl,
     conversation_state_row as _conversation_state_row,
     effective_digest_cursor_from_row as _effective_digest_cursor_from_row,
+    patch_memorize_failure as _patch_memorize_failure,
     write_conversation_state as _write_conversation_state_impl,
 )
 from app.services.turn_contract import (
@@ -2451,7 +2452,7 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
     safe["user"] = {**(safe.get("user") or {}), "user_id": uid, "soul_id": sid}
     marker = _memorize_lock_key(uid, sid)
     source = _message_log.derive_source_label(_extract_conversation_id(safe))
-    if source not in {"whatsapp:dm", "whatsapp:group", "sillytavern", "atomic", "mentra", "replika", "import"}:
+    if source not in {"whatsapp:dm", "whatsapp:group", "sillytavern", "atomic", "mentra", "replika", "import", "activity"}:
         if admitted and not batch_owned:
             await _finish_memorize_claim(marker, False)
         raise HTTPException(status_code=400, detail="Memorize requires a saved chat source with a supported history reader")
@@ -2477,8 +2478,8 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
             failure = _paid_work_state(uid, sid).get("memorize_failure")
             if not failure:
                 raise HTTPException(status_code=409, detail="No failed Memorize is ready to retry")
-            _write_conversation_state(
-                failure["conversation_id"], user_id=uid, soul_id=sid,
+            _write_retry_memorize_state(
+                _extract_conversation_id(safe), user_id=uid, soul_id=sid,
                 updates={"memorize_failure": {**failure, "paused": True}},
             )
         if not retry and not historical:
@@ -2531,7 +2532,7 @@ def _memorize_targets_complete(user_id: str, soul_id: str, targets: dict[str, An
         for cid, target in targets.items():
             row = _conversation_state_row(con, cid, user_id=user_id, soul_id=soul_id)
             if row is None:
-                return False
+                continue
             prefix = "digest" if target.get("memory_producing", True) else "rolling_summary"
             cursor_field = "digest_cursor" if prefix == "digest" else "rolling_summary_cursor_id"
             current = (_effective_digest_cursor_from_row(dict(row))
@@ -2631,6 +2632,43 @@ def _prepare_frozen_memorize(safe: dict[str, Any], uid: str, sid: str) -> bool:
     return eligible
 
 
+def _retry_memorize_anchor(cid: str, user_id: str, soul_id: str) -> str | None:
+    con = _sqlite_connect(_sqlite_current_path(user_id, soul_id))
+    try:
+        row = con.execute(
+            "SELECT conversation_id FROM conversations WHERE user_id = ? AND soul_id = ? "
+            "ORDER BY conversation_id = ? DESC, conversation_id LIMIT 1",
+            (user_id, soul_id, cid),
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        con.close()
+
+
+def _write_retry_memorize_state(cid: str | None, *, user_id: str, soul_id: str,
+                               updates: dict[str, Any], connection: Any = None) -> None:
+    if cid is not None:
+        _write_conversation_state(cid, user_id=user_id, soul_id=soul_id, updates=updates, connection=connection)
+        return
+    # Recovery still owns saved work when every conversation has been deleted.
+    con = connection or _sqlite_connect(_sqlite_current_path(user_id, soul_id))
+    try:
+        con.row_factory = sqlite3.Row
+        if connection is None:
+            con.execute("BEGIN IMMEDIATE")
+        patch = {"finish": updates.get("finish_segment_work", False)}
+        if "memorize_failure" in updates:
+            patch["replacement"] = updates["memorize_failure"]
+        if "memorize_segment_work" in updates:
+            patch["segment_work"] = updates["memorize_segment_work"]
+        _soul_state.write(con, {"memorize_failure": _patch_memorize_failure(con, **patch)})
+        if connection is None:
+            con.commit()
+    finally:
+        if connection is None:
+            con.close()
+
+
 @app.post("/memorize/retry", operation_id="retry_memorize")
 async def retry_memorize(user_id: str, soul_id: str, background_tasks: BackgroundTasks):
     scope = _extract_scope(_safe_payload({"user": {"user_id": user_id, "soul_id": soul_id}})) or {}
@@ -2648,7 +2686,8 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
             if _memorize_lock_key(user_id, soul_id) in _FORCED_MEMORIZE_INFLIGHT:
                 raise HTTPException(status_code=409, detail="Memorize is already running")
             if failure:
-                _write_conversation_state(failure["conversation_id"], user_id=user_id, soul_id=soul_id,
+                _write_retry_memorize_state(_retry_memorize_anchor(failure["conversation_id"], user_id, soul_id),
+                                          user_id=user_id, soul_id=soul_id,
                                           updates={"memorize_failure": {"paused": True}})
             _FORCED_MEMORIZE_INFLIGHT[_memorize_lock_key(user_id, soul_id)] = False
         background_tasks.add_task(_import_routes.run_waiting_memorize, sys.modules[__name__],
@@ -2659,7 +2698,7 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
     marker = _memorize_lock_key(user_id, soul_id)
     if marker in _FORCED_MEMORIZE_INFLIGHT:
         raise HTTPException(status_code=409, detail="Memorize is already running")
-    cid = failure["conversation_id"]
+    cid = _retry_memorize_anchor(failure["conversation_id"], user_id, soul_id)
     if failure.get("segment_work"):
         with _STATE_LOCK:
             _cid, current_import = _soul_import_state(user_id, soul_id)
@@ -2667,21 +2706,27 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
                 raise HTTPException(status_code=409, detail="Finish the import in Echo before retrying Memorize")
             if marker in _FORCED_MEMORIZE_INFLIGHT:
                 raise HTTPException(status_code=409, detail="Memorize is already running")
-            _write_conversation_state(cid, user_id=user_id, soul_id=soul_id,
+            _write_retry_memorize_state(cid, user_id=user_id, soul_id=soul_id,
                                       updates={"memorize_failure": {"paused": True}})
             _FORCED_MEMORIZE_INFLIGHT[marker] = False
         background_tasks.add_task(_import_routes.run_waiting_memorize, sys.modules[__name__],
                                   scoped={"user_id": user_id, "soul_id": soul_id}, retry=True)
         return {"ok": True, "status": "accepted"}
-    if _memorize_targets_complete(user_id, soul_id, failure["targets"]):
-        _write_conversation_state(cid, user_id=user_id, soul_id=soul_id, updates={"memorize_failure": None})
-        background_tasks.add_task(
-            _run_consolidation_task, _get_service_from_payload({"user": {"user_id": user_id, "soul_id": soul_id}}),
-            conversation_id=cid, soul_id=soul_id, uid=user_id,
-            progress_key=marker, memorize_progress=_MEMORIZE_PROGRESS,
-        )
+    complete = _memorize_targets_complete(user_id, soul_id, failure["targets"])
+    payload = None
+    if cid is not None and not (cid == failure["conversation_id"] and complete):
+        payload = _saved_memorize_payload(cid, user_id, soul_id, failure)
+    if payload is None:
+        if failure["targets"] and not complete:
+            _check_memorize_failure_targets(user_id, soul_id)
+        _write_retry_memorize_state(cid, user_id=user_id, soul_id=soul_id, updates={"memorize_failure": None})
+        if cid is not None:
+            background_tasks.add_task(
+                _run_consolidation_task, _get_service_from_payload({"user": {"user_id": user_id, "soul_id": soul_id}}),
+                conversation_id=cid, soul_id=soul_id, uid=user_id,
+                progress_key=marker, memorize_progress=_MEMORIZE_PROGRESS,
+            )
         return {"ok": True, "status": "already_memorized"}
-    payload = _saved_memorize_payload(cid, user_id, soul_id, failure)
     return await _memorize_owned(payload, background_tasks, True, retry=True)
 
 
@@ -2710,10 +2755,6 @@ def _saved_memorize_payload(cid: str, user_id: str, soul_id: str, failure: dict 
         filing_policy={target_cid: target.get("memory_producing", True)
                        for target_cid, target in (failure or {}).get("targets", {}).items()},
     )
-    if payload is None:
-        if not history and failure is None:
-            return None
-        raise HTTPException(status_code=409, detail=f"Chat source {cid} is unavailable; restore it before retrying Memorize")
     return payload
 
 
