@@ -10,6 +10,7 @@ from memu.app import MemoryService
 from memu.app.settings import LLMConfig
 
 from app.config import SoulIdError
+from app.services.souls import read_soul_name
 
 
 _SERVICES: dict[str, MemoryService] = {}
@@ -433,8 +434,12 @@ def _get_service_from_payload(
             ):
                 retrieve_config[profile_field] = cfg_key
     user_config = payload.get("user_config") or {}
+    user_config = {
+        **(user_config if isinstance(user_config, dict) else {}),
+        "user_name": read_soul_name(sqlite_file_from_dsn(database_config["metadata_store"]["dsn"])),
+    }
 
-    sig = payload_signature({**payload, "claude_code": claude_code})
+    sig = payload_signature({**payload, "claude_code": claude_code, "user_config": user_config})
     service_key = f"{service_key_raw}__{sig}"
     storage_fp = _service_storage_fingerprint(
         database_config if isinstance(database_config, dict) else None,

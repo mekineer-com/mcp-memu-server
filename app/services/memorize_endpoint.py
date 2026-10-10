@@ -17,6 +17,7 @@ from app.config import validate_soul_id
 from app.services.conversation_id import canonical_conversation_id
 from app.services.payload import message_ts_ms
 from app.services.state import conversation_state_from_row, conversation_state_row, effective_digest_cursor_from_row
+from app.services.souls import read_soul_name, publish_soul_db
 
 
 def write_segment_phase(
@@ -1207,6 +1208,7 @@ async def memorize_endpoint(
                     raise HTTPException(status_code=409, detail="cannot rebuild during consolidation")
                 db_path = endpoint_ctx.sqlite_current_path(uid, soul_id)
                 if db_path is not None and db_path.exists():
+                    user_name = read_soul_name(db_path)
                     ts = datetime.now(UTC).strftime("%y%m%d-%H%M%S")
                     archive_path = db_path.with_suffix(f".bak-{ts}")
                     db_path.rename(archive_path)
@@ -1214,6 +1216,7 @@ async def memorize_endpoint(
                         wal_file = db_path.with_name(db_path.name + wal_suffix)
                         if wal_file.exists():
                             wal_file.rename(archive_path.with_name(archive_path.name + wal_suffix))
+                    publish_soul_db(db_path, user_name)
                     ctx.logger.info("re-memorize: archived %s → %s", db_path.name, archive_path.name)
                     endpoint_ctx.clear_cached_services()
             # Acquire (or re-acquire after archive) the service so schema creation runs against

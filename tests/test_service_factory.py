@@ -75,7 +75,7 @@ def test_server_config_separates_embedding_provider_and_profile_guard(tmp_path) 
         },
     }
     owner.create_owner(cfg, "test-user")
-    souls.publish_soul_db(tmp_path / "test.db")
+    souls.publish_soul_db(tmp_path / "test.db", "test-user")
     profiles = default_llm_profiles_from_server_config(cfg)
     database = database_config_from_cfg(cfg, {"user_id": "test-user", "soul_id": "test"})
 
@@ -101,7 +101,7 @@ def test_embedding_profile_is_managed_by_openalma(tmp_path) -> None:
         },
     }
     owner.create_owner(cfg, "test-user")
-    souls.publish_soul_db(tmp_path / "test.db")
+    souls.publish_soul_db(tmp_path / "test.db", "test-user")
 
     database = database_config_from_cfg(cfg, {"user_id": "test-user", "soul_id": "test"})
 
@@ -193,6 +193,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         text: str = ""
 
     monkeypatch.setattr(service_factory, "MemoryService", _FakeService)
+    monkeypatch.setattr(service_factory, "read_soul_name", lambda _path: "TestOwner")
     service_factory._SERVICES.clear()
     service_factory._SERVICE_STORAGE_FP.clear()
 
@@ -217,6 +218,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         "user": {"user_id": "u", "soul_id": "echo"},
         "database_config": {},
         "memorize_config": {"semantic_dedupe_similarity_threshold": "banana"},
+        "user_config": {"user_name": "RequestNameMustNotWin"},
         **({"claude_code": request_mode} if request_mode is not None else {}),
     }
     kwargs = dict(
@@ -257,6 +259,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert isinstance(out, _FakeService)
     effective_mode = server_mode if request_mode is None else request_mode
     assert captured["claude_code"] is effective_mode
+    assert captured["user_config"]["user_name"] == "TestOwner"
     assert captured["claude_code_model"] == "claude-opus-4-7"
     assert captured["claude_code_context_window_tokens"] == 200_000
     assert captured["claude_code_effort"] == "medium"
@@ -318,6 +321,7 @@ def test_client_llm_profiles_suppress_server_step_model_routing(monkeypatch: pyt
         text: str = ""
 
     monkeypatch.setattr(service_factory, "MemoryService", _FakeService)
+    monkeypatch.setattr(service_factory, "read_soul_name", lambda _path: "TestOwner")
     service_factory._SERVICES.clear()
     service_factory._SERVICE_STORAGE_FP.clear()
 
@@ -385,6 +389,7 @@ def test_server_step_models_inject_when_client_profiles_absent(monkeypatch: pyte
         text: str = ""
 
     monkeypatch.setattr(service_factory, "MemoryService", _FakeService)
+    monkeypatch.setattr(service_factory, "read_soul_name", lambda _path: "TestOwner")
     service_factory._SERVICES.clear()
     service_factory._SERVICE_STORAGE_FP.clear()
 

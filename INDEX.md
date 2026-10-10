@@ -133,6 +133,7 @@ mcp-memu-server/
 | `/categories/search` | POST | Search categories |
 | `/clear` | POST | Delete memories in scope |
 | `/souls` | GET/POST | Discover or create canonical scoped soul databases; enabled-gated keyless Mentra alias at `/integration/mentra/souls` |
+| `/souls/{soul_id}` | GET | Read immutable per-Soul human name without creating schema or a service; shared Mentra alias |
 | `/integration/atomic/memories` | POST | Create one exact, approved human-authored `knowledge` memory for an owner+soul scope |
 | `/config` | GET/POST | Read or update runtime config |
 | `/reload` | POST | Reload config from disk |
@@ -146,11 +147,16 @@ and sitting ownership, not separate chats. No old-chat conversion or fallback re
 ### Soul Setup Contract
 
 `GET /souls` returns exact `*.db` filename stems except the configured base DB and
-symlinks. `POST /souls` accepts `{soul_id, use_existing: bool}` and returns
+symlinks. `POST /souls` accepts `{soul_id, use_existing: bool, user_name?: str}` and returns
 `{soul_id, created: bool}`.
 Both methods share their implementation with `/integration/mentra/souls`, whose
 only dependency is Mentra's enabled gate, with no connection key.
-Local routes follow the trusted-local API convention.
+Local routes follow the trusted-local API convention. `GET /souls/{soul_id}`
+returns `{soul_id, user_name}` through a direct read-only query; missing bindings
+fail rather than creating or migrating a DB. New creation defaults an omitted
+name to the canonical owner and publishes the stored name with the staged DB.
+Existing-Soul consent does not overwrite it. Scope/speaker IDs remain unchanged;
+the stored name supplies human anchor and extraction/reflection prompt labels.
 
 Only `POST /souls` publishes a regular-file soul database. Any scoped request for an unknown
 soul fails; read/turn/outbound paths never create identity as a side effect.

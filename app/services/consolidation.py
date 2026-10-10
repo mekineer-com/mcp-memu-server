@@ -322,8 +322,9 @@ def _render_identity_prompt(
 ) -> tuple[str, str]:
     context = inputs["reflection_prompt_context"]
     bundles = inputs["anchor_bundles"]
+    user_name = bundles["user"]["dossier"].name
     statuses = {role: revision_status_items(bundle) for role, bundle in bundles.items()}
-    system_prompt = anchors_prompt.SYSTEM_PROMPT.format(soul_name=soul_id, user_name=user_id)
+    system_prompt = anchors_prompt.SYSTEM_PROMPT.format(soul_name=soul_id, user_name=user_name)
     user_prompt = anchors_prompt.USER_PROMPT.format(
         narrative_self=context["narrative_self"],
         life_goals=context["life_goals"],
@@ -347,7 +348,7 @@ def _render_identity_prompt(
         user_anchor_inactive_linked_memory_items=render_memory_records(
             statuses["user"]["purged"]
         ),
-        user_name=user_id,
+        user_name=user_name,
     )
     return system_prompt, user_prompt
 
@@ -374,7 +375,9 @@ def _render_weekly_prompt(
     active_goals = _project_life_goals(
         inputs["active_life_goals"], identity["life_goal_add"], identity["life_goal_remove"]
     )
-    system_prompt = weekly_prompt.SYSTEM_PROMPT.format(soul_name=soul_id, user_name=user_id)
+    system_prompt = weekly_prompt.SYSTEM_PROMPT.format(
+        soul_name=soul_id, user_name=inputs["anchor_bundles"]["user"]["dossier"].name
+    )
     user_prompt = weekly_prompt.USER_PROMPT.format(
         narrative_self=identity["narrative_self"] or context["narrative_self"],
         soul_anchor=(
@@ -440,7 +443,7 @@ def _prepare_dossier_consolidation_prompts(
     }
 
     anchors = inputs["anchor_bundles"]
-    system_prompt = dossiers_prompt.SYSTEM_PROMPT.format(soul_name=soul_id, user_name=user_id)
+    system_prompt = dossiers_prompt.SYSTEM_PROMPT.format(soul_name=soul_id, user_name=anchors["user"]["dossier"].name)
     literal_fields = {
         name: "{" + name + "}"
         for name in (

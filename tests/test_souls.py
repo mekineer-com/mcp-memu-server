@@ -149,10 +149,71 @@ def test_publication_uses_reopenable_temporary_file_and_cleans_it(tmp_path, monk
     monkeypatch.setattr(souls.tempfile, "NamedTemporaryFile", tracked_temporary_file)
     path = tmp_path / "Portable Soul.db"
 
-    assert souls.publish_soul_db(path) is True
+    assert souls.publish_soul_db(path, "TestOwner") is True
     assert options["delete_on_close"] is False
     assert path.is_file()
     assert list(tmp_path.glob("*.tmp")) == []
+    assert souls.read_soul_name(path) == "TestOwner"
+
+
+def test_display_names_are_per_soul_and_immutable(tmp_path):
+    client, _cfg = client_for(tmp_path)
+    for soul_id, user_name in (("FirstSoul", "FirstHuman"), ("SecondSoul", "SecondHuman")):
+        assert client.post("/souls", json={
+            "soul_id": soul_id, "user_name": user_name, "use_existing": False,
+        }).status_code == 200
+        assert client.get(f"/souls/{soul_id}").json() == {"soul_id": soul_id, "user_name": user_name}
+        assert client.post("/souls", json={
+            "soul_id": soul_id, "user_name": "ReplacementHuman", "use_existing": True,
+        }).status_code == 200
+        assert client.get(f"/souls/{soul_id}").json()["user_name"] == user_name
+    for name in ("SameName", "samename"):
+        response = client.post("/souls", json={"soul_id": "SameName", "user_name": name, "use_existing": False})
+        assert response.status_code == 422
+    assert not (tmp_path / "SameName.db").exists()
+    assert post(client, "CanonicalSoul").status_code == 200
+    assert client.get("/souls/CanonicalSoul").json()["user_name"] == "TestOwner"
+
+
+@pytest.mark.parametrize("state", ["missing", "no_table", "no_column", "no_row", "blank"])
+def test_metadata_refuses_missing_binding_without_writing_or_migrating(tmp_path, state):
+    client, _cfg = client_for(tmp_path)
+    path = tmp_path / "Unbound.db"
+    if state != "missing":
+        with sqlite3.connect(path) as con:
+            if state != "no_table":
+                con.execute("CREATE TABLE soul_state (id INTEGER PRIMARY KEY" +
+                            (", user_name TEXT" if state != "no_column" else "") + ")")
+                if state == "blank":
+                    con.execute("INSERT INTO soul_state VALUES (1, '')")
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    assert client.get("/souls/Unbound").status_code == 409
+    if state != "missing":
+        assert client.post("/souls", json={
+            "soul_id": "Unbound", "user_name": "DoNotSeed", "use_existing": True,
+        }).status_code == 409
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_metadata_stopped_wal_read_has_no_side_effects(tmp_path, bound):
+    client, _cfg = client_for(tmp_path)
+    path = tmp_path / "WalSoul.db"
+    if bound:
+        souls.publish_soul_db(path, "TestHuman")
+    con = sqlite3.connect(path)
+    if not bound:
+        con.execute("CREATE TABLE soul_state (id INTEGER PRIMARY KEY)")
+        con.commit()
+    con.execute("PRAGMA journal_mode=WAL")
+    con.close()
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    assert not any(name.endswith(("-wal", "-shm")) for name in before)
+    response = client.get("/souls/WalSoul")
+    assert response.status_code == (200 if bound else 409)
+    if bound:
+        assert response.json()["user_name"] == "TestHuman"
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before
 
 
 def test_non_file_soul_occupant_is_rejected(tmp_path):
@@ -175,9 +236,9 @@ def test_concurrent_case_variants_publish_only_one_soul(tmp_path, monkeypatch):
     client, cfg = client_for(tmp_path)
     publish = souls.publish_soul_db
 
-    def delayed_publish(path):
+    def delayed_publish(path, user_name):
         sleep(0.05)
-        return publish(path)
+        return publish(path, user_name)
 
     monkeypatch.setattr(souls, "publish_soul_db", delayed_publish)
     names = ["AuditSoul", "auditsoul"]

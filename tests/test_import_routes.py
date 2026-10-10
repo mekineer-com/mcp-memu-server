@@ -290,7 +290,8 @@ def test_new_soul_first_preview_initializes_schema_without_model_calls(tmp_path,
     assert client.post("/souls", json={"soul_id": "FreshImportSoul", "use_existing": False}).status_code == 200
     path = main._sqlite_current_path("TestOwner", "FreshImportSoul")
     with sqlite3.connect(path) as con:
-        assert not con.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        assert con.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall() == [("soul_state",)]
+        assert con.execute("SELECT user_name FROM soul_state WHERE id = 1").fetchone() == ("TestOwner",)
     monkeypatch.setattr(main, "_build_turn_prompt", lambda **_: pytest.fail("All-history preview built a turn"))
     response = client.post("/imports/validate", json={
         "user_id": "TestOwner", "soul_id": "FreshImportSoul", "label": "Replika",

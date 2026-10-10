@@ -36,15 +36,17 @@ from app.services.state import conversation_state_from_row, conversation_state_r
 
 
 class _DossierContextService:
-    def __init__(self, *, due_ids=(), profiles=("default", "revision"), stale_id=None) -> None:
+    def __init__(self, *, due_ids=(), profiles=("default", "revision"), stale_id=None, user_name="TestUser") -> None:
         self.memorize_config = SimpleNamespace(category_update_llm_profile="revision")
         self.llm_profiles = SimpleNamespace(
             profiles={name: SimpleNamespace(max_tokens=8000, context_window_tokens=1_000_000, chat_model=name) for name in profiles}
         )
         self.due = [SimpleNamespace(id=dossier_id) for dossier_id in due_ids]
         self.stale_id = stale_id
+        self.user_name = user_name
         self.calls: list[tuple] = []
         self.prompts: list[str] = []
+        self.system_prompts: list[str] = []
 
     def list_due_dossiers(self, scope, *, segment_ids=None, excluded_segment_ids=(), include_reviewed_changes=False):
         self.calls.append(("due", scope, segment_ids))
@@ -69,7 +71,8 @@ class _DossierContextService:
         self.calls.append(("anchor", role, scope, actionable_ids))
         return {
             "dossier": SimpleNamespace(
-                id=f"anchor-{role}", anchor_role=role, name=role,
+                id=f"anchor-{role}", anchor_role=role,
+                name=scope["soul_id"] if role == "soul" else self.user_name,
                 description=f"{role} description", summary="## Current\nStable.",
             ),
             "cited_items": [], "cleanup_items": [], "pending_items": [],
@@ -90,6 +93,7 @@ class _DossierContextService:
         step = kwargs["step"]
         self.calls.append(("chat", step))
         self.prompts.append(prompt)
+        self.system_prompts.append(kwargs["system_prompt"])
         if step == "anchors":
             return """<identity_maintenance>
   <narrative_self action="keep"></narrative_self>
@@ -202,6 +206,37 @@ async def test_dry_prompt_preparation_is_reused_without_model_calls_or_rebuildin
     assert svc.prompts == [prepared[2]]
     assert len([call for call in svc.calls if call[0] == "due"]) == 1
     assert len([call for call in svc.calls if call[0] == "prepare"]) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_name", ["TestDisplayA", "TestDisplayB"])
+async def test_display_name_matches_estimates_and_all_execution_phases(monkeypatch, user_name):
+    svc = _DossierContextService(due_ids=("first",), user_name=user_name)
+    inputs = _inputs()
+    scope = {"soul_id": "TestSoul", "user_id": "TestOwnerID"}
+    estimated_prompts = []
+    estimate = consolidation.estimate_prompt_tokens
+
+    def record_estimate(prompt):
+        estimated_prompts.append(prompt)
+        return estimate(prompt)
+
+    monkeypatch.setattr(consolidation, "estimate_prompt_tokens", record_estimate)
+    prepared = consolidation._prepare_dossier_consolidation_prompts(svc, inputs=inputs, **scope)
+    initial_prompts = estimated_prompts[1:] + estimated_prompts[:1]
+    assert len(initial_prompts) == 3
+    assert prepared[3] == dict(zip(("dossiers", "anchors", "weekly"), map(estimate, initial_prompts)))
+    await prepare_dossier_consolidation_context(svc, inputs=inputs, prepared=prepared, **scope)
+    await run_consolidation_llm(svc, inputs=inputs, **scope)
+    executed_prompts = [system + "\n" + prompt for system, prompt in zip(svc.system_prompts, svc.prompts)]
+    assert executed_prompts[:2] == initial_prompts[:2]
+    assert all(prompt in estimated_prompts for prompt in executed_prompts)
+    assert all(user_name in prompt and scope["user_id"] not in prompt for prompt in initial_prompts)
+    assert all(user_name in prompt and scope["user_id"] not in prompt for prompt in executed_prompts)
+    assert inputs["anchor_bundles"]["user"]["dossier"].name == user_name
+    assert [call[1] for call in svc.calls if call[0] == "chat"] == ["dossiers", "anchors", "weekly"]
+    assert all(call[1] == scope for call in svc.calls if call[0] in {"due", "index"})
+    assert all(call[2] == scope for call in svc.calls if call[0] in {"anchor", "prepare", "prepare_anchor"})
 
 
 @pytest.mark.asyncio

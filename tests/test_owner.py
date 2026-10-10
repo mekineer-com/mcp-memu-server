@@ -44,7 +44,7 @@ def test_owner_is_create_once_and_persists(tmp_path) -> None:
 
 def test_scoped_database_requires_forwarded_owner(tmp_path, monkeypatch) -> None:
     cfg = _config(tmp_path)
-    souls.publish_soul_db(tmp_path / "Codexia.db")
+    souls.publish_soul_db(tmp_path / "Codexia.db", "TestOwner")
     seen: list[str] = []
     monkeypatch.setattr(owner, "require_owner", lambda _cfg, user_id: seen.append(user_id))
 
@@ -75,7 +75,7 @@ def test_owner_mismatch_precedes_case_variant_soul_disclosure(tmp_path) -> None:
     cfg = _config(tmp_path)
     base = cfg["storage"]["metadata_store"]["dsn"]
     owner.create_owner(cfg, "Fictional Owner")
-    souls.publish_soul_db(tmp_path / "Fictional Soul.db")
+    souls.publish_soul_db(tmp_path / "Fictional Soul.db", "TestOwner")
 
     with pytest.raises(owner.OwnerMismatchError, match="not 'Other Fictional Owner'"):
         config.sqlite_dsn_for_scope(
@@ -112,12 +112,13 @@ def test_main_service_construction_enforces_real_owner_gate(tmp_path, monkeypatc
         main._get_service_from_payload(payload)
 
     owner.create_owner(cfg, "Test Owner")
-    souls.create_soul(cfg, souls.SoulCreate(soul_id="Test Soul", use_existing=False))
+    souls.create_soul(cfg, souls.SoulCreate(soul_id="Test Soul", use_existing=False, user_name="VisibleHuman"))
     with pytest.raises(owner.OwnerMismatchError, match="not 'test owner'"):
         main._get_service_from_payload({"user": {"user_id": "test owner", "soul_id": "Test Soul"}})
 
     assert isinstance(main._get_service_from_payload(payload), FakeService)
     assert captured["database_config"]["metadata_store"]["dsn"].endswith("/Test Soul.db")
+    assert captured["user_config"]["user_name"] == "VisibleHuman"
     main._clear_cached_services()
 
 

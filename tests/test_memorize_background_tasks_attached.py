@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from datetime import UTC, datetime
 
 import pytest
@@ -27,6 +28,7 @@ from fastapi import BackgroundTasks, HTTPException
 
 from app import main as main_module
 from app.main import app
+from app.services import souls, owner
 
 
 @pytest.fixture(autouse=True)
@@ -435,7 +437,7 @@ def test_rebuild_archives_db_and_service_reacquired_after_archive(
 ) -> None:
     """rebuild=True must archive the DB and re-acquire the service AFTER the archive."""
     db_file = tmp_path / "TestSoul.db"
-    db_file.write_text("fake-db")
+    souls.publish_soul_db(db_file, "DifferentHuman")
     monkeypatch.setattr(main_module, "_CONSOLIDATION_RUNNING", running)
 
     call_order: list[str] = []
@@ -463,13 +465,11 @@ def test_rebuild_archives_db_and_service_reacquired_after_archive(
     resp = client.post("/memorize?rebuild=true", json=_make_stub_payload("u1", "TestSoul", "chat:cid-r"))
     assert resp.status_code in (200, 202), f"status={resp.status_code} body={resp.text[:300]}"
 
-    # DB must have been renamed — .bak file should exist, original should not.
+    # Archive and replacement both retain the established name.
     bak_files = list(tmp_path.glob("*.bak-*"))
     assert bak_files, "rebuild=True must create a .bak archive file"
-    assert not db_file.exists(), (
-        f"rebuild=True must rename the original DB; call_order={call_order}; "
-        f"tmp contents={list(tmp_path.iterdir())}"
-    )
+    assert souls.read_soul_name(db_file) == "DifferentHuman"
+    assert souls.read_soul_name(bak_files[0]) == "DifferentHuman"
 
     # Service must be re-acquired AFTER the cache was cleared.
     assert "cleared" in call_order, f"clear_cached_services not called; order={call_order}"
@@ -480,3 +480,32 @@ def test_rebuild_archives_db_and_service_reacquired_after_archive(
         "get_service_from_payload must be called AFTER clear_cached_services; "
         f"order was {call_order}"
     )
+
+
+def test_rebuild_preserves_display_name_with_real_service_reacquisition(client, monkeypatch):
+    owner.create_owner(main_module._CONFIG, "TestOwner")
+    souls.create_soul(main_module._CONFIG, souls.SoulCreate(soul_id="TestSoul", use_existing=False, user_name="DifferentHuman"))
+    db_path = main_module._sqlite_current_path("TestOwner", "TestSoul")
+    monkeypatch.setattr(main_module._memorize_endpoint, "run_memorize_segments", _noop_run)
+    response = client.post("/memorize?rebuild=true", json=_make_stub_payload("TestOwner", "TestSoul", "chat:rebuild"))
+    assert response.status_code == 202, response.text
+    assert souls.read_soul_name(db_path) == "DifferentHuman"
+    assert len(list(db_path.parent.glob("TestSoul.bak-*"))) == 1
+    service = main_module._get_service_from_payload({"user": {"user_id": "TestOwner", "soul_id": "TestSoul"}})
+    assert service.user_config.user_name == "DifferentHuman"
+
+
+def test_rebuild_refuses_missing_binding_before_archiving(client, monkeypatch, tmp_path):
+    path = tmp_path / "Unbound.db"
+    with sqlite3.connect(path) as con:
+        con.execute("CREATE TABLE existing (value TEXT)")
+    con.execute("PRAGMA journal_mode=WAL")
+    con.close()
+    before = path.read_bytes()
+    monkeypatch.setattr(main_module, "_sqlite_current_path", lambda *_args: path)
+    monkeypatch.setattr(main_module, "_get_service_from_payload", lambda *_args: pytest.fail("service acquired after missing binding"))
+    response = client.post("/memorize?rebuild=true", json=_make_stub_payload("TestOwner", "Unbound", "chat:unbound"))
+    assert response.status_code == 409
+    assert path.read_bytes() == before
+    assert not list(tmp_path.glob("*.bak-*"))
+    assert not list(tmp_path.glob("*-wal")) and not list(tmp_path.glob("*-shm"))

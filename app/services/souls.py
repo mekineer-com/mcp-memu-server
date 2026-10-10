@@ -22,7 +22,8 @@ from app.config import (
     sqlite_path_for_scope,
     validate_soul_id,
 )
-from app.services.owner import read_owner
+from app.services.owner import read_owner, validate_user_id
+from app.services import soul_state
 
 
 _CREATE_LOCK = threading.Lock()
@@ -31,6 +32,7 @@ _CREATE_LOCK = threading.Lock()
 class SoulCreate(BaseModel):
     soul_id: str
     use_existing: StrictBool
+    user_name: str | None = None
 
 
 def _base_dsn(config: dict[str, Any]) -> str:
@@ -63,8 +65,9 @@ def _path(config: dict[str, Any], soul_id: str) -> Path:
     return path
 
 
-def publish_soul_db(path: Path) -> bool:
-    """Atomically publish a minimal SQLite file; return whether this call won."""
+def publish_soul_db(path: Path, user_name: str) -> bool:
+    """Publish the Soul and its immutable human name together."""
+    user_name = validate_user_id(user_name)
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         dir=path.parent,
@@ -73,12 +76,30 @@ def publish_soul_db(path: Path) -> bool:
     ) as staged:
         with closing(sqlite3.connect(staged.name)) as con:
             con.execute("PRAGMA user_version=1")
+            soul_state.ensure_schema(con)
+            con.execute("UPDATE soul_state SET user_name = ? WHERE id = 1", (user_name,))
             con.commit()
         try:
             os.link(staged.name, path)
         except FileExistsError:
             return False
     return True
+
+
+def read_soul_name(path: Path | None) -> str:
+    """Read existing identity without creating files, schema, state or WAL."""
+    missing = HTTPException(status_code=409, detail="Soul user name is missing; this database has no persona binding")
+    if path is None or not path.is_file() or path.is_symlink():
+        raise missing
+    try:
+        # The write-once name is committed in the staged main DB, never in WAL.
+        with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro&immutable=1", uri=True)) as con:
+            row = con.execute("SELECT user_name FROM soul_state WHERE id = 1").fetchone()
+        if row is None or not isinstance(row[0], str):
+            raise missing
+        return validate_user_id(row[0])
+    except (sqlite3.Error, ValueError) as exc:
+        raise missing from exc
 
 
 def list_souls(config: dict[str, Any]) -> list[str]:
@@ -110,12 +131,22 @@ def create_soul(config: dict[str, Any], body: SoulCreate) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="Soul name must differ from the owner name")
     with _CREATE_LOCK:
         path = _path(config, soul_id)
-        created = publish_soul_db(path) if not path.exists() else False
+        created = False
+        if not path.exists():
+            try:
+                user_name = validate_user_id(body.user_name if body.user_name is not None else owner_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if user_name.casefold() == soul_id.casefold():
+                raise HTTPException(status_code=422, detail="Soul name must differ from the user's name")
+            created = publish_soul_db(path, user_name)
         if not created and not body.use_existing:
             raise HTTPException(
                 status_code=409,
                 detail={"reason": "existing_exact", "message": "Soul already exists. Use its existing database?"},
             )
+        if not created:
+            read_soul_name(path)
         return {"soul_id": soul_id, "created": created}
 
 
@@ -133,3 +164,8 @@ def register_soul_routes(
     @app.post(f"{prefix}/souls", dependencies=dependencies)
     def souls_create(body: SoulCreate) -> dict[str, Any]:
         return create_soul(get_config(), body)
+
+    @app.get(f"{prefix}/souls/{{soul_id}}", dependencies=dependencies)
+    def soul_metadata(soul_id: str) -> dict[str, str]:
+        soul_id = _soul_id(soul_id)
+        return {"soul_id": soul_id, "user_name": read_soul_name(_path(get_config(), soul_id))}

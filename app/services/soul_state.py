@@ -44,6 +44,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     con.execute("""
 CREATE TABLE IF NOT EXISTS soul_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
+    user_name TEXT,
     narrative_self TEXT,
     narrative_self_previous TEXT,
     narrative_self_approved TEXT,
