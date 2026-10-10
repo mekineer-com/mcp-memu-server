@@ -132,6 +132,30 @@ def strip_markdown_code_fence(text: str) -> str:
     return text
 
 
+def _label_owner_messages(
+    messages: list[dict[str, Any]], *, user_id: str, user_name: str | None,
+    conversation_id: str = "",
+) -> list[dict[str, Any]]:
+    """Project existing owner evidence into labels without changing source rows."""
+    out = []
+    for message in messages:
+        row = dict(message)
+        cid = str(row.get("source_conversation_id") or row.get("conversation_id") or conversation_id)
+        source = str(row.get("source_label") or "")
+        marker = row.get("source_owner_id")
+        imported = source == "import" or cid.startswith("import:")
+        whatsapp = source.startswith("whatsapp:") or cid.startswith("whatsapp:")
+        # Saved WhatsApp readers reserve user role for non-echo from-me rows.
+        owner = marker == user_id if marker is not None else (
+            not imported and (not whatsapp or source.startswith("whatsapp:"))
+        )
+        role = str(row.get("role") or "").strip().lower()
+        if user_id and user_name and owner and role in {"user", "human", "participant"}:
+            row.update(name=user_name, speaker=user_name, source_owner_id=user_id)
+        out.append(row)
+    return out
+
+
 def _normalize_conversation(conv: Any) -> Any:
     if not isinstance(conv, list):
         return conv

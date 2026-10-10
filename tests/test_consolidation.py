@@ -923,6 +923,10 @@ INSERT INTO memory_items (
         with pytest.raises(HTTPException, match="ownership missing or ambiguous"):
             gather_consolidation_inputs(deps, conversation_id="conv-a", soul_id=soul_id, user_id=user_id)
         return
+    with sqlite3.connect(db_path) as con:
+        con.execute("UPDATE soul_state SET user_name = 'TestHuman' WHERE id = 1")
+    original_files = {path: path.read_bytes() for directory in chat_dirs.values()
+                      for path in (directory / "segments").glob("*.json")}
     out = gather_consolidation_inputs(
         deps,
         conversation_id="conv-a",
@@ -931,6 +935,8 @@ INSERT INTO memory_items (
     )
 
     assert out["selected_segment_ids_by_conversation"] == expected
+    assert all(row["name"] == row["speaker"] == "TestHuman" for row in out["current_chat_messages"])
+    assert all(path.read_bytes() == original for path, original in original_files.items())
     assert [row["segment_id"] for row in out["segment_inputs"]] == [historical_id, "conv-a:0-0", "conv-b:0-0"]
     assert out["segment_inputs"][0]["start_idx"] == out["segment_inputs"][0]["end_idx"] == 1
     assert [row["content"] for row in out["current_chat_messages"]] == ["older imported history", "message 0", "message 1"]

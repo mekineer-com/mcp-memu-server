@@ -683,6 +683,7 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
         SimpleNamespace(anchor_role="user", summary="My human prefers early walks."),
     ]
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: SimpleNamespace(
+        user_config=SimpleNamespace(user_name="TestHuman"),
         list_active_dossiers=lambda _scope: anchors,
         build_dossier_index=lambda _scope, **_kw: "- Sketches: our coast walks",
     ))
@@ -769,7 +770,7 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
     assert captured["safe"]["queries"][-1] == {
         "role": "user",
         "content": {
-            "text": "Fictional User: From your recent conversations above, choose a salient "
+            "text": "TestHuman: From your recent conversations above, choose a salient "
             "thread and retrieve memory background that would help you understand it."
         },
     }
@@ -783,6 +784,7 @@ async def test_prepared_reply_keeps_anchors_when_character_card_overrides_narrat
     anchors = [SimpleNamespace(anchor_role="soul", summary="I paint coastal sketches."),
                SimpleNamespace(anchor_role="user", summary="My human prefers early walks.")]
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _: SimpleNamespace(
+        user_config=SimpleNamespace(user_name="TestHuman"),
         list_active_dossiers=lambda _scope: anchors,
         build_dossier_index=lambda _scope, **_kw: "- Sketches: coast walks",
     ))
@@ -2461,7 +2463,7 @@ def test_current_whatsapp_history_uses_configured_web_source_and_filters_current
     monkeypatch.setattr(
         main,
         "_resolve_whatsapp_web_source_config",
-        lambda: (tmp_path / "web_source.db", "✦ *Siri*: "),
+        lambda: tmp_path / "web_source.db",
     )
 
     captured: dict[str, Any] = {}
@@ -2501,7 +2503,7 @@ def test_current_whatsapp_history_empty_web_source_stays_empty(
     monkeypatch.setattr(
         main,
         "_resolve_whatsapp_web_source_config",
-        lambda: (tmp_path / "web_source.db", "✦ *Echo*: "),
+        lambda: tmp_path / "web_source.db",
     )
     monkeypatch.setattr(main._conversation_sources, "load_whatsapp_web_source_tail", lambda **_kwargs: [])
     rows = main._load_current_whatsapp_history_from_source(
@@ -3401,7 +3403,7 @@ def test_load_tail_for_source_conversation_uses_web_source(
     channels_home = tmp_path / "channels"
     channels_home.mkdir()
     (channels_home / "config.json").write_text(
-        json.dumps({"reply_prefix": "✦ *Siri*: "})
+        "invalid legacy prefix config must not be read"
     )
     monkeypatch.setitem(
         main._CONFIG,
@@ -3441,7 +3443,7 @@ def test_load_tail_for_source_conversation_uses_web_source(
     assert rows[0]["content"] == "from web source"
     assert captured["since_cursor"] == 10
     assert captured["soul_id"] == "Siri"
-    assert captured["reply_prefix"] == "✦ *Siri*: "
+    assert "reply_prefix" not in captured
     assert captured["min_timestamp"] == 100.0
 
 
@@ -3452,6 +3454,7 @@ def test_mentra_bootstrap_marks_prior_tail_as_current_smartglasses_chat(
     mentra_storage = tmp_path / "mentra"
     monkeypatch.setattr(conversation_sources, "mentra_storage_dir", lambda: mentra_storage)
     db_path = tmp_path / "Codexia.db"
+    main._souls.publish_soul_db(db_path, "Fictional User")
     con = main._sqlite_connect(db_path)
     try:
         con.row_factory = sqlite3.Row
@@ -3618,7 +3621,7 @@ def test_load_background_rollup_tail_uses_assistant_source_ids_for_web_source(
     monkeypatch.setattr(
         main,
         "_resolve_whatsapp_web_source_config",
-        lambda: (tmp_path / "web_source.db", "✦ *Echo*: "),
+        lambda: tmp_path / "web_source.db",
     )
     monkeypatch.setattr(main, "_load_soul_active_since", lambda *_a, **_k: 100.0)
     monkeypatch.setattr(
@@ -3853,7 +3856,7 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
         ],
     )
 
-    class _FakeSvc:
+    class _FakeSvc(AnchorService):
         async def summarize_background_chat_rollup(
             self,
             *,
@@ -4543,7 +4546,8 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
     monkeypatch.setattr(
         main,
         "_get_service_from_payload",
-        lambda *_a, **_k: SimpleNamespace(list_active_dossiers=lambda _scope: [], build_dossier_index=lambda _scope, **_kw: "- Joy: Alive"),
+        lambda *_a, **_k: SimpleNamespace(user_config=SimpleNamespace(user_name="SoulHuman"),
+            list_active_dossiers=lambda _scope: [], build_dossier_index=lambda _scope, **_kw: "- Joy: Alive"),
     )
     monkeypatch.setattr(main, "_apimw_memory_count_from_cfg", lambda *_a, **_k: 5)
     monkeypatch.setattr(main, "_apimw_random_count_from_cfg", lambda *_a, **_k: 0)
@@ -4553,9 +4557,9 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
         lambda **_kwargs: [
             {
                 "conversation_id": "whatsapp:dm:cross",
-                "role": "user",
-                "speaker": "Liz",
-                "chat_name": "Liz",
+                "role": "unknown",
+                "speaker": "GuestSpeaker",
+                "chat_name": "Fictional Contact",
                 "content": "cross hello",
                 "received_at": "2026-05-01T00:00:00+00:00",
             }
@@ -4588,20 +4592,21 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
     monkeypatch.setattr(main, "_apimw_persist", _fake_persist)
 
     history = [
-        {"role": "user", "name": "Marcos", "content": f"msg {idx}"}
+        {"role": "user", "name": "PhoneName", "source_owner_id": "TestOwner", "content": f"msg {idx}"}
         for idx in range(1, 36)
     ]
 
     await main._run_apimw(
         {
             "message": "current hello",
-            "user_name": "Marcos",
-            "chat_name": "Marcos",
+            "user_name": "PhoneName",
+            "source_owner_id": "TestOwner",
+            "chat_name": "Fictional DM",
             "chat_type": "dm",
         },
-        conversation_id="whatsapp:dm:15133278228",
-        soul_id="Siri",
-        user_id="u1",
+        conversation_id="whatsapp:dm:19990000001",
+        soul_id="TestSoul",
+        user_id="TestOwner",
         state_row={"memory_cache": [], "intentions_active": []},
         current_history=history,
     )
@@ -4610,8 +4615,13 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
     assert "msg 1" in captured["conversations_block"]
     assert "msg 35" in captured["conversations_block"]
     assert "cross hello" in captured["conversations_block"]
-    assert "[dm][Marcos] \u2190 current chat" in captured["conversations_block"]
-    assert "[Marcos] current hello ..." in captured["conversations_block"]
+    assert "[dm][Fictional DM] \u2190 current chat" in captured["conversations_block"]
+    assert "[SoulHuman] current hello ..." in captured["conversations_block"]
+    assert "[SoulHuman] msg 1" in captured["conversations_block"]
+    assert "[SoulHuman] msg 35" in captured["conversations_block"]
+    assert "[GuestSpeaker] cross hello" in captured["conversations_block"]
+    assert "PhoneName" not in captured["conversations_block"]
+    assert all(row["name"] == "PhoneName" for row in history)
     assert "New Message:" not in captured["conversations_block"]
     assert captured["synthesis_segment_text"] == captured["conversations_block"]
     assert captured["synthesis_current_message_text"] == "current hello"
@@ -4810,7 +4820,61 @@ async def test_run_memorize_segments_batches_one_job_per_persisted_segment(tmp_p
         payload = segment_job["segment"]
         assert payload["message_indices"] == list(range(len(messages)))
         assert payload["context_only"] is False
-        assert json.loads(segment_job["raw_text"]) == messages
+        from app.services.payload import _label_owner_messages
+        assert json.loads(segment_job["raw_text"]) == _label_owner_messages(
+            messages, user_id=user_id, user_name="TestHuman", conversation_id="saved-test",
+        )
+        assert json.loads(Path(segment_job["local_path"]).read_text()) == messages
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("human_name", ["FirstHuman", "SecondHuman"])
+@pytest.mark.parametrize("cid,marker,typed_name,expected", [
+    ("whatsapp:group:fictional", "TestOwner", "PhoneName", None),
+    ("whatsapp:group:fictional", None, "GroupGuest", "GroupGuest"),
+    ("whatsapp:group:fictional", "OtherOwner", "GroupGuest", "GroupGuest"),
+    ("chat:atomic-fictional", None, "LocalName", None),
+    ("mentra:fictional", None, None, None),
+    ("chat:fictional", None, "OtherPersona", "OtherPersona"),
+])
+async def test_conversation_retrieve_owner_projection(monkeypatch, human_name, cid, marker, typed_name, expected):
+    from copy import deepcopy
+
+    svc = SimpleNamespace(
+        user_config=SimpleNamespace(user_name=human_name),
+        list_active_dossiers=lambda _scope: [], build_dossier_index=lambda *_a, **_kw: "",
+    )
+    captured = {}
+    async def retrieve(safe, **kwargs):
+        captured.update(safe)
+        return {"result": {}, "memory_cache": [], "intentions_active": []}
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _safe: svc)
+    monkeypatch.setattr(main, "_run_retrieve", retrieve)
+    monkeypatch.setattr(main, "_require_soul_active", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a: None)
+    state = {"last_memorize_at": None, "digest_cursor": -1, "memory_cache": [], "intentions_active": []}
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", lambda *_a, **_kw: (state, None, None))
+    monkeypatch.setattr(main, "_resolve_source_cursor", lambda *_a, **_kw: (-1, None, False))
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (Path("/unused"), None, None, None))
+    rows = [
+        {"role": "user", "name": "SourceOwner", "content": "owner history", "source_owner_id": "TestOwner"},
+        {"role": "unknown", "name": "OtherPersona", "content": "guest history"},
+    ]
+    request = {"user": {"user_id": "TestOwner", "soul_id": "TestSoul"}, "message": "[OtherName] current words",
+               "history": rows, "user_name": typed_name, "source_owner_id": marker, "build_turn_prompt": True}
+    original = deepcopy(request)
+    out = await main.conversation_retrieve(cid, request)
+    label = expected or human_name
+    assert captured["user_name"] == label
+    assert captured["message"] == request["message"]
+    prompt = out["turn_user_prompt"]
+    assert f"[{human_name}] owner history" in prompt
+    assert "[OtherPersona] guest history" in prompt
+    if marker == "TestOwner":
+        assert f"[{human_name}] [OtherName] current words" in prompt
+    query = next(q for q in captured["queries"] if q["role"] == "user")
+    assert query["content"]["text"] == request["message"]
+    assert request == original
 
 
 def test_auto_consolidation_policy() -> None:
@@ -8075,7 +8139,7 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
         main._sqlite_ensure_conversation_state_schema(con)
         con.execute(
             "INSERT INTO conversations (conversation_id, digest_cursor, last_memorize_at) VALUES (?, ?, ?)",
-            ("whatsapp:dm:15133278228", 11, "2026-05-01T00:00:00+00:00"),
+            ("whatsapp:dm:19990000001", 11, "2026-05-01T00:00:00+00:00"),
         )
         con.commit()
     finally:
@@ -8107,10 +8171,10 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
         "_load_cross_tail_from_sources",
         lambda *_a, **_k: [
             {
-                "conversation_id": "whatsapp:group:familia",
-                "role": "user",
-                "speaker": "Family Member",
-                "chat_name": "Household Group",
+                "conversation_id": "whatsapp:group:fictional-group",
+                "role": "unknown",
+                "speaker": "GuestSpeaker",
+                "chat_name": "Fictional Group",
                 "content": "cross chat message",
                 "source_label": "whatsapp:group",
                 "received_at": "2026-05-08T11:00:01+00:00",
@@ -8135,22 +8199,22 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
         "build_turn_prompt": True,
         "load_source_history": True,
         "is_live_turn": True,
-        "user_name": "Marcos",
-        "chat_name": "Marcos",
+        "user_name": "PhoneName",
+        "chat_name": "PhoneName",
         "chat_type": "dm",
     }
 
-    out = await main.conversation_retrieve("whatsapp:dm:15133278228", payload)
+    out = await main.conversation_retrieve("whatsapp:dm:19990000001", payload)
     turn_prompt = str(out.get("turn_user_prompt") or "")
     assert "msg_04" not in turn_prompt
     assert "msg_11" not in turn_prompt
     assert "My WhatsApp Conversations:" in turn_prompt
     assert "My SillyTavern Conversations:" not in turn_prompt
-    assert "[dm][Marcos] \u2190 current chat" in turn_prompt
+    assert "[dm][PhoneName] \u2190 current chat" in turn_prompt
     assert "[user] current message" not in turn_prompt
-    assert "[Marcos] current message" in turn_prompt
-    assert "[group][Household Group]" in turn_prompt
-    assert "[Family Member] cross chat message" in turn_prompt
+    assert "[PhoneName] current message" in turn_prompt
+    assert "[group][Fictional Group]" in turn_prompt
+    assert "[GuestSpeaker] cross chat message" in turn_prompt
     assert "current message" in turn_prompt
     safe = captured["safe"]
     assert isinstance(safe, dict)
@@ -8161,10 +8225,10 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
     )
     assert "My WhatsApp Conversations:" in query_text
     assert "My SillyTavern Conversations:" not in query_text
-    assert "[dm][Marcos] \u2190 current chat" in query_text
-    assert "[Marcos] current message ..." in query_text
-    assert "[group][Household Group]" in query_text
-    assert "[Family Member] cross chat message" in query_text
+    assert "[dm][PhoneName] \u2190 current chat" in query_text
+    assert "[PhoneName] current message ..." in query_text
+    assert "[group][Fictional Group]" in query_text
+    assert "[GuestSpeaker] cross chat message" in query_text
 
 
 @pytest.mark.asyncio

@@ -27,7 +27,7 @@ def client_for(tmp_path, *, with_owner=True):
 
 
 def post(client, name, consent=False, path="/souls", headers=None):
-    return client.post(path, json={"soul_id": name, "use_existing": consent}, headers=headers)
+    return client.post(path, json={"soul_id": name, "user_name": "TestHuman", "use_existing": consent}, headers=headers)
 
 
 def test_exact_names_discovery_and_confirmation(tmp_path, monkeypatch):
@@ -172,7 +172,23 @@ def test_display_names_are_per_soul_and_immutable(tmp_path):
         assert response.status_code == 422
     assert not (tmp_path / "SameName.db").exists()
     assert post(client, "CanonicalSoul").status_code == 200
-    assert client.get("/souls/CanonicalSoul").json()["user_name"] == "TestOwner"
+    assert client.get("/souls/CanonicalSoul").json()["user_name"] == "TestHuman"
+
+
+@pytest.mark.parametrize("path", ["/souls", "/integration/mentra/souls"])
+@pytest.mark.parametrize("consent", [False, True])
+@pytest.mark.parametrize("name", [None, "", " ", "Bad\x00Name"])
+def test_creation_requires_explicit_valid_human_name(tmp_path, path, consent, name):
+    client, cfg = client_for(tmp_path)
+    cfg["mentra"]["enabled"] = True
+    body = {"soul_id": "NewSoul", "use_existing": consent}
+    if name is not None:
+        body["user_name"] = name
+    assert client.post(path, json=body).status_code == 422
+    assert not list(tmp_path.glob("*.db"))
+    assert client.post(path, json={**body, "user_name": " TestHuman "}).json()["created"] is True
+    assert client.post(path, json={"soul_id": "NewSoul", "use_existing": True}).json()["created"] is False
+    assert client.get("/souls/NewSoul").json()["user_name"] == "TestHuman"
 
 
 @pytest.mark.parametrize("state", ["missing", "no_table", "no_column", "no_row", "blank"])
@@ -262,7 +278,7 @@ def test_failed_creation_publishes_nothing_and_can_retry(tmp_path, monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(sqlite3, "connect", lambda *_a, **_k: (_ for _ in ()).throw(sqlite3.OperationalError("failed")))
         with pytest.raises(sqlite3.OperationalError):
-            souls.create_soul(cfg, souls.SoulCreate(soul_id="Retry Soul", use_existing=False))
+            souls.create_soul(cfg, souls.SoulCreate(soul_id="Retry Soul", user_name="TestHuman", use_existing=False))
     assert set(tmp_path.iterdir()) == before
     assert post(client, "Retry Soul").json()["created"] is True
 

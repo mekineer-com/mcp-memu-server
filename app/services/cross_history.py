@@ -16,6 +16,7 @@ from app.services import message_log as _message_log
 from app.services.turn_contract import _current_chat_rows_for_grouped_render
 from app.services.conversation_id import canonical_conversation_id
 from app.services.payload import (
+    _label_owner_messages,
     _normalize_conversation,
     _normalize_turn_history,
     _parse_turn_ts_ms,
@@ -57,19 +58,11 @@ def _resolve_cross_source_paths() -> tuple[Path, Path | None, Path | None, Path 
     return _m()._get_storage_dir(_m()._CONFIG), hermes_home_path, sessions_index_path, state_db_path
 
 
-def _resolve_whatsapp_web_source_config() -> tuple[Path | None, str]:
+def _resolve_whatsapp_web_source_config() -> Path | None:
     hermes_cfg = _m()._CONFIG.get("hermes") if isinstance(_m()._CONFIG.get("hermes"), dict) else {}
     db_raw = str(hermes_cfg.get("whatsapp_web_source_db") or "").strip()
     db_path = Path(db_raw).expanduser().resolve() if db_raw else None
-    home_raw = str(hermes_cfg.get("home") or "").strip()
-    channels_config = Path(home_raw).expanduser().resolve() / "config.json" if home_raw else None
-    channels_cfg = (
-        json.loads(channels_config.read_text(encoding="utf-8"))
-        if channels_config and channels_config.exists()
-        else {}
-    )
-    reply_prefix = str(channels_cfg.get("reply_prefix") or "")
-    return db_path, reply_prefix
+    return db_path
 
 
 def _resolve_source_cursor(
@@ -83,7 +76,7 @@ def _resolve_source_cursor(
 ) -> tuple[int, int | None, bool]:
     if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
         return cursor, None, False
-    db_path, _ = _m()._resolve_whatsapp_web_source_config()
+    db_path = _m()._resolve_whatsapp_web_source_config()
     resolved, min_timestamp = _conversation_sources.resolve_whatsapp_web_source_cursor(
         conversation_id,
         cursor,
@@ -227,7 +220,7 @@ def _load_current_whatsapp_history_from_source(
     if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
         return None
     _storage_dir, hermes_home_path, sessions_index_path, state_db_path = _m()._resolve_cross_source_paths()
-    web_source_db_path, reply_prefix = _m()._resolve_whatsapp_web_source_config()
+    web_source_db_path = _m()._resolve_whatsapp_web_source_config()
     assistant_speakers = _conversation_sources.load_whatsapp_assistant_source_speakers(
         conversation_id=conversation_id,
         hermes_home=hermes_home_path,
@@ -239,7 +232,6 @@ def _load_current_whatsapp_history_from_source(
         since_cursor=-1,
         recent_fallback_messages=0,
         soul_id=soul_id,
-        reply_prefix=reply_prefix,
         hermes_home=hermes_home_path,
         web_source_db_path=web_source_db_path,
         min_timestamp=active_since,
@@ -349,7 +341,7 @@ def _load_tail_for_source_conversation(
             (value for value in (active_since, min_timestamp) if value is not None),
             default=None,
         )
-        web_source_db_path, reply_prefix = _m()._resolve_whatsapp_web_source_config()
+        web_source_db_path = _m()._resolve_whatsapp_web_source_config()
         assistant_speakers = _conversation_sources.load_whatsapp_assistant_source_speakers(
             conversation_id=conversation_id,
             hermes_home=hermes_home_path,
@@ -361,7 +353,6 @@ def _load_tail_for_source_conversation(
             since_cursor=since_cursor,
             recent_fallback_messages=recent_fallback_messages,
             soul_id=soul_id,
-            reply_prefix=reply_prefix,
             hermes_home=hermes_home_path,
             web_source_db_path=web_source_db_path,
             min_timestamp=timestamp_floor,
@@ -652,10 +643,19 @@ def _format_all_chat_history_for_ai(
     chat_label: str | None = None,
     current_user_text: str | None = None,
     current_user_name: str | None = None,
+    current_source_owner_id: str | None = None,
     self_turn_directive: str | None = None,
     mark_current_chat: bool = True,
+    user_id: str = "",
+    user_name: str | None = None,
 ) -> str:
-    history_rows = current_history or []
+    history_rows = _label_owner_messages(
+        current_history or [], user_id=user_id, user_name=user_name, conversation_id=conversation_id,
+    )
+    cross_tail = _label_owner_messages(cross_tail or [], user_id=user_id, user_name=user_name)
+    current_source_owner_id = current_source_owner_id if user_id and current_source_owner_id == user_id else None
+    if current_source_owner_id and user_name:
+        current_user_name = user_name
     if not mark_current_chat:
         history_rows = _current_chat_rows_for_grouped_render(history_rows, conversation_id=conversation_id)
         selected_sources = {
@@ -696,6 +696,7 @@ def _format_all_chat_history_for_ai(
                 soul_name=soul_id,
                 current_user_text=current_user_text,
                 current_user_name=current_user_name,
+                current_source_owner_id=current_source_owner_id,
                 self_turn_directive=self_turn_directive,
                 mark_current_chat=mark_current_chat,
             )
@@ -708,6 +709,7 @@ def _format_all_chat_history_for_ai(
         soul_name=soul_id,
         current_user_text=current_user_text,
         current_user_name=current_user_name,
+        current_source_owner_id=current_source_owner_id,
         self_turn_directive=self_turn_directive,
         mark_current_chat=mark_current_chat,
     )
@@ -726,7 +728,7 @@ def _load_cross_tail_for_ai(
     try:
         con.row_factory = sqlite3.Row
         _m()._sqlite_ensure_conversation_state_schema(con)
-        return [
+        messages = [
             *_m()._load_activity_tail_for_ai(con, user_id=user_id, soul_id=soul_id),
             *_m()._load_cross_tail_from_sources(
                 con,
@@ -735,6 +737,7 @@ def _load_cross_tail_for_ai(
                 exclude_conversation_id=conversation_id,
             ),
         ]
+        return _label_owner_messages(messages, user_id=user_id, user_name=_m()._souls.read_soul_name(db_path))
     finally:
         con.close()
 
@@ -835,7 +838,7 @@ def _load_cross_memorize_tails_from_sources(
                     hermes_home_path=hermes_home_path,
                     state_db_path=state_db_path,
                 )
-                web_source_db_path, reply_prefix = _m()._resolve_whatsapp_web_source_config()
+                web_source_db_path = _m()._resolve_whatsapp_web_source_config()
                 rolling_cursor_id, checkpoint_floor, _ = _resolve_source_cursor(
                     cid,
                     int(rolling_cursor_id or 0),
@@ -854,7 +857,6 @@ def _load_cross_memorize_tails_from_sources(
                     conversation_id=cid,
                     after_rowid=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
                     soul_id=soul_id,
-                    reply_prefix=reply_prefix,
                     hermes_home=hermes_home_path,
                     web_source_db_path=web_source_db_path,
                     min_timestamp=max(

@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.config import SoulIdError, validate_soul_id
 from app.services import memorize_endpoint
 from app.services.state import normalize_import_state
 
@@ -427,30 +428,15 @@ def _resolve_whatsapp_row_speaker(
     return str(session_user_name or "").strip()
 
 
-def _strip_soul_prefix(body: str, soul_id: str, reply_prefix: str = "") -> tuple[str, str]:
+def _strip_soul_prefix(body: str) -> tuple[str, str]:
     text = str(body or "")
-    soul = str(soul_id or "").strip()
-    prefix = str(reply_prefix or "").replace("\\n", "\n")
-    # A configured prefix belongs to its named speaker, not the requesting Soul.
-    named_prefix = re.match(r"^\s*(?:✦\s*)?\*{0,2}([^:\[\]\n]+?)\*{0,2}\s*:\s*$", prefix)
-    if not named_prefix:
-        named_prefix = re.match(r"^\s*\[([^\]\n]+)\]\s*$", prefix)
-    if prefix.strip() and text.startswith(prefix) and named_prefix:
-        return named_prefix[1].strip(), text[len(prefix):].strip()
-    match = re.match(r"^\s*✦\s*\*{0,2}([^:\[\]\n]+?)\*{0,2}\s*:\s*", text)
+    match = re.match(r"^\s*✦[ \t]+(\*{1,2})?([^:\r\n]+?)(?(1)\1):[ \t]*", text)
     if match:
-        return match[1].strip(), text[match.end():].strip()
-    if not soul:
-        return "", text
-    escaped = re.escape(soul)
-    patterns = [
-        rf"^\s*(?:✦\s*)?\*{{0,2}}{escaped}\*{{0,2}}\s*:\s*",
-        rf"^\s*\[{escaped}\]\s*",
-    ]
-    for pattern in patterns:
-        match = re.match(pattern, text, flags=re.IGNORECASE)
-        if match:
-            return soul, text[match.end():].strip()
+        try:
+            speaker = validate_soul_id(match[2])
+        except SoulIdError:
+            return "", text
+        return speaker, text[match.end():].strip()
     return "", text
 
 
@@ -590,7 +576,6 @@ def _web_source_row_to_tail(
     chat_type: str,
     chat_name: str,
     soul_id: str,
-    reply_prefix: str,
     assistant_source_speakers: dict[str, str],
     contact_map: dict[str, str],
     source_ref_map: dict[str, str],
@@ -605,7 +590,7 @@ def _web_source_row_to_tail(
         (key for key in assistant_source_speakers if _source_id_matches_any(source_message_id, {key})),
         None,
     )
-    prefix_speaker, stripped = _strip_soul_prefix(body, soul_id, reply_prefix)
+    prefix_speaker, stripped = _strip_soul_prefix(body)
     saved_speaker = assistant_source_speakers.get(matched_id, "")
     if from_me and (matched_id is not None or prefix_speaker):
         speaker = saved_speaker or prefix_speaker
@@ -653,7 +638,6 @@ def load_whatsapp_web_source_tail(
     since_cursor: int,
     recent_fallback_messages: int,
     soul_id: str,
-    reply_prefix: str,
     hermes_home: Path | None = None,
     web_source_db_path: Path | None = None,
     min_timestamp: float | None = None,
@@ -666,7 +650,6 @@ def load_whatsapp_web_source_tail(
         cursor_is_rowid=False,
         recent_fallback_messages=recent_fallback_messages,
         soul_id=soul_id,
-        reply_prefix=reply_prefix,
         hermes_home=hermes_home,
         web_source_db_path=web_source_db_path,
         min_timestamp=min_timestamp,
@@ -680,7 +663,6 @@ def load_whatsapp_web_source_tail_after_rowid(
     conversation_id: str,
     after_rowid: int | None,
     soul_id: str,
-    reply_prefix: str,
     hermes_home: Path | None = None,
     web_source_db_path: Path | None = None,
     min_timestamp: float | None = None,
@@ -692,7 +674,6 @@ def load_whatsapp_web_source_tail_after_rowid(
         cursor_is_rowid=True,
         recent_fallback_messages=0,
         soul_id=soul_id,
-        reply_prefix=reply_prefix,
         hermes_home=hermes_home,
         web_source_db_path=web_source_db_path,
         min_timestamp=min_timestamp,
@@ -707,7 +688,6 @@ def _load_whatsapp_web_source_tail(
     cursor_is_rowid: bool,
     recent_fallback_messages: int,
     soul_id: str,
-    reply_prefix: str,
     hermes_home: Path | None,
     web_source_db_path: Path | None,
     min_timestamp: float | None,
@@ -802,7 +782,6 @@ def _load_whatsapp_web_source_tail(
             chat_type=chat_type,
             chat_name=chat_name,
             soul_id=soul_id,
-            reply_prefix=reply_prefix,
             assistant_source_speakers=assistant_source_speakers or {},
             contact_map=contact_map,
             source_ref_map=source_ref_map,

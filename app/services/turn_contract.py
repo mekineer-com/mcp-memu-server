@@ -194,6 +194,7 @@ def build_conversations_block(
     soul_name: str | None = None,
     current_user_text: str | None = None,
     current_user_name: str | None = None,
+    current_source_owner_id: str | None = None,
     self_turn_directive: str | None = None,
     mark_current_chat: bool = True,
 ) -> str:
@@ -212,6 +213,8 @@ def build_conversations_block(
             synthetic["conversation_id"] = _text(conversation_id)
         if current_name:
             synthetic["name"] = current_name
+        if current_source_owner_id:
+            synthetic["source_owner_id"] = current_source_owner_id
         history_for_render.append(synthetic)
 
     has_current_history = any(

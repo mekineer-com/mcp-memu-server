@@ -71,6 +71,7 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
             message="hello",
             history=[{"role": "user", "content": "hello"}],
             user_name="Alice",
+            source_owner_id="u1",
             chat_name="Alice",
             chat_type="dm",
             memorize_chat=False,
@@ -90,6 +91,7 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
     retrieve_payload = captured[0][2]
     turn_payload = captured[1][2]
     assert retrieve_payload.get("user_name") == "Alice"
+    assert retrieve_payload["source_owner_id"] == "u1"
     assert retrieve_payload.get("chat_name") == "Alice"
     assert retrieve_payload.get("chat_type") == "dm"
     assert retrieve_payload.get("memorize_chat") is False
@@ -99,6 +101,7 @@ async def test_memu_turn_orchestrates_retrieve_then_turn() -> None:
     assert "time_zone_offset_min" not in retrieve_payload
     assert "load_source_history" not in retrieve_payload
     assert turn_payload.get("user_name") == "Alice"
+    assert turn_payload["source_owner_id"] == "u1"
     assert turn_payload.get("chat_name") == "Alice"
     assert turn_payload.get("chat_type") == "dm"
     assert turn_payload.get("memorize_chat") is False

@@ -16,7 +16,7 @@ from sqlalchemy import event
 
 from app.config import validate_soul_id
 from app.services.conversation_id import canonical_conversation_id
-from app.services.payload import message_ts_ms
+from app.services.payload import _label_owner_messages, message_ts_ms
 from app.services.state import conversation_state_from_row, conversation_state_row, effective_digest_cursor_from_row
 from app.services.souls import read_soul_name, publish_soul_db
 
@@ -683,7 +683,11 @@ async def run_memorize_segments(
                         {
                             "resource_url": job["segment_resource_url"],
                             "local_path": job["segment_resource_url"],
-                            "raw_text": job["segment_raw_text"],
+                            "raw_text": json.dumps(_label_owner_messages(
+                                job["segment_messages"], user_id=uid,
+                                user_name=svc.user_config.user_name,
+                                conversation_id=conversation_id or "",
+                            ), ensure_ascii=False),
                             "segment": job["segment_payload"],
                         }
                         for job in segment_jobs

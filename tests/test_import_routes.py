@@ -287,7 +287,8 @@ def test_new_soul_first_preview_initializes_schema_without_model_calls(tmp_path,
     source = tmp_path / "imports.db"
     monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
     client = TestClient(main.app, client=("127.0.0.1", 50000))
-    assert client.post("/souls", json={"soul_id": "FreshImportSoul", "use_existing": False}).status_code == 200
+    assert client.post("/souls", json={"soul_id": "FreshImportSoul", "use_existing": False,
+                                       "user_name": "TestOwner"}).status_code == 200
     path = main._sqlite_current_path("TestOwner", "FreshImportSoul")
     with sqlite3.connect(path) as con:
         assert con.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall() == [("soul_state",)]
@@ -550,6 +551,7 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
     monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_kw: db)
     monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+    main._souls.publish_soul_db(db, "TestHuman")
     with sqlite3.connect(db) as con:
         _guidance_schema(con)
     rows, _, _ = chat_import.normalize_messages([
@@ -572,7 +574,8 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
     profile = SimpleNamespace(context_window_tokens=100000, max_tokens=1000, chat_model="fictional-model")
     anchors = [SimpleNamespace(anchor_role="soul", summary="I paint coastal sketches."),
                SimpleNamespace(anchor_role="user", summary="My human prefers early walks.")]
-    svc = SimpleNamespace(_claude_code=False, llm_profiles=SimpleNamespace(profiles={"default": profile}),
+    svc = SimpleNamespace(user_config=SimpleNamespace(user_name="TestHuman"),
+                          _claude_code=False, llm_profiles=SimpleNamespace(profiles={"default": profile}),
                           list_active_dossiers=lambda _: anchors, build_dossier_index=lambda _, **_kw: "Known dossier index")
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _: svc)
     prompts = []

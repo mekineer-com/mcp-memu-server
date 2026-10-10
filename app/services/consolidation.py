@@ -47,7 +47,7 @@ from app.services.intention_state import (
 from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import soul_summaries as _soul_summaries
 from app.services.conversation_id import canonical_conversation_id
-from app.services.payload import message_ts_ms, parse_iso_datetime
+from app.services.payload import _label_owner_messages, message_ts_ms, parse_iso_datetime
 from app.services import soul_state as _soul_state
 from app.services import service_factory as _service_factory
 from app.services.state import normalize_import_state
@@ -870,6 +870,7 @@ ORDER BY updated_at ASC, id ASC
         ]
 
         narrative_self = str(state.get("narrative_self") or "").strip() or None
+        user_name = con.execute("SELECT user_name FROM soul_state WHERE id = 1").fetchone()[0]
 
         segment_inputs: list[dict[str, Any]] = []
         current_chat_messages: list[dict[str, Any]] = []
@@ -904,6 +905,10 @@ ORDER BY updated_at ASC, id ASC
                     raise HTTPException(status_code=400, detail=f"segment history is not a message list: {ep_file}")
                 if any(not isinstance(message, dict) for message in messages):
                     raise HTTPException(status_code=400, detail=f"segment history contains a non-message row: {ep_file}")
+                messages = _label_owner_messages(
+                    messages, user_id=user_id, user_name=user_name,
+                    conversation_id=pending_conversation_id,
+                )
                 try:
                     start, end = parse_segment_range(segment_id)
                     if len(messages) != end - start + 1:

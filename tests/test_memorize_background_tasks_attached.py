@@ -22,6 +22,7 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -733,7 +734,12 @@ async def test_active_rewind_ceiling_survives_regrowth_and_committed_progress(tm
             return await super().memorize_segments_batch(**kwargs)
 
         async def extract(self, **kwargs):
-            assert json.loads(kwargs["segments"][0]["raw_text"]) == rows
+            assert json.loads(kwargs["segments"][0]["raw_text"]) == [
+                {**row, "name": "TestHuman", "speaker": "TestHuman", "source_owner_id": "TestOwner"}
+                for row in rows
+            ]
+            if producing:
+                assert json.loads(Path(kwargs["segments"][0]["local_path"]).read_text()) == rows
             assert progress[key]["_st_cursor_ceiling"] is bounds
             assert "_processed_rows" not in progress[key]
             bounds[cid]["ceiling"] = ceiling

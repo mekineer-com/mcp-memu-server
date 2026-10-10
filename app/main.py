@@ -105,6 +105,7 @@ from app.services.payload import (
     _extract_result_item_ids,
     _extract_scope,
     _item_sig,
+    _label_owner_messages,
     _normalize_conversation,
     _normalize_turn_history,
     _parse_as_of_datetime,
@@ -283,7 +284,7 @@ def _load_background_rollup_tail(
             hermes_home_path=hermes_home_path,
             state_db_path=state_db_path,
         )
-        web_source_db_path, reply_prefix = _resolve_whatsapp_web_source_config()
+        web_source_db_path = _resolve_whatsapp_web_source_config()
         assistant_speakers = _conversation_sources.load_whatsapp_assistant_source_speakers(
             conversation_id=conversation_id,
             hermes_home=hermes_home_path,
@@ -294,7 +295,6 @@ def _load_background_rollup_tail(
             conversation_id=conversation_id,
             after_rowid=rolling_summary_cursor_id,
             soul_id=soul_id,
-            reply_prefix=reply_prefix,
             hermes_home=hermes_home_path,
             web_source_db_path=web_source_db_path,
             min_timestamp=max(
@@ -404,6 +404,9 @@ async def _run_background_rollup_for_conversation(
                 "user": {"user_id": uid, "soul_id": sid, "conversation_id": cid},
                 "conversation_id": cid,
             }
+        )
+        tail = _label_owner_messages(
+            tail, user_id=uid, user_name=llm_service.user_config.user_name, conversation_id=cid,
         )
         summary_input = [
             {
@@ -1895,6 +1898,8 @@ def _load_mentra_cross_chat_context(
         conversation_id=conversation_id,
         soul_id=soul_id,
         mark_current_chat=True,
+        user_id=user_id,
+        user_name=_souls.read_soul_name(db_path),
     )
 
 
@@ -2274,7 +2279,7 @@ def _resolve_web_source_checkpoint(
     conversation_id: str,
     source_message_id: str,
 ) -> int | None:
-    db_path, _ = _resolve_whatsapp_web_source_config()
+    db_path = _resolve_whatsapp_web_source_config()
     _, hermes_home_path, _, _ = _resolve_cross_source_paths()
     return _conversation_sources.whatsapp_web_source_message_rowid(
         conversation_id,
@@ -3208,6 +3213,13 @@ async def conversation_retrieve(
             safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
             safe["conversation_id"] = cid
         svc = _get_service_from_payload(safe) if uid and soul_id else None
+        user_name = svc.user_config.user_name if svc is not None else None
+        current_row = _label_owner_messages([{
+            "role": "user" if cid.startswith(("whatsapp:", "chat:atomic-", "mentra:")) else "unknown",
+            "name": _pick_str(safe, "user_name"), "source_owner_id": safe.get("source_owner_id"),
+        }], user_id=uid, user_name=user_name, conversation_id=cid)[0]
+        safe["user_name"] = current_row.get("name")
+        safe["source_owner_id"] = current_row.get("source_owner_id")
         dossiers = svc.list_active_dossiers(scope) if svc is not None else []
         anchor_context = _render_anchor_context({row.anchor_role: row for row in dossiers if row.anchor_role})
         all_categories_summary = svc.build_dossier_index(scope, dossiers=dossiers) if svc is not None else ""
@@ -3217,7 +3229,7 @@ async def conversation_retrieve(
         retrieve_focus = self_turn_directive or message
         if build_atomic_snapshot and not retrieve_focus:
             retrieve_focus = (
-                f"{uid}: From your recent conversations above, choose a salient thread and "
+                f"{user_name}: From your recent conversations above, choose a salient thread and "
                 "retrieve memory background that would help you understand it."
             )
             if safe.get("queries") is None:
@@ -3285,6 +3297,7 @@ async def conversation_retrieve(
                 _turn_history_with_floor(history, digest_cursor, min_timestamp),
                 safe.get("external_message_id"),
             )
+        cross_tail = _label_owner_messages(cross_tail, user_id=uid, user_name=user_name)
         cross_text = _format_cross_tail_for_ai(cross_tail, soul_id=soul_id) if cross_tail else ""
         if cross_text:
             safe["_cross_conversation_history"] = cross_text
@@ -3296,6 +3309,9 @@ async def conversation_retrieve(
             chat_label=chat_label_for_prompt,
             current_user_text=display_current_user_text,
             current_user_name=_pick_str(safe, "user_name") or None,
+            current_source_owner_id=current_row.get("source_owner_id"),
+            user_id=uid,
+            user_name=user_name,
             self_turn_directive=self_turn_directive or None,
         )
 
@@ -3348,6 +3364,9 @@ async def conversation_retrieve(
                     chat_label=chat_label_for_prompt,
                     current_user_text=message,
                     current_user_name=_pick_str(safe, "user_name") or None,
+                    current_source_owner_id=current_row.get("source_owner_id"),
+                    user_id=uid,
+                    user_name=user_name,
                     self_turn_directive=self_turn_directive,
                 )
                 if not response_chat_history_for_ai.strip() and cid.startswith("chat:atomic-"):
@@ -3409,6 +3428,9 @@ async def conversation_retrieve(
                     chat_label=chat_label_for_prompt,
                     current_user_text=message,
                     current_user_name=_pick_str(safe, "user_name") or None,
+                    current_source_owner_id=current_row.get("source_owner_id"),
+                    user_id=uid,
+                    user_name=user_name,
                     self_turn_directive=self_turn_directive,
                 )
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
@@ -4155,6 +4177,12 @@ async def conversation_turn(
         turn_response_format: Any = {"type": "json_object"}
 
         memory_service = _get_service_from_payload(safe)
+        current_row = _label_owner_messages([{
+            "role": "user" if cid.startswith(("whatsapp:", "chat:atomic-", "mentra:")) else "unknown",
+            "name": _pick_str(safe, "user_name"), "source_owner_id": safe.get("source_owner_id"),
+        }], user_id=uid, user_name=memory_service.user_config.user_name, conversation_id=cid)[0]
+        safe["user_name"] = current_row.get("name")
+        safe["source_owner_id"] = current_row.get("source_owner_id")
         turn_system_prompt = override_system_prompt or _make_turn_system_prompt(
             soul_id,
             anchor_context=_render_anchor_context(
@@ -4253,7 +4281,10 @@ async def conversation_turn(
         apimw_status = "skipped_dry_run" if dry_run else "not_started"
         if (not dry_run) and run_apimw:
             apimw_status = _turn_launch_apimw(
-                cid, uid, soul_id, safe, history_full,
+                cid, uid, soul_id, safe, _label_owner_messages(
+                    history_full, user_id=uid, user_name=memory_service.user_config.user_name,
+                    conversation_id=cid,
+                ),
             )
 
         response_target = str(turn_contract.get("response_target") or "").strip().lower()

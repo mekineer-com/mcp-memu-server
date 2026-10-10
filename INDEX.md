@@ -147,7 +147,8 @@ and sitting ownership, not separate chats. No old-chat conversion or fallback re
 ### Soul Setup Contract
 
 `GET /souls` returns exact `*.db` filename stems except the configured base DB and
-symlinks. `POST /souls` accepts `{soul_id, use_existing: bool, user_name?: str}` and returns
+symlinks. `POST /souls` accepts `{soul_id, use_existing: bool, user_name?: str}`;
+`user_name` is required for creation and omitted when reusing a Soul. It returns
 `{soul_id, created: bool}`.
 Both methods share their implementation with `/integration/mentra/souls`, whose
 only dependency is Mentra's enabled gate, with no connection key.
@@ -189,7 +190,7 @@ guess a chat from the last reporting app.
 | `app/services/cross_history.py` | Cross-conversation history: formats AI-facing all-chat history, assembles cross-tail/background memorize feeds, manages display-segment cleanup |
 | `app/services/apimw.py` | APImw background memory-weaving pipeline: retrieve → synthesize prior-context/message-to-self → persist |
 | `app/services/admin_routes.py` | Health/version/shutdown/diag endpoint handlers |
-| `app/services/payload.py` | Shared payload/scope/normalization helpers (scope extraction, turn history normalization, signature helpers) |
+| `app/services/payload.py` | Shared payload/scope/normalization helpers; `_label_owner_messages` copies proven-owner lines to the Soul's canonical `user_name`, with optional live `source_owner_id` evidence and unchanged source data/IDs |
 | `app/services/service_factory.py` | `MemoryService` cache + construction, llm profile merge, config readers, profile-aware semantic-dedupe defaults (per embedding profile; numeric config values are operator recovery overrides only) |
 | `app/services/retrieve_orchestration.py` | Retrieve domain helpers: query/where extraction, identity-context builder, `_run_retrieve` implementation |
 | `app/services/sqlite_scope.py` | Scoped db-path resolution, scope `WHERE` builder, state-db lookup/write wrappers |

@@ -133,8 +133,10 @@ def create_soul(config: dict[str, Any], body: SoulCreate) -> dict[str, Any]:
         path = _path(config, soul_id)
         created = False
         if not path.exists():
+            if not body.user_name or not body.user_name.strip():
+                raise HTTPException(status_code=422, detail="Enter the name this Soul should call you")
             try:
-                user_name = validate_user_id(body.user_name if body.user_name is not None else owner_id)
+                user_name = validate_user_id(body.user_name)
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             if user_name.casefold() == soul_id.casefold():

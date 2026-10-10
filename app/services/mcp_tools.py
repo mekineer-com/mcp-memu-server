@@ -14,6 +14,7 @@ class MemuTurnRequest(BaseModel):
     message: str
     history: list[dict[str, Any]] | None = None
     user_name: str | None = None
+    source_owner_id: str | None = None
     soul_card: str | None = None
     debug: bool = False
     chat_name: str | None = None
@@ -130,6 +131,8 @@ async def memu_turn_endpoint(
         retrieve_payload["is_live_turn"] = True
     if user_name:
         retrieve_payload["user_name"] = user_name
+    if req.source_owner_id is not None:
+        retrieve_payload["source_owner_id"] = req.source_owner_id
     if req.soul_card:
         retrieve_payload["soul_card"] = str(req.soul_card)
     if chat_name:
@@ -167,6 +170,8 @@ async def memu_turn_endpoint(
         turn_payload["is_live_turn"] = True
     if user_name:
         turn_payload["user_name"] = user_name
+    if req.source_owner_id is not None:
+        turn_payload["source_owner_id"] = req.source_owner_id
     if req.soul_card:
         turn_payload["soul_card"] = str(req.soul_card)
     if chat_name:

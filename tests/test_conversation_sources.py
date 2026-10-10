@@ -9,6 +9,46 @@ from app.services import conversation_sources
 from app.services import cross_history, state
 
 
+@pytest.mark.parametrize("name", ["Ardent", "ardent", "Beacon Vale", "星", "A" * 80])
+@pytest.mark.parametrize("bold", ["", "*", "**"])
+def test_soul_prefix_requires_marker_and_preserves_exact_valid_name(name, bold):
+    assert conversation_sources._strip_soul_prefix(f"✦ {bold}{name}{bold}: reply") == (name, "reply")
+
+
+@pytest.mark.parametrize("body", [
+    "Ardent: natural human address", "ardent: natural human address", "[Ardent] human words",
+    "*Ardent*: human words", "**Ardent**: human words", "⚕ Ardent: legacy header",
+    "✦", "✦ : reply", "✦ Ardent reply", "✦ [Ardent]: reply", "✦ *Ardent: reply",
+    "✦ **Ardent*: reply", "✦ Ardent*: reply", "✦ ../Ardent: reply", "✦ CON: reply",
+    "✦ Ardent.: reply", "✦ Ardent\x00: reply", "✦ Ardent\n: reply", "✦ " + "星" * 27 + ": reply",
+])
+def test_soul_prefix_rejects_bare_configured_or_invalid_shapes(body):
+    assert conversation_sources._strip_soul_prefix(body) == ("", body)
+
+
+@pytest.mark.parametrize("reading_soul", ["Ardent", "Beacon"])
+def test_bare_soul_address_stays_human_and_stamp_wins(tmp_path, reading_soul):
+    path = tmp_path / "web_source.db"
+    bodies = ["Ardent: human question", "[Ardent] human words", "**Ardent**: human words",
+              "✦ Beacon: stamped Ardent reply", "✦ Ardent: guest words"]
+    _write_web_source_db(path, messages=[{
+        "msg_key": f"physical-{index}", "timestamp": 100 + index,
+        "body": body, "from_me": index != 4, "chat_id": "19990000001@c.us",
+    } for index, body in enumerate(bodies)])
+    rows = conversation_sources.load_whatsapp_web_source_tail(
+        conversation_id="whatsapp:dm:19990000001", since_cursor=-1, recent_fallback_messages=0,
+        soul_id=reading_soul, web_source_db_path=path,
+        assistant_source_speakers={"physical-3": "Ardent"},
+    )
+    assert [row.get("role") for row in rows[:3]] == ["user"] * 3
+    assert [row["content"] for row in rows[:3]] == bodies[:3]
+    assert rows[3]["speaker"] == "Ardent"
+    assert rows[3].get("role") == ("assistant" if reading_soul == "Ardent" else None)
+    assert rows[3]["content"] == "stamped Ardent reply"
+    assert rows[4].get("role") is None and rows[4]["content"] == bodies[4]
+    assert [row["source_message_id"] for row in rows] == [f"physical-{index}" for index in range(5)]
+
+
 def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path, monkeypatch):
     import sys
     from datetime import UTC, datetime
@@ -518,7 +558,6 @@ def test_load_whatsapp_web_source_tail_floors_sparse_chat_rows_without_new(tmp_p
         since_cursor=20,
         recent_fallback_messages=8,
         soul_id="Siri",
-        reply_prefix="",
         web_source_db_path=web_db,
         include_floor_without_new=True,
     )
@@ -624,7 +663,6 @@ def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_
         since_cursor=-1,
         recent_fallback_messages=0,
         soul_id="Siri",
-        reply_prefix="✦ *Siri*: ",
         web_source_db_path=web_db,
         min_timestamp=100,
     )
@@ -691,7 +729,6 @@ def test_whatsapp_tail_projects_one_source_ref_for_phone_and_lid_aliases(tmp_pat
         since_cursor=-1,
         recent_fallback_messages=0,
         soul_id="TestSoul",
-        reply_prefix="",
         web_source_db_path=web_db,
         assistant_source_speakers={"soul-message-id": "TestSoul"},
     )
@@ -721,7 +758,6 @@ def test_whatsapp_tail_projects_one_source_ref_for_phone_and_lid_aliases(tmp_pat
         since_cursor=-1,
         recent_fallback_messages=0,
         soul_id="TestSoul",
-        reply_prefix="",
         web_source_db_path=dm_db,
     )
     assert [row.get("source_ref") for row in dm_rows] == [f"whatsapp:{lid_jid}"]
@@ -741,7 +777,6 @@ def test_load_whatsapp_web_source_tail_after_rowid_uses_monotonic_cursor(tmp_pat
         conversation_id="whatsapp:dm:15133278228",
         after_rowid=1,
         soul_id="Siri",
-        reply_prefix="✦ *Siri*: ",
         web_source_db_path=web_db,
     )
 
@@ -768,7 +803,6 @@ def test_load_whatsapp_web_source_tail_does_not_require_matching_prefix(tmp_path
         since_cursor=-1,
         recent_fallback_messages=0,
         soul_id="Siri",
-        reply_prefix="⚕ *Hermes Agent*",
         web_source_db_path=web_db,
     )
 
@@ -794,7 +828,6 @@ def test_load_whatsapp_web_source_tail_uses_assistant_source_speakers(tmp_path: 
         since_cursor=-1,
         recent_fallback_messages=0,
         soul_id="Ardent",
-        reply_prefix="",
         web_source_db_path=web_db,
         assistant_source_speakers={"SENT-ID": "Ardent"},
     )
@@ -804,12 +837,8 @@ def test_load_whatsapp_web_source_tail_uses_assistant_source_speakers(tmp_path: 
     ]
 
 
-@pytest.mark.parametrize("reply_prefix,caption_prefix", [
-    ("✦ *Beacon*: ", "✦ *Beacon*: "),
-    ("[Beacon] ", "[Beacon] "),
-    ("✦ *Ardent*: ", "✦ *Beacon*: "),
-])
-def test_whatsapp_soul_switch_keeps_speakers_across_readers(tmp_path, monkeypatch, reply_prefix, caption_prefix):
+@pytest.mark.parametrize("caption_prefix", ["✦ Beacon: ", "✦ *Beacon*: ", "✦ **Beacon**: "])
+def test_whatsapp_soul_switch_keeps_speakers_across_readers(tmp_path, monkeypatch, caption_prefix):
     from app import main
     from app.db import sqlite_ensure_conversation_state_schema
     from app.services.payload import _normalize_conversation
@@ -848,7 +877,7 @@ def test_whatsapp_soul_switch_keeps_speakers_across_readers(tmp_path, monkeypatc
     } for i, (key, text) in enumerate(zip(keys, texts))], contacts=[{
         "contact_id": "19990000002@c.us", "contact_local_id": "19990000002", "name": "Orion"}])
     monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, tmp_path, sessions, channels))
-    monkeypatch.setattr(main, "_resolve_whatsapp_web_source_config", lambda: (web, reply_prefix))
+    monkeypatch.setattr(main, "_resolve_whatsapp_web_source_config", lambda: web)
 
     live = main._load_current_whatsapp_history_from_source(cid, "Ardent", active_since=100)
     background = main._load_background_rollup_tail(conversation_id=cid, user_id="Orion", soul_id="Ardent",
@@ -889,7 +918,7 @@ def test_whatsapp_soul_switch_keeps_speakers_across_readers(tmp_path, monkeypatc
     # Floors retain the switched-Soul period; rowid summaries resume without renumbering.
     speakers = conversation_sources.load_whatsapp_assistant_source_speakers(
         conversation_id=cid, sessions_index_path=sessions, state_db_path=channels)
-    kwargs = dict(conversation_id=cid, soul_id="Ardent", reply_prefix=reply_prefix,
+    kwargs = dict(conversation_id=cid, soul_id="Ardent",
                   web_source_db_path=web, assistant_source_speakers=speakers)
     floor = conversation_sources.load_whatsapp_web_source_tail(
         **kwargs, since_cursor=8, recent_fallback_messages=8, include_floor_without_new=True)
@@ -917,7 +946,6 @@ def test_load_whatsapp_web_source_tail_does_not_substring_match_assistant_ids(tm
         since_cursor=-1,
         recent_fallback_messages=0,
         soul_id="Siri",
-        reply_prefix="",
         web_source_db_path=web_db,
         assistant_source_speakers={"SENT-ID": "Ardent"},
     )
@@ -953,7 +981,6 @@ def test_load_whatsapp_web_source_tail_filters_gateway_notices(tmp_path: Path) -
         since_cursor=-1,
         recent_fallback_messages=0,
         soul_id="Siri",
-        reply_prefix="",
         web_source_db_path=web_db,
     )
 
@@ -981,7 +1008,6 @@ def test_load_whatsapp_web_source_tail_omits_revoked_rows(tmp_path: Path) -> Non
         since_cursor=-1,
         recent_fallback_messages=0,
         soul_id="Echo",
-        reply_prefix="",
         web_source_db_path=web_db,
     )
 
@@ -1208,7 +1234,6 @@ def test_load_whatsapp_web_source_tail_raises_on_initial_read_with_no_matching_r
             since_cursor=-1,
             recent_fallback_messages=0,
             soul_id="Siri",
-            reply_prefix="",
             web_source_db_path=web_db,
         )
 
@@ -1229,7 +1254,6 @@ def test_load_whatsapp_web_source_tail_no_error_on_initial_read_with_messages_fi
         since_cursor=-1,
         recent_fallback_messages=0,
         soul_id="Siri",
-        reply_prefix="",
         web_source_db_path=web_db,
         min_timestamp=100.0,
     )
@@ -1249,7 +1273,6 @@ def test_load_whatsapp_web_source_tail_after_rowid_no_error_when_no_new_rows(tmp
         conversation_id="whatsapp:dm:15133278228",
         after_rowid=999,
         soul_id="Siri",
-        reply_prefix="",
         web_source_db_path=web_db,
     )
     assert rows == []
@@ -1281,7 +1304,6 @@ def test_web_source_reaction_rendered_into_content(tmp_path: Path) -> None:
         since_cursor=-1,
         recent_fallback_messages=0,
         soul_id="Siri",
-        reply_prefix="",
         web_source_db_path=web_db,
     )
     assert len(rows) == 1
@@ -1312,7 +1334,6 @@ def test_web_source_multiple_reactors(tmp_path: Path) -> None:
         since_cursor=-1,
         recent_fallback_messages=0,
         soul_id="Siri",
-        reply_prefix="",
         web_source_db_path=web_db,
     )
     assert len(rows) == 1
@@ -1382,6 +1403,5 @@ def test_web_source_outdated_schema_raises(tmp_path: Path) -> None:
             since_cursor=-1,
             recent_fallback_messages=0,
             soul_id="Siri",
-            reply_prefix="",
             web_source_db_path=web_db,
         )

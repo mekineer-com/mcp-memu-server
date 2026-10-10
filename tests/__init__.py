@@ -11,6 +11,7 @@ class _TestScope(BaseModel):
 
 
 class AnchorService:
+    user_config = SimpleNamespace(user_name="TestHuman")
     anchors = {}
     _claude_code = False
     _claude_code_model = "test-cli"
@@ -26,6 +27,8 @@ class AnchorService:
 
 class SavedBatchService:
     """Fake extraction, real categorize/dedupe transactions and publication hooks."""
+
+    user_config = SimpleNamespace(user_name="TestHuman")
 
     @staticmethod
     def make_engine(scope):
