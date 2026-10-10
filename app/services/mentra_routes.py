@@ -94,6 +94,7 @@ _lease_lock = asyncio.Lock()
 _image_finalize_tasks: dict[tuple[str, str, str], tuple[str, asyncio.Task[Any]]] = {}
 _image_finalize_errors: dict[tuple[str, str, str], set[str]] = {}
 _transcript_conflicts: dict[tuple[str, str, str], int] = {}
+# run.py starts one worker; installation writes share this process-local lock.
 _installation_lock = asyncio.Lock()
 
 
@@ -672,13 +673,16 @@ def _build_bootstrap_instruction(
 
 def _load_installations(storage_dir: Path) -> dict[str, dict[str, dict[str, Any]]]:
     path = storage_dir / _INSTALLATIONS_FILE
-    if not path.exists():
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return {}
-    data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=f"Cannot read Mentra installation registry: {path}") from exc
     if not isinstance(data, dict) or not all(
         isinstance(value, dict) for value in data.values()
     ):
-        raise RuntimeError(f"Mentra installation registry is invalid: {path}")
+        raise HTTPException(status_code=503, detail=f"Mentra installation registry is invalid: {path}")
     return data
 
 
@@ -699,6 +703,8 @@ def _write_installations(
         ) as tmp:
             tmp_name = tmp.name
             json.dump(installations, tmp, ensure_ascii=False)
+            tmp.flush()
+            os.fsync(tmp.fileno())
         os.replace(tmp_name, path)
     finally:
         if tmp_name:
@@ -736,6 +742,7 @@ def _installation_status(storage_dir: Path, device_session_id: str) -> dict[str,
         "installations": [
             {"device_session_id": key, **value, "host_reporting": _host_reporting(value)}
             for key, value in records.items()
+            if value.get("package_name") or value.get("host")
         ],
     }
 
@@ -854,6 +861,8 @@ def register_mentra_routes(
             record = records.get(body.device_session_id, {})
             if "target_device_session_id" in record:
                 raise HTTPException(status_code=409, detail="Setup ticket is not an app ID")
+            if body.host_package and record.get("package_name") and not record.get("host"):
+                raise HTTPException(status_code=409, detail="Installed stock app cannot become a fork host")
             if body.installation_ticket:
                 if body.host_package or record.get("host") or (
                     record and record.get("user_id") != body.user_id
@@ -899,6 +908,8 @@ def register_mentra_routes(
             record = installations.setdefault(_IRIS_PACKAGE, {}).setdefault(
                 body.device_session_id, {}
             )
+            if "target_device_session_id" in record or (record.get("package_name") and not record.get("host")):
+                raise HTTPException(status_code=409, detail="Choose a fork host, not a stock app or setup ticket")
             record["host"] = host
             record.setdefault("display_name", body.default_name)
             _write_installations(storage_dir, installations)

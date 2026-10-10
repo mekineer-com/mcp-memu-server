@@ -419,6 +419,18 @@ def test_mentra_installation_report_persists_and_status_selects_device(
     assert "device_session_id" not in status
     assert "user_id" not in status
 
+    host = {
+        "user_id": first["user_id"], "device_session_id": first["device_session_id"],
+        "host_package": "com.mentra.mentra.openalma", "host_version": "3.2.0",
+        "default_name": "Wrong host",
+    }
+    before = (tmp_path / "installations.json").read_text()
+    assert restarted.post("/integration/mentra/host/seen", json=host).status_code == 409
+    assert restarted.post("/integration/mentra/installation/seen", json={
+        **first, "host_package": host["host_package"], "host_version": host["host_version"],
+    }).status_code == 409
+    assert (tmp_path / "installations.json").read_text() == before
+
 
 def test_mentra_host_capability_merges_with_installation(
     monkeypatch: pytest.MonkeyPatch,
@@ -516,9 +528,17 @@ def test_installation_metadata_is_local_and_keeps_names(
     client = TestClient(remote.app, client=("127.0.0.1", 12345))
     first = client.post(endpoint).json()
     assert first["display_name"] == "stock_01"
+    assert remote.get("/integration/mentra/status").json()["installations"] == []
     another = client.post(endpoint).json()
     assert another["installation_ticket"] != first["installation_ticket"]
     assert first["device_session_id"] == ""
+    before = (tmp_path / "installations.json").read_text()
+    assert client.post("/integration/mentra/host/seen", json={
+        "user_id": START["user_id"], "device_session_id": first["installation_ticket"],
+        "host_package": "com.mentra.mentra.openalma", "host_version": "3.2.0",
+        "default_name": "Not an app",
+    }).status_code == 409
+    assert (tmp_path / "installations.json").read_text() == before
     client.delete(f"{endpoint}/{another['installation_ticket']}").raise_for_status()
     key = "stock-app-one"
     first_report = {
@@ -604,6 +624,37 @@ def test_installation_metadata_is_local_and_keeps_names(
     client.post(f"/integration/mentra/session/{sitting}/end",
                 json={"user_id": START["user_id"], "soul_id": START["soul_id"]}).raise_for_status()
     client.delete(f"{endpoint}/{key}").raise_for_status()
+
+
+def test_installation_registry_failure_preserves_the_saved_records(monkeypatch, tmp_path):
+    previous = {"com.openalma.mentra": {"saved-app": {"display_name": "Keep me"}}}
+    mentra_routes._write_installations(tmp_path, previous)
+    path = tmp_path / "installations.json"
+    original = path.read_bytes()
+    sync_calls = []
+
+    def fail_sync(fd):
+        sync_calls.append(fd)
+        raise OSError("Fictional sync failure")
+
+    monkeypatch.setattr(mentra_routes.os, "fsync", fail_sync)
+    with pytest.raises(OSError, match="Fictional sync failure"):
+        mentra_routes._write_installations(tmp_path, {})
+    assert len(sync_calls) == 1
+    assert path.read_bytes() == original
+    assert not list(tmp_path.glob(".installations.json.*.tmp"))
+
+
+def test_invalid_installation_registry_is_reported_without_overwriting(monkeypatch, tmp_path):
+    remote, _, _ = _session_app(monkeypatch, tmp_path)
+    local = TestClient(remote.app, client=("127.0.0.1", 12345))
+    path = tmp_path / "installations.json"
+    for contents in ('{"incomplete":', '[]'):
+        path.write_text(contents)
+        for response in (remote.get("/integration/mentra/status"), local.post("/mentra/installations")):
+            assert response.status_code == 503
+            assert "installation registry" in response.json()["detail"]
+        assert path.read_text() == contents
 
 
 def test_mentra_status_distinguishes_interruption_conflict_and_missing_transcript(
