@@ -948,7 +948,7 @@ async def test_retry_names_unreadable_source_without_clearing_failure(monkeypatc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_stage", ["save", "review", "review_error_write"])
+@pytest.mark.parametrize("failure_stage", ["save", "review", "review_error_write", "extract_first", "extract_late", "extract_import"])
 async def test_partial_publication_retains_only_published_files_and_retry_reuses_resource(monkeypatch, tmp_path, request, failure_stage):
     from pydantic import BaseModel
     from memu.app.service import MemoryService
@@ -960,7 +960,14 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
     svc = MemoryService(database_config={"metadata_store": {"provider": "sqlite", "dsn": f"sqlite:///{path}"}}, user_config={"model": Scope})
     request.addfinalizer(svc.database.close)
     scope = {"user_id": uid, "soul_id": sid}
-    main._write_conversation_state(cid, **scope, updates={})
+    historical = failure_stage == "extract_import"
+    main._write_conversation_state(cid, **scope, updates={"import_state": {
+        "history_end_index": 3, "memorize_cursor": -1, "pending_segment_ids": [],
+        "stage": "memorize", "error": None,
+    }} if historical else {})
+    if historical:
+        svc.llm_profiles.profiles["default"].context_window_tokens = 200_000
+        initial, _, _ = main._load_turn_state_and_soul_card(cid, **scope)
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
     manifest = tmp_path / "manifest.json"
@@ -978,7 +985,29 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
         kwargs["llm_client"].day = kwargs["source_days"][0]
         return await route(text, types, **kwargs)
     monkeypatch.setattr(svc, "_route_segment", routed)
-    monkeypatch.setattr(svc, "_generate_entries_from_text", AsyncMock(return_value=[]))
+    extraction_calls = []
+    progress_at_failure = []
+    extraction_failed = False
+    if failure_stage.startswith("extract_"):
+        svc.memorize_config.memory_types = ["profile", "knowledge"]
+        svc.memorize_config.semantic_dedupe_enabled = False
+        async def extract(**kwargs):
+            nonlocal extraction_failed
+            source = "Second" if "Second" in kwargs["resource_text"] else "First"
+            memory_type = kwargs["memory_types"][0]
+            extraction_calls.append((source, memory_type))
+            bad_type = "profile" if failure_stage == "extract_first" else "knowledge"
+            if source == "Second" and memory_type == bad_type and not extraction_failed:
+                extraction_failed = True
+                progress_at_failure.append(dict(main._MEMORIZE_PROGRESS[main._memorize_lock_key(uid, sid)]))
+                raise RuntimeError("Second segment extraction failed")
+            return svc._parse_structured_entries([memory_type], [
+                f"<item><memory><content>Fictional {memory_type} fact from {source}.</content>"
+                f"<day>{kwargs['source_days'][0]}</day><source_role>user</source_role></memory></item>"
+            ], source_days=kwargs["source_days"])
+        monkeypatch.setattr(svc, "_generate_entries_from_text", extract)
+    else:
+        monkeypatch.setattr(svc, "_generate_entries_from_text", AsyncMock(return_value=[]))
     monkeypatch.setattr(svc, "_select_chat_client", lambda *_a, **_kw: Router())
     monkeypatch.setattr(svc, "_select_embedding_client", lambda *_a, **_kw: SimpleNamespace(
         embed=AsyncMock(side_effect=lambda texts: [[1.0, 0.0] for _ in texts])))
@@ -993,7 +1022,8 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
     review_failed = False
     async def fail_review(state, context, **kwargs):
         nonlocal review_failed
-        if failure_stage != "save" and state.get("resources") and not review_failed:
+        assert kwargs.get("enforce_input_budget", False) == historical
+        if failure_stage in {"review", "review_error_write"} and state.get("resources") and not review_failed:
             review_failed = True
             raise RuntimeError("Saved segment review failed")
         return await review(state, context, **kwargs)
@@ -1008,18 +1038,44 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
             svc=svc, scope=scope, conversation_id=cid, soul_id=sid, uid=uid,
             processed_cursor=-1, safe={}, resource_url="unused", chat_key=None, merged_len=2,
             force=True, sleep_stats=None, segments_dir=segments_dir,
+            historical=historical,
         )
-    with pytest.raises(RuntimeError, match="Second publication|Saved segment review|Failure status write"):
+    with pytest.raises(RuntimeError, match="Second publication|Saved segment review|Failure status write|Second segment extraction"):
         await run([0, 1])
     assert [file.name for file in segments_dir.iterdir()] == ["2020-01-01.json"]
     assert json.loads(manifest.read_text())["segments"] == [{"start": 0, "end": 0}]
     assert len(svc.database.resource_repo.list_resources(scope)) == 1
     state, _, _ = main._load_turn_state_and_soul_card(cid, **scope)
-    assert state["digest_cursor"] == 1 and state["pending_segment_ids"] == [f"{cid}:0-0"]
-    assert state["memorize_failure"]["segment_work"] == {f"{cid}:0-0": "review"}
+    record = state["import_state"] if historical else state["memorize_failure"]
+    assert (record["memorize_cursor"] if historical else state["digest_cursor"]) == 1
+    assert (record["pending_segment_ids"] if historical else state["pending_segment_ids"]) == [f"{cid}:0-0"]
+    assert record["segment_work"] == {f"{cid}:0-0": "review"}
+    if failure_stage.startswith("extract_"):
+        saved = svc.database.memory_item_repo.list_items(scope)
+        assert len(saved) == 3 and {item.segment_id for item in saved.values()} == {f"{cid}:0-0"}
+        progress = progress_at_failure[0]
+        assert progress["current"] == (2 if failure_stage == "extract_first" else 3)
+        assert progress["total"] == 4
     monkeypatch.setattr(main, "_write_conversation_state", writer)
     svc.database.close()
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: svc)
+    if historical:
+        before_recovery = (len(routes), len(extraction_calls))
+        await main._import_routes.recover_memorize(main, scoped=scope, cid=cid, historical=True)
+        assert (len(routes), len(extraction_calls)) == before_recovery
+        await run([1])
+        state, _, _ = main._load_turn_state_and_soul_card(cid, **scope)
+        assert state["import_state"]["memorize_cursor"] == 2
+        assert not state["import_state"].get("segment_work") and state["import_state"]["error"] is None
+        assert state["digest_cursor"] == initial["digest_cursor"] and state["pending_segment_ids"] == initial["pending_segment_ids"]
+        assert len(routes) == 3 and len(svc.database.resource_repo.list_resources(scope)) == 2
+        assert len(list(segments_dir.iterdir())) == 2
+        assert extraction_calls == [("First", "profile"), ("First", "knowledge"),
+                                    ("Second", "profile"), ("Second", "knowledge")] + [("Second", "profile"), ("Second", "knowledge")]
+        final_items = svc.database.memory_item_repo.list_items(scope)
+        assert set(saved).issubset(final_items)
+        assert sorted(item.segment_id for item in final_items.values()) == [f"{cid}:0-0"] * 3 + [f"{cid}:1-1"] * 3
+        return
     monkeypatch.setattr(main, "_saved_memorize_payload", lambda *_args: {"user": scope, "conversation_id": cid})
     async def remainder(payload, tasks, force, **kwargs):
         assert kwargs["admitted"] and kwargs["batch_owned"] and kwargs["retry"]
@@ -1050,6 +1106,14 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
     state, _, _ = main._load_turn_state_and_soul_card(cid, **scope)
     assert state["rolling_summary_cursor_id"] == 0 and state["digest_cursor"] == 2
     assert state["memorize_failure"] is None
+    if failure_stage.startswith("extract_"):
+        assert extraction_calls[:2] == [("First", "profile"), ("First", "knowledge")]
+        assert all(source == "Second" for source, _ in extraction_calls[2:])
+        assert extraction_calls[-2:] == [("Second", "profile"), ("Second", "knowledge")]
+        assert len(extraction_calls) == (5 if failure_stage == "extract_first" else 6)
+        final_items = svc.database.memory_item_repo.list_items(scope)
+        assert set(saved).issubset(final_items)
+        assert sorted(item.segment_id for item in final_items.values()) == [f"{cid}:0-0"] * 3 + [f"{cid}:1-1"] * 3
 
 
 @pytest.mark.asyncio
