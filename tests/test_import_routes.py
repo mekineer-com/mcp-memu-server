@@ -232,10 +232,17 @@ async def test_real_import_completion_memorizes_current_messages_across_chats(tm
         storage_dir=main._get_storage_dir(main._CONFIG), **scoped, conversation_id=trigger,
         history=[{"role": "user", "content": "Current other chat", "received_at": "2026-01-01T12:00:00Z"}])
     assert main._schedule_auto_memorize({}, main._auto_memorize_scope(trigger, *scoped.values(), {}, [])) == "coalesced"
+    later_trigger = "chat:later-trigger"
+    main._write_conversation_state(later_trigger, **scoped, updates={})
+    conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=main._get_storage_dir(main._CONFIG), **scoped, conversation_id=later_trigger,
+        history=[{"role": "user", "content": "Current second chat", "received_at": "2026-01-01T13:00:00Z"}])
+    assert main._schedule_auto_memorize({}, main._auto_memorize_scope(later_trigger, *scoped.values(), {}, [])) == "coalesced"
+    assert main._soul_import_state(**scoped)[1]["ordinary_waiting"] == later_trigger
     assert (await main.diag_memorize_pending(**scoped))["retry_operation"] == "import"
     assert (await _endpoint("/imports/process")(request)).status_code == 202
     await asyncio.gather(*list(main._BACKGROUND_TASKS))
-    assert calls == [["Past story"], ["Current imported story", "Current other chat"]]
+    assert calls == [["Past story"], ["Current imported story", "Current other chat", "Current second chat"]]
     imported = main._soul_import_state(**scoped)[1]
     assert imported["stage"] == "complete" and bool(imported["ordinary_waiting"]) == fail_handoff
     assert bool(main._soul_activity_pause(**scoped)) == fail_handoff
