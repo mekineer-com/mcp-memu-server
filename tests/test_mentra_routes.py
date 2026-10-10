@@ -1995,6 +1995,28 @@ def test_sequence_and_duplicate_lookup_tolerate_compacted_prefix() -> None:
     assert merged[-1]["received_at"].endswith("Z")
 
 
+def test_transcript_chunks_preserve_boundary_whitespace_and_unicode(monkeypatch, tmp_path):
+    client, _, _ = _session_app(monkeypatch, tmp_path)
+    sitting = client.post("/integration/mentra/session/start", json=START).json()["session_id"]
+    pieces = ["first ", " " * 16_000, "\U0001f642" * 16_000, " last"]
+    events = [{"event_id": f"{sitting}:{index + 1}", "sequence": index + 1,
+               "event_kind": "transcript", "role": "user", "content": text, "status": "complete"}
+              for index, text in enumerate(pieces)]
+    response = client.post(f"/integration/mentra/session/{sitting}/transcripts/append", json={
+        "user_id": START["user_id"], "soul_id": START["soul_id"], "events": events,
+    })
+    response.raise_for_status()
+    stored = mentra_routes.conversation_sources.load_mentra_history_snapshot(storage_dir=tmp_path,
+        user_id=START["user_id"], soul_id=START["soul_id"], conversation_id="mentra:iris")
+    assert [row["content"] for row in stored] == pieces
+    for invalid in ("", "\U0001f642" * 16_001):
+        response = client.post(f"/integration/mentra/session/{sitting}/transcripts/append", json={
+            "user_id": START["user_id"], "soul_id": START["soul_id"],
+            "events": [{**events[0], "event_id": f"{sitting}:5", "sequence": 5, "content": invalid}],
+        })
+        assert response.status_code == 422
+
+
 def test_transcript_append_rejects_holes_conflicts_and_redacts_validation_input(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

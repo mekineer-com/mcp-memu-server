@@ -346,9 +346,8 @@ class MentraTranscriptEvent(BaseModel):
     @field_validator("content")
     @classmethod
     def validate_content(cls, value: str) -> str:
-        value = value.strip()
         if not value:
-            raise ValueError("must not be blank")
+            raise ValueError("must not be empty")
         if len(value) > 16_000:
             raise ValueError("is too long")
         return value
