@@ -776,7 +776,7 @@ async def test_recovery_dedupes_trailing_segment_before_soul_wide_review(monkeyp
     for _ in range(10):
         item = engine.database.memory_item_repo.create_item(
             memory_type="knowledge", summary="A fictional garden", embedding=[1.0, 0.0],
-            user_data=scoped, segment_id="later")
+            user_data=scoped, segment_id="later", source_role="user", speaker_id="user:testowner")
         engine.database.dossier_candidate_repo.add_candidate(proposed_name="Garden", item_id=item.id, where=scoped)
     monkeypatch.setattr(engine, "generate_dynamic_category_review", AsyncMock(
         side_effect=AssertionError("Duplicate evidence must collapse before review")))
