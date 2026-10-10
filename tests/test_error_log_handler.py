@@ -2,6 +2,8 @@
 to the root logger so errors from all modules land in errors.log."""
 from __future__ import annotations
 
+import logging
+import time
 from pathlib import Path
 
 import pytest
@@ -52,6 +54,34 @@ def test_error_handler_wired_to_root_logger(tmp_path: Path) -> None:
     stream_cfg = log_cfg.get("loggers", {}).get("memu.llm.http_client", {})
     assert stream_cfg.get("level") == "INFO"
     assert "memu_file" in (stream_cfg.get("handlers") or [])
+    assert "quiet_access" in log_cfg["loggers"]["uvicorn.access"]["filters"]
+
+
+def test_quiet_access_filter_limits_mentra_errors_without_hiding_other_errors(monkeypatch):
+    now = 0.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    quiet = server_run._QuietAccessFilter()
+
+    def access(path, status, port=12345):
+        return logging.LogRecord("uvicorn.access", logging.INFO, "", 0,
+                                 '%s - "%s %s HTTP/%s" %d',
+                                 (f"127.0.0.1:{port}", "GET", path, "1.1", status), None)
+
+    for status in (200, 204, 307):
+        assert not quiet.filter(access("/integration/mentra/status", status))
+    for status in (401, 409, 503):
+        assert quiet.filter(access("/integration/mentra/status?user_id=fictional", status))
+        for port in range(100):
+            assert not quiet.filter(access(f"/integration/mentra/session/fictional-{port}/heartbeat", status, port))
+        assert quiet.filter(access("/health", status))
+        assert quiet.filter(access("/health", status))
+    now = 59.9
+    for status in (401, 409, 503):
+        assert not quiet.filter(access("/integration/mentra/health", status))
+    now = 60.0
+    for status in (401, 409, 503):
+        assert quiet.filter(access("/integration/mentra/health", status))
+    assert quiet.filter(logging.LogRecord("uvicorn.error", logging.ERROR, "", 0, "Application exception", (), None))
 
 
 def test_resolve_errors_log_path_migrates_legacy_logs_subfolder(

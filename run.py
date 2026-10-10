@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sys
+import time
 from copy import deepcopy
 from pathlib import Path
 
@@ -205,13 +206,28 @@ def _log_file_path(cfg: dict) -> Path:
 
 
 class _QuietAccessFilter(logging.Filter):
+    def __init__(self) -> None:
+        super().__init__()
+        self._mentra_errors: dict[int, float] = {}
+
     def filter(self, record: logging.LogRecord) -> bool:
         if record.name != "uvicorn.access":
             return True
         try:
-            return int(record.getMessage().rsplit(" ", 1)[-1]) >= 400
-        except ValueError:
+            _, _, path, _, status = record.args
+            status = int(status)
+        except (TypeError, ValueError):
             return True
+        if status < 400:
+            return False
+        if path.split("?", 1)[0].startswith("/integration/mentra/"):
+            # Limit by status, not session ID or query, so polling cannot flood the log.
+            now = time.monotonic()
+            previous = self._mentra_errors.get(status)
+            if previous is not None and now - previous < 60:
+                return False
+            self._mentra_errors[status] = now
+        return True
 
 
 def _build_uvicorn_log_config(uvicorn_module: object, cfg: dict) -> dict:
