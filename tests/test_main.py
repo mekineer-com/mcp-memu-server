@@ -9113,35 +9113,48 @@ async def test_whatsapp_outbound_claim_and_mark(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db_path = tmp_path / "SiriTest.db"
+    db_path = tmp_path / "TestSoul.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
+    now = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(main._whatsapp_outbounds, "datetime", SimpleNamespace(now=lambda _tz: now))
 
     out_id = main._insert_whatsapp_outbound(
-        user_id="u1",
-        soul_id="Siri",
-        origin_conversation_id="whatsapp:group:18322935409-1579788049@g.us:222685531500721@lid",
+        user_id="TestOwner",
+        soul_id="TestSoul",
+        origin_conversation_id="whatsapp:group:fictional@g.us:fictional@lid",
         target="respond",
         response_text="hello",
         metadata={"source": "test"},
     )
+    assert not main._whatsapp_outbounds._poll_marker_path(db_path, "whatsapp-outbounds").exists()
+    main._touch_poll_marker(db_path, "free-turn-followups", "future follow-up")
 
     claimed = await main.whatsapp_outbounds_claim(
-        {"user_id": "u1", "soul_id": "Siri", "claimed_by": "hermes-test", "limit": 10}
+        {"user_id": "TestOwner", "soul_id": "TestSoul", "claimed_by": "hermes-test", "limit": 10}
     )
     assert [row["id"] for row in claimed["outbounds"]] == [out_id]
-    assert claimed["outbounds"][0]["origin_conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
-    assert claimed["outbounds"][0]["target_conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
+    assert claimed["outbounds"][0]["origin_conversation_id"] == "whatsapp:group:fictional@g.us"
+    assert claimed["outbounds"][0]["target_conversation_id"] == "whatsapp:group:fictional@g.us"
     assert claimed["outbounds"][0]["metadata"] == {"source": "test"}
 
-    claimed_again = await main.whatsapp_outbounds_claim(
-        {"user_id": "u1", "soul_id": "Siri", "claimed_by": "hermes-test", "limit": 10}
+    for elapsed in (1, 299, 300):
+        now = datetime(2026, 10, 10, 12, 0, tzinfo=UTC) + timedelta(seconds=elapsed)
+        claimed_again = await main.whatsapp_outbounds_claim(
+            {"user_id": "TestOwner", "soul_id": "TestSoul", "claimed_by": "hermes-test", "limit": 10}
+        )
+        assert claimed_again["outbounds"] == []
+    now += timedelta(seconds=1)
+    reclaimed = await main.whatsapp_outbounds_claim(
+        {"user_id": "TestOwner", "soul_id": "TestSoul", "claimed_by": "restarted-hermes", "limit": 10}
     )
-    assert claimed_again["outbounds"] == []
+    assert [row["id"] for row in reclaimed["outbounds"]] == [out_id]
+    assert reclaimed["outbounds"][0]["claimed_by"] == "restarted-hermes"
+    assert main._whatsapp_outbounds._poll_marker_path(db_path, "free-turn-followups").read_text() == "future follow-up"
 
     marked = await main.whatsapp_outbounds_mark(
         {
-            "user_id": "u1",
-            "soul_id": "Siri",
+            "user_id": "TestOwner",
+            "soul_id": "TestSoul",
             "outbound_id": out_id,
             "status": "sent",
             "provider_message_id": "wa-msg-1",
@@ -9152,29 +9165,119 @@ async def test_whatsapp_outbound_claim_and_mark(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("storage", ["empty", "missing", "missing_table", "directory"])
 async def test_whatsapp_outbound_empty_claim_does_not_create_wal_sidecars(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    storage: str,
 ) -> None:
-    db_path = tmp_path / "SiriTest.db"
+    db_path = tmp_path / "TestSoul.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
 
-    con = sqlite3.connect(str(db_path))
-    try:
-        con.execute("PRAGMA journal_mode=WAL")
-        main._ensure_whatsapp_outbounds_schema(con)
-    finally:
-        con.close()
-    for suffix in ("-wal", "-shm"):
-        (tmp_path / f"SiriTest.db{suffix}").unlink(missing_ok=True)
+    if storage == "directory":
+        db_path.mkdir()
+    elif storage != "missing":
+        con = sqlite3.connect(str(db_path))
+        try:
+            con.execute("PRAGMA journal_mode=WAL")
+            if storage == "empty":
+                main._ensure_whatsapp_outbounds_schema(con)
+            else:
+                con.execute("PRAGMA user_version=1")
+        finally:
+            con.close()
+    before = set(tmp_path.iterdir())
+    statements = []
+    connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        con = connect(*args, **kwargs)
+        con.set_trace_callback(statements.append)
+        return con
+
+    monkeypatch.setattr(sqlite3, "connect", traced_connect)
 
     claimed = await main.whatsapp_outbounds_claim(
-        {"user_id": "u1", "soul_id": "Siri", "claimed_by": "hermes-test", "limit": 10}
+        {"user_id": "TestOwner", "soul_id": "TestSoul", "claimed_by": "hermes-test", "limit": 10}
     )
 
     assert claimed["outbounds"] == []
-    assert not (tmp_path / "SiriTest.db-wal").exists()
-    assert not (tmp_path / "SiriTest.db-shm").exists()
+    assert set(tmp_path.iterdir()) == before
+    assert not (tmp_path / "TestSoul.db-wal").exists()
+    assert not (tmp_path / "TestSoul.db-shm").exists()
+    if storage == "empty":
+        assert any("SELECT 1 FROM whatsapp_pending_outbounds WHERE" in sql for sql in statements)
+    elif storage == "missing_table":
+        assert any("SELECT 1 FROM sqlite_master" in sql for sql in statements)
+    else:
+        assert statements == []
+    assert all(sql.startswith(("SELECT", "PRAGMA busy_timeout")) for sql in statements)
+
+
+@pytest.mark.parametrize("name", ["plain.db", "Soul #% \N{LATIN SMALL LETTER E WITH ACUTE}.db"])
+def test_sqlite_connect_native_modes_preserve_path_and_pragmas(tmp_path, monkeypatch, name):
+    from app.db import sqlite_connect
+
+    monkeypatch.chdir(tmp_path)
+    path = Path(name)
+    with pytest.raises(sqlite3.OperationalError):
+        sqlite_connect(path, mode="rw")
+    assert not path.exists()
+    con = sqlite_connect(path)
+    try:
+        assert con.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert con.execute("PRAGMA busy_timeout").fetchone()[0] == 3000
+        assert Path(con.execute("PRAGMA database_list").fetchone()[2]) == path.resolve()
+    finally:
+        con.close()
+    con = sqlite_connect(path, mode="rw")
+    con.close()
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_outbound_claim_sees_committed_wal_only_row(tmp_path, monkeypatch):
+    db_path = tmp_path / "TestSoul.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: db_path)
+    out_id = main._insert_whatsapp_outbound(
+        user_id="TestOwner", soul_id="TestSoul", origin_conversation_id="whatsapp:dm:fictional",
+        target="respond", response_text="fictional reply",
+    )
+    writer = main._sqlite_connect(db_path)
+    try:
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("UPDATE whatsapp_pending_outbounds SET status='sent' WHERE id=?", (out_id,))
+        writer.commit()
+        assert writer.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+        writer.execute("UPDATE whatsapp_pending_outbounds SET status='pending' WHERE id=?", (out_id,))
+        writer.commit()
+        assert db_path.with_name(db_path.name + "-wal").stat().st_size > 0
+        claimed = await main.whatsapp_outbounds_claim(
+            {"user_id": "TestOwner", "soul_id": "TestSoul", "claimed_by": "hermes-test"}
+        )
+        assert [row["id"] for row in claimed["outbounds"]] == [out_id]
+        assert claimed["outbounds"][0]["status"] == "claimed"
+    finally:
+        writer.close()
+
+
+def test_whatsapp_outbound_claim_deleted_db_does_not_recreate(tmp_path, monkeypatch):
+    db_path = tmp_path / "TestSoul.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: db_path)
+    main._insert_whatsapp_outbound(
+        user_id="TestOwner", soul_id="TestSoul", origin_conversation_id="whatsapp:dm:fictional",
+        target="respond", response_text="fictional reply",
+    )
+    connect = main._whatsapp_outbounds.sqlite_connect
+
+    def delete_before_claim(path, **kwargs):
+        path.unlink()
+        return connect(path, **kwargs)
+
+    monkeypatch.setattr(main._whatsapp_outbounds, "sqlite_connect", delete_before_claim)
+    with pytest.raises(sqlite3.OperationalError) as exc:
+        main._claim_whatsapp_outbounds(user_id="TestOwner", soul_id="TestSoul", claimed_by="hermes-test")
+    assert exc.value.sqlite_errorcode == sqlite3.SQLITE_CANTOPEN
+    assert not db_path.exists()
 
 
 @pytest.mark.asyncio
@@ -9447,8 +9550,8 @@ def test_free_turn_follow_up_schedule_persists_pending_row(
     assert payload["follow_up_reason"] == "Check whether Marcos got home safely."
 
 
-def test_free_turn_empty_claim_does_not_create_wal_sidecars(tmp_path: Path) -> None:
-    db_path = tmp_path / "SiriTest.db"
+def test_free_turn_empty_claim_does_not_create_wal_sidecars(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "TestSoul.db"
     con = sqlite3.connect(str(db_path))
     try:
         con.execute("PRAGMA journal_mode=WAL")
@@ -9456,13 +9559,25 @@ def test_free_turn_empty_claim_does_not_create_wal_sidecars(tmp_path: Path) -> N
     finally:
         con.close()
     for suffix in ("-wal", "-shm"):
-        (tmp_path / f"SiriTest.db{suffix}").unlink(missing_ok=True)
+        (tmp_path / f"TestSoul.db{suffix}").unlink(missing_ok=True)
+
+    main._touch_poll_marker(db_path, "free-turn-followups")
+    checked_tables = []
+    has_rows = main._sqlite_has_rows_quietly
+
+    def checked(*args, **kwargs):
+        checked_tables.append(kwargs["table"])
+        return has_rows(*args, **kwargs)
+
+    monkeypatch.setattr(main, "_sqlite_has_rows_quietly", checked)
 
     claimed = main._claim_due_free_turn_followups(db_path, now=datetime.now(UTC))
 
     assert claimed == []
-    assert not (tmp_path / "SiriTest.db-wal").exists()
-    assert not (tmp_path / "SiriTest.db-shm").exists()
+    assert checked_tables == ["free_turn_followups"]
+    assert not main._whatsapp_outbounds._poll_marker_path(db_path, "free-turn-followups").exists()
+    assert not (tmp_path / "TestSoul.db-wal").exists()
+    assert not (tmp_path / "TestSoul.db-shm").exists()
 
 
 @pytest.mark.asyncio

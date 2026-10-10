@@ -27,8 +27,8 @@ def sqlite_ensure_nonempty(path: Path) -> None:
         logger.warning("sqlite_ensure_nonempty failed for %s", path, exc_info=True)
 
 
-def sqlite_connect(path: Path) -> sqlite3.Connection:
-    con = sqlite3.connect(str(path), timeout=5.0)
+def sqlite_connect(path: Path, *, mode: str = "rwc") -> sqlite3.Connection:
+    con = sqlite3.connect(f"{path.resolve().as_uri()}?mode={mode}", uri=True, timeout=5.0)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=3000")
     return con

@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import sqlite3
 import time as _time
 import traceback
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, time as dtime, timedelta
 from pathlib import Path
 from typing import Any, TypedDict
+from uuid import uuid4
 
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
@@ -1252,12 +1254,17 @@ async def memorize_endpoint(
                 if db_path is not None and db_path.exists():
                     user_name = read_soul_name(db_path)
                     ts = datetime.now(UTC).strftime("%y%m%d-%H%M%S")
-                    archive_path = db_path.with_suffix(f".bak-{ts}")
-                    db_path.rename(archive_path)
+                    archive_path = db_path.with_suffix(f".bak-{ts}-{uuid4().hex}")
+                    archive_files = [(db_path, archive_path)]
                     for wal_suffix in ("-wal", "-shm"):
                         wal_file = db_path.with_name(db_path.name + wal_suffix)
                         if wal_file.exists():
-                            wal_file.rename(archive_path.with_name(archive_path.name + wal_suffix))
+                            archive_files.append((wal_file, archive_path.with_name(archive_path.name + wal_suffix)))
+                    # Publish every file without replacing backups before removing any source.
+                    for source, destination in archive_files:
+                        os.link(source, destination)
+                    for source, _destination in archive_files:
+                        source.unlink()
                     publish_soul_db(db_path, user_name)
                     ctx.logger.info("re-memorize: archived %s → %s", db_path.name, archive_path.name)
                     endpoint_ctx.clear_cached_services()

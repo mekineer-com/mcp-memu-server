@@ -82,7 +82,10 @@ def _sqlite_has_rows_quietly(
     where_sql: str,
     params: tuple[Any, ...],
 ) -> bool:
-    con = sqlite3.connect(str(db_path), timeout=5.0)
+    if not db_path.is_file():
+        return False
+    # Read-only connections can leave newly created WAL/SHM behind after close.
+    con = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=rw", uri=True, timeout=5.0)
     try:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA busy_timeout=3000")
@@ -184,7 +187,6 @@ INSERT INTO whatsapp_pending_outbounds (
         con.commit()
     finally:
         con.close()
-    _touch_poll_marker(db_path, "whatsapp-outbounds")
     return out_id
 
 
@@ -205,9 +207,6 @@ def _claim_whatsapp_outbounds(
     db_path = sqlite_current_path(uid, sid)
     if db_path is None:
         raise HTTPException(status_code=400, detail="sqlite path unavailable for outbound scope")
-    if not _poll_marker_path(db_path, "whatsapp-outbounds").exists():
-        return []
-    sqlite_ensure_nonempty(db_path)
     now = datetime.now(UTC)
     now_iso = now.isoformat()
     stale_before = (now - timedelta(seconds=max(1, int(claim_timeout_seconds)))).isoformat()
@@ -218,10 +217,9 @@ def _claim_whatsapp_outbounds(
         where_sql="user_id = ? AND soul_id = ? AND (status = 'pending' OR (status = 'claimed' AND claimed_at < ?))",
         params=(uid, sid, stale_before),
     ):
-        _remove_poll_marker(db_path, "whatsapp-outbounds")
         return []
     claimed: list[dict[str, Any]] = []
-    con = sqlite_connect(db_path)
+    con = sqlite_connect(db_path, mode="rw")
     try:
         con.row_factory = sqlite3.Row
         _ensure_whatsapp_outbounds_schema(con)
@@ -258,8 +256,6 @@ WHERE id = ? AND user_id = ? AND soul_id = ?
         con.commit()
     finally:
         con.close()
-    if not claimed:
-        _remove_poll_marker(db_path, "whatsapp-outbounds")
     return claimed
 
 

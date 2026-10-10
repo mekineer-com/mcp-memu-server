@@ -23,6 +23,7 @@ import sqlite3
 from datetime import UTC, datetime
 from dataclasses import replace
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -438,18 +439,42 @@ async def test_rebuild_rechecks_consolidation_after_waiting_for_lock(monkeypatch
 
 
 @pytest.mark.parametrize("running", [{}, {("u2", "TestSoul"): False}, {("u1", "OtherSoul"): False}])
+@pytest.mark.parametrize("collision_suffix", [None, "", "-wal", "-shm"])
 def test_rebuild_archives_db_and_service_reacquired_after_archive(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
     running,
+    collision_suffix,
+    capsys,
 ) -> None:
     """rebuild=True must archive the DB and re-acquire the service AFTER the archive."""
     db_file = tmp_path / "TestSoul.db"
     souls.publish_soul_db(db_file, "DifferentHuman")
+    with sqlite3.connect(db_file) as con:
+        con.execute("CREATE TABLE rebuild_sentinel (value TEXT)")
+        con.execute("INSERT INTO rebuild_sentinel VALUES ('original data')")
+    con.close()
+    original_bytes = db_file.read_bytes()
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 10, 12, 0, 0, tzinfo=tz)
+
+    archive_ids = iter((UUID(int=1), UUID(int=2)))
+    monkeypatch.setattr(memorize_endpoint, "datetime", FrozenDateTime)
+    monkeypatch.setattr(memorize_endpoint, "uuid4", lambda: next(archive_ids))
     monkeypatch.setattr(main_module, "_CONSOLIDATION_RUNNING", running)
 
     call_order: list[str] = []
+    publish = memorize_endpoint.publish_soul_db
+
+    def record_publish(path, user_name):
+        call_order.append("published")
+        return publish(path, user_name)
+
+    monkeypatch.setattr(memorize_endpoint, "publish_soul_db", record_publish)
 
     def fake_sqlite_current_path(uid: str, soul_id: str):
         return db_file
@@ -471,24 +496,49 @@ def test_rebuild_archives_db_and_service_reacquired_after_archive(
     monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)
     monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
 
-    resp = client.post("/memorize?rebuild=true", json=_make_stub_payload("u1", "TestSoul", "chat:cid-r"))
-    assert resp.status_code in (200, 202), f"status={resp.status_code} body={resp.text[:300]}"
+    archives = []
+    for index in (1, 2):
+        source_bytes = db_file.read_bytes()
+        sidecars = {suffix: f"rebuild {index}{suffix}".encode() for suffix in ("-wal", "-shm")}
+        for suffix, contents in sidecars.items():
+            db_file.with_name(db_file.name + suffix).write_bytes(contents)
+        archive = db_file.with_suffix(f".bak-261010-120000-{UUID(int=index).hex}")
+        if collision_suffix is not None:
+            collision = archive.with_name(archive.name + collision_suffix)
+            collision.write_bytes(b"existing backup")
 
-    # Archive and replacement both retain the established name.
-    bak_files = list(tmp_path.glob("*.bak-*"))
-    assert bak_files, "rebuild=True must create a .bak archive file"
-    assert souls.read_soul_name(db_file) == "DifferentHuman"
-    assert souls.read_soul_name(bak_files[0]) == "DifferentHuman"
+        resp = client.post("/memorize?rebuild=true", json=_make_stub_payload("u1", "TestSoul", "chat:cid-r"))
+        if collision_suffix is not None:
+            assert resp.status_code == 500, resp.text
+            error = capsys.readouterr().err
+            assert "FileExistsError" in error
+            assert str(collision) in error
+            for suffix in ("", "-wal", "-shm"):
+                if suffix == collision_suffix:
+                    break
+                assert archive.with_name(archive.name + suffix).samefile(db_file.with_name(db_file.name + suffix))
+            assert collision.read_bytes() == b"existing backup"
+            assert db_file.read_bytes() == original_bytes
+            for suffix, contents in sidecars.items():
+                assert db_file.with_name(db_file.name + suffix).read_bytes() == contents
+            assert call_order == []
+            return
 
-    # Service must be re-acquired AFTER the cache was cleared.
-    assert "cleared" in call_order, f"clear_cached_services not called; order={call_order}"
-    assert "get_service" in call_order, f"get_service_from_payload not called; order={call_order}"
-    cleared_idx = call_order.index("cleared")
-    get_service_idx = call_order.index("get_service")
-    assert get_service_idx > cleared_idx, (
-        "get_service_from_payload must be called AFTER clear_cached_services; "
-        f"order was {call_order}"
-    )
+        assert resp.status_code in (200, 202), f"status={resp.status_code} body={resp.text[:300]}"
+        assert archive.read_bytes() == source_bytes
+        for suffix, contents in sidecars.items():
+            assert archive.with_name(archive.name + suffix).read_bytes() == contents
+            assert not db_file.with_name(db_file.name + suffix).exists()
+        assert souls.read_soul_name(db_file) == souls.read_soul_name(archive) == "DifferentHuman"
+        assert call_order == ["published", "cleared", "get_service"] * index
+        archives.append(archive)
+
+    assert archives[0].read_bytes() == original_bytes
+    assert archives[0].with_name(archives[0].name + "-wal").read_bytes() == b"rebuild 1-wal"
+    assert archives[0].with_name(archives[0].name + "-shm").read_bytes() == b"rebuild 1-shm"
+    assert set(tmp_path.glob("TestSoul.bak-*")) == {
+        path.with_name(path.name + suffix) for path in archives for suffix in ("", "-wal", "-shm")
+    }
 
 
 def test_rebuild_preserves_display_name_with_real_service_reacquisition(client, monkeypatch):
