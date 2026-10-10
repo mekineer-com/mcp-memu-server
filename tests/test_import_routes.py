@@ -222,7 +222,7 @@ async def test_real_import_completion_memorizes_current_messages_across_chats(tm
             main._write_conversation_state(cid, **scoped, updates={"import_state": {
                 **record, "pending_segment_ids": [], "stage": "complete", "error": None,
             }})
-        return {"status": "ok"}
+        return {"status": "ok", "result": {}}
     monkeypatch.setattr(main, "_run_consolidation_pipeline_once", consolidated)
     request = ImportProcess(**scoped, label="TestApp")
     _endpoint("/imports/register")(request)

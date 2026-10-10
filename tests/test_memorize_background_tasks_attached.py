@@ -108,8 +108,11 @@ def test_memorize_tail_retries_consolidation_when_pending_segments_exist(
         uid: str,
         progress_key: str | None = None,
         memorize_progress: dict | None = None,
+        release_memorize_claim: bool = False,
     ) -> None:
         recorded.append({"conversation_id": conversation_id, "soul_id": soul_id, "uid": uid})
+        assert release_memorize_claim
+        await main_module._finish_memorize_claim(main_module._memorize_lock_key(uid, soul_id), True)
 
     async def fake_run_memorize_segments(**_kwargs) -> None:  # pragma: no cover - should not run in this branch
         raise AssertionError("run_memorize_segments should not run when no tail segments exist")

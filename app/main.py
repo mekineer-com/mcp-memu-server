@@ -81,7 +81,7 @@ from app.services import souls as _souls
 from app.services import whatsapp_outbounds as _whatsapp_outbounds
 from app.services.consolidation import (
     ConsolidationDeps,
-    _run_consolidation_pipeline_once,
+    _run_consolidation_pipeline_once as _consolidation_pipeline_once,
 )
 from app.services.intention_state import (
     append_memory_cache_entry as _append_memory_cache_entry,
@@ -2166,6 +2166,21 @@ def _source_cursor_checkpoint(*args: Any, **kwargs: Any) -> Any:
     return _cross_history._source_cursor_checkpoint(*args, **kwargs)
 
 
+async def _run_consolidation_pipeline_once(*, user_id: str, soul_id: str, historical: bool = False, **kwargs):
+    out = await _consolidation_pipeline_once(user_id=user_id, soul_id=soul_id, historical=historical, **kwargs)
+    if not historical and (out.get("status") == "ok" or
+                           (out.get("status") == "skipped" and out.get("reason") == "not_due")):
+        marker = _memorize_lock_key(user_id, soul_id)
+        with _STATE_LOCK:
+            recheck = None
+            if marker not in _FORCED_MEMORIZE_INFLIGHT and not _soul_activity_pause(user_id, soul_id):
+                recheck = _FORCED_MEMORIZE_RECHECK.pop(marker, None)
+        if recheck is not None:
+            # Let the caller finish reflection progress before the next run sets its progress.
+            asyncio.get_running_loop().call_soon(_schedule_auto_memorize, recheck["payload"], recheck["scope"])
+    return out
+
+
 async def _run_consolidation_task(
     svc: Any,
     *,
@@ -2176,6 +2191,7 @@ async def _run_consolidation_task(
     selected_segments: set[tuple[str, str]] | None = None,
     progress_key: str | None = None,
     memorize_progress: dict[str, dict[str, Any]] | None = None,
+    release_memorize_claim: bool = False,
 ) -> dict[str, Any]:
     if (uid, soul_id) in _CONSOLIDATION_RUNNING or (
         _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, soul_id)) is True
@@ -2191,6 +2207,8 @@ async def _run_consolidation_task(
                 active=False,
                 last_result="skipped",
             )
+        if release_memorize_claim:
+            await _finish_memorize_claim(_memorize_lock_key(uid, soul_id), False)
         return {"ok": True, "status": "skipped"}
     if progress_key and memorize_progress is not None:
         _memorize_endpoint._set_memorize_progress(
@@ -2201,6 +2219,7 @@ async def _run_consolidation_task(
             current=1,
             total=1,
         )
+    success = False
     try:
         deps = _make_consolidation_deps()
         state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
@@ -2218,6 +2237,7 @@ async def _run_consolidation_task(
             selected_segments=selected_segments,
         )
         if out.get("status") == "skipped":
+            success = out.get("reason") == "not_due"
             if progress_key and memorize_progress is not None:
                 _memorize_endpoint._set_memorize_progress(
                     memorize_progress,
@@ -2226,6 +2246,7 @@ async def _run_consolidation_task(
                     last_result="skipped",
                 )
             return {"ok": True, "status": "skipped"}
+        success = True
         if progress_key and memorize_progress is not None:
             _memorize_endpoint._set_memorize_progress(
                 memorize_progress,
@@ -2250,6 +2271,8 @@ async def _run_consolidation_task(
     finally:
         if progress_key and memorize_progress is not None:
             _MEMORIZE_CANCEL.discard(progress_key)
+        if release_memorize_claim:
+            await _finish_memorize_claim(_memorize_lock_key(uid, soul_id), success)
 
 
 def _active_consolidation_failure(
@@ -2463,6 +2486,8 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
         _require_soul_active(uid, sid, import_handoff=import_handoff)
     if not admitted:
         with _STATE_LOCK:
+            if (uid, sid) in _CONSOLIDATION_RUNNING:
+                raise HTTPException(status_code=409, detail="cannot rebuild during consolidation" if rebuild else "Cannot Memorize during consolidation")
             import_cid, imported = _soul_import_state(uid, sid)
             if not historical and imported and (imported["stage"] != "complete" or _FORCED_MEMORIZE_INFLIGHT.get(marker) is True):
                 if rebuild:
@@ -2522,7 +2547,9 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
         )
         return response
     finally:
-        if not batch_owned and not any(task.func is _run_memorize_segments for task in background_tasks.tasks):
+        if not batch_owned and not any(task.func is _run_memorize_segments or
+                                      (task.func is _run_consolidation_task and task.kwargs.get("release_memorize_claim"))
+                                      for task in background_tasks.tasks):
             await _finish_memorize_claim(marker, response is not None and response.status_code < 400)
 
 
@@ -2798,8 +2825,8 @@ def _consolidation_request_context(
     soul_id = str(scope.get("soul_id") or "").strip()
     if not uid or not soul_id:
         raise HTTPException(status_code=400, detail="user_id and soul_id required")
-    if _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, soul_id)) is True:
-        raise HTTPException(status_code=409, detail="Import batch is running")
+    if _memorize_lock_key(uid, soul_id) in _FORCED_MEMORIZE_INFLIGHT:
+        raise HTTPException(status_code=409, detail="Memory work is running")
     safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
     safe["conversation_id"] = cid
     return cid, safe, uid, soul_id, _get_service_from_payload(safe)
@@ -2880,6 +2907,7 @@ async def retry_consolidation(
         raise HTTPException(status_code=404, detail="conversation database not found")
     if _active_consolidation_failure(state)[0] is None:
         raise HTTPException(status_code=409, detail="no failed consolidation to retry")
+    _FORCED_MEMORIZE_INFLIGHT[_memorize_lock_key(uid, soul_id)] = False
     task = asyncio.create_task(
         _run_consolidation_task(
             svc,
@@ -2887,6 +2915,7 @@ async def retry_consolidation(
             soul_id=soul_id,
             uid=uid,
             force=True,
+            release_memorize_claim=True,
         )
     )
     _BACKGROUND_TASKS.add(task)
@@ -3945,11 +3974,12 @@ def _auto_memorize_scope(
 async def _finish_memorize_claim(marker: str, success: bool) -> None:
     with _STATE_LOCK:
         historical = _FORCED_MEMORIZE_INFLIGHT.pop(marker, None) is True
-        recheck = _FORCED_MEMORIZE_RECHECK.pop(marker, None)
+        recheck = _FORCED_MEMORIZE_RECHECK.get(marker)
         progress = _MEMORIZE_PROGRESS.get(marker, {})
         bounds = progress.pop("_st_cursor_ceiling", {})
         processed = progress.pop("_processed_rows", [])
-        if historical or not success or recheck is None:
+        if historical or recheck is None:
+            _FORCED_MEMORIZE_RECHECK.pop(marker, None)
             return
         payload = recheck["payload"]
         rewound = {cid for cid in recheck["pre_rewind"]
@@ -3961,6 +3991,13 @@ async def _finish_memorize_claim(marker: str, success: bool) -> None:
             committed = {identity(row) for row in processed if row.get("source_conversation_id") in rewound}
             payload["conversation"] = [row for row in payload.get("conversation", [])
                                        if row.get("source_conversation_id") not in rewound or identity(row) not in committed]
+        if _soul_state.consolidation_failure(
+            _paid_work_state(str(recheck["scope"]["user_id"]), str(recheck["scope"]["soul_id"]))
+        ):
+            return
+        _FORCED_MEMORIZE_RECHECK.pop(marker, None)
+        if not success:
+            return
     # Re-admit without an await gap, but do not reacquire the non-reentrant lock inside itself.
     _schedule_auto_memorize(payload, recheck["scope"])
 
@@ -3985,7 +4022,7 @@ def _schedule_auto_memorize(
     with _STATE_LOCK:
         if _defer_memorize_for_import(str(scope["conversation_id"]), str(scope["user_id"]), str(scope["soul_id"])):
             return "coalesced"
-        if marker in _FORCED_MEMORIZE_INFLIGHT:
+        if marker in _FORCED_MEMORIZE_INFLIGHT or (str(scope["user_id"]), str(scope["soul_id"])) in _CONSOLIDATION_RUNNING:
             active = _MEMORIZE_PROGRESS.get(marker, {}).get("_st_cursor_ceiling", {})
             _FORCED_MEMORIZE_RECHECK[marker] = {
                 "payload": payload, "scope": dict(scope),

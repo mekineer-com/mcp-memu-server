@@ -33,7 +33,7 @@ async def test_frozen_batch_subtracts_current_checkpoints_without_reloading_text
             calls.extend(json.loads(segment["raw_text"]) for segment in kwargs["segments"])
             return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
-    monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock())
+    monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
     tasks = BackgroundTasks()
     response = await main._memorize_owned(payload, tasks, True)
     assert response.status_code == 202
@@ -98,7 +98,8 @@ async def test_exhausted_capture_preserves_unfinished_failure():
 
 
 @pytest.mark.asyncio
-async def test_rewind_prunes_old_waiting_capture_but_keeps_post_rewind_replacement(monkeypatch):
+@pytest.mark.parametrize("reflection_failure", [False, True])
+async def test_rewind_prunes_old_waiting_capture_but_keeps_post_rewind_replacement(monkeypatch, reflection_failure):
     uid, sid, first, other = "TestOwner", "TestSoul", "chat:rewind-main", "chat:waiting-trigger"
     calls, entered, release = [], asyncio.Event(), asyncio.Event()
     class Service(SavedBatchService):
@@ -109,7 +110,13 @@ async def test_rewind_prunes_old_waiting_capture_but_keeps_post_rewind_replaceme
                 await release.wait()
             return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
-    monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock())
+    async def reflect(*_args, **_kwargs):
+        if reflection_failure and len(calls) == 1:
+            main._write_conversation_state(first, user_id=uid, soul_id=sid, updates={
+                "last_consolidation_error": "Reflection failed", "last_consolidation_error_at": datetime.now(UTC).isoformat()})
+            return {"status": "error"}
+        return {"status": "skipped"}
+    monkeypatch.setattr(main, "_run_consolidation_task", reflect)
     monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 1)
     monkeypatch.setattr(main, "_unmemorized_sleep_gap_detected", lambda *_a, **_k: True)
     main._write_conversation_state(first, user_id=uid, soul_id=sid, updates={})
@@ -142,6 +149,16 @@ async def test_rewind_prunes_old_waiting_capture_but_keeps_post_rewind_replaceme
         while main._BACKGROUND_TASKS:
             await asyncio.wait_for(asyncio.gather(*list(main._BACKGROUND_TASKS)), 5)
             await asyncio.sleep(0)
+        if reflection_failure:
+            assert len(calls) == 1 and main._soul_activity_pause(uid, sid) == "Reflection failed"
+            assert main._FORCED_MEMORIZE_RECHECK[marker]["payload"]["conversation"] == [extra]
+            main._write_conversation_state(first, user_id=uid, soul_id=sid, updates={"last_consolidation_error": None})
+            monkeypatch.setattr(main, "_consolidation_pipeline_once", AsyncMock(return_value={"status": "ok"}))
+            await main._run_consolidation_pipeline_once(user_id=uid, soul_id=sid)
+            await asyncio.sleep(0)
+            while main._BACKGROUND_TASKS:
+                await asyncio.wait_for(asyncio.gather(*list(main._BACKGROUND_TASKS)), 5)
+                await asyncio.sleep(0)
         assert [[row["content"] for row in call] for call in calls] == [
             [f"original-{i}" for i in range(4)], ["waiting chat content"],
         ]
@@ -829,6 +846,114 @@ async def test_detached_consolidation_owns_terminal_progress_and_cancel_cleanup(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("retry", [False, True])
+async def test_memorize_refuses_running_reflection_before_claim_or_service(monkeypatch, retry):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    marker = main._memorize_lock_key(**scope)
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
+    monkeypatch.setitem(main._CONSOLIDATION_RUNNING, (scope["user_id"], scope["soul_id"]), False)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: pytest.fail("busy admission must precede service lookup"))
+    with pytest.raises(HTTPException) as busy:
+        await main._memorize_owned({"user": scope, "conversation_id": "chat:busy"}, BackgroundTasks(), True, retry=retry)
+    assert busy.value.status_code == 409
+    assert "consolidation" in str(busy.value.detail).lower()
+    assert marker not in main._FORCED_MEMORIZE_INFLIGHT
+
+
+@pytest.mark.asyncio
+async def test_auto_memorize_waits_for_reflection_without_starting_work(monkeypatch):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "conversation_id": "chat:waiting"}
+    marker = main._memorize_lock_key(scope["user_id"], scope["soul_id"])
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_RECHECK", {})
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
+    monkeypatch.setitem(main._CONSOLIDATION_RUNNING, (scope["user_id"], scope["soul_id"]), False)
+    monkeypatch.setattr(main, "_run_forced_memorize_from_turn", lambda *_: pytest.fail("reflection is still running"))
+    assert main._schedule_auto_memorize({"conversation": [{"content": "Captured words"}]}, scope) == "coalesced"
+    assert marker not in main._FORCED_MEMORIZE_INFLIGHT
+    assert main._FORCED_MEMORIZE_RECHECK[marker]["payload"]["conversation"] == [{"content": "Captured words"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["ok", "not_due", "failure"])
+async def test_reflection_completion_releases_capture_only_after_success(monkeypatch, outcome):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "conversation_id": "chat:reflection"}
+    marker = main._memorize_lock_key(scope["user_id"], scope["soul_id"])
+    captured, runs = {"conversation": [{"content": "Frozen words"}]}, []
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_RECHECK", {marker: {"payload": captured, "scope": scope, "pre_rewind": []}})
+    async def pipeline(**_kwargs):
+        if outcome == "failure":
+            raise TimeoutError()
+        return {"status": "ok", "result": {}} if outcome == "ok" else {"status": "skipped", "reason": "not_due"}
+    async def memorize(payload):
+        assert main._MEMORIZE_PROGRESS[marker]["phase"] == "accepted"
+        runs.append(payload["conversation"])
+        await main._finish_memorize_claim(marker, True)
+    monkeypatch.setattr(main, "_consolidation_pipeline_once", pipeline)
+    monkeypatch.setattr(main, "_run_forced_memorize_from_turn", memorize)
+    await main._run_consolidation_task(object(), uid=scope["user_id"], soul_id=scope["soul_id"],
+                                     conversation_id=scope["conversation_id"], progress_key=marker,
+                                     memorize_progress=main._MEMORIZE_PROGRESS)
+    await asyncio.sleep(0)
+    await asyncio.gather(*list(main._BACKGROUND_TASKS))
+    assert runs == ([] if outcome == "failure" else [captured["conversation"]])
+    assert (marker in main._FORCED_MEMORIZE_RECHECK) == (outcome == "failure")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [False, True])
+async def test_extraction_keeps_claim_until_following_reflection_finishes(monkeypatch, failure):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid, entered, release = "chat:handoff", asyncio.Event(), asyncio.Event()
+    marker = main._memorize_lock_key(**scope)
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_RECHECK", {})
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
+            return [{} for _ in kwargs["segments"]]
+    service = Service()
+    async def reflect(*_args, **_kwargs):
+        assert not main._get_memorize_lock(marker).locked()
+        entered.set()
+        await release.wait()
+        if failure:
+            main._write_conversation_state(cid, **scope, updates={
+                "last_consolidation_error": "Reflection failed", "last_consolidation_error_at": datetime.now(UTC).isoformat()})
+        return {"status": "error" if failure else "ok"}
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: service)
+    monkeypatch.setattr(main, "_run_consolidation_task", reflect)
+    tasks = BackgroundTasks()
+    await main._memorize_owned({"user": scope, "conversation_id": cid,
+                               "_cross_memorize": True,
+                               "_final_cursors": {cid: {"cursor": 0, "memory_producing": True}},
+                               "conversation": [{"role": "user", "content": "A fictional event",
+                                                 "source_conversation_id": cid, "source_conversation_index": 0,
+                                                 "memorize_chat": True}]}, tasks, True)
+    runner = asyncio.create_task(tasks())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert marker in main._FORCED_MEMORIZE_INFLIGHT
+        with pytest.raises(HTTPException) as busy:
+            await main._memorize_owned({"user": scope, "conversation_id": cid}, BackgroundTasks(), True)
+        assert busy.value.status_code == 409
+        waiting_scope = {**scope, "conversation_id": cid}
+        main._schedule_auto_memorize({"conversation": [{"content": "Next words"}]}, waiting_scope)
+        if not failure:
+            monkeypatch.setattr(main, "_schedule_auto_memorize", lambda payload, _scope: payload)
+        release.set()
+        await runner
+        state = main._load_turn_state_and_soul_card(cid, **scope)[0]
+        assert state["digest_cursor"] == 0 and state["pending_segment_ids"]
+        assert state["memorize_failure"] is None
+        assert (marker in main._FORCED_MEMORIZE_RECHECK) == failure
+        assert marker not in main._FORCED_MEMORIZE_INFLIGHT
+    finally:
+        release.set()
+        await asyncio.gather(runner, return_exceptions=True)
+        service.engine.database.close()
+
+
+@pytest.mark.asyncio
 async def test_retry_stays_paused_and_duplicate_is_refused(monkeypatch):
     uid, sid, cid = "TestOwner", "TestSoul", "chat:saved-chat"
     failure = {"conversation_id": cid, "error": "Failed", "paused": False, "targets": {cid: {"cursor": 1}}}
@@ -1430,13 +1555,17 @@ async def test_no_new_tail_still_checks_pending_consolidation_with_a_recent_cloc
         "digest_cursor": 0, "last_memorize_at": datetime.now(UTC).isoformat(),
     })
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: object())
-    schedule = AsyncMock(return_value={"status": "skipped"})
+    monkeypatch.setattr(main, "_consolidation_pipeline_once", AsyncMock(return_value={"status": "skipped", "reason": "not_due"}))
+    schedule = AsyncMock(wraps=main._run_consolidation_task)
     monkeypatch.setattr(main, "_run_consolidation_task", schedule)
     tasks = BackgroundTasks()
     response = await main.memorize({"user": {"user_id": uid, "soul_id": sid},
         "conversation_id": cid, "conversation": [{"role": "user", "content": "Already memorized"}]}, tasks, True, tail=True)
     assert response.status_code == 202
+    marker = main._memorize_lock_key(uid, sid)
+    assert marker in main._FORCED_MEMORIZE_INFLIGHT
     await tasks()
+    assert marker not in main._FORCED_MEMORIZE_INFLIGHT
     schedule.assert_awaited_once()
     assert schedule.await_args.kwargs["conversation_id"] == cid
     assert not schedule.await_args.kwargs.get("force", False)

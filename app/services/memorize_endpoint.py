@@ -813,7 +813,11 @@ async def run_memorize_segments(
                     "sleepSplitStats": sleep_stats,
                 },
             )
-        if not consolidation_started:
+        if consolidation_started:
+            result = await _ct
+            if result.get("status") == "error":
+                return False
+        else:
             if terminal_result == "cancelled":
                 _set_memorize_progress(
                     ctx.memorize_progress,
@@ -1399,6 +1403,7 @@ async def memorize_endpoint(
                             uid=uid,
                             progress_key=progress_key,
                             memorize_progress=ctx.memorize_progress,
+                            release_memorize_claim=True,
                         )
                         return JSONResponse(
                             status_code=202,

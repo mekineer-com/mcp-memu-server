@@ -2239,7 +2239,7 @@ async def test_retry_consolidation_schedules_forced_background_run(
         release.set()
         await asyncio.gather(*tasks)
         assert marker in main._MEMORIZE_CANCEL
-        assert marker in main._FORCED_MEMORIZE_INFLIGHT
+        assert marker not in main._FORCED_MEMORIZE_INFLIGHT
         assert main._MEMORIZE_PROGRESS[marker] == {"active": True, "phase": "memorizing"}
     finally:
         release.set()
