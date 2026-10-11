@@ -70,7 +70,7 @@ mcp-memu-server/
 | `/timeline` | GET | Entity relationship timeline |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt: enriches query with identity, categories, memory cache, intentions, and current-chat history before calling memu. |
 | `/conversation/{id}/turn` | POST | Soul turn loop: runs LLM with turn contract, may annul current intentions, persists cache, fires APImw in background on cadence, and manages continuations/attachments. |
-| `/conversation/{id}/turn/undo` | POST | Undo latest turn, then independently best-effort delete its uncited annulment reflections |
+| `/conversation/{id}/turn/undo` | POST | Undo only the snapshot matching the reply's `turn_id`; missing/stale IDs leave state intact. Then best-effort delete its uncited annulment reflections |
 | `/integration/memu/turn` | POST | MCP single-call turn wrapper: retrieve then turn |
 | `/integration/memu/sensory-search` | POST | Scoped explicit visual-memory candidate search over separate media and caption lanes |
 | `/integration/mentra/health` | GET | Keyless private-network Mentra ingress health check; enabled gate, disabled by default |

@@ -4166,6 +4166,7 @@ def _turn_state_write(
     }
     if not _TURN_PRESERVE_UNDO.get():
         updates["undo_snapshot"] = {
+            "turn_id": str(uuid.uuid4()),
             "memory_cache": current_memory_cache,
             "memory_cache_entry": next_memory_cache[-1] if cache_entry else None,
             "annulled_intentions": annulled_intentions,
@@ -4418,6 +4419,8 @@ async def conversation_turn(
                     scope=scope,
                     prepared_annulments=prepared_annulments,
                 )
+                if not _TURN_PRESERVE_UNDO.get():
+                    generation_metadata["turn_id"] = conversation_state_after["undo_snapshot"]["turn_id"]
             if not bool(conversation_state_after.get("memorize_chat", True)):
                 _queue_background_rollup_task(
                     conversation_id=cid,
@@ -4622,6 +4625,9 @@ async def conversation_turn_undo(
         undo_snapshot = conversation_state.get("undo_snapshot")
         if not isinstance(undo_snapshot, dict):
             return {"status": "no_snapshot"}
+        turn_id = safe.get("turn_id")
+        if not isinstance(turn_id, str) or not turn_id or turn_id != undo_snapshot.get("turn_id"):
+            return {"status": "snapshot_mismatch"}
 
         annulment_memory_ids = [
             str(value or "").strip()

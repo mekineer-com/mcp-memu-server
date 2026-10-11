@@ -356,8 +356,15 @@ def test_turn_state_write_consumes_prior_context_after_successful_turn(monkeypat
     assert captured["prior_context"] is None
     assert captured["apimw_message_to_self"] is None
     assert captured["undo_snapshot"]["annulment_memory_ids"] == []
+    first_id = captured["undo_snapshot"]["turn_id"]
+    assert main.uuid.UUID(first_id).version == 4
     assert state["prior_context"] is None
     assert memory_ids == []
+    main._turn_state_write(
+        "conv", "user", "soul", "", [], [], svc=svc,
+        scope={"user_id": "user", "soul_id": "soul"}, prepared_annulments=[],
+    )
+    assert captured["undo_snapshot"]["turn_id"] != first_id
 
 
 def test_scheduled_turn_preserves_the_existing_undo_slot(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -507,6 +514,7 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     deleted: list[tuple[list[str], dict[str, str]]] = []
     writes: list[dict[str, Any]] = []
     snapshot = {
+        "turn_id": "fictional-matching-turn",
         "memory_cache": ["before"],
         "memory_cache_entry": "turn",
         "annulled_intentions": [
@@ -543,7 +551,7 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
 
     out = await main.conversation_turn_undo(
         "chat",
-        {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
+        {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}, "turn_id": snapshot["turn_id"]},
     )
 
     assert out == {"status": "restored"}
@@ -574,7 +582,7 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     with caplog.at_level(logging.WARNING):
         out = await main.conversation_turn_undo(
             "chat",
-            {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
+            {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}, "turn_id": snapshot["turn_id"]},
         )
     assert deleted == [
         (["memory-2"], {"user_id": "Fictional User", "soul_id": "Fictional Soul"}),
@@ -590,7 +598,7 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     with caplog.at_level(logging.ERROR):
         out = await main.conversation_turn_undo(
             "chat",
-            {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
+            {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}, "turn_id": snapshot["turn_id"]},
         )
     assert out["status"] == "restored"
     assert "delete failed" in out["cleanup_warning"]
@@ -602,7 +610,7 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     svc.graph_delete_memory = lambda *_a, **_k: (_ for _ in ()).throw(KeyError("missing group member"))
     out = await main.conversation_turn_undo(
         "chat",
-        {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
+        {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}, "turn_id": snapshot["turn_id"]},
     )
     assert out["status"] == "restored"
     assert "missing group member" in out["cleanup_warning"]
@@ -616,8 +624,83 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     )
     assert await main.conversation_turn_undo(
         "chat",
-        {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}},
+        {"user": {"user_id": "Fictional User", "soul_id": "Fictional Soul"}, "turn_id": snapshot["turn_id"]},
     ) == {"status": "restored"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested_id,stored_id", [
+    (None, "current-turn"), ("", "current-turn"), ("old-turn", "current-turn"),
+    (123, "current-turn"), (["current-turn"], "current-turn"),
+    (" current-turn ", "current-turn"), ("old-turn", None),
+])
+async def test_turn_undo_requires_exact_snapshot_identity_before_any_cleanup(monkeypatch, requested_id, stored_id):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "sillytavern:qualified-undo"
+    snapshot = {"memory_cache": ["before"], "memory_cache_entry": "latest",
+                "annulled_intentions": [], "annulment_memory_ids": ["must-not-clean-up"]}
+    if stored_id is not None:
+        snapshot["turn_id"] = stored_id
+    main._write_conversation_state(cid, **scope, updates={
+        "memory_cache": ["before", "latest"], "intentions_active": [], "undo_snapshot": snapshot,
+    })
+    before = main._load_turn_state_and_soul_card(cid, **scope)[0]
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_kw: pytest.fail("stale Undo loaded cleanup service"))
+    payload = {"user": scope}
+    if requested_id is not None:
+        payload["turn_id"] = requested_id
+    assert await main.conversation_turn_undo(cid, payload) == {"status": "snapshot_mismatch"}
+    assert main._load_turn_state_and_soul_card(cid, **scope)[0] == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["ordinary", "dry_run", "preserved"])
+async def test_native_turn_metadata_matches_published_snapshot_without_tagging_preserved_work(monkeypatch, mode):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "sillytavern:turn-identity"
+    old = {"turn_id": "existing-foreground", "memory_cache": [], "memory_cache_entry": None,
+           "annulled_intentions": [], "annulment_memory_ids": []}
+    main._write_conversation_state(cid, **scope, updates={"undo_snapshot": old})
+
+    class Service(AnchorService):
+        async def chat(self, *_args, **_kwargs):
+            return json.dumps({"working_thought": "A fictional private thought.", "annulments": [],
+                               "rehearsal": "A fictional reply.", "response_target": "respond",
+                               "response": "A fictional reply."})
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_kw: Service())
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_kw: {})
+    monkeypatch.setattr(main, "_prepare_auto_memorize", lambda *_a, **_kw: (0, None))
+    monkeypatch.setattr(main, "_record_call", lambda *_a, **_kw: None)
+    monkeypatch.setitem(main._CONFIG, "retrieve", {"apimw_enabled": False})
+    payload = {"user": scope, "message": "A fictional question.", "chat_name": "Personal",
+               "dry_run": mode == "dry_run", "trace_id": "reusable-trace",
+               "prompt_override_payload": {"user_prompt": "A fictional question.", "system_prompt": "Fictional system.",
+                                           "memory_cache": [], "retrieve_rag": {"items": [], "categories": [], "resources": []}}}
+    if mode != "ordinary":
+        monkeypatch.setattr(main.uuid, "uuid4", lambda: pytest.fail("dry/preserved turn minted a reply identity"))
+    token = main._TURN_PRESERVE_UNDO.set(mode == "preserved")
+    try:
+        response = await main.conversation_turn(cid, payload)
+    finally:
+        main._TURN_PRESERVE_UNDO.reset(token)
+    state = main._load_turn_state_and_soul_card(cid, **scope)[0]
+    metadata = response["generation_metadata"]
+    assert metadata["api"] == "openai" and metadata["model"] == "test-api"
+    if mode != "ordinary":
+        assert "turn_id" not in metadata and state["undo_snapshot"] == old
+        return
+    turn_id = metadata["turn_id"]
+    assert main.uuid.UUID(turn_id).version == 4 and state["undo_snapshot"]["turn_id"] == turn_id
+    assert turn_id != payload["trace_id"]
+    second = await main.conversation_turn(cid, payload)
+    second_id = second["generation_metadata"]["turn_id"]
+    assert second_id != turn_id
+    assert await main.conversation_turn_undo(cid, {"user": scope, "turn_id": turn_id}) == {"status": "snapshot_mismatch"}
+    assert main._load_turn_state_and_soul_card(cid, **scope)[0]["undo_snapshot"]["turn_id"] == second_id
+    assert await main.conversation_turn_undo(cid, {"user": scope, "turn_id": second_id}) == {"status": "restored"}
+    assert main._load_turn_state_and_soul_card(cid, **scope)[0]["undo_snapshot"] is None
+    assert await main.conversation_turn_undo(cid, {"user": scope, "turn_id": second_id}) == {"status": "no_snapshot"}
 
 
 @pytest.mark.asyncio
@@ -7524,7 +7607,7 @@ def _patch_turn_dependencies(
     monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: _FakeSvc())
     monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_k: {})
     monkeypatch.setattr(main, "_turn_state_read", _fake_turn_state_read)
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0, "undo_snapshot": {"turn_id": "fixture-turn"}}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
     monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
@@ -7662,7 +7745,7 @@ async def test_conversation_turn_accepts_generated_prompt_with_matching_cutoff(
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0, "undo_snapshot": {"turn_id": "fixture-turn"}}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
     payload = {
@@ -8755,7 +8838,7 @@ async def test_conversation_turn_does_not_persist_messages_to_table(
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0, "undo_snapshot": {"turn_id": "fixture-turn"}}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
     monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
@@ -8835,7 +8918,7 @@ async def test_conversation_turn_does_not_publish_unsaved_sillytavern_reply(
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0, "undo_snapshot": {"turn_id": "fixture-turn"}}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
     monkeypatch.setattr(main, "_retrieve_apimw_enabled_from_cfg", lambda *_a, **_k: False)
@@ -8905,7 +8988,7 @@ async def test_conversation_turn_keeps_response_when_chat_name_differs(
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0, "undo_snapshot": {"turn_id": "fixture-turn"}}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
 
@@ -8979,7 +9062,7 @@ async def test_conversation_turn_private_response_not_persisted_in_origin_chat(
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0, "undo_snapshot": {"turn_id": "fixture-turn"}}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
 
@@ -9058,7 +9141,7 @@ async def test_conversation_turn_observe_mode_forbids_public_response(
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0, "undo_snapshot": {"turn_id": "fixture-turn"}}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
     monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
@@ -9133,7 +9216,7 @@ async def test_conversation_turn_does_not_retry_parse_failure(
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0, "undo_snapshot": {"turn_id": "fixture-turn"}}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
 
@@ -10050,7 +10133,7 @@ async def test_conversation_turn_allows_respond_when_chat_name_missing_and_logs_
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0, "undo_snapshot": {"turn_id": "fixture-turn"}}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
 
@@ -10239,7 +10322,7 @@ def _make_turn_monkeypatches(
             None,
         ),
     )
-    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0}, db_path, []))
+    monkeypatch.setattr(main, "_turn_state_write", lambda *_a, **_k: ({"digest_cursor": 0, "undo_snapshot": {"turn_id": "fixture-turn"}}, db_path, []))
     monkeypatch.setattr(main, "_persist_annulment_memories", _fake_persist_annulment_memories)
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_k: None)
     monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
