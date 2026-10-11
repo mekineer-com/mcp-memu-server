@@ -42,7 +42,6 @@ def migrate_database(
     embedding_profile: str,
     migrations: tuple[Migration, ...] = MIGRATIONS,
 ) -> None:
-    _initialize_schema(database, embedding_profile)
     with sqlite3.connect(database) as connection:
         connection.execute(
             "CREATE TABLE IF NOT EXISTS openalma_release_migrations ("
@@ -68,6 +67,7 @@ def migrate_database(
             except Exception:
                 connection.rollback()
                 raise
+    _initialize_schema(database, embedding_profile)
 
 
 def soul_databases(config: dict) -> list[Path]:

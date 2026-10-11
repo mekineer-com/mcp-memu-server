@@ -34,7 +34,8 @@ mcp-memu-server/
 ├── app/services/soul_summaries.py # SQL-only summary writes; shared journal finishing after caller commit
 ├── app/services/soul_state.py # Shared Soul state, durable Memorize failure and common activity-pause predicate
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
-├── _archive/database-tools/ # Historical one-time tools and release migration reference; not part of runtime or active tests
+├── migrate_release.py       # Explicit, rerunnable release migration command; registered migrations currently empty
+├── _archive/database-tools/ # Historical one-time tools; not part of runtime or active tests
 ├── config.json              # Runtime config (llm, storage, listen, dossier policy, memu path)
 ├── config.example.json      # Minimal installable template
 ├── config.json.md           # Complete setting reference

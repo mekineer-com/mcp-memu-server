@@ -5,6 +5,24 @@ import pytest
 import migrate_release
 
 
+def test_release_upgrade_runs_before_current_schema_initialization(tmp_path, monkeypatch):
+    database = tmp_path / "FictionalSoul.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE fictional_value (value TEXT)")
+        connection.execute("INSERT INTO fictional_value VALUES ('preserved')")
+
+    def initialize(path, _profile):
+        with sqlite3.connect(path) as connection:
+            assert connection.execute("SELECT value, new_value FROM fictional_value").fetchone() == ("preserved", "upgraded")
+
+    def upgrade(connection):
+        connection.execute("ALTER TABLE fictional_value ADD COLUMN new_value TEXT DEFAULT 'upgraded'")
+
+    monkeypatch.setattr(migrate_release, "_initialize_schema", initialize)
+    migrate_release.migrate_database(database, "fictional-profile", (("fictional-format-v1", upgrade),))
+    migrate_release.migrate_database(database, "fictional-profile", (("fictional-format-v1", upgrade),))
+
+
 def test_release_data_migration_is_marked_and_rerunnable(tmp_path, monkeypatch):
     database = tmp_path / "FictionalSoul.db"
     monkeypatch.setattr(migrate_release, "_initialize_schema", lambda path, _profile: path.touch())
