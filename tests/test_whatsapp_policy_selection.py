@@ -211,3 +211,62 @@ def test_whatsapp_keys_preserve_primary_fallback_and_reflection_rebase(tmp_path,
         assert "Duplicate rebased fact" not in rendered and "Distinct fictional fact" in rendered
     finally:
         con.close()
+
+
+def test_scoped_background_context_keeps_two_souls_separate(tmp_path, monkeypatch):
+    from app import main
+    from tests.test_conversation_sources import _write_web_source_db
+
+    home = tmp_path / "channels"
+    home.mkdir()
+    source_path = home / "web_source.db"
+    first, second, excluded = [f"whatsapp:dm:199900000{suffix}@s.whatsapp.net" for suffix in (11, 12, 13)]
+    write_policy(home, {
+        first.removeprefix("whatsapp:dm:"): {"policy": "full", "memorize": False},
+        second.removeprefix("whatsapp:dm:"): {"policy": "listen_only", "memorize": False},
+        excluded.removeprefix("whatsapp:dm:"): {"policy": "excluded", "memorize": True},
+    })
+    _write_web_source_db(source_path, messages=[
+        {"msg_key": f"physical-{index}", "timestamp": 100 + index, "body": body,
+         "chat_id": cid.removeprefix("whatsapp:dm:"), "from_id": "19990000999@s.whatsapp.net"}
+        for index, (cid, body) in enumerate([
+            (first, "Older first source"), (first, "First Soul fresh tail"),
+            (second, "Older second source"), (second, "Second Soul fresh tail"),
+            (excluded, "Excluded fresh tail"),
+        ], 1)
+    ])
+    monkeypatch.setattr(main, "_CONFIG", {**main._CONFIG, "hermes": {
+        "home": str(home), "whatsapp_web_source_db": str(source_path),
+        "sessions_index_path": str(home / "sessions.json"), "state_db_path": str(home / "state.db"),
+    }})
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: pytest.fail("context reads need no service"))
+    cases = [("FirstTestSoul", first, 1, "First Soul saved summary", "First Soul fresh tail", 2),
+             ("SecondTestSoul", second, 3, "Second Soul saved summary", "Second Soul fresh tail", 4)]
+    for sid, cid, cursor, summary, _, _ in cases:
+        main._write_conversation_state(cid, user_id="TestOwner", soul_id=sid, updates={
+            "memorize_chat": True, "rolling_summary_cursor_id": cursor,
+            "rolling_summary": summary,
+        })
+        main._write_conversation_state(excluded, user_id="TestOwner", soul_id=sid, updates={
+            "memorize_chat": True, "rolling_summary": "Excluded saved summary",
+        })
+    paths = [main._sqlite_current_path("TestOwner", sid) for sid, *_ in cases]
+    assert paths[0] != paths[1] and all(path.is_relative_to(tmp_path) for path in paths)
+    for sid, cid, _, summary, tail, rowid in cases:
+        rows = main._load_cross_tail_for_ai(user_id="TestOwner", soul_id=sid, conversation_id="")
+        assert [row["content"] for row in rows] == [tail]
+        assert rows[0]["source_conversation_id"] == cid and rows[0]["memorize_chat"] is False
+        assert rows[0]["source_conversation_index"] == rowid
+        assert rows[0]["source_message_id"] == f"physical-{rowid}"
+        with main._sqlite_connect(main._sqlite_current_path("TestOwner", sid)) as con:
+            con.row_factory = sqlite3.Row
+            summaries = main._read_background_rolling_summaries_from_conversations(con)
+        assert set(summaries) == {cid} and summaries[cid]["summary"] == summary
+        rendered = main._format_all_chat_history_for_ai(
+            current_history=[], cross_tail=rows, conversation_id="chat:context-reader",
+            user_id="TestOwner", soul_id=sid, user_name="TestOwner",
+        )
+        assert summary in rendered and tail in rendered and "Excluded" not in rendered
+        for other_sid, _, _, other_summary, other_tail, _ in cases:
+            if other_sid != sid:
+                assert other_summary not in rendered and other_tail not in rendered

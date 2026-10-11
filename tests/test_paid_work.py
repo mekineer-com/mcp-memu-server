@@ -1400,6 +1400,207 @@ async def test_retry_names_unreadable_source_without_clearing_failure(monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["success", "pre_save", "review", "historical"])
+async def test_joined_background_worker_retry_and_resource_reflection(monkeypatch, request, mode):
+    from memu.app.service import MemoryService
+    from pydantic import BaseModel
+
+    class Scope(BaseModel):
+        user_id: str | None = None
+        soul_id: str | None = None
+
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid, quiet, large, short = ("replika:joined", "replika:quiet", "replika:work", "replika:short")
+    path = main._sqlite_current_path(**scope)
+    svc = MemoryService(database_config={"metadata_store": {"provider": "sqlite", "dsn": f"sqlite:///{path}"}},
+        user_config={"model": Scope, "user_name": "TestOwner"}, memorize_config={"memory_types": ["knowledge"]})
+    request.addfinalizer(svc.database.close)
+    monkeypatch.setattr(svc, "_dump_unparseable_reply", lambda *_a, **_kw: None)
+    for profile in svc.llm_profiles.profiles.values():
+        profile.context_window_tokens = 1_000_000
+    source = {
+        cid: [{"role": "user", "content": "Personal conversation about a fictional garden.",
+               "source_message_id": "personal-id", "source_conversation_index": 0,
+               "received_at": "2020-01-01T12:00:00+00:00"}],
+        quiet: [],
+        large: [{"role": "unknown", "content": "RAW_WORK_COMMAND " * 90, "name": "TestGuest",
+                 "source_message_id": "work-id", "source_conversation_index": 3,
+                 "received_at": "2020-01-01T11:00:00+00:00"}],
+        short: [{"role": "unknown", "content": "Short fictional update.", "name": "TestGuest",
+                 "source_message_id": "short-id", "source_conversation_index": 3,
+                 "received_at": "2020-01-01T11:01:00+00:00"}],
+    }
+    clock = "2001-01-01T00:00:00+00:00"
+    main._write_conversation_state(cid, **scope, updates={
+        "narrative_self": "A fictional steady narrative.", "last_consolidation_at": clock})
+    for bg in (quiet, large, short):
+        main._write_conversation_state(bg, **scope, updates={"memorize_chat": False,
+            "rolling_summary": "VERBATIM PRIOR " + bg, "rolling_summary_cursor_id": 2,
+            "rolling_summary_updated_at": "2020-01-01T10:00:00+00:00"})
+    main._write_conversation_state(quiet, user_id="TestOwner", soul_id="OtherSoul",
+        updates={"memorize_chat": False, "rolling_summary": "OTHER SOUL SECRET"})
+    def read_source(**kwargs):
+        return [dict(row) for row in source[kwargs["conversation_id"]]
+                if row["source_conversation_index"] > kwargs["since_cursor"]]
+    def background(**kwargs):
+        return read_source(conversation_id=kwargs["conversation_id"], since_cursor=kwargs["rolling_summary_cursor_id"])
+    monkeypatch.setattr(main, "_load_tail_for_source_conversation", read_source)
+    monkeypatch.setattr(main, "_load_background_rollup_tail", background)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: svc)
+    monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
+    calls = []
+    failed = False
+    def change_flags():
+        for bg in (quiet, large, short):
+            main._write_conversation_state(bg, **scope, updates={"memorize_chat": True})
+    class Client:
+        chat_model = "fictional-model"
+        async def chat(self, prompt, **kwargs):
+            nonlocal failed
+            if prompt.startswith('{"groups"') or prompt.startswith('{\n  "groups"'):
+                groups = json.loads(prompt)["groups"]
+                calls.append(("summary", prompt))
+                assert [group["source_key"] for group in groups] == [large]
+                return json.dumps({"summaries": [{"source_key": large, "summary": "COMPACT WORK FOLLOW-UP"}]})
+            if "route the chats to individual memory types" in prompt:
+                calls.append(("router", prompt))
+                return json.dumps({"excluded_types": [], "episodes": [{"title": "Garden", "day": "2020-01-01",
+                    "episode_summary": "A personal garden story.", "episode_item": "A fictional garden.", "categories": ["Garden"]}]})
+            calls.append(("extract", prompt))
+            if mode == "pre_save" and not failed:
+                failed = True
+                change_flags()
+                raise RuntimeError("Injected pre-save extraction failure")
+            return ('<item><memory><content>A fictional garden matters.</content><day>2020-01-01</day>'
+                    '<source_role>environment</source_role></memory></item>')
+    client = Client()
+    monkeypatch.setattr(svc, "_select_chat_client", lambda *_a, **_kw: client)
+    embed = SimpleNamespace(embed=AsyncMock(side_effect=lambda texts: [[1.0, 0.0] for _ in texts]))
+    monkeypatch.setattr(svc, "_select_embedding_client", lambda *_a, **_kw: embed)
+    svc._llm_clients["embedding"] = embed
+    review = svc._memorize_persist_and_index
+    async def fail_review(state, context, **kwargs):
+        nonlocal failed
+        if mode == "review" and state.get("resources") and not failed:
+            failed = True
+            change_flags()
+            raise RuntimeError("Injected saved review failure")
+        return await review(state, context, **kwargs)
+    monkeypatch.setattr(svc, "_memorize_persist_and_index", fail_review)
+    safe = main._build_cross_conversation_payload(cid, *scope.values(), {}, source[cid], -1, True, strict_sources=True)
+    assert quiet in safe["_background_rolling_summaries"] and quiet not in safe["_final_cursors"]
+    accepted = safe["conversation"]
+    chats = main._get_storage_dir(main._CONFIG) / "st_chats"
+    chat_dir = main._memorize_endpoint.resolve_chat_storage_dir(chats, *scope.values(), cid)[0]
+    segments_dir = chat_dir / "segments"
+    segments_dir.mkdir(parents=True)
+    (chat_dir / "manifest.json").write_text(json.dumps({"segments": [{"start": 0, "end": len(accepted) - 1}]}))
+    async def run():
+        return await main._run_memorize_segments(
+            memorize_segments=[("unused", accepted, 0, len(accepted) - 1, (0, len(accepted) - 1))],
+            svc=svc, scope=scope, conversation_id=cid, uid=scope["user_id"], soul_id=scope["soul_id"],
+            processed_cursor=-1, safe=safe, resource_url="unused", chat_key=None, merged_len=len(accepted),
+            force=True, sleep_stats=None, segments_dir=segments_dir, cross_memorize=True,
+            final_cursors=safe["_final_cursors"])
+    if mode in {"pre_save", "review"}:
+        with pytest.raises(RuntimeError, match="Injected"):
+            await run()
+        failure = main._paid_work_state(**scope)["memorize_failure"]
+        assert failure["filing_policy"][quiet] is False and quiet not in failure["targets"]
+        before = sum(kind == "extract" for kind, _ in calls)
+        before_retry = list(calls)
+        tasks = BackgroundTasks()
+        response = await main.retry_memorize(**scope, background_tasks=tasks)
+        assert (response if isinstance(response, dict) else json.loads(response.body))["status"] == "accepted"
+        await tasks()
+        assert sum(kind == "extract" for kind, _ in calls) == before + int(mode == "pre_save")
+        if mode == "review":
+            assert calls == before_retry
+        assert main._paid_work_state(**scope)["memorize_failure"] is None
+    else:
+        assert await run()
+    resources = svc.database.resource_repo.list_resources(scope)
+    assert len(resources) == 1
+    resource = next(iter(resources.values()))
+    with main._sqlite_connect(path) as con:
+        segment_id = con.execute("SELECT segment_id FROM resources WHERE id = ?", (resource.id,)).fetchone()[0]
+    envelope = json.loads(Path(resource.local_path).read_text())
+    block = envelope["segment_background_context"]
+    assert len(envelope["content"]) == len(accepted) == 3
+    assert {row["source_message_id"] for row in envelope["content"]} == {"personal-id", "work-id", "short-id"}
+    for kind, prompt in calls:
+        if kind in {"router", "extract"}:
+            assert "RAW_WORK_COMMAND" not in prompt and "OTHER SOUL SECRET" not in prompt
+            assert "COMPACT WORK FOLLOW-UP" in prompt and "Short fictional update." in prompt
+            assert "VERBATIM PRIOR " + quiet in prompt and "Personal conversation" in prompt
+    before_reflection = list(calls)
+    for bg in (quiet, large, short):
+        state = main._load_turn_state_and_soul_card(bg, **scope)[0]
+        assert state["rolling_summary"] == "VERBATIM PRIOR " + bg and state["rolling_summary_cursor_id"] == 2
+    historical = mode == "historical"
+    if historical:
+        main._write_conversation_state(cid, **scope, updates={"pending_segment_ids": [], "import_state": {
+            "history_end_index": len(accepted), "memorize_cursor": len(accepted) - 1, "pending_segment_ids": [segment_id],
+            "stage": "consolidation", "error": None}})
+    item = next(item for item in svc.database.memory_item_repo.list_items(scope).values() if item.memory_type == "knowledge")
+    with svc._sqlite_write_session(svc.database) as session:
+        dossier = svc.database.memory_category_repo.create_category_strict(
+            name="Joined verification", description="Fictional garden context", embedding=[1.0, 0.0],
+            user_data=scope, kind="topic", session=session)
+        svc.database.memory_category_repo.update_category(category_id=dossier.id,
+            summary="## Garden\nA fictional garden.", where=scope, session=session)
+        svc.database.category_item_repo.link_item_category(item.id, dossier.id, scope, session=session)
+        session.commit()
+    reflection_prompts = []
+    async def reflection(prompt, **kwargs):
+        reflection_prompts.append((kwargs["step"], prompt))
+        assert "RAW_WORK_COMMAND" not in prompt and "OTHER SOUL SECRET" not in prompt
+        if kwargs["step"] in {"dossiers", "weekly"}:
+            assert block in prompt
+        if kwargs["step"] == "dossiers":
+            from memu.app.dossier_revision import revision_status_items
+            revisions = []
+            for due in svc.list_due_dossiers(scope, segment_ids=[segment_id], include_reviewed_changes=not historical):
+                bundle = svc.prepare_dossier_revision(due.id, scope,
+                    **({"segment_ids": [segment_id]} if historical else {}))
+                decisions = ''.join(f'<decision ref="[M{pending.memory_ref}]" action="add"/>'
+                    for pending in revision_status_items(bundle)["pending"])
+                revisions.append(f'<dossier_revision dossier_id="{due.id}"><description>Fictional garden context</description>'
+                    f'<prose_action>keep</prose_action><prose_patches/><decisions>{decisions}</decisions></dossier_revision>')
+            return '<dossier_revisions>' + ''.join(revisions) + '</dossier_revisions>'
+        if kwargs["step"] == "anchors":
+            return ('<identity_maintenance><narrative_self action="replace">A fictional steady narrative.</narrative_self><anchor_revisions>'
+                '<anchor role="soul"><description>Fictional soul</description><prose_action>replace</prose_action>'
+                '<prose>## Identity\nA fictional steady soul.</prose><prose_patches/></anchor>'
+                '<anchor role="user"><description>Fictional user</description><prose_action>replace</prose_action>'
+                '<prose>## Identity\nA fictional human who enjoys gardens.</prose><prose_patches/></anchor>'
+                '</anchor_revisions><life_goals action="keep"><add/><remove/></life_goals></identity_maintenance>')
+        assert kwargs["step"] == "weekly"
+        return '<weekly_reflection><intentions/><edges/><companion_memory>A fictional steady week.</companion_memory></weekly_reflection>'
+    monkeypatch.setattr(svc, "chat", reflection)
+    deps = main._make_consolidation_deps()
+    prep = consolidation.gather_consolidation_inputs(deps, conversation_id=cid, **scope, force=True,
+        historical=historical, selected_segments={(cid, segment_id)} if historical else None)
+    assert prep["background_context_blocks"] == [block]
+    assert [row["source_message_id"] for row in prep["current_chat_messages"]] == ["personal-id"]
+    assert len(prep["background_context_messages"]) == 2
+    result = await consolidation._run_consolidation_pipeline_once(
+        svc=svc, deps=deps, state_lock=asyncio.Lock(), running={}, conversation_id=cid, **scope,
+        force=True, historical=historical, selected_segments={(cid, segment_id)} if historical else None,
+        load_cross_tail_for_ai=lambda **_kw: [] if not historical else pytest.fail("Historical reflection read live context"),
+        format_all_chat_history_for_ai=main._format_all_chat_history_for_ai)
+    assert result["status"] == "ok" and calls == before_reflection
+    assert [step for step, _ in reflection_prompts] == (["dossiers", "anchors"] if historical else ["dossiers", "anchors", "weekly"])
+    with main._sqlite_connect(path) as con:
+        con.row_factory = sqlite3.Row
+        final_clock = soul_state.read(con)["last_consolidation_at"]
+    assert (final_clock == clock) is historical
+    for bg in (quiet, large, short):
+        state = main._load_turn_state_and_soul_card(bg, **scope)[0]
+        assert state["rolling_summary"] == "VERBATIM PRIOR " + bg and state["rolling_summary_cursor_id"] == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure_stage", ["save", "review", "review_error_write", "extract_first", "extract_late", "extract_import"])
 async def test_partial_publication_retains_only_published_files_and_retry_reuses_resource(monkeypatch, tmp_path, request, failure_stage):
     from pydantic import BaseModel

@@ -1146,11 +1146,11 @@ def test_resource_retry_after_failed_publication_reuses_one_owned_file(tmp_path,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("large", [False, True])
+@pytest.mark.parametrize("sizes", [(99,), (100,), (101,), (60, 60), (99, 100, 101)])
 @pytest.mark.parametrize("index_overlap", [False, True])
 @pytest.mark.parametrize("prior_saved", [False, True])
 async def test_reflection_preserves_saved_context_and_prepares_only_fresh_background(
-    tmp_path, monkeypatch, large, index_overlap, prior_saved,
+    tmp_path, monkeypatch, sizes, index_overlap, prior_saved,
 ):
     from memu.app import memorize_segments
     path = tmp_path / "reflection.db"
@@ -1161,10 +1161,13 @@ async def test_reflection_preserves_saved_context_and_prepares_only_fresh_backgr
     covered = {"conversation_id": cid, "source_message_id": "captured-id",
         "source_conversation_index": 500, "memorize_chat": False,
         "role": "unknown", "content": "CAPTURED RAW MUST NOT REPLAY"}
-    fresh_text = "fresh detail " * 60 if large else "Fresh short tail"
-    cross = [{**covered, "source_conversation_index": 2}, {
-        **covered, "source_message_id": "fresh-id", "source_conversation_index": 500 if index_overlap else 501,
-        "content": fresh_text}]
+    fresh = [{**covered, "source_conversation_id": cid if index == 0 else f"whatsapp:dm:test-background-{index}",
+        "source_message_id": f"fresh-id-{index}", "source_conversation_index": 500 if index_overlap else 501,
+        "chat_name": f"Test Background {index}", "content": f"Fresh detail {index}: {size}"}
+        for index, size in enumerate(sizes)]
+    estimates = {row["content"]: size for row, size in zip(fresh, sizes)}
+    monkeypatch.setattr(memorize_segments, "_estimate_text_tokens", estimates.__getitem__)
+    cross = [{**covered, "source_conversation_index": 2}, *fresh]
     prep = {**_inputs(), "status": "ready", "db_path": path,
         "current_chat_messages": [{"role": "user", "content": "Personal conversation"}],
         "background_context_messages": [covered], "background_context_blocks": ["EXACT SAVED SUPPORT"]}
@@ -1177,12 +1180,15 @@ async def test_reflection_preserves_saved_context_and_prepares_only_fresh_backgr
     stub = _make_svc_stub(path)
     svc.database, svc._sqlite_write_session = stub.database, stub._sqlite_write_session
     provider_calls, rendered_ids = [], []
+    qualifying = [row for row, size in zip(fresh, sizes) if size >= 100]
     class Provider:
         async def chat(self, prompt, **kwargs):
             groups = json.loads(prompt)["groups"]
             provider_calls.append(groups)
-            assert len(groups) == 1 and fresh_text.strip() in groups[0]["messages"]
-            return json.dumps({"summaries": [{"source_key": groups[0]["source_key"], "summary": "Fresh compact summary"}]})
+            assert [group["source_key"] for group in groups] == [row["source_conversation_id"] for row in qualifying]
+            assert all(row["content"] in group["messages"] for row, group in zip(qualifying, groups))
+            return json.dumps({"summaries": [{"source_key": group["source_key"],
+                "summary": f"Fresh compact summary {index}"} for index, group in enumerate(groups)]})
     async def summarize(**kwargs):
         kwargs["llm_client"] = Provider()
         return await memorize_segments._summarize_background_groups_batched(
@@ -1193,19 +1199,6 @@ async def test_reflection_preserves_saved_context_and_prepares_only_fresh_backgr
             **kwargs, summarize_background_groups_batched=summarize,
             memorize_config=SimpleNamespace(background_extra_messages_tokens=100), llm_client=None)
     svc._render_episode_with_background_context = render
-    async def prepare(*args, **kwargs):
-        return None
-    async def reflect(*args, **kwargs):
-        text = kwargs["inputs"]["all_chat_history"]
-        assert "EXACT SAVED SUPPORT" in text and "Personal conversation" in text
-        assert "CAPTURED RAW MUST NOT REPLAY" not in text
-        assert ("CURRENT ROLLING PROSE" in text) is not prior_saved
-        assert ("Fresh compact summary" if large else fresh_text) in text
-        if large:
-            assert fresh_text.strip() not in text
-        return {}
-    monkeypatch.setattr(consolidation, "prepare_dossier_consolidation_context", prepare)
-    monkeypatch.setattr(consolidation, "run_consolidation_llm", reflect)
     monkeypatch.setattr(consolidation, "write_consolidation_outputs", lambda *_a, **_kw: {})
     result = await consolidation._run_consolidation_pipeline_once(
         svc=svc, deps=_make_consolidation_deps(path, tmp_path), state_lock=asyncio.Lock(), running={},
@@ -1213,8 +1206,18 @@ async def test_reflection_preserves_saved_context_and_prepares_only_fresh_backgr
         format_all_chat_history_for_ai=cross_history._format_all_chat_history_for_ai,
         conversation_id="replika:primary", force=True, **scope)
     assert result["status"] == "ok"
-    assert rendered_ids == ["fresh-id"]
-    assert len(provider_calls) == int(large)
+    assert rendered_ids == [row["source_message_id"] for row in fresh]
+    assert len(provider_calls) == bool(qualifying)
+    text = svc.prompts[-1]
+    assert ("chat", "weekly") in svc.calls
+    assert "EXACT SAVED SUPPORT" in text and "Personal conversation" in text
+    assert "CAPTURED RAW MUST NOT REPLAY" not in text
+    assert ("CURRENT ROLLING PROSE" in text) is not prior_saved
+    for index, (row, size) in enumerate(zip(fresh, sizes)):
+        assert (row["content"] in text) is (size < 100)
+        assert f"Test Background {index}" in text
+    for index in range(len(qualifying)):
+        assert f"Fresh compact summary {index}" in text
 
 
 def test_gather_rejects_noncanonical_pending_owner(tmp_path: Path) -> None:
