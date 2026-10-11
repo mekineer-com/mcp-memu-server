@@ -11,6 +11,19 @@ from typing import Any
 from fastapi import HTTPException
 
 from app.config import SoulIdError, validate_soul_id
+from app.services.conversation_id import canonical_conversation_id
+
+
+def message_source_keys(message: Mapping[str, Any], *, prefer_id: bool = False) -> set[tuple[str, str, str]]:
+    cid = canonical_conversation_id(str(message.get("source_conversation_id") or message.get("conversation_id") or ""))
+    fields = ("source_message_id",) if prefer_id and message.get("source_message_id") else (
+        "source_message_id", "source_conversation_index",
+    )
+    return {
+        (cid, field, str(message[field]))
+        for field in fields
+        if cid and message.get(field) is not None and str(message[field]).strip()
+    }
 
 
 def _pick_str(payload: dict[str, Any], *keys: str) -> str | None:

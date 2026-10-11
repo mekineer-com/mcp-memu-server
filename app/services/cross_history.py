@@ -22,6 +22,7 @@ from app.services.payload import (
     _parse_turn_ts_ms,
     _pick_str,
     message_ts_ms,
+    message_source_keys,
 )
 from app.services.state import (
     effective_digest_cursor_from_row as _effective_digest_cursor_from_row,
@@ -220,6 +221,9 @@ def _load_current_whatsapp_history_from_source(
     if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
         return None
     _storage_dir, hermes_home_path, sessions_index_path, state_db_path = _m()._resolve_cross_source_paths()
+    routing, _ = _conversation_sources.load_whatsapp_channel_settings(conversation_id, hermes_home=hermes_home_path)
+    if routing == "excluded":
+        return []
     web_source_db_path = _m()._resolve_whatsapp_web_source_config()
     assistant_speakers = _conversation_sources.load_whatsapp_assistant_source_speakers(
         conversation_id=conversation_id,
@@ -444,12 +448,51 @@ def _latest_saved_segment_display_ranges(
             raw = json.loads(segment_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        if isinstance(raw, dict):
+            raw = raw.get("content")
         if not isinstance(raw, list):
             continue
         ranges = _memorize_endpoint._segment_display_ranges(raw)
         if ranges:
             return ranges
     return {}
+
+
+def _source_memorize_policy(
+    cid: str, row: Any, filing_policy: dict[str, bool] | None = None,
+) -> bool | None:
+    if filing_policy is not None and cid in filing_policy:
+        return filing_policy[cid]
+    if _message_log.derive_source_label(cid).startswith("whatsapp:"):
+        _, hermes_home, _, _ = _m()._resolve_cross_source_paths()
+        routing, memorize = _conversation_sources.load_whatsapp_channel_settings(cid, hermes_home=hermes_home)
+        return None if routing == "excluded" else memorize
+    return cid.startswith(("mentra:", "activity:")) or _memorize_chat_from_row(row)
+
+
+def _load_background_tail_from_source(
+    cid: str, row: Any, *, user_id: str, soul_id: str,
+) -> list[dict[str, Any]]:
+    _, hermes_home, _, _ = _m()._resolve_cross_source_paths()
+    saved_cursor = row["rolling_summary_cursor_id"]
+    cursor, floor, _ = _resolve_source_cursor(
+        cid, int(saved_cursor) if saved_cursor is not None else -1,
+        row["rolling_summary_cursor_source_message_id"], row["rolling_summary_cursor_ts"],
+        rolling=True, hermes_home_path=hermes_home,
+    )
+    import_state = row["import_state"]
+    tail = _m()._load_background_rollup_tail(
+        conversation_id=cid, user_id=user_id, soul_id=soul_id,
+        rolling_summary_cursor_id=cursor, min_timestamp=floor,
+        import_state=json.loads(import_state) if isinstance(import_state, str) else import_state,
+    )
+    for msg in tail:
+        msg["source_conversation_id"] = cid
+        if msg.get("source_conversation_index") is None:
+            raise RuntimeError(f"background/non-memorize tail missing source_conversation_index for {cid}")
+        msg["source_conversation_index"] = int(msg["source_conversation_index"])
+        msg["memorize_chat"] = False
+    return tail
 
 
 def _load_cross_tail_from_sources(
@@ -465,6 +508,7 @@ def _load_cross_tail_from_sources(
     cursor_rows = con.execute(
         "SELECT conversation_id, memorize_chat, digest_cursor, last_memorize_at, "
         "digest_cursor_source_message_id, digest_cursor_ts, "
+        "rolling_summary_cursor_id, rolling_summary_cursor_source_message_id, rolling_summary_cursor_ts, "
         "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at, import_state "
         "FROM conversations"
     ).fetchall()
@@ -487,6 +531,14 @@ def _load_cross_tail_from_sources(
         source_label = _message_log.derive_source_label(cid)
         cursor = _effective_digest_cursor_from_row(row)
         try:
+            producing = _source_memorize_policy(cid, row)
+            if producing is None:
+                continue
+            if not producing:
+                tail = _load_background_tail_from_source(cid, row, user_id=user_id, soul_id=soul_id)
+                _m()._stamp_assistant_display_name(tail, soul_id)
+                all_messages.extend(tail)
+                continue
             cursor, min_timestamp, web_source = _resolve_source_cursor(
                 cid,
                 cursor,
@@ -552,6 +604,9 @@ def _load_cross_tail_from_sources(
                 include_floor_without_new=latest_display_participant,
                 import_state=json.loads(row["import_state"]) if row["import_state"] is not None else None,
             )
+            for msg in tail:
+                msg["source_conversation_id"] = cid
+                msg["memorize_chat"] = True
         except Exception as exc:
             _m().logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)
             is_lid_gap = "LID↔phone mapping gap" in str(exc)
@@ -631,7 +686,10 @@ def _chat_label_from_history(
     return None
 
 
-def _format_cross_tail_for_ai(cross_tail: list[dict[str, Any]], *, soul_id: str) -> str:
+def _format_cross_tail_for_ai(
+    cross_tail: list[dict[str, Any]], *, soul_id: str,
+    background_context_rows: list[dict[str, Any]] | None = None,
+) -> str:
     activity_tail = [
         msg for msg in cross_tail
         if str(msg.get("conversation_id") or "").startswith("activity:")
@@ -641,7 +699,9 @@ def _format_cross_tail_for_ai(cross_tail: list[dict[str, Any]], *, soul_id: str)
         if not str(msg.get("conversation_id") or "").startswith("activity:")
     ]
     activity_text = _message_log.format_merged_history(activity_tail, soul_name=soul_id) if activity_tail else ""
-    chat_text = _message_log.format_merged_history(chat_tail, soul_name=soul_id) if chat_tail else ""
+    chat_text = _message_log.format_merged_history(
+        chat_tail, soul_name=soul_id, background_context_rows=background_context_rows,
+    ) if chat_tail or background_context_rows else ""
     return "\n\n".join(part for part in (activity_text, chat_text) if part)
 
 
@@ -659,7 +719,21 @@ def _format_all_chat_history_for_ai(
     mark_current_chat: bool = True,
     user_id: str = "",
     user_name: str | None = None,
+    background_context_rows: list[dict[str, Any]] | None = None,
+    background_context_blocks: list[str] | None = None,
+    memory_context: bool = False,
 ) -> str:
+    if memory_context:
+        cross_tail = [row for row in cross_tail or [] if row.get("memorize_chat") is not False]
+    if background_context_rows is None:
+        background_context_rows = (
+            [] if memory_context and background_context_blocks else
+            _load_background_context_for_ai(user_id=user_id, soul_id=soul_id)
+        )
+
+    def with_saved_context(text: str) -> str:
+        return "\n\n".join(part for part in [*(background_context_blocks or []), text] if part)
+
     history_rows = _label_owner_messages(
         current_history or [], user_id=user_id, user_name=user_name, conversation_id=conversation_id,
     )
@@ -679,11 +753,7 @@ def _format_all_chat_history_for_ai(
         for row in [*history_rows, *_current_chat_rows_for_grouped_render(cross_tail or [], conversation_id=None)]:
             cid = _source_conversation_key(str(row.get("source_conversation_id") or row.get("conversation_id") or ""))
             row["conversation_id"] = cid
-            keys = {
-                (cid, field, str(row[field]))
-                for field in ("source_message_id", "source_conversation_index")
-                if cid and row.get(field) is not None and str(row[field]).strip()
-            }
+            keys = message_source_keys(row)
             if keys.isdisjoint(seen):
                 merged.append(row)
             seen.update(keys)
@@ -692,14 +762,16 @@ def _format_all_chat_history_for_ai(
             int(row.get("source_conversation_index") or 0),
         ))
         if len(selected_sources) > 1:
-            return _m()._format_cross_tail_for_ai(merged, soul_id=soul_id)
+            return with_saved_context(_m()._format_cross_tail_for_ai(
+                merged, soul_id=soul_id, background_context_rows=background_context_rows,
+            ))
         if selected_sources:
             conversation_id = next(iter(selected_sources))
         history_rows = [row for row in merged if row["conversation_id"] in selected_sources]
         cross_tail = [row for row in merged if row["conversation_id"] not in selected_sources]
     if not history_rows:
         if current_user_text or self_turn_directive:
-            return _m()._build_conversations_block(
+            return with_saved_context(_m()._build_conversations_block(
                 history=[],
                 cross_conversation_history=cross_tail,
                 conversation_id=conversation_id,
@@ -710,9 +782,12 @@ def _format_all_chat_history_for_ai(
                 current_source_owner_id=current_source_owner_id,
                 self_turn_directive=self_turn_directive,
                 mark_current_chat=mark_current_chat,
-            )
-        return _m()._format_cross_tail_for_ai(cross_tail or [], soul_id=soul_id)
-    return _m()._build_conversations_block(
+                background_context_rows=background_context_rows,
+            ))
+        return with_saved_context(_m()._format_cross_tail_for_ai(
+            cross_tail or [], soul_id=soul_id, background_context_rows=background_context_rows,
+        ))
+    return with_saved_context(_m()._build_conversations_block(
         history=history_rows,
         cross_conversation_history=cross_tail,
         conversation_id=conversation_id,
@@ -723,7 +798,23 @@ def _format_all_chat_history_for_ai(
         current_source_owner_id=current_source_owner_id,
         self_turn_directive=self_turn_directive,
         mark_current_chat=mark_current_chat,
-    )
+        background_context_rows=background_context_rows,
+    ))
+
+
+def _load_background_context_for_ai(*, user_id: str, soul_id: str) -> list[dict[str, Any]]:
+    if not user_id or not soul_id:
+        return []
+    db_path = _m()._sqlite_current_path(user_id, soul_id)
+    if db_path is None or not db_path.exists():
+        return []
+    con = _m()._sqlite_connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        _m()._sqlite_ensure_conversation_state_schema(con)
+        return list(_read_background_rolling_summaries_from_conversations(con).values())
+    finally:
+        con.close()
 
 
 def _load_cross_tail_for_ai(
@@ -806,7 +897,9 @@ def _load_cross_memorize_tails_from_sources(
                 if tail:
                     tails[cid] = tail
                 continue
-            memorize_chat = (filing_policy or {}).get(cid, cid.startswith("mentra:") or _memorize_chat_from_row(row))
+            memorize_chat = _source_memorize_policy(cid, row, filing_policy)
+            if memorize_chat is None:
+                continue
             if memorize_chat:
                 cursor = _effective_digest_cursor_from_row(row)
                 cursor, min_timestamp, _ = _resolve_source_cursor(
@@ -841,27 +934,9 @@ def _load_cross_memorize_tails_from_sources(
                 tails[cid] = tail
                 continue
 
-            rolling_cursor_id = row["rolling_summary_cursor_id"]
-            rolling_cursor_id, checkpoint_floor, _ = _resolve_source_cursor(
-                cid, int(rolling_cursor_id) if rolling_cursor_id is not None else -1,
-                row["rolling_summary_cursor_source_message_id"], row["rolling_summary_cursor_ts"],
-                rolling=True, hermes_home_path=hermes_home_path,
-            )
-            tail = _m()._load_background_rollup_tail(
-                conversation_id=cid, user_id=user_id, soul_id=soul_id,
-                rolling_summary_cursor_id=rolling_cursor_id, min_timestamp=checkpoint_floor,
-                import_state=json.loads(row["import_state"]) if row["import_state"] is not None else None,
-            )
+            tail = _load_background_tail_from_source(cid, row, user_id=user_id, soul_id=soul_id)
             if not tail:
                 continue
-            for msg in tail:
-                msg["source_conversation_id"] = cid
-                if msg.get("source_conversation_index") is None:
-                    raise RuntimeError(
-                        f"cross-memorize background/non-memorize tail missing source_conversation_index for {cid}"
-                    )
-                msg["source_conversation_index"] = int(msg["source_conversation_index"])
-                msg["memorize_chat"] = False
             tails[cid] = tail
         except Exception as exc:
             _m().logger.error("cross-memorize source read failed for conversation_id=%s: %s", cid, exc)
@@ -880,19 +955,21 @@ def _read_background_rolling_summaries_from_conversations(
     con: sqlite3.Connection,
     *,
     exclude_conversation_id: str | None = None,
+    filing_policy: dict[str, bool] | None = None,
 ) -> dict[str, dict[str, Any]]:
     rows = con.execute(
-        "SELECT conversation_id, memorize_chat, rolling_summary, rolling_summary_updated_at "
+        "SELECT conversation_id, user_id, soul_id, memorize_chat, rolling_summary, rolling_summary_updated_at "
         "FROM conversations"
     ).fetchall()
     excluded_id = str(exclude_conversation_id or "").strip()
     out: dict[str, dict[str, Any]] = {}
+    names = _message_log._load_whatsapp_directory_names()
     for row in rows:
         cid = str(row["conversation_id"] or "").strip()
         if not cid or cid == excluded_id:
             continue
-        memorize_chat = cid.startswith("mentra:") or _memorize_chat_from_row(row)
-        if memorize_chat:
+        memorize_chat = _source_memorize_policy(cid, row, filing_policy)
+        if memorize_chat is not False:
             continue
         summary = str(row["rolling_summary"] or "").strip()
         if not summary:
@@ -903,6 +980,26 @@ def _read_background_rolling_summaries_from_conversations(
             "summary": summary,
             "updated_at": row["rolling_summary_updated_at"],
         }
+        if _message_log.derive_source_label(cid).startswith("whatsapp:"):
+            _, chat_id = _conversation_sources._split_whatsapp_conversation_id(cid)
+            _, hermes_home, _, _ = _m()._resolve_cross_source_paths()
+            aliases = _conversation_sources._expand_whatsapp_policy_aliases(chat_id, hermes_home)
+            out[cid]["chat_name"] = names.get(chat_id) or next(
+                (names[alias] for alias in sorted(aliases) if alias in names), chat_id,
+            )
+        elif cid.startswith("import:dm:"):
+            path = _conversation_sources.import_source_path()
+            source = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+            try:
+                metadata = source.execute(
+                    "SELECT label, title FROM imported_chats WHERE chat_id = ? AND user_id = ? AND soul_id = ?",
+                    (cid.removeprefix("import:dm:"), row["user_id"], row["soul_id"]),
+                ).fetchone()
+            finally:
+                source.close()
+            if metadata is None:
+                raise ValueError(f"Imported chat metadata missing for {cid}")
+            out[cid].update(app_label=metadata[0], chat_name=metadata[1] or metadata[0])
     return out
 
 

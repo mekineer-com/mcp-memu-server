@@ -204,6 +204,8 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
             prep["all_chat_history"] = runtime._format_all_chat_history_for_ai(
                 current_history=prep["current_chat_messages"], cross_tail=[],
                 conversation_id=cid, soul_id=sid, mark_current_chat=False,
+                background_context_blocks=prep.get("background_context_blocks", []),
+                memory_context=True,
             )
             days.update(date.fromisoformat(row["source_day"]) for row in prep["current_chat_messages"])
             estimates = consolidation._prepare_dossier_consolidation_prompts(
@@ -465,7 +467,8 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         history = [floor_by_index[index] for index in sorted(floor_by_index)] + pending
         cross = [row for row in displayed if row.get("conversation_id") != cid]
         block = runtime._format_all_chat_history_for_ai(
-            current_history=history, cross_tail=cross, conversation_id=cid, soul_id=scoped["soul_id"])
+            current_history=history, cross_tail=cross, conversation_id=cid,
+            soul_id=scoped["soul_id"], user_id=scoped["user_id"])
         dossiers = svc.list_active_dossiers(scoped)
         anchors = runtime._render_anchor_context({row.anchor_role: row for row in dossiers if row.anchor_role})
         system = runtime._make_turn_system_prompt(

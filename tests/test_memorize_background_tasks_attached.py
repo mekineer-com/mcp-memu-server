@@ -346,7 +346,8 @@ def test_cross_memorize_endpoint_marks_manifest_range(
     payload["_final_cursors"] = {"chat:cid-cross": {"cursor": 11, "memory_producing": False}}
     resp = client.post("/memorize", json=payload)
 
-    assert resp.status_code == 202
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "nothing_to_memorize"
     assert recorded == [(8, 10)]
     assert json.loads((chat_dir / "manifest.json").read_text(encoding="utf-8"))["segments"] == manifest["segments"]
 
@@ -807,10 +808,14 @@ async def test_active_rewind_ceiling_survives_regrowth_and_committed_progress(tm
                                                      {cid: {"cursor": 99, "memory_producing": producing}}, progress=progress)
     assert success
     saved, _, _ = main_module._load_turn_state_and_soul_card(cid, user_id="TestOwner", soul_id="TestSoul")
+    # Background state written by the simulated concurrent operation is retained.
     assert saved[field] == expected
     assert saved["digest_cursor"] == (expected if producing else 0)
     assert saved["pending_segment_ids"] == (["chat:frozen:0-0"] if producing else [])
-    assert progress[key]["_processed_rows"] == rows
+    if producing:
+        assert progress[key]["_processed_rows"] == rows
+    else:
+        assert "_processed_rows" not in progress[key]
     assert progress[key]["_st_cursor_ceiling"] is bounds
     with service._sqlite_write_session(service.database) as session:
         resources = session.connection().exec_driver_sql("SELECT url FROM resources").all()
@@ -876,15 +881,16 @@ async def test_rewind_commit_does_not_shorten_unresolved_failure_targets(tmp_pat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("summary", "updated_at", "cleared"), [
-    ("captured summary", "2026-10-01T00:00:00+00:00", True),
-    ("new summary", "2026-10-01T00:00:00+00:00", False),
-    ("captured summary", "2026-10-02T00:00:00+00:00", False),
+@pytest.mark.parametrize(("summary", "updated_at"), [
+    ("captured summary", "2026-10-01T00:00:00+00:00"),
+    ("new summary", "2026-10-01T00:00:00+00:00"),
+    ("captured summary", "2026-10-02T00:00:00+00:00"),
 ])
-async def test_background_summary_cleanup_compares_fresh_text_and_timestamp(tmp_path, summary, updated_at, cleared):
+async def test_memorize_preserves_rollup_owned_summary_and_cursor(tmp_path, summary, updated_at):
     cid = "chat:background"
     stamp = "2026-10-01T00:00:00+00:00"
     main_module._write_conversation_state(cid, user_id="TestOwner", soul_id="TestSoul", updates={
+        "memorize_chat": False, "digest_cursor": 7,
         "rolling_summary": "captured summary", "rolling_summary_updated_at": stamp, "rolling_summary_cursor_id": 8,
     })
     rows = [
@@ -901,13 +907,17 @@ async def test_background_summary_cleanup_compares_fresh_text_and_timestamp(tmp_
             })
             return [{}]
 
-    await _run_disposable_segment(tmp_path, Service(), rows, {"_background_rolling_summaries": {
+    success, _ = await _run_disposable_segment(tmp_path, Service(), rows, {"_background_rolling_summaries": {
         cid: {"summary": "captured summary", "updated_at": stamp},
     }}, {"chat:frozen": {"cursor": 0, "memory_producing": True}, cid: {"cursor": 9, "memory_producing": False}})
     saved, _, _ = main_module._load_turn_state_and_soul_card(cid, user_id="TestOwner", soul_id="TestSoul")
-    assert saved["rolling_summary"] == (None if cleared else summary)
-    assert saved["rolling_summary_updated_at"] == (None if cleared else updated_at)
-    assert saved["rolling_summary_cursor_id"] == 9
+    assert success
+    assert saved["rolling_summary"] == summary
+    assert saved["rolling_summary_updated_at"] == updated_at
+    assert saved["rolling_summary_cursor_id"] == 8 and saved["digest_cursor"] == 7
+    assert saved["pending_segment_ids"] == []
+    primary, _, _ = main_module._load_turn_state_and_soul_card("chat:frozen", user_id="TestOwner", soul_id="TestSoul")
+    assert primary["pending_segment_ids"] == ["chat:frozen:0-1"]
 
 
 def test_empty_rewind_round_trip_keeps_timestamp_and_row_zero_eligible():
@@ -921,5 +931,5 @@ def test_empty_rewind_round_trip_keeps_timestamp_and_row_zero_eligible():
     assert empty["last_memorize_at"] == stamp
     assert empty["digest_cursor"] == empty["rolling_summary_cursor_id"] == -1
     assert state.effective_digest_cursor_from_row(empty) == -1
-    saved = write(memorize_endpoint._cursor_updates_for_unit(memory_producing=True, cursor=0, now_iso=stamp))
+    saved = write(memorize_endpoint._cursor_updates_for_unit(cursor=0, now_iso=stamp))
     assert state.effective_digest_cursor_from_row(saved) == 0

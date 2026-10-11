@@ -645,13 +645,21 @@ async def test_automatic_admission_failure_before_jobs_pauses_and_exposes_retry(
 @pytest.mark.asyncio
 async def test_retry_of_completed_targets_clears_only_memorize(monkeypatch):
     uid, sid, cid = "TestOwner", "TestSoul", "chat:saved-chat"
-    failure = {"conversation_id": cid, "error": "Failed", "paused": True, "targets": {cid: {"cursor": 0}}}
+    background = "chat:old-context-bound"
+    main._write_conversation_state(background, user_id=uid, soul_id=sid, updates={
+        "memorize_chat": False, "rolling_summary": "Retained fictional context",
+    })
+    failure = {"conversation_id": cid, "error": "Failed", "paused": True, "targets": {
+        cid: {"cursor": 0}, background: {"cursor": 99, "memory_producing": False},
+    }}
     main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={"memorize_failure": failure})
     assert not main._memorize_targets_complete(uid, sid, failure["targets"])
     main._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={
         "digest_cursor": 0, "last_memorize_at": datetime.now(UTC).isoformat(),
         "last_consolidation_error": "Reflection failed", "last_consolidation_error_at": datetime.now(UTC).isoformat(),
     })
+    assert main._memorize_targets_complete(uid, sid, failure["targets"])
+    monkeypatch.setattr(main, "_saved_memorize_payload", lambda *_a, **_k: pytest.fail("completed primary targets must not re-extract background bounds"))
     monkeypatch.setattr(main, "_safe_payload", lambda payload: payload)
     schedule = AsyncMock(return_value={"status": "skipped"})
     monkeypatch.setattr(main, "_run_consolidation_task", schedule)
@@ -662,6 +670,9 @@ async def test_retry_of_completed_targets_clears_only_memorize(monkeypatch):
     state = main._paid_work_state(uid, sid)
     assert state["memorize_failure"] is None
     assert main._soul_activity_pause(uid, sid) == "Reflection failed"
+    context, _, _ = main._load_turn_state_and_soul_card(background, user_id=uid, soul_id=sid)
+    assert context["rolling_summary_cursor_id"] is None and context["digest_cursor"] == 0
+    assert context["rolling_summary"] == "Retained fictional context" and context["pending_segment_ids"] == []
 
 
 @pytest.mark.asyncio
@@ -1077,6 +1088,7 @@ async def test_pending_status_keeps_recovery_visible_when_source_count_is_unknow
         "last_consolidation_error": "Fictional consolidation failure",
         "last_consolidation_error_at": datetime.now(UTC).isoformat()})
     failure = main._paid_work_state(**scoped)["memorize_failure"]
+    monkeypatch.setattr(main._conversation_sources, "load_whatsapp_channel_settings", lambda *_a, **_k: ("full", producing))
     reader = main._cross_history._load_tail_for_source_conversation
     def broken(**kwargs):
         if kwargs["conversation_id"] == source:
@@ -1105,9 +1117,10 @@ async def test_pending_status_keeps_recovery_visible_when_source_count_is_unknow
     assert result["pending_consolidation_segments"] == 2 and result["retry_conversation_id"] == healthy
     assert result["consolidation_state"] == "error"
     assert "progress" in result and not result["memorize_running"] and not result["consolidation_running"]
-    with pytest.raises(HTTPException) as refused:
-        await main.retry_memorize(**scoped, background_tasks=BackgroundTasks())
-    assert refused.value.status_code == 409
+    if producing:
+        with pytest.raises(HTTPException) as refused:
+            await main.retry_memorize(**scoped, background_tasks=BackgroundTasks())
+        assert refused.value.status_code == 409
     if not producing:
         with main._sqlite_connect(main._sqlite_current_path(**scoped)) as con:
             con.row_factory = sqlite3.Row
@@ -1115,7 +1128,15 @@ async def test_pending_status_keeps_recovery_visible_when_source_count_is_unknow
                 main._load_cross_memorize_tails_from_sources(con, **scoped, strict=True)
         assert refused_background.value.status_code == 409
         assert isinstance(refused_background.value.__cause__, ValueError)
-    assert main._paid_work_state(**scoped)["memorize_failure"] == failure
+        # An old context-only bound does not owe extraction or rolling acknowledgement.
+        monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: object())
+        tasks = BackgroundTasks()
+        retried = await main.retry_memorize(**scoped, background_tasks=tasks)
+        assert retried["status"] == "already_memorized" and len(tasks.tasks) == 1
+        assert main._paid_work_state(**scoped)["memorize_failure"] is None
+        assert main._paid_work_state(**scoped)["last_consolidation_error"] == "Fictional consolidation failure"
+    else:
+        assert main._paid_work_state(**scoped)["memorize_failure"] == failure
 
 
 @pytest.mark.asyncio
@@ -1535,7 +1556,7 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
     assert len(routes) == 3 and len(svc.database.resource_repo.list_resources(scope)) == 2
     assert len(list(segments_dir.iterdir())) == 2
     state, _, _ = main._load_turn_state_and_soul_card(cid, **scope)
-    assert state["rolling_summary_cursor_id"] == 0 and state["digest_cursor"] == 2
+    assert state["rolling_summary_cursor_id"] is None and state["digest_cursor"] == 2
     assert state["memorize_failure"] is None
     if failure_stage.startswith("extract_"):
         assert extraction_calls[:2] == [("First", "profile"), ("First", "knowledge")]

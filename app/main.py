@@ -346,7 +346,7 @@ async def _run_background_rollup_for_conversation(
             user_id=uid,
             soul_id=sid,
         )
-        if bool(state_row.get("memorize_chat", True)):
+        if _cross_history._source_memorize_policy(cid, state_row) is not False:
             return "skipped_primary_chat"
         if db_path is None or not db_path.exists():
             return "skipped_no_db"
@@ -1872,6 +1872,41 @@ def _load_mentra_current_history(
     )
 
 
+def _current_history_for_ai(
+    conversation_id: str, user_id: str, soul_id: str,
+    history: list[dict[str, Any]], state: dict[str, Any] | None,
+    *, is_live_turn: bool = False,
+) -> list[dict[str, Any]]:
+    policy = _cross_history._source_memorize_policy(
+        conversation_id, {"memorize_chat": (state or {}).get("memorize_chat")},
+    )
+    if policy is None:
+        return []
+    if policy is False:
+        state = state or _load_turn_state_and_soul_card(
+            conversation_id, user_id=user_id, soul_id=soul_id,
+        )[0]
+        try:
+            return _cross_history._load_background_tail_from_source(
+                conversation_id, state, user_id=user_id, soul_id=soul_id,
+            )
+        except (OSError, sqlite3.Error, RuntimeError, ValueError, HTTPException):
+            if not is_live_turn:
+                raise
+            logger.warning("Live background source unavailable; using bounded payload history for %s", conversation_id)
+            return _turn_history_with_floor(history, -1, state.get("rolling_summary_cursor_ts"))
+    if not history:
+        return []
+    _, hermes_home, _, _ = _resolve_cross_source_paths()
+    cursor, floor, _ = _resolve_source_cursor(
+        conversation_id, _effective_digest_cursor_from_row(state),
+        (state or {}).get("digest_cursor_source_message_id"),
+        (state or {}).get("digest_cursor_ts"), rolling=False,
+        hermes_home_path=hermes_home,
+    )
+    return _turn_history_with_floor(history, cursor, floor)
+
+
 def _load_mentra_cross_chat_context(
     *, user_id: str, soul_id: str, conversation_id: str
 ) -> str:
@@ -2559,6 +2594,8 @@ def _memorize_targets_complete(user_id: str, soul_id: str, targets: dict[str, An
     try:
         con.row_factory = sqlite3.Row
         for cid, target in targets.items():
+            if target.get("memory_producing") is False:
+                continue
             row = _conversation_state_row(con, cid, user_id=user_id, soul_id=soul_id)
             if row is None:
                 continue
@@ -2619,8 +2656,14 @@ def _prepare_frozen_memorize(safe: dict[str, Any], uid: str, sid: str) -> bool:
     retained, final = [], {}
     _, hermes_home, _, _ = _resolve_cross_source_paths()
     for cid, rows in grouped.items():
-        state, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=sid)
         producing = (safe.get("_final_cursors", {}).get(cid) or {}).get("memory_producing", True)
+        if not producing:
+            retained.extend(rows)
+            checkpoint = (safe.get("_final_cursors") or {}).get(cid)
+            if checkpoint:
+                final[cid] = checkpoint
+            continue
+        state, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=sid)
         prefix = "digest" if producing else "rolling_summary"
         cursor = (_effective_digest_cursor_from_row(state) if producing else
                   int(state["rolling_summary_cursor_id"]) if state.get("rolling_summary_cursor_id") is not None else -1)
@@ -2648,9 +2691,7 @@ def _prepare_frozen_memorize(safe: dict[str, Any], uid: str, sid: str) -> bool:
     retained.sort(key=_cross_history.message_sort_key)
     safe["conversation"] = retained
     safe["_final_cursors"] = final
-    summaries = safe.get("_background_rolling_summaries") or {}
-    safe["_background_rolling_summaries"] = {cid: value for cid, value in summaries.items() if cid in final}
-    eligible = bool(final)
+    eligible = any(value["memory_producing"] for value in final.values())
     if eligible and safe.get("_automatic_memorize"):
         cid = _extract_conversation_id(safe)
         trigger = [row for row in retained if row.get("source_conversation_id") == cid and row.get("memorize_chat") is not False]
@@ -2762,7 +2803,12 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
 def _saved_memorize_payload(cid: str, user_id: str, soul_id: str, failure: dict | None = None) -> dict | None:
     state, _, _ = _load_turn_state_and_soul_card(cid, user_id=user_id, soul_id=soul_id)
     storage, hermes, sessions, channels = _resolve_cross_source_paths()
-    memory_producing = (failure or {}).get("targets", {}).get(cid, {}).get("memory_producing", state.get("memorize_chat", True))
+    filing_policy = {
+        **{target_cid: target.get("memory_producing", True)
+           for target_cid, target in (failure or {}).get("targets", {}).items()},
+        **((failure or {}).get("filing_policy") or {}),
+    }
+    memory_producing = filing_policy.get(cid, state.get("memorize_chat", True))
     prefix = "digest" if memory_producing else "rolling_summary"
     saved_cursor = (_effective_digest_cursor_from_row(state) if memory_producing else
                     int(state["rolling_summary_cursor_id"]) if state.get("rolling_summary_cursor_id") is not None else -1)
@@ -2781,8 +2827,7 @@ def _saved_memorize_payload(cid: str, user_id: str, soul_id: str, failure: dict 
         saved_cursor, bool(memory_producing),
         trigger_web_source=web_source,
         strict_sources=True,
-        filing_policy={target_cid: target.get("memory_producing", True)
-                       for target_cid, target in (failure or {}).get("targets", {}).items()},
+        filing_policy=filing_policy,
     )
     return payload
 
@@ -3328,6 +3373,7 @@ async def conversation_retrieve(
         _stamp_assistant_display_name(history, soul_id)
         state_row: dict[str, Any] | None = None
         cross_tail: list[dict[str, Any]] = []
+        background_context_rows: list[dict[str, Any]] = []
         if uid and soul_id and retrieve_focus.strip():
             state_row, _, _db_path = _load_turn_state_and_soul_card(
                 cid,
@@ -3345,28 +3391,20 @@ async def conversation_retrieve(
                         soul_id=soul_id,
                         exclude_conversation_id=cid,
                     )
+                    background_context_rows = list(
+                        _read_background_rolling_summaries_from_conversations(_con).values()
+                    )
                 finally:
                     _con.close()
 
         if uid and soul_id:
             _require_soul_active(uid, soul_id)
         chat_label_for_prompt = _chat_label_for_prompt(safe)
-        digest_cursor, min_timestamp = -1, None
-        if history:
-            _, hermes_home_path, _, _ = _resolve_cross_source_paths()
-            digest_cursor, min_timestamp, _ = _resolve_source_cursor(
-                cid,
-                _effective_digest_cursor_from_row(state_row),
-                (state_row or {}).get("digest_cursor_source_message_id"),
-                (state_row or {}).get("digest_cursor_ts"),
-                rolling=False,
-                hermes_home_path=hermes_home_path,
-            )
         if _MENTRA_RECALL_ACTIVE.get():
             history_for_ai = history_without_external
         else:
             history_for_ai = _filter_external_message_from_history(
-                _turn_history_with_floor(history, digest_cursor, min_timestamp),
+                _current_history_for_ai(cid, uid, soul_id, history, state_row, is_live_turn=is_live_turn),
                 safe.get("external_message_id"),
             )
         cross_tail = _label_owner_messages(cross_tail, user_id=uid, user_name=user_name)
@@ -3385,6 +3423,7 @@ async def conversation_retrieve(
             user_id=uid,
             user_name=user_name,
             self_turn_directive=self_turn_directive or None,
+            background_context_rows=background_context_rows,
         )
 
         should_build_default_queries = (
@@ -3440,6 +3479,7 @@ async def conversation_retrieve(
                     user_id=uid,
                     user_name=user_name,
                     self_turn_directive=self_turn_directive,
+                    background_context_rows=background_context_rows,
                 )
                 if not response_chat_history_for_ai.strip() and cid.startswith("chat:atomic-"):
                     response_chat_history_for_ai = "My Atomic Conversations:"
@@ -3504,6 +3544,7 @@ async def conversation_retrieve(
                     user_id=uid,
                     user_name=user_name,
                     self_turn_directive=self_turn_directive,
+                    background_context_rows=background_context_rows,
                 )
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _validate_intentions(out.get("intentions_active"))
@@ -3613,9 +3654,12 @@ def _build_cross_conversation_payload(
 
     trigger_label = _message_log.derive_source_label(cid)
     trigger_memorize_raw = safe.get("memorize_chat")
-    trigger_memorize = trigger_memorize_raw if isinstance(trigger_memorize_raw, bool) else trigger_memorize_default
+    trigger_memorize = _cross_history._source_memorize_policy(
+        cid, {"memorize_chat": trigger_memorize_raw if isinstance(trigger_memorize_raw, bool)
+              else trigger_memorize_default}, filing_policy,
+    )
     trigger_chat_name = str(safe.get("chat_name") or "").strip()
-    trigger_tail = _normalize_conversation(trigger_history)
+    trigger_tail = _normalize_conversation(trigger_history) if trigger_memorize is not None else []
 
     for i, msg in enumerate(trigger_tail):
         msg["source_label"] = trigger_label
@@ -3653,7 +3697,7 @@ def _build_cross_conversation_payload(
         )
         rolling_summaries = _read_background_rolling_summaries_from_conversations(
             con,
-            exclude_conversation_id=cid,
+            filing_policy=filing_policy,
         )
     finally:
         con.close()
@@ -3881,6 +3925,8 @@ def _prepare_auto_memorize(
 ) -> tuple[int, dict[str, Any] | None]:
     if _soul_activity_pause(uid, soul_id, conversation_state):
         return 0, None
+    if _cross_history._source_memorize_policy(cid, conversation_state) is not True:
+        return 0, None
     digest_cursor = _effective_digest_cursor_from_row(conversation_state)
     if conversation_state.get("import_state") is not None and not cid.startswith("import:dm:"):
         digest_cursor = max(digest_cursor, conversation_state["import_state"]["history_end_index"] - 1)
@@ -3893,7 +3939,7 @@ def _prepare_auto_memorize(
         rolling=False,
         hermes_home_path=hermes_home_path,
     )
-    primary_history = history_full if bool(conversation_state.get("memorize_chat", True)) else []
+    primary_history = history_full
     if min_timestamp is not None:
         primary_history = [
             row for row in primary_history

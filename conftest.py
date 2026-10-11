@@ -56,6 +56,11 @@ def _isolate_memu_sqlite_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     dsn = f"sqlite:///{(sqlite_dir / 'memu.db').as_posix()}"
 
     cfg = deepcopy(main._CONFIG)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CHANNELS_HOME", str(hermes_home))
+    cfg.setdefault("hermes", {})["home"] = str(hermes_home)
     storage = cfg.setdefault("storage", {})
     storage["sqlite_dir"] = str(sqlite_dir)
     storage["resources_dir"] = str(resources_dir)

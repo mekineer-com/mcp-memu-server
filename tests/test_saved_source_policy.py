@@ -1,6 +1,7 @@
 """Offline regressions for captured policy and unpaid frozen preparation."""
 
 from copy import deepcopy
+import json
 
 import pytest
 from fastapi import BackgroundTasks
@@ -79,22 +80,29 @@ async def test_manual_context_capture_slices_by_rolling_not_digest(saved_chat, m
     main._write_conversation_state(CID, user_id=UID, soul_id=SID, updates={
         "memorize_chat": True, "rolling_summary_cursor_id": rolling,
     })
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: object())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: pytest.fail("background-only capture must not construct a service"))
+    captures = []
+    prepare = main._prepare_frozen_memorize
+    def capture(safe, uid, sid):
+        eligible = prepare(safe, uid, sid)
+        captures.append(deepcopy(safe))
+        return eligible
+    monkeypatch.setattr(main, "_prepare_frozen_memorize", capture)
     tasks = BackgroundTasks()
     payload = {"intent": "manual", "user": {"user_id": UID, "soul_id": SID},
                "conversation_id": CID, "memorize_chat": False, "conversation": saved_chat}
 
     response = await main._memorize_owned(payload, tasks, True, admitted=True, batch_owned=True)
 
-    assert response.status_code == 202
-    assert response.background is tasks
-    assert len(tasks.tasks) == 1
-    job = tasks.tasks[0].kwargs
+    assert response.status_code == 200
+    assert json.loads(response.body)["status"] == "nothing_to_memorize"
+    assert tasks.tasks == []
+    assert len(captures) == 1
+    captured = captures[0]
     expected = list(range((rolling if rolling is not None else -1) + 1, 6))
-    assert [row["source_conversation_index"] for row in job["memorize_segments"][0][1]] == expected
-    assert all(row["memorize_chat"] is False for row in job["memorize_segments"][0][1])
-    assert job["memorize_segments"][0][4] is None
-    assert job["final_cursors"][CID] == {"cursor": 5, "memory_producing": False}
+    assert [row["source_conversation_index"] for row in captured["conversation"]] == expected
+    assert all(row["memorize_chat"] is False for row in captured["conversation"])
+    assert captured["_final_cursors"][CID] == {"cursor": 5, "memory_producing": False}
     state, _, _ = main._load_turn_state_and_soul_card(CID, user_id=UID, soul_id=SID)
     assert state["digest_cursor"] == 4
     assert state["rolling_summary_cursor_id"] == rolling

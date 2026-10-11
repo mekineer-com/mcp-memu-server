@@ -33,6 +33,7 @@ from app.services.segment import (
     create_companion_memory,
     parse_segment_range,
 )
+from app.services.payload import message_source_keys
 from app.services.xml_utils import extract_xml_fragment, xml_text
 from app.services.graph_edges import (
     ALLOWED_EDGE_PREDICATES,
@@ -874,6 +875,8 @@ ORDER BY updated_at ASC, id ASC
 
         segment_inputs: list[dict[str, Any]] = []
         current_chat_messages: list[dict[str, Any]] = []
+        background_context_blocks: list[str] = []
+        background_context_messages: list[dict[str, Any]] = []
         selected_by_conversation: dict[str, list[str]] = {}
         selected_resource_rows: list[sqlite3.Row] = []
         chats_dir = (deps.get_storage_dir(deps.config) / "st_chats").resolve()
@@ -901,10 +904,18 @@ ORDER BY updated_at ASC, id ASC
                     messages = json.loads(ep_file.read_text(encoding="utf-8"))
                 except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                     raise HTTPException(status_code=400, detail=f"segment history unreadable: {ep_file}") from exc
+                supporting = None
+                if isinstance(messages, dict):
+                    supporting = messages.get("segment_background_context")
+                    if not isinstance(supporting, str):
+                        raise HTTPException(status_code=400, detail=f"segment supporting context missing: {ep_file}")
+                    messages = messages.get("content")
                 if not isinstance(messages, list):
                     raise HTTPException(status_code=400, detail=f"segment history is not a message list: {ep_file}")
                 if any(not isinstance(message, dict) for message in messages):
                     raise HTTPException(status_code=400, detail=f"segment history contains a non-message row: {ep_file}")
+                if supporting is None and any(message.get("memorize_chat") is False for message in messages):
+                    raise HTTPException(status_code=400, detail=f"Saved background summary preparation required: {ep_file}")
                 messages = _label_owner_messages(
                     messages, user_id=user_id, user_name=user_name,
                     conversation_id=pending_conversation_id,
@@ -917,7 +928,15 @@ ORDER BY updated_at ASC, id ASC
                 except ValueError as exc:
                     raise HTTPException(status_code=400, detail=str(exc)) from exc
                 selected_resource_rows.extend(resource_rows)
-                current_chat_messages.extend(_messages_for_segment_inputs(messages, [entry], start_offset=start))
+                current_chat_messages.extend(
+                    message for message in _messages_for_segment_inputs(messages, [entry], start_offset=start)
+                    if message.get("memorize_chat") is not False
+                )
+                if supporting:
+                    background_context_blocks.append(supporting)
+                background_context_messages.extend(
+                    message for message in messages if message.get("memorize_chat") is False
+                )
                 entry["conversation_id"] = pending_conversation_id
                 rows = con.execute(
                     """
@@ -1064,6 +1083,8 @@ WHERE id IN ({placeholders}) AND soul_id = ? AND user_id = ?
             "removed_life_goals": removed_goals,
             "segment_inputs": segment_inputs,
             "current_chat_messages": current_chat_messages,
+            "background_context_blocks": background_context_blocks,
+            "background_context_messages": background_context_messages,
             "narrative_self": narrative_self,
             "last_consolidation_at": state.get("last_consolidation_at"),
             "started_at": now.isoformat(),
@@ -1549,16 +1570,28 @@ async def _run_consolidation_pipeline_once(
             row for row in (prep.get("current_chat_messages") or [])
             if isinstance(row, dict)
         ]
+        cross_tail = [] if historical else load_cross_tail_for_ai(
+            user_id=user_id, soul_id=soul_id, conversation_id=conversation_id,
+        )
+        covered = set().union(*(message_source_keys(row, prefer_id=True)
+            for row in prep.get("background_context_messages", [])))
+        fresh_background = [row for row in cross_tail
+            if row.get("memorize_chat") is False and message_source_keys(row, prefer_id=True).isdisjoint(covered)]
+        if fresh_background:
+            supporting, _ = await svc._render_episode_with_background_context(
+                background_messages=fresh_background, soul_name=soul_id,
+            )
+            if supporting:
+                prep.setdefault("background_context_blocks", []).append(supporting)
         prep["all_chat_history"] = format_all_chat_history_for_ai(
             current_history=current_chat_messages,
-            cross_tail=[] if historical else load_cross_tail_for_ai(
-                user_id=user_id,
-                soul_id=soul_id,
-                conversation_id=conversation_id,
-            ),
+            cross_tail=cross_tail,
             conversation_id=conversation_id,
             soul_id=soul_id,
             mark_current_chat=False,
+            user_id=user_id,
+            background_context_blocks=prep.get("background_context_blocks", []),
+            memory_context=True,
         )
         prepared = None
         if not force and not historical and not consolidation_due(
@@ -1610,6 +1643,8 @@ async def _run_consolidation_pipeline_once(
                 prep["all_chat_history"] = format_all_chat_history_for_ai(
                     current_history=prep["current_chat_messages"], cross_tail=[],
                     conversation_id=conversation_id, soul_id=soul_id, mark_current_chat=False,
+                    background_context_blocks=prep.get("background_context_blocks", []),
+                    memory_context=True,
                 )
         async with state_lock:
             old_error = _soul_state.consolidation_failure(prep.get("state", {}))

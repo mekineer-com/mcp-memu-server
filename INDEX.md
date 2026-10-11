@@ -14,7 +14,7 @@ mcp-memu-server/
 ├── app/db.py                # SQLite helpers, schema ensures, JSON marshalling
 ├── app/models/base.py       # Declarative ORM base
 ├── app/services/consolidation.py # Shared runner, read-only prompt preparation, Resource-owned segment reconstruction and selected prior context
-├── app/services/memorize_endpoint.py # Shared extraction with same-transaction checkpoint/phase publication; private handoff leaves claim release to the outer import task
+├── app/services/memorize_endpoint.py # Shared extraction with same-transaction primary checkpoint/phase publication; rolling state stays rollup-owned
 ├── app/services/activity_messages.py
 ├── app/services/whatsapp_outbounds.py
 ├── app/services/free_turn.py
@@ -185,10 +185,10 @@ guess a chat from the last reporting app.
 | `app/services/activity_messages.py` | `activity_messages` scoped-SQLite table for synthetic self-DM activity recaps (`My Activities:`); accepts a caller-owned transaction for Atomic End |
 | `app/services/whatsapp_outbounds.py` | `whatsapp_pending_outbounds` scoped-SQLite queue for WhatsApp replies/attachments |
 | `app/services/mentra_routes.py` | Keyless private-network Mentra boundary: enabled-gated discovery/session work, always-readable status, sitting-scoped lease lifecycle, bootstrap/token mint, non-blocking recall, transcript append/ack, and durable image snapshot/finalize. Image finalize stays unavailable until Gemini embedding config and DB profile are both active. |
-| `app/services/memorize_endpoint.py` | `/memorize` core: segment-file persistence, forced-memorize runner, rolling-summary injection, sleep-gap/token chunking, progress/cancel. Historical mode uses registered import progress and original source positions, not filtered-list offsets, and enables engine-owned actual-model prompt budgets. Main's mode-aware claim distinguishes ordinary recovery from historical work. Listen-only segments advance source cursors without producing memory, consuming rolling summaries, or retaining segment files. |
+| `app/services/memorize_endpoint.py` | `/memorize` core: exact supporting context saved with segment files, primary checkpoint/phase publication, sleep-gap/token chunking, progress/cancel. Historical mode uses registered import progress and original source positions, not filtered-list offsets, and enables engine-owned actual-model prompt budgets. Background inputs stay supporting context; only the rollup advances their rolling state. WhatsApp routing (`full`/`listen_only`) is independent of Mem on/off. |
 | `app/services/conversation_sources.py` | Source adapters: WhatsApp from `web_source.db`; ST/Atomic/Replika from resource chat snapshots (`st_chats` / `atomic_chats` / `replika_chats`); Mentra from `openalma/mentra/transcripts`. ST snapshots preserve original message positions and the unfiltered saved count. Handles atomic writes, cursor slicing, floor backfill, and role normalization. |
 | `app/services/import_routes.py` | Echo's scoped registration, unpaid current-tail validation, Process/Retry/status and bounded outer historical loop. Holds the existing claim through extraction plus one consolidation, resumes pending spans first, records the failed phase, and releases coalesced ordinary work. |
-| `app/services/cross_history.py` | Cross-conversation history: formats AI-facing all-chat history, assembles cross-tail/background memorize feeds, manages display-segment cleanup |
+| `app/services/cross_history.py` | Shared all-chat formatting and source selection: current Channels policy or captured Retry flags; live background summary + unsummarized tail; saved supporting context for reflection; display-segment cleanup |
 | `app/services/apimw.py` | APImw background memory-weaving pipeline: retrieve → synthesize prior-context/message-to-self → persist |
 | `app/services/admin_routes.py` | Health/version/shutdown/diag endpoint handlers |
 | `app/services/payload.py` | Shared payload/scope/normalization helpers; `_label_owner_messages` copies proven-owner lines to the Soul's canonical `user_name`, with optional live `source_owner_id` evidence and unchanged source data/IDs |

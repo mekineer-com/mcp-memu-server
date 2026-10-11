@@ -197,6 +197,7 @@ def build_conversations_block(
     current_source_owner_id: str | None = None,
     self_turn_directive: str | None = None,
     mark_current_chat: bool = True,
+    background_context_rows: list[dict[str, Any]] | None = None,
 ) -> str:
     history_for_render = [dict(item) if isinstance(item, dict) else item for item in (history or [])]
     current_text = _text(current_user_text)
@@ -223,7 +224,9 @@ def build_conversations_block(
     )
     cross_rows = cross_conversation_history or []
     if not has_current_history and not directive_text:
-        return _message_log.format_merged_history(cross_rows, soul_name=soul_name)
+        return _message_log.format_merged_history(
+            cross_rows, soul_name=soul_name, background_context_rows=background_context_rows,
+        )
 
     rows = _current_chat_rows_for_grouped_render(history_for_render, conversation_id=conversation_id)
     cid = _text(conversation_id) or (rows[-1].get("conversation_id") if rows else None) or "sillytavern"
@@ -237,6 +240,7 @@ def build_conversations_block(
         current_conversation_id=cid,
         current_chat_label=chat_label,
         mark_current_chat=mark_current_chat,
+        background_context_rows=background_context_rows,
     )
 
 

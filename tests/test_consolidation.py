@@ -1066,7 +1066,8 @@ INSERT INTO memory_items (
     assert changed_pending == {"status": "skip", "reason": "failure_requires_retry"}
 
 
-def test_resource_retry_after_failed_publication_reuses_one_owned_file(tmp_path, request):
+@pytest.mark.parametrize("short_tail", [False, True])
+def test_resource_retry_after_failed_publication_reuses_one_owned_file(tmp_path, request, short_tail):
     class PublicationScope(BaseModel):
         user_id: str | None = None
         soul_id: str | None = None
@@ -1079,11 +1080,18 @@ def test_resource_retry_after_failed_publication_reuses_one_owned_file(tmp_path,
     )
     store = svc.database
     request.addfinalizer(store.close)
-    cid, segment_id = "replika:test-publication", "replika:test-publication:0-0"
+    cid, segment_id = "replika:test-publication", "replika:test-publication:0-1"
     chat_dir = tmp_path / "publication"
     (chat_dir / "segments").mkdir(parents=True)
     file = chat_dir / "segments" / "2020-01-01.json"
-    content = json.dumps([{"role": "user", "content": "history", "ts_ms": 1_577_836_800_000}])
+    raw_background = "A short update." if short_tail else "UNRESTRICTED_BACKGROUND_COMMAND " * 150
+    supporting = "[dm][Fictional Work]\nSaved rolling prose.\n" + (raw_background if short_tail else "Exact captured follow-up summary.")
+    rows = [{"role": "user", "content": "history", "ts_ms": 1_577_836_800_000,
+             "memorize_chat": True, "source_message_id": "primary-1", "source_conversation_index": 4},
+            {"role": "unknown", "content": raw_background, "ts_ms": 1_577_836_801_000,
+             "source_conversation_id": "whatsapp:dm:test-background",
+             "memorize_chat": False, "source_message_id": "background-1", "source_conversation_index": 8}]
+    content = json.dumps({"content": rows, "segment_background_context": supporting})
     file.write_text(content, encoding="utf-8")
     state_args = {"sqlite_current_path": lambda *_: db_path, **scope}
     write_conversation_state(cid, **state_args)
@@ -1111,6 +1119,96 @@ def test_resource_retry_after_failed_publication_reuses_one_owned_file(tmp_path,
     result = gather_consolidation_inputs(deps, conversation_id=cid, **scope)
     assert [entry["segment_id"] for entry in result["segment_inputs"]] == [segment_id]
     assert [row["content"] for row in result["current_chat_messages"]] == ["history"]
+    assert result["current_chat_messages"][0]["source_message_id"] == "primary-1"
+    assert result["background_context_blocks"] == [supporting]
+    assert [row["source_message_id"] for row in result["background_context_messages"]] == ["background-1"]
+    assert json.loads(file.read_text())["content"] == rows
+    from app import main
+    rendered = main._format_all_chat_history_for_ai(
+        current_history=result["current_chat_messages"], cross_tail=[], conversation_id=cid,
+        soul_id=scope["soul_id"], user_id=scope["user_id"], mark_current_chat=False,
+        background_context_blocks=result["background_context_blocks"], memory_context=True,
+    )
+    assert supporting in rendered and "history" in rendered
+    assert "UNRESTRICTED_BACKGROUND_COMMAND" not in rendered
+    result["all_chat_history"] = rendered
+    result["state"] = {**_inputs()["state"], **result["state"]}
+    prepared = consolidation._prepare_dossier_consolidation_prompts(
+        _DossierContextService(due_ids=("first",)), inputs=result, **scope,
+    )
+    assert supporting in prepared[2]
+    assert "UNRESTRICTED_BACKGROUND_COMMAND" not in prepared[2]
+    if short_tail:
+        assert "A short update." in rendered
+    with pytest.raises(HTTPException, match="range does not match stored history"):
+        file.write_text(json.dumps({"content": rows[:1], "segment_background_context": supporting}))
+        gather_consolidation_inputs(deps, conversation_id=cid, **scope)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("large", [False, True])
+@pytest.mark.parametrize("index_overlap", [False, True])
+async def test_reflection_preserves_saved_context_and_prepares_only_fresh_background(
+    tmp_path, monkeypatch, large, index_overlap,
+):
+    from memu.app import memorize_segments
+    path = tmp_path / "reflection.db"
+    with sqlite_connect(path) as con:
+        sqlite_ensure_conversation_state_schema(con)
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "whatsapp:dm:test-background"
+    covered = {"conversation_id": cid, "source_message_id": "captured-id",
+        "source_conversation_index": 500, "memorize_chat": False,
+        "role": "unknown", "content": "CAPTURED RAW MUST NOT REPLAY"}
+    fresh_text = "fresh detail " * 60 if large else "Fresh short tail"
+    cross = [{**covered, "source_conversation_index": 2}, {
+        **covered, "source_message_id": "fresh-id", "source_conversation_index": 500 if index_overlap else 501,
+        "content": fresh_text}]
+    prep = {**_inputs(), "status": "ready", "db_path": path,
+        "current_chat_messages": [{"role": "user", "content": "Personal conversation"}],
+        "background_context_messages": [covered], "background_context_blocks": ["EXACT SAVED SUPPORT"]}
+    monkeypatch.setattr(consolidation, "gather_consolidation_inputs", lambda *_a, **_kw: prep)
+    svc = _DossierContextService()
+    stub = _make_svc_stub(path)
+    svc.database, svc._sqlite_write_session = stub.database, stub._sqlite_write_session
+    provider_calls, rendered_ids = [], []
+    class Provider:
+        async def chat(self, prompt, **kwargs):
+            groups = json.loads(prompt)["groups"]
+            provider_calls.append(groups)
+            assert len(groups) == 1 and fresh_text.strip() in groups[0]["messages"]
+            return json.dumps({"summaries": [{"source_key": groups[0]["source_key"], "summary": "Fresh compact summary"}]})
+    async def summarize(**kwargs):
+        kwargs["llm_client"] = Provider()
+        return await memorize_segments._summarize_background_groups_batched(
+            **kwargs, extract_json_blob=lambda text: text)
+    async def render(**kwargs):
+        rendered_ids.extend(row["source_message_id"] for row in kwargs["background_messages"])
+        return await memorize_segments._render_episode_with_background_context(
+            **kwargs, summarize_background_groups_batched=summarize,
+            memorize_config=SimpleNamespace(background_extra_messages_tokens=100), llm_client=None)
+    svc._render_episode_with_background_context = render
+    async def prepare(*args, **kwargs):
+        return None
+    async def reflect(*args, **kwargs):
+        text = kwargs["inputs"]["all_chat_history"]
+        assert "EXACT SAVED SUPPORT" in text and "Personal conversation" in text
+        assert "CAPTURED RAW MUST NOT REPLAY" not in text
+        assert ("Fresh compact summary" if large else fresh_text) in text
+        if large:
+            assert fresh_text.strip() not in text
+        return {}
+    monkeypatch.setattr(consolidation, "prepare_dossier_consolidation_context", prepare)
+    monkeypatch.setattr(consolidation, "run_consolidation_llm", reflect)
+    monkeypatch.setattr(consolidation, "write_consolidation_outputs", lambda *_a, **_kw: {})
+    result = await consolidation._run_consolidation_pipeline_once(
+        svc=svc, deps=_make_consolidation_deps(path, tmp_path), state_lock=asyncio.Lock(), running={},
+        load_cross_tail_for_ai=lambda **_kw: cross,
+        format_all_chat_history_for_ai=cross_history._format_all_chat_history_for_ai,
+        conversation_id="replika:primary", force=True, **scope)
+    assert result["status"] == "ok"
+    assert rendered_ids == ["fresh-id"]
+    assert len(provider_calls) == int(large)
 
 
 def test_gather_rejects_noncanonical_pending_owner(tmp_path: Path) -> None:
@@ -1156,6 +1254,9 @@ def test_gather_rejects_noncanonical_pending_owner(tmp_path: Path) -> None:
         ("{not json", 0, "segment history unreadable"),
         (json.dumps([{"role": "user", "content": "valid"}, 7]), 0, "non-message row"),
         (json.dumps([{"role": "user", "content": "only row"}]), 1, "range does not match stored history"),
+        (json.dumps([{"role": "unknown", "content": "legacy background", "memorize_chat": False}]), 0, "Saved background summary preparation required"),
+        (json.dumps({"content": [{"role": "unknown", "content": "background", "memorize_chat": False}]}), 0, "segment supporting context missing"),
+        (json.dumps({"content": [{"role": "user", "content": "primary"}], "segment_background_context": []}), 0, "segment supporting context missing"),
     ],
 )
 async def test_gather_consolidation_inputs_rejects_invalid_segment_file(

@@ -92,6 +92,7 @@ def format_merged_history(
     current_conversation_id: str | None = None,
     current_chat_label: str | None = None,
     mark_current_chat: bool = True,
+    background_context_rows: list[dict[str, Any]] | None = None,
 ) -> str:
     """Format merged messages as grouped markdown for the soul's cross-chat context."""
     return format_grouped_chat_history(
@@ -102,4 +103,5 @@ def format_merged_history(
         current_conversation_id=current_conversation_id,
         current_chat_label=current_chat_label,
         mark_current_chat=mark_current_chat,
+        background_context_rows=background_context_rows,
     )

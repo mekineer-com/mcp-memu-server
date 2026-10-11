@@ -117,7 +117,6 @@ class SegmentMemorizeJob(TypedDict):
     segment_end_index: int
     segment_id: str | None
     memory_producing: bool
-    consumed_background_summary_ids: list[str]
     durable_range: tuple[int, int] | None
 
 
@@ -132,7 +131,6 @@ MemorizeSegment = tuple[
 
 def _cursor_updates_for_unit(
     *,
-    memory_producing: bool,
     cursor: int | None,
     now_iso: str,
     source_message_id: str = "",
@@ -140,19 +138,14 @@ def _cursor_updates_for_unit(
     pending_segment_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     pending = pending_segment_ids or []
-    if not memory_producing and pending:
-        raise RuntimeError("context-only memorize unit cannot append pending segment ids")
-
     updates: dict[str, Any] = {}
     if cursor is not None:
-        prefix = "digest" if memory_producing else "rolling_summary"
-        updates[f"{prefix}_cursor" if memory_producing else "rolling_summary_cursor_id"] = max(-1, cursor)
-        updates[f"{prefix}_cursor_source_message_id"] = source_message_id or None
-        updates[f"{prefix}_cursor_ts"] = int(source_ts) if source_message_id and source_ts is not None else None
-    if memory_producing:
-        updates["last_memorize_at"] = now_iso
-        if pending:
-            updates["append_pending_segment_ids"] = pending
+        updates["digest_cursor"] = max(-1, cursor)
+        updates["digest_cursor_source_message_id"] = source_message_id or None
+        updates["digest_cursor_ts"] = int(source_ts) if source_message_id and source_ts is not None else None
+    updates["last_memorize_at"] = now_iso
+    if pending:
+        updates["append_pending_segment_ids"] = pending
     return updates
 
 
@@ -448,7 +441,6 @@ async def run_memorize_segments(
                 if durable_range is not None
                 else None
             )
-            consumed_background_summary_ids: set[str] = set()
             segment_background_rows: list[dict[str, Any]] = []
             seen_background_sources: set[str] = set()
             if conversation_rolling_summary and conversation_id and not cross_memorize:
@@ -461,33 +453,25 @@ async def run_memorize_segments(
                     }
                 )
                 seen_background_sources.add(conversation_id)
-            for idx, msg in enumerate(segment_messages):
-                if not isinstance(msg, dict):
-                    continue
-                if bool(msg.get("memorize_chat", True)):
-                    continue
-                source_cid = str(msg.get("source_conversation_id") or "").strip()
+            for source_cid, summary_row in rolling_summaries.items():
                 if not source_cid or source_cid in seen_background_sources:
                     continue
                 seen_background_sources.add(source_cid)
-                summary_row = rolling_summaries.get(source_cid)
                 if not isinstance(summary_row, dict):
                     continue
                 summary = str(summary_row.get("summary") or "").strip()
                 if not summary:
                     continue
-                source_label = str(summary_row.get("source_label") or msg.get("source_label") or "background").strip() or "background"
+                source_label = str(summary_row.get("source_label") or "background").strip() or "background"
                 segment_background_rows.append(
                     {
+                        **summary_row,
                         "summary": summary,
                         "source_label": source_label,
                         "source_conversation_id": source_cid,
                         "rolled_up": True,
-                        "anchor_index": int(idx),
                     }
                 )
-                if memory_producing:
-                    consumed_background_summary_ids.add(source_cid)
             segment_payload: dict[str, Any] = {
                 "message_indices": list(range(len(segment_messages))),
                 "segment_background_context_rows": segment_background_rows,
@@ -505,7 +489,6 @@ async def run_memorize_segments(
                     "segment_end_index": segment_end_index,
                     "segment_id": segment_id,
                     "memory_producing": memory_producing,
-                    "consumed_background_summary_ids": list(consumed_background_summary_ids),
                     "durable_range": durable_range,
                 }
             )
@@ -518,14 +501,15 @@ async def run_memorize_segments(
             producing = checkpoint.get("memory_producing")
             if not isinstance(producing, bool):
                 raise RuntimeError(f"memorize checkpoint missing captured policy for {cid}")
+            if not producing:
+                continue
             source_id = str(checkpoint.get("source_message_id") or "").strip()
             if source_id and checkpoint.get("ts") is not None:
                 payload_position = run_ctx.resolve_web_source_checkpoint(cid, source_id)
                 if payload_position is None:
                     raise RuntimeError(f"WhatsApp web_source checkpoint disappeared for {cid}")
                 row, _, _ = run_ctx.load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
-                prefix = "digest" if producing else "rolling_summary"
-                saved_id = str(row.get(f"{prefix}_cursor_source_message_id") or "").strip()
+                saved_id = str(row.get("digest_cursor_source_message_id") or "").strip()
                 saved_position = run_ctx.resolve_web_source_checkpoint(cid, saved_id) if saved_id else None
                 prepared_positions[cid] = (payload_position, saved_id, saved_position)
 
@@ -542,19 +526,15 @@ async def run_memorize_segments(
             try:
                 con.row_factory = sqlite3.Row
                 now_iso = datetime.now(UTC).isoformat()
-                if job["memory_producing"]:
-                    if ids != [job["segment_id"]]:
-                        raise RuntimeError("Segment publication requires its own pending ID")
-                    patch_phase(session, job["segment_resource_url"], "dedupe")
+                if ids != [job["segment_id"]]:
+                    raise RuntimeError("Segment publication requires its own pending ID")
+                patch_phase(session, job["segment_resource_url"], "dedupe")
                 if conversation_id and not cross_memorize:
                     fresh = conversation_state_from_row(conversation_state_row(
                         con, conversation_id, user_id=uid, soul_id=soul_id,
                     )) or {}
-                    producing = job["memory_producing"]
-                    field = "digest_cursor" if producing else "rolling_summary_cursor_id"
                     cursor = (fresh["import_state"]["memorize_cursor"] if historical else
-                              effective_digest_cursor_from_row(fresh or None) if producing else
-                              int(fresh[field]) if fresh.get(field) is not None else -1)
+                              effective_digest_cursor_from_row(fresh or None))
                     end_cursor = job["segment_end_index"]
                     if conversation_id in cursor_ceilings:
                         end_cursor = min(end_cursor, cursor_ceilings[conversation_id]["ceiling"])
@@ -564,7 +544,6 @@ async def run_memorize_segments(
                                    "append_import_pending_segment_ids": ids}
                     else:
                         updates = _cursor_updates_for_unit(
-                            memory_producing=producing,
                             cursor=processed_end_cursor if cursor <= end_cursor else None,
                             now_iso=now_iso, pending_segment_ids=ids,
                         )
@@ -575,11 +554,13 @@ async def run_memorize_segments(
                 if conversation_id and ids and conversation_id not in (final_cursors or {}) and cross_memorize:
                     ctx.write_conversation_state(
                         conversation_id, user_id=uid, soul_id=soul_id, connection=con,
-                        updates=_cursor_updates_for_unit(memory_producing=True, cursor=None,
+                        updates=_cursor_updates_for_unit(cursor=None,
                                                         now_iso=now_iso, pending_segment_ids=ids),
                     )
                 for cid, checkpoint in (final_cursors or {}).items():
                     producing = checkpoint["memory_producing"]
+                    if not producing:
+                        continue
                     source_id = str(checkpoint.get("source_message_id") or "").strip()
                     source_ts = checkpoint.get("ts")
                     cursor = max(-1, int(checkpoint["cursor"]))
@@ -588,28 +569,24 @@ async def run_memorize_segments(
                     )) or {}
                     if cid in prepared_positions:
                         payload_position, saved_id, saved_position = prepared_positions[cid]
-                        prefix = "digest" if producing else "rolling_summary"
-                        if str(fresh.get(f"{prefix}_cursor_source_message_id") or "").strip() != saved_id:
+                        if str(fresh.get("digest_cursor_source_message_id") or "").strip() != saved_id:
                             raise RuntimeError(f"WhatsApp cursor changed during Memorize for {cid}")
-                        field = "digest_cursor" if producing else "rolling_summary_cursor_id"
                         fresh_position = (saved_position if saved_position is not None
-                                          else (-1 if producing else 0) if saved_id
-                                          else int(fresh.get(field) or 0))
+                                          else -1 if saved_id
+                                          else int(fresh.get("digest_cursor") or 0))
                         cursor = payload_position if payload_position > fresh_position else None
                     else:
                         if cid in cursor_ceilings:
                             cursor = min(cursor, cursor_ceilings[cid]["ceiling"])
-                        field = "digest_cursor" if producing else "rolling_summary_cursor_id"
-                        fresh_cursor = (effective_digest_cursor_from_row(fresh or None) if producing else
-                                        int(fresh[field]) if fresh.get(field) is not None else -1)
+                        fresh_cursor = effective_digest_cursor_from_row(fresh or None)
                         if cursor < fresh_cursor:
                             cursor = None
                     updates = _cursor_updates_for_unit(
-                        memory_producing=producing, cursor=cursor, now_iso=now_iso,
+                        cursor=cursor, now_iso=now_iso,
                         source_message_id=source_id, source_ts=source_ts,
                         pending_segment_ids=ids if cid == conversation_id else None,
                     )
-                    if producing and cross_memorize:
+                    if cross_memorize:
                         display = latest_display_ranges.get(cid)
                         updates.update(last_display_segment_start_index=display[0] if display else None,
                                        last_display_segment_end_index=display[1] if display else None,
@@ -617,18 +594,6 @@ async def run_memorize_segments(
                     if updates:
                         ctx.write_conversation_state(cid, user_id=uid, soul_id=soul_id,
                                                      updates=updates, connection=con)
-                for cid in job["consumed_background_summary_ids"]:
-                    fresh = conversation_state_from_row(conversation_state_row(
-                        con, cid, user_id=uid, soul_id=soul_id,
-                    )) or {}
-                    captured = rolling_summaries[cid]
-                    if (fresh.get("rolling_summary") != captured.get("summary")
-                            or fresh.get("rolling_summary_updated_at") != captured.get("updated_at")):
-                        continue
-                    ctx.write_conversation_state(
-                        cid, user_id=uid, soul_id=soul_id, connection=con,
-                        updates={"rolling_summary": None, "rolling_summary_updated_at": None},
-                    )
                 if not historical:
                     # Publication runs before commit; rolled-back rows must not prune waiting work.
                     event.listen(session, "after_commit", lambda _session: ctx.memorize_progress.setdefault(
@@ -658,13 +623,19 @@ async def run_memorize_segments(
                     ctx.write_conversation_state(conversation_id, user_id=uid, soul_id=soul_id,
                         updates={"import_stage": "memorize", "import_error": "Memorize interrupted before completion. Retry required."})
                 elif failure_record is not None or any(job["memory_producing"] for job in segment_jobs):
-                    targets = final_cursors or {
+                    bounds = final_cursors or {
                         conversation_id: {"cursor": memorize_segments[-1][3], "memory_producing": True},
                     }
+                    targets = {cid: value for cid, value in bounds.items()
+                               if value.get("memory_producing") is not False}
+                    filing_policy = {cid: value.get("memory_producing", True) for cid, value in bounds.items()}
+                    filing_policy.update({cid: False for cid in rolling_summaries})
+                    filing_policy.update((failure_record or {}).get("filing_policy") or {})
                     failure_record = {
                         "conversation_id": conversation_id,
                         "error": failure_record["error"] if failure_record else "Memorize interrupted before completion. Retry in launcher.",
                         "paused": bool(failure_record), "targets": {**targets, **(failure_record["targets"] if failure_record else {})},
+                        "filing_policy": filing_policy,
                     }
                     ctx.write_conversation_state(
                         conversation_id, user_id=uid, soul_id=soul_id,
@@ -740,12 +711,6 @@ async def run_memorize_segments(
                             raise RuntimeError("context-only memorize unit returned pending segment ids")
                         if segment_job["memory_producing"]:
                             has_memory_results = True
-                    if not segment_job["memory_producing"]:
-                        async with mem_lock:
-                            with svc._sqlite_write_session(svc.database) as session:
-                                session.connection().exec_driver_sql("BEGIN IMMEDIATE")
-                                publish_job(session, segment_job, [])
-                                session.commit()
                 created_segment_paths.clear()
 
         # Phase 3: final state flush + bookkeeping under lock.

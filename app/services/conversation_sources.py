@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -9,13 +10,15 @@ from collections.abc import Sequence
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from app.config import SoulIdError, validate_soul_id
 from app.services import memorize_endpoint
 from app.services.state import normalize_import_state
 
 _NUMERIC_LIKE_RE = re.compile(r"^[0-9+\-() .]+$")
+_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9@.+\-]+$")
+logger = logging.getLogger(__name__)
 _ST_SNAPSHOT_FILE = "latest_history.json"
 MENTRA_CONVERSATION_ID = "mentra:iris"
 _CHAT_SNAPSHOT_DIRS = {
@@ -166,6 +169,95 @@ def _hermes_base(hermes_home: Path | None = None) -> Path:
     fallback = Path(__file__).resolve().parents[3] / "hermes-channels" / "data"
     raw = hermes_home or Path(os.getenv("HERMES_HOME") or os.getenv("CHANNELS_HOME") or fallback)
     return raw.expanduser().resolve()
+
+
+def _load_creds_alias_map(session_dir: Path) -> dict[str, str]:
+    creds_path = session_dir / "creds.json"
+    if not creds_path.exists():
+        return {}
+    try:
+        parsed = json.loads(creds_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    me = parsed.get("me") if isinstance(parsed, dict) else None
+    if not isinstance(me, dict):
+        return {}
+    phone_id = _normalize_whatsapp_identifier(me.get("id"))
+    lid_id = _normalize_whatsapp_identifier(me.get("lid"))
+    if not phone_id or not lid_id or phone_id == lid_id:
+        return {}
+    return {phone_id: lid_id, lid_id: phone_id}
+
+
+def _expand_whatsapp_policy_aliases(identifier: str, hermes_home: Path | None = None) -> set[str]:
+    """Use Channels' policy aliases, including session mappings without a contact store."""
+    normalized = _normalize_whatsapp_identifier(identifier)
+    if not normalized:
+        return set()
+    session_dir = _hermes_base(hermes_home) / "whatsapp" / "session"
+    creds_alias_map = _load_creds_alias_map(session_dir)
+    resolved: set[str] = set()
+    queue = [normalized]
+    while queue:
+        current = queue.pop(0)
+        if not current or current in resolved or not _SAFE_IDENTIFIER_RE.match(current):
+            continue
+        resolved.add(current)
+        for suffix in ("", "_reverse"):
+            mapping_path = session_dir / f"lid-mapping-{current}{suffix}.json"
+            if not mapping_path.exists():
+                continue
+            try:
+                mapped = _normalize_whatsapp_identifier(json.loads(mapping_path.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if mapped and mapped not in resolved:
+                queue.append(mapped)
+        mapped = creds_alias_map.get(current, "")
+        if mapped and mapped not in resolved:
+            queue.append(mapped)
+    return resolved
+
+
+def load_whatsapp_channel_settings(
+    conversation_id: str, *, hermes_home: Path | None = None,
+) -> tuple[Literal["full", "listen_only", "excluded"], bool]:
+    """Read the same current routing/independent Mem policy as Channels."""
+    path = _hermes_base(hermes_home) / "memu.json"
+    config = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            config = data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("WhatsApp policy read failed for %s: %s", path, exc)
+    whatsapp = config.get("whatsapp") if isinstance(config.get("whatsapp"), dict) else {}
+    channels = whatsapp.get("channels", {})
+    raw_default = str(whatsapp.get("default_policy") or "").strip().lower()
+    default_policy = raw_default if raw_default in {"full", "listen_only", "excluded"} else "full"
+    _chat_type, chat_id = _split_whatsapp_conversation_id(conversation_id)
+    aliases = _expand_whatsapp_policy_aliases(chat_id, hermes_home)
+    entries = [entry for key, entry in channels.items()
+               if isinstance(entry, dict) and _normalize_whatsapp_identifier(str(key)) in aliases
+               ] if isinstance(channels, dict) else []
+    policy = "full"
+    has_policy = False
+    memorize: bool | None = None
+    for entry in entries:
+        raw_policy = str(entry.get("policy") or "").strip().lower()
+        if raw_policy == "excluded":
+            policy, has_policy = "excluded", True
+        elif raw_policy == "listen_only" and policy != "excluded":
+            policy, has_policy = "listen_only", True
+        elif raw_policy == "full" and policy not in {"excluded", "listen_only"}:
+            policy, has_policy = "full", True
+        if isinstance(entry.get("memorize"), bool):
+            memorize = bool(entry["memorize"]) if memorize is not True else True
+    if not has_policy:
+        policy = default_policy
+    if policy == "excluded":
+        return policy, False
+    return policy, memorize if memorize is not None else policy != "excluded"
 
 
 def _resolve_hermes_paths(

@@ -96,7 +96,7 @@ The stored embedding profile is managed by OpenAlma and is not a user setting.
 | --- | --- | --- |
 | `min_chunk_tokens` | `8000` | Unmemorized conversation size that triggers automatic memorization. Lowering it lowers the Launcher's projected Context load at 100%, not an existing backlog. Sleep-gap batches can exceed it. `0` disables the size gate. |
 | `background_summary_tokens` | `1000` | Target size of the rolling background summary. |
-| `background_extra_messages_tokens` | `100` | Recent-message allowance added around background summarization. |
+| `background_extra_messages_tokens` | `100` | Per non-Memorize chat: shorter tails stay raw; tails at or above this size get separate summaries in one batched call. Existing rolling summaries stay verbatim. |
 | `enable_confidence_normalization` | `false` | Normalize extracted confidence values within a batch. |
 | `semantic_dedupe_enabled` | `true` | Run post-persist semantic soft-merging. This is an operator recovery switch for either supported embedding profile; it does not make an unknown profile valid. |
 | `semantic_dedupe_similarity_threshold` | `"default"` | Use the active embedding profile's internal threshold: `0.89` for `text-embedding-3-large:3072`, `0.90` for `gemini-embedding-2:3072`. A numeric operator override is accepted for recovery or recalibration. |
