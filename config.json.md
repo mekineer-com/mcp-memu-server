@@ -67,7 +67,7 @@ use `llm.temperature` or the provider default.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `resources_dir` | user memU resources directory | Files and media associated with memories. |
+| `resources_dir` | sibling `memu/resources` directory | Files and media associated with memories. |
 | `sqlite_dir` | directory containing the configured DSN | Directory containing per-Soul SQLite databases and `owner.txt`. |
 
 ### `storage.metadata_store`
@@ -83,7 +83,7 @@ The stored embedding profile is managed by OpenAlma and is not a user setting.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `memu.path` | detected `~/apps/memu` or empty | Path to the memU repository root or `src` directory. |
+| `memu.path` | sibling `memu/src` if present, otherwise empty | Path to the memU package's import directory. |
 | `listen.host` | `"127.0.0.1"` | HTTP bind address. |
 | `listen.port` | `8099` | HTTP port. |
 | `python.force_venv` | `false` | Re-execute through `mcp-memu-server/.venv` when starting via `run.py`. |

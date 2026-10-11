@@ -57,33 +57,24 @@ def is_ephemeral_db(cfg: dict[str, Any]) -> bool:
     return False
 
 
-def home_dir() -> Path:
-    h = os.getenv("HOME") or os.getenv("USERPROFILE") or "."
-    return Path(h).expanduser().resolve()
-
-
 def default_config() -> dict[str, Any]:
-    home = home_dir()
-
-    memu_guess = None
-    for cand in (home / "apps" / "memu",):
-        if cand.exists():
-            memu_guess = cand
-            break
+    server_dir = config_dir()
+    memu_dir = server_dir.parent / "memu"
+    memu_src = memu_dir / "src"
 
     sqlite_path = Path(":memory:")  # placeholder; per-soul dbs resolved per-request
-    resources_dir = home / "apps" / "memu" / "resources"
-    channels_data = Path(__file__).resolve().parents[2] / "hermes-channels" / "data"
+    resources_dir = memu_dir / "resources"
+    channels_data = server_dir.parent / "hermes-channels" / "data"
 
     return {
         "memu": {
-            "path": str(memu_guess) if memu_guess else "",
+            "path": str(memu_src) if memu_src.is_dir() else "",
         },
         "python": {
             "executable": "",
             "force_venv": False,
         },
-        "pid_file": str(home / "apps" / "mcp-memu-server" / ".memu-server.pid"),
+        "pid_file": str(server_dir / ".memu-server.pid"),
         "listen": {"host": "127.0.0.1", "port": 8099},
         "llm": {
             "provider": "openai",

@@ -21,7 +21,32 @@ _EXAMPLE_CONFIG = _ROOT / "config.example.json"
 @pytest.fixture(autouse=True)
 def _isolated_config_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(app_config, "config_path", lambda: tmp_path / "config" / "config.json")
-    monkeypatch.setattr(app_config, "home_dir", lambda: tmp_path / "home")
+
+
+@pytest.mark.parametrize("engine_present", [False, True])
+def test_missing_config_bootstraps_repo_local_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine_present: bool,
+) -> None:
+    home = tmp_path / "home"
+    legacy_memu = home / "apps" / "memu"
+    legacy_memu.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.chdir(home)
+    server_dir = app_config.config_dir()
+    memu_dir = server_dir.parent / "memu"
+    if engine_present:
+        (memu_dir / "src").mkdir(parents=True)
+
+    cfg = app_config.load_config()
+
+    assert cfg["storage"]["resources_dir"] == str(memu_dir / "resources")
+    assert (memu_dir / "resources").is_dir()
+    assert cfg["pid_file"] == str(server_dir / ".memu-server.pid")
+    expected_memu = str(memu_dir / "src") if engine_present else ""
+    assert cfg["memu"]["path"] == expected_memu
+    assert app_config.default_config()["memu"]["path"] == expected_memu
+    assert not (legacy_memu / "resources").exists()
 
 
 def test_example_is_valid_json_and_non_empty() -> None:
