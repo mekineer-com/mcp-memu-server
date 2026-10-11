@@ -34,6 +34,7 @@ from app.services.segment import (
     parse_segment_range,
 )
 from app.services.payload import message_source_keys
+from app.services import cross_history
 from app.services.xml_utils import extract_xml_fragment, xml_text
 from app.services.graph_edges import (
     ALLOWED_EDGE_PREDICATES,
@@ -877,6 +878,7 @@ ORDER BY updated_at ASC, id ASC
         current_chat_messages: list[dict[str, Any]] = []
         background_context_blocks: list[str] = []
         background_context_messages: list[dict[str, Any]] = []
+        background_context_conversation_ids: set[str] = set()
         selected_by_conversation: dict[str, list[str]] = {}
         selected_resource_rows: list[sqlite3.Row] = []
         chats_dir = (deps.get_storage_dir(deps.config) / "st_chats").resolve()
@@ -909,6 +911,10 @@ ORDER BY updated_at ASC, id ASC
                     supporting = messages.get("segment_background_context")
                     if not isinstance(supporting, str):
                         raise HTTPException(status_code=400, detail=f"segment supporting context missing: {ep_file}")
+                    captured_sources = messages.get("segment_background_conversation_ids", [])
+                    if not isinstance(captured_sources, list) or any(not isinstance(cid, str) for cid in captured_sources):
+                        raise HTTPException(status_code=400, detail=f"segment supporting sources malformed: {ep_file}")
+                    background_context_conversation_ids.update(captured_sources)
                     messages = messages.get("content")
                 if not isinstance(messages, list):
                     raise HTTPException(status_code=400, detail=f"segment history is not a message list: {ep_file}")
@@ -936,6 +942,10 @@ ORDER BY updated_at ASC, id ASC
                     background_context_blocks.append(supporting)
                 background_context_messages.extend(
                     message for message in messages if message.get("memorize_chat") is False
+                )
+                background_context_conversation_ids.update(
+                    str(message.get("source_conversation_id") or message.get("conversation_id") or "")
+                    for message in messages if message.get("memorize_chat") is False
                 )
                 entry["conversation_id"] = pending_conversation_id
                 rows = con.execute(
@@ -1085,6 +1095,7 @@ WHERE id IN ({placeholders}) AND soul_id = ? AND user_id = ?
             "current_chat_messages": current_chat_messages,
             "background_context_blocks": background_context_blocks,
             "background_context_messages": background_context_messages,
+            "background_context_conversation_ids": background_context_conversation_ids,
             "narrative_self": narrative_self,
             "last_consolidation_at": state.get("last_consolidation_at"),
             "started_at": now.isoformat(),
@@ -1577,9 +1588,12 @@ async def _run_consolidation_pipeline_once(
             for row in prep.get("background_context_messages", [])))
         fresh_background = [row for row in cross_tail
             if row.get("memorize_chat") is False and message_source_keys(row, prefer_id=True).isdisjoint(covered)]
-        if fresh_background:
+        captured_sources = prep.get("background_context_conversation_ids", set())
+        rolling = [] if historical else [row for row in cross_history._load_background_context_for_ai(user_id=user_id, soul_id=soul_id)
+                   if row["source_conversation_id"] not in captured_sources]
+        if fresh_background or rolling:
             supporting, _ = await svc._render_episode_with_background_context(
-                background_messages=fresh_background, soul_name=soul_id,
+                background_messages=fresh_background, prior_rows=rolling, soul_name=soul_id,
             )
             if supporting:
                 prep.setdefault("background_context_blocks", []).append(supporting)

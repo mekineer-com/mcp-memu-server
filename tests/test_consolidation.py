@@ -1148,8 +1148,9 @@ def test_resource_retry_after_failed_publication_reuses_one_owned_file(tmp_path,
 @pytest.mark.asyncio
 @pytest.mark.parametrize("large", [False, True])
 @pytest.mark.parametrize("index_overlap", [False, True])
+@pytest.mark.parametrize("prior_saved", [False, True])
 async def test_reflection_preserves_saved_context_and_prepares_only_fresh_background(
-    tmp_path, monkeypatch, large, index_overlap,
+    tmp_path, monkeypatch, large, index_overlap, prior_saved,
 ):
     from memu.app import memorize_segments
     path = tmp_path / "reflection.db"
@@ -1167,6 +1168,10 @@ async def test_reflection_preserves_saved_context_and_prepares_only_fresh_backgr
     prep = {**_inputs(), "status": "ready", "db_path": path,
         "current_chat_messages": [{"role": "user", "content": "Personal conversation"}],
         "background_context_messages": [covered], "background_context_blocks": ["EXACT SAVED SUPPORT"]}
+    prep["background_context_conversation_ids"] = {cid} if prior_saved else set()
+    monkeypatch.setattr(cross_history, "_load_background_context_for_ai", lambda **_kw: [{
+        "source_conversation_id": cid, "summary": "CURRENT ROLLING PROSE", "chat_name": "Test Background",
+    }])
     monkeypatch.setattr(consolidation, "gather_consolidation_inputs", lambda *_a, **_kw: prep)
     svc = _DossierContextService()
     stub = _make_svc_stub(path)
@@ -1194,6 +1199,7 @@ async def test_reflection_preserves_saved_context_and_prepares_only_fresh_backgr
         text = kwargs["inputs"]["all_chat_history"]
         assert "EXACT SAVED SUPPORT" in text and "Personal conversation" in text
         assert "CAPTURED RAW MUST NOT REPLAY" not in text
+        assert ("CURRENT ROLLING PROSE" in text) is not prior_saved
         assert ("Fresh compact summary" if large else fresh_text) in text
         if large:
             assert fresh_text.strip() not in text
