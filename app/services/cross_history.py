@@ -842,53 +842,16 @@ def _load_cross_memorize_tails_from_sources(
                 continue
 
             rolling_cursor_id = row["rolling_summary_cursor_id"]
-            source_label = _message_log.derive_source_label(cid)
-            if source_label.startswith("whatsapp:"):
-                active_since = _m()._load_soul_active_since(
-                    soul_id,
-                    hermes_home_path=hermes_home_path,
-                    state_db_path=state_db_path,
-                )
-                web_source_db_path = _m()._resolve_whatsapp_web_source_config()
-                rolling_cursor_id, checkpoint_floor, _ = _resolve_source_cursor(
-                    cid,
-                    int(rolling_cursor_id or 0),
-                    row["rolling_summary_cursor_source_message_id"],
-                    row["rolling_summary_cursor_ts"],
-                    rolling=True,
-                    hermes_home_path=hermes_home_path,
-                )
-                assistant_speakers = _conversation_sources.load_whatsapp_assistant_source_speakers(
-                    conversation_id=cid,
-                    hermes_home=hermes_home_path,
-                    sessions_index_path=sessions_index_path,
-                    state_db_path=state_db_path,
-                )
-                tail = _conversation_sources.load_whatsapp_web_source_tail_after_rowid(
-                    conversation_id=cid,
-                    after_rowid=int(rolling_cursor_id) if rolling_cursor_id is not None else None,
-                    soul_id=soul_id,
-                    hermes_home=hermes_home_path,
-                    web_source_db_path=web_source_db_path,
-                    min_timestamp=max(
-                        (value for value in (active_since, checkpoint_floor) if value is not None),
-                        default=None,
-                    ),
-                    assistant_source_speakers=assistant_speakers,
-                )
-            elif source_label == "sillytavern":
-                tail = _conversation_sources.load_sillytavern_tail(
-                    storage_dir=storage_dir,
-                    user_id=user_id,
-                    soul_id=soul_id,
-                    conversation_id=cid,
-                    since_cursor=int(rolling_cursor_id) if rolling_cursor_id is not None else -1,
-                    recent_fallback_messages=0,
-                    import_state=json.loads(row["import_state"]) if row["import_state"] is not None else None,
-                )
-            else:
-                continue
-            _m()._stamp_assistant_display_name(tail, soul_id)
+            rolling_cursor_id, checkpoint_floor, _ = _resolve_source_cursor(
+                cid, int(rolling_cursor_id) if rolling_cursor_id is not None else -1,
+                row["rolling_summary_cursor_source_message_id"], row["rolling_summary_cursor_ts"],
+                rolling=True, hermes_home_path=hermes_home_path,
+            )
+            tail = _m()._load_background_rollup_tail(
+                conversation_id=cid, user_id=user_id, soul_id=soul_id,
+                rolling_summary_cursor_id=rolling_cursor_id, min_timestamp=checkpoint_floor,
+                import_state=json.loads(row["import_state"]) if row["import_state"] is not None else None,
+            )
             if not tail:
                 continue
             for msg in tail:

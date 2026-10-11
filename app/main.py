@@ -279,6 +279,7 @@ def _load_background_rollup_tail(
     soul_id: str,
     rolling_summary_cursor_id: int | None,
     min_timestamp: int | None = None,
+    import_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     storage_dir, hermes_home_path, sessions_index_path, state_db_path = _resolve_cross_source_paths()
     source_label = _message_log.derive_source_label(conversation_id)
@@ -309,18 +310,15 @@ def _load_background_rollup_tail(
         )
         _stamp_assistant_display_name(tail, soul_id)
         return tail
-    if source_label == "sillytavern":
-        tail = _conversation_sources.load_sillytavern_tail(
-            storage_dir=storage_dir,
-            user_id=user_id,
-            soul_id=soul_id,
-            conversation_id=conversation_id,
-            since_cursor=int(rolling_summary_cursor_id) if rolling_summary_cursor_id is not None else -1,
-            recent_fallback_messages=0,
-        )
-        _stamp_assistant_display_name(tail, soul_id)
-        return tail
-    return []
+    tail = _load_tail_for_source_conversation(
+        conversation_id=conversation_id, user_id=user_id, soul_id=soul_id,
+        since_cursor=int(rolling_summary_cursor_id) if rolling_summary_cursor_id is not None else -1,
+        recent_fallback_messages=0, storage_dir=storage_dir, hermes_home_path=hermes_home_path,
+        sessions_index_path=sessions_index_path, state_db_path=state_db_path,
+        min_timestamp=min_timestamp, import_state=import_state,
+    )
+    _stamp_assistant_display_name(tail, soul_id)
+    return tail
 
 
 async def _run_background_rollup_for_conversation(
@@ -357,7 +355,7 @@ async def _run_background_rollup_for_conversation(
         _, hermes_home_path, _, _ = _resolve_cross_source_paths()
         rolling_cursor_id, min_timestamp, web_source = _resolve_source_cursor(
             cid,
-            int(rolling_cursor_id or 0),
+            int(rolling_cursor_id) if rolling_cursor_id is not None else -1,
             state_row.get("rolling_summary_cursor_source_message_id"),
             state_row.get("rolling_summary_cursor_ts"),
             rolling=True,
@@ -369,6 +367,7 @@ async def _run_background_rollup_for_conversation(
             soul_id=sid,
             rolling_summary_cursor_id=rolling_cursor_id,
             min_timestamp=min_timestamp,
+            import_state=state_row.get("import_state"),
         )
         if len(tail) < 2:
             return "skipped_short_tail"

@@ -30,6 +30,24 @@ def _guidance_schema(con):
                 "modality TEXT)")
 
 
+def test_import_background_readers_keep_historical_rows_out(tmp_path, monkeypatch):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    monkeypatch.setattr(conversation_sources, "import_source_path", lambda: tmp_path / "imports.db")
+    rows, _, _ = chat_import.normalize_messages([
+        {"id": str(index), "role": "user", "content": f"Fictional row {index}",
+         "timestamp": f"2026-01-01T0{index}:00:00Z"} for index in range(3)])
+    chat = chat_import.store_upload(tmp_path / "imports.db", **scope, label="TestApp", messages=rows, history_count=1)
+    cid = chat["conversation_id"]
+    main._write_conversation_state(cid, **scope, updates={"memorize_chat": False})
+    tail = main._load_background_rollup_tail(conversation_id=cid, **scope, rolling_summary_cursor_id=None)
+    assert [row["content"] for row in tail] == ["Fictional row 1", "Fictional row 2"]
+    with main._sqlite_connect(main._sqlite_current_path(**scope)) as con:
+        con.row_factory = sqlite3.Row
+        tails = main._cross_history._load_cross_memorize_tails_from_sources(con, **scope, strict=True)
+    assert [row["content"] for row in tails[cid]] == [row["content"] for row in tail]
+    assert all(row["memorize_chat"] is False for row in tails[cid])
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["default", "continuous", "enable", "disable", "failure", "draining", "draining_final"])
 async def test_import_task_owns_continuation_and_releases_once(monkeypatch, mode):

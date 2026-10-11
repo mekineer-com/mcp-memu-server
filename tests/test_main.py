@@ -3902,6 +3902,41 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source,cid", [("sillytavern", "chat:background"), ("atomic", "atomic:background"), ("replika", "replika:background")])
+@pytest.mark.parametrize("imported", [False, True])
+async def test_background_readers_share_native_sources_and_import_bounds(tmp_path, monkeypatch, source, cid, imported):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    path = tmp_path / "TestSoul.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_kw: path)
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+    monkeypatch.setattr(main, "_BACKGROUND_SUMMARY_TOKENS", 1)
+    monkeypatch.setattr(main, "_background_sleep_gap_detected", lambda **_kw: True)
+    record = {"history_end_index": 2, "memorize_cursor": 1, "pending_segment_ids": [], "stage": "complete", "error": None} if imported else None
+    main._write_conversation_state(cid, **scope, updates={"memorize_chat": False, "import_state": record, "digest_cursor": 7})
+    rows = [{"role": "user", "name": "TestOwner", "content": f"Fictional row {index}",
+             "received_at": f"2026-01-01T0{index}:00:00Z"} for index in range(4)]
+    conversation_sources.persist_chat_history_snapshot(storage_dir=tmp_path, **scope, conversation_id=cid,
+                                                       history=rows, source_label=source)
+    expected = [row["content"] for row in rows[2 if imported else 0:]]
+    with main._sqlite_connect(path) as con:
+        con.row_factory = sqlite3.Row
+        tails = main._cross_history._load_cross_memorize_tails_from_sources(con, **scope, strict=True)
+    assert [row["content"] for row in tails[cid]] == expected
+    assert all(row["memorize_chat"] is False for row in tails[cid])
+    class Service(AnchorService):
+        async def summarize_background_chat_rollup(self, *, messages, **_kw):
+            assert [row["content"] for row in messages] == expected
+            return "Fictional rolling summary"
+    assert await main._run_background_rollup_for_conversation(conversation_id=cid, **scope,
+                                                             safe_payload={}, service=Service()) == "rolled_up"
+    state = main._load_turn_state_and_soul_card(cid, **scope)[0]
+    assert state["rolling_summary_cursor_id"] == 3 and state["digest_cursor"] == 7
+    assert main._load_background_rollup_tail(conversation_id=cid, **scope, rolling_summary_cursor_id=3) == []
+    assert [row["content"] for row in main._load_background_rollup_tail(
+        conversation_id=cid, **scope, rolling_summary_cursor_id=0)] == [row["content"] for row in rows[1:]]
+
+
+@pytest.mark.asyncio
 async def test_run_background_rollup_for_conversation_skips_primary_chat(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
