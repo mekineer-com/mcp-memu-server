@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import weakref
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
@@ -57,20 +58,18 @@ def _resolve_profile_if_configured(svc: Any, name: str | None) -> str | None:
     return name if name in profiles else None
 
 
-def _close_service_quiet(svc: MemoryService | None) -> None:
-    if svc is None:
-        return
+def _close_service_when_unused(svc: MemoryService) -> None:
     db = getattr(svc, "database", None)
     close_fn = getattr(db, "close", None)
     if callable(close_fn):
-        close_fn()
+        # Active and detached work, not cache membership, owns the lifetime.
+        weakref.finalize(svc, close_fn).atexit = False
 
 
 def _clear_cached_services() -> None:
-    for svc in list(_SERVICES.values()):
-        _close_service_quiet(svc)
-    _SERVICES.clear()
-    _SERVICE_STORAGE_FP.clear()
+    with _SERVICES_LOCK:
+        _SERVICES.clear()
+        _SERVICE_STORAGE_FP.clear()
 
 
 def _service_storage_fingerprint(
@@ -472,7 +471,6 @@ def _get_service_from_payload(
                 return svc
             _SERVICES.pop(service_key, None)
             _SERVICE_STORAGE_FP.pop(service_key, None)
-            _close_service_quiet(svc)
 
         user_config = {**(user_config if isinstance(user_config, dict) else {}), "model": st_user_model}
 
@@ -492,6 +490,7 @@ def _get_service_from_payload(
             claude_code_workspace=str(config.get("claude_code_workspace", "")).strip() or None,
             claude_code_timeout_seconds=_cfg_int(config, "claude_code_timeout_seconds", 3600, minimum=1),
         )
+        _close_service_when_unused(svc)
         if log_prompts:
             svc.intercept_before_llm_call(prompt_log_before, name="prompt_logger")
             svc.intercept_after_llm_call(prompt_log_after, name="response_logger")
@@ -502,7 +501,7 @@ def _get_service_from_payload(
         if len(_SERVICES) >= 50:
             oldest_key = next(iter(_SERVICES), None)
             if oldest_key is not None:
-                _close_service_quiet(_SERVICES.pop(oldest_key, None))
+                _SERVICES.pop(oldest_key, None)
                 _SERVICE_STORAGE_FP.pop(oldest_key, None)
 
         _SERVICES[service_key] = svc

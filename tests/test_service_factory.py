@@ -1,6 +1,9 @@
+import gc
 import logging
+import weakref
 from copy import deepcopy
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from fastapi import HTTPException
@@ -53,6 +56,76 @@ def test_storage_fingerprint_treats_omitted_provider_as_sqlite(tmp_path) -> None
 
     assert fingerprint["provider"] == "sqlite"
     assert fingerprint["ino"] == database.stat().st_ino
+
+
+@pytest.mark.parametrize("reason", ["clear", "eviction", "fingerprint"])
+def test_cached_service_closes_only_after_last_reference(tmp_path, monkeypatch, reason) -> None:
+    from app import main
+    from memu.app import MemoryService
+
+    class _FakeService(MemoryService):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.database.close = Mock(wraps=self.database.close)
+
+        def require_dossier_cutover_ready(self, scope):
+            pass
+
+    cfg = {"storage": {
+        "sqlite_dir": str(tmp_path),
+        "resources_dir": str(tmp_path / "resources"),
+        "metadata_store": {"provider": "sqlite", "dsn": f"sqlite:///{tmp_path / 'base.db'}"},
+    }}
+    owner.create_owner(cfg, "test-user")
+    path = tmp_path / "test.db"
+    souls.publish_soul_db(path, "test-user")
+    monkeypatch.setattr(main, "_CONFIG", cfg)
+    monkeypatch.setattr(main, "_LOG_PROMPTS", False)
+    monkeypatch.setattr(service_factory, "MemoryService", _FakeService)
+    monkeypatch.setattr(service_factory, "_SERVICES", {})
+    monkeypatch.setattr(service_factory, "_SERVICE_STORAGE_FP", {})
+
+    def get_service(top_k=1):
+        return main._get_service_from_payload({
+            "user": {"user_id": "test-user", "soul_id": "test"},
+            "retrieve_config": {"item": {"top_k": top_k}},
+        })
+
+    try:
+        svc = get_service()
+        assert get_service() is svc
+        reference = weakref.ref(svc)
+        close = svc.database.close  # Retains the database, not the service.
+        if reason == "clear":
+            main._clear_cached_services()
+        elif reason == "eviction":
+            for top_k in range(2, 52):
+                get_service(top_k)
+            assert service_factory._services_cached() == 50
+        else:
+            fingerprint = dict(next(iter(service_factory._SERVICE_STORAGE_FP.values())))
+            fingerprint["ino"] += 1
+            monkeypatch.setattr(
+                service_factory, "_service_storage_fingerprint", lambda *args, **kwargs: fingerprint,
+            )
+            assert get_service() is not svc
+
+        assert all(cached is not svc for cached in service_factory._SERVICES.values())
+        gc.collect()
+        close.assert_not_called()
+        with svc.database._sessions.engine.connect() as connection:
+            assert connection.exec_driver_sql(
+                "SELECT user_name FROM soul_state WHERE id = 1"
+            ).scalar_one() == "test-user"
+        del svc
+        gc.collect()
+        assert reference() is None
+        close.assert_called_once_with()
+        main._clear_cached_services()
+        gc.collect()
+        close.assert_called_once_with()
+    finally:
+        main._clear_cached_services()
 
 
 def test_server_config_separates_embedding_provider_and_profile_guard(tmp_path) -> None:
