@@ -94,10 +94,10 @@ def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path
     with sqlite3.connect(source) as con:
         assert json.loads(con.execute("SELECT raw_json FROM imported_messages WHERE position = 3").fetchone()[0])["id"] == "3"
     assert "import_metadata" not in normalized[0]
-    speaker_map = _build_speaker_map(normalized, scope, {"testspeaker": "entity:test-guest"})
+    speaker_map = _build_speaker_map(normalized, scope)
     memory = StructuredMemoryEntry("social", "TestSpeaker shared a thought", [], "peer", None, [0], None)
     attributed = _attribute_memory(memory, speaker_map)
-    assert attributed.speaker_id == "entity:test-guest" and attributed.speaker_label == "TestSpeaker"
+    assert attributed.speaker_id is None and attributed.speaker_label is None
     assert _build_speaker_map(normalized, scope) == {i: ("", "TestSpeaker") for i in range(len(normalized))}
     assert _build_speaker_map([{**normalized[0], "name": ""}], scope)[0][0] == ""
     assert normalized[0]["role"] == "user"
@@ -970,15 +970,13 @@ def test_whatsapp_soul_switch_keeps_speakers_across_readers(tmp_path, monkeypatc
         assert "[Ardent] A returns" in rendered and "[Orion] owner message" in rendered
         normalized = _normalize_conversation(rows)
         scope = {"user_id": "Orion", "soul_id": "Ardent"}
-        speaker_map = _build_speaker_map(normalized, scope, {"beacon": "entity:test-beacon"})
+        speaker_map = _build_speaker_map(normalized, scope)
         assert speaker_map[0] == ("user:orion", "Orion")
         assert speaker_map[1] == ("soul:ardent", "Ardent")
-        assert all(speaker_map[i] == ("entity:test-beacon", "Beacon") for i in (2, 3, 4))
-        assert all(_build_speaker_map(normalized, scope)[i] == ("", "Beacon") for i in (2, 3, 4))
+        assert all(speaker_map[i] == ("", "Beacon") for i in (2, 3, 4))
         memory = StructuredMemoryEntry("social", "Beacon replied", [], "peer", None, [2, 3, 4], None)
         attributed = _attribute_memory(memory, speaker_map)
-        assert (attributed.speaker_id, attributed.speaker_label) == ("entity:test-beacon", "Beacon")
-        assert _attribute_memory(memory, _build_speaker_map(normalized, scope)).speaker_id is None
+        assert attributed.speaker_id is None and attributed.speaker_label is None
 
     # Floors retain the switched-Soul period; rowid summaries resume without renumbering.
     speakers = conversation_sources.load_whatsapp_assistant_source_speakers(

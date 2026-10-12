@@ -224,7 +224,7 @@ async def _run_retrieve(
         anchor_context = render_anchor_context(svc._get_database().memory_category_repo.list_anchor_categories(scope))
     if anchor_context:
         memu_queries = list(memu_queries)
-        identity_index = next((i for i, query in enumerate(memu_queries) if str(query.get("role", "")).lower() == "identity_context"), None)
+        identity_index = next((i for i, query in enumerate(memu_queries) if str(query.get("role", "")).strip().lower() == "identity_context"), None)
         if identity_index is None:
             memu_queries.insert(0, {"role": "identity_context", "content": {"text": anchor_context}})
         else:

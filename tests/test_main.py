@@ -2840,7 +2840,7 @@ def test_run_retrieve_reports_rag_method(monkeypatch: pytest.MonkeyPatch, identi
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("endpoint", ["conversation", "direct"])
+@pytest.mark.parametrize("endpoint", ["conversation", "direct", "turn"])
 @pytest.mark.parametrize("selector", ["where", "scope", "top"])
 @pytest.mark.parametrize("key", ["user_id", "soul_id"])
 async def test_retrieval_rejects_conflicting_identity_before_service_access(monkeypatch, endpoint, selector, key):
@@ -2854,6 +2854,8 @@ async def test_retrieval_rejects_conflicting_identity_before_service_access(monk
     with pytest.raises(HTTPException, match=f"Conflicting {key}") as failure:
         if endpoint == "conversation":
             await main.conversation_retrieve("chat:fictional", payload)
+        elif endpoint == "turn":
+            await main.conversation_turn("chat:fictional", payload)
         else:
             await main.retrieve(payload)
     assert failure.value.status_code == 400
@@ -2861,7 +2863,7 @@ async def test_retrieval_rejects_conflicting_identity_before_service_access(monk
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["shared", "direct", "mcp"])
-@pytest.mark.parametrize("identity_shape", ["absent", "string", "mapping", "already"])
+@pytest.mark.parametrize("identity_shape", ["absent", "string", "mapping", "already", "padded"])
 async def test_retrieval_anchors_cover_supplied_queries_without_mutation(monkeypatch, endpoint, identity_shape):
     anchors = {"soul": "I paint coastal sketches.", "user": "My human prefers early walks."}
     block = main._render_anchor_context(anchors)
@@ -2880,7 +2882,8 @@ async def test_retrieval_anchors_cover_supplied_queries_without_mutation(monkeyp
         content = {"text": "Caller identity", "tag": "preserved"} if identity_shape == "mapping" else "Caller identity"
         if identity_shape == "already":
             content += "\n\n" + block
-        queries.insert(0, {"role": "identity_context", "content": content})
+        role = " Identity_Context " if identity_shape == "padded" else "identity_context"
+        queries.insert(0, {"role": role, "content": content})
     before = json.loads(json.dumps(queries))
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     payload = {"user": scope, "queries": queries, "_read_only_retrieve": True}
@@ -2894,7 +2897,7 @@ async def test_retrieval_anchors_cover_supplied_queries_without_mutation(monkeyp
     assert captured["scope"] == scope
     result = captured["queries"]
     assert result[-1] == before[-1]
-    assert [query["role"] for query in result] == ["identity_context", "message"]
+    assert [query["role"] for query in result] == [before[0]["role"] if identity_shape != "absent" else "identity_context", "message"]
     text = result[0]["content"]
     if isinstance(text, dict):
         if identity_shape == "mapping":

@@ -4355,7 +4355,7 @@ async def conversation_turn(
 
         safe = _safe_payload(payload)
 
-        scope = _extract_scope(safe)
+        scope = _extract_retrieve_where(safe) or {}
 
         uid = str(scope.get("user_id") or "").strip()
         soul_id = str(scope.get("soul_id") or "").strip()
