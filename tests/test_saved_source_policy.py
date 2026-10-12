@@ -60,7 +60,7 @@ def test_retry_capture_keeps_failure_policy_after_setting_change(saved_chat, pro
 
     payload = main._saved_memorize_payload(CID, UID, SID, failure)
 
-    cursor = 2 if producing else rolling if rolling is not None else -1
+    cursor = 2 if producing else max(2, rolling if rolling is not None else -1)
     trigger_rows = [row for row in payload["conversation"] if row["source_conversation_id"] == CID]
     other_rows = [row for row in payload["conversation"] if row["source_conversation_id"] == other]
     assert [row["source_conversation_index"] for row in trigger_rows] == list(range(cursor + 1, 6))
@@ -75,8 +75,8 @@ def test_retry_capture_keeps_failure_policy_after_setting_change(saved_chat, pro
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("rolling", [1, None])
-async def test_manual_context_capture_slices_by_rolling_not_digest(saved_chat, monkeypatch, rolling):
+@pytest.mark.parametrize("rolling", [1, None, 5])
+async def test_manual_context_capture_slices_after_both_checkpoints(saved_chat, monkeypatch, rolling):
     main._write_conversation_state(CID, user_id=UID, soul_id=SID, updates={
         "memorize_chat": True, "rolling_summary_cursor_id": rolling,
     })
@@ -97,12 +97,13 @@ async def test_manual_context_capture_slices_by_rolling_not_digest(saved_chat, m
     assert response.status_code == 200
     assert json.loads(response.body)["status"] == "nothing_to_memorize"
     assert tasks.tasks == []
-    assert len(captures) == 1
-    captured = captures[0]
-    expected = list(range((rolling if rolling is not None else -1) + 1, 6))
-    assert [row["source_conversation_index"] for row in captured["conversation"]] == expected
-    assert all(row["memorize_chat"] is False for row in captured["conversation"])
-    assert captured["_final_cursors"][CID] == {"cursor": 5, "memory_producing": False}
+    expected = list(range(max(4, rolling if rolling is not None else -1) + 1, 6))
+    assert len(captures) == bool(expected)
+    if expected:
+        captured = captures[0]
+        assert [row["source_conversation_index"] for row in captured["conversation"]] == expected
+        assert all(row["memorize_chat"] is False for row in captured["conversation"])
+        assert captured["_final_cursors"][CID] == {"cursor": 5, "memory_producing": False}
     state, _, _ = main._load_turn_state_and_soul_card(CID, user_id=UID, soul_id=SID)
     assert state["digest_cursor"] == 4
     assert state["rolling_summary_cursor_id"] == rolling

@@ -3453,8 +3453,8 @@ def test_retry_reconstructs_quiet_and_tail_context_under_captured_policy(monkeyp
     failure = {"conversation_id": anchor, "targets": {"replika:primary": {"cursor": 10}},
                "filing_policy": {"replika:primary": True, "replika:quiet": False, "replika:tail": False}}
     result = main._saved_memorize_payload(anchor, **scope, failure=failure)
-    assert ("replika:tail", 2) in seen
-    assert ("replika:tail", 9) not in seen
+    assert ("replika:tail", 9) in seen
+    assert ("replika:tail", 2) not in seen
     assert result["_background_rolling_summaries"]["replika:quiet"]["summary"] == "Captured context replika:quiet"
     assert result["_background_rolling_summaries"]["replika:tail"]["summary"] == "Captured context replika:tail"
     assert any(row["source_conversation_id"] == "replika:tail" and row["memorize_chat"] is False for row in result["conversation"])
@@ -4110,7 +4110,8 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source,cid", [("sillytavern", "chat:background"), ("atomic", "atomic:background"), ("replika", "replika:background")])
 @pytest.mark.parametrize("imported", [False, True])
-async def test_background_readers_share_native_sources_and_import_bounds(tmp_path, monkeypatch, source, cid, imported):
+@pytest.mark.parametrize("rolling,memorized", [(None, False), (None, True), (0, True), (2, True)])
+async def test_background_readers_share_native_sources_and_import_bounds(tmp_path, monkeypatch, source, cid, imported, rolling, memorized):
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     path = tmp_path / "TestSoul.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_kw: path)
@@ -4118,12 +4119,15 @@ async def test_background_readers_share_native_sources_and_import_bounds(tmp_pat
     monkeypatch.setattr(main, "_BACKGROUND_SUMMARY_TOKENS", 1)
     monkeypatch.setattr(main, "_background_sleep_gap_detected", lambda **_kw: True)
     record = {"history_end_index": 2, "memorize_cursor": 1, "pending_segment_ids": [], "stage": "complete", "error": None} if imported else None
-    main._write_conversation_state(cid, **scope, updates={"memorize_chat": False, "import_state": record, "digest_cursor": 7})
+    main._write_conversation_state(cid, **scope, updates={"memorize_chat": False, "import_state": record,
+        "digest_cursor": 1 if memorized else 7, "last_memorize_at": "2026-01-01T01:00:00Z" if memorized else None,
+        "rolling_summary_cursor_id": rolling, "rolling_summary": "Existing summary"})
     rows = [{"role": "user", "name": "TestOwner", "content": f"Fictional row {index}",
              "received_at": f"2026-01-01T0{index}:00:00Z"} for index in range(4)]
     conversation_sources.persist_chat_history_snapshot(storage_dir=tmp_path, **scope, conversation_id=cid,
                                                        history=rows, source_label=source)
-    expected = [row["content"] for row in rows[2 if imported else 0:]]
+    start = max(2 if imported or memorized else 0, rolling + 1 if rolling is not None else 0)
+    expected = [row["content"] for row in rows[start:]]
     with main._sqlite_connect(path) as con:
         con.row_factory = sqlite3.Row
         tails = main._cross_history._load_cross_memorize_tails_from_sources(con, **scope, strict=True)
@@ -4132,18 +4136,27 @@ async def test_background_readers_share_native_sources_and_import_bounds(tmp_pat
     class Service(AnchorService):
         async def summarize_background_chat_rollup(self, *, messages, **_kw):
             assert [row["content"] for row in messages] == expected
+            assert _kw["prior_summary"] == "Existing summary"
             return "Fictional rolling summary"
     assert await main._run_background_rollup_for_conversation(conversation_id=cid, **scope,
-                                                             safe_payload={}, service=Service()) == "rolled_up"
+        safe_payload={}, service=Service()) == ("rolled_up" if len(expected) >= 2 else "skipped_short_tail")
     state = main._load_turn_state_and_soul_card(cid, **scope)[0]
-    assert state["rolling_summary_cursor_id"] == 3 and state["digest_cursor"] == 7
+    assert state["digest_cursor"] == (1 if memorized else 7)
+    if len(expected) >= 2:
+        assert state["rolling_summary_cursor_id"] == 3
+    if memorized:
+        main._write_conversation_state(cid, **scope, updates={"memorize_chat": True})
+        with main._sqlite_connect(path) as con:
+            con.row_factory = sqlite3.Row
+            primary = main._cross_history._load_cross_memorize_tails_from_sources(con, **scope, strict=True)
+        assert [row["content"] for row in primary[cid]] == [row["content"] for row in rows[2:]]
     assert main._load_background_rollup_tail(conversation_id=cid, **scope, rolling_summary_cursor_id=3) == []
     assert [row["content"] for row in main._load_background_rollup_tail(
         conversation_id=cid, **scope, rolling_summary_cursor_id=0)] == [row["content"] for row in rows[1:]]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["reply", "appended", "advanced", "policy", "claim", "paused", "import",
+@pytest.mark.parametrize("change", ["reply", "appended", "advanced", "digest", "policy", "claim", "paused", "import",
                                     "deleted", "deleted_db", "replaced_db", "failure", "newer_error", "failure_newer_error"])
 async def test_rollup_provider_wait_releases_reply_lock_and_rechecks_state(monkeypatch, change):
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
@@ -4182,6 +4195,9 @@ async def test_rollup_provider_wait_releases_reply_lock_and_rechecks_state(monke
             main._write_conversation_state(cid, **scope, updates={"memory_cache": ["Fictional concurrent reply memory"]})
             if change == "advanced":
                 main._write_conversation_state(cid, **scope, updates={"rolling_summary_cursor_id": 20})
+            elif change == "digest":
+                main._write_conversation_state(cid, **scope, updates={"digest_cursor": 12,
+                    "last_memorize_at": "2026-01-02T00:00:00Z"})
             elif change == "policy":
                 main._write_conversation_state(cid, **scope, updates={"memorize_chat": True})
             elif change == "claim":
@@ -5409,7 +5425,7 @@ def test_current_background_history_live_fallback_and_source_id_rebase(monkeypat
     _background_whatsapp_policy("test-background")
     state = {"memorize_chat": False, "rolling_summary_cursor_id": 500,
         "rolling_summary_cursor_source_message_id": "stable-source-id", "rolling_summary_cursor_ts": 100,
-        "import_state": None}
+        "import_state": None, "last_memorize_at": None}
     def resolve(conversation_id, cursor, source_id, source_ts, *args, **kwargs):
         assert conversation_id == cid
         assert (cursor, source_id, source_ts) == (500, "stable-source-id", 100)
@@ -5436,12 +5452,55 @@ def test_current_background_history_live_fallback_and_source_id_rebase(monkeypat
             assert rows[0]["source_message_id"] == "new-id" and rows[0]["source_conversation_index"] == 1
 
 
+@pytest.mark.parametrize("rolling,digest,expected", [
+    ((1, None), (3, None), (3, None, True)),
+    ((5, None), (3, None), (5, None, True)),
+    ((0, 300), (3, None), (3, 300, True)),
+    ((5, None), (-1, 400), (5, 400, True)),
+    ((0, 300), (-1, 400), (0, 400, True)),
+])
+def test_background_boundary_rebases_both_whatsapp_checkpoints(monkeypatch, rolling, digest, expected):
+    state = {"rolling_summary_cursor_id": 900, "rolling_summary_cursor_source_message_id": "roll-id",
+        "rolling_summary_cursor_ts": 300, "digest_cursor": 800, "digest_cursor_source_message_id": "digest-id",
+        "digest_cursor_ts": 400, "last_memorize_at": "2026-01-01T00:00:00Z"}
+    calls = []
+    def resolve(cid, cursor, source_id, ts, *_a, **kw):
+        calls.append((cursor, source_id, ts, kw["rolling"]))
+        return rolling if source_id == "roll-id" else digest
+    monkeypatch.setattr(conversation_sources, "resolve_whatsapp_web_source_cursor", resolve)
+    assert main._cross_history._resolve_background_cursor("whatsapp:dm:fictional@lid", state) == expected
+    assert calls == [(900, "roll-id", 300, True), (800, "digest-id", 400, False)]
+    assert state["digest_cursor"] == 800 and state["rolling_summary_cursor_id"] == 900
+
+
+@pytest.mark.parametrize("source", ["replika", "whatsapp"])
+def test_live_background_source_failure_honors_memorize_boundary(monkeypatch, source):
+    cid = "replika:background-fallback" if source == "replika" else "whatsapp:dm:test-background"
+    if source == "whatsapp":
+        _background_whatsapp_policy("test-background")
+        monkeypatch.setattr(conversation_sources, "resolve_whatsapp_web_source_cursor", lambda _cid, cursor, *_a, **_kw: (cursor, None))
+    main._write_conversation_state(cid, user_id="TestOwner", soul_id="TestSoul", updates={
+        "memorize_chat": False, "digest_cursor": 1, "last_memorize_at": "2026-01-01T00:00:00Z",
+        "rolling_summary_cursor_id": 0,
+        **({"digest_cursor_source_message_id": "digest-id", "digest_cursor_ts": 200,
+            "rolling_summary_cursor_source_message_id": "roll-id", "rolling_summary_cursor_ts": 100}
+           if source == "whatsapp" else {})})
+    state = main._load_turn_state_and_soul_card(cid, user_id="TestOwner", soul_id="TestSoul")[0]
+    def unavailable(**_kw):
+        raise OSError("Fictional source unavailable")
+    monkeypatch.setattr(main, "_load_background_rollup_tail", unavailable)
+    rows = [{"role": "user", "content": str(ts), "ts_ms": ts * 1000} for ts in (150, 201, 202)]
+    result = main._current_history_for_ai(cid, "TestOwner", "TestSoul", rows, state, is_live_turn=True)
+    assert [row["content"] for row in result] == (["202"] if source == "replika" else ["201", "202"])
+
+
 @pytest.mark.asyncio
 async def test_apimw_removes_current_external_message_after_background_reload(monkeypatch):
     monkeypatch.setattr(main, "_apimw_cadence_due", lambda *_a: True)
     monkeypatch.setattr(main, "_mark_apimw_inflight", lambda *_a: True)
     state = {"memorize_chat": False, "rolling_summary_cursor_id": 2,
-        "rolling_summary_cursor_source_message_id": None, "rolling_summary_cursor_ts": None, "import_state": None}
+        "rolling_summary_cursor_source_message_id": None, "rolling_summary_cursor_ts": None, "import_state": None,
+        "last_memorize_at": None}
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", lambda *_a, **_kw: (state, None, None))
     monkeypatch.setattr(main, "_load_background_rollup_tail", lambda **kw: [
         {"content": "Older tail", "source_message_id": "older-id", "source_conversation_index": 3},

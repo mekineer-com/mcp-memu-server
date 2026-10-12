@@ -470,16 +470,29 @@ def _source_memorize_policy(
     return cid.startswith(("mentra:", "activity:")) or _memorize_chat_from_row(row)
 
 
-def _load_background_tail_from_source(
-    cid: str, row: Any, *, user_id: str, soul_id: str,
-) -> list[dict[str, Any]]:
+def _resolve_background_cursor(cid: str, row: Any) -> tuple[int, int | None, bool]:
     _, hermes_home, _, _ = _m()._resolve_cross_source_paths()
     saved_cursor = row["rolling_summary_cursor_id"]
-    cursor, floor, _ = _resolve_source_cursor(
+    cursor, floor, web_source = _resolve_source_cursor(
         cid, int(saved_cursor) if saved_cursor is not None else -1,
         row["rolling_summary_cursor_source_message_id"], row["rolling_summary_cursor_ts"],
         rolling=True, hermes_home_path=hermes_home,
     )
+    digest_cursor = _effective_digest_cursor_from_row(row)
+    if digest_cursor >= 0:
+        digest_cursor, digest_floor, _ = _resolve_source_cursor(
+            cid, digest_cursor, row["digest_cursor_source_message_id"], row["digest_cursor_ts"],
+            rolling=False, hermes_home_path=hermes_home,
+        )
+        cursor = max(cursor, digest_cursor)
+        floor = max((value for value in (floor, digest_floor) if value is not None), default=None)
+    return cursor, floor, web_source
+
+
+def _load_background_tail_from_source(
+    cid: str, row: Any, *, user_id: str, soul_id: str,
+) -> list[dict[str, Any]]:
+    cursor, floor, _ = _resolve_background_cursor(cid, row)
     import_state = row["import_state"]
     tail = _m()._load_background_rollup_tail(
         conversation_id=cid, user_id=user_id, soul_id=soul_id,

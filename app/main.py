@@ -104,6 +104,7 @@ from app.services import memorize_endpoint as _memorize_endpoint
 from app.services import service_factory as _service_factory
 from app.services import import_routes as _import_routes
 from app.services.payload import (
+    message_ts_ms as _message_ts_ms,
     _canonicalize_scope_where,
     _extract_conversation_id,
     _extract_result_item_ids,
@@ -378,7 +379,8 @@ async def _run_background_rollup_for_conversation(
                 if current is None or _cross_history._source_memorize_policy(cid, current) is not False:
                     return False
                 fields = ("rolling_summary", "rolling_summary_cursor_id", "rolling_summary_cursor_source_message_id",
-                          "rolling_summary_cursor_ts", "rolling_summary_updated_at")
+                          "rolling_summary_cursor_ts", "rolling_summary_updated_at", "last_memorize_at",
+                          "digest_cursor", "digest_cursor_source_message_id", "digest_cursor_ts")
                 if any(current.get(field) != state_row.get(field) for field in fields):
                     return False
                 if (current.get("import_state") or {}).get("history_end_index") != (state_row.get("import_state") or {}).get("history_end_index"):
@@ -399,16 +401,7 @@ async def _run_background_rollup_for_conversation(
             })
 
         try:
-            rolling_cursor_id = state_row.get("rolling_summary_cursor_id")
-            _, hermes_home_path, _, _ = _resolve_cross_source_paths()
-            rolling_cursor_id, min_timestamp, web_source = _resolve_source_cursor(
-                cid,
-                int(rolling_cursor_id) if rolling_cursor_id is not None else -1,
-                state_row.get("rolling_summary_cursor_source_message_id"),
-                state_row.get("rolling_summary_cursor_ts"),
-                rolling=True,
-                hermes_home_path=hermes_home_path,
-            )
+            rolling_cursor_id, min_timestamp, web_source = _cross_history._resolve_background_cursor(cid, state_row)
             tail = _load_background_rollup_tail(
                 conversation_id=cid,
                 user_id=uid,
@@ -1949,7 +1942,16 @@ def _current_history_for_ai(
             if not is_live_turn:
                 raise
             logger.warning("Live background source unavailable; using bounded payload history for %s", conversation_id)
-            return _turn_history_with_floor(history, -1, state.get("rolling_summary_cursor_ts"))
+            if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
+                cursor, _, _ = _cross_history._resolve_background_cursor(conversation_id, state)
+                return _conversation_sources.slice_tail_with_floor(
+                    history, since_cursor=cursor, recent_fallback_messages=0,
+                )[-TURN_HISTORY_WINDOW_MESSAGES:]
+            floor = max((value for value in (
+                state.get("rolling_summary_cursor_ts"),
+                state.get("digest_cursor_ts") if state.get("last_memorize_at") else None,
+            ) if value is not None), default=None)
+            return _turn_history_with_floor(history, -1, floor)
     if not history:
         return []
     _, hermes_home, _, _ = _resolve_cross_source_paths()
@@ -2672,11 +2674,15 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
                 for index, row in enumerate(history):
                     row.setdefault("source_conversation_index", index)
                 producing = safe.get("memorize_chat", state.get("memorize_chat", True)) is not False
-                cursor = (_effective_digest_cursor_from_row(state) if producing else
-                          int(state["rolling_summary_cursor_id"]) if state.get("rolling_summary_cursor_id") is not None else -1)
+                if producing:
+                    cursor, floor, web_source = _effective_digest_cursor_from_row(state), None, False
+                else:
+                    cursor, floor, web_source = _cross_history._resolve_background_cursor(_extract_conversation_id(safe), state)
                 history = _conversation_sources.slice_tail_with_floor(history, since_cursor=cursor, recent_fallback_messages=0)
+                if floor is not None:
+                    history = [row for row in history if (_message_ts_ms(row) or 0) >= floor * 1000]
                 cross = _build_cross_conversation_payload(_extract_conversation_id(safe), uid, sid, safe, history, cursor,
-                                                        producing, strict_sources=True)
+                                                        producing, strict_sources=True, trigger_web_source=web_source)
                 if cross is not None:
                     safe = cross
                 else:
@@ -2923,13 +2929,15 @@ def _saved_memorize_payload(cid: str, user_id: str, soul_id: str, failure: dict 
         **((failure or {}).get("filing_policy") or {}),
     }
     memory_producing = filing_policy.get(cid, state.get("memorize_chat", True))
-    prefix = "digest" if memory_producing else "rolling_summary"
-    saved_cursor = (_effective_digest_cursor_from_row(state) if memory_producing else
-                    int(state["rolling_summary_cursor_id"]) if state.get("rolling_summary_cursor_id") is not None else -1)
-    cursor, floor, web_source = _resolve_source_cursor(
-        cid, saved_cursor, state.get(f"{prefix}_cursor_source_message_id"),
-        state.get(f"{prefix}_cursor_ts"), rolling=not memory_producing, hermes_home_path=hermes,
-    )
+    if memory_producing:
+        saved_cursor = _effective_digest_cursor_from_row(state)
+        cursor, floor, web_source = _resolve_source_cursor(
+            cid, saved_cursor, state.get("digest_cursor_source_message_id"),
+            state.get("digest_cursor_ts"), rolling=False, hermes_home_path=hermes,
+        )
+    else:
+        cursor, floor, web_source = _cross_history._resolve_background_cursor(cid, state)
+        saved_cursor = cursor
     history = _load_tail_for_source_conversation(
         conversation_id=cid, user_id=user_id, soul_id=soul_id, since_cursor=cursor,
         recent_fallback_messages=0, storage_dir=storage, hermes_home_path=hermes,
