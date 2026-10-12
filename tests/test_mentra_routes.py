@@ -77,6 +77,11 @@ def _session_app(
     memorize_error: Exception | None = None,
     memorize_hook: Callable[[dict[str, Any]], Any] | None = None,
 ) -> tuple[TestClient, dict[str, Any], dict[str, Any]]:
+    from app import main
+
+    for name in ("_FORCED_MEMORIZE_INFLIGHT", "_FORCED_MEMORIZE_RECHECK", "_MEMORIZE_PROGRESS", "_CONSOLIDATION_RUNNING"):
+        monkeypatch.setattr(main, name, {})
+    monkeypatch.setattr(main, "_paid_work_state", lambda *_args: {})
     config = _configured()
     config["storage"]["metadata_store"]["dsn"] = f"sqlite:///{tmp_path / 'memu.db'}"
     owner.create_owner(config, START["user_id"])
@@ -288,6 +293,10 @@ def _session_app(
         schedule_auto_memorize=schedule,
         get_resource_storage_dir=lambda: tmp_path / "resources",
         background_tasks=calls["background_tasks"],
+        memorize_lock_key=main._memorize_lock_key,
+        memorize_inflight=main._FORCED_MEMORIZE_INFLIGHT,
+        consolidation_running=main._CONSOLIDATION_RUNNING,
+        finish_memorize_claim=main._finish_memorize_claim,
         set_background_error=lambda *args, **kwargs: calls["background_errors"].append(
             (args, kwargs)
         ),
@@ -2206,6 +2215,125 @@ def test_snapshot_is_atomic_idempotent_scoped_and_redacted(
     isolated.raise_for_status()
     assert isolated.json()["duplicate"] is False
     assert isolated.json()["media_ref"] != stored.json()["media_ref"]
+
+
+@pytest.mark.parametrize("owner_kind", ["memorize", "import", "reflection"])
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancelled", "waiting_cancelled"])
+def test_snapshot_finalize_shares_memory_claim_and_preserves_waiting_auto_memorize(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, owner_kind: str, outcome: str,
+) -> None:
+    from app import main
+
+    async def run() -> None:
+        started, release, exited, auto_started = (asyncio.Event() for _ in range(4))
+        queue_auto = False
+        scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+
+        async def photo(_kwargs: dict[str, Any]) -> None:
+            assert main._FORCED_MEMORIZE_INFLIGHT[marker] is False
+            assert not calls["soul_lock"].locked()
+            started.set()
+            try:
+                await release.wait()
+                if outcome == "failure":
+                    raise RuntimeError("Fictional photo failure")
+            finally:
+                exited.set()
+
+        client, calls, _ = _session_app(
+            monkeypatch, tmp_path, memorize_hook=photo,
+            prepare_auto_memorize=lambda *_a, **_k: (1, {"conversation": []}) if queue_auto else (0, None),
+            schedule_auto_memorize=lambda payload, *_a: main._schedule_auto_memorize(
+                payload, {**scope, "conversation_id": conversation_sources.MENTRA_CONVERSATION_ID},
+            ),
+        )
+        marker = main._memorize_lock_key(scope["user_id"], scope["soul_id"])
+        unrelated = main._memorize_lock_key(scope["user_id"], "Other Fictional Soul")
+        monkeypatch.setattr(main, "_BACKGROUND_TASKS", set())
+        monkeypatch.setattr(main, "_soul_import_state", lambda *_a: ("", None))
+        monkeypatch.setattr(main, "_register_memorize_bounds", lambda *_a, **_k: None)
+
+        async def auto_memorize(_payload: dict[str, Any]) -> None:
+            assert exited.is_set()
+            assert main._FORCED_MEMORIZE_INFLIGHT[marker] is False
+            auto_started.set()
+            await main._finish_memorize_claim(marker, True)
+
+        monkeypatch.setattr(main, "_run_forced_memorize_from_turn", auto_memorize)
+        owners = main._CONSOLIDATION_RUNNING if owner_kind == "reflection" else main._FORCED_MEMORIZE_INFLIGHT
+        owner_key = (scope["user_id"], scope["soul_id"]) if owner_kind == "reflection" else marker
+        owners[owner_key] = owner_kind == "import"
+        main._FORCED_MEMORIZE_INFLIGHT[unrelated] = True
+        async with AsyncClient(transport=ASGITransport(app=client.app), base_url="http://test") as http:
+            sitting = (await http.post("/integration/mentra/session/start", json=START)).json()["session_id"]
+            base = f"/integration/mentra/session/{sitting}"
+            caption = {"event_id": f"{sitting}:1", "sequence": 1, "event_kind": "transcript",
+                       "role": "assistant", "content": "A fictional photo caption.", "status": "complete"}
+            (await http.post(f"{base}/transcripts/append", json={**scope, "events": [caption]})).raise_for_status()
+            stored = await http.post(f"{base}/snapshot", json={
+                **scope, "image_id": "shared-claim", "mime_type": "image/png", "data": "AQID",
+            })
+            stored.raise_for_status()
+            response = await http.post(f"{base}/snapshot/finalize", json={
+                **scope, "image_id": "shared-claim", "caption": caption["content"],
+                "caption_event_id": caption["event_id"],
+            })
+            assert response.json()["queued"] is True
+            task = mentra_routes._image_finalize_tasks[(scope["user_id"], scope["soul_id"], stored.json()["media_ref"])][1]
+            try:
+                await asyncio.sleep(0)
+                assert not started.is_set() and calls["image_memorize"] == []
+                assert owners[owner_key] is (owner_kind == "import")
+                waiting_reply = await asyncio.wait_for(http.post(f"{base}/transcripts/append", json={
+                    **scope, "events": [{**caption, "event_id": f"{sitting}:2", "sequence": 2,
+                                         "content": "A reply while the photo waits for memory work."}],
+                }), 1)
+                waiting_reply.raise_for_status()
+                assert not started.is_set() and owner_key in owners
+                if outcome == "waiting_cancelled":
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    assert owner_key in owners
+                else:
+                    if owner_kind == "memorize" and outcome == "success":
+                        main._MEMORIZE_PROGRESS[marker] = {"active": True, "phase": "accepted"}
+                        main._MEMORIZE_CANCEL.add(marker)
+                        await main._finish_memorize_claim(marker, False)
+                        assert main._MEMORIZE_PROGRESS[marker]["active"] is False
+                        assert marker not in main._MEMORIZE_CANCEL
+                    else:
+                        owners.pop(owner_key)
+                    await asyncio.wait_for(started.wait(), 1)
+                    assert (await main.memorize_cancel(scope))["status"] == "no_active_memorize"
+                    queue_auto = True
+                    reply = await asyncio.wait_for(http.post(f"{base}/transcripts/append", json={
+                        **scope, "events": [{**caption, "event_id": f"{sitting}:3", "sequence": 3,
+                                             "content": "A reply while photo filing holds the claim."}],
+                    }), 1)
+                    reply.raise_for_status()
+                    assert marker in main._FORCED_MEMORIZE_RECHECK and not auto_started.is_set()
+                    assert not calls["soul_lock"].locked()
+                    if outcome == "cancelled":
+                        task.cancel()
+                    else:
+                        release.set()
+                    result = (await asyncio.gather(task, return_exceptions=True))[0]
+                    if outcome != "success":
+                        assert isinstance(result, RuntimeError if outcome == "failure" else asyncio.CancelledError)
+                    await asyncio.wait_for(auto_started.wait(), 1)
+                    await asyncio.gather(*main._BACKGROUND_TASKS)
+                    assert marker not in main._FORCED_MEMORIZE_INFLIGHT
+                    assert marker not in main._FORCED_MEMORIZE_RECHECK
+                await asyncio.sleep(0)
+                assert main._FORCED_MEMORIZE_INFLIGHT[unrelated] is True
+                assert mentra_routes._image_finalize_tasks == {} and calls["background_tasks"] == set()
+                assert len(calls["background_errors"]) == (outcome == "failure")
+            finally:
+                release.set()
+                task.cancel()
+                await asyncio.gather(task, *main._BACKGROUND_TASKS, return_exceptions=True)
+
+    asyncio.run(asyncio.wait_for(run(), 5))
 
 
 def test_snapshot_finalize_keeps_reply_publication_available_and_photos_fifo(

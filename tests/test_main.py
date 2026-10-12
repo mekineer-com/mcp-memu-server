@@ -2424,9 +2424,10 @@ async def test_retry_consolidation_schedules_forced_background_run(
         assert (await main.memorize_cancel({"user_id": "User", "soul_id": "Soul"}))["status"] == "cancel_too_late"
         release.set()
         await asyncio.gather(*tasks)
-        assert marker in main._MEMORIZE_CANCEL
+        assert marker not in main._MEMORIZE_CANCEL
+        assert main._MEMORIZE_PROGRESS[marker]["active"] is False
         assert marker not in main._FORCED_MEMORIZE_INFLIGHT
-        assert main._MEMORIZE_PROGRESS[marker] == {"active": True, "phase": "memorizing"}
+        assert main._MEMORIZE_PROGRESS[marker] == {"active": False, "phase": "memorizing"}
     finally:
         release.set()
         await asyncio.gather(*tasks, return_exceptions=True)

@@ -770,6 +770,10 @@ def register_mentra_routes(
     schedule_auto_memorize: Callable[..., str] | None = None,
     get_resource_storage_dir: Callable[[], Path] | None = None,
     background_tasks: set[asyncio.Task[Any]] | None = None,
+    memorize_lock_key: Callable[[str, str], str] | None = None,
+    memorize_inflight: dict[str, bool] | None = None,
+    consolidation_running: dict[tuple[str, str], bool] | None = None,
+    finish_memorize_claim: Callable[[str, bool], Awaitable[None]] | None = None,
     set_background_error: Callable[..., None] | None = None,
     prepare_annulment_memories: Callable[..., Awaitable[list[dict[str, Any]]]] | None = None,
     save_actual_annulments: Callable[..., list[str]] | None = None,
@@ -1632,6 +1636,10 @@ def register_mentra_routes(
             or get_resource_storage_dir is None
             or get_storage_dir is None
             or background_tasks is None
+            or memorize_lock_key is None
+            or memorize_inflight is None
+            or consolidation_running is None
+            or finish_memorize_claim is None
         ):
             raise HTTPException(status_code=503, detail="Mentra snapshot finalization is not configured")
         body = await _private_model(
@@ -1697,13 +1705,22 @@ def register_mentra_routes(
         async def memorize_image() -> Any:
             if predecessors:
                 await asyncio.shield(asyncio.gather(*predecessors, return_exceptions=True))
-            return await service.memorize(
-                resource_url=media_ref,
-                modality="image",
-                user=scope,
-                caption=body.caption,
-                source_timestamp=caption_row["received_at"],
-            )
+            marker = memorize_lock_key(body.user_id, body.soul_id)
+            while marker in memorize_inflight or (body.user_id, body.soul_id) in consolidation_running:
+                await asyncio.sleep(0.05)
+            # Check and reserve without yielding; never hold the reply lock over providers.
+            memorize_inflight[marker] = False
+            try:
+                return await service.memorize(
+                    resource_url=media_ref,
+                    modality="image",
+                    user=scope,
+                    caption=body.caption,
+                    source_timestamp=caption_row["received_at"],
+                )
+            finally:
+                # Photo failure does not pause Memorize or discard its waiting capture.
+                await finish_memorize_claim(marker, True)
 
         task = asyncio.create_task(memorize_image())
         _image_finalize_tasks[task_key] = (body.caption, task)

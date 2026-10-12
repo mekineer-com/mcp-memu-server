@@ -21,6 +21,23 @@ def _m() -> Any:
     return _main
 
 
+def _apimw_database_identity(path: Any) -> tuple[Any, int, int] | None:
+    if path is None:
+        return None
+    try:
+        identity = path.stat()
+    except FileNotFoundError:
+        return None
+    return path, identity.st_dev, identity.st_ino
+
+
+def _apimw_current(user_id: str, soul_id: str, conversation_id: str, identity: Any) -> bool:
+    return bool(identity is not None
+        and _apimw_database_identity(_m()._sqlite_current_path(user_id, soul_id)) == identity
+        and not _m()._sillytavern_source_deleted(conversation_id, user_id, soul_id)
+        and not _m()._soul_activity_pause(user_id, soul_id))
+
+
 def _mark_apimw_inflight(conversation_id: str) -> bool:
     return _m()._mark_inflight(_m()._APIMW_INFLIGHT, conversation_id)
 
@@ -287,9 +304,15 @@ async def _apimw_persist(
     user_id: str,
     soul_id: str,
     expected_prior_context: str = "",
+    database_identity: Any = None,
 ) -> None:
     conversation_id = canonical_conversation_id(conversation_id)
+    if database_identity is None:
+        database_identity = _apimw_database_identity(_m()._sqlite_current_path(user_id, soul_id))
+    subconscious_insight = str(result_json.get("subconscious_insight") or "").strip()
     async with _m()._retrieve_scope_lock(user_id, soul_id):
+        if not _apimw_current(user_id, soul_id, conversation_id, database_identity):
+            return
         updates: dict[str, Any] = {}
         resolved_prior_context_ids: list[str] = []
 
@@ -319,23 +342,8 @@ async def _apimw_persist(
                 new_prior = "\n".join(prior_context_lines)
                 updates["prior_context"] = new_prior
 
-        subconscious_insight = str(result_json.get("subconscious_insight") or "").strip()
         if subconscious_insight:
             updates["apimw_subconscious_insight"] = f"[subconscious] {subconscious_insight}"
-            try:
-                sc_embedding = (await svc.embed([subconscious_insight], profile="embedding"))[0]
-                svc.database.memory_item_repo.create_item(
-                    resource_id=None,
-                    memory_type="subconscious",
-                    source_role="soul",
-                    summary=subconscious_insight,
-                    embedding=sc_embedding,
-                    extra={"apimw_subconscious_insight": True},
-                    user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
-                    conversation_id=conversation_id,
-                )
-            except Exception:
-                _m().logger.warning("failed to persist subconscious memory item", exc_info=True)
 
         prior_context_ids = (
             list(dict.fromkeys(resolved_prior_context_ids))
@@ -353,6 +361,29 @@ async def _apimw_persist(
                 updates=updates,
             )
             _m().logger.info("apimw state written for %s (keys: %s)", conversation_id, list(updates.keys()))
+        try:
+            _m()._clear_background_error_if_apimw_owned(conversation_id, soul_id=soul_id, user_id=user_id)
+        except Exception:
+            _m().logger.exception("failed to clear APImw background error state for %s", conversation_id)
+
+    if subconscious_insight:
+        try:
+            sc_embedding = (await svc.embed([subconscious_insight], profile="embedding"))[0]
+            async with _m()._retrieve_scope_lock(user_id, soul_id):
+                if not _apimw_current(user_id, soul_id, conversation_id, database_identity):
+                    return
+                svc.database.memory_item_repo.create_item(
+                    resource_id=None,
+                    memory_type="subconscious",
+                    source_role="soul",
+                    summary=subconscious_insight,
+                    embedding=sc_embedding,
+                    extra={"apimw_subconscious_insight": True},
+                    user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
+                    conversation_id=conversation_id,
+                )
+        except Exception:
+            _m().logger.warning("failed to persist subconscious memory item", exc_info=True)
 
 
 async def _run_apimw(
@@ -367,10 +398,13 @@ async def _run_apimw(
     retrieval_service: Any = None,
     apimw_k: int | None = None,
     apimw_random_count: int | None = None,
+    database_identity: Any = None,
 ) -> None:
     conversation_id = canonical_conversation_id(conversation_id)
     payload = {key: value for key, value in payload.items()
                if key not in {"llm_profiles", "claude_code", "memorize_config"}}
+    if database_identity is None:
+        database_identity = _apimw_database_identity(_m()._sqlite_current_path(user_id, soul_id))
     try:
         scope = {"user_id": user_id, "soul_id": soul_id}
         is_st = _m()._message_log.derive_source_label(conversation_id) == "sillytavern"
@@ -386,7 +420,7 @@ async def _run_apimw(
                 operation="retrieve",
             )
         apimw_trace_id = uuid.uuid4().hex
-        if _m()._soul_activity_pause(user_id, soul_id):
+        if not _apimw_current(user_id, soul_id, conversation_id, database_identity):
             return
         dossiers = svc.list_active_dossiers(scope)
         anchor_context = _m()._render_anchor_context({row.anchor_role: row for row in dossiers if row.anchor_role})
@@ -451,13 +485,12 @@ async def _run_apimw(
         )
         if result_json is None:
             try:
-                _m()._set_background_error(
-                    conversation_id,
-                    soul_id=soul_id,
-                    user_id=user_id,
-                    code="apimw_synthesis_parse_failed",
-                    detail="synthesis response was not valid JSON object",
-                )
+                async with _m()._retrieve_scope_lock(user_id, soul_id):
+                    if _apimw_current(user_id, soul_id, conversation_id, database_identity):
+                        _m()._set_background_error(
+                            conversation_id, soul_id=soul_id, user_id=user_id,
+                            code="apimw_synthesis_parse_failed", detail="synthesis response was not valid JSON object",
+                        )
                 # prior_context stays: it is durable until a successful turn
                 # consumes it, so a transient synthesis failure must not erase
                 # the context the next turn should still see.
@@ -475,23 +508,19 @@ async def _run_apimw(
             user_id=user_id,
             soul_id=soul_id,
             expected_prior_context=str(state_row.get("prior_context") or ""),
+            database_identity=database_identity,
         )
-        try:
-            _m()._clear_background_error_if_apimw_owned(conversation_id, soul_id=soul_id, user_id=user_id)
-        except Exception:
-            _m().logger.exception("failed to clear APImw background error state for %s", conversation_id)
 
     except Exception as exc:
         if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) and exc.detail.get("code") == "soul_paused":
             return
         try:
-            _m()._set_background_error(
-                conversation_id,
-                soul_id=soul_id,
-                user_id=user_id,
-                code="apimw_failed",
-                detail=f"{type(exc).__name__}: {str(exc)[:220]}",
-            )
+            async with _m()._retrieve_scope_lock(user_id, soul_id):
+                if _apimw_current(user_id, soul_id, conversation_id, database_identity):
+                    _m()._set_background_error(
+                        conversation_id, soul_id=soul_id, user_id=user_id,
+                        code="apimw_failed", detail=f"{type(exc).__name__}: {str(exc)[:220]}",
+                    )
             # prior_context stays on failure too (see parse-failure branch).
         except Exception:
             _m().logger.exception("failed to record APImw failure state for %s", conversation_id)
@@ -536,6 +565,7 @@ def _turn_launch_apimw(
             user_id=uid,
             soul_id=soul_id,
         )
+        database_identity = _apimw_database_identity(_apimw_db_path)
         history_for_ai = _m()._current_history_for_ai(
             cid, uid, soul_id, history_full, apimw_state_row,
             is_live_turn=bool(safe.get("is_live_turn")),
@@ -566,6 +596,7 @@ def _turn_launch_apimw(
                 retrieval_service=retrieval_service,
                 apimw_k=apimw_k,
                 apimw_random_count=apimw_random_count,
+                database_identity=database_identity,
             )
         )
         _m()._BACKGROUND_TASKS.add(apimw_task)

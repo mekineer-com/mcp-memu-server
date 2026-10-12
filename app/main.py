@@ -2048,6 +2048,10 @@ _mentra_routes.register_mentra_routes(
     ),
     get_resource_storage_dir=lambda: _get_storage_dir(_CONFIG),
     background_tasks=_BACKGROUND_TASKS,
+    memorize_lock_key=_memorize_lock_key,
+    memorize_inflight=_FORCED_MEMORIZE_INFLIGHT,
+    consolidation_running=_CONSOLIDATION_RUNNING,
+    finish_memorize_claim=lambda marker, success: _finish_memorize_claim(marker, success),
     set_background_error=_set_background_error,
     prepare_annulment_memories=_prepare_annulment_memories,
     save_actual_annulments=_save_actual_annulments,
@@ -2919,14 +2923,20 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
     if payload is None:
         if failure["targets"] and not complete:
             _check_memorize_failure_targets(user_id, soul_id)
+        svc = None
+        if cid is not None:
+            if (user_id, soul_id) in _CONSOLIDATION_RUNNING:
+                raise HTTPException(status_code=409, detail="consolidation already in progress")
+            svc = _get_service_from_payload(
+                {"user": {"user_id": user_id, "soul_id": soul_id}}, operation="consolidation"
+            )
         _write_retry_memorize_state(cid, user_id=user_id, soul_id=soul_id, updates={"memorize_failure": None})
         if cid is not None:
+            _FORCED_MEMORIZE_INFLIGHT[marker] = False
             background_tasks.add_task(
-                _run_consolidation_task, _get_service_from_payload(
-                    {"user": {"user_id": user_id, "soul_id": soul_id}}, operation="consolidation"
-                ),
+                _run_consolidation_task, svc,
                 conversation_id=cid, soul_id=soul_id, uid=user_id,
-                progress_key=marker, memorize_progress=_MEMORIZE_PROGRESS,
+                progress_key=marker, memorize_progress=_MEMORIZE_PROGRESS, release_memorize_claim=True,
             )
         return {"ok": True, "status": "already_memorized"}
     return await _memorize_owned(payload, background_tasks, True, retry=True)
@@ -4158,6 +4168,8 @@ async def _finish_memorize_claim(marker: str, success: bool) -> None:
         historical = _FORCED_MEMORIZE_INFLIGHT.pop(marker, None) is True
         recheck = _FORCED_MEMORIZE_RECHECK.get(marker)
         progress = _MEMORIZE_PROGRESS.get(marker, {})
+        progress["active"] = False
+        _MEMORIZE_CANCEL.discard(marker)
         bounds = progress.pop("_st_cursor_ceiling", {})
         processed = progress.pop("_processed_rows", [])
         if historical or recheck is None:

@@ -676,6 +676,52 @@ async def test_retry_of_completed_targets_clears_only_memorize(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["accepted", "service_failure", "busy", "no_anchor"])
+async def test_completed_memorize_retry_reserves_reflection_before_dispatch(monkeypatch, mode):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "chat:completed-reflection-admission"
+    monkeypatch.setattr(main, "_CONSOLIDATION_RUNNING", {})
+    main._write_conversation_state(cid, **scope, updates={"digest_cursor": 0,
+        "last_memorize_at": datetime.now(UTC).isoformat(), "memorize_failure": {
+            "conversation_id": cid, "paused": True, "error": "Saved extraction", "targets": {cid: {"cursor": 0}}}})
+    before = main._paid_work_state(**scope)["memorize_failure"]
+    marker = main._memorize_lock_key(**scope)
+    def service(*_a, **_kw):
+        assert marker not in main._FORCED_MEMORIZE_INFLIGHT
+        assert main._paid_work_state(**scope)["memorize_failure"] == before
+        if mode == "service_failure":
+            raise ValueError("Fictional service configuration failure")
+        assert mode != "no_anchor"
+        return object()
+    monkeypatch.setattr(main, "_get_service_from_payload", service)
+    pipeline = AsyncMock(return_value={"status": "skipped", "reason": "not_due"})
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", pipeline)
+    tasks = BackgroundTasks()
+    if mode == "busy":
+        main._CONSOLIDATION_RUNNING[tuple(scope.values())] = False
+    if mode == "no_anchor":
+        monkeypatch.setattr(main, "_retry_memorize_anchor", lambda *_a: None)
+    if mode in {"busy", "service_failure"}:
+        with pytest.raises(HTTPException if mode == "busy" else ValueError):
+            await main.retry_memorize(**scope, background_tasks=tasks)
+        assert main._paid_work_state(**scope)["memorize_failure"] == before
+        assert tasks.tasks == [] and marker not in main._FORCED_MEMORIZE_INFLIGHT
+        return
+    assert (await main.retry_memorize(**scope, background_tasks=tasks))["status"] == "already_memorized"
+    assert main._paid_work_state(**scope)["memorize_failure"] is None
+    if mode == "no_anchor":
+        assert tasks.tasks == [] and marker not in main._FORCED_MEMORIZE_INFLIGHT
+        return
+    assert marker in main._FORCED_MEMORIZE_INFLIGHT and not pipeline.await_count
+    with pytest.raises(HTTPException) as busy:
+        main._consolidation_request_context(cid, {"user": scope})
+    assert busy.value.status_code == 409
+    await tasks()
+    pipeline.assert_awaited_once()
+    assert marker not in main._FORCED_MEMORIZE_INFLIGHT
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("waiting", [False, True])
 @pytest.mark.parametrize("fail", [False, True])
 @pytest.mark.parametrize("phase", ["dedupe", "review"])
@@ -773,7 +819,11 @@ async def test_recovery_cancel_flag_and_consolidation_interruption_preserve_targ
                 await tasks()
             assert main._paid_work_state(**scoped)["memorize_failure"]["targets"] == targets
             assert main._memorize_targets_complete(*scoped.values(), targets)
-            assert (await main.retry_memorize(**scoped, background_tasks=BackgroundTasks()))["status"] == "already_memorized"
+            retry_tasks = BackgroundTasks()
+            assert (await main.retry_memorize(**scoped, background_tasks=retry_tasks))["status"] == "already_memorized"
+            assert main._memorize_lock_key(**scoped) in main._FORCED_MEMORIZE_INFLIGHT
+            with pytest.raises(asyncio.CancelledError):
+                await retry_tasks()
         else:
             await tasks()
             assert main._paid_work_state(**scoped)["memorize_failure"] is None
