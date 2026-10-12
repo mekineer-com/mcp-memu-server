@@ -24,6 +24,69 @@ def _route_endpoint(name: str):
     return next(route.endpoint for route in main.app.routes if route.name == name)
 
 
+def test_browser_mutations_block_before_config_write(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"listen": {"host": "127.0.0.1"}}))
+    writes = []
+    monkeypatch.setattr(main, "_config_path", lambda: path)
+    monkeypatch.setattr(main, "_save_config", writes.append)
+    monkeypatch.setattr(main, "_refresh_runtime_limits", lambda: None)
+    monkeypatch.setattr(main, "_ensure_storage_paths", lambda _cfg: None)
+    monkeypatch.setattr(main, "_clear_cached_services", lambda: None)
+    monkeypatch.setattr(main, "_CONFIG", {"listen": {"host": "127.0.0.1"}})
+    client = TestClient(main.app, base_url="http://127.0.0.1:8099")
+    for headers in (
+        {"origin": "https://foreign.example", "sec-fetch-site": "same-origin"},
+        {"origin": "null"}, {"origin": ""}, {"sec-fetch-site": "cross-site"},
+        {"sec-fetch-site": "same-site"}, {"sec-fetch-site": ""},
+        {"host": "foreign.example", "origin": "http://foreign.example"},
+    ):
+        response = client.post("/config", content='{"test_marker":true}', headers=headers)
+        assert response.status_code == 403
+    assert writes == []
+    assert client.post("/config", content='{"test_marker":true}').status_code == 200
+    assert writes[0]["test_marker"] is True
+    assert main._ACTIVE_HTTP_REQUESTS == main._ACTIVE_WORK_REQUESTS == 0
+    assert main._LAST_HTTP[-2]["status"] == 403 and main._LAST_HTTP[-1]["status"] == 200
+
+
+def test_browser_mutation_guard_preserves_native_and_mentra_requests(monkeypatch):
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+    monkeypatch.setitem(main._CONFIG, "listen", {"host": "127.0.0.1"})
+    app = FastAPI()
+    app.middleware("http")(main._trace_requests)
+    calls = []
+    async def probe(request: Request):
+        calls.append((request.method, request.url.path))
+        return {"ok": True}
+    for path in ("/probe", "/integration/mentra/probe", "/integration/mentra-impostor/probe"):
+        app.add_api_route(path, probe, methods=["GET", "POST", "PATCH", "DELETE"])
+    client = TestClient(app, base_url="http://127.0.0.1:8099")
+    for method in ("POST", "PATCH", "DELETE"):
+        assert client.request(method, "/probe", headers={"origin": "null"}).status_code == 403
+        assert client.request(method, "/probe").status_code == 200
+        assert client.request(method, "/probe", headers={"host": "native.example"}).status_code == 200
+        assert client.request(method, "/probe", headers={"origin": "http://127.0.0.1:8099", "sec-fetch-site": "same-origin"}).status_code == 200
+        assert client.request(method, "/probe", headers={"sec-fetch-site": "none"}).status_code == 200
+    assert len(calls) == 12
+    assert client.get("/probe", headers={"origin": "null"}).status_code == 200
+    assert client.post("/integration/mentra/probe", headers={"origin": "null", "sec-fetch-site": "cross-site"}).status_code == 200
+    assert client.post("/integration/mentra-impostor/probe", headers={"origin": "null"}).status_code == 403
+    monkeypatch.setitem(main._CONFIG, "listen", {"host": "LAN.Example"})
+    configured = TestClient(app, base_url="http://lan.example:8099")
+    assert configured.post("/probe", headers={"origin": "http://lan.example:8099"}).status_code == 200
+    for host in ("0.0.0.0", "::"):
+        monkeypatch.setitem(main._CONFIG, "listen", {"host": host})
+        assert configured.post("/probe", headers={"origin": "https://foreign.example"}).status_code == 403
+        assert configured.post("/probe", headers={"origin": "http://lan.example:8099"}).status_code == 200
+    for listen in (None, "invalid", {"host": 1}):
+        monkeypatch.setitem(main._CONFIG, "listen", listen)
+        assert client.post("/probe", headers={"origin": "http://127.0.0.1:8099"}).status_code == 200
+        assert configured.post("/probe", headers={"origin": "http://lan.example:8099"}).status_code == 403
+
+
 @pytest.mark.asyncio
 async def test_model_mapping_config_patch_preserves_file_settings(tmp_path, monkeypatch):
     path = tmp_path / "config.json"

@@ -854,6 +854,18 @@ async def _trace_requests(request: Request, call_next):
             _ACTIVE_WORK_REQUESTS += 1
 
     try:
+        if request.method not in {"GET", "HEAD"} and not path.startswith("/integration/mentra/"):
+            origin = request.headers.get("origin")
+            site = request.headers.get("sec-fetch-site")
+            if origin is not None or site is not None:
+                listen = _CONFIG.get("listen") if isinstance(_CONFIG.get("listen"), dict) else {}
+                host = listen.get("host")
+                host = (host if isinstance(host, str) and host else "127.0.0.1").lower()
+                trusted = host in {"0.0.0.0", "::"} or request.url.hostname in {host, "127.0.0.1", "localhost", "::1"}  # nosec B104 - compares the bind setting, does not bind a socket
+                if (not trusted or origin is not None and origin != f"{request.url.scheme}://{request.url.netloc}"
+                        or site is not None and site not in {"same-origin", "none"}):
+                    status = 403
+                    return JSONResponse(status_code=status, content={"detail": "Cross-origin browser actions are not allowed"})
         if draining and not is_control:
             status = 503
             return JSONResponse(
