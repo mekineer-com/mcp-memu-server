@@ -2332,7 +2332,7 @@ def test_snapshot_finalize_shares_memory_claim_and_preserves_waiting_auto_memori
         scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
 
         async def photo(_kwargs: dict[str, Any]) -> None:
-            assert main._FORCED_MEMORIZE_INFLIGHT[marker] is False
+            assert main._FORCED_MEMORIZE_INFLIGHT[marker] is None
             assert not calls["soul_lock"].locked()
             started.set()
             try:

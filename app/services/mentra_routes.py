@@ -1724,7 +1724,7 @@ def register_mentra_routes(
             while marker in memorize_inflight or (body.user_id, body.soul_id) in consolidation_running:
                 await asyncio.sleep(0.05)
             # Check and reserve without yielding; never hold the reply lock over providers.
-            memorize_inflight[marker] = False
+            memorize_inflight[marker] = None
             try:
                 return await service.memorize(
                     resource_url=media_ref,

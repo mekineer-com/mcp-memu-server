@@ -165,3 +165,62 @@ def test_preturn_checks_import_due_without_capturing(saved_chat, monkeypatch, dr
         assert record["ordinary_waiting"] == (None if dry_run else CID)
         assert record["memorize_cursor"] == -1
         assert record["history_end_index"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remainder", ["primary", "short", "background", "empty"])
+@pytest.mark.parametrize("deleted_trigger", [False, True])
+async def test_queued_retired_sources_drop_content_and_keep_surviving_capture(monkeypatch, remainder, deleted_trigger):
+    import asyncio
+
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    dead, background, quiet, live = [f"integrity:{name}" for name in ("dead", "background", "quiet", "live")]
+    trigger = dead if deleted_trigger else live
+    marker = main._memorize_lock_key(**scope)
+    for cid in (dead, background, quiet, live):
+        main._write_conversation_state(cid, **scope, updates={})
+        conversation_sources.persist_sillytavern_history_snapshot(
+            storage_dir=main._get_storage_dir(main._CONFIG), **scope,
+            conversation_id=cid, history=[], source_message_count=8,
+        )
+    rows = [{"source_conversation_id": cid, "source_conversation_index": 0,
+             "role": "user", "content": "captured " * 200, "memorize_chat": producing}
+            for cid, producing in ((dead, True), (background, False), (live, remainder != "background"))
+            if cid != live or remainder != "empty"]
+    if remainder == "short":
+        rows[-1]["content"] = "hello"
+    bounds = {cid: {"end": 7, "ceiling": 4} for cid in (dead, background, quiet, live)}
+    payload = {"user": scope, "conversation_id": trigger, "conversation": rows, "_cross_memorize": True,
+        "_final_cursors": {row["source_conversation_id"]: {"cursor": 0, "memory_producing": row["memorize_chat"]} for row in rows},
+        "_background_rolling_summaries": {cid: {"summary": "old captured summary"} for cid in (background, quiet)},
+        "_st_cursor_ceiling": bounds}
+    original = deepcopy(payload)
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {marker: None})
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_RECHECK", {})
+    monkeypatch.setattr(main, "_MEMORIZE_PROGRESS", {})
+    monkeypatch.setattr(main, "_BACKGROUND_TASKS", set())
+    monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 100)
+    monkeypatch.setattr(main, "_soul_import_state", lambda *_a: (None, {}))
+    monkeypatch.setattr(main, "_unmemorized_sleep_gap_detected", lambda *_a, **_k: not deleted_trigger)
+    received = []
+
+    async def run(safe):
+        assert all(row["source_conversation_id"] == live for row in safe["conversation"])
+        assert safe["_background_rolling_summaries"] == {}
+        assert set(safe["_final_cursors"]) == ({live} if remainder != "empty" else set())
+        assert safe["_st_cursor_ceiling"] == {live: bounds[live]}
+        assert safe["conversation_id"] == trigger
+        received.append(main._prepare_frozen_memorize(safe, **dict(uid=scope["user_id"], sid=scope["soul_id"])))
+        await main._finish_memorize_claim(marker, True)
+
+    monkeypatch.setattr(main, "_run_forced_memorize_from_turn", run)
+    assert main._schedule_auto_memorize(payload, {**scope, "conversation_id": trigger}) == "coalesced"
+    for cid in (dead, background, quiet):
+        await main.retire_conversation_source(cid, {"user": scope})
+    # An unexplained missing original does not invalidate the surviving frozen copy.
+    conversation_sources._chat_snapshot_path(storage_dir=main._get_storage_dir(main._CONFIG),
+        **scope, conversation_id=live, source_label="sillytavern").unlink()
+    await main._finish_memorize_claim(marker, True)
+    await asyncio.gather(*main._BACKGROUND_TASKS)
+    assert received == [remainder == "primary"]
+    assert payload == original

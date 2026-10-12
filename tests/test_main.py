@@ -4853,6 +4853,34 @@ async def test_auto_memorize_collision_runs_latest_frozen_capture_after_success(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("paused", [False, True])
+async def test_non_memorize_claim_preserves_retry_and_waiting_capture(monkeypatch, paused):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "replika:interrupted"
+    marker = main._memorize_lock_key(**scope)
+    failure = {"conversation_id": cid, "paused": paused, "error": "Retry required",
+               "targets": {cid: {"cursor": 0, "memory_producing": True}}}
+    main._write_conversation_state(cid, **scope, updates={"memorize_failure": failure})
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {marker: None})
+    waiting = {"payload": {"conversation_id": cid, "conversation": []},
+               "scope": {**scope, "conversation_id": cid}, "pre_rewind": []}
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_RECHECK", {marker: waiting})
+    monkeypatch.setattr(main, "_load_cross_memorize_tails_from_sources", lambda *_a, **_k: {})
+    launched = []
+    monkeypatch.setattr(main, "_schedule_auto_memorize", lambda payload, _scope: launched.append(payload))
+    assert main._soul_activity_pause(**scope) == "Retry required"
+    assert (await main.diag_memorize_pending(**scope))["retry_operation"] == "memorize"
+    await main._finish_memorize_claim(marker, True)
+    assert not launched and main._FORCED_MEMORIZE_RECHECK[marker] is waiting
+    assert main._paid_work_state(**scope)["memorize_failure"] == failure
+    # Successful recovery publishes the cleared failure before releasing its claim.
+    main._write_conversation_state(cid, **scope, updates={"memorize_failure": None})
+    main._FORCED_MEMORIZE_INFLIGHT[marker] = False
+    await main._finish_memorize_claim(marker, True)
+    assert launched == [waiting["payload"]] and marker not in main._FORCED_MEMORIZE_RECHECK
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("historical", [False, True])
 async def test_auto_memorize_failure_does_not_release_ordinary_work(
     monkeypatch: pytest.MonkeyPatch,

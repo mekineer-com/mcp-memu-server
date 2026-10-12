@@ -668,7 +668,7 @@ _ACTIVE_WORK_REQUESTS: int = 0
 _SHUTDOWN_TASK: asyncio.Task | None = None
 _APIMW_INFLIGHT: set[str] = set()
 _BACKGROUND_ROLLUP_INFLIGHT: set[str] = set()
-_FORCED_MEMORIZE_INFLIGHT: dict[str, bool | None] = {}  # True: import; False: Memorize; None: Atomic edit.
+_FORCED_MEMORIZE_INFLIGHT: dict[str, bool | None] = {}  # True: import; False: Memorize; None: edit/photo.
 _FORCED_MEMORIZE_RECHECK: dict[str, dict[str, Any]] = {}
 _FREE_TURN_INFLIGHT: set[str] = set()
 _FREE_TURN_FOLLOW_UP_INFLIGHT: set[str] = set()
@@ -2939,7 +2939,8 @@ def _prepare_frozen_memorize(safe: dict[str, Any], uid: str, sid: str) -> bool:
         cid = _extract_conversation_id(safe)
         trigger = [row for row in retained if row.get("source_conversation_id") == cid and row.get("memorize_chat") is not False]
         eligible = (_estimate_primary_memorize_tokens(retained) >= _MIN_CHUNK_TOKENS
-                    and _unmemorized_sleep_gap_detected(trigger, -1, safe, min_chunk_tokens=0))
+                    and (_sillytavern_source_deleted(cid, uid, sid)
+                         or _unmemorized_sleep_gap_detected(trigger, -1, safe, min_chunk_tokens=0)))
     if not eligible:
         _check_memorize_failure_targets(uid, sid)
     return eligible
@@ -4310,8 +4311,10 @@ async def _finish_memorize_claim(marker: str, success: bool) -> None:
             committed = {identity(row) for row in processed if row.get("source_conversation_id") in rewound}
             payload["conversation"] = [row for row in payload.get("conversation", [])
                                        if row.get("source_conversation_id") not in rewound or identity(row) not in committed]
-        if _soul_state.consolidation_failure(
-            _paid_work_state(str(recheck["scope"]["user_id"]), str(recheck["scope"]["soul_id"]))
+        uid, sid = str(recheck["scope"]["user_id"]), str(recheck["scope"]["soul_id"])
+        if _soul_state.activity_pause(
+            _paid_work_state(uid, sid), memorize_running=False,
+            consolidation_running=_CONSOLIDATION_RUNNING.get((uid, sid)) is False,
         ):
             return
         _FORCED_MEMORIZE_RECHECK.pop(marker, None)
@@ -4348,6 +4351,18 @@ def _schedule_auto_memorize(
                 "pre_rewind": [cid for cid, bound in active.items() if bound["ceiling"] == bound["end"]],
             }
             return "coalesced"
+        cid, uid, sid = str(scope["conversation_id"]), str(scope["user_id"]), str(scope["soul_id"])
+        fields = ("_final_cursors", "_background_rolling_summaries", "_st_cursor_ceiling")
+        sources = {cid, *(str(row.get("source_conversation_id") or cid) for row in payload.get("conversation", []))}
+        for field in fields:
+            sources.update(payload.get(field, {}))
+        deleted = {source for source in sources if _sillytavern_source_deleted(source, uid, sid)}
+        if deleted:
+            payload["conversation"] = [row for row in payload.get("conversation", [])
+                                       if str(row.get("source_conversation_id") or cid) not in deleted]
+            for field in fields:
+                if field in payload:
+                    payload[field] = {source: value for source, value in payload[field].items() if source not in deleted}
         _FORCED_MEMORIZE_INFLIGHT[marker] = False
         _register_memorize_bounds(payload, marker)
         _memorize_endpoint._set_memorize_progress(_MEMORIZE_PROGRESS, marker, active=True, phase="accepted", current=0, total=1)
