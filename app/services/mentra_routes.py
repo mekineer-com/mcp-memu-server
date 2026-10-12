@@ -96,7 +96,7 @@ class _Lease(NamedTuple):
 _leases: dict[str, _Lease] = {}
 _start_claims: dict[str, tuple[str, str]] = {}  # sitting_id, device_session_id
 _lease_lock = asyncio.Lock()
-_image_finalize_tasks: dict[tuple[str, str, str], tuple[str, asyncio.Task[Any]]] = {}
+_image_finalize_tasks: dict[tuple[str, str, str], tuple[str, asyncio.Task[Any], str]] = {}
 _image_finalize_errors: dict[tuple[str, str, str], set[str]] = {}
 _transcript_conflicts: dict[tuple[str, str, str], int] = {}
 # run.py starts one worker; installation writes share this process-local lock.
@@ -1687,6 +1687,15 @@ def register_mentra_routes(
         }
         service = get_service_from_scope(scope)
         resource_scope = {"user_id": body.user_id, "soul_id": body.soul_id}
+        task_key = (body.user_id, body.soul_id, media_ref)
+        pending = _image_finalize_tasks.get(task_key)
+        if pending is not None:
+            if pending[0] != body.caption:
+                raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
+            # Only an explicit check transfers the worker's outcome to a replacement sitting.
+            _image_finalize_tasks[task_key] = (pending[0], pending[1], sitting_id)
+            return {"ok": True, "queued": True, "duplicate": True}
+
         existing = next(
             (
                 resource
@@ -1704,13 +1713,6 @@ def register_mentra_routes(
             )
             if linked:
                 return {"ok": True, "queued": False, "duplicate": True}
-
-        task_key = (body.user_id, body.soul_id, media_ref)
-        pending = _image_finalize_tasks.get(task_key)
-        if pending is not None:
-            if pending[0] != body.caption:
-                raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
-            return {"ok": True, "queued": False, "duplicate": True}
 
         # Capture all predecessors so a cancelled middle photo cannot release later work early.
         predecessors = [entry[1] for key, entry in _image_finalize_tasks.items() if key[:2] == task_key[:2]]
@@ -1736,13 +1738,13 @@ def register_mentra_routes(
                 await finish_memorize_claim(marker, True)
 
         task = asyncio.create_task(memorize_image())
-        _image_finalize_tasks[task_key] = (body.caption, task)
+        _image_finalize_tasks[task_key] = (body.caption, task, sitting_id)
         background_tasks.add(task)
 
         def finish(done: asyncio.Task[Any]) -> None:
-            _image_finalize_tasks.pop(task_key, None)
+            _, _, observer = _image_finalize_tasks.pop(task_key)
             background_tasks.discard(done)
-            error_key = (body.user_id, body.soul_id, sitting_id)
+            error_key = (body.user_id, body.soul_id, observer)
             try:
                 done.result()
             except asyncio.CancelledError:
@@ -1751,7 +1753,7 @@ def register_mentra_routes(
                 active = _leases.get(body.soul_id)
                 if (
                     active
-                    and active.sitting_id == sitting_id
+                    and active.sitting_id == observer
                     and active.user_id == body.user_id
                     and active.expires_at > time.monotonic()
                 ):

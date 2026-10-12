@@ -2414,7 +2414,7 @@ def test_snapshot_finalize_keeps_reply_publication_available_and_photos_fifo(
         scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
         unrelated = asyncio.get_running_loop().create_future()
         unrelated_key = (scope["user_id"], "Other Fictional Soul", "other-photo.png")
-        mentra_routes._image_finalize_tasks[unrelated_key] = ("Unrelated caption", unrelated)
+        mentra_routes._image_finalize_tasks[unrelated_key] = ("Unrelated caption", unrelated, "other-sitting")
         async with AsyncClient(transport=ASGITransport(app=client.app), base_url="http://test") as http:
             sitting = (await http.post("/integration/mentra/session/start", json=START)).json()["session_id"]
             base = f"/integration/mentra/session/{sitting}"
@@ -2446,7 +2446,7 @@ def test_snapshot_finalize_keeps_reply_publication_available_and_photos_fifo(
             assert [row["caption"] for row in calls["image_memorize"]] == ["Fictional photo 1"]
             assert not started[1].is_set() and not started[2].is_set()
             duplicate = await http.post(f"{base}/snapshot/finalize", json=payloads[1])
-            assert duplicate.json() == {"ok": True, "queued": False, "duplicate": True}
+            assert duplicate.json() == {"ok": True, "queued": True, "duplicate": True}
             conflict = await http.post(f"{base}/snapshot/finalize", json={
                 **payloads[1], "caption": captions[3]["content"], "caption_event_id": captions[3]["event_id"],
             })
@@ -2583,11 +2583,11 @@ def test_snapshot_finalize_coalesces_completed_registered_future_until_cleanup(
             key = (scope["user_id"], scope["soul_id"], stored.json()["media_ref"])
             completed = asyncio.get_running_loop().create_future()
             completed.set_result(None)
-            mentra_routes._image_finalize_tasks[key] = (events[0]["content"], completed)
+            mentra_routes._image_finalize_tasks[key] = (events[0]["content"], completed, sitting)
             payload = {**scope, "image_id": "completed-photo", "caption": events[0]["content"],
                        "caption_event_id": events[0]["event_id"]}
             duplicate = await http.post(f"{base}/snapshot/finalize", json=payload)
-            assert duplicate.json() == {"ok": True, "queued": False, "duplicate": True}
+            assert duplicate.json() == {"ok": True, "queued": True, "duplicate": True}
             conflict = await http.post(f"{base}/snapshot/finalize", json={
                 **payload, "caption": events[1]["content"], "caption_event_id": events[1]["event_id"],
             })
@@ -2800,6 +2800,70 @@ def test_snapshot_finalize_rejects_non_multimodal_runtime(
     )
     assert response.status_code == 503
     assert response.json()["detail"] == "Mentra image embedding is not configured"
+
+
+@pytest.mark.parametrize("observe", [False, True])
+@pytest.mark.parametrize("fails", [False, True])
+def test_replacement_photo_check_observes_existing_worker_only_when_requested(monkeypatch, tmp_path, observe, fails):
+    async def run():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def filing(kwargs):
+            calls["image_resources"]["saved-photo"] = SimpleNamespace(
+                id="saved-photo", url=kwargs["resource_url"], modality="image", caption=kwargs["caption"],
+            )
+            calls["memory_items"]["saved-item"] = SimpleNamespace(resource_id="saved-photo")
+            started.set()
+            await release.wait()
+            if fails:
+                raise RuntimeError("fictional post-save filing failure")
+
+        client, calls, _ = _session_app(monkeypatch, tmp_path, memorize_hook=filing)
+        scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+        async with AsyncClient(transport=ASGITransport(app=client.app), base_url="http://test") as http:
+            first = (await http.post("/integration/mentra/session/start", json=START)).json()["session_id"]
+            base = f"/integration/mentra/session/{first}"
+            caption = "A fictional lighthouse photograph."
+            event_id = f"{first}:1"
+            (await http.post(f"{base}/transcripts/append", json={**scope, "events": [{
+                "event_id": event_id, "sequence": 1, "event_kind": "transcript", "role": "assistant",
+                "content": caption, "status": "complete",
+            }]})).raise_for_status()
+            stored = await http.post(f"{base}/snapshot", json={**scope, "image_id": "observed-photo",
+                "mime_type": "image/png", "data": base64.b64encode(b"fictional-photo").decode()})
+            stored.raise_for_status()
+            payload = {**scope, "image_id": "observed-photo", "caption": caption, "caption_event_id": event_id}
+            assert (await http.post(f"{base}/snapshot/finalize", json=payload)).json()["queued"] is True
+            await asyncio.wait_for(started.wait(), 1)
+            key = (scope["user_id"], scope["soul_id"], stored.json()["media_ref"])
+            task = mentra_routes._image_finalize_tasks[key][1]
+            second = (await http.post("/integration/mentra/session/start", json=START)).json()["session_id"]
+            base = f"/integration/mentra/session/{second}"
+            error_key = (*key[:2], second)
+            if observe:
+                response = await http.post(f"{base}/snapshot/finalize", json=payload)
+                assert response.json() == {"ok": True, "queued": True, "duplicate": True}
+                assert mentra_routes._image_finalize_tasks[key][1] is task
+                assert mentra_routes._image_finalize_tasks[key][2] == second
+                if not fails:
+                    mentra_routes._image_finalize_errors[error_key] = {key[2], "another-photo.png"}
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.sleep(0)
+            heartbeat = (await http.post(f"{base}/heartbeat", json=scope)).json()
+            assert bool(heartbeat.get("background_error")) == observe
+            if observe and not fails:
+                assert mentra_routes._image_finalize_errors[error_key] == {"another-photo.png"}
+            assert len(calls["image_memorize"]) == 1
+            assert key not in mentra_routes._image_finalize_tasks
+            assert calls["background_tasks"] == set()
+            assert len(calls["background_errors"]) == int(fails)
+            history = conversation_sources.load_mentra_history_snapshot(storage_dir=tmp_path,
+                **scope, conversation_id=conversation_sources.MENTRA_CONVERSATION_ID)
+            assert [row["event_id"] for row in history] == [event_id]
+
+    asyncio.run(asyncio.wait_for(run(), 5))
 
 
 def test_snapshot_finalize_failure_keeps_bytes_and_reports_error(

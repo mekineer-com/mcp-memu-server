@@ -296,6 +296,12 @@ even after photo failure. Completed-Memorize Retry reserves that same claim befo
 dispatching follow-on reflection. `_finish_memorize_claim` clears stale active
 progress and Cancel before handing off a fresh job. These are process-local
 claims, not restart recovery; unfinished photo filing is not automatically resumed.
+Photo finalization checks registered work before saved memory rows. An explicit
+re-finalize joins that worker and selects the latest validated sitting to receive
+its outcome; merely starting a replacement sitting does not subscribe it. Error
+delivery requires that observer's active lease, and success clears only that
+photo's warning. Queue acceptance and saved-item duplicate evidence do not assert
+that later dedupe/review completed; no full background-filing Retry is added.
 
 Live `_MEMORIZE_PROGRESS`, busy claims, cancellation flags and ST plugin
 `localTasks` are process-local status, **not a durable job queue**. ST
