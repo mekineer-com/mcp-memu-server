@@ -51,7 +51,7 @@ async def recover_memorize(runtime: Any, *, scoped: dict, cid: str | None, histo
     if not work:
         return
     marker = runtime._memorize_lock_key(**scoped)
-    svc = runtime._get_service_from_payload({"user": scoped})
+    svc = runtime._get_service_from_payload({"user": scoped}, operation="memorize")
     for index, (segment_id, phase) in enumerate(
         sorted(work.items(), key=lambda row: row[1] != "dedupe"), start=1,
     ):
@@ -97,7 +97,7 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | 
                     runtime._check_memorize_failure_targets(uid, sid)
                 runtime._write_retry_memorize_state(cid, **scoped, updates={"memorize_failure": None})
             if failure and cid is not None:
-                svc = runtime._get_service_from_payload({"user": scoped})
+                svc = runtime._get_service_from_payload({"user": scoped}, operation="consolidation")
                 consolidation_started = True
                 await runtime._run_consolidation_task(
                     svc, conversation_id=cid,
@@ -152,7 +152,7 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
         phase = "consolidation" if current["pending_segment_ids"] and not (
             retry and current["error"] and current["stage"] == "memorize"
         ) else "memorize"
-        svc = runtime._get_service_from_payload({"user": scoped})
+        svc = runtime._get_service_from_payload({"user": scoped}, operation="memorize")
         deps = runtime._make_consolidation_deps()
         profile = runtime._resolve_profile_if_configured(svc, "consolidation")
         revision_profile = consolidation.preflight_consolidation_profiles(svc, profile)
@@ -407,7 +407,7 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         label = chat["label"] if chat else label
         if cid != request.conversation_id:
             raise HTTPException(status_code=409, detail="Use the existing chat for this app label")
-        svc = runtime._get_service_from_payload({"user": scoped})
+        svc = runtime._get_service_from_payload({"user": scoped}, operation="memorize")
         state, card, path = runtime._load_turn_state_and_soul_card(cid, **scoped)
         cursor = effective_digest_cursor_from_row(state)
         stored = conversation_sources.load_import_tail(

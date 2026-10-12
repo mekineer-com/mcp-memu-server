@@ -230,7 +230,7 @@ async def test_real_import_completion_memorizes_current_messages_across_chats(tm
             if len(calls) == 2 and fail_handoff:
                 raise ValueError("Fictional ordinary extraction failure")
             return [{"memory_item_ids": []} for _ in kwargs["segments"]]
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: Service())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _, **_kwargs: Service())
     monkeypatch.setattr(consolidation, "_prepare_dossier_consolidation_prompts", lambda *_a, **_kw:
         ([], None, {}, {"dossiers": 0, "anchors": 0, "weekly": 0}))
     async def consolidated(**kwargs):
@@ -397,7 +397,7 @@ async def test_registration_uses_segments_not_incidental_memories(tmp_path, monk
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "label": "Replika"}
     monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_kw: db)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: None)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _, **_kwargs: None)
     with sqlite3.connect(db) as con:
         _guidance_schema(con)
         con.execute("CREATE TABLE memory_items (user_id TEXT, soul_id TEXT, memory_type TEXT)")
@@ -453,7 +453,7 @@ async def test_import_retry_recovers_zero_item_segment_before_pending_shortcut(m
             raise RuntimeError(error)
         return state
     monkeypatch.setattr(engine, "_memorize_persist_and_index", review)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: engine)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: engine)
     monkeypatch.setattr(conversation_sources, "import_chat_info", lambda **_kw: {
         "conversation_id": cid, "label": "TestApp", "title": None})
     def tail(**_kwargs):
@@ -500,7 +500,7 @@ def test_first_registration_waits_for_memory_work(tmp_path, monkeypatch, running
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "label": "Replika"}
     monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_kw: db)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: None)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _, **_kwargs: None)
     with sqlite3.connect(db) as con:
         _guidance_schema(con)
     rows, _, _ = chat_import.normalize_messages([{"id": "one", "role": "user", "content": "fictional",
@@ -609,7 +609,7 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
     svc = SimpleNamespace(user_config=SimpleNamespace(user_name="TestHuman"),
                           _claude_code=False, llm_profiles=SimpleNamespace(profiles={"default": profile}),
                           list_active_dossiers=lambda _: anchors, build_dossier_index=lambda _, **_kw: "Known dossier index")
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: svc)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _, **_kwargs: svc)
     prompts = []
     build = main._build_turn_prompt
     def capture(**kwargs):
@@ -665,7 +665,7 @@ def test_import_guidance_uses_soul_period_but_selected_chat_processed_dates(tmp_
     main._write_conversation_state(cid, user_id="TestOwner", soul_id="TestSoul",
         updates={"digest_cursor": 1, "last_memorize_at": "2025-01-02T12:00:00Z"})
     # All-history guidance must not build a turn or call a model.
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: None)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _, **_kwargs: None)
     monkeypatch.setattr(main, "_build_turn_prompt", lambda **_: pytest.fail("All-history guidance built a turn"))
     validate = _endpoint("/imports/validate")
     result = validate(ImportPreview(**scope, conversation_id=cid, current_messages=[]))
@@ -754,7 +754,7 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
             if stop in {"failure", "calendar_retry", "error_write"} and fail and len(extracts) == 2:
                 raise ValueError("Fictional extraction failure")
             return [{"pending_segment_ids": [row["segment"]["segment_id"]]} for row in kwargs["segments"]]
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_, **_kwargs: Service())
     def gather(_deps, **kwargs):
         pairs = kwargs["selected_segments"]
         assert all(owner == cid for owner, _ in pairs)

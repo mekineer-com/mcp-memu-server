@@ -39,13 +39,44 @@ be rebuilt into a new database and atomically installed; mixing embedding spaces
 
 ### `llm.step_models`
 
-Optional chat-model overrides. Empty strings use `llm.chat_model`.
+Canonical advanced model selectors. Missing entries use the base API settings
+in `llm`, including `llm.chat_model`. Existing scalar model names are normalized
+in memory into configured profiles under that base provider, preserving their
+explicit step capacity; loading an existing file does not rewrite it.
 
 - `preprocess`: document/media preprocessing and episode routing.
 - `memory_extract`: memory extraction.
 - `category_update`: dossier filing and revision.
 - `reflection`: retrieval sufficiency and related reflection work.
 - `consolidation`: periodic consolidation.
+
+### Model selector sources
+
+`llm.reply_models` contains `srmm` (SillyTavern Replies) and `other_apps`.
+Reply and advanced rows use these sources:
+
+- `{"source": "config"}`: use the base API profile, not another mapping row.
+- `{"source": "srmm"}`: advanced-only inheritance of the complete SRMM API profile.
+- `{"source": "st_native"}`: use the shared `llm.st_selected.resolved` snapshot.
+- `{"source": "configured", "selection": {...}, "resolved": {...}}`: retain the qualified ST provider/model choice and its backend-resolved profile.
+
+Resolved profiles use canonical `provider: "openai"`, `base_url`, `api_key`,
+`chat_model`, and optional `context_window_tokens`, `max_tokens`, `temperature`,
+and `endpoint_overrides`. The protocol must be OpenAI-compatible; a company or
+model name does not establish compatibility. An empty API key is valid for an
+explicitly keyless endpoint. Different models need their own configured capacity;
+missing capacity is left unset for the existing paid-work preflight to refuse.
+
+The plugin resolves secrets on the backend. Config responses mask nested profile
+keys; saves must not echo those masked values. Changed mapping rows replace that
+row only, preserving unrelated rows, base settings and embedding credentials.
+Startup reloads the actual file; normal autosave is sufficient. No live file
+synchronization or shutdown save is required.
+
+Global `claude_code` hides but preserves API mappings. SillyTavern replies,
+Narrative Suggestions and ST APImw synthesis remain API-backed through SRMM.
+Other replies and memory operations use the global mode; only applicable API
+rows are resolved when needed. Iris live voice settings remain separate.
 
 ### `llm.step_context_window_tokens`
 

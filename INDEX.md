@@ -137,7 +137,7 @@ mcp-memu-server/
 | `/souls` | GET/POST | Discover or create canonical scoped soul databases; enabled-gated keyless Mentra alias at `/integration/mentra/souls` |
 | `/souls/{soul_id}` | GET | Read immutable per-Soul human name without creating schema or a service; optional `include_narrative=true` adds a live WAL-aware narrative read. Shared Mentra alias |
 | `/integration/atomic/memories` | POST | Create one exact, approved human-authored `knowledge` memory for an owner+soul scope |
-| `/config` | GET/POST | Read or update runtime config |
+| `/config` | GET/POST | Read or update runtime config; model patches merge mapping rows without erasing other settings, and mask nested provider credentials |
 | `/reload` | POST | Reload config from disk |
 | `/diag`, `/diag/calls`, `/diag/http`, `/diag/sqlite/*` | GET | Diagnostic pages. Read-only — never use for DB bootstrap. |
 | `/diag/memorize/pending` | GET | Scoped Soul memorize pressure, read-only `context_load_tokens` forecast at the threshold, source warnings, recovery state and historical import-claim activity |
@@ -181,7 +181,7 @@ guess a chat from the last reporting app.
 
 | Module | Purpose |
 |--------|---------|
-| `app/config.py` | `load_config()`, `save_config()`, `mask_config()`, storage path normalization, sqlite DSN scoping |
+| `app/config.py` | `load_config()`, `save_config()`, `mask_config()`, `normalize_model_mappings()`, `merge_model_config()`, operation-specific profile selection, storage path normalization, sqlite DSN scoping |
 | `app/db.py` | `sqlite_ensure_*()`, `sqlite_connect()`, `json_to_db()`, `json_from_db()`, table column introspection |
 | `app/services/consolidation.py` | Shared coordinator: Resource-owned chronological evidence → reusable read-only prompt preparation → committed dossier checkpoint → anchors and, for ordinary runs, weekly reflection → caller-owned final transaction. Ordinary cadence is time OR full-prompt size, reserving one average span; every eligible ordinary run consumes one whole captured set. Historical mode selects capacity-bounded import prefixes without weekly effects or ordinary clock updates; anchors retain whole-life context. Main supplies mode-aware running claims/lock/history callbacks; cache/journals finish after commit. Echo invokes the historical pipeline; its launcher workflow remains unfinished. |
 | `app/services/graph_edges.py` | Edge normalization + write/invalidate helpers (`caused_by`, `evokes`, `conflicts_with`, `parallels`, `shaped_by`) |

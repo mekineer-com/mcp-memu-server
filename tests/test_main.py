@@ -25,6 +25,39 @@ def _route_endpoint(name: str):
 
 
 @pytest.mark.asyncio
+async def test_model_mapping_config_patch_preserves_file_settings(tmp_path, monkeypatch):
+    path = tmp_path / "config.json"
+    initial = {"claude_code": False, "llm": {
+        "api_key": "fictional-base-key", "chat_model": "base-model",
+        "embedding": {"api_key": "fictional-embedding-key"},
+        "reply_models": {"srmm": {"source": "config"}},
+        "step_models": {"memory_extract": {"source": "config"}},
+    }, "untouched": "file-edit"}
+    path.write_text(json.dumps(initial))
+    monkeypatch.setattr(main, "_config_path", lambda: path)
+    monkeypatch.setattr(main, "_save_config", lambda cfg: path.write_text(json.dumps(cfg)))
+    monkeypatch.setattr(main, "_refresh_runtime_limits", lambda: None)
+    monkeypatch.setattr(main, "_ensure_storage_paths", lambda cfg: None)
+    monkeypatch.setattr(main, "_clear_cached_services", lambda: None)
+
+    async def body():
+        return {"claude_code": True, "llm": {
+            "reply_models": {"other_apps": {"source": "config"}},
+            "step_models": {"reflection": {"source": "srmm"}},
+        }}
+
+    response = await main.set_config(SimpleNamespace(json=body))
+    saved = json.loads(path.read_text())
+    assert saved["llm"]["api_key"] == "fictional-base-key"
+    assert saved["llm"]["embedding"] == initial["llm"]["embedding"]
+    assert saved["llm"]["step_models"]["memory_extract"] == {"source": "config"}
+    assert saved["llm"]["reply_models"]["srmm"] == {"source": "config"}
+    assert saved["untouched"] == "file-edit" and saved["claude_code"] is True
+    assert "fictional-base-key" not in response.body.decode()
+    assert "fictional-embedding-key" not in response.body.decode()
+
+
+@pytest.mark.asyncio
 async def test_graph_routes_registered_and_service_lookup_is_live(monkeypatch: pytest.MonkeyPatch) -> None:
     expected = {
         "memory_graph": ("/graph", "GET"),
@@ -46,7 +79,7 @@ async def test_graph_routes_registered_and_service_lookup_is_live(monkeypatch: p
     endpoint = _route_endpoint("memory_graph")
     for marker in ("first", "second"):
         svc = SimpleNamespace(graph_recent=lambda **kwargs: marker)
-        monkeypatch.setattr(main, "_get_service_from_payload", lambda payload: svc)
+        monkeypatch.setattr(main, "_get_service_from_payload", lambda payload, **_kwargs: svc)
         assert await endpoint(user_id="TestOwner", soul_id="TestSoul") == marker
 
 
@@ -84,7 +117,7 @@ async def test_entity_routes_registered_and_service_lookup_is_live(monkeypatch: 
     endpoint = _route_endpoint("atomic_memory_entities")
     for marker in ("first", "second"):
         svc = SimpleNamespace(graph_atomic_entities=lambda **kwargs: marker)
-        monkeypatch.setattr(main, "_get_service_from_payload", lambda payload: svc)
+        monkeypatch.setattr(main, "_get_service_from_payload", lambda payload, **_kwargs: svc)
         assert await endpoint(user_id="TestOwner", soul_id="TestSoul") == marker
 
 
@@ -132,7 +165,7 @@ async def test_review_routes_registered_and_lookups_are_live(monkeypatch: pytest
             return guarded_connect(db_path)
 
         svc = SimpleNamespace(graph_list_pending=lambda **kwargs: {"marker": revision})
-        monkeypatch.setattr(main, "_get_service_from_payload", lambda payload: svc)
+        monkeypatch.setattr(main, "_get_service_from_payload", lambda payload, **_kwargs: svc)
         monkeypatch.setattr(main, "_sqlite_current_path", lambda uid, sid: path)
         monkeypatch.setattr(main, "_sqlite_connect", connect)
         out = await endpoint(user_id="TestOwner", soul_id="TestSoul")
@@ -173,7 +206,7 @@ async def test_category_review_failure_rolls_back_prose_revision_and_cache(monke
     before = store.memory_category_repo.list_categories(scope)["c1"]
     journals = []
     monkeypatch.setattr(graph, "append_category_summary_journal", lambda **entry: journals.append(entry))
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: service)
 
     class Embedder:
         async def embed(self, _texts):
@@ -227,7 +260,7 @@ async def test_category_review_rejects_edit_during_embedding(monkeypatch, tmp_pa
             return [[0.0, 1.0]]
 
     monkeypatch.setattr(service, "_select_embedding_client", lambda _ctx: Embedder())
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: service)
     payload = {"summary": "## Section\nEdited", "title": "Requested title"}
     if snapshot:
         payload.update(displayed_summary="shown", displayed_title="Review", displayed_description="", summaries_revision=0)
@@ -262,7 +295,7 @@ async def test_category_review_rejects_unseen_identity(monkeypatch, tmp_path, fi
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     service = _review_test_service(tmp_path, monkeypatch, scope)
     store = service.database
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: service)
     store.memory_category_repo.update_category(category_id="c1", **{field: "Unseen text"})
     payload = {"displayed_summary": "shown", "displayed_title": "Review", "displayed_description": "", "summaries_revision": 0}
     if action == "update":
@@ -529,7 +562,7 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
         return {"memory_id": item_id}
 
     svc = SimpleNamespace(graph_delete_memory=_delete_memory)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: svc)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: svc)
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
@@ -620,7 +653,7 @@ async def test_turn_undo_restores_state_before_best_effort_reflection_cleanup(
     monkeypatch.setattr(
         main,
         "_get_service_from_payload",
-        lambda _payload: (_ for _ in ()).throw(AssertionError("legacy undo needs no service")),
+        lambda _payload, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy undo needs no service")),
     )
     assert await main.conversation_turn_undo(
         "chat",
@@ -807,7 +840,7 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
 
     captured: dict[str, Any] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         assert safe.get("_read_only_retrieve") is True
         assert safe.get("mental_health_addon") is False
         captured["safe"] = safe
@@ -873,7 +906,7 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
 async def test_prepared_reply_keeps_anchors_when_character_card_overrides_narrative(monkeypatch, card):
     anchors = [SimpleNamespace(anchor_role="soul", summary="I paint coastal sketches."),
                SimpleNamespace(anchor_role="user", summary="My human prefers early walks.")]
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: SimpleNamespace(
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _, **_kwargs: SimpleNamespace(
         user_config=SimpleNamespace(user_name="TestHuman"),
         list_active_dossiers=lambda _scope: anchors,
         build_dossier_index=lambda _scope, **_kw: "- Sketches: coast walks",
@@ -921,7 +954,7 @@ async def test_reply_fallback_adds_anchors_but_prepared_prompt_is_unchanged(monk
     service = Service()
     service._claude_code = claude_code
     original = "Prepared voice\n\n" + main._render_anchor_context(service.anchors)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: service)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _, **_kwargs: service)
     monkeypatch.setattr(main, "_load_soul_gen_config", lambda *args, **kwargs: {})
     monkeypatch.setattr(main, "_turn_state_read", lambda *args, **kwargs: (
         {"digest_cursor": 0}, "Narrative voice", None, [], [], 0, None,
@@ -1595,7 +1628,7 @@ async def test_conversation_retrieve_read_only_skips_sillytavern_snapshot(
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("snapshot write must be suppressed")),
     )
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         return {
             "ok": True,
             "result": {},
@@ -2259,7 +2292,7 @@ async def test_force_consolidation_validation_failure_does_not_record_or_seed_st
         assert _kwargs["format_all_chat_history_for_ai"] is main._format_all_chat_history_for_ai
         raise HTTPException(status_code=404, detail="conversation state not found")
 
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: object())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: object())
     monkeypatch.setattr(main, "_run_consolidation_pipeline_once", invalid_request)
     monkeypatch.setattr(
         consolidation,
@@ -2729,12 +2762,16 @@ def test_run_retrieve_reports_rag_method(monkeypatch: pytest.MonkeyPatch, identi
         async def retrieve(self, *_args, **_kwargs):
             return {"items": []}
 
-    def service(payload):
+    def service(payload, **_kwargs):
         assert payload["user"] == {"user_id": "TestOwner", "soul_id": "TestSoul"}
+        assert not _kwargs
+        assert payload["llm_profiles"] == {"default": {"chat_model": "explicit-generic-model"}}
+        assert payload["claude_code"] is False
         return _FakeSvc()
 
     monkeypatch.setattr(main, "_get_service_from_payload", service)
-    out = asyncio.run(main._run_retrieve({"query": "hello", **identity}))
+    out = asyncio.run(main._run_retrieve({"query": "hello", **identity,
+        "llm_profiles": {"default": {"chat_model": "explicit-generic-model"}}, "claude_code": False}))
     assert out["method"] == "rag"
 
 
@@ -2743,7 +2780,7 @@ def test_run_retrieve_reports_rag_method(monkeypatch: pytest.MonkeyPatch, identi
 @pytest.mark.parametrize("selector", ["where", "scope", "top"])
 @pytest.mark.parametrize("key", ["user_id", "soul_id"])
 async def test_retrieval_rejects_conflicting_identity_before_service_access(monkeypatch, endpoint, selector, key):
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: pytest.fail("conflicting scope reached service"))
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _, **_kwargs: pytest.fail("conflicting scope reached service"))
     identity = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     payload = {"query": "sketches", "message": "sketches", "user": identity}
     if selector == "top":
@@ -2773,7 +2810,7 @@ async def test_retrieval_anchors_cover_supplied_queries_without_mutation(monkeyp
 
     service = Service()
     service.anchors = anchors
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _: service)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _, **_kwargs: service)
     queries = [{"role": "message", "content": {"text": "coastal sketches"}}]
     if identity_shape != "absent":
         content = {"text": "Caller identity", "tag": "preserved"} if identity_shape == "mapping" else "Caller identity"
@@ -4732,7 +4769,7 @@ async def test_busy_consolidation_closes_progress_before_pipeline(monkeypatch, h
         monkeypatch.setitem(main._FORCED_MEMORIZE_INFLIGHT, marker, True)
     else:
         monkeypatch.setitem(main._CONSOLIDATION_RUNNING, ("TestOwner", "TestSoul"), True)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: pytest.fail("busy admission must precede service lookup"))
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_, **_kwargs: pytest.fail("busy admission must precede service lookup"))
     monkeypatch.setattr(main, "_make_consolidation_deps", lambda: pytest.fail("busy handoff must not start the pipeline"))
     progress = {marker: {"active": True, "phase": "accepted"}}
     result = await main._run_consolidation_task(
@@ -5159,7 +5196,7 @@ async def test_conversation_retrieve_owner_projection(monkeypatch, human_name, c
     async def retrieve(safe, **kwargs):
         captured.update(safe)
         return {"result": {}, "memory_cache": [], "intentions_active": []}
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _safe: svc)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _safe, **_kwargs: svc)
     monkeypatch.setattr(main, "_run_retrieve", retrieve)
     monkeypatch.setattr(main, "_require_soul_active", lambda *_a, **_kw: None)
     monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a: None)
@@ -5281,7 +5318,7 @@ async def test_retired_unsaved_retry_processes_surviving_st_source(monkeypatch):
             captured.extend(json.loads(segment["raw_text"]) for segment in kwargs["segments"])
             return [{}]
     service = Service()
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a: service)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_kwargs: service)
     monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
     tasks = BackgroundTasks()
     try:
@@ -5337,7 +5374,7 @@ async def test_retrieve_freezes_background_summaries_and_tails_across_await(monk
         })
     svc = SimpleNamespace(user_config=SimpleNamespace(user_name="TestHuman"),
         list_active_dossiers=lambda _scope: [], build_dossier_index=lambda *_a, **_kw: "")
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _safe: svc)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _safe, **_kwargs: svc)
     monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a: None)
     monkeypatch.setattr(main, "_load_background_rollup_tail", lambda **kw: [{
         "role": "unknown", "content": "FROZEN CURRENT TAIL", "source_conversation_index": 1}])
@@ -5470,7 +5507,7 @@ async def test_historical_memorize_publishes_only_import_state(tmp_path, monkeyp
     monkeypatch.setattr(main, "_write_conversation_state", write)
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", load)
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_: path)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_, **_kwargs: Service())
     monkeypatch.setattr(main, "_run_consolidation_task", lambda *_a, **_kw: pytest.fail("no normal schedule during import"))
     key = main._memorize_lock_key(scope["user_id"], scope["soul_id"])
     if batch_owned:
@@ -6288,7 +6325,7 @@ def test_memory_graph_endpoint_uses_scoped_service(monkeypatch: pytest.MonkeyPat
             calls["limit"] = limit
             return {"nodes": [], "edges": [], "limit": limit, "count": 0}
 
-    def _fake_service(payload):
+    def _fake_service(payload, **_kwargs):
         calls["payload"] = payload
         return _Svc()
 
@@ -6310,7 +6347,7 @@ def test_memory_graph_item_endpoint_uses_scoped_service(monkeypatch: pytest.Monk
             calls["where"] = where
             return {"id": item_id}
 
-    def _fake_service(payload):
+    def _fake_service(payload, **_kwargs):
         calls["payload"] = payload
         return _Svc()
 
@@ -6332,7 +6369,7 @@ def test_atomic_create_memory_endpoint_preserves_text_and_scope(monkeypatch: pyt
             calls["where"] = where
             return {"id": "memory:m1", "summary": text}
 
-    def _fake_service(payload):
+    def _fake_service(payload, **_kwargs):
         calls["payload"] = payload
         return _Svc()
 
@@ -6358,7 +6395,7 @@ def test_atomic_create_memory_endpoint_rejects_empty_text(monkeypatch: pytest.Mo
         async def graph_create_manual_memory(self, _text, *, where):
             raise ValueError("text is required")
 
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: _Svc())
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(
@@ -6382,7 +6419,7 @@ def test_memory_graph_category_detail_includes_summary_revision(monkeypatch: pyt
     service = SimpleNamespace(
         graph_memory=lambda _item_id, *, where: {"id": "category:c1", "summary": "shown"}
     )
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: service)
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: path)
 
     out = asyncio.run(_route_endpoint("memory_graph_item")(item_id="category:c1", user_id="u", soul_id="s"))
@@ -6405,7 +6442,7 @@ def test_memory_graph_item_update_endpoint_uses_scoped_service(monkeypatch: pyte
             calls["expected_summary"] = expected_summary
             return {"id": item_id, "summary": summary}
 
-    def _fake_service(payload):
+    def _fake_service(payload, **_kwargs):
         calls["payload"] = payload
         return _Svc()
 
@@ -6441,7 +6478,7 @@ def test_memory_graph_pending_endpoint_uses_scoped_service(monkeypatch: pytest.M
             calls["where"] = where
             return {"items": [], "categories": []}
 
-    def _fake_service(payload):
+    def _fake_service(payload, **_kwargs):
         calls["payload"] = payload
         return _Svc()
 
@@ -6469,7 +6506,7 @@ def test_memory_graph_item_approve_endpoint_uses_scoped_service(monkeypatch: pyt
             calls["expected_summary"] = expected_summary
             return {"id": item_id}
 
-    def _fake_service(payload):
+    def _fake_service(payload, **_kwargs):
         calls["payload"] = payload
         return _Svc()
 
@@ -6500,7 +6537,7 @@ def test_memory_graph_item_delete_endpoint_uses_scoped_service(monkeypatch: pyte
             calls["expected_summary"] = expected_summary
             return {"id": item_id}
 
-    def _fake_service(payload):
+    def _fake_service(payload, **_kwargs):
         calls["payload"] = payload
         return _Svc()
 
@@ -6530,7 +6567,7 @@ def test_memory_graph_item_delete_returns_citation_conflict(monkeypatch: pytest.
             assert expected_summary == "shown"
             raise main.MemoryCitationConflictError([usage])
 
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: _Svc())
 
     with pytest.raises(main.HTTPException) as exc_info:
         asyncio.run(
@@ -6559,7 +6596,7 @@ def test_memory_graph_item_mutations_map_stale_summary_to_conflict(monkeypatch: 
         def graph_delete_memory(self, *_args, **_kwargs):
             raise ValueError("summary_snapshot_stale")
 
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: _Svc())
     calls = [
         _route_endpoint("memory_graph_item_update")(
             item_id="memory:m1",
@@ -6630,7 +6667,7 @@ def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: 
             calls["approved"] = approved
             return await service.prepare_graph_category_update(item_id, summary=summary, title=title, description=description, category_kind=category_kind, where=where, edited_by=edited_by, approved=approved)
 
-    def _fake_service(payload):
+    def _fake_service(payload, **_kwargs):
         calls["payload"] = payload
         return _Svc()
 
@@ -6657,7 +6694,7 @@ def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: 
 def test_memory_graph_category_update_reserves_summary_revision(monkeypatch: pytest.MonkeyPatch, tmp_path):
     service = _review_test_service(tmp_path, monkeypatch, {"user_id": "u", "soul_id": "s"})
 
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: service)
 
     out = asyncio.run(
         _route_endpoint("memory_graph_category_update")(
@@ -6712,7 +6749,7 @@ def test_category_membership_routes_reserve_snapshot_and_forward_state(
             calls.append({"category_id": category_id, "memory_id": memory_id, **{k: v for k, v in kwargs.items() if k != "session"}})
             return service.graph_set_category_membership(category_id, memory_id, **kwargs)
 
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: _Svc())
 
     attached = asyncio.run(
         _route_endpoint("memory_graph_category_memory_attach")(
@@ -6795,7 +6832,7 @@ def test_category_membership_routes_map_engine_errors(
         def graph_set_category_membership(self, *_args, **_kwargs):
             raise error
 
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: _Svc())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: _Svc())
 
     with pytest.raises(main.HTTPException) as exc:
         asyncio.run(
@@ -6840,7 +6877,7 @@ def test_memory_graph_category_approve_endpoint_uses_scoped_service(monkeypatch:
             calls["where"] = where
             return service.graph_approve_category(item_id, where=where, session=session)
 
-    def _fake_service(payload):
+    def _fake_service(payload, **_kwargs):
         calls["payload"] = payload
         return _Svc()
 
@@ -7334,7 +7371,7 @@ async def test_conversation_retrieve_preserves_prebuilt_queries_without_cutoff(
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -7385,7 +7422,7 @@ async def test_conversation_retrieve_uses_payload_history_for_primary_chat_queri
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -7461,7 +7498,7 @@ async def test_conversation_retrieve_turn_prompt_reuses_first_floored_history(
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         captured["safe"] = safe
         return {
             "ok": True,
@@ -7572,7 +7609,7 @@ async def test_conversation_retrieve_filters_whatsapp_history_before_prompt(
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -7637,7 +7674,7 @@ async def test_conversation_retrieve_rebuilds_prebuilt_queries_when_cutoff_activ
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -7707,7 +7744,7 @@ async def test_live_conversation_retrieve_degrades_source_history_load_failure(
     )
     captured: dict[str, Any] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, Any], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, Any]:
+    async def _fake_run_retrieve(safe: dict[str, Any], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, Any]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -7768,7 +7805,7 @@ async def test_live_conversation_retrieve_degrades_active_since_filter_failure(
     )
     captured: dict[str, Any] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, Any], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, Any]:
+    async def _fake_run_retrieve(safe: dict[str, Any], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, Any]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -8007,7 +8044,7 @@ async def test_conversation_retrieve_uses_same_payload_history_for_turn_prompt(
         lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         return {
             "ok": True,
             "result": {},
@@ -8066,7 +8103,7 @@ async def test_conversation_retrieve_preserves_history_already_floored_by_source
     captured: dict[str, Any] = {}
 
     async def _fake_run_retrieve(
-        safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None
+        safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None
     ) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
@@ -8182,7 +8219,7 @@ async def test_conversation_retrieve_uses_sillytavern_floor_after_memorize(
         ),
     )
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -8221,7 +8258,7 @@ async def test_conversation_retrieve_does_not_consume_prior_context(
         ),
     )
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         return {
             "ok": True,
             "result": {},
@@ -8278,7 +8315,7 @@ async def test_conversation_retrieve_sillytavern_floor_is_not_a_cap(
         ),
     )
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -8350,7 +8387,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_after_memorize(
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -8438,7 +8475,7 @@ async def test_conversation_retrieve_uses_whatsapp_floor_without_memorize_cursor
         ]
 
     monkeypatch.setattr(main, "_load_current_whatsapp_history_from_source", _fake_load_current_whatsapp_history_from_source)
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -8548,7 +8585,7 @@ async def test_conversation_retrieve_uses_live_message_to_trigger_floor_without_
     monkeypatch.setattr(main, "_load_current_whatsapp_history_from_source", _fake_load_current_whatsapp_history_from_source)
     monkeypatch.setattr(main, "_load_cross_tail_from_sources", lambda *_a, **_k: [])
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -8626,7 +8663,7 @@ async def test_conversation_retrieve_preserves_source_indexes_for_primary_floor(
     monkeypatch.setattr(main, "_load_current_whatsapp_history_from_source", _fake_load_current_whatsapp_history_from_source)
     monkeypatch.setattr(main, "_load_cross_tail_from_sources", lambda *_a, **_k: [])
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -8719,7 +8756,7 @@ async def test_conversation_retrieve_omits_whatsapp_floor_when_no_new_messages(
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -8790,7 +8827,7 @@ async def test_conversation_retrieve_does_not_persist_current_user_message(
         lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
     )
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -8839,7 +8876,7 @@ async def test_conversation_retrieve_preserves_saved_sillytavern_source(
     )
     monkeypatch.setattr(main, "_get_storage_dir", lambda *_a, **_k: storage_dir)
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
     monkeypatch.setattr(main, "_run_retrieve", _fake_run_retrieve)
@@ -8923,7 +8960,7 @@ async def test_conversation_retrieve_includes_sillytavern_cross_tail_from_snapsh
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -8987,7 +9024,7 @@ async def test_conversation_retrieve_preserves_caller_queries(
 
     captured: dict[str, object] = {}
 
-    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None) -> dict[str, object]:
+    async def _fake_run_retrieve(safe: dict[str, object], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, object]:
         captured["safe"] = safe
         return {"ok": True, "result": {}, "conversation_id": conversation_id, "intentions_active": []}
 
@@ -9458,7 +9495,8 @@ async def test_conversation_turn_does_not_retry_parse_failure(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("response_identity", ["Roleplay explorer.", "Inspector identity.", ""])
-async def test_conversation_turn_keeps_response_identity_out_of_native_continuation(monkeypatch, response_identity):
+@pytest.mark.parametrize("api_response", [False, True])
+async def test_conversation_turn_keeps_response_identity_out_of_native_continuation(monkeypatch, response_identity, api_response):
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     cid = "sillytavern:identity-boundary"
     narrative = "I am the real shared fictional Soul."
@@ -9484,6 +9522,8 @@ async def test_conversation_turn_keeps_response_identity_out_of_native_continuat
             return json.dumps(contract)
 
     svc = Service()
+    reply_svc = Service()
+    reply_svc._claude_code = not api_response
     queued = []
     native_queue = main._queue_free_turn_chain
 
@@ -9491,12 +9531,13 @@ async def test_conversation_turn_keeps_response_identity_out_of_native_continuat
         queued.append(kwargs)
         return native_queue(**kwargs)
 
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_kw: svc)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **kw: reply_svc if kw.get("operation") == "st_reply" else svc)
     monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_kw: {})
     monkeypatch.setattr(main, "_prepare_auto_memorize", lambda *_a, **_kw: (0, None))
     monkeypatch.setattr(main, "_record_call", lambda *_a, **_kw: None)
     monkeypatch.setattr(main, "_queue_free_turn_chain", capture_queue)
     monkeypatch.setitem(main._CONFIG, "retrieve", {"apimw_enabled": False})
+    monkeypatch.setitem(main._CONFIG, "claude_code", True)
     before = set(main._BACKGROUND_TASKS)
     out = await main.conversation_turn(cid, {
         "user": scope, "message": "Inspect the fictional garden.", "chat_name": "Fictional garden",
@@ -9508,24 +9549,33 @@ async def test_conversation_turn_keeps_response_identity_out_of_native_continuat
     await asyncio.gather(*(main._BACKGROUND_TASKS - before))
     assert out["continuation_queued"] is True
     assert len(queued) == 1 and queued[0]["soul_card"] == narrative
-    assert len(svc.calls) == 2
-    response, continuation = svc.calls
+    response = reply_svc.calls[0]
+    continuation = svc.calls[0] if api_response else reply_svc.calls[1]
     if response_identity:
         assert response[1]["system_prompt"] == response_identity
         assert response_identity not in continuation[1]["system_prompt"]
     else:
         assert narrative in response[1]["system_prompt"]
     assert narrative in continuation[1]["system_prompt"]
-    assert continuation[1]["resume_session_id"] == response[1]["session_id"]
-    assert continuation[1]["resume_session_id"]
+    if api_response:
+        assert "session_id" not in response[1]
+        assert continuation[1]["session_id"]
+        assert "resume_session_id" not in continuation[1]
+        assert "Inspect the fictional garden." in continuation[0]
+        assert "A fictional reply." in continuation[0]
+    else:
+        assert continuation[1]["resume_session_id"] == response[1]["session_id"]
+        assert continuation[1]["resume_session_id"]
     assert "Finish the fictional task." in continuation[0]
     assert "TestOwner::TestSoul" not in main._FREE_TURN_INFLIGHT
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("existing_session", ["session-123", None])
 async def test_free_turn_chain_caps_at_three_without_direct_memorize(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    existing_session: str | None,
 ) -> None:
     db_path = tmp_path / "SoulTest.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
@@ -9549,12 +9599,12 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize(
     svc = _FakeSvc()
     try:
         await main._run_free_turn_chain(
-            marker="u1::Siri",
+            marker="TestOwner::TestSoul",
             service=svc,
-            user_id="u1",
-            soul_id="Siri",
-            conversation_id="whatsapp:dm:Marcos",
-            session_id="session-123",
+            user_id="TestOwner",
+            soul_id="TestSoul",
+            conversation_id="whatsapp:dm:fictional-sender",
+            session_id=existing_session,
             initial_reason="task",
             initial_contract={
                 "response_target": "listen",
@@ -9568,7 +9618,12 @@ async def test_free_turn_chain_caps_at_three_without_direct_memorize(
         main._FREE_TURN_INFLIGHT.clear()
 
     assert len(svc.chat_calls) == 3
-    assert all(call["resume_session_id"] == "session-123" for call in svc.chat_calls)
+    if existing_session:
+        assert all(call["resume_session_id"] == existing_session for call in svc.chat_calls)
+    else:
+        created = svc.chat_calls[0]["session_id"]
+        assert created and "resume_session_id" not in svc.chat_calls[0]
+        assert all(call["resume_session_id"] == created for call in svc.chat_calls[1:])
     assert all("first-person activity recap" in str(call["system_prompt"]) for call in svc.chat_calls)
 
     con = main._sqlite_connect(db_path)
@@ -10267,9 +10322,11 @@ async def test_due_free_turn_follow_up_runs_fresh_turn_and_queues_outbound(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cli", [False, True])
 async def test_due_free_turn_follow_up_from_sillytavern_queues_private_whatsapp(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    cli: bool,
 ) -> None:
     db_path = tmp_path / "TestSoul.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
@@ -10290,8 +10347,30 @@ async def test_due_free_turn_follow_up_from_sillytavern_queues_private_whatsapp(
         stored["soul_card"] = "An old queued roleplay identity."
         con.execute("UPDATE free_turn_followups SET payload_json = ? WHERE id = ?", (json.dumps(stored), followup_id))
     calls = []
+    operations = []
     original_rows = []
     native_runner = main._run_free_turn_followup
+    native_turn = main.conversation_turn
+
+    class Service(AnchorService):
+        _claude_code = cli
+
+        async def chat(self, _prompt, **kwargs):
+            assert bool(kwargs.get("session_id")) is cli
+            return json.dumps({"working_thought": None, "annulments": [], "rehearsal": "Fictional findings.",
+                              "response_target": "respond", "response": "I found it.",
+                              "activity_recap": "I checked the fictional garden."})
+
+    def service(payload, *, operation=None):
+        operations.append(operation)
+        assert operation == "other_reply"
+        return Service()
+
+    monkeypatch.setattr(main, "_get_service_from_payload", service)
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_kw: {})
+    monkeypatch.setattr(main, "_prepare_auto_memorize", lambda *_a, **_kw: (0, None))
+    monkeypatch.setitem(main._CONFIG, "claude_code", cli)
+    monkeypatch.setitem(main._CONFIG, "retrieve", {"apimw_enabled": False})
 
     async def capture_runner(row, path):
         original_rows.append(row)
@@ -10311,7 +10390,7 @@ async def test_due_free_turn_follow_up_from_sillytavern_queues_private_whatsapp(
 
     async def _fake_turn(_conversation_id: str, _payload: dict[str, Any]) -> dict[str, Any]:
         calls.append(_payload)
-        return {"ok": True, "response_target": "respond", "response": "I found it."}
+        return await native_turn(_conversation_id, _payload)
 
     monkeypatch.setattr(main, "conversation_retrieve", _fake_retrieve)
     monkeypatch.setattr(main, "conversation_turn", _fake_turn)
@@ -10325,6 +10404,7 @@ async def test_due_free_turn_follow_up_from_sillytavern_queues_private_whatsapp(
         assert stored["follow_up_reason"] in payload["self_turn_directive"]
         assert payload["user"] == {"user_id": "TestOwner", "soul_id": "TestSoul", "conversation_id": "sillytavern:chat-1"}
     assert original_rows[0]["payload"] == stored
+    assert operations == ["other_reply"]
 
     con = main._sqlite_connect(db_path)
     try:

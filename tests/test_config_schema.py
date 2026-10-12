@@ -60,6 +60,172 @@ def test_example_is_valid_json_and_non_empty() -> None:
     assert example["storage"]["metadata_store"]["dsn"]
 
 
+def _mapping_config() -> dict:
+    return {"claude_code": False, "llm": {
+        "provider": "openai", "base_url": "https://fictional.example/v1", "api_key": "base-secret",
+        "chat_model": "custom-base", "context_window_tokens": 100000,
+        "embedding": {"api_key": "embedding-secret", "base_url": "https://embedding.example/"},
+        "reply_models": {"srmm": {"source": "configured", "selection": {"provider": "openrouter", "model": "fictional-reply"},
+            "resolved": {"provider": "openai", "base_url": "https://reply.example/v1", "api_key": "reply-secret",
+                         "chat_model": "fictional-reply", "context_window_tokens": 50000, "max_tokens": 2000}},
+            "other_apps": {"source": "st_native"}},
+        "st_selected": {"selection": {"provider": "openai", "model": "fictional-native"}, "resolved": {
+            "provider": "openai", "base_url": "https://native.example/v1", "api_key": "native-secret",
+            "chat_model": "fictional-native", "context_window_tokens": 60000}},
+        "step_models": {"preprocess": {"source": "config"}, "memory_extract": {"source": "srmm"},
+                        "category_update": {"source": "st_native"}, "consolidation": {"source": "srmm"},
+                        "reflection": {"source": "config"}},
+    }, "storage": {"resources_dir": "untouched"}, "mentra": {"gemini_api_key": "voice-secret", "model": "unchanged-voice"}}
+
+
+def test_model_mapping_normalization_preserves_scalar_model_and_matching_capacity() -> None:
+    cfg = _mapping_config()
+    cfg["llm"]["step_models"] = {"memory_extract": "old-model", "preprocess": "another-model"}
+    cfg["llm"]["step_context_window_tokens"] = {"memory_extract": 40000}
+    normalized = app_config.normalize_model_mappings(cfg)
+    assert cfg["llm"]["step_models"]["memory_extract"] == "old-model"
+    rows = normalized["llm"]["step_models"]
+    assert rows["memory_extract"]["resolved"]["chat_model"] == "old-model"
+    assert rows["memory_extract"]["resolved"]["context_window_tokens"] == 40000
+    assert "context_window_tokens" not in rows["preprocess"]["resolved"]
+    assert rows["reflection"] == {"source": "config"}
+
+
+def test_load_config_normalizes_without_rewriting_existing_file(monkeypatch) -> None:
+    cfg = _mapping_config()
+    cfg["llm"]["step_models"] = {"memory_extract": "saved-scalar-model"}
+    cfg["llm"]["step_context_window_tokens"] = {"memory_extract": 70000}
+    path = app_config.config_path()
+    path.parent.mkdir(parents=True)
+    original = json.dumps(cfg)
+    path.write_text(original)
+    monkeypatch.setattr(app_config, "ensure_storage_paths", lambda _cfg: None)
+    loaded = app_config.load_config()
+    assert loaded["llm"]["step_models"]["memory_extract"]["resolved"]["context_window_tokens"] == 70000
+    assert path.read_text() == original
+
+
+@pytest.mark.parametrize("operation,names", [
+    ("st_reply", set()), ("other_reply", set()), ("retrieve", {"reflection"}), ("rollup", {"preprocess"}),
+    ("memorize", {"preprocess", "memory_extract", "category_update", "consolidation"}),
+    ("consolidation", {"category_update", "consolidation"}), (None, set(app_config.MODEL_STEPS)),
+])
+def test_model_mapping_operation_profiles(operation, names) -> None:
+    cfg = _mapping_config()
+    profiles = app_config.default_llm_profiles_from_server_config(cfg, operation=operation)
+    assert set(profiles) == {"default", "embedding"} | names
+    expected = "fictional-reply" if operation == "st_reply" else "fictional-native" if operation == "other_reply" else "custom-base"
+    assert profiles["default"]["chat_model"] == expected
+    assert profiles["embedding"]["api_key"] == "embedding-secret"
+    if "memory_extract" in profiles:
+        assert profiles["memory_extract"]["api_key"] == "reply-secret"
+        assert profiles["memory_extract"]["context_window_tokens"] == 50000
+    if "category_update" in profiles:
+        assert profiles["category_update"]["chat_model"] == "fictional-native"
+
+
+@pytest.mark.parametrize("operation", [None, "other_reply", "retrieve", "rollup", "memorize", "consolidation"])
+def test_cli_skips_unresolved_hidden_api_mappings(operation) -> None:
+    cfg = _mapping_config()
+    cfg["claude_code"] = True
+    del cfg["llm"]["st_selected"]
+    cfg["llm"]["step_models"]["preprocess"] = {"source": "configured"}
+    assert set(app_config.default_llm_profiles_from_server_config(cfg, operation=operation)) == {"default", "embedding"}
+    assert app_config.default_llm_profiles_from_server_config(cfg, operation="st_reply")["default"]["chat_model"] == "fictional-reply"
+
+
+def test_unused_native_mapping_does_not_block_retrieval_or_normalization() -> None:
+    cfg = _mapping_config()
+    del cfg["llm"]["st_selected"]
+    app_config.normalize_model_mappings(cfg)
+    assert app_config.default_llm_profiles_from_server_config(cfg, operation="retrieve")["reflection"]["chat_model"] == "custom-base"
+    with pytest.raises(ValueError, match="resolved st_native"):
+        app_config.default_llm_profiles_from_server_config(cfg, operation="other_reply")
+
+
+@pytest.mark.parametrize("capacity", [0, -1, True, "64000"])
+def test_selected_model_capacity_must_be_positive_integer(capacity) -> None:
+    cfg = _mapping_config()
+    cfg["llm"]["reply_models"]["srmm"]["resolved"]["context_window_tokens"] = capacity
+    with pytest.raises(ValueError, match="positive integer"):
+        app_config.default_llm_profiles_from_server_config(cfg, operation="st_reply")
+
+
+@pytest.mark.parametrize("field", ["context_window_tokens", "max_tokens"])
+@pytest.mark.parametrize("capacity", [0, -1, True, "64000"])
+def test_base_model_capacity_must_be_positive_integer(field, capacity) -> None:
+    cfg = _mapping_config()
+    cfg["llm"]["reply_models"]["srmm"] = {"source": "config"}
+    cfg["llm"][field] = capacity
+    with pytest.raises(ValueError, match="positive integer"):
+        app_config.default_llm_profiles_from_server_config(cfg, operation="st_reply")
+
+
+def test_effective_generic_api_mode_preserves_steps_under_global_cli() -> None:
+    cfg = _mapping_config()
+    cfg["claude_code"] = True
+    effective = {**cfg, "claude_code": False}
+    profiles = app_config.default_llm_profiles_from_server_config(effective)
+    assert profiles["memory_extract"]["chat_model"] == "fictional-reply"
+    assert cfg["claude_code"] is True
+
+
+def test_config_model_default_and_native_inheritance_are_not_self_references() -> None:
+    cfg = _mapping_config()
+    cfg["llm"]["reply_models"]["srmm"] = {"source": "config"}
+    profiles = app_config.default_llm_profiles_from_server_config(cfg, operation="memorize")
+    assert profiles["memory_extract"]["chat_model"] == "custom-base"
+    cfg["llm"]["reply_models"]["srmm"] = {"source": "srmm"}
+    with pytest.raises(ValueError, match="advanced steps"):
+        app_config.normalize_model_mappings(cfg)
+
+
+def test_model_config_merge_preserves_secrets_hidden_rows_and_other_settings() -> None:
+    current = _mapping_config()
+    body = {"llm": {"reply_models": {"srmm": {"source": "config"}}, "embedding": {"base_url": "https://new-embedding.example/"}},
+            "claude_code": True}
+    result = app_config.merge_model_config(current, body)
+    assert result["llm"]["reply_models"]["srmm"] == {"source": "config"}
+    assert result["llm"]["reply_models"]["other_apps"] == current["llm"]["reply_models"]["other_apps"]
+    assert result["llm"]["step_models"] == current["llm"]["step_models"]
+    assert result["llm"]["st_selected"] == current["llm"]["st_selected"]
+    assert result["llm"]["api_key"] == "base-secret" and result["llm"]["embedding"]["api_key"] == "embedding-secret"
+    assert result["storage"] == current["storage"] and result["mentra"] == current["mentra"]
+    assert current["claude_code"] is False and body["llm"]["reply_models"]["srmm"] == {"source": "config"}
+
+
+def test_model_mapping_masks_every_nested_profile_without_mutating_config() -> None:
+    cfg = _mapping_config()
+    masked = app_config.mask_config(cfg)
+    assert masked["llm"]["api_key"] == "base...cret"
+    for holder in [masked["llm"]["embedding"], masked["llm"]["reply_models"]["srmm"]["resolved"], masked["llm"]["st_selected"]["resolved"]]:
+        assert holder["api_key"] == "***"
+    assert cfg["llm"]["api_key"] == "base-secret"
+    assert app_config.mask_config(cfg, include_llm_secret=True)["llm"]["st_selected"]["resolved"]["api_key"] == "native-secret"
+    assert masked["mentra"]["gemini_api_key"] == "***"
+
+
+@pytest.mark.parametrize("secret", ["***", "abcd...wxyz"])
+def test_model_config_rejects_masked_secret_round_trip(secret) -> None:
+    cfg = _mapping_config()
+    with pytest.raises(ValueError, match="Masked api_key"):
+        app_config.merge_model_config(cfg, {"llm": {"reply_models": {"srmm": {"source": "configured", "resolved": {"api_key": secret}}}}})
+
+
+@pytest.mark.parametrize("cli", [False, True])
+def test_model_mapping_rejects_native_noncompatible_protocol(cli) -> None:
+    cfg = _mapping_config()
+    cfg["claude_code"] = cli
+    row = cfg["llm"]["reply_models"]["srmm"]
+    row["resolved"]["provider"] = "anthropic"
+    with pytest.raises(ValueError, match="OpenAI-compatible"):
+        app_config.default_llm_profiles_from_server_config(cfg, operation="st_reply")
+    with pytest.raises(ValueError, match="OpenAI-compatible"):
+        app_config.merge_model_config(_mapping_config(), {"llm": {"reply_models": {"srmm": row}}})
+    with pytest.raises(ValueError, match="OpenAI-compatible"):
+        app_config.merge_model_config(cfg, {"llm": {"st_selected": {"resolved": row["resolved"]}}})
+
+
 def test_default_whatsapp_paths_point_at_channels_data() -> None:
     hermes = default_config()["hermes"]
 
@@ -86,6 +252,7 @@ def test_default_mentra_contract_is_keyless_and_loopback() -> None:
 def test_config_writes_are_atomic_and_private(operation: str, monkeypatch: pytest.MonkeyPatch) -> None:
     path = app_config.config_path()
     cfg = {"llm": {"api_key": "fictional-key"}, "mentra": {"public_base_url": "http://phone.example.invalid"}}
+    expected = app_config.normalize_model_mappings(cfg) if operation == "load" else cfg
     original = b'{"llm": {"api_key": "fictional-old-key"}}'
     if operation == "replace":
         path.parent.mkdir()
@@ -98,7 +265,7 @@ def test_config_writes_are_atomic_and_private(operation: str, monkeypatch: pytes
         staged = Path(src)
         assert Path(dst) == path
         assert staged.parent == path.parent
-        assert staged.read_text(encoding="utf-8") == json.dumps(cfg, indent=2)
+        assert staged.read_text(encoding="utf-8") == json.dumps(expected, indent=2)
         if os.name == "posix":
             assert staged.stat().st_mode & 0o777 == 0o600
         if operation == "replace":
@@ -111,11 +278,11 @@ def test_config_writes_are_atomic_and_private(operation: str, monkeypatch: pytes
     monkeypatch.setattr(app_config.os, "replace", replace)
     if operation == "load":
         monkeypatch.setattr(app_config, "default_config", lambda: cfg)
-        assert app_config.load_config() == cfg
+        assert app_config.load_config() == expected
     else:
         app_config.save_config(cfg)
     assert len(staged_paths) == 1
-    assert json.loads(path.read_text(encoding="utf-8")) == cfg
+    assert json.loads(path.read_text(encoding="utf-8")) == expected
     if os.name == "posix":
         assert path.stat().st_mode & 0o777 == 0o600
     assert list(path.parent.iterdir()) == [path]
@@ -133,9 +300,13 @@ def test_config_read_preserves_missing_bootstrap_and_valid_objects(existing, mon
         path.write_text(json.dumps(cfg), encoding="utf-8")
     assert server_run._read_json(path) == (cfg if existing else {})
     assert path.exists() is existing
-    assert app_config.load_config() == cfg
-    assert initialized == [cfg]
-    assert server_run._read_json(path) == cfg
+    original = path.read_text() if existing else None
+    normalized = app_config.normalize_model_mappings(cfg)
+    assert app_config.load_config() == normalized
+    assert initialized == [normalized]
+    assert server_run._read_json(path) == (cfg if existing else normalized)
+    if existing:
+        assert path.read_text() == original
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,5 @@
 {
+  "claude_code": false,
   "llm": {
     "provider": "openai",
     "api_key": "YOUR_API_KEY_HERE",
@@ -6,6 +7,17 @@
     "chat_model": "YOUR_CHAT_MODEL",
     "context_window_tokens": null,
     "step_context_window_tokens": {},
+    "reply_models": {
+      "srmm": {"source": "config"},
+      "other_apps": {"source": "config"}
+    },
+    "step_models": {
+      "preprocess": {"source": "config"},
+      "memory_extract": {"source": "config"},
+      "category_update": {"source": "config"},
+      "reflection": {"source": "config"},
+      "consolidation": {"source": "config"}
+    },
     "embedding": {
       "api_key": "YOUR_GEMINI_API_KEY",
       "base_url": "https://generativelanguage.googleapis.com/"

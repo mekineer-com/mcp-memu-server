@@ -48,6 +48,7 @@ from app.config import (
     load_config as _load_config,
     load_soul_gen_config as _load_soul_gen_config,
     mask_config as _mask_config,
+    merge_model_config as _merge_model_config,
     normalize_sqlite_dsn as _normalize_sqlite_dsn,
     procedural_db_path as _procedural_db_path,
     procedural_should_ingest as _procedural_should_ingest,
@@ -453,7 +454,8 @@ async def _run_background_rollup_for_conversation(
                     **safe_payload,
                     "user": {"user_id": uid, "soul_id": sid, "conversation_id": cid},
                     "conversation_id": cid,
-                }
+                },
+                operation="rollup",
             )
             tail = _label_owner_messages(
                 tail, user_id=uid, user_name=llm_service.user_config.user_name, conversation_id=cid,
@@ -582,11 +584,12 @@ async def _run_free_turn_chain(
     user_id: str,
     soul_id: str,
     conversation_id: str,
-    session_id: str,
+    session_id: str | None,
     initial_reason: str,
     initial_contract: dict[str, Any],
     safe_payload: dict[str, Any],
     soul_card: str | None,
+    initial_context: str = "",
 ) -> None:
     await _free_turn._run_free_turn_chain(
         marker=marker,
@@ -599,6 +602,7 @@ async def _run_free_turn_chain(
         initial_contract=initial_contract,
         safe_payload=safe_payload,
         soul_card=soul_card,
+        initial_context=initial_context,
         config=_CONFIG,
         make_turn_system_prompt=_make_turn_system_prompt,
         parse_free_turn_contract=_parse_free_turn_contract,
@@ -620,11 +624,12 @@ def _queue_free_turn_chain(
     user_id: str,
     soul_id: str,
     conversation_id: str,
-    session_id: str,
+    session_id: str | None,
     initial_reason: str,
     initial_contract: dict[str, Any],
     safe_payload: dict[str, Any],
     soul_card: str | None,
+    initial_context: str = "",
 ) -> bool:
     return _free_turn._queue_free_turn_chain(
         service=service,
@@ -636,6 +641,7 @@ def _queue_free_turn_chain(
         initial_contract=initial_contract,
         safe_payload=safe_payload,
         soul_card=soul_card,
+        initial_context=initial_context,
         mark_inflight=_mark_inflight,
         free_turn_inflight=_FREE_TURN_INFLIGHT,
         background_tasks=_BACKGROUND_TASKS,
@@ -1062,7 +1068,7 @@ _merge_llm_profiles = _service_factory._merge_llm_profiles
 _clear_cached_services = _service_factory._clear_cached_services
 
 
-def _get_service_from_payload(payload: dict[str, Any]):
+def _get_service_from_payload(payload: dict[str, Any], *, operation: str | None = None):
     return _service_factory._get_service_from_payload(
         payload,
         config=_CONFIG,
@@ -1081,6 +1087,7 @@ def _get_service_from_payload(payload: dict[str, Any]):
         prompt_log_on_error=_prompt_log_on_error,
         st_user_model=STUserModel,
         logger=logger,
+        operation=operation,
     )
 
 
@@ -1710,6 +1717,7 @@ async def _run_retrieve(
     *,
     conversation_id: str | None = None,
     anchor_context: str | None = None,
+    service: Any = None,
 ) -> dict[str, Any]:
     scope = _extract_retrieve_where(_safe_payload(payload)) or {}
     uid, sid = str(scope.get("user_id") or ""), str(scope.get("soul_id") or "")
@@ -1737,6 +1745,7 @@ async def _run_retrieve(
         procedural_should_ingest=_procedural_should_ingest,
         config=_CONFIG,
         logger=logger,
+        service=service,
     )
 
 
@@ -2068,7 +2077,7 @@ async def set_config(req: Request):
                     **incoming_mentra,
                 },
             }
-        merged = {**current, **body}
+        merged = _merge_model_config(current, body)
         _save_config(merged)
         _CONFIG = merged
         _refresh_runtime_limits()
@@ -2413,7 +2422,7 @@ def _make_memorize_endpoint_context() -> _memorize_endpoint.MemorizeEndpointCont
     return _memorize_endpoint.MemorizeEndpointContext(
         base=_make_memorize_context(),
         safe_payload=_safe_payload,
-        get_service_from_payload=_get_service_from_payload,
+        get_service_from_payload=lambda safe: _get_service_from_payload(safe, operation="memorize"),
         extract_scope=_extract_scope,
         extract_conversation_id=_extract_conversation_id,
         normalize_conversation=_normalize_conversation,
@@ -2482,6 +2491,14 @@ async def _run_memorize_segments(
 
 
 # ---- Memorize endpoint ----
+
+def _public_model_operation(payload: dict[str, Any], operation: str, cid: str | None = None) -> str | None:
+    if _message_log.derive_source_label(cid or _extract_conversation_id(payload)) != "sillytavern" and any(
+        key in payload for key in ("llm_profiles", "claude_code")
+    ):
+        return None
+    return operation
+
 
 def _sillytavern_source_deleted(cid: str, uid: str, sid: str) -> bool:
     return _message_log.derive_source_label(cid) == "sillytavern" and _conversation_sources.sillytavern_source_deleted(
@@ -2581,7 +2598,8 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
                 result = _schedule_auto_memorize(capture, _auto_memorize_scope(cid, uid, sid, safe, rows))
                 return {"ok": True, "status": "accepted" if result == "launched" else "coalesced"}
         return await _memorize_owned(safe, background_tasks, force, tail=tail, rebuild=rebuild)
-    return await _memorize_owned(payload, background_tasks, force, tail=tail, rebuild=rebuild)
+    return await _memorize_owned(payload, background_tasks, force, tail=tail, rebuild=rebuild,
+                                 operation=_public_model_operation(payload, "memorize"))
 
 
 async def _memorize_admitted(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool):
@@ -2590,7 +2608,8 @@ async def _memorize_admitted(payload: dict[str, Any], background_tasks: Backgrou
 
 async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool,
                           *, tail: bool = False, rebuild: bool = False, admitted: bool = False, retry: bool = False,
-                          historical: bool = False, batch_owned: bool = False, import_handoff: bool = False):
+                          historical: bool = False, batch_owned: bool = False, import_handoff: bool = False,
+                          operation: str | None = "memorize"):
     safe = _safe_payload(payload) if admitted else deepcopy(_safe_payload(payload))
     if not _extract_conversation_id(safe):
         raise HTTPException(status_code=400, detail="conversation_id is required")
@@ -2642,6 +2661,8 @@ async def _memorize_owned(payload: dict[str, Any], background_tasks: BackgroundT
                 )
             _require_soul_active(uid, sid, import_handoff=import_handoff)
         endpoint_ctx = _make_memorize_endpoint_context()
+        if operation is None:
+            endpoint_ctx = replace(endpoint_ctx, get_service_from_payload=_get_service_from_payload)
         if batch_owned:
             endpoint_ctx = replace(endpoint_ctx, run_memorize_segments=partial(_run_memorize_segments, batch_owned=True))
         if not historical:
@@ -2883,7 +2904,9 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
         _write_retry_memorize_state(cid, user_id=user_id, soul_id=soul_id, updates={"memorize_failure": None})
         if cid is not None:
             background_tasks.add_task(
-                _run_consolidation_task, _get_service_from_payload({"user": {"user_id": user_id, "soul_id": soul_id}}),
+                _run_consolidation_task, _get_service_from_payload(
+                    {"user": {"user_id": user_id, "soul_id": soul_id}}, operation="consolidation"
+                ),
                 conversation_id=cid, soul_id=soul_id, uid=user_id,
                 progress_key=marker, memorize_progress=_MEMORIZE_PROGRESS,
             )
@@ -2964,7 +2987,9 @@ def _consolidation_request_context(
         raise HTTPException(status_code=409, detail="Memory work is running")
     safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
     safe["conversation_id"] = cid
-    return cid, safe, uid, soul_id, _get_service_from_payload(safe)
+    return cid, safe, uid, soul_id, _get_service_from_payload(
+        safe, operation=_public_model_operation(safe, "consolidation", cid)
+    )
 
 
 @app.post("/conversation/{conversation_id}/consolidation/force", operation_id="force_consolidation")
@@ -3166,7 +3191,7 @@ async def narrative_suggestion(soul_id: str, payload: dict[str, Any] = Body(...)
         sqlite_connect=_sqlite_connect,
         sqlite_ensure_conversation_state_schema=_sqlite_ensure_conversation_state_schema,
         sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
-        get_service_from_payload=_get_service_from_payload,
+        get_service_from_payload=lambda safe: _get_service_from_payload(safe, operation="st_reply"),
         build_retrieve_identity_context=_build_retrieve_identity_context,
         snapshot_previous_narrative_self=snapshot_previous_narrative_self,
         utility_max_tokens=None,
@@ -3420,7 +3445,7 @@ async def conversation_retrieve(
         if uid and soul_id:
             safe["user"] = {"user_id": uid, "soul_id": soul_id, "conversation_id": cid}
             safe["conversation_id"] = cid
-        svc = _get_service_from_payload(safe) if uid and soul_id else None
+        svc = _get_service_from_payload(safe, operation="retrieve") if uid and soul_id else None
         user_name = svc.user_config.user_name if svc is not None else None
         current_row = _label_owner_messages([{
             "role": "user" if cid.startswith(("whatsapp:", "chat:atomic-", "mentra:")) else "unknown",
@@ -3544,7 +3569,7 @@ async def conversation_retrieve(
                 self_turn_label=self_turn_label or None,
             )
 
-        out = await _run_retrieve(safe, conversation_id=cid, anchor_context=anchor_context)
+        out = await _run_retrieve(safe, conversation_id=cid, anchor_context=anchor_context, service=svc)
 
         if build_atomic_snapshot:
             scope = _extract_scope(safe)
@@ -4418,7 +4443,14 @@ async def conversation_turn(
         turn_temperature: float = float(generation_config.get("temperature", 0.2))
         turn_response_format: Any = {"type": "json_object"}
 
-        memory_service = _get_service_from_payload(safe)
+        reply_operation = "st_reply" if _message_log.derive_source_label(cid) == "sillytavern" and not self_turn_directive else "other_reply"
+        memory_service = _get_service_from_payload(safe, operation=reply_operation)
+        rollup_service = None
+        if not dry_run and not bool(conversation_state_before.get("memorize_chat", True) if memorize_chat is None else memorize_chat):
+            rollup_service = _get_service_from_payload(safe, operation="rollup")
+        continuation_service = memory_service
+        if not dry_run and not memory_service._claude_code and bool(_CONFIG.get("claude_code", False)):
+            continuation_service = _get_service_from_payload(safe, operation="other_reply")
         current_row = _label_owner_messages([{
             "role": "user" if cid.startswith(("whatsapp:", "chat:atomic-", "mentra:")) else "unknown",
             "name": _pick_str(safe, "user_name"), "source_owner_id": safe.get("source_owner_id"),
@@ -4519,7 +4551,7 @@ async def conversation_turn(
                     user_id=uid,
                     soul_id=soul_id,
                     safe_payload=safe,
-                    service=memory_service,
+                    service=rollup_service,
                 )
 
         apimw_status = "skipped_dry_run" if dry_run else "not_started"
@@ -4550,9 +4582,9 @@ async def conversation_turn(
                         safe_payload=safe,
                     )
                 )
-            elif turn_session_id:
+            elif continuation_service._claude_code:
                 continuation_queued = _queue_free_turn_chain(
-                    service=memory_service,
+                    service=continuation_service,
                     user_id=uid,
                     soul_id=soul_id,
                     conversation_id=cid,
@@ -4561,6 +4593,7 @@ async def conversation_turn(
                     initial_contract=turn_contract,
                     safe_payload=safe,
                     soul_card=str(conversation_state_before.get("narrative_self") or "").strip() or None,
+                    initial_context=turn_user_prompt if not turn_session_id else "",
                 )
             else:
                 logger.warning("free_turn: continuation requested but claude_code is disabled")
@@ -4972,7 +5005,9 @@ async def atomic_session_end(req: AtomicSessionEndRequest):
 
 
 def _atomic_chat_settings_from_config(cfg: dict[str, Any]) -> dict[str, str]:
-    profile = _default_llm_profiles_from_server_config(cfg).get("default", {})
+    profile = _default_llm_profiles_from_server_config(
+        {**cfg, "claude_code": False}, operation="other_reply"
+    ).get("default", {})
     provider = str(profile.get("provider") or "").strip().lower()
     base_url = str(profile.get("base_url") or "").strip()
     api_key = str(profile.get("api_key") or "")

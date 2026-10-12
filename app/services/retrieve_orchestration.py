@@ -209,6 +209,7 @@ async def _run_retrieve(
     config: dict[str, Any],
     logger: Any,
     anchor_context: str | None = None,
+    service: Any = None,
 ) -> dict[str, Any]:
     safe = safe_payload(payload)
     scoped_conversation_id = str(conversation_id or extract_conversation_id(safe) or "").strip() or None
@@ -217,7 +218,7 @@ async def _run_retrieve(
 
     scope = _extract_retrieve_where(safe)
     safe["user"] = {"user_id": scope["user_id"], "soul_id": scope["soul_id"]}
-    svc = get_service_from_payload(safe)
+    svc = service if service is not None else get_service_from_payload(safe)
     memu_queries = _extract_retrieve_queries(safe)
     if anchor_context is None:
         anchor_context = render_anchor_context(svc._get_database().memory_category_repo.list_anchor_categories(scope))

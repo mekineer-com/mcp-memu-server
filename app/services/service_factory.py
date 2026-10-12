@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
 from fastapi import HTTPException
@@ -270,7 +271,7 @@ def _validated_step_models(
                 raise HTTPException(
                     status_code=500, detail=f"llm.{setting}.{key} must be a positive integer",
                 )
-        model_name = str(raw_value or "").strip()
+        model_name = str(raw_value.get("source") or "") if isinstance(raw_value, Mapping) else str(raw_value or "").strip()
         if not model_name:
             continue
         if key not in llm_profiles:
@@ -304,14 +305,26 @@ def _get_service_from_payload(
     prompt_log_on_error: Any,
     st_user_model: Any,
     logger: logging.Logger,
+    operation: str | None = None,
 ) -> MemoryService:
-    claude_code = payload.get("claude_code", bool(config.get("claude_code", False)))
+    if operation is not None:
+        payload = deepcopy(payload)
+        payload.pop("llm_profiles", None)
+        payload.pop("claude_code", None)
+        for key, fields in (("memorize_config", _STEP_MODEL_TO_MEMORIZE_PROFILE_FIELD.values()),
+                            ("retrieve_config", _STEP_MODEL_TO_RETRIEVE_PROFILE_FIELD.values())):
+            if isinstance(payload.get(key), dict):
+                for field in fields:
+                    payload[key].pop(field, None)
+    claude_code = False if operation == "st_reply" else payload.get("claude_code", bool(config.get("claude_code", False)))
     if type(claude_code) is not bool:
         raise HTTPException(status_code=400, detail="claude_code must be a Boolean")
     service_key_raw = _derive_service_key(payload, extract_scope=extract_scope)
 
     client_profiles = payload.get("llm_profiles") if isinstance(payload.get("llm_profiles"), dict) else {}
-    server_profiles = default_llm_profiles_from_server_config(config)
+    projection_config = {**config, "claude_code": claude_code}
+    server_profiles = (default_llm_profiles_from_server_config(projection_config, operation=operation)
+                       if operation is not None else default_llm_profiles_from_server_config(projection_config))
     if client_profiles:
         for step_name in _VALID_STEP_MODEL_KEYS:
             if step_name not in client_profiles:
@@ -325,7 +338,10 @@ def _get_service_from_payload(
     step_capacities_cfg = (config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}).get("step_context_window_tokens", {})
     if not isinstance(step_capacities_cfg, dict):
         step_capacities_cfg = {}
-    use_server_step_models = not client_profiles
+    if operation is not None:
+        step_models_cfg = {key: value for key, value in step_models_cfg.items() if key in llm_profiles} if isinstance(step_models_cfg, dict) else {}
+        step_capacities_cfg = {key: value for key, value in step_capacities_cfg.items() if key in llm_profiles}
+    use_server_step_models = not client_profiles and not claude_code
     if use_server_step_models:
         _validated_step_models(
             step_models_cfg,
@@ -340,6 +356,8 @@ def _get_service_from_payload(
     if isinstance(step_temps, dict):
         merged_default = llm_profiles.get("default", {})
         for step_name, temp in step_temps.items():
+            if claude_code or (operation is not None and step_name not in llm_profiles):
+                continue
             if temp is not None and temp != "":
                 existing = llm_profiles.get(step_name, {**merged_default})
                 existing["temperature"] = float(temp)
@@ -413,9 +431,12 @@ def _get_service_from_payload(
         if use_server_step_models and isinstance(step_models_cfg, dict):
             for cfg_key, profile_field in _STEP_MODEL_TO_MEMORIZE_PROFILE_FIELD.items():
                 if profile_field not in memorize_config and (
-                    str(step_models_cfg.get(cfg_key) or "").strip() or step_capacities_cfg.get(cfg_key) is not None
+                    (cfg_key in llm_profiles if operation is not None else
+                     str(step_models_cfg.get(cfg_key) or "").strip() or step_capacities_cfg.get(cfg_key) is not None)
                 ):
                     memorize_config[profile_field] = cfg_key
+    if operation is not None:
+        payload["memorize_config"] = memorize_config
     retrieve_config = payload.get("retrieve_config")
     if not isinstance(retrieve_config, dict):
         retrieve_config = {}
@@ -431,7 +452,8 @@ def _get_service_from_payload(
     if use_server_step_models and isinstance(step_models_cfg, dict):
         for cfg_key, profile_field in _STEP_MODEL_TO_RETRIEVE_PROFILE_FIELD.items():
             if profile_field not in retrieve_config and (
-                str(step_models_cfg.get(cfg_key) or "").strip() or step_capacities_cfg.get(cfg_key) is not None
+                (cfg_key in llm_profiles if operation is not None else
+                 str(step_models_cfg.get(cfg_key) or "").strip() or step_capacities_cfg.get(cfg_key) is not None)
             ):
                 retrieve_config[profile_field] = cfg_key
     user_config = payload.get("user_config") or {}

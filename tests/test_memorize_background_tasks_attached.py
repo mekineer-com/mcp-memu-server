@@ -215,6 +215,47 @@ async def _noop_run(**kwargs) -> None:
     pass
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cid", ["integrity:memory-settings", "atomic:memory-settings"])
+@pytest.mark.parametrize("admitted,public", [(False, False), (True, False), (False, True)])
+async def test_saved_memory_uses_canonical_operation_without_dropping_policy(monkeypatch, cid, admitted, public):
+    payload = _make_stub_payload("TestOwner", "TestSoul", cid)
+    payload.update(claude_code=False, memorize_config={"memory_extract_llm_profile": "reply"},
+                   retrieve_config={"sufficiency_check_llm_profile": "reply"})
+    captured = []
+    def select_service(safe, *, operation=None):
+        captured.append((dict(safe), operation))
+        raise HTTPException(status_code=418, detail="Fictional service boundary")
+    monkeypatch.setattr(main_module, "_get_service_from_payload", select_service)
+    with pytest.raises(HTTPException) as boundary:
+        if public:
+            await main_module.memorize(payload, BackgroundTasks(), True)
+        else:
+            await main_module._memorize_owned(payload, BackgroundTasks(), True, admitted=admitted)
+    assert boundary.value.status_code == 418
+    assert len(captured) == 1
+    assert captured[0][1] == (None if public and cid.startswith("atomic:") else "memorize")
+    for key in ("llm_profiles", "claude_code", "memorize_config", "retrieve_config"):
+        assert captured[0][0][key] == payload[key]
+
+
+@pytest.mark.parametrize("cid", ["integrity:consolidation-settings", "atomic:consolidation-settings"])
+def test_saved_consolidation_uses_canonical_operation(monkeypatch, cid):
+    payload = _make_stub_payload("TestOwner", "TestSoul", cid)
+    payload["claude_code"] = False
+    captured = []
+    service = object()
+    def select_service(safe, *, operation=None):
+        captured.append((dict(safe), operation))
+        return service
+    monkeypatch.setattr(main_module, "_get_service_from_payload", select_service)
+    monkeypatch.setattr(main_module, "_FORCED_MEMORIZE_INFLIGHT", {})
+    assert main_module._consolidation_request_context(cid, payload)[-1] is service
+    assert captured[0][1] == (None if cid.startswith("atomic:") else "consolidation")
+    assert captured[0][0]["llm_profiles"] == payload["llm_profiles"]
+    assert captured[0][0]["claude_code"] is False
+
+
 def test_cross_manifest_ranges_are_non_rebuildable_and_non_overlapping() -> None:
     existing = [{"start": 0, "end": 4}, {"start": 3, "end": 7}]
     start = main_module._memorize_endpoint._next_manifest_start(existing)
@@ -432,7 +473,7 @@ async def test_rebuild_refuses_registered_photo_until_cleanup(monkeypatch, tmp_p
     monkeypatch.setattr(main_module, "_sqlite_current_path", lambda *_args: db_file)
     calls = []
 
-    def service_after_archive(*_args):
+    def service_after_archive(*_args, **_kwargs):
         calls.append("service")
         raise HTTPException(status_code=418, detail="Fictional service boundary")
 
@@ -535,7 +576,7 @@ def test_rebuild_archives_db_and_service_reacquired_after_archive(
     def fake_clear_cached_services() -> None:
         call_order.append("cleared")
 
-    def fake_get_service(payload):
+    def fake_get_service(payload, **_kwargs):
         call_order.append("get_service")
         return object()
 
@@ -654,7 +695,7 @@ def test_rebuild_refuses_missing_binding_before_archiving(client, monkeypatch, t
     con.close()
     before = path.read_bytes()
     monkeypatch.setattr(main_module, "_sqlite_current_path", lambda *_args: path)
-    monkeypatch.setattr(main_module, "_get_service_from_payload", lambda *_args: pytest.fail("service acquired after missing binding"))
+    monkeypatch.setattr(main_module, "_get_service_from_payload", lambda *_args, **_kwargs: pytest.fail("service acquired after missing binding"))
     response = client.post("/memorize?rebuild=true", json=_make_stub_payload("TestOwner", "Unbound", "chat:unbound"))
     assert response.status_code == 409
     assert path.read_bytes() == before

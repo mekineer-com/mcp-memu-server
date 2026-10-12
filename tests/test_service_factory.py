@@ -1,4 +1,5 @@
 import logging
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -179,7 +180,9 @@ def test_validated_step_models_raises_when_profile_missing() -> None:
 @pytest.mark.parametrize("server_mode,request_mode", [
     (False, None), (True, None), (True, False), (False, True),
 ])
-def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytest.MonkeyPatch, server_mode, request_mode) -> None:
+@pytest.mark.parametrize("operation", [None, "st_reply", "other_reply", "retrieve", "rollup", "memorize", "consolidation"])
+@pytest.mark.parametrize("native_projection", [False, True])
+def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytest.MonkeyPatch, server_mode, request_mode, operation, native_projection) -> None:
     captured: dict[str, object] = {}
 
     class _FakeService:
@@ -198,7 +201,7 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     service_factory._SERVICE_STORAGE_FP.clear()
 
     cfg = {
-        "llm": {"step_models": {}},
+        "llm": {"provider": "openai", "base_url": "https://example.com/v1", "api_key": "k", "chat_model": "m", "step_models": {}},
         "categories": {"category_summary_target_words": 275},
         "memorize": {
             "background_extra_messages_tokens": 321,
@@ -221,24 +224,45 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         "user_config": {"user_name": "RequestNameMustNotWin"},
         **({"claude_code": request_mode} if request_mode is not None else {}),
     }
+    steps = {
+        "retrieve": ("reflection",), "rollup": ("preprocess",),
+        "memorize": ("preprocess", "memory_extract", "category_update", "consolidation"),
+        "consolidation": ("category_update", "consolidation"),
+    }.get(operation, ())
+    if native_projection and operation is None:
+        cfg["llm"]["step_models"] = {"memory_extract": "server-heavy", "consolidation": "server-reflection"}
+    if operation is not None:
+        profile = {"provider": "openai", "base_url": "https://example.com/v1", "api_key": "k"}
+        cfg["llm"]["step_models"] = {key: {"source": "configured", "resolved": {**profile, "chat_model": key}}
+                                      for key in service_factory._VALID_STEP_MODEL_KEYS}
+        cfg["llm"]["reply_models"] = {key: {"source": "configured", "resolved": {**profile, "chat_model": model}}
+                                       for key, model in (("srmm", "st_reply"), ("other_apps", "other_reply"))}
+        for key in service_factory._VALID_STEP_MODEL_KEYS - set(steps if not server_mode else ()):
+            cfg["llm"]["step_models"][key] = {"source": "configured", "resolved": {"provider": "openai"}}
+        if operation != "st_reply":
+            cfg["llm"]["reply_models"]["srmm"] = {"source": "configured", "resolved": {"provider": "openai"}}
+        if operation != "other_reply" or server_mode:
+            cfg["llm"]["reply_models"]["other_apps"] = {"source": "configured", "resolved": {"provider": "openai"}}
+        cfg["llm"]["step_context_window_tokens"] = {"reflection": "unused-invalid-capacity"} if "reflection" not in steps else {}
+        cfg["llm"]["step_temperatures"] = {"reflection": "unused-invalid-temperature"} if "reflection" not in steps else {}
+        payload["llm_profiles"] = {"default": {"chat_model": "old-response-role"}}
+        payload["memorize_config"]["memory_extract_llm_profile"] = "old-response-role"
+        payload["retrieve_config"] = {"item": {"top_k": 17}, "sufficiency_check_llm_profile": "old-response-role"}
+    original = deepcopy(payload)
+
+    def project(_cfg, *, operation=None):
+        profile = {"provider": "openai", "api_key": "k", "base_url": "https://example.com/v1", "chat_model": "m"}
+        result = {"default": profile, "embedding": {**profile, "embed_model": "gemini-embedding-2"}}
+        if operation is not None:
+            if operation == "st_reply" or (operation == "other_reply" and not server_mode):
+                result["default"] = {**profile, "chat_model": operation}
+            if not server_mode or operation == "st_reply":
+                result.update({key: {**profile, "chat_model": key} for key in steps})
+        return result
+
     kwargs = dict(
         config=cfg,
-        default_llm_profiles_from_server_config=lambda _cfg: {
-            "default": {
-                "provider": "openai",
-                "api_key": "k",
-                "base_url": "https://example.com/v1",
-                "chat_model": "m",
-                "embed_model": "gemini-embedding-2",
-            },
-            "embedding": {
-                "provider": "openai",
-                "api_key": "k",
-                "base_url": "https://example.com/v1",
-                "chat_model": "m",
-                "embed_model": "gemini-embedding-2",
-            },
-        },
+        default_llm_profiles_from_server_config=default_llm_profiles_from_server_config if native_projection else project,
         database_config_from_cfg=lambda _cfg, scope=None: {"metadata_store": {"provider": "sqlite", "dsn": "sqlite:///:memory:"}},
         blob_config_from_cfg=lambda _cfg: {"resources_dir": "./resources"},
         normalize_sqlite_dsn=lambda dsn: dsn,
@@ -253,11 +277,12 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         prompt_log_on_error=lambda *a, **k: None,
         st_user_model=_DummyUserModel,
         logger=logging.getLogger("test.service_factory"),
+        operation=operation,
     )
     out = service_factory._get_service_from_payload(payload, **kwargs)
 
     assert isinstance(out, _FakeService)
-    effective_mode = server_mode if request_mode is None else request_mode
+    effective_mode = (False if operation == "st_reply" else server_mode) if operation is not None else (server_mode if request_mode is None else request_mode)
     assert captured["claude_code"] is effective_mode
     assert captured["user_config"]["user_name"] == "TestOwner"
     assert captured["claude_code_model"] == "claude-opus-4-7"
@@ -276,9 +301,22 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert "semantic_dedupe_similarity_threshold" not in captured["memorize_config"]
     assert captured["cutover_scope"] == {"user_id": "u", "soul_id": "echo"}
     assert captured["database_config"]["metadata_store"]["embedding_profile"] == "gemini-embedding-2:3072"
+    if native_projection and operation is None:
+        assert captured["memorize_config"].get("memory_extract_llm_profile") == (None if effective_mode else "memory_extract")
+    if operation is not None:
+        assert payload == original
+        assert captured["llm_profiles"]["default"]["chat_model"] == (operation if operation in {"st_reply", "other_reply"} and not effective_mode else "m")
+        assert set(captured["llm_profiles"]) == {"default", "embedding", *(steps if not effective_mode else ())}
+        assert captured["retrieve_config"]["item"]["top_k"] == 17
+        for step, field in service_factory._STEP_MODEL_TO_MEMORIZE_PROFILE_FIELD.items():
+            assert captured["memorize_config"].get(field) == (step if step in steps and not effective_mode else None)
+        assert captured["retrieve_config"].get("sufficiency_check_llm_profile") == ("reflection" if "reflection" in steps and not effective_mode else None)
 
     opposite_payload = {**payload, "claude_code": not effective_mode}
     opposite = service_factory._get_service_from_payload(opposite_payload, **kwargs)
+    if operation is not None:
+        assert opposite is out
+        return
     assert opposite is not out
     assert captured["claude_code"] is not effective_mode
     assert service_factory._get_service_from_payload(opposite_payload, **kwargs) is opposite

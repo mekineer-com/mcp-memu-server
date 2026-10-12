@@ -46,6 +46,13 @@ def _parse_apimw_json_response(text: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _apimw_retrieval_config(payload: dict[str, Any], top_k: int) -> dict[str, Any]:
+    config = dict(payload.get("retrieve_config")) if isinstance(payload.get("retrieve_config"), dict) else {}
+    item = dict(config.get("item")) if isinstance(config.get("item"), dict) else {}
+    config["item"] = {**item, "top_k": max(1, int(top_k))}
+    return config
+
+
 async def _apimw_retrieve_items(
     payload: dict[str, Any],
     *,
@@ -59,6 +66,7 @@ async def _apimw_retrieve_items(
     trace_id: str,
     all_categories_summary: str = "",
     anchor_context: str = "",
+    service: Any = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     retrieve_queries = _m()._build_retrieve_soul_context_queries(
         soul_id=soul_id,
@@ -71,21 +79,20 @@ async def _apimw_retrieve_items(
         conversation_id=conversation_id,
         conversations_block=conversations_block,
     )
-    retrieve_config = dict(payload.get("retrieve_config")) if isinstance(payload.get("retrieve_config"), dict) else {}
-    item_config = dict(retrieve_config.get("item")) if isinstance(retrieve_config.get("item"), dict) else {}
-    item_config["top_k"] = max(1, int(apimw_k))
-    retrieve_config["item"] = item_config
     retrieve_payload = {
         **payload,
         "query": focus_text,
         "queries": retrieve_queries,
         "conversation_id": conversation_id,
         "force_retrieve": True,
-        "retrieve_config": retrieve_config,
+        "retrieve_config": _apimw_retrieval_config(payload, apimw_k),
         "trace_id": trace_id,
     }
     _m().logger.info("apimw retrieve for %s", conversation_id)
-    retrieve_out = await _m()._run_retrieve(retrieve_payload, conversation_id=conversation_id, anchor_context=anchor_context)
+    retrieve_out = await _m()._run_retrieve(
+        retrieve_payload, conversation_id=conversation_id, anchor_context=anchor_context,
+        **({"service": service} if service is not None else {}),
+    )
     retrieve_result_data = retrieve_out.get("result") or {}
     retrieved_items = [item for item in (retrieve_result_data.get("items") or []) if isinstance(item, dict)]
     _m().logger.info("apimw retrieved %d items for %s", len(retrieved_items), conversation_id)
@@ -108,6 +115,7 @@ async def _apimw_collect_memory_items(
     trace_id: str,
     all_categories_summary: str = "",
     anchor_context: str = "",
+    retrieval_service: Any = None,
 ) -> list[dict[str, Any]]:
     _retrieve_result, retrieved_items = await _m()._apimw_retrieve_items(
         payload,
@@ -121,6 +129,7 @@ async def _apimw_collect_memory_items(
         conversation_id=conversation_id,
         apimw_k=apimw_k,
         trace_id=trace_id,
+        service=retrieval_service,
     )
 
     combined_items: list[dict[str, Any]] = []
@@ -354,19 +363,34 @@ async def _run_apimw(
     user_id: str,
     state_row: dict[str, Any],
     current_history: list[dict[str, Any]],
+    service: Any = None,
+    retrieval_service: Any = None,
+    apimw_k: int | None = None,
+    apimw_random_count: int | None = None,
 ) -> None:
     conversation_id = canonical_conversation_id(conversation_id)
+    payload = {key: value for key, value in payload.items()
+               if key not in {"llm_profiles", "claude_code", "memorize_config"}}
     try:
-        svc = _m()._get_service_from_payload(payload)
-        apimw_trace_id = uuid.uuid4().hex
         scope = {"user_id": user_id, "soul_id": soul_id}
+        is_st = _m()._message_log.derive_source_label(conversation_id) == "sillytavern"
+        apimw_item_top_k = apimw_k if apimw_k is not None else _m()._apimw_memory_count_from_cfg(_m()._CONFIG)
+        if apimw_random_count is None:
+            apimw_random_count = _m()._apimw_random_count_from_cfg(_m()._CONFIG)
+        svc = service if service is not None else _m()._get_service_from_payload(
+            {"user": scope}, **({"operation": "st_reply"} if is_st else {}),
+        )
+        if retrieval_service is None:
+            retrieval_service = _m()._get_service_from_payload(
+                {"user": scope, "retrieve_config": _apimw_retrieval_config(payload, apimw_item_top_k)},
+                operation="retrieve",
+            )
+        apimw_trace_id = uuid.uuid4().hex
         if _m()._soul_activity_pause(user_id, soul_id):
             return
         dossiers = svc.list_active_dossiers(scope)
         anchor_context = _m()._render_anchor_context({row.anchor_role: row for row in dossiers if row.anchor_role})
         all_categories_summary = svc.build_dossier_index(scope, dossiers=dossiers)
-        apimw_item_top_k = _m()._apimw_memory_count_from_cfg(_m()._CONFIG)
-        apimw_random_count = _m()._apimw_random_count_from_cfg(_m()._CONFIG)
 
         cross_tail = _m()._load_cross_tail_for_ai(
             user_id=user_id,
@@ -406,9 +430,10 @@ async def _run_apimw(
             apimw_random_count=apimw_random_count,
             scope=scope,
             trace_id=apimw_trace_id,
+            retrieval_service=retrieval_service,
         )
 
-        apimw_heavy_profile = _m()._resolve_profile_if_configured(svc, "memory_extract")
+        apimw_heavy_profile = None if is_st else _m()._resolve_profile_if_configured(svc, "memory_extract")
         result_json, items_by_id, apimw_id_map = await _m()._apimw_synthesize(
             svc,
             combined_items=combined_items,
@@ -518,6 +543,17 @@ def _turn_launch_apimw(
         history_for_ai = _m()._filter_external_message_from_history(
             history_for_ai, safe.get("external_message_id"),
         )
+        scope = {"user_id": uid, "soul_id": soul_id}
+        apimw_k = _m()._apimw_memory_count_from_cfg(_m()._CONFIG)
+        apimw_random_count = _m()._apimw_random_count_from_cfg(_m()._CONFIG)
+        retrieval_service = _m()._get_service_from_payload(
+            {"user": scope, "retrieve_config": _apimw_retrieval_config(safe, apimw_k)},
+            operation="retrieve",
+        )
+        is_st = _m()._message_log.derive_source_label(cid) == "sillytavern"
+        service = _m()._get_service_from_payload(
+            {"user": scope}, **({"operation": "st_reply"} if is_st else {}),
+        )
         apimw_task = asyncio.create_task(
             _m()._run_apimw(
                 safe,
@@ -526,6 +562,10 @@ def _turn_launch_apimw(
                 user_id=uid,
                 state_row=apimw_state_row,
                 current_history=history_for_ai,
+                service=service,
+                retrieval_service=retrieval_service,
+                apimw_k=apimw_k,
+                apimw_random_count=apimw_random_count,
             )
         )
         _m()._BACKGROUND_TASKS.add(apimw_task)

@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import re
@@ -22,6 +23,14 @@ EMBEDDING_PROVIDER = "gemini"
 EMBEDDING_MODEL = "gemini-embedding-2"
 EMBEDDING_BASE_URL = "https://generativelanguage.googleapis.com/"
 EMBEDDING_PROFILE = f"{EMBEDDING_MODEL}:3072"
+MODEL_STEPS = ("preprocess", "memory_extract", "category_update", "reflection", "consolidation")
+REPLY_MODELS = ("srmm", "other_apps")
+_MODEL_OPERATIONS = {
+    "st_reply": (), "other_reply": (), "retrieve": ("reflection",),
+    "rollup": ("preprocess",),
+    "memorize": ("preprocess", "memory_extract", "category_update", "consolidation"),
+    "consolidation": ("category_update", "consolidation"),
+}
 
 
 class SoulIdError(ValueError):
@@ -83,6 +92,8 @@ def default_config() -> dict[str, Any]:
             "chat_model": "",
             "context_window_tokens": None,
             "step_context_window_tokens": {},
+            "reply_models": {name: {"source": "config"} for name in REPLY_MODELS},
+            "step_models": {name: {"source": "config"} for name in MODEL_STEPS},
             "embedding": {},
             "endpoint_overrides": {},
         },
@@ -121,6 +132,7 @@ def default_config() -> dict[str, Any]:
             "mental_health_query": True,
         },
         "consolidation_interval_days": 7,
+        "claude_code": False,
         "claude_code_context_window_tokens": None,
         "procedural": {
             "yaml_dir": "../memu/procedural",
@@ -264,13 +276,14 @@ def ensure_storage_paths(cfg: dict[str, Any]) -> None:
 def load_config() -> dict[str, Any]:
     p = config_path()
     if not p.exists():
-        cfg = default_config()
+        cfg = normalize_model_mappings(default_config())
         save_config(cfg)
         ensure_storage_paths(cfg)
         return cfg
     cfg = json.loads(p.read_text(encoding="utf-8"))
     if not isinstance(cfg, dict):
         raise ValueError(f"Config must be a JSON object: {p}")
+    cfg = normalize_model_mappings(cfg)
     ensure_storage_paths(cfg)
     return cfg
 
@@ -302,10 +315,23 @@ def save_config(cfg: dict[str, Any]) -> None:
 
 
 def mask_config(cfg: dict[str, Any], *, include_llm_secret: bool = False) -> dict[str, Any]:
-    out = json.loads(json.dumps(cfg))
-    key = out.get("llm", {}).get("api_key", "")
-    if not include_llm_secret and isinstance(key, str) and key:
-        out["llm"]["api_key"] = key[:4] + "..." + key[-4:]
+    out = copy.deepcopy(cfg)
+    def mask(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "api_key" and child:
+                    value[key] = "***"
+                else:
+                    mask(child)
+        elif isinstance(value, list):
+            for child in value:
+                mask(child)
+    if not include_llm_secret:
+        llm = out.get("llm")
+        base_key = llm.get("api_key") if isinstance(llm, dict) else None
+        mask(llm)
+        if isinstance(base_key, str) and base_key:
+            llm["api_key"] = base_key[:4] + "..." + base_key[-4:]
     mentra = out.get("mentra")
     if isinstance(mentra, dict) and mentra.get("gemini_api_key"):
         mentra["gemini_api_key"] = "***"
@@ -461,8 +487,7 @@ def blob_config_from_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
     return {"resources_dir": str(get_storage_dir(cfg))}
 
 
-def default_llm_profiles_from_server_config(cfg: dict[str, Any]) -> dict[str, Any]:
-    llm = cfg.get("llm", {}) if isinstance(cfg.get("llm"), dict) else {}
+def _base_chat_profile(llm: dict[str, Any]) -> dict[str, Any]:
     api_key = str(llm.get("api_key") or "")
     base_url = str(llm.get("base_url") or "https://api.openai.com/v1")
     chat_model = str(llm.get("chat_model") or "")
@@ -480,9 +505,125 @@ def default_llm_profiles_from_server_config(cfg: dict[str, Any]) -> dict[str, An
         default_profile["temperature"] = float(temperature)
     max_tokens = llm.get("max_tokens")
     if max_tokens is not None:
-        default_profile["max_tokens"] = int(max_tokens)
+        default_profile["max_tokens"] = max_tokens
     if llm.get("context_window_tokens") is not None:
         default_profile["context_window_tokens"] = llm["context_window_tokens"]
+    return default_profile
+
+
+def normalize_model_mappings(cfg: dict[str, Any]) -> dict[str, Any]:
+    out = copy.deepcopy(cfg)
+    llm = out.setdefault("llm", {})
+    if not isinstance(llm, dict):
+        raise ValueError("llm must be an object")
+    capacities = llm.get("step_context_window_tokens") or {}
+    if not isinstance(capacities, dict):
+        raise ValueError("llm.step_context_window_tokens must be an object")
+    for field, names in (("reply_models", REPLY_MODELS), ("step_models", MODEL_STEPS)):
+        rows = llm.setdefault(field, {})
+        if not isinstance(rows, dict):
+            raise ValueError(f"llm.{field} must be an object")
+        for name in names:
+            row = rows.get(name)
+            if row is None or row == "":
+                row = {"source": "config"}
+            elif isinstance(row, str) and field == "step_models":
+                profile = _base_chat_profile(llm)
+                model = row.strip()
+                if model != profile["chat_model"]:
+                    profile.pop("context_window_tokens", None)
+                profile["chat_model"] = model
+                if capacities.get(name) is not None:
+                    profile["context_window_tokens"] = capacities[name]
+                row = {"source": "configured", "selection": {"provider": profile["provider"], "model": model},
+                       "resolved": profile} if model else {"source": "config"}
+            if not isinstance(row, dict) or row.get("source") not in {"config", "srmm", "st_native", "configured"}:
+                raise ValueError(f"Invalid model selector: llm.{field}.{name}")
+            if row["source"] == "srmm" and field != "step_models":
+                raise ValueError("srmm inheritance is only allowed for advanced steps")
+            for key in ("selection", "resolved"):
+                if key in row and not isinstance(row[key], dict):
+                    raise ValueError(f"llm.{field}.{name}.{key} must be an object")
+            if "resolved" in row and row["resolved"].get("provider") != "openai":
+                raise ValueError(f"llm.{field}.{name}.resolved must use an OpenAI-compatible provider")
+            rows[name] = row
+    if "st_selected" in llm and not isinstance(llm["st_selected"], dict):
+        raise ValueError("llm.st_selected must be an object")
+    snapshot = llm.get("st_selected", {})
+    if "resolved" in snapshot and (not isinstance(snapshot["resolved"], dict) or snapshot["resolved"].get("provider") != "openai"):
+        raise ValueError("llm.st_selected.resolved must use an OpenAI-compatible provider")
+    return out
+
+
+def merge_model_config(current: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(body, dict):
+        raise ValueError("Config must be an object")
+    def reject_masks(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "api_key" and isinstance(child, str) and (child == "***" or re.fullmatch(r".{4}\.\.\..{4}", child)):
+                    raise ValueError("Masked api_key cannot be saved")
+                reject_masks(child)
+        elif isinstance(value, list):
+            for child in value:
+                reject_masks(child)
+    reject_masks(body.get("llm"))
+    merged = {**copy.deepcopy(current), **copy.deepcopy(body)}
+    for field in ("llm", "mentra"):
+        if field not in body:
+            continue
+        if not isinstance(body[field], dict):
+            raise ValueError(f"{field} must be an object")
+        merged[field] = {**copy.deepcopy(current.get(field) or {}), **copy.deepcopy(body[field])}
+    incoming = body.get("llm", {})
+    for field in ("reply_models", "step_models", "step_context_window_tokens", "step_temperatures", "embedding"):
+        if field in incoming:
+            if not isinstance(incoming[field], dict):
+                raise ValueError(f"llm.{field} must be an object")
+            merged["llm"][field] = {**copy.deepcopy((current.get("llm") or {}).get(field) or {}), **copy.deepcopy(incoming[field])}
+    if "claude_code" in body and type(body["claude_code"]) is not bool:
+        raise ValueError("claude_code must be a Boolean")
+    return normalize_model_mappings(merged)
+
+
+def _resolve_model_profile(llm: dict[str, Any], name: str, *, validate: bool = True) -> dict[str, Any]:
+    field = "reply_models" if name in REPLY_MODELS else "step_models"
+    row = llm[field][name]
+    source = row["source"]
+    if source == "srmm":
+        return _resolve_model_profile(llm, "srmm", validate=validate)
+    if source == "config":
+        profile = _base_chat_profile(llm)
+        capacity = (llm.get("step_context_window_tokens") or {}).get(name)
+        if capacity is not None:
+            profile["context_window_tokens"] = capacity
+    else:
+        holder = llm.get("st_selected", {}) if source == "st_native" else row
+        profile = copy.deepcopy(holder.get("resolved"))
+        if not isinstance(profile, dict):
+            raise ValueError(f"Model mapping {name} needs a resolved {source} profile")
+    if validate or source != "config":
+        if profile.get("provider") != "openai":
+            raise ValueError(f"Model mapping {name} requires an OpenAI-compatible profile")
+        if not isinstance(profile.get("base_url"), str) or not profile["base_url"].strip():
+            raise ValueError(f"Model mapping {name} needs base_url")
+        if not isinstance(profile.get("chat_model"), str) or not profile["chat_model"].strip():
+            raise ValueError(f"Model mapping {name} needs chat_model")
+        if "api_key" not in profile or not isinstance(profile["api_key"], str):
+            raise ValueError(f"Model mapping {name} needs an explicit api_key (empty for a keyless endpoint)")
+    for key in ("context_window_tokens", "max_tokens"):
+        value = profile.get(key)
+        if value is not None and (type(value) is not int or value <= 0):
+            raise ValueError(f"Model mapping {name}.{key} must be a positive integer")
+    return profile
+
+
+def default_llm_profiles_from_server_config(cfg: dict[str, Any], *, operation: str | None = None) -> dict[str, Any]:
+    if operation is not None and operation not in _MODEL_OPERATIONS:
+        raise ValueError(f"Unknown model operation: {operation}")
+    normalized = normalize_model_mappings(cfg)
+    llm = normalized["llm"]
+    default_profile = _base_chat_profile(llm)
     embedding_cfg = llm.get("embedding") if isinstance(llm.get("embedding"), dict) else {}
     embedding_profile = {
         "provider": EMBEDDING_PROVIDER,
@@ -495,17 +636,12 @@ def default_llm_profiles_from_server_config(cfg: dict[str, Any]) -> dict[str, An
         "default": default_profile,
         "embedding": embedding_profile,
     }
-    step_models = llm.get("step_models")
-    if isinstance(step_models, dict):
-        for step_name, model in step_models.items():
-            model_str = str(model or "").strip()
-            if model_str:
-                profiles[step_name] = {**default_profile, "chat_model": model_str}
-                if model_str != chat_model:
-                    profiles[step_name].pop("context_window_tokens", None)
-    step_capacities = llm.get("step_context_window_tokens")
-    if isinstance(step_capacities, dict):
-        for step_name, capacity in step_capacities.items():
-            if capacity is not None:
-                profiles[step_name] = {**profiles.get(step_name, default_profile), "context_window_tokens": capacity}
+    if operation != "st_reply" and cfg.get("claude_code") is True:
+        return profiles
+    if operation in {"st_reply", "other_reply"}:
+        profiles["default"] = _resolve_model_profile(llm, "srmm" if operation == "st_reply" else "other_apps")
+    else:
+        names = _MODEL_OPERATIONS[operation] if operation is not None else MODEL_STEPS
+        for name in names:
+            profiles[name] = _resolve_model_profile(llm, name, validate=operation is not None)
     return profiles

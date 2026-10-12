@@ -32,7 +32,7 @@ async def test_frozen_batch_subtracts_current_checkpoints_without_reloading_text
         async def extract(self, **kwargs):
             calls.extend(json.loads(segment["raw_text"]) for segment in kwargs["segments"])
             return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_, **_kwargs: Service())
     monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
     tasks = BackgroundTasks()
     response = await main._memorize_owned(payload, tasks, True)
@@ -109,7 +109,7 @@ async def test_rewind_prunes_old_waiting_capture_but_keeps_post_rewind_replaceme
                 entered.set()
                 await release.wait()
             return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_, **_kwargs: Service())
     async def reflect(*_args, **_kwargs):
         if reflection_failure and len(calls) == 1:
             main._write_conversation_state(first, user_id=uid, soul_id=sid, updates={
@@ -191,7 +191,7 @@ async def test_registered_import_handoff_keeps_history_out_of_normal_memorize(mo
         async def extract(self, **kwargs):
             calls.append(kwargs)
             return [{"pending_segment_ids": [row["segment"]["segment_id"]]} for row in kwargs["segments"]]
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: Service())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_, **_kwargs: Service())
     storage = main._get_storage_dir(main._CONFIG)
     source = dict(storage_dir=storage, user_id=uid, soul_id=sid, conversation_id=cid, source_label="replika")
     history = [{"role": "user", "content": text} for text in ("Old one", "", "Old two", "Current tail")]
@@ -374,7 +374,7 @@ async def test_cross_checkpoint_failure_retains_published_history_and_retry_uses
             raise RuntimeError("Checkpoint failed")
         return real_write(cid, **kwargs)
     monkeypatch.setattr(main, "_write_conversation_state", write)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: Service())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args, **_kwargs: Service())
     monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
     tasks = BackgroundTasks()
     await main.memorize(payload, tasks, True)
@@ -456,7 +456,7 @@ async def test_retry_assembles_remaining_activity_under_original_owner(monkeypat
             assert kwargs["conversation_id"] == cid
             assert "Completed a fictional task" in kwargs["segments"][0]["raw_text"]
             return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: Service())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args, **_kwargs: Service())
     monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
     tasks = BackgroundTasks()
     await main.retry_memorize(uid, sid, tasks)
@@ -493,7 +493,7 @@ async def test_context_only_remainder_recovers_existing_failure_without_creating
             assert (failure is not None and failure["paused"]) if recovering else failure is None
             assert all(segment["segment"]["context_only"] for segment in kwargs["segments"])
             return [{"context_only": True} for _segment in kwargs["segments"]]
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: Service())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args, **_kwargs: Service())
     monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
     tasks = BackgroundTasks()
     if recovering:
@@ -521,7 +521,7 @@ async def test_direct_checkpoint_cannot_commit_without_pending_bookkeeping(monke
     class Service(SavedBatchService):
         async def extract(self, **kwargs):
             return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: Service())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args, **_kwargs: Service())
     tasks = BackgroundTasks()
     await main.memorize({"user": {"user_id": uid, "soul_id": sid}, "conversation_id": cid,
                         "conversation": [{"role": "user", "content": "Test"}]}, tasks, True)
@@ -549,7 +549,7 @@ async def test_automatic_admission_reaches_real_endpoint_once(monkeypatch, cance
             assert main._soul_activity_pause(uid, sid) is None
             return [{"memory_item_ids": []} for _ in kwargs["segments"]]
 
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: Service())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: Service())
     payload = {
         "user": {"user_id": uid, "soul_id": sid, "conversation_id": cid},
         "conversation_id": cid,
@@ -592,7 +592,7 @@ async def test_automatic_admission_failure_before_jobs_pauses_and_exposes_retry(
     extract = AsyncMock(return_value=[{}])
     service = SavedBatchService()
     monkeypatch.setattr(service, "extract", extract, raising=False)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: service)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args, **_kwargs: service)
     monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
     monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 1)
     monkeypatch.setattr(main, "_unmemorized_sleep_gap_detected", lambda *_args, **_kwargs: True)
@@ -704,7 +704,7 @@ async def test_retry_recovers_before_completed_shortcut_and_consolidation(monkey
             raise RuntimeError("Review still failed")
         return state
     monkeypatch.setattr(engine, "_memorize_persist_and_index", review)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: engine)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: engine)
     monkeypatch.setattr(main, "_saved_memorize_payload", lambda *_args: pytest.fail("Completed checkpoint must not extract"))
     consolidation = AsyncMock(return_value={"status": "skipped"})
     monkeypatch.setattr(main, "_run_consolidation_pipeline_once", consolidation)
@@ -762,7 +762,7 @@ async def test_recovery_cancel_flag_and_consolidation_interruption_preserve_targ
             raise RuntimeError("Reflection failed")
         return {"status": "ok", "result": {}} if outcome == "success" else {"status": "skipped"}
     monkeypatch.setattr(engine, "_memorize_persist_and_index", review)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: engine)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: engine)
     monkeypatch.setattr(main, "_run_consolidation_pipeline_once", consolidate)
     tasks = BackgroundTasks()
     await main.retry_memorize(**scoped, background_tasks=tasks)
@@ -808,7 +808,7 @@ async def test_recovery_dedupes_trailing_segment_before_soul_wide_review(monkeyp
         engine.database.dossier_candidate_repo.add_candidate(proposed_name="Garden", item_id=item.id, where=scoped)
     monkeypatch.setattr(engine, "generate_dynamic_category_review", AsyncMock(
         side_effect=AssertionError("Duplicate evidence must collapse before review")))
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: engine)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: engine)
     try:
         await import_routes.recover_memorize(main, scoped=scoped, cid=cid)
         assert len(engine.database.memory_item_repo.list_items(scoped)) == 1
@@ -863,7 +863,7 @@ async def test_memorize_refuses_running_reflection_before_claim_or_service(monke
     marker = main._memorize_lock_key(**scope)
     monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
     monkeypatch.setitem(main._CONSOLIDATION_RUNNING, (scope["user_id"], scope["soul_id"]), False)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: pytest.fail("busy admission must precede service lookup"))
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_, **_kwargs: pytest.fail("busy admission must precede service lookup"))
     with pytest.raises(HTTPException) as busy:
         await main._memorize_owned({"user": scope, "conversation_id": "chat:busy"}, BackgroundTasks(), True, retry=retry)
     assert busy.value.status_code == 409
@@ -931,7 +931,7 @@ async def test_extraction_keeps_claim_until_following_reflection_finishes(monkey
             main._write_conversation_state(cid, **scope, updates={
                 "last_consolidation_error": "Reflection failed", "last_consolidation_error_at": datetime.now(UTC).isoformat()})
         return {"status": "error" if failure else "ok"}
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_: service)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_, **_kwargs: service)
     monkeypatch.setattr(main, "_run_consolidation_task", reflect)
     tasks = BackgroundTasks()
     await main._memorize_owned({"user": scope, "conversation_id": cid,
@@ -982,7 +982,7 @@ async def test_retry_stays_paused_and_duplicate_is_refused(monkeypatch):
             entered.set()
             await release.wait()
             return [{"memory_item_ids": []} for _ in kwargs["segments"]]
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: Service())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: Service())
     tasks = BackgroundTasks()
     await main.retry_memorize(uid, sid, tasks)
     marker = main._memorize_lock_key(uid, sid)
@@ -1184,7 +1184,7 @@ async def test_context_load_forecast_is_scoped_read_only_and_independent_of_back
         category = repo.get_or_create_category(name="Fictional garden", description="A fictional topic.",
             embedding=[1.0, 0.0], user_data=scope, kind="topic", last_evidence_at=datetime.now(UTC))
         repo.update_category(category_id=category.id, summary="Fictional " * words)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a: pytest.fail("Status must not construct services"))
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_kwargs: pytest.fail("Status must not construct services"))
     monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 8000)
     try:
         before = [engine.database.memory_category_repo.list_categories(scope)
@@ -1231,7 +1231,7 @@ async def test_retry_validated_empty_source_preserves_unfinished_targets(monkeyp
             path.write_text("{broken", encoding="utf-8")
     consolidate = AsyncMock(return_value={"status": "skipped"})
     monkeypatch.setattr(main, "_run_consolidation_task", consolidate)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: object())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: object())
     if waiting:
         await main._import_routes.run_waiting_memorize(main, scoped=scoped, retry=True)
     elif source == "empty":
@@ -1282,7 +1282,7 @@ async def test_retry_deleted_trigger_processes_retained_source_without_resurrect
             calls.extend(json.loads(segment["raw_text"]) for segment in kwargs["segments"])
             return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
     service = Service()
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: service)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: service)
     monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
     later = {"conversation_id": retained, "error": "Later fictional source unavailable", "paused": True,
              "targets": {retained: {"cursor": 1, "memory_producing": True}}}
@@ -1326,7 +1326,7 @@ async def test_retry_all_deleted_without_saved_work_needs_no_source_or_consolida
     with main._sqlite_connect(main._sqlite_current_path(**scoped)) as con:
         con.execute("DELETE FROM conversations WHERE conversation_id = ?", (cid,))
     monkeypatch.setattr(main, "_saved_memorize_payload", lambda *_a: pytest.fail("No registered source"))
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a: pytest.fail("No work to consolidate"))
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_kwargs: pytest.fail("No work to consolidate"))
     if waiting:
         await main._import_routes.run_waiting_memorize(main, scoped=scoped, retry=True)
     else:
@@ -1362,7 +1362,7 @@ async def test_retry_all_deleted_finishes_real_saved_work_without_recreating_cha
         return state
     monkeypatch.setattr(engine, "_select_embedding_client", lambda *_a, **_kw: object())
     monkeypatch.setattr(engine, "_memorize_persist_and_index", review)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: engine)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: engine)
     monkeypatch.setattr(main, "_saved_memorize_payload", lambda *_a: pytest.fail("No registered source to read"))
     consolidate = AsyncMock()
     monkeypatch.setattr(main, "_run_consolidation_task", consolidate)
@@ -1448,7 +1448,7 @@ async def test_joined_background_worker_retry_and_resource_reflection(monkeypatc
         return read_source(conversation_id=kwargs["conversation_id"], since_cursor=kwargs["rolling_summary_cursor_id"])
     monkeypatch.setattr(main, "_load_tail_for_source_conversation", read_source)
     monkeypatch.setattr(main, "_load_background_rollup_tail", background)
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: svc)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: svc)
     monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
     calls = []
     failed = False
@@ -1720,7 +1720,7 @@ async def test_partial_publication_retains_only_published_files_and_retry_reuses
         assert progress["total"] == 4
     monkeypatch.setattr(main, "_write_conversation_state", writer)
     svc.database.close()
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload: svc)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: svc)
     if historical:
         before_recovery = (len(routes), len(extraction_calls))
         await main._import_routes.recover_memorize(main, scoped=scope, cid=cid, historical=True)
@@ -1785,7 +1785,7 @@ async def test_no_new_tail_still_checks_pending_consolidation_with_a_recent_cloc
         "pending_segment_ids": [f"{cid}:0-0"], "last_consolidation_at": datetime.now(UTC).isoformat(),
         "digest_cursor": 0, "last_memorize_at": datetime.now(UTC).isoformat(),
     })
-    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args: object())
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(main, "_consolidation_pipeline_once", AsyncMock(return_value={"status": "skipped", "reason": "not_due"}))
     schedule = AsyncMock(wraps=main._run_consolidation_task)
     monkeypatch.setattr(main, "_run_consolidation_task", schedule)

@@ -112,7 +112,7 @@ async def _run_free_turn_chain(
     user_id: str,
     soul_id: str,
     conversation_id: str,
-    session_id: str,
+    session_id: str | None,
     initial_reason: str,
     initial_contract: dict[str, Any],
     safe_payload: dict[str, Any],
@@ -129,6 +129,7 @@ async def _run_free_turn_chain(
     free_turn_inflight: set[str],
     require_soul_active: Callable[[str, str], None],
     logger: Any,
+    initial_context: str = "",
 ) -> None:
     reason = initial_reason
     previous_contract = initial_contract
@@ -153,13 +154,19 @@ async def _run_free_turn_chain(
                 origin_conversation_id=conversation_id,
                 previous_contract=previous_contract,
             )
+            if session_id is None:
+                prompt = "\n\n".join((initial_context, json.dumps(initial_contract, ensure_ascii=False), prompt))
+                session_id = str(uuid.uuid4())
+                session_args = {"session_id": session_id}
+            else:
+                session_args = {"resume_session_id": session_id}
             raw = await service.chat(
                 prompt,
                 system_prompt=free_turn_system_prompt,
                 response_format={"type": "json_object"},
                 op="free_turn",
                 step=f"continue_{continuation_index}",
-                resume_session_id=session_id,
+                **session_args,
             )
             contract = parse_free_turn_contract(raw)
             record_activity_message(
@@ -228,7 +235,7 @@ def _queue_free_turn_chain(
     user_id: str,
     soul_id: str,
     conversation_id: str,
-    session_id: str,
+    session_id: str | None,
     initial_reason: str,
     initial_contract: dict[str, Any],
     safe_payload: dict[str, Any],
@@ -238,6 +245,7 @@ def _queue_free_turn_chain(
     background_tasks: set[asyncio.Task],
     run_free_turn_chain: Callable[..., Any],
     logger: Any,
+    initial_context: str = "",
 ) -> bool:
     marker = f"{user_id}::{soul_id}"
     if not mark_inflight(free_turn_inflight, marker):
@@ -255,6 +263,7 @@ def _queue_free_turn_chain(
             initial_contract=initial_contract,
             safe_payload=safe_payload,
             soul_card=soul_card,
+            initial_context=initial_context,
         )
     )
     background_tasks.add(task)
