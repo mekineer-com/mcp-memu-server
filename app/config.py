@@ -561,13 +561,14 @@ def merge_model_config(current: dict[str, Any], body: dict[str, Any]) -> dict[st
     def reject_masks(value: Any) -> None:
         if isinstance(value, dict):
             for key, child in value.items():
-                if key == "api_key" and isinstance(child, str) and (child == "***" or re.fullmatch(r".{4}\.\.\..{4}", child)):
-                    raise ValueError("Masked api_key cannot be saved")
+                if key in ("api_key", "gemini_api_key") and isinstance(child, str) and (child == "***" or re.fullmatch(r".{4}\.\.\..{4}", child)):
+                    raise ValueError(f"Masked {key} cannot be saved")
                 reject_masks(child)
         elif isinstance(value, list):
             for child in value:
                 reject_masks(child)
     reject_masks(body.get("llm"))
+    reject_masks(body.get("mentra"))
     merged = {**copy.deepcopy(current), **copy.deepcopy(body)}
     for field in ("llm", "mentra"):
         if field not in body:

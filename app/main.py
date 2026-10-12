@@ -2166,11 +2166,13 @@ async def set_config(req: Request):
         _clear_cached_services()
         return JSONResponse(content={"ok": True, "config": _mask_config(_CONFIG)})
     except HTTPException as he:
+        logger.warning("config.set refused (HTTP %s)", he.status_code)
         _record_call(
             "config.set", body if isinstance(body, dict) else None, ok=False, error=str(getattr(he, "detail", he))
         )
         raise
     except Exception as exc:
+        logger.exception("config.set failed")
         raise HTTPException(status_code=400, detail="Internal Server Error. Check server logs.") from exc
 
 

@@ -88,6 +88,49 @@ def test_browser_mutation_guard_preserves_native_and_mentra_requests(monkeypatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["masked_key", "encoding", "disk", "non_object"])
+async def test_config_save_failures_are_logged_without_overwriting_or_dumping_keys(
+    tmp_path, monkeypatch, caplog, failure,
+):
+    path = tmp_path / "config.json"
+    current = {"llm": {"api_key": "fictional-server-key"},
+               "mentra": {"gemini_api_key": "fictional-voice-key"}}
+    original = b"\xff" if failure == "encoding" else json.dumps(current).encode()
+    path.write_bytes(original)
+    monkeypatch.setattr(main, "_config_path", lambda: path)
+    monkeypatch.setattr(main, "_CONFIG", current)
+    writes = []
+    def save(config):
+        if failure == "disk":
+            raise PermissionError("fictional config directory is read-only")
+        writes.append(config)
+    monkeypatch.setattr(main, "_save_config", save)
+    def forbidden(*_args):
+        pytest.fail("Failed save must not reload configuration or close services")
+    for name in ("_refresh_runtime_limits", "_ensure_storage_paths", "_clear_cached_services"):
+        monkeypatch.setattr(main, name, forbidden)
+    async def body():
+        if failure == "non_object":
+            return []
+        return {"mentra": {"gemini_api_key": "***" if failure == "masked_key" else "fictional-new-voice-key"}}
+    with caplog.at_level(logging.WARNING, logger=main.logger.name):
+        with pytest.raises(HTTPException) as raised:
+            await main.set_config(SimpleNamespace(json=body))
+    assert raised.value.status_code == 400
+    assert path.read_bytes() == original and main._CONFIG is current and not writes
+    records = [record for record in caplog.records if record.name == main.logger.name]
+    assert len(records) == 1
+    if failure == "non_object":
+        assert records[0].getMessage() == "config.set refused (HTTP 400)"
+        assert raised.value.detail == "Config must be a JSON object"
+    else:
+        assert records[0].getMessage() == "config.set failed" and records[0].exc_info
+        assert raised.value.detail == "Internal Server Error. Check server logs."
+    for key in ("fictional-server-key", "fictional-voice-key", "fictional-new-voice-key"):
+        assert key not in caplog.text and key not in raised.value.detail
+
+
+@pytest.mark.asyncio
 async def test_model_mapping_config_patch_preserves_file_settings(tmp_path, monkeypatch):
     path = tmp_path / "config.json"
     initial = {"claude_code": False, "llm": {

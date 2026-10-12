@@ -299,6 +299,14 @@ def test_model_config_merge_preserves_secrets_hidden_rows_and_other_settings() -
         assert updated == {**current["storage"], "metadata_store": replacement}
     assert current["storage"]["resources_dir"] == "selected-resources"
     assert current["storage"]["metadata_store"]["ddl_mode"] == "create"
+    before = copy.deepcopy(current)
+    for patch in ({"public_base_url": "http://phone.example.invalid"},
+                  {"gemini_api_key": ""}, {"gemini_api_key": "fictional-new-voice-key"}):
+        body = {"mentra": patch}
+        before_body = copy.deepcopy(body)
+        result = app_config.merge_model_config(current, body)
+        assert result["mentra"] == {**current["mentra"], **patch}
+        assert current == before and body == before_body
 
 
 def test_model_mapping_masks_every_nested_profile_without_mutating_config() -> None:
@@ -313,10 +321,24 @@ def test_model_mapping_masks_every_nested_profile_without_mutating_config() -> N
 
 
 @pytest.mark.parametrize("secret", ["***", "abcd...wxyz"])
-def test_model_config_rejects_masked_secret_round_trip(secret) -> None:
+@pytest.mark.parametrize("field", ["llm", "mentra"])
+def test_model_config_rejects_masked_secret_round_trip(secret, field) -> None:
     cfg = _mapping_config()
-    with pytest.raises(ValueError, match="Masked api_key"):
-        app_config.merge_model_config(cfg, {"llm": {"reply_models": {"srmm": {"source": "configured", "resolved": {"api_key": secret}}}}})
+    before = copy.deepcopy(cfg)
+    body = (
+        {"llm": {"reply_models": {"srmm": {"source": "configured", "resolved": {"api_key": secret}}}}}
+        if field == "llm" else {"mentra": {"gemini_api_key": secret}}
+    )
+    before_body = copy.deepcopy(body)
+    with pytest.raises(ValueError, match="Masked .*api_key"):
+        app_config.merge_model_config(cfg, body)
+    assert cfg == before and body == before_body
+    if secret == "***":
+        body = app_config.mask_config(cfg, include_llm_secret=field == "mentra")
+        before_body = copy.deepcopy(body)
+        with pytest.raises(ValueError, match="Masked .*api_key"):
+            app_config.merge_model_config(cfg, body)
+        assert cfg == before and body == before_body
 
 
 @pytest.mark.parametrize("cli", [False, True])
