@@ -202,7 +202,8 @@ source days, not broadened by background-only dates. The default type registry i
 `src/memu/prompts/memory_type/__init__.py`; speaker attribution is in
 `memorize_speakers.py`. Preparation/model work is not the primary commit.
 `memorize_parsing._parse_memory_type_response_xml` preserves literal less-than
-signs inside memory content without repairing structural XML. CDATA, comments
+signs inside memory content, including `a<b`, without repairing structural XML.
+Quote-aware tag shielding leaves attributes to XML validation. CDATA, comments
 and processing instructions do not change content nesting; broken structure still
 fails before persistence. Weekly companion prose uses all child/tail text when
 preparing its embedding and final write, not just the first XML text node.
@@ -297,6 +298,13 @@ not an automatically substituted copy of their previous text.
 ## Failure And Retry Ownership
 
 ### Atomic Edit Admission
+
+Stored-memory merging occurs only in Memorize dedupe, including image filing
+and dedupe-phase Retry. Supported MCP entrypoints retain the Soul-wide claim
+through correction preparation, saving and dedupe; conversation IDs do not
+create separate writers. Reply/intention and APImw publication can overlap but
+only create memories, not merge correction targets. These process-local claims
+do not serialize direct engine/repository use or a second server process.
 
 The shared HTTP gate refuses Atomic memU mutations while that Soul has a
 Memorize/import/photo claim or a running consolidation. Memory and dossier
