@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
@@ -223,10 +222,11 @@ def test_atomic_narrative_correction_updates_state_without_evolution(monkeypatch
     check.close()
 
 
-@pytest.mark.parametrize("concurrent_edit", [False, True])
-def test_narrative_suggestion_preserves_concurrent_card(monkeypatch, tmp_path, concurrent_edit):
+@pytest.mark.parametrize("case", ["accepted", "concurrent_chat", "concurrent_embedding", "embedding_failure", "companion_write_failure", "declined", "unchanged"])
+def test_narrative_suggestion_preserves_concurrent_card(monkeypatch, tmp_path, request, case):
     from memu.app import category_summary_journal
-    from app.services import crud_endpoints
+    from app.services import crud_endpoints, narrative_self
+    from sqlalchemy.exc import IntegrityError
 
     path = tmp_path / "soul.db"
     con = sqlite3.connect(path)
@@ -235,65 +235,87 @@ def test_narrative_suggestion_preserves_concurrent_card(monkeypatch, tmp_path, c
     con.commit()
     con.close()
     monkeypatch.setattr(category_summary_journal, "JOURNAL_DIR", tmp_path / "journals")
-    snapshots = []
-    memories = []
     service_payloads = []
     prompts = []
+    svc = main.MemoryService(
+        database_config={"metadata_store": {"provider": "sqlite", "dsn": f"sqlite:///{path}"}},
+        user_config={"model": main.STUserModel, "user_name": "FictionalHuman"},
+    )
+    request.addfinalizer(svc.database.close)
+    if case == "companion_write_failure":
+        with sqlite3.connect(path) as writer:
+            writer.execute("CREATE TRIGGER reject_companion BEFORE INSERT ON memory_items WHEN NEW.memory_type = 'reflection' BEGIN SELECT RAISE(ABORT, 'fictional companion failure'); END")
 
-    class Service:
-        user_config = SimpleNamespace(user_name="FictionalHuman")
-        database = type("Database", (), {"memory_item_repo": type("Repo", (), {"create_item": staticmethod(lambda **kwargs: memories.append(kwargs))})()})()
-        def build_dossier_index(self, _scope):
-            return ""
+    async def chat(prompt, **kwargs):
+        prompts.append((prompt, kwargs["system_prompt"]))
+        if case == "concurrent_chat":
+            with sqlite3.connect(path) as writer:
+                writer.execute("UPDATE soul_state SET narrative_self = 'Newer card'")
+        narrative = "" if case == "declined" else "Original card" if case == "unchanged" else "Suggested card"
+        return json.dumps({"narrative_self": narrative, "companion_memory": "I considered the suggestion."})
 
-        async def chat(self, prompt, **kwargs):
-            prompts.append((prompt, kwargs["system_prompt"]))
-            if concurrent_edit:
+    async def embed(texts, **_kwargs):
+        if "I considered the suggestion." in texts:
+            if case == "embedding_failure":
+                raise RuntimeError("fictional embedding failure")
+            if case == "concurrent_embedding":
                 with sqlite3.connect(path) as writer:
                     writer.execute("UPDATE soul_state SET narrative_self = 'Newer card'")
-            return json.dumps({"narrative_self": "Suggested card", "companion_memory": "I considered the suggestion."})
+        return [[1.0, 0.0] for _ in texts]
 
-        async def embed(self, *_args, **_kwargs):
-            return [[1.0, 0.0]]
+    monkeypatch.setattr(svc, "chat", chat)
+    monkeypatch.setattr(svc, "embed", embed)
+    monkeypatch.setattr(svc, "build_dossier_index", lambda _scope: "")
 
     runtime_payload = {"user_id": "TestOwner", "suggestion": "A fictional suggestion", "claude_code": False,
                        "llm_profiles": {"default": {"chat_model": "fictional-captured-model"}}}
     def service_from_payload(payload):
         service_payloads.append(payload)
-        return Service()
-    request = crud_endpoints.narrative_suggestion_endpoint(
+        return svc
+    suggestion = crud_endpoints.narrative_suggestion_endpoint(
         soul_id="TestSoul", payload=runtime_payload,
         sqlite_current_path=lambda _u, _s: path, sqlite_connect=main._sqlite_connect,
         sqlite_ensure_conversation_state_schema=main._sqlite_ensure_conversation_state_schema,
         sqlite_ensure_nonempty=main._sqlite_ensure_nonempty,
         get_service_from_payload=service_from_payload,
         build_retrieve_identity_context=lambda _name: "",
-        snapshot_previous_narrative_self=lambda *_args, **kwargs: snapshots.append(kwargs),
+        snapshot_previous_narrative_self=narrative_self.snapshot_previous_narrative_self,
     )
+    concurrent_edit = case in ("concurrent_chat", "concurrent_embedding")
     if concurrent_edit:
         with pytest.raises(main.HTTPException) as stale:
-            asyncio.run(request)
+            asyncio.run(suggestion)
         assert stale.value.status_code == 409
         assert "changed" in stale.value.detail
+    elif case == "embedding_failure":
+        with pytest.raises(RuntimeError, match="fictional embedding failure"):
+            asyncio.run(suggestion)
+    elif case == "companion_write_failure":
+        with pytest.raises(IntegrityError, match="fictional companion failure"):
+            asyncio.run(suggestion)
     else:
-        assert asyncio.run(request) == {"narrative_self": "Suggested card"}
+        assert asyncio.run(suggestion) == {"narrative_self": "Suggested card" if case == "accepted" else "Original card"}
     assert service_payloads == [{**runtime_payload, "user": {"user_id": "TestOwner", "soul_id": "TestSoul"}}]
     assert "FictionalHuman's suggestion:\nA fictional suggestion" in prompts[0][0]
     assert "received a suggestion from FictionalHuman" in prompts[0][1]
     assert "It's up to me to decide if I want that." in prompts[0][1]
     assert "TestOwner" not in prompts[0][0] + prompts[0][1]
+    assert len(prompts) == 1
+    accepted = case == "accepted"
+    companion_saved = case in ("accepted", "declined", "unchanged")
     with sqlite3.connect(path) as check:
         assert check.execute("SELECT narrative_self, summaries_revision FROM soul_state").fetchone() == (
-            ("Newer card", 0) if concurrent_edit else ("Suggested card", 1)
+            ("Newer card", 0) if concurrent_edit else ("Suggested card", 1) if accepted else ("Original card  ", 0)
         )
-        assert check.execute("SELECT COUNT(*) FROM narrative_history").fetchone()[0] == (0 if concurrent_edit else 1)
-    assert bool(snapshots) == (not concurrent_edit)
-    assert bool(memories) == (not concurrent_edit)
-    assert (tmp_path / "journals").exists() == (not concurrent_edit)
+        assert check.execute("SELECT COUNT(*) FROM narrative_history").fetchone()[0] == int(accepted)
+        assert check.execute("SELECT COUNT(*) FROM memory_items WHERE memory_type = 'narrative_self'").fetchone()[0] == int(accepted)
+        assert check.execute("SELECT COUNT(*) FROM memory_items WHERE memory_type = 'reflection'").fetchone()[0] == int(companion_saved)
+        assert check.execute("SELECT COUNT(*) FROM triples").fetchone()[0] == 0
+    assert (tmp_path / "journals").exists() == accepted
 
 
 @pytest.mark.parametrize("surface", ["atomic", "suggestion"])
-def test_failed_narrative_save_does_not_journal(monkeypatch, tmp_path, surface) -> None:
+def test_failed_narrative_save_does_not_journal(monkeypatch, tmp_path, request, surface) -> None:
     from memu.app import category_summary_journal
 
     path = tmp_path / "soul.db"
@@ -315,23 +337,28 @@ def test_failed_narrative_save_does_not_journal(monkeypatch, tmp_path, surface) 
     else:
         from app.services import crud_endpoints
 
-        class Service:
-            user_config = SimpleNamespace(user_name="FictionalHuman")
-            def build_dossier_index(self, _scope):
-                return ""
+        svc = main.MemoryService(
+            database_config={"metadata_store": {"provider": "sqlite", "dsn": f"sqlite:///{path}"}},
+            user_config={"model": main.STUserModel, "user_name": "FictionalHuman"},
+        )
+        request.addfinalizer(svc.database.close)
 
-            async def chat(self, *_args, **_kwargs):
-                return json.dumps({"narrative_self": "Rejected card", "companion_memory": ""})
+        async def chat(*_args, **_kwargs):
+            return json.dumps({"narrative_self": "Rejected card", "companion_memory": ""})
 
-            async def embed(self, *_args, **_kwargs):
-                return [[1.0, 0.0]]
+        async def embed(texts, **_kwargs):
+            return [[1.0, 0.0] for _ in texts]
+
+        monkeypatch.setattr(svc, "chat", chat)
+        monkeypatch.setattr(svc, "embed", embed)
+        monkeypatch.setattr(svc, "build_dossier_index", lambda _scope: "")
 
         request = crud_endpoints.narrative_suggestion_endpoint(
             soul_id="TestSoul", payload={"user_id": "TestOwner", "suggestion": "A fictional suggestion"},
             sqlite_current_path=lambda _u, _s: path, sqlite_connect=main._sqlite_connect,
             sqlite_ensure_conversation_state_schema=main._sqlite_ensure_conversation_state_schema,
             sqlite_ensure_nonempty=main._sqlite_ensure_nonempty,
-            get_service_from_payload=lambda _payload: Service(),
+            get_service_from_payload=lambda _payload: svc,
             build_retrieve_identity_context=lambda _name: "",
             snapshot_previous_narrative_self=lambda *_args, **_kwargs: None,
         )

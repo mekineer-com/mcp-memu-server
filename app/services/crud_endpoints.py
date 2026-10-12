@@ -552,59 +552,55 @@ async def narrative_suggestion_endpoint(
     new_narrative = str(parsed.get("narrative_self") or "").strip()
     companion_memory = str(parsed.get("companion_memory") or "").strip()
 
-    if new_narrative and db_path is not None and current_narrative != new_narrative:
+    changed = bool(new_narrative and current_narrative != new_narrative)
+    if db_path is not None and (changed or companion_memory):
         old_embedding = None
-        if current_narrative:
+        if changed and current_narrative:
             [old_embedding] = await svc.embed([current_narrative], profile="embedding")
-
+        companion_embedding = None
+        if companion_memory:
+            [companion_embedding] = await svc.embed([companion_memory], profile="embedding")
         sqlite_ensure_nonempty(db_path)
-        con = sqlite_connect(db_path)
-        try:
-            con.row_factory = sqlite3.Row
-            sqlite_ensure_conversation_state_schema(con)
-            narrative_id = str(uuid.uuid4())
-            now_iso = datetime.now(UTC).isoformat()
-            con.execute(
-                "INSERT INTO narrative_history (id, narrative_self, related_memory_ids, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (narrative_id, new_narrative, "[]", now_iso),
+        session_cm = svc._sqlite_write_session(svc.database)
+        if session_cm is None:
+            raise RuntimeError("Narrative suggestion apply requires SQLite")
+        with session_cm as session:
+            connection = session.connection()
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            con = connection.connection.driver_connection
+            previous_row_factory = con.row_factory
+            try:
+                con.row_factory = sqlite3.Row
+                if changed:
+                    before = str(_soul_state.read(con).get("narrative_self") or "")
+                    if before != displayed_narrative:
+                        raise HTTPException(status_code=409, detail="Self-description changed while the suggestion was being considered; nothing was overwritten.")
+                    con.execute(
+                        "INSERT INTO narrative_history (id, narrative_self, related_memory_ids, created_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (str(uuid.uuid4()), new_narrative, "[]", datetime.now(UTC).isoformat()),
+                    )
+                    _soul_summaries.write_live(con, kind="narrative_self", summary=new_narrative)
+                    if current_narrative:
+                        snapshot_previous_narrative_self(
+                            svc, scope=scope, old_text=current_narrative,
+                            old_embedding=old_embedding, session=session,
+                        )
+                if companion_memory:
+                    svc.database.memory_item_repo.create_item(
+                        resource_id=None, memory_type="reflection", summary=companion_memory,
+                        embedding=companion_embedding, user_data=scope, source_role="soul",
+                        happened_at=datetime.now(UTC), session=session,
+                    )
+                session.commit()
+            finally:
+                con.row_factory = previous_row_factory
+        if changed:
+            _soul_summaries.journal_committed_write(
+                kind="narrative_self", before=before, after=new_narrative,
+                scope=scope, edited_by="narrative_suggestion",
             )
-            before = str(_soul_state.read(con).get("narrative_self") or "")
-            if before != displayed_narrative:
-                raise HTTPException(status_code=409, detail="Self-description changed while the suggestion was being considered; nothing was overwritten.")
-            _soul_summaries.write_live(
-                con,
-                kind="narrative_self",
-                summary=new_narrative,
-            )
-            con.commit()
-        finally:
-            con.close()
-        _soul_summaries.journal_committed_write(
-            kind="narrative_self", before=before, after=new_narrative,
-            scope=scope, edited_by="narrative_suggestion",
-        )
-        if current_narrative:
-            snapshot_previous_narrative_self(
-                svc,
-                scope=scope,
-                old_text=current_narrative,
-                old_embedding=old_embedding,
-            )
-        current_narrative = new_narrative
-
-    if companion_memory and db_path is not None:
-        sqlite_ensure_nonempty(db_path)
-        [companion_embedding] = await svc.embed([companion_memory], profile="embedding")
-        svc.database.memory_item_repo.create_item(
-            resource_id=None,
-            memory_type="reflection",
-            summary=companion_memory,
-            embedding=companion_embedding,
-            user_data=scope,
-            source_role="soul",
-            happened_at=datetime.now(UTC),
-        )
+            current_narrative = new_narrative
 
     if current_narrative:
         return {"narrative_self": current_narrative}
