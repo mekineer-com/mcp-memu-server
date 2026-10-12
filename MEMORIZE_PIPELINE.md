@@ -96,6 +96,9 @@ and memU `memorize_speakers._build_speaker_map`: explicit `source_owner_id`, sou
 roles/references and established entity links carry attribution. Generic imported
 roles alone do not assert owner identity. Preserve that evidence, not just prose.
 The shared speaker builder does not resolve a participant from a name or alias.
+The shared grouped renderer also never derives a group sender from `[Name]`
+typed in the message body. Structured sender labels remain authoritative and
+bracketed text stays literal, for replies, extraction and reflection alike.
 Unlinked named participants retain their display labels in source context but
 remain unidentified for deterministic memory attribution and dedupe. Explicit
 source links and model-selected declared-relationship roster references remain

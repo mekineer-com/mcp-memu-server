@@ -155,22 +155,21 @@ def test_derive_source_label_maps_integrity_and_chat_to_sillytavern() -> None:
     assert message_log.derive_source_label("chat:Echo.chat") == "sillytavern"
 
 
-def test_format_merged_history_parses_legacy_group_prefix_at_render_time() -> None:
+def test_format_merged_history_keeps_typed_group_prefix_as_content() -> None:
     rendered = message_log.format_merged_history(
         [
             {
-                "conversation_id": "whatsapp:group:18322935409-1579788049@g.us",
+                "conversation_id": "whatsapp:group:fictional-group@g.us",
                 "source_label": "whatsapp:group",
                 "role": "user",
-                "speaker": "Marcos",
-                "content": "[Contact A] Going to the gym now.",
+                "speaker": "TestGuest",
+                "content": "[TestOwner] Going to the gym now.",
                 "received_at": "2026-05-09T12:08:26+00:00",
             }
         ]
     )
 
-    assert "[Marcos] [Contact A] Going to the gym now." not in rendered
-    assert "[Contact A] Going to the gym now." in rendered
+    assert "[TestGuest] [TestOwner] Going to the gym now." in rendered
 
 
 def test_format_merged_history_preserves_same_day_duplicate_lines() -> None:

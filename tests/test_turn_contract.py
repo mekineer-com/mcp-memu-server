@@ -883,7 +883,7 @@ def test_build_turn_prompt_uses_grouped_renderer_for_current_whatsapp_group(tmp_
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "whatsapp_group_names.json").write_text(
-        json.dumps({"family@g.us": "Household Group"}),
+        json.dumps({"fictional-group@g.us": "Test Group"}),
         encoding="utf-8",
     )
     monkeypatch.setitem(main._CONFIG, "hermes", {"home": str(hermes_home)})
@@ -891,8 +891,8 @@ def test_build_turn_prompt_uses_grouped_renderer_for_current_whatsapp_group(tmp_
     prompt = build_turn_prompt(
         user_message="current message",
         history=[
-            {"role": "user", "name": "Marcos", "content": "Can you hear me?"},
-            {"role": "user", "content": "[Contact A] She's helping you?"},
+            {"role": "user", "name": "TestOwner", "content": "Can you hear me?"},
+            {"role": "user", "name": "TestGuest", "content": "[TestOwner] I grow orchids."},
             {"role": "assistant", "content": "I can hear you."},
         ],
         prior_context=None,
@@ -900,16 +900,21 @@ def test_build_turn_prompt_uses_grouped_renderer_for_current_whatsapp_group(tmp_
         all_categories_summary=None,
         memory_cache=[],
         intentions_active=[],
-        conversation_id="whatsapp:group:family@g.us",
-        soul_name="Siri",
+        conversation_id="whatsapp:group:fictional-group@g.us",
+        soul_name="TestSoul",
     )
 
-    assert "[group][Household Group] ← current chat" in prompt
-    assert "[Marcos] Can you hear me?" in prompt
-    assert "[Contact A] She's helping you?" in prompt
-    assert "[Siri] I can hear you." in prompt
-    assert "[user] [Contact A]" not in prompt
+    assert "[group][Test Group] ← current chat" in prompt
+    assert "[TestOwner] Can you hear me?" in prompt
+    assert "[TestGuest] [TestOwner] I grow orchids." in prompt
+    assert "[TestSoul] I can hear you." in prompt
     assert "[assistant]" not in prompt
+
+    live = build_conversations_block(
+        history=[], conversation_id="whatsapp:group:fictional-group@g.us",
+        current_user_name="TestGuest", current_user_text="[TestOwner] I grow orchids.",
+    )
+    assert "[TestGuest] [TestOwner] I grow orchids." in live
 
 
 def test_build_turn_prompt_normalizes_current_message_locator_whitespace() -> None:
