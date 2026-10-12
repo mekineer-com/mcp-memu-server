@@ -1599,7 +1599,7 @@ async def _prepare_annulment_memories(
         intention = by_id.get(intention_id)
         if intention is None:
             continue
-        summary = f'On {event_at.date().isoformat()}, I marked "{intention["text"]}" as {row["status"]}.'
+        summary = f'On {event_at.astimezone().date().isoformat()}, I marked "{intention["text"]}" as {row["status"]}.'
         note = row["note"]
         if note:
             summary = f"{summary} Note: {note}"

@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -589,8 +589,18 @@ def test_persist_actual_annulments_uses_ids_removed_from_latest_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_annulment_memories_are_dated_historical_events() -> None:
+async def test_annulment_memories_are_dated_historical_events(monkeypatch) -> None:
     created: list[dict[str, Any]] = []
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 13, 2, 30, tzinfo=UTC).astimezone(tz)
+
+        def astimezone(self, tz=None):
+            return super().astimezone(tz if tz is not None else timezone(timedelta(hours=-5)))
+
+    monkeypatch.setattr(main, "datetime", _Clock)
 
     class _Repo:
         def create_item(self, **kwargs: Any) -> SimpleNamespace:
@@ -626,11 +636,13 @@ async def test_annulment_memories_are_dated_historical_events() -> None:
     )
 
     event_at = created[0]["happened_at"]
+    assert event_at == datetime(2026, 10, 13, 2, 30, tzinfo=UTC)
+    assert event_at.tzinfo is UTC
     assert ids == ["memory-1", "memory-2"]
     assert [row["happened_at"] for row in created] == [event_at, event_at]
-    assert created[0]["summary"] == f'On {event_at.date()}, I marked "Ask about sleep" as completed.'
+    assert created[0]["summary"] == 'On 2026-10-12, I marked "Ask about sleep" as completed.'
     assert created[1]["summary"] == (
-        f'On {event_at.date()}, I marked "Check the weather" as deleted. Note: No longer needed'
+        'On 2026-10-12, I marked "Check the weather" as deleted. Note: No longer needed'
     )
 
     async def _short_embed(_texts: list[str], **_kwargs: Any) -> list[list[float]]:
