@@ -18,7 +18,7 @@ from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine
 
 from app.db import json_to_db, normalize_text_list, sqlite_connect, sqlite_ensure_conversation_state_schema, sqlite_ensure_nonempty
-from app.services import consolidation, cross_history, message_log, payload, segment, turn_contract
+from app.services import consolidation, cross_history, memorize_endpoint, message_log, payload, segment, turn_contract
 from app.services import soul_state as _soul_state
 from app.services import soul_summaries as _soul_summaries
 from app.services.consolidation import ConsolidationDeps, write_consolidation_outputs
@@ -734,7 +734,8 @@ def test_gather_consolidation_inputs_skips_when_no_pending_segments() -> None:
 
 
 @pytest.mark.parametrize("ambiguous_path", [False, True])
-def test_gather_consolidation_inputs_collects_all_pending_conversations(tmp_path: Path, ambiguous_path, monkeypatch) -> None:
+@pytest.mark.parametrize("manifest_exists", [False, True])
+def test_gather_consolidation_inputs_collects_all_pending_conversations(tmp_path: Path, ambiguous_path, manifest_exists, monkeypatch) -> None:
     db_path = tmp_path / "soul.db"
     con = sqlite3.connect(db_path)
     try:
@@ -773,13 +774,16 @@ CREATE TABLE resources (
             user_id=user_id,
             updates={"pending_segment_ids": [segment_id]},
         )
-        chat_dir = tmp_path / cid
+        chat_dir = memorize_endpoint.resolve_chat_storage_dir(
+            tmp_path / "st_chats", user_id, soul_id, cid,
+        )[0]
         segments_dir = chat_dir / "segments"
         segments_dir.mkdir(parents=True)
-        (chat_dir / "manifest.json").write_text(
-            json.dumps({"segments": [{"start": 0, "end": 0}]}),
-            encoding="utf-8",
-        )
+        if manifest_exists:
+            (chat_dir / "manifest.json").write_text(
+                json.dumps({"segments": [{"start": 0, "end": 0}]}),
+                encoding="utf-8",
+            )
         (segments_dir / "segment_0.json").write_text(
             json.dumps([{
                 "role": "user",
@@ -917,7 +921,7 @@ INSERT INTO memory_items (
     deps = _make_consolidation_deps(db_path, tmp_path)
     deps = replace(
         deps,
-        find_chat_dir_for_conversation=lambda _a, _b, _c, cid: chat_dirs.get(cid),
+        find_chat_dir_for_conversation=memorize_endpoint.find_chat_dir_for_conversation,
     )
     if ambiguous_path:
         with pytest.raises(HTTPException, match="ownership missing or ambiguous"):

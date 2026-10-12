@@ -145,7 +145,7 @@ def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path
     chat_dir.joinpath("manifest.json").unlink()
     assert memorize_endpoint.find_chat_dir_for_conversation(
         tmp_path / "st_chats", "TestOwner", "TestSoul", cid,
-    ) is None
+    ) == chat_dir
     with sqlite3.connect(soul_db) as con:
         con.row_factory = sqlite3.Row
         displayed = cross_history._load_cross_tail_from_sources(con, user_id="TestOwner", soul_id="TestSoul")
@@ -158,6 +158,11 @@ def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path
     ordinary_file.unlink()
     historical_file.unlink()
     assert main._latest_saved_segment_display_ranges(**lookup) == {}
+    artifacts.rmdir()
+    chat_dir.rmdir()
+    assert memorize_endpoint.find_chat_dir_for_conversation(
+        tmp_path / "st_chats", "TestOwner", "TestSoul", cid,
+    ) is None
     with pytest.raises(ValueError, match="does not belong"):
         conversation_sources.load_import_tail(**{**kwargs, "soul_id": "OtherSoul"}, since_cursor=-1)
     long, _, _ = chat_import.normalize_messages([

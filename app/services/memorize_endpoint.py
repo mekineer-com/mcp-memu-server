@@ -635,13 +635,14 @@ async def run_memorize_segments(
                     failure_record = {
                         "conversation_id": conversation_id,
                         "error": failure_record["error"] if failure_record else "Memorize interrupted before completion. Retry in launcher.",
-                        "paused": bool(failure_record), "targets": {**targets, **(failure_record["targets"] if failure_record else {})},
+                        "paused": bool(failure_record), "targets": targets,
                         "filing_policy": filing_policy,
                     }
-                    ctx.write_conversation_state(
+                    failure_state, _ = ctx.write_conversation_state(
                         conversation_id, user_id=uid, soul_id=soul_id,
                         updates={"memorize_failure": failure_record},
                     )
+                    failure_record = failure_state["memorize_failure"]
                 _set_memorize_progress(
                     ctx.memorize_progress,
                     progress_key,
@@ -1119,7 +1120,7 @@ def find_chat_dir_for_conversation(
         soul_id,
         conversation_id,
     )
-    if (primary_dir / "manifest.json").exists():
+    if primary_dir.is_dir():
         return primary_dir
 
     return None

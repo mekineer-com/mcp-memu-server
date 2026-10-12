@@ -11,9 +11,8 @@ from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
-from app.config import sqlite_file_from_dsn
-
 from app.services.conversation_id import canonical_conversation_id
+from app.services.souls import list_souls
 from app.services.turn_contract import _conversation_heading_from_conversation_id, render_anchor_context
 
 
@@ -438,15 +437,11 @@ def _free_turn_followup_db_paths(
 ) -> list[Path]:
     base_dsn = str(storage_status.get("dsn") or "")
     sqlite_dir = sqlite_dir_from_cfg(config, fallback_dsn=base_dsn)
-    base_path = sqlite_file_from_dsn(base_dsn)
-    try:
-        return sorted(
-            path for path in sqlite_dir.glob("*.db")
-            if path.is_file() and (base_path is None or path.resolve() != base_path.resolve())
-        )
-    except OSError:
-        logger.exception("free_turn: failed to scan follow_up sqlite dir %s", sqlite_dir)
-        return []
+    # Keep the injected directory and runtime base DSN while sharing Soul exclusions.
+    discovery_config = {**config, "storage": {
+        "sqlite_dir": str(sqlite_dir), "metadata_store": {"dsn": base_dsn},
+    }}
+    return [sqlite_dir / f"{soul_id}.db" for soul_id in list_souls(discovery_config)]
 
 
 def _claim_due_free_turn_followups(
@@ -454,7 +449,7 @@ def _claim_due_free_turn_followups(
     *,
     now: datetime,
     json_from_db: Callable[[Any], Any],
-    sqlite_connect: Callable[[Path], sqlite3.Connection],
+    sqlite_connect: Callable[..., sqlite3.Connection],
     poll_marker_due: Callable[..., bool],
     sqlite_has_rows_quietly: Callable[..., bool],
     remove_poll_marker: Callable[[Path, str], None],
@@ -464,8 +459,6 @@ def _claim_due_free_turn_followups(
     claimed: list[dict[str, Any]] = []
     now_iso = now.astimezone(UTC).isoformat()
     stale_before = (now.astimezone(UTC) - timedelta(seconds=max(1, int(claim_timeout_seconds)))).isoformat()
-    if not poll_marker_due(db_path, "free-turn-followups", now=now):
-        return []
     if not sqlite_has_rows_quietly(
         db_path,
         table="free_turn_followups",
@@ -474,7 +467,7 @@ def _claim_due_free_turn_followups(
     ):
         remove_poll_marker(db_path, "free-turn-followups")
         return []
-    con = sqlite_connect(db_path)
+    con = sqlite_connect(db_path, mode="rw")
     try:
         con.row_factory = sqlite3.Row
         table = con.execute(

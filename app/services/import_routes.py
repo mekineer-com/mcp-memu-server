@@ -92,16 +92,21 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | 
         if cid is not None and not (failure and cid == failure["conversation_id"] and complete):
             payload = runtime._saved_memorize_payload(cid, uid, sid, failure)
         if payload is None:
+            handoff_failure = None
             if failure:
                 if failure["targets"] and not complete:
                     runtime._check_memorize_failure_targets(uid, sid)
-                runtime._write_retry_memorize_state(cid, **scoped, updates={"memorize_failure": None})
+                if cid is None or runtime._soul_state.consolidation_failure(state):
+                    runtime._write_retry_memorize_state(cid, **scoped, updates={"memorize_failure": None})
+                else:
+                    handoff_failure = failure
             if failure and cid is not None:
                 svc = runtime._get_service_from_payload({"user": scoped}, operation="consolidation")
                 consolidation_started = True
                 await runtime._run_consolidation_task(
                     svc, conversation_id=cid,
                     soul_id=sid, uid=uid, progress_key=marker, memorize_progress=runtime._MEMORIZE_PROGRESS,
+                    completed_memorize_failure=handoff_failure,
                 )
             success = True
         else:

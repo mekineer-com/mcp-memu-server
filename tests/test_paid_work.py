@@ -15,6 +15,35 @@ from app.services import soul_state
 from app.services import consolidation, service_factory
 
 
+@pytest.mark.parametrize("old,new,positions,winner", [
+    ({"cursor": 9}, {"cursor": 3}, {}, "old"),
+    ({"cursor": 3}, {"cursor": 9}, {}, "new"),
+    ({"cursor": 90, "source_message_id": "old"},
+     {"cursor": 2, "source_message_id": "new"}, {"old": 3, "new": 9}, "new"),
+    ({"cursor": 2, "source_message_id": "old"},
+     {"cursor": 90, "source_message_id": "new"}, {"old": 9, "new": 3}, "old"),
+    ({"cursor": 2, "source_message_id": "old"},
+     {"cursor": 90, "source_message_id": "new"}, {"old": None, "new": 9}, "old"),
+    ({"cursor": 2, "source_message_id": "old"},
+     {"cursor": 90, "source_message_id": "new"}, {"old": 3, "new": None}, "old"),
+])
+def test_failed_targets_never_shrink_and_resolve_message_ids(monkeypatch, old, new, positions, winner):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid, other = "chat:failed-bounds", "chat:other-failed-bound"
+    old, new = {**old, "ts": 1}, {**new, "ts": 2}
+    monkeypatch.setattr(main, "_resolve_web_source_checkpoint", lambda _cid, message_id: positions[message_id])
+    main._write_conversation_state(cid, **scope, updates={"memorize_failure": {
+        "conversation_id": cid, "error": "Failed", "paused": True,
+        "targets": {cid: old, other: {"cursor": 7}},
+    }})
+    state, _ = main._write_conversation_state(cid, **scope, updates={"memorize_failure": {
+        "conversation_id": cid, "error": "Retried", "paused": False, "targets": {cid: new},
+    }})
+    failure = state["memorize_failure"]
+    assert failure["targets"] == {cid: old if winner == "old" else new, other: {"cursor": 7}}
+    assert failure["paused"]
+
+
 @pytest.mark.asyncio
 async def test_frozen_batch_subtracts_current_checkpoints_without_reloading_text(monkeypatch):
     uid, sid, first, other = "TestOwner", "TestSoul", "chat:captured-first", "chat:captured-other"
@@ -353,7 +382,8 @@ async def test_waiting_consolidation_retry_never_lifts_pause(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cross_checkpoint_failure_retains_published_history_and_retry_uses_remaining_source(monkeypatch):
+@pytest.mark.parametrize("growing_retry", [False, True])
+async def test_cross_checkpoint_failure_retains_published_history_and_retry_uses_remaining_source(monkeypatch, growing_retry):
     uid, sid, first, second = "TestOwner", "TestSoul", "chat:audit-a", "chat:audit-b"
     history = [{"role": "user", "content": "Test", "ts_ms": 1}, {"role": "assistant", "content": "Reply", "ts_ms": 2}]
     for cid in (first, second):
@@ -406,7 +436,8 @@ async def test_cross_checkpoint_failure_retains_published_history_and_retry_uses
     assert main._paid_work_state(uid, sid)["memorize_failure"]["targets"][second]["cursor"] == 1
     main._conversation_sources.persist_sillytavern_history_snapshot(
         storage_dir=main._get_storage_dir(main._CONFIG), user_id=uid, soul_id=sid,
-        conversation_id=second, history=history,
+        conversation_id=second, history=history + ([{"role": "user", "content": "New retry work", "ts_ms": 3}]
+                                                if growing_retry else []),
     )
     third = "chat:audit-new"
     main._write_conversation_state(third, user_id=uid, soul_id=sid, updates={"memorize_chat": True})
@@ -423,6 +454,7 @@ async def test_cross_checkpoint_failure_retains_published_history_and_retry_uses
     await main.retry_memorize(uid, sid, tasks)
     await tasks()
     assert "Later checkpoint failed" in main._paid_work_state(uid, sid)["memorize_failure"]["error"]
+    assert main._paid_work_state(uid, sid)["memorize_failure"]["targets"][second]["cursor"] == (2 if growing_retry else 1)
     state, _, _ = main._load_turn_state_and_soul_card(first, user_id=uid, soul_id=sid)
     assert calls[-1]["segments"][0]["segment"]["segment_id"] not in state["pending_segment_ids"]
     assert not any(Path(segment["local_path"]).is_file() for segment in calls[-1]["segments"])
@@ -676,7 +708,8 @@ async def test_retry_of_completed_targets_clears_only_memorize(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["accepted", "service_failure", "busy", "no_anchor"])
+@pytest.mark.parametrize("mode", ["accepted", "no_pending", "cancel_before_marker", "failure_after_marker",
+                                  "fresh_failure", "service_failure", "busy", "no_anchor"])
 async def test_completed_memorize_retry_reserves_reflection_before_dispatch(monkeypatch, mode):
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     cid = "chat:completed-reflection-admission"
@@ -694,7 +727,21 @@ async def test_completed_memorize_retry_reserves_reflection_before_dispatch(monk
         assert mode != "no_anchor"
         return object()
     monkeypatch.setattr(main, "_get_service_from_payload", service)
-    pipeline = AsyncMock(return_value={"status": "skipped", "reason": "not_due"})
+    fresh_failure = {**before, "error": "A later source failed"}
+    async def finish_pipeline(**_kwargs):
+        assert main._paid_work_state(**scope)["memorize_failure"] == before
+        if mode == "cancel_before_marker":
+            raise asyncio.CancelledError()
+        if mode == "failure_after_marker":
+            main._write_conversation_state(cid, **scope, updates={
+                "last_consolidation_error": "Reflection failed",
+                "last_consolidation_error_at": datetime.now(UTC).isoformat(),
+            })
+            raise ValueError("Reflection failed")
+        if mode == "fresh_failure":
+            main._write_conversation_state(cid, **scope, updates={"memorize_failure": fresh_failure})
+        return {"status": "skipped", "reason": "no_pending_segments" if mode == "no_pending" else "not_due"}
+    pipeline = AsyncMock(side_effect=finish_pipeline)
     monkeypatch.setattr(main, "_run_consolidation_pipeline_once", pipeline)
     tasks = BackgroundTasks()
     if mode == "busy":
@@ -708,7 +755,7 @@ async def test_completed_memorize_retry_reserves_reflection_before_dispatch(monk
         assert tasks.tasks == [] and marker not in main._FORCED_MEMORIZE_INFLIGHT
         return
     assert (await main.retry_memorize(**scope, background_tasks=tasks))["status"] == "already_memorized"
-    assert main._paid_work_state(**scope)["memorize_failure"] is None
+    assert main._paid_work_state(**scope)["memorize_failure"] == (None if mode == "no_anchor" else before)
     if mode == "no_anchor":
         assert tasks.tasks == [] and marker not in main._FORCED_MEMORIZE_INFLIGHT
         return
@@ -716,8 +763,16 @@ async def test_completed_memorize_retry_reserves_reflection_before_dispatch(monk
     with pytest.raises(HTTPException) as busy:
         main._consolidation_request_context(cid, {"user": scope})
     assert busy.value.status_code == 409
-    await tasks()
+    if mode == "cancel_before_marker":
+        with pytest.raises(asyncio.CancelledError):
+            await tasks()
+    else:
+        await tasks()
     pipeline.assert_awaited_once()
+    expected = before if mode == "cancel_before_marker" else fresh_failure if mode == "fresh_failure" else None
+    assert main._paid_work_state(**scope)["memorize_failure"] == expected
+    if mode == "failure_after_marker":
+        assert main._soul_activity_pause(**scope) == "Reflection failed"
     assert marker not in main._FORCED_MEMORIZE_INFLIGHT
 
 
@@ -741,6 +796,9 @@ async def test_retry_recovers_before_completed_shortcut_and_consolidation(monkey
             "stage": "complete", "error": None, "ordinary_waiting": cid}})
     engine = SavedBatchService.make_engine(scoped)
     entered, release = asyncio.Event(), asyncio.Event()
+    engine.database.resource_repo.create_resource(url="saved-segment", modality="conversation",
+        local_path="saved-segment", caption=None, embedding=None, user_data=scoped,
+        segment_id="saved-segment", conversation_id=cid)
     async def review(state, context, **kwargs):
         assert main._paid_work_state(uid, sid)["memorize_failure"]["paused"]
         assert main._soul_activity_pause(uid, sid)
@@ -797,6 +855,8 @@ async def test_recovery_cancel_flag_and_consolidation_interruption_preserve_targ
         "conversation_id": cid, "paused": False, "error": "Review failed", "targets": targets}})
     main._write_conversation_state(cid, **scoped, updates={"memorize_segment_work": {"saved": "review"}})
     engine = SavedBatchService.make_engine(scoped)
+    engine.database.resource_repo.create_resource(url="saved", modality="conversation",
+        local_path="saved", caption=None, embedding=None, user_data=scoped, segment_id="saved", conversation_id=cid)
     async def review(state, context, **_kwargs):
         assert (await main.memorize_cancel(scoped)) == {"ok": False, "status": "cancel_too_late"}
         assert main._memorize_lock_key(**scoped) not in main._MEMORIZE_CANCEL
@@ -806,7 +866,7 @@ async def test_recovery_cancel_flag_and_consolidation_interruption_preserve_targ
             raise asyncio.CancelledError()
         if outcome == "failure":
             raise RuntimeError("Reflection failed")
-        return {"status": "ok", "result": {}} if outcome == "success" else {"status": "skipped"}
+        return {"status": "ok", "result": {}} if outcome == "success" else {"status": "skipped", "reason": "not_due"}
     monkeypatch.setattr(engine, "_memorize_persist_and_index", review)
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: engine)
     monkeypatch.setattr(main, "_run_consolidation_pipeline_once", consolidate)
@@ -826,7 +886,7 @@ async def test_recovery_cancel_flag_and_consolidation_interruption_preserve_targ
                 await retry_tasks()
         else:
             await tasks()
-            assert main._paid_work_state(**scoped)["memorize_failure"] is None
+            assert bool(main._paid_work_state(**scoped)["memorize_failure"]) == (outcome == "failure")
         marker = main._memorize_lock_key(**scoped)
         assert marker not in main._MEMORIZE_CANCEL and marker not in main._FORCED_MEMORIZE_INFLIGHT
         assert not main._MEMORIZE_PROGRESS[marker]["active"]
@@ -851,6 +911,10 @@ async def test_recovery_dedupes_trailing_segment_before_soul_wide_review(monkeyp
     main._write_conversation_state(cid, **scoped, updates={"memorize_segment_work": {
         "earlier": "review", "later": "dedupe"}})
     engine = SavedBatchService.make_engine(scoped)
+    for segment_id in ("earlier", "later"):
+        engine.database.resource_repo.create_resource(url=segment_id, modality="conversation",
+            local_path=segment_id, caption=None, embedding=None, user_data=scoped,
+            segment_id=segment_id, conversation_id=cid)
     for _ in range(10):
         item = engine.database.memory_item_repo.create_item(
             memory_type="knowledge", summary="A fictional garden", embedding=[1.0, 0.0],
@@ -1279,8 +1343,8 @@ async def test_retry_validated_empty_source_preserves_unfinished_targets(monkeyp
                 conversation_id=cid, source_label="sillytavern",
             )
             path.write_text("{broken", encoding="utf-8")
-    consolidate = AsyncMock(return_value={"status": "skipped"})
-    monkeypatch.setattr(main, "_run_consolidation_task", consolidate)
+    consolidate = AsyncMock(return_value={"status": "skipped", "reason": "no_pending_segments"})
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", consolidate)
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: object())
     if waiting:
         await main._import_routes.run_waiting_memorize(main, scoped=scoped, retry=True)
@@ -1400,6 +1464,8 @@ async def test_retry_all_deleted_finishes_real_saved_work_without_recreating_cha
         memory_type="knowledge", summary="Fictional saved evidence", embedding=[1.0, 0.0],
         user_data=scoped, segment_id="saved",
     )
+    engine.database.resource_repo.create_resource(url="saved", modality="conversation",
+        local_path="saved", caption=None, embedding=None, user_data=scoped, segment_id="saved", conversation_id=cid)
     path = main._sqlite_current_path(uid, sid)
     with main._sqlite_connect(path) as con:
         con.execute("DELETE FROM conversations WHERE conversation_id = ?", (cid,))
@@ -1499,7 +1565,8 @@ async def test_joined_background_worker_retry_and_resource_reflection(monkeypatc
     monkeypatch.setattr(main, "_load_tail_for_source_conversation", read_source)
     monkeypatch.setattr(main, "_load_background_rollup_tail", background)
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: svc)
-    monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", AsyncMock(
+        return_value={"status": "skipped", "reason": "not_due"}))
     calls = []
     failed = False
     def change_flags():

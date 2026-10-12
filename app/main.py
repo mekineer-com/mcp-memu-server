@@ -1215,6 +1215,7 @@ def _write_conversation_state(
         write_conversation_state_impl=_write_conversation_state_impl,
         sqlite_current_path=_sqlite_current_path,
         connection=connection,
+        resolve_source_checkpoint=_resolve_web_source_checkpoint,
     )
 
 
@@ -2321,6 +2322,7 @@ async def _run_consolidation_task(
     progress_key: str | None = None,
     memorize_progress: dict[str, dict[str, Any]] | None = None,
     release_memorize_claim: bool = False,
+    completed_memorize_failure: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if (uid, soul_id) in _CONSOLIDATION_RUNNING or (
         _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, soul_id)) is True
@@ -2349,6 +2351,7 @@ async def _run_consolidation_task(
             total=1,
         )
     success = False
+    out: dict[str, Any] = {}
     try:
         deps = _make_consolidation_deps()
         state_lock = _get_memorize_lock(_memorize_lock_key(uid, soul_id))
@@ -2400,8 +2403,24 @@ async def _run_consolidation_task(
     finally:
         if progress_key and memorize_progress is not None:
             _MEMORIZE_CANCEL.discard(progress_key)
-        if release_memorize_claim:
-            await _finish_memorize_claim(_memorize_lock_key(uid, soul_id), success)
+        try:
+            if completed_memorize_failure is not None:
+                con = _sqlite_connect(_sqlite_current_path(uid, soul_id))
+                try:
+                    con.row_factory = sqlite3.Row
+                    con.execute("BEGIN IMMEDIATE")
+                    state = _soul_state.read(con)
+                    if state["memorize_failure"] == completed_memorize_failure and (
+                        success or out.get("reason") == "no_pending_segments"
+                        or _soul_state.consolidation_failure(state)
+                    ):
+                        _soul_state.write(con, {"memorize_failure": _patch_memorize_failure(con, None)})
+                    con.commit()
+                finally:
+                    con.close()
+        finally:
+            if release_memorize_claim:
+                await _finish_memorize_claim(_memorize_lock_key(uid, soul_id), success)
 
 
 def _active_consolidation_failure(
@@ -2887,7 +2906,8 @@ def _write_retry_memorize_state(cid: str | None, *, user_id: str, soul_id: str,
             patch["replacement"] = updates["memorize_failure"]
         if "memorize_segment_work" in updates:
             patch["segment_work"] = updates["memorize_segment_work"]
-        _soul_state.write(con, {"memorize_failure": _patch_memorize_failure(con, **patch)})
+        _soul_state.write(con, {"memorize_failure": _patch_memorize_failure(
+            con, **patch, resolve_source_checkpoint=_resolve_web_source_checkpoint)})
         if connection is None:
             con.commit()
     finally:
@@ -2952,13 +2972,18 @@ async def retry_memorize(user_id: str, soul_id: str, background_tasks: Backgroun
             svc = _get_service_from_payload(
                 {"user": {"user_id": user_id, "soul_id": soul_id}}, operation="consolidation"
             )
-        _write_retry_memorize_state(cid, user_id=user_id, soul_id=soul_id, updates={"memorize_failure": None})
+        handoff_failure = failure if cid is not None and not _soul_state.consolidation_failure(
+            _paid_work_state(user_id, soul_id)
+        ) else None
+        if handoff_failure is None:
+            _write_retry_memorize_state(cid, user_id=user_id, soul_id=soul_id, updates={"memorize_failure": None})
         if cid is not None:
             _FORCED_MEMORIZE_INFLIGHT[marker] = False
             background_tasks.add_task(
                 _run_consolidation_task, svc,
                 conversation_id=cid, soul_id=soul_id, uid=user_id,
                 progress_key=marker, memorize_progress=_MEMORIZE_PROGRESS, release_memorize_claim=True,
+                completed_memorize_failure=handoff_failure,
             )
         return {"ok": True, "status": "already_memorized"}
     return await _memorize_owned(payload, background_tasks, True, retry=True)

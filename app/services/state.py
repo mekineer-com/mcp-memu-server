@@ -241,6 +241,7 @@ def conversation_state_empty(
 def patch_memorize_failure(
     con: sqlite3.Connection, replacement: Any = _MISSING, *,
     segment_work: Mapping[str, str] | None = None, finish: bool = False,
+    resolve_source_checkpoint: Callable[[str, str], int | None] | None = None,
 ) -> Any:
     current = _soul_state.read(con).get("memorize_failure")
     work = dict((current or {}).get("segment_work") or {})
@@ -259,7 +260,25 @@ def patch_memorize_failure(
     updated = {**(current or {}), **({} if replacement is _MISSING else replacement)}
     if current:
         updated["conversation_id"] = current["conversation_id"]
-        updated["targets"] = {**current["targets"], **updated["targets"]}
+        targets = dict(current["targets"])
+        for cid, target in updated["targets"].items():
+            old = targets.get(cid)
+            if old is None:
+                targets[cid] = target
+                continue
+            if old == target:
+                continue
+            old_position, new_position = old.get("cursor"), target.get("cursor")
+            if old.get("source_message_id") or target.get("source_message_id"):
+                if resolve_source_checkpoint is None or not (
+                    old.get("source_message_id") and target.get("source_message_id")
+                ):
+                    continue
+                old_position = resolve_source_checkpoint(cid, old["source_message_id"])
+                new_position = resolve_source_checkpoint(cid, target["source_message_id"])
+            if old_position is not None and new_position is not None and new_position >= old_position:
+                targets[cid] = target
+        updated["targets"] = targets
         updated["paused"] = bool(current["paused"] or updated["paused"])
     if work:
         updated["segment_work"] = work
@@ -276,6 +295,7 @@ def write_conversation_state(
     user_id: str | None = None,
     updates: Mapping[str, Any] | None = None,
     connection: sqlite3.Connection | None = None,
+    resolve_source_checkpoint: Callable[[str, str], int | None] | None = None,
 ) -> tuple[dict[str, Any], Path]:
     cid = canonical_conversation_id(conversation_id)
     if not cid:
@@ -357,6 +377,7 @@ INSERT OR IGNORE INTO conversations (
             soul_updates["memorize_failure"] = patch_memorize_failure(
                 con, soul_updates.get("memorize_failure", _MISSING),
                 segment_work=raw_updates.pop("memorize_segment_work", None), finish=finish_work,
+                resolve_source_checkpoint=resolve_source_checkpoint,
             )
         for append_key, field in (
             ("append_retrieval_ids_since_consolidation", "retrieval_ids_since_consolidation"),

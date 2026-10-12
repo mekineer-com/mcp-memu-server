@@ -441,6 +441,9 @@ async def test_import_retry_recovers_zero_item_segment_before_pending_shortcut(m
         "stage": stage, "error": "Review failed"}})
     main._write_conversation_state(cid, **scoped, updates={"import_segment_work": {"saved": phase}})
     engine = SavedBatchService.make_engine(scoped)
+    engine.database.resource_repo.create_resource(url="saved", modality="conversation",
+        local_path="saved", caption=None, embedding=None, user_data=scoped,
+        segment_id="saved", conversation_id=cid)
     for profile in engine.llm_profiles.profiles.values():
         profile.context_window_tokens = 1_000_000
     entered, release = asyncio.Event(), asyncio.Event()

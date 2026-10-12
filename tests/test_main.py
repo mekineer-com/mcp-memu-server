@@ -5713,6 +5713,8 @@ async def test_run_memorize_segments_preserves_pending_ids_on_extraction_failure
             state_row["pending_segment_ids"] = list(updates.get("pending_segment_ids") or [])
         if "digest_cursor" in updates:
             state_row["digest_cursor"] = int(updates["digest_cursor"])
+        if "memorize_failure" in updates:
+            state_row["memorize_failure"] = updates["memorize_failure"]
         return dict(state_row), tmp_path / "Echo.db"
 
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
@@ -5786,6 +5788,8 @@ async def test_run_memorize_segments_ignores_cancel_after_batch_extraction(
             state_row["last_memorize_at"] = updates["last_memorize_at"]
         if "append_pending_segment_ids" in updates:
             state_row["pending_segment_ids"] = list(dict.fromkeys(state_row["pending_segment_ids"] + updates["append_pending_segment_ids"]))
+        if "memorize_failure" in updates:
+            state_row["memorize_failure"] = updates["memorize_failure"]
         return dict(state_row), tmp_path / "Echo.db"
 
     monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
@@ -10406,6 +10410,86 @@ def test_free_turn_follow_up_schedule_persists_pending_row(
     payload = json.loads(row["payload_json"])
     assert payload["user"]["conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
     assert payload["follow_up_reason"] == "Check whether Marcos got home safely."
+
+
+def test_free_turn_discovery_uses_injected_paths_and_canonical_soul_exclusions(tmp_path, monkeypatch):
+    base_path = tmp_path / "base.db"
+    procedural_path = tmp_path / "procedural.db"
+    soul_path = tmp_path / "Test Soul.db"
+    for path in (base_path, procedural_path, soul_path):
+        path.touch()
+    (tmp_path / "directory.db").mkdir()
+    (tmp_path / "ignored.bak").touch()
+    try:
+        (tmp_path / "alias.db").symlink_to(soul_path)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    config = {"storage": {"sqlite_dir": str(tmp_path / "unused")},
+              "procedural": {"db_path": str(procedural_path)}}
+    base_dsn = f"sqlite:///{base_path}"
+    monkeypatch.setattr(main, "_CONFIG", config)
+    monkeypatch.setattr(main, "_STORAGE_STATUS", {"dsn": base_dsn})
+    calls = []
+
+    def injected_directory(cfg, *, fallback_dsn):
+        calls.append((cfg, fallback_dsn))
+        return tmp_path
+
+    monkeypatch.setattr(main, "_sqlite_dir_from_cfg", injected_directory)
+    assert main._free_turn_followup_db_paths() == [soul_path]
+    assert calls == [(config, base_dsn)]
+    assert config["storage"]["sqlite_dir"] == str(tmp_path / "unused")
+
+
+@pytest.mark.parametrize("marker", ["missing", "future"])
+@pytest.mark.parametrize("timeout", [7200, 60])
+def test_free_turn_claim_reclaims_without_marker_or_new_followup(tmp_path, monkeypatch, marker, timeout):
+    db_path = tmp_path / "TestSoul.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda _uid, _sid: db_path)
+    now = datetime(2026, 10, 12, 12, tzinfo=UTC)
+    followup_id = main._schedule_free_turn_follow_up(
+        user_id="TestOwner", soul_id="TestSoul", conversation_id="sillytavern:test-chat",
+        continue_at=(now + timedelta(seconds=10)).isoformat(), continue_reason="Check the task.",
+        safe_payload={"user": {"user_id": "TestOwner", "soul_id": "TestSoul"}},
+    )
+    marker_path = main._whatsapp_outbounds._poll_marker_path(db_path, "free-turn-followups")
+    if marker == "missing":
+        marker_path.unlink()
+    else:
+        main._touch_poll_marker(db_path, "free-turn-followups", str((now + timedelta(days=1)).timestamp()))
+    assert main._claim_due_free_turn_followups(db_path, now=now, claim_timeout_seconds=timeout) == []
+    now += timedelta(seconds=10)
+    claimed = main._claim_due_free_turn_followups(db_path, now=now, claim_timeout_seconds=timeout)
+    assert [row["id"] for row in claimed] == [followup_id]
+    assert claimed[0]["status"] == "running"
+    if marker == "future":
+        main._touch_poll_marker(db_path, "free-turn-followups", str((now + timedelta(days=1)).timestamp()))
+    for elapsed in (1, timeout):
+        assert main._claim_due_free_turn_followups(
+            db_path, now=now + timedelta(seconds=elapsed), claim_timeout_seconds=timeout,
+        ) == []
+    assert not marker_path.exists()
+    reclaimed = main._claim_due_free_turn_followups(
+        db_path, now=now + timedelta(seconds=timeout + 1), claim_timeout_seconds=timeout,
+    )
+    assert [row["id"] for row in reclaimed] == [followup_id]
+    assert reclaimed[0]["user_id"] == "TestOwner"
+    assert reclaimed[0]["soul_id"] == "TestSoul"
+    assert reclaimed[0]["payload"] == claimed[0]["payload"]
+
+
+def test_free_turn_claim_does_not_recreate_database_deleted_after_precheck(tmp_path, monkeypatch):
+    db_path = tmp_path / "TestSoul.db"
+    db_path.touch()
+
+    def deleted_after_check(*_args, **_kwargs):
+        db_path.unlink()
+        return True
+
+    monkeypatch.setattr(main, "_sqlite_has_rows_quietly", deleted_after_check)
+    with pytest.raises(sqlite3.OperationalError):
+        main._claim_due_free_turn_followups(db_path, now=datetime.now(UTC))
+    assert not db_path.exists()
 
 
 def test_free_turn_empty_claim_does_not_create_wal_sidecars(tmp_path: Path, monkeypatch) -> None:
