@@ -597,12 +597,15 @@ def merge_model_config(current: dict[str, Any], body: dict[str, Any]) -> dict[st
 def _resolve_model_profile(llm: dict[str, Any], name: str, *, validate: bool = True) -> dict[str, Any]:
     field = "reply_models" if name in REPLY_MODELS else "step_models"
     row = llm[field][name]
+    selected_name = name
+    if row["source"] == "srmm":
+        selected_name = "srmm"
+        row = llm["reply_models"][selected_name]
     source = row["source"]
-    if source == "srmm":
-        return _resolve_model_profile(llm, "srmm", validate=validate)
+    capacities = llm.get("step_context_window_tokens") or {}
     if source == "config":
         profile = _base_chat_profile(llm)
-        capacity = (llm.get("step_context_window_tokens") or {}).get(name)
+        capacity = capacities.get(selected_name)
         if capacity is not None:
             profile["context_window_tokens"] = capacity
     else:
@@ -610,6 +613,9 @@ def _resolve_model_profile(llm: dict[str, Any], name: str, *, validate: bool = T
         profile = copy.deepcopy(holder.get("resolved"))
         if not isinstance(profile, dict):
             raise ValueError(f"Model mapping {name} needs a resolved {source} profile")
+    capacity = capacities.get(name) if name in MODEL_STEPS else None
+    if capacity is not None:
+        profile["context_window_tokens"] = capacity
     if validate or source != "config":
         if profile.get("provider") != "openai":
             raise ValueError(f"Model mapping {name} requires an OpenAI-compatible profile")

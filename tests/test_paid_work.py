@@ -1303,12 +1303,29 @@ async def test_context_load_forecast_is_scoped_read_only_and_independent_of_back
     try:
         before = [engine.database.memory_category_repo.list_categories(scope)
                   for engine, scope in zip(engines, (scoped, other), strict=True)]
-        high = (await main.diag_memorize_pending(**scoped))["context_load_tokens"]
+        empty = await main.diag_memorize_pending(**scoped)
+        high = empty["context_load_tokens"]
         small = (await main.diag_memorize_pending(**other))["context_load_tokens"]
-        assert high > small > 8000
+        assert high > small > 0
+        assert not empty["context_load_has_chat"] and empty["source_warning"] is None
+        assert empty["summed_unmemorized_tokens"] == 0
+        history = [{"role": "user", "content": "Fictional conversation " * 3000,
+                    "source_conversation_index": 1, "ts_ms": 1}]
+        main._conversation_sources.persist_sillytavern_history_snapshot(
+            storage_dir=main._get_storage_dir(main._CONFIG), **scoped,
+            conversation_id="chat:forecast", history=history,
+        )
+        sampled = await main.diag_memorize_pending(**scoped)
+        assert sampled["context_load_has_chat"] and sampled["context_load_tokens"] > high
+        assert sampled["summed_unmemorized_tokens"] == 8000
         monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 4000)
         low = (await main.diag_memorize_pending(**scoped))["context_load_tokens"]
-        assert 4000 < low < high
+        assert 4000 < low < sampled["context_load_tokens"]
+        main._conversation_sources.persist_sillytavern_history_snapshot(
+            storage_dir=main._get_storage_dir(main._CONFIG), **scoped,
+            conversation_id="chat:forecast", history=[],
+        )
+        memory_only = (await main.diag_memorize_pending(**scoped))["context_load_tokens"]
         path = main._conversation_sources._chat_snapshot_path(
             storage_dir=main._get_storage_dir(main._CONFIG), **scoped,
             conversation_id="chat:forecast", source_label="sillytavern",
@@ -1316,7 +1333,8 @@ async def test_context_load_forecast_is_scoped_read_only_and_independent_of_back
         path.unlink()
         unreadable = await main.diag_memorize_pending(**scoped)
         assert unreadable["summed_unmemorized_tokens"] is None
-        assert unreadable["context_load_tokens"] == low
+        assert unreadable["source_warning"] and not unreadable["context_load_has_chat"]
+        assert unreadable["context_load_tokens"] == memory_only
         assert [engine.database.memory_category_repo.list_categories(scope)
                 for engine, scope in zip(engines, (scoped, other), strict=True)] == before
     finally:

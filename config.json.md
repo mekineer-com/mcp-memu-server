@@ -80,9 +80,14 @@ rows are resolved when needed. Iris live voice settings remain separate.
 
 ### `llm.step_context_window_tokens`
 
-`llm.step_context_window_tokens` uses the same five step names. Different model
-overrides need their own explicit capacity; the same model may inherit the
-default. Input allowance is 80% of (context size minus configured `max_tokens`),
+`llm.step_context_window_tokens` uses the same five step names. A non-null named
+capacity overrides the selected profile's capacity for every selector source,
+including SRMM inheritance, before validation. Without an override, the selected
+profile's capacity is preserved; an unrelated base model's capacity is not used.
+Config-source SRMM also retains its existing `step_context_window_tokens.srmm`
+capacity contribution, with the named step's override taking precedence.
+Capacities must be positive integers. Input allowance is 80% of (context size
+minus configured `max_tokens`),
 or 80% of context if no output cap is set. Each enabled stage must fit separately.
 The estimator is approximate; this is headroom, not guaranteed token accuracy.
 The Launcher Memorize section links to this config file and shows estimated

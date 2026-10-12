@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -112,6 +113,7 @@ def test_load_config_normalizes_without_rewriting_existing_file(monkeypatch) -> 
 ])
 def test_model_mapping_operation_profiles(operation, names) -> None:
     cfg = _mapping_config()
+    cfg["llm"]["step_context_window_tokens"] = {"memory_extract": 70000, "srmm": 40000}
     profiles = app_config.default_llm_profiles_from_server_config(cfg, operation=operation)
     assert set(profiles) == {"default", "embedding"} | names
     expected = "fictional-reply" if operation == "st_reply" else "fictional-native" if operation == "other_reply" else "custom-base"
@@ -119,7 +121,11 @@ def test_model_mapping_operation_profiles(operation, names) -> None:
     assert profiles["embedding"]["api_key"] == "embedding-secret"
     if "memory_extract" in profiles:
         assert profiles["memory_extract"]["api_key"] == "reply-secret"
-        assert profiles["memory_extract"]["context_window_tokens"] == 50000
+        assert profiles["memory_extract"]["context_window_tokens"] == 70000
+    if "consolidation" in profiles:
+        assert profiles["consolidation"]["context_window_tokens"] == 50000
+    if operation == "st_reply":
+        assert profiles["default"]["context_window_tokens"] == 50000
     if "category_update" in profiles:
         assert profiles["category_update"]["chat_model"] == "fictional-native"
 
@@ -149,6 +155,90 @@ def test_selected_model_capacity_must_be_positive_integer(capacity) -> None:
     cfg["llm"]["reply_models"]["srmm"]["resolved"]["context_window_tokens"] = capacity
     with pytest.raises(ValueError, match="positive integer"):
         app_config.default_llm_profiles_from_server_config(cfg, operation="st_reply")
+
+
+@pytest.mark.parametrize("source,reply_source", [
+    ("config", None), ("configured", None), ("st_native", None),
+    ("srmm", "config"), ("srmm", "configured"), ("srmm", "st_native"),
+])
+@pytest.mark.parametrize("selected_capacity,override", [
+    (None, None), (50000, None), (None, 70000), (50000, 70000), (0, 70000),
+])
+def test_named_step_capacity_overlays_selected_profile_without_leaking(
+    source, reply_source, selected_capacity, override,
+) -> None:
+    cfg = _mapping_config()
+    llm = cfg["llm"]
+    selected_source = reply_source or source
+    if selected_source == "config":
+        selected = llm
+    elif selected_source == "st_native":
+        selected = llm["st_selected"]["resolved"]
+    else:
+        selected = llm["reply_models"]["srmm"]["resolved"]
+    selected.pop("context_window_tokens", None)
+    if selected_capacity is not None:
+        selected["context_window_tokens"] = selected_capacity
+    row = {"source": source}
+    if source == "configured":
+        row["resolved"] = copy.deepcopy(selected)
+    if source == "srmm":
+        llm["reply_models"]["srmm"] = {
+            "source": reply_source,
+            **({"resolved": selected} if reply_source == "configured" else {}),
+        }
+    llm["step_models"]["preprocess"] = row
+    llm["step_context_window_tokens"] = {"preprocess": override}
+    original = copy.deepcopy(cfg)
+    profiles = app_config.default_llm_profiles_from_server_config(cfg, operation="rollup")
+    expected = override if override is not None else selected_capacity
+    assert profiles["preprocess"].get("context_window_tokens") == expected
+    assert profiles["preprocess"]["chat_model"] == selected["chat_model"]
+    assert profiles["preprocess"]["api_key"] == selected["api_key"]
+    assert profiles["default"].get("context_window_tokens") == llm.get("context_window_tokens")
+    assert cfg == original
+    profiles["preprocess"]["api_key"] = "changed-copy"
+    assert profiles["default"]["api_key"] != "changed-copy"
+    assert cfg == original
+
+
+@pytest.mark.parametrize("override,expected", [(None, 40000), (70000, 70000)])
+def test_named_capacity_preserves_config_source_srmm_capacity_contribution(override, expected) -> None:
+    cfg = _mapping_config()
+    cfg["llm"]["reply_models"]["srmm"] = {"source": "config"}
+    cfg["llm"]["step_context_window_tokens"] = {"srmm": 40000, "memory_extract": override}
+    profiles = app_config.default_llm_profiles_from_server_config(cfg, operation="memorize")
+    assert profiles["memory_extract"]["context_window_tokens"] == expected
+    assert profiles["consolidation"]["context_window_tokens"] == 40000
+    reply = app_config.default_llm_profiles_from_server_config(cfg, operation="st_reply")
+    assert reply["default"]["context_window_tokens"] == 40000
+
+
+def test_named_capacity_replaces_invalid_config_source_srmm_contribution() -> None:
+    cfg = _mapping_config()
+    cfg["llm"]["reply_models"]["srmm"] = {"source": "config"}
+    cfg["llm"]["step_models"]["preprocess"] = {"source": "srmm"}
+    cfg["llm"]["step_context_window_tokens"] = {"srmm": 0, "preprocess": 70000}
+    profiles = app_config.default_llm_profiles_from_server_config(cfg, operation="rollup")
+    assert profiles["preprocess"]["context_window_tokens"] == 70000
+    assert cfg["llm"]["step_context_window_tokens"]["srmm"] == 0
+
+
+def test_invalid_named_step_capacity_fails_final_validation() -> None:
+    cfg = _mapping_config()
+    cfg["llm"]["step_models"]["preprocess"] = {"source": "srmm"}
+    cfg["llm"]["step_context_window_tokens"] = {"preprocess": 0}
+    with pytest.raises(ValueError, match=r"Model mapping preprocess.context_window_tokens.*positive integer"):
+        app_config.default_llm_profiles_from_server_config(cfg, operation="rollup")
+
+
+def test_named_capacity_does_not_bypass_inherited_output_cap_validation() -> None:
+    cfg = _mapping_config()
+    cfg["llm"]["reply_models"]["srmm"]["resolved"].update({"context_window_tokens": 0, "max_tokens": 0})
+    cfg["llm"]["step_models"]["preprocess"] = {"source": "srmm"}
+    cfg["llm"]["step_context_window_tokens"] = {"preprocess": 70000}
+    with pytest.raises(ValueError, match=r"Model mapping preprocess.max_tokens.*positive integer"):
+        app_config.default_llm_profiles_from_server_config(cfg, operation="rollup")
 
 
 @pytest.mark.parametrize("field", ["context_window_tokens", "max_tokens"])

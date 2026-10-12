@@ -4050,6 +4050,16 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
             str(pending_rows[0]["conversation_id"]) if pending_rows else None
         )
         soul_status = _soul_state.read(con)
+        merged = [msg for tail in tails.values() for msg in tail]
+        merged.sort(key=_cross_history.message_sort_key)
+        for msg in merged:
+            if msg.get("ts_ms") is None:
+                ts_ms = _parse_turn_ts_ms(msg.get("received_at"))
+                if ts_ms is not None:
+                    msg["ts_ms"] = ts_ms
+        primary_messages = [msg for msg in merged
+                            if msg.get("event_kind") != "image" and bool(msg.get("memorize_chat", True))]
+        context_load_has_chat = any(str(msg.get("content") or "").split() for msg in primary_messages)
         context_load = None
         if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'categories'").fetchone():
             categories = [MemoryCategory.model_validate(dict(row)) for row in con.execute(
@@ -4060,16 +4070,10 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
             context_load = estimate_memorize_context_load(
                 categories=categories, narrative_self=soul_status.get("narrative_self"),
                 memorize_config=MemorizeConfig(min_chunk_tokens=_MIN_CHUNK_TOKENS), user_id=uid,
+                primary_messages=primary_messages, soul_name=sid,
             )
     finally:
         con.close()
-    merged = [msg for tail in tails.values() for msg in tail]
-    merged.sort(key=_cross_history.message_sort_key)
-    for msg in merged:
-        if msg.get("ts_ms") is None:
-            ts_ms = _parse_turn_ts_ms(msg.get("received_at"))
-            if ts_ms is not None:
-                msg["ts_ms"] = ts_ms
     summed = _estimate_primary_memorize_tokens(merged) if source_warning is None else None
     threshold = _MIN_CHUNK_TOKENS
     now = datetime.now(UTC)
@@ -4138,6 +4142,7 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         ),
         "summed_unmemorized_tokens": summed,
         "context_load_tokens": context_load,
+        "context_load_has_chat": context_load_has_chat,
         "source_warning": source_warning,
         "threshold": threshold,
         "pct": (round(summed * 100 / threshold) if threshold else 0) if summed is not None else None,
