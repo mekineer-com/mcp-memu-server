@@ -252,6 +252,20 @@ ordinary consolidation clock. Its cursor/stage/error/pending IDs stay in
 
 ## Failure And Retry Ownership
 
+### Atomic Edit Admission
+
+The shared HTTP gate refuses Atomic memU mutations while that Soul has a
+Memorize/import/photo claim or a running consolidation. Memory and dossier
+reviews, approvals, deletion, memberships, entities and relationships share this
+admission; GET reads and independent Atomic Workspace notes do not.
+
+An admitted edit holds the existing claim until its handler finishes, preventing
+a memory job from starting during paid edit preparation. `None` distinguishes an
+edit from ordinary (`False`) or historical (`True`) memory processing, so edits
+cannot unpause interrupted recovery. Existing claim release rechecks queued
+automatic work even if the edit fails. Snapshot checks and dead tabs remain:
+unsaved drafts can still become stale while memory processing runs.
+
 ### Provider Waits
 
 memU's existing HTTP clients bound each call, including throttle/retry waits,

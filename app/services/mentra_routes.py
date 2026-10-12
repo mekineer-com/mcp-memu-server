@@ -776,7 +776,7 @@ def register_mentra_routes(
     get_resource_storage_dir: Callable[[], Path] | None = None,
     background_tasks: set[asyncio.Task[Any]] | None = None,
     memorize_lock_key: Callable[[str, str], str] | None = None,
-    memorize_inflight: dict[str, bool] | None = None,
+    memorize_inflight: dict[str, bool | None] | None = None,
     consolidation_running: dict[tuple[str, str], bool] | None = None,
     finish_memorize_claim: Callable[[str, bool], Awaitable[None]] | None = None,
     set_background_error: Callable[..., None] | None = None,

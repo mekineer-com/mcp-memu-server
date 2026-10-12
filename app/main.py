@@ -668,7 +668,7 @@ _ACTIVE_WORK_REQUESTS: int = 0
 _SHUTDOWN_TASK: asyncio.Task | None = None
 _APIMW_INFLIGHT: set[str] = set()
 _BACKGROUND_ROLLUP_INFLIGHT: set[str] = set()
-_FORCED_MEMORIZE_INFLIGHT: dict[str, bool] = {}  # True marks historical work, not ordinary recovery.
+_FORCED_MEMORIZE_INFLIGHT: dict[str, bool | None] = {}  # True: import; False: Memorize; None: Atomic edit.
 _FORCED_MEMORIZE_RECHECK: dict[str, dict[str, Any]] = {}
 _FREE_TURN_INFLIGHT: set[str] = set()
 _FREE_TURN_FOLLOW_UP_INFLIGHT: set[str] = set()
@@ -878,7 +878,47 @@ async def _trace_requests(request: Request, call_next):
                 },
             )
 
-        resp = await call_next(request)
+        edit_marker = None
+        relationship = re.fullmatch(r"/souls/([^/]+)/relationships(?:/[^/]+)?", path)
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and (
+            path.startswith(("/memory/", "/category/", "/soul-summary/",
+                             "/integration/atomic/entities/", "/integration/atomic/memories/"))
+            or path in {"/integration/atomic/entities", "/integration/atomic/memories"}
+            or relationship is not None
+        ):
+            scope = request.query_params
+            if path == "/integration/atomic/memories" or (relationship and request.method != "DELETE"):
+                try:
+                    body = await request.json()
+                except ValueError:
+                    body = None
+                scope = body if isinstance(body, dict) else {}
+            uid = str(scope.get("user_id") or "").strip()
+            sid = str(relationship.group(1) if relationship else scope.get("soul_id") or "").strip()
+            if uid and sid:
+                try:
+                    marker = _memorize_lock_key(uid, sid)
+                except HTTPException as exc:
+                    status = exc.status_code
+                    return JSONResponse(status_code=status, content={"detail": exc.detail}, headers=exc.headers)
+                except _owner.OwnerIdentityError as exc:
+                    response = await _owner_identity_error(request, exc)
+                    status = response.status_code
+                    return response
+                with _STATE_LOCK:
+                    if marker in _FORCED_MEMORIZE_INFLIGHT or (uid, sid) in _CONSOLIDATION_RUNNING:
+                        status = 409
+                        return JSONResponse(status_code=status, content={
+                            "detail": "Memory work is in progress; try again shortly.",
+                        })
+                    # Hold the existing claim, without masquerading as a running Memorize.
+                    _FORCED_MEMORIZE_INFLIGHT[marker] = None
+                    edit_marker = marker
+        try:
+            resp = await call_next(request)
+        finally:
+            if edit_marker is not None:
+                await _finish_memorize_claim(edit_marker, True)
         status = getattr(resp, "status_code", 200)
         return resp
     finally:
@@ -4063,7 +4103,8 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
                            or ((imported.get("ordinary_waiting") or memory_failure) and imported["stage"] != "complete"))
                        else "memorize" if memory_failure and memory_failure.get("segment_work")
                        else "consolidation" if imported.get("ordinary_waiting") and consolidation_error
-                       else "memorize" if memory_failure and (memory_failure.get("paused") or not memory_running)
+                       else "memorize" if memory_failure and (memory_failure.get("paused") or
+                           _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, sid)) is not False)
                        else "consolidation" if _soul_state.activity_pause(
                            soul_status, memorize_running=_FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, sid)) is False,
                            consolidation_running=_CONSOLIDATION_RUNNING.get((uid, sid)) is False)

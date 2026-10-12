@@ -1562,7 +1562,7 @@ def memorize_cancel_endpoint(
     memorize_lock_key: Callable[[str, str], str],
     memorize_progress: dict[str, dict[str, Any]],
     memorize_cancel: set[str],
-    memorize_inflight: dict[str, bool],
+    memorize_inflight: dict[str, bool | None],
 ) -> dict[str, Any]:
     uid = str(payload.get("user_id") or "").strip()
     sid = str(payload.get("soul_id") or "").strip()
