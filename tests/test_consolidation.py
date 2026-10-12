@@ -3,6 +3,7 @@ import json
 import sqlite3
 import tempfile
 import time
+from xml.etree.ElementTree import ParseError
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -540,6 +541,12 @@ def test_weekly_reflection_rejects_blank_companion_prose(prose) -> None:
     ("I noticed <em>how much</em> we grew.", "I noticed how much we grew."),
     ("<em>We grew.</em> Together.", "We grew. Together."),
     ("<![CDATA[We felt <3 & steady.]]>", "We felt <3 & steady."),
+    ("TestOwner & TestPeer felt <3 when a<b and 2 < 3.", "TestOwner & TestPeer felt <3 when a<b and 2 < 3."),
+    ("a<b tomorrow & <em>still hopeful</em>.", "a<b tomorrow & still hopeful."),
+    ("&amp; &lt; &#60; &#x3c;", "& < < <"),
+    ("<![CDATA[literal &amp; </weekly_reflection> <3]]>", "literal &amp; </weekly_reflection> <3"),
+    ("Before<!-- </weekly_reflection> --> & after.", "Before & after."),
+    ('<em title="a > b">Warm & steady.</em>', "Warm & steady."),
 ])
 async def test_weekly_reflection_preserves_complete_prose_through_embedding(prose, expected) -> None:
     svc = _DossierContextService()
@@ -568,6 +575,58 @@ async def test_weekly_reflection_preserves_complete_prose_through_embedding(pros
     )
     assert result["companion_memory"] == expected
     assert embedded == [expected]
+
+
+@pytest.mark.parametrize("prose", [
+    "<em>broken</strong>", '<em title="broken', "<![CDATA[broken", "<!--broken",
+    "&unknown;", "&#0;", "&#xZZ;", "<em title=broken>text</em>",
+])
+def test_weekly_reflection_still_rejects_malformed_xml(prose):
+    with pytest.raises((ValueError, ParseError)):
+        _parse_weekly_reflection_xml(
+            "<weekly_reflection><intentions/><edges/><companion_memory>"
+            f"{prose}</companion_memory></weekly_reflection>"
+        )
+
+
+@pytest.mark.parametrize("xml", [
+    '<weekly_reflection><intentions><intention id="a&b">Text</intention></intentions><edges/><companion_memory>Text</companion_memory></weekly_reflection>',
+    '<weekly_reflection>&<intentions/><edges/><companion_memory>Text</companion_memory></weekly_reflection>',
+])
+def test_xml_normalization_does_not_repair_attributes_or_structure(xml):
+    with pytest.raises(ParseError):
+        _parse_weekly_reflection_xml(xml)
+
+
+@pytest.mark.parametrize("kind", ["edge", "invalidate"])
+def test_weekly_edge_fields_cannot_silently_discard_nested_text(kind):
+    with pytest.raises(ValueError, match="Expected plain XML text"):
+        _parse_weekly_reflection_xml(
+            f"<weekly_reflection><intentions/><edges><{kind}>"
+            "<subject_id>left<description>R&D</description></subject_id>"
+            "<predicate>parallels</predicate><object_id>right</object_id>"
+            f"</{kind}></edges><companion_memory>Text</companion_memory></weekly_reflection>"
+        )
+
+
+@pytest.mark.asyncio
+async def test_identity_xml_preserves_literal_narrative_anchor_and_goal_text():
+    svc = _DossierContextService()
+    inputs = _inputs()
+    await prepare_dossier_consolidation_context(svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser")
+    raw = await svc.chat("Fictional reflection", step="anchors", system_prompt="Fictional instruction")
+    prose = "I value A & B when a<b and feel <3."
+    raw = raw.replace('<narrative_self action="keep"></narrative_self>',
+                      f'<narrative_self action="replace">{prose}</narrative_self>')
+    raw = raw.replace("soul description", prose)
+    raw = raw.replace('<prose_action>keep</prose_action><prose_patches></prose_patches>',
+                      '<prose_action>patch</prose_action><prose_patches><section ref="S1" action="replace">'
+                      f'## Current\n{prose}</section></prose_patches>', 1)
+    raw = raw.replace('<life_goals action="keep">', '<life_goals action="update">').replace('<add></add>', f'<add>{prose}</add>')
+    result = consolidation._parse_identity_maintenance_xml(raw, inputs["anchor_bundles"])
+    assert result["narrative_self"] == prose and result["life_goal_add"] == [prose]
+    assert result["anchor_decisions"]["soul"]["description"] == prose
+    assert result["anchor_decisions"]["soul"]["resulting_prose"] == f"## Current\n{prose}"
 
 
 def test_episode_rendering_prefers_full_summary_and_falls_back_to_item() -> None:
