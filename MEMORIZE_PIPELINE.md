@@ -91,6 +91,12 @@ Reply entry validates identity selectors with the same resolver as retrieval,
 before reading a Soul or calling a provider. Anchor enrichment normalizes the
 identity-context role like the engine without changing caller-authored queries.
 Fixed Atomic/Iris context timing and intentional exclusions are unchanged.
+Iris working-state writes use the existing reply lock and recheck the sitting and
+pause before saving. Intention preparation and lock admission share one 25-second
+asynchronous deadline; a preparation/admission timeout is definitely unsaved, not
+an ambiguous write result. Synchronous persistence still runs to completion.
+Thoughts retain the shared 600-character cap and report truncation explicitly.
+No write is automatically repeated by Iris after a lost result.
 
 ## Selection And Context
 

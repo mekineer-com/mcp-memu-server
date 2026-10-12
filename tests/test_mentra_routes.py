@@ -948,7 +948,7 @@ def test_live_working_state_is_fresh_and_thought_write_is_bounded(monkeypatch, t
         "intentions": calls["working_state"]["intentions_active"],
     }
     assert client.post(f"{root}/working-thought", json={**scope, "thought": "x" * 601}).json() == {
-        "ok": True, "status": "saved",
+        "ok": True, "status": "saved", "truncated": True,
     }
     current = client.post(f"{root}/working-state", json=scope).json()
     assert current["working_thoughts"] == [f"Fictional thought {i}" for i in range(1, 7)] + ["x" * 600]
@@ -988,9 +988,10 @@ def test_annul_intention_records_only_actual_removal(monkeypatch, tmp_path, stat
     ("working-thought", {"thought": "A fictional hypothesis."}),
     ("annul-intention", {"intention_id": "learn-tides", "status": "completed"}),
 ])
-def test_live_write_save_failure_keeps_state_and_releases_lock(monkeypatch, tmp_path, tool, arguments):
+@pytest.mark.parametrize("failure", [RuntimeError, TimeoutError])
+def test_live_write_save_failure_keeps_state_and_releases_lock(monkeypatch, tmp_path, tool, arguments, failure):
     client, calls, _ = _session_app(
-        monkeypatch, tmp_path, state_results=[RuntimeError("fictional save failure")],
+        monkeypatch, tmp_path, state_results=[failure("fictional save failure")],
         raise_server_exceptions=False,
     )
     calls["working_state"]["intentions_active"] = [{"id": "learn-tides", "text": "Learn fictional tides."}]
@@ -1063,6 +1064,53 @@ def test_live_writes_return_busy_without_preparation_and_bound_admission(monkeyp
         **scope, "thought": "Fictional thought.",
     }).json() == busy
     assert not calls["soul_lock"].locked() and calls["state_writes"] == []
+
+
+@pytest.mark.parametrize("provider_timeout", [False, True])
+def test_annulment_preparation_timeout_reports_not_saved(monkeypatch, tmp_path, provider_timeout):
+    client, calls, _ = _session_app(monkeypatch, tmp_path, raise_server_exceptions=False)
+    calls["working_state"]["intentions_active"] = [{"id": "learn-tides", "text": "Learn fictional tides."}]
+
+    async def stalled_embedding():
+        if provider_timeout:
+            raise TimeoutError("fictional provider timeout before persistence")
+        await asyncio.sleep(1)
+
+    calls["embedding_hook"] = stalled_embedding
+    client.post("/integration/mentra/session/start", json=START)
+    monkeypatch.setattr(mentra_routes, "_RECALL_TIMEOUT_SECONDS", 0.01)
+    result = client.post("/integration/mentra/session/sitting-1/annul-intention", json={
+        "user_id": START["user_id"], "soul_id": START["soul_id"],
+        "intention_id": "learn-tides", "status": "completed",
+    })
+    assert result.status_code == 200
+    assert result.json() == {"ok": False, "status": "busy", "message": "busy, not saved"}
+    assert calls["state_writes"] == [] and calls["memory_items"] == {}
+    assert not calls["soul_lock"].locked()
+
+
+def test_annulment_shares_one_deadline_with_lock_admission(monkeypatch, tmp_path):
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    calls["working_state"]["intentions_active"] = [{"id": "learn-tides", "text": "Learn fictional tides."}]
+
+    async def prepare_then_delay_admission():
+        await asyncio.sleep(0.03)
+
+        async def delayed_acquire():
+            await asyncio.sleep(0.03)
+            raise AssertionError("must not start another full timeout after preparation")
+
+        monkeypatch.setattr(calls["soul_lock"], "acquire", delayed_acquire)
+
+    calls["embedding_hook"] = prepare_then_delay_admission
+    client.post("/integration/mentra/session/start", json=START)
+    monkeypatch.setattr(mentra_routes, "_RECALL_TIMEOUT_SECONDS", 0.05)
+    result = client.post("/integration/mentra/session/sitting-1/annul-intention", json={
+        "user_id": START["user_id"], "soul_id": START["soul_id"],
+        "intention_id": "learn-tides", "status": "completed",
+    })
+    assert result.json() == {"ok": False, "status": "busy", "message": "busy, not saved"}
+    assert calls["state_writes"] == [] and calls["memory_items"] == {}
 
 
 @pytest.mark.parametrize("change,expected", [("stop", 404), ("pause", 409), ("remove", 200), ("busy", 200)])

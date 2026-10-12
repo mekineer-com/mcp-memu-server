@@ -31,7 +31,12 @@ from pydantic import (
 
 from app.config import validate_soul_id
 from app.services import conversation_sources, turn_contract
-from app.services.intention_state import append_memory_cache_entry, normalize_memory_cache, validate_intentions
+from app.services.intention_state import (
+    MAX_MEMORY_CACHE_ENTRY_CHARS,
+    append_memory_cache_entry,
+    normalize_memory_cache,
+    validate_intentions,
+)
 from app.services.owner import read_owner, require_local_owner_access, require_owner
 from app.services.souls import register_soul_routes
 
@@ -1406,7 +1411,9 @@ def register_mentra_routes(
                 user_id=body.user_id, soul_id=body.soul_id,
                 updates={"memory_cache": append_memory_cache_entry(state.get("memory_cache"), body.thought)},
             )
-        return {"ok": True, "status": "saved"}
+        return {"ok": True, "status": "saved", **(
+            {"truncated": True} if len(body.thought) > MAX_MEMORY_CACHE_ENTRY_CHARS else {}
+        )}
 
     @app.post(
         "/integration/mentra/session/{sitting_id}/annul-intention",
@@ -1424,27 +1431,33 @@ def register_mentra_routes(
         if get_soul_lock(body.user_id, body.soul_id).locked():
             return busy
         service = get_service_from_scope({"user_id": body.user_id, "soul_id": body.soul_id})
-        prepared = await asyncio.wait_for(
-            prepare_annulment_memories(
-                svc=service,
-                intentions_before=working_state(body).get("intentions_active", []),
-                annulments=[{
-                    "intention_id": body.intention_id, "status": body.status, "note": body.note,
-                }],
-            ),
-            timeout=_RECALL_TIMEOUT_SECONDS,
-        )
-        async with admit_working_write(sitting_id, body) as admitted:
-            if not admitted:
-                return busy
-            current = validate_intentions(working_state(body).get("intentions_active", []))
-            if not any(item["id"] == body.intention_id for item in current):
-                return {"ok": False, "status": "not_found", "message": "intention not found"}
-            memory_ids = save_actual_annulments(
-                service=service, user_id=body.user_id, soul_id=body.soul_id,
-                conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
-                current_intentions=current, annulment_ids=[body.intention_id], prepared=prepared,
-            )
+        try:
+            async with asyncio.timeout(_RECALL_TIMEOUT_SECONDS) as deadline:
+                try:
+                    prepared = await prepare_annulment_memories(
+                        svc=service,
+                        intentions_before=working_state(body).get("intentions_active", []),
+                        annulments=[{
+                            "intention_id": body.intention_id, "status": body.status, "note": body.note,
+                        }],
+                    )
+                except TimeoutError:
+                    return busy
+                async with admit_working_write(sitting_id, body) as admitted:
+                    if not admitted:
+                        return busy
+                    current = validate_intentions(working_state(body).get("intentions_active", []))
+                    if not any(item["id"] == body.intention_id for item in current):
+                        return {"ok": False, "status": "not_found", "message": "intention not found"}
+                    memory_ids = save_actual_annulments(
+                        service=service, user_id=body.user_id, soul_id=body.soul_id,
+                        conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
+                        current_intentions=current, annulment_ids=[body.intention_id], prepared=prepared,
+                    )
+        except TimeoutError:
+            if not deadline.expired():
+                raise
+            return busy
         return {"ok": True, "status": "removed", "memory_ids": memory_ids}
 
     @app.post(
