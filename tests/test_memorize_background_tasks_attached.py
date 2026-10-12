@@ -31,7 +31,7 @@ from fastapi import BackgroundTasks, HTTPException
 
 from app import main as main_module
 from app.main import app
-from app.services import souls, owner
+from app.services import souls, owner, mentra_routes
 from app.services import memorize_endpoint, state
 from tests import SavedBatchService
 
@@ -418,12 +418,55 @@ def test_rebuild_rejected_during_same_soul_consolidation(
 
 
 @pytest.mark.asyncio
-async def test_rebuild_rechecks_consolidation_after_waiting_for_lock(monkeypatch, tmp_path):
+@pytest.mark.parametrize("completed", [False, True])
+async def test_rebuild_refuses_registered_photo_until_cleanup(monkeypatch, tmp_path, completed):
+    db_file = tmp_path / "TestSoul.db"
+    souls.publish_soul_db(db_file, "TestOwner")
+    original = db_file.read_bytes()
+    task = asyncio.get_running_loop().create_future()
+    if completed:
+        task.set_result(None)
+    photos = {("TestOwner", "TestSoul", "fictional.png"): ("Fictional caption", task)}
+    monkeypatch.setattr(mentra_routes, "_image_finalize_tasks", photos)
+    monkeypatch.setattr(main_module, "_CONSOLIDATION_RUNNING", {})
+    monkeypatch.setattr(main_module, "_sqlite_current_path", lambda *_args: db_file)
+    calls = []
+
+    def service_after_archive(*_args):
+        calls.append("service")
+        raise HTTPException(status_code=418, detail="Fictional service boundary")
+
+    monkeypatch.setattr(main_module, "_clear_cached_services", lambda: calls.append("clear"))
+    monkeypatch.setattr(main_module, "_get_service_from_payload", service_after_archive)
+    payload = _make_stub_payload("TestOwner", "TestSoul", "chat:photo-rebuild")
+    try:
+        with pytest.raises(HTTPException) as blocked:
+            await main_module.memorize(payload, BackgroundTasks(), rebuild=True)
+        assert blocked.value.status_code == 409
+        assert blocked.value.detail == "Photo filing in progress; try again shortly."
+        assert calls == [] and db_file.read_bytes() == original
+        assert not list(tmp_path.glob("*.bak-*"))
+        # Once the registered job is cleaned up, the unchanged rebuild path runs.
+        photos.clear()
+        with pytest.raises(HTTPException) as admitted:
+            await main_module.memorize(payload, BackgroundTasks(), rebuild=True)
+        assert admitted.value.status_code == 418
+        assert calls == ["clear", "service"]
+        assert len(list(tmp_path.glob("*.bak-*"))) == 1
+    finally:
+        task.cancel()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("work", ["consolidation", "photo"])
+async def test_rebuild_rechecks_running_work_after_waiting_for_lock(monkeypatch, tmp_path, work):
     db_file = tmp_path / "TestSoul.db"
     db_file.write_bytes(b"original database")
     running = {}
+    photos = {}
     lock = asyncio.Lock()
     monkeypatch.setattr(main_module, "_CONSOLIDATION_RUNNING", running)
+    monkeypatch.setattr(mentra_routes, "_image_finalize_tasks", photos)
     monkeypatch.setattr(main_module, "_get_memorize_lock", lambda *_args: lock)
     monkeypatch.setattr(main_module, "_sqlite_current_path", lambda *_args: db_file)
 
@@ -433,7 +476,10 @@ async def test_rebuild_rechecks_consolidation_after_waiting_for_lock(monkeypatch
     ))
     await asyncio.sleep(0)
     assert not task.done()
-    running[("u1", "TestSoul")] = False
+    if work == "photo":
+        photos[("u1", "TestSoul", "fictional.png")] = ("Fictional caption", object())
+    else:
+        running[("u1", "TestSoul")] = False
     lock.release()
     with pytest.raises(HTTPException) as exc:
         await task
@@ -470,6 +516,9 @@ def test_rebuild_archives_db_and_service_reacquired_after_archive(
     monkeypatch.setattr(memorize_endpoint, "datetime", FrozenDateTime)
     monkeypatch.setattr(memorize_endpoint, "uuid4", lambda: next(archive_ids))
     monkeypatch.setattr(main_module, "_CONSOLIDATION_RUNNING", running)
+    monkeypatch.setattr(mentra_routes, "_image_finalize_tasks", {
+        (*scope, "fictional.png"): ("Fictional caption", object()) for scope in running
+    })
 
     call_order: list[str] = []
     publish = memorize_endpoint.publish_soul_db

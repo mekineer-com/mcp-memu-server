@@ -98,6 +98,10 @@ _transcript_conflicts: dict[tuple[str, str, str], int] = {}
 _installation_lock = asyncio.Lock()
 
 
+def image_finalize_pending(user_id: str, soul_id: str) -> bool:
+    return any(key[:2] == (user_id, soul_id) for key in _image_finalize_tasks)
+
+
 class MentraSessionStart(BaseModel):
     user_id: str
     soul_id: SoulId
@@ -1628,7 +1632,6 @@ def register_mentra_routes(
             or get_resource_storage_dir is None
             or get_storage_dir is None
             or background_tasks is None
-            or get_soul_lock is None
         ):
             raise HTTPException(status_code=503, detail="Mentra snapshot finalization is not configured")
         body = await _private_model(
@@ -1683,20 +1686,24 @@ def register_mentra_routes(
 
         task_key = (body.user_id, body.soul_id, media_ref)
         pending = _image_finalize_tasks.get(task_key)
-        if pending is not None and not pending[1].done():
+        if pending is not None:
             if pending[0] != body.caption:
                 raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
             return {"ok": True, "queued": False, "duplicate": True}
 
+        # Capture all predecessors so a cancelled middle photo cannot release later work early.
+        predecessors = [entry[1] for key, entry in _image_finalize_tasks.items() if key[:2] == task_key[:2]]
+
         async def memorize_image() -> Any:
-            async with get_soul_lock(body.user_id, body.soul_id):
-                return await service.memorize(
-                    resource_url=media_ref,
-                    modality="image",
-                    user=scope,
-                    caption=body.caption,
-                    source_timestamp=caption_row["received_at"],
-                )
+            if predecessors:
+                await asyncio.shield(asyncio.gather(*predecessors, return_exceptions=True))
+            return await service.memorize(
+                resource_url=media_ref,
+                modality="image",
+                user=scope,
+                caption=body.caption,
+                source_timestamp=caption_row["received_at"],
+            )
 
         task = asyncio.create_task(memorize_image())
         _image_finalize_tasks[task_key] = (body.caption, task)

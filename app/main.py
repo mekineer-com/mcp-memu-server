@@ -2422,6 +2422,7 @@ def _make_memorize_endpoint_context() -> _memorize_endpoint.MemorizeEndpointCont
         run_consolidation_task=_run_consolidation_task,
         get_config=lambda: _CONFIG,
         prepare_frozen_payload=_prepare_frozen_memorize,
+        image_finalize_pending=_mentra_routes.image_finalize_pending,
     )
 
 

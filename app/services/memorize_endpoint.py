@@ -194,6 +194,7 @@ class MemorizeEndpointContext:
     run_memorize_segments: Callable[..., Awaitable[bool]]
     run_consolidation_task: Callable[..., Awaitable[dict[str, Any]]]
     get_config: Callable[[], dict[str, Any]]
+    image_finalize_pending: Callable[[str, str], bool]
     prepare_frozen_payload: Callable[[dict[str, Any], str, str], bool] | None = None
 
 
@@ -1217,6 +1218,8 @@ async def memorize_endpoint(
                 ]
             conv_norm = endpoint_ctx.normalize_conversation(conversation)
             if rebuild:
+                if endpoint_ctx.image_finalize_pending(uid, soul_id):
+                    raise HTTPException(status_code=409, detail="Photo filing in progress; try again shortly.")
                 if (uid, soul_id) in endpoint_ctx.consolidation_running:
                     raise HTTPException(status_code=409, detail="cannot rebuild during consolidation")
                 db_path = endpoint_ctx.sqlite_current_path(uid, soul_id)
