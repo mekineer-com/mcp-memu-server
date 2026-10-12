@@ -250,6 +250,16 @@ maintains dossiers/identity, skips weekly reflection and does not advance the
 ordinary consolidation clock. Its cursor/stage/error/pending IDs stay in
 `import_state`, separate from ordinary digest progress.
 
+Dossier scheduling treats prose citations as dependencies even without an
+attached membership. Ordinary updates include inactive dependencies outside the
+current chat segments; historical selection and pending-import exclusions still
+bound review. Revision bundles supply their active successors independently of
+search `top_k`, so the Soul can repair citations in submitted prose. Exact memory
+lookups do not redirect. An excluded old citation can remain until its import is
+processed; retaining it uses the existing citation-to-membership rule without
+marking that evidence reviewed. Empty dossiers keep the Soul's submitted prose,
+not an automatically substituted copy of their previous text.
+
 ## Failure And Retry Ownership
 
 ### Atomic Edit Admission

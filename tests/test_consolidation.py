@@ -156,6 +156,59 @@ def _inputs() -> dict:
     }
 
 
+@pytest.mark.parametrize("historical,selected,excluded,expected", [
+    (False, ["next-chat"], [], True),
+    (True, ["next-chat"], [], False),
+    (False, ["next-chat"], ["old-chat"], False),
+    (True, ["old-chat"], [], True),
+])
+def test_real_dossier_preparation_citation_boundaries(
+    tmp_path, request, monkeypatch, historical, selected, excluded, expected,
+):
+    from memu.database.models import Triple
+
+    class Scope(BaseModel):
+        user_id: str | None = None
+        soul_id: str | None = None
+
+    scope = {"user_id": "Fictional User", "soul_id": "Fictional Soul"}
+    svc = MemoryService(
+        database_config={"metadata_store": {"provider": "sqlite", "dsn": f"sqlite:///{tmp_path / 'citations.db'}"}},
+        user_config={"model": Scope}, retrieve_config={"item": {"top_k": 0}},
+    )
+    svc.llm_profiles.profiles["default"].context_window_tokens = 1_000_000
+    monkeypatch.setattr(svc, "chat", lambda *_a, **_kw: pytest.fail("Preparation must not call a model"))
+    store = svc.database
+    request.addfinalizer(store.close)
+    for role, name in (("soul", scope["soul_id"]), ("user", scope["user_id"])):
+        store.memory_category_repo.get_or_create_category(
+            name=name, description="Original description", embedding=[1.0, 0.0],
+            user_data=scope, kind="lore", lore_subtype="person", anchor_role=role,
+        )
+    dossier = store.memory_category_repo.get_or_create_category(
+        name="Fictional account", description="Account", embedding=[1.0, 0.0], user_data=scope, kind="topic",
+    )
+    old, new = [store.memory_item_repo.create_item(
+        memory_type="knowledge", summary=text, embedding=[1.0, 0.0], user_data=scope, segment_id=segment,
+    ) for text, segment in (("Earlier account", "old-chat"), ("Current account", None))]
+    store.memory_category_repo.update_category(
+        category_id=dossier.id, summary=f"## Account\nEarlier [M{old.memory_ref}].",
+    )
+    store.triple_repo.add(Triple(
+        subject_id=old.id, subject_kind="memory", predicate="evolved_into",
+        object_id=new.id, object_kind="memory", source_memory_id=new.id,
+    ), user_data=scope)
+    inputs = {
+        **_inputs(), "historical": historical, "selected_segment_ids": selected, "excluded_segment_ids": excluded,
+    }
+    bundles, _, _, _ = consolidation._prepare_dossier_consolidation_prompts(svc, inputs=inputs, **scope)
+    assert [bundle["dossier"].id for bundle in bundles] == ([dossier.id] if expected else [])
+    if expected:
+        assert {item.id for item in bundles[0]["cleanup_items"]} == {old.id}
+        assert {item.id for item in bundles[0]["candidate_items"]} == {new.id}
+        assert bundles[0]["cleanup_memberships"] == []
+
+
 def test_consolidation_keeps_rendered_chat_whitespace() -> None:
     inputs = _inputs()
     inputs["all_chat_history"] = "My SillyTavern Conversations:\n\n[dm][fictional]\n[TestOwner]  START\n[x][y]\n END  \n\n"
