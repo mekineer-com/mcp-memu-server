@@ -1122,6 +1122,19 @@ def persist_mentra_history_snapshot(
         chat_name="Smartglasses",
         source_label="mentra",
     )
+    path = _chat_snapshot_path(
+        storage_dir=storage_dir, user_id=user_id, soul_id=soul_id,
+        conversation_id=conversation_id, source_label="mentra",
+    )
+    _write_chat_snapshot(_mentra_publication_path(path), {
+        "conversation_id": conversation_id, "user_id": user_id,
+        "soul_id": soul_id, "source_label": "mentra",
+    })
+
+
+def _mentra_publication_path(snapshot_path: Path) -> Path:
+    # Keep publication evidence when the scoped transcript folder is lost.
+    return snapshot_path.parent.parent / ".published" / f"{snapshot_path.parent.name}.json"
 
 
 def _read_mentra_snapshot(
@@ -1138,12 +1151,18 @@ def _read_mentra_snapshot(
         conversation_id=conversation_id,
         source_label="mentra",
     )
+    expected = {"conversation_id": conversation_id, "user_id": user_id,
+                "soul_id": soul_id, "source_label": "mentra"}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return path, None
-    expected = {"conversation_id": conversation_id, "user_id": user_id,
-                "soul_id": soul_id, "source_label": "mentra"}
+        try:
+            publication = json.loads(_mentra_publication_path(path).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return path, None
+        if publication != expected:
+            raise ValueError(f"mentra publication identity mismatch: {path}") from None
+        raise FileNotFoundError(f"Published mentra snapshot missing: {path}") from None
     if not isinstance(raw, dict) or any(raw.get(key) != value for key, value in expected.items()):
         raise ValueError(f"mentra snapshot identity mismatch: {path}")
     if not isinstance(raw.get("history"), list):
@@ -1189,9 +1208,15 @@ def load_chat_snapshot_tail(
         conversation_id=conversation_id,
         source_label=source_label,
     )
-    if not path.exists():
+    if source_label == "mentra":
+        _path, raw = _read_mentra_snapshot(
+            storage_dir=storage_dir, user_id=user_id, soul_id=soul_id, conversation_id=conversation_id,
+        )
+        if raw is None:
+            return []
+    elif not path.exists():
         raise FileNotFoundError(f"{source_label} snapshot missing: {path}")
-    if source_label == "sillytavern":
+    elif source_label == "sillytavern":
         _path, raw = _read_sillytavern_snapshot(
             storage_dir=storage_dir, user_id=user_id, soul_id=soul_id, conversation_id=conversation_id,
         )
@@ -1199,12 +1224,6 @@ def load_chat_snapshot_tail(
             raise FileNotFoundError(f"sillytavern snapshot missing: {path}")
         if raw.get("deleted") is True:
             return []
-    elif source_label == "mentra":
-        _path, raw = _read_mentra_snapshot(
-            storage_dir=storage_dir, user_id=user_id, soul_id=soul_id, conversation_id=conversation_id,
-        )
-        if raw is None:
-            raise FileNotFoundError(f"mentra snapshot missing: {path}")
     else:
         raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
@@ -1338,17 +1357,14 @@ def load_mentra_tail(
     include_floor_without_new: bool = False,
     import_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    try:
-        return load_chat_snapshot_tail(
-            storage_dir=storage_dir,
-            user_id=user_id,
-            soul_id=soul_id,
-            conversation_id=conversation_id,
-            since_cursor=since_cursor,
-            recent_fallback_messages=recent_fallback_messages,
-            source_label="mentra",
-            include_floor_without_new=include_floor_without_new,
-            import_state=import_state,
-        )
-    except FileNotFoundError:
-        return []
+    return load_chat_snapshot_tail(
+        storage_dir=storage_dir,
+        user_id=user_id,
+        soul_id=soul_id,
+        conversation_id=conversation_id,
+        since_cursor=since_cursor,
+        recent_fallback_messages=recent_fallback_messages,
+        source_label="mentra",
+        include_floor_without_new=include_floor_without_new,
+        import_state=import_state,
+    )

@@ -1956,6 +1956,47 @@ def test_transcript_append_is_contiguous_idempotent_and_initializes_state(
     }
 
 
+def test_transcript_publication_failure_replays_without_duplicating_history(monkeypatch, tmp_path):
+    client, calls, _ = _session_app(monkeypatch, tmp_path, raise_server_exceptions=False)
+    sitting = client.post("/integration/mentra/session/start", json=START).json()["session_id"]
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    endpoint = f"/integration/mentra/session/{sitting}/transcripts/append"
+    event = {"event_id": f"{sitting}:1", "sequence": 1, "event_kind": "transcript",
+             "role": "user", "content": "A fictional saved line.", "status": "complete"}
+    write_snapshot = conversation_sources._write_chat_snapshot
+
+    def fail_receipt(path, payload):
+        if path.parent.name == ".published":
+            raise OSError("Fictional receipt write failure")
+        write_snapshot(path, payload)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(conversation_sources, "_write_chat_snapshot", fail_receipt)
+        assert client.post(endpoint, json={**scope, "events": [event]}).status_code == 500
+        # A duplicate replay also has to finish publication before acknowledging.
+        assert client.post(endpoint, json={**scope, "events": [event]}).status_code == 500
+    assert calls["state_writes"] == [] and calls["memorize_checks"] == []
+    path = next((tmp_path / "transcripts").rglob("latest_history.json"))
+    saved = path.read_bytes()
+    replay = client.post(endpoint, json={**scope, "events": [event]})
+    assert replay.status_code == 200
+    assert replay.json()["accepted"] == 0 and replay.json()["duplicates"] == 1
+    assert replay.json()["ack_sequence"] == 1
+    assert len(json.loads(path.read_bytes())["history"]) == 1
+    assert json.loads(path.read_bytes())["history"] == json.loads(saved)["history"]
+    assert len(calls["state_writes"]) == 1
+    receipt = next((tmp_path / "transcripts" / ".published").glob("*.json"))
+    assert json.loads(receipt.read_text()) == {**scope, "conversation_id": "mentra:iris", "source_label": "mentra"}
+
+    path.unlink()
+    status = client.get("/integration/mentra/status", params=scope).json()
+    assert status["state"] == "degraded" and status["detail"] == "Transcript status unavailable"
+    assert client.post(endpoint, json={**scope, "events": [event]}).status_code == 500
+    assert client.post("/integration/mentra/session/start", json=START).status_code == 500
+    assert not path.exists() and len(calls["state_writes"]) == 1
+    assert len(calls["token"]) == 1
+
+
 def test_transcript_append_queues_shared_auto_memorize_only_for_new_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

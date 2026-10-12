@@ -75,6 +75,20 @@ In `main.memorize`, ST snapshot publication precedes processing admission:
 writes use `conversation_sources._write_chat_snapshot` (temporary file + replace).
 They are separate from memory-engine SQLite commits.
 
+Iris transcript publication saves the snapshot, then a scoped identity receipt
+under `transcripts/.published/`, before conversation state and acknowledgement.
+The receipt survives loss of the individual chat folder. Both transcript readers
+use `_read_mentra_snapshot`: missing history with a receipt is an unavailable
+source, not a new empty chat. Strict Memorize refuses it; status reports degraded;
+append and Start cannot silently recreate it or reset its sequence. Without
+publication evidence, first-use chats still read empty; working thoughts alone
+are not evidence. Reads never create receipts or upgrade old snapshots.
+Snapshot and receipt saves are not one transaction: a failed receipt save leaves
+the snapshot unacknowledged, and duplicate replay can finish publication. The
+first-save crash interval, whole transcript-root loss and pre-repair history
+without receipts remain outside this detection; duplicate replay still does not
+rerun automatic Memorize eligibility.
+
 Do not confuse **source ownership** with **speaker identity**. The shared user
 and Soul scope do not make every imported `user` row the owner. See
 `payload._label_owner_messages`, `conversation_sources._import_source_message`

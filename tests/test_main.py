@@ -10443,6 +10443,36 @@ def test_automatic_source_failure_events_do_not_mask_programming_errors(monkeypa
         assert raised.value is error and main._paid_work_state(**scope)["memorize_failure"] is None
 
 
+def test_cross_memorize_refuses_lost_published_mentra_history(tmp_path, monkeypatch):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = conversation_sources.MENTRA_CONVERSATION_ID
+    db_path = tmp_path / "TestSoul.db"
+    storage = tmp_path / "mentra"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: db_path)
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, None, None, None))
+    monkeypatch.setattr(conversation_sources, "mentra_storage_dir", lambda: storage)
+    # Working thoughts may register this chat before its first transcript.
+    main._write_conversation_state(cid, **scope, updates={"memorize_chat": True})
+    with main._sqlite_connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        assert main._cross_history._load_cross_memorize_tails_from_sources(con, **scope, strict=True) == {}
+        conversation_sources.persist_mentra_history_snapshot(
+            storage_dir=storage, **scope, conversation_id=cid, history=[{
+                "sequence": 1, "role": "user", "content": "A fictional saved line.",
+                "received_at": "2026-10-12T12:00:00Z",
+            }],
+        )
+        tail = main._cross_history._load_cross_memorize_tails_from_sources(con, **scope, strict=True)
+        assert tail[cid][0]["content"] == "A fictional saved line."
+        path = next((storage / "transcripts").rglob("latest_history.json"))
+        path.unlink()
+        with pytest.raises(HTTPException) as refused:
+            main._cross_history._load_cross_memorize_tails_from_sources(con, **scope, strict=True)
+        assert refused.value.status_code == 409
+        assert "restore it before retrying" in refused.value.detail
+        assert not path.exists()
+
+
 def test_free_turn_discovery_uses_injected_paths_and_canonical_soul_exclusions(tmp_path, monkeypatch):
     base_path = tmp_path / "base.db"
     procedural_path = tmp_path / "procedural.db"

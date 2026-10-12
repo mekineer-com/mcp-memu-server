@@ -408,6 +408,61 @@ def test_mentra_storage_dir_stays_with_openalma_apps() -> None:
     assert conversation_sources.mentra_storage_dir() == expected
 
 
+@pytest.mark.parametrize("reader", [
+    conversation_sources.load_mentra_history_snapshot, conversation_sources.load_mentra_tail,
+])
+@pytest.mark.parametrize("remove_directory", [False, True])
+def test_mentra_readers_refuse_lost_published_history(tmp_path, reader, remove_directory):
+    scope = dict(storage_dir=tmp_path, user_id="TestOwner", soul_id="TestSoul",
+                 conversation_id="mentra:iris")
+    tail_args = {"since_cursor": -1, "recent_fallback_messages": 0} if reader is conversation_sources.load_mentra_tail else {}
+    conversation_sources.persist_mentra_history_snapshot(**scope, history=[])
+    path = next((tmp_path / "transcripts").rglob("latest_history.json"))
+    saved = path.read_bytes()
+    path.unlink()
+    if remove_directory:
+        path.parent.rmdir()
+    before = set(tmp_path.rglob("*"))
+    with pytest.raises(FileNotFoundError, match="Published mentra snapshot missing"):
+        reader(**scope, **tail_args)
+    assert set(tmp_path.rglob("*")) == before
+    assert reader(**{**scope, "soul_id": "OtherSoul"}, **tail_args) == []
+    assert reader(**{**scope, "user_id": "OtherOwner"}, **tail_args) == []
+    path.parent.mkdir(exist_ok=True)
+    path.write_bytes(saved)
+    assert reader(**scope, **tail_args) == []
+
+
+@pytest.mark.parametrize("damage", ['{', '{}', 'unreadable'])
+def test_mentra_missing_snapshot_does_not_ignore_bad_publication_evidence(tmp_path, monkeypatch, damage):
+    scope = dict(storage_dir=tmp_path, user_id="TestOwner", soul_id="TestSoul",
+                 conversation_id="mentra:iris")
+    conversation_sources.persist_mentra_history_snapshot(**scope, history=[])
+    next((tmp_path / "transcripts").rglob("latest_history.json")).unlink()
+    receipt = next((tmp_path / "transcripts" / ".published").glob("*.json"))
+    receipt.write_text(damage)
+    read_text = Path.read_text
+    def read(path, *args, **kwargs):
+        if path == receipt and damage == 'unreadable':
+            raise PermissionError("Fictional publication read failure")
+        return read_text(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", read)
+    with pytest.raises(PermissionError if damage == 'unreadable' else ValueError):
+        conversation_sources.load_mentra_history_snapshot(**scope)
+    assert read_text(receipt) == damage
+
+
+def test_mentra_readers_do_not_backfill_publication_evidence(tmp_path):
+    scope = dict(storage_dir=tmp_path, user_id="TestOwner", soul_id="TestSoul",
+                 conversation_id="mentra:iris")
+    conversation_sources.persist_chat_history_snapshot(**scope, history=[], source_label="mentra")
+    before = set(tmp_path.rglob("*"))
+    assert conversation_sources.load_mentra_history_snapshot(**scope) == []
+    assert conversation_sources.load_mentra_tail(**scope, since_cursor=-1, recent_fallback_messages=0) == []
+    assert set(tmp_path.rglob("*")) == before
+    assert not (tmp_path / "transcripts" / ".published").exists()
+
+
 def test_mentra_storage_dir_rejects_incomplete_application_layout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -440,6 +495,8 @@ def test_mentra_snapshot_replace_failure_keeps_prior_history(
         "received_at": "2026-08-23T01:00:00+00:00",
     }]
     conversation_sources.persist_mentra_history_snapshot(**kwargs, history=first)
+    receipt = next((tmp_path / "transcripts" / ".published").glob("*.json"))
+    saved_receipt = receipt.read_bytes()
     monkeypatch.setattr(
         conversation_sources.os,
         "replace",
@@ -453,6 +510,7 @@ def test_mentra_snapshot_replace_failure_keeps_prior_history(
         )
 
     assert conversation_sources.load_mentra_history_snapshot(**kwargs) == first
+    assert receipt.read_bytes() == saved_receipt
 
 
 def test_hermes_base_defaults_to_channels_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
