@@ -363,20 +363,14 @@ def _get_service_from_payload(
                 existing["temperature"] = float(temp)
                 llm_profiles[step_name] = existing
     payload["llm_profiles"] = llm_profiles
-    database_config = payload.get("database_config")
-    blob_config = payload.get("blob_config")
-
-    if not isinstance(database_config, dict) or not isinstance(database_config.get("metadata_store"), dict):
-        scope_hint = extract_scope(payload) if isinstance(payload, dict) else None
-        try:
-            database_config = database_config_from_cfg(config, scope=scope_hint)
-        except SoulIdError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        payload["database_config"] = database_config
-
-    if not isinstance(blob_config, dict):
-        blob_config = blob_config_from_cfg(config)
-        payload["blob_config"] = blob_config
+    scope_hint = extract_scope(payload)
+    try:
+        database_config = database_config_from_cfg(config, scope=scope_hint)
+    except SoulIdError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    payload["database_config"] = database_config
+    blob_config = blob_config_from_cfg(config)
+    payload["blob_config"] = blob_config
 
     if isinstance(database_config, dict):
         ms = database_config.get("metadata_store")

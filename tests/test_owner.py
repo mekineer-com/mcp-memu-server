@@ -87,12 +87,14 @@ def test_owner_mismatch_precedes_case_variant_soul_disclosure(tmp_path) -> None:
     assert config.sqlite_dsn_for_scope(cfg, base, None) == base
 
 
-def test_main_service_construction_enforces_real_owner_gate(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("provider", ["sqlite", " sqlite"])
+def test_main_service_construction_enforces_real_owner_gate(tmp_path, monkeypatch, provider) -> None:
     sqlite_dir = tmp_path / "real-owner-service"
     sqlite_dir.mkdir()
     cfg = deepcopy(main._CONFIG)
     cfg["storage"]["sqlite_dir"] = str(sqlite_dir)
     cfg["storage"]["metadata_store"]["dsn"] = f"sqlite:///{sqlite_dir / 'memu.db'}"
+    cfg["storage"]["resources_dir"] = str(sqlite_dir / "resources")
     monkeypatch.setattr(main, "_CONFIG", cfg)
     monkeypatch.setattr(main, "_LOG_PROMPTS", False)
     captured: dict = {}
@@ -106,7 +108,15 @@ def test_main_service_construction_enforces_real_owner_gate(tmp_path, monkeypatc
 
     monkeypatch.setattr(main._service_factory, "MemoryService", FakeService)
     main._clear_cached_services()
-    payload = {"user": {"user_id": "Test Owner", "soul_id": "Test Soul"}}
+    storage_overrides = {
+        "database_config": {"metadata_store": {
+            "provider": provider,
+            "dsn": f"sqlite:///{tmp_path / 'other-soul.db'}",
+            "embedding_profile": "gemini-embedding-2:3072",
+        }},
+        "blob_config": {"resources_dir": str(tmp_path / "other-resources")},
+    }
+    payload = {"user": {"user_id": "Test Owner", "soul_id": "Test Soul"}, **deepcopy(storage_overrides)}
 
     with pytest.raises(owner.OwnerMissingError, match="has not been created"):
         main._get_service_from_payload(payload)
@@ -114,11 +124,16 @@ def test_main_service_construction_enforces_real_owner_gate(tmp_path, monkeypatc
     owner.create_owner(cfg, "Test Owner")
     souls.create_soul(cfg, souls.SoulCreate(soul_id="Test Soul", use_existing=False, user_name="VisibleHuman"))
     with pytest.raises(owner.OwnerMismatchError, match="not 'test owner'"):
-        main._get_service_from_payload({"user": {"user_id": "test owner", "soul_id": "Test Soul"}})
+        main._get_service_from_payload({
+            "user": {"user_id": "test owner", "soul_id": "Test Soul"}, **deepcopy(storage_overrides),
+        })
 
     assert isinstance(main._get_service_from_payload(payload), FakeService)
     assert captured["database_config"]["metadata_store"]["dsn"].endswith("/Test Soul.db")
     assert captured["user_config"]["user_name"] == "VisibleHuman"
+    assert captured["blob_config"] == {"resources_dir": str(sqlite_dir / "resources")}
+    assert not (tmp_path / "other-soul.db").exists()
+    assert not (tmp_path / "other-resources").exists()
     main._clear_cached_services()
 
 

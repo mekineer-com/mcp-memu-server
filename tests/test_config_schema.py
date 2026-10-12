@@ -182,6 +182,10 @@ def test_config_model_default_and_native_inheritance_are_not_self_references() -
 
 def test_model_config_merge_preserves_secrets_hidden_rows_and_other_settings() -> None:
     current = _mapping_config()
+    current["storage"] = {
+        "resources_dir": "selected-resources", "sqlite_dir": "selected-sqlite",
+        "metadata_store": {"provider": "sqlite", "dsn": "sqlite:///selected.db", "ddl_mode": "create"},
+    }
     body = {"llm": {"reply_models": {"srmm": {"source": "config"}}, "embedding": {"base_url": "https://new-embedding.example/"}},
             "claude_code": True}
     result = app_config.merge_model_config(current, body)
@@ -192,6 +196,19 @@ def test_model_config_merge_preserves_secrets_hidden_rows_and_other_settings() -
     assert result["llm"]["api_key"] == "base-secret" and result["llm"]["embedding"]["api_key"] == "embedding-secret"
     assert result["storage"] == current["storage"] and result["mentra"] == current["mentra"]
     assert current["claude_code"] is False and body["llm"]["reply_models"]["srmm"] == {"source": "config"}
+    for patch in ({"resources_dir": "new-resources"}, {"metadata_store": {"ddl_mode": "validate"}}):
+        updated = app_config.merge_model_config(current, {"storage": patch})["storage"]
+        assert updated["sqlite_dir"] == "selected-sqlite"
+        assert updated["resources_dir"] == patch.get("resources_dir", "selected-resources")
+        assert updated["metadata_store"] == {
+            **current["storage"]["metadata_store"], **patch.get("metadata_store", {}),
+        }
+    for replacement in (None, "", []):
+        assert app_config.merge_model_config(current, {"storage": replacement})["storage"] == replacement
+        updated = app_config.merge_model_config(current, {"storage": {"metadata_store": replacement}})["storage"]
+        assert updated == {**current["storage"], "metadata_store": replacement}
+    assert current["storage"]["resources_dir"] == "selected-resources"
+    assert current["storage"]["metadata_store"]["ddl_mode"] == "create"
 
 
 def test_model_mapping_masks_every_nested_profile_without_mutating_config() -> None:

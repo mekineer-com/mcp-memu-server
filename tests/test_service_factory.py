@@ -219,7 +219,12 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
 
     payload = {
         "user": {"user_id": "u", "soul_id": "echo"},
-        "database_config": {},
+        "database_config": {"metadata_store": {
+            "provider": " sqlite" if native_projection else "sqlite",
+            "dsn": "sqlite:////untrusted/other-soul.db",
+            "embedding_profile": "client-embedding:12",
+        }},
+        "blob_config": {"resources_dir": "/untrusted/resources"},
         "memorize_config": {"semantic_dedupe_similarity_threshold": "banana", "enforce_input_budget": False},
         "user_config": {"user_name": "RequestNameMustNotWin"},
         **({"claude_code": request_mode} if request_mode is not None else {}),
@@ -301,6 +306,8 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
     assert "semantic_dedupe_similarity_threshold" not in captured["memorize_config"]
     assert captured["cutover_scope"] == {"user_id": "u", "soul_id": "echo"}
     assert captured["database_config"]["metadata_store"]["embedding_profile"] == "gemini-embedding-2:3072"
+    assert captured["database_config"]["metadata_store"]["dsn"] == "sqlite:///:memory:"
+    assert captured["blob_config"] == {"resources_dir": "./resources"}
     if native_projection and operation is None:
         assert captured["memorize_config"].get("memory_extract_llm_profile") == (None if effective_mode else "memory_extract")
     if operation is not None:

@@ -575,6 +575,14 @@ def merge_model_config(current: dict[str, Any], body: dict[str, Any]) -> dict[st
         if not isinstance(body[field], dict):
             raise ValueError(f"{field} must be an object")
         merged[field] = {**copy.deepcopy(current.get(field) or {}), **copy.deepcopy(body[field])}
+    incoming_storage = body.get("storage")
+    if isinstance(incoming_storage, dict):
+        storage = current.get("storage") if isinstance(current.get("storage"), dict) else {}
+        merged["storage"] = {**copy.deepcopy(storage), **copy.deepcopy(incoming_storage)}
+        incoming_meta = incoming_storage.get("metadata_store")
+        if isinstance(incoming_meta, dict):
+            meta = storage.get("metadata_store") if isinstance(storage.get("metadata_store"), dict) else {}
+            merged["storage"]["metadata_store"] = {**copy.deepcopy(meta), **copy.deepcopy(incoming_meta)}
     incoming = body.get("llm", {})
     for field in ("reply_models", "step_models", "step_context_window_tokens", "step_temperatures", "embedding"):
         if field in incoming:

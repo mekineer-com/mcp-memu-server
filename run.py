@@ -63,11 +63,12 @@ def _pidfile_path(cfg: dict) -> Path:
 
 def _write_pidfile(cfg: dict) -> None:
     pf = _pidfile_path(cfg)
-    _write_text(pf, str(os.getpid()) + "\n")
+    pid = os.getpid()
+    _write_text(pf, str(pid) + "\n")
 
     def _cleanup() -> None:
         try:
-            if pf.exists():
+            if _parse_pid(pf.read_text(encoding="utf-8")) == pid:
                 pf.unlink()
         except Exception:
             pass
