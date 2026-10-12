@@ -717,6 +717,8 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
     with sqlite3.connect(db) as con:
         sqlite_ensure_conversation_state_schema(con)
     SavedBatchService.make_engine(scoped).database.close()
+    main._write_conversation_state("chat:import-background", **scoped, updates={
+        "memorize_chat": False, "rolling_summary": "Import supporting summary"})
     rows, _, _ = chat_import.normalize_messages([
         {"id": str(i), "role": "user", "content": "fictional story " * 20,
          "timestamp": "2025-01-09" if stop in {"calendar", "calendar_retry", "no_memories_calendar"} and i else "2025-01-01"}
@@ -762,8 +764,11 @@ async def test_import_batch_reuses_extraction_and_one_consolidation(tmp_path, mo
             {"source_day": rows[int(segment_id.rsplit(":", 1)[1].split("-")[0])]["source_day"]}
             for _owner, segment_id in pairs]}
     monkeypatch.setattr(consolidation, "gather_consolidation_inputs", gather)
-    monkeypatch.setattr(consolidation, "_prepare_dossier_consolidation_prompts", lambda *_a, **kw:
-        ([], "", "", {"dossiers": 60 if stop in {"capacity", "continuous", "cancel_extraction", "consolidation_failure"} and len(kw["inputs"]["segment_inputs"]) >= 2 else 10}))
+    def prepare(*_a, **kw):
+        assert "Import supporting summary" in kw["inputs"]["all_chat_history"]
+        return ([], "", "", {"dossiers": 60 if stop in {"capacity", "continuous", "cancel_extraction", "consolidation_failure"}
+                and len(kw["inputs"]["segment_inputs"]) >= 2 else 10})
+    monkeypatch.setattr(consolidation, "_prepare_dossier_consolidation_prompts", prepare)
     def record():
         return main._load_turn_state_and_soul_card(cid, **scoped)[0]["import_state"]
     entered, finish = asyncio.Event(), asyncio.Event()

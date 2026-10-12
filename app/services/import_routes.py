@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from memu.app.dossier_revision import estimate_prompt_tokens
-from app.services import consolidation, conversation_sources, memorize_endpoint
+from app.services import consolidation, conversation_sources, cross_history, memorize_endpoint
 from app.services.consolidation import consolidation_input_budget
 from app.services.state import effective_digest_cursor_from_row
 from app.services.segment import _message_happened_at
@@ -203,7 +203,8 @@ async def run_import_batch(runtime: Any, *, scoped: dict, chat: dict, retry: boo
                 raise RuntimeError("Extracted import segments could not be prepared for consolidation")
             prep["all_chat_history"] = runtime._format_all_chat_history_for_ai(
                 current_history=prep["current_chat_messages"], cross_tail=[],
-                conversation_id=cid, soul_id=sid, mark_current_chat=False,
+                conversation_id=cid, soul_id=sid, user_id=uid, mark_current_chat=False,
+                background_context_rows=cross_history._load_background_context_for_ai(**scoped),
                 background_context_blocks=prep.get("background_context_blocks", []),
                 memory_context=True,
             )

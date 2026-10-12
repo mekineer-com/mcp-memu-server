@@ -1588,15 +1588,7 @@ async def _run_consolidation_pipeline_once(
             for row in prep.get("background_context_messages", [])))
         fresh_background = [row for row in cross_tail
             if row.get("memorize_chat") is False and message_source_keys(row, prefer_id=True).isdisjoint(covered)]
-        captured_sources = prep.get("background_context_conversation_ids", set())
-        rolling = [] if historical else [row for row in cross_history._load_background_context_for_ai(user_id=user_id, soul_id=soul_id)
-                   if row["source_conversation_id"] not in captured_sources]
-        if fresh_background or rolling:
-            supporting, _ = await svc._render_episode_with_background_context(
-                background_messages=fresh_background, prior_rows=rolling, soul_name=soul_id,
-            )
-            if supporting:
-                prep.setdefault("background_context_blocks", []).append(supporting)
+        rolling = cross_history._load_background_context_for_ai(user_id=user_id, soul_id=soul_id)
         prep["all_chat_history"] = format_all_chat_history_for_ai(
             current_history=current_chat_messages,
             cross_tail=cross_tail,
@@ -1604,6 +1596,7 @@ async def _run_consolidation_pipeline_once(
             soul_id=soul_id,
             mark_current_chat=False,
             user_id=user_id,
+            background_context_rows=rolling,
             background_context_blocks=prep.get("background_context_blocks", []),
             memory_context=True,
         )
@@ -1616,9 +1609,15 @@ async def _run_consolidation_pipeline_once(
                 svc, inputs=prep, soul_id=soul_id, user_id=user_id,
             )
             segment_count = len(prep["segment_inputs"])
-            if not consolidation_size_due(svc, prepared[3], segment_count, consolidation_profile):
+            estimates = dict(prepared[3])
+            # ponytail: raw-tail cost is a conservative admission estimate; final summary prompts get checked again.
+            fresh_tokens = estimate_prompt_tokens("\n".join(str(row.get("content") or "") for row in fresh_background))
+            for stage in ("dossiers", "weekly"):
+                if estimates.get(stage):
+                    estimates[stage] += fresh_tokens
+            if not consolidation_size_due(svc, estimates, segment_count, consolidation_profile):
                 return {"status": "skipped", "reason": "not_due"}
-            log.info("consolidation due by size: segments=%d estimates=%s", segment_count, prepared[3])
+            log.info("consolidation due by size: segments=%d estimates=%s", segment_count, estimates)
         if historical:
             ordered_segments = prep["segment_inputs"]
             revision_profile = svc.memorize_config.category_update_llm_profile
@@ -1656,7 +1655,8 @@ async def _run_consolidation_pipeline_once(
                     return {"status": "skipped", "reason": prep.get("reason")}
                 prep["all_chat_history"] = format_all_chat_history_for_ai(
                     current_history=prep["current_chat_messages"], cross_tail=[],
-                    conversation_id=conversation_id, soul_id=soul_id, mark_current_chat=False,
+                    conversation_id=conversation_id, soul_id=soul_id, user_id=user_id, mark_current_chat=False,
+                    background_context_rows=rolling,
                     background_context_blocks=prep.get("background_context_blocks", []),
                     memory_context=True,
                 )
@@ -1670,6 +1670,19 @@ async def _run_consolidation_pipeline_once(
                            "Consolidation was interrupted. Retry in progress."
                            if old_error else _soul_state.CONSOLIDATION_UNFINISHED),
                 )
+        if fresh_background:
+            supporting, _ = await svc._render_episode_with_background_context(
+                background_messages=fresh_background, prior_rows=[], soul_name=soul_id,
+            )
+            if supporting:
+                prep.setdefault("background_context_blocks", []).append(supporting)
+            prep["all_chat_history"] = format_all_chat_history_for_ai(
+                current_history=current_chat_messages, cross_tail=cross_tail,
+                conversation_id=conversation_id, soul_id=soul_id, user_id=user_id,
+                mark_current_chat=False, background_context_rows=rolling,
+                background_context_blocks=prep.get("background_context_blocks", []), memory_context=True,
+            )
+            prepared = None
         await prepare_dossier_consolidation_context(
             svc,
             inputs=prep,

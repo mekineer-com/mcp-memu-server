@@ -1149,8 +1149,9 @@ def test_resource_retry_after_failed_publication_reuses_one_owned_file(tmp_path,
 @pytest.mark.parametrize("sizes", [(99,), (100,), (101,), (60, 60), (99, 100, 101)])
 @pytest.mark.parametrize("index_overlap", [False, True])
 @pytest.mark.parametrize("prior_saved", [False, True])
+@pytest.mark.parametrize("admission", ["force", "wait", "size"])
 async def test_reflection_preserves_saved_context_and_prepares_only_fresh_background(
-    tmp_path, monkeypatch, sizes, index_overlap, prior_saved,
+    tmp_path, monkeypatch, sizes, index_overlap, prior_saved, admission,
 ):
     from memu.app import memorize_segments
     path = tmp_path / "reflection.db"
@@ -1169,6 +1170,8 @@ async def test_reflection_preserves_saved_context_and_prepares_only_fresh_backgr
     monkeypatch.setattr(memorize_segments, "_estimate_text_tokens", estimates.__getitem__)
     cross = [{**covered, "source_conversation_index": 2}, *fresh]
     prep = {**_inputs(), "status": "ready", "db_path": path,
+        "last_consolidation_at": datetime.now(UTC).isoformat(),
+        "segment_inputs": [{"segment_id": "segment-2", "memory_summaries": []}],
         "current_chat_messages": [{"role": "user", "content": "Personal conversation"}],
         "background_context_messages": [covered], "background_context_blocks": ["EXACT SAVED SUPPORT"]}
     prep["background_context_conversation_ids"] = {cid} if prior_saved else set()
@@ -1194,17 +1197,37 @@ async def test_reflection_preserves_saved_context_and_prepares_only_fresh_backgr
         return await memorize_segments._summarize_background_groups_batched(
             **kwargs, extract_json_blob=lambda text: text)
     async def render(**kwargs):
+        with sqlite_connect(path) as con:
+            con.row_factory = sqlite3.Row
+            assert _soul_state.consolidation_failure(_soul_state.read(con)) == _soul_state.CONSOLIDATION_UNFINISHED
         rendered_ids.extend(row["source_message_id"] for row in kwargs["background_messages"])
         return await memorize_segments._render_episode_with_background_context(
             **kwargs, summarize_background_groups_batched=summarize,
             memorize_config=SimpleNamespace(background_extra_messages_tokens=100), llm_client=None)
     svc._render_episode_with_background_context = render
+    def size_due(_svc, estimates, count, _profile):
+        assert provider_calls == [] and rendered_ids == []
+        assert "CURRENT ROLLING PROSE" in prep["all_chat_history"]
+        assert all(row["content"] not in prep["all_chat_history"] for row in fresh)
+        assert count == 1 and estimates["dossiers"] == 0
+        assert estimates["weekly"] > consolidation._prepare_dossier_consolidation_prompts(
+            svc, inputs=prep, **scope)[3]["weekly"]
+        return admission == "size"
+    monkeypatch.setattr(consolidation, "consolidation_size_due", size_due)
     monkeypatch.setattr(consolidation, "write_consolidation_outputs", lambda *_a, **_kw: {})
     result = await consolidation._run_consolidation_pipeline_once(
         svc=svc, deps=_make_consolidation_deps(path, tmp_path), state_lock=asyncio.Lock(), running={},
         load_cross_tail_for_ai=lambda **_kw: cross,
         format_all_chat_history_for_ai=cross_history._format_all_chat_history_for_ai,
-        conversation_id="replika:primary", force=True, **scope)
+        conversation_id="replika:primary", force=admission == "force", **scope)
+    if admission == "wait":
+        assert result == {"status": "skipped", "reason": "not_due"}
+        assert provider_calls == [] and rendered_ids == []
+        assert not [call for call in svc.calls if call[0] == "chat"]
+        with sqlite_connect(path) as con:
+            con.row_factory = sqlite3.Row
+            assert _soul_state.consolidation_failure(_soul_state.read(con)) is None
+        return
     assert result["status"] == "ok"
     assert rendered_ids == [row["source_message_id"] for row in fresh]
     assert len(provider_calls) == bool(qualifying)
@@ -1212,7 +1235,7 @@ async def test_reflection_preserves_saved_context_and_prepares_only_fresh_backgr
     assert ("chat", "weekly") in svc.calls
     assert "EXACT SAVED SUPPORT" in text and "Personal conversation" in text
     assert "CAPTURED RAW MUST NOT REPLAY" not in text
-    assert ("CURRENT ROLLING PROSE" in text) is not prior_saved
+    assert text.count("CURRENT ROLLING PROSE") == 1
     for index, (row, size) in enumerate(zip(fresh, sizes)):
         assert (row["content"] in text) is (size < 100)
         assert f"Test Background {index}" in text
@@ -1565,6 +1588,20 @@ async def test_historical_selection_shrinks_whole_prefix_before_any_model_call(t
     svc.llm_profiles.profiles["default"].context_window_tokens = anchor_capacity
     svc.calls.clear()
     captures = []
+    rolling = [{"source_conversation_id": "chat:background", "summary": "Historical background summary"}]
+    summary_reads = []
+    def summaries(**kwargs):
+        assert kwargs == scope
+        summary_reads.append(True)
+        return rolling
+    monkeypatch.setattr(cross_history, "_load_background_context_for_ai", summaries)
+    rendered = []
+    def history(**kwargs):
+        assert kwargs["user_id"] == scope["user_id"]
+        assert kwargs["background_context_rows"] is rolling
+        assert kwargs["cross_tail"] == [] and kwargs["memory_context"] is True
+        rendered.append(True)
+        return "A lived span. Historical background summary"
     def gather(*_args, **kwargs):
         selection = kwargs["selected_segments"]
         rows = [row for row in segments if selection is None or (row["conversation_id"], row["segment_id"]) in selection]
@@ -1575,7 +1612,8 @@ async def test_historical_selection_shrinks_whole_prefix_before_any_model_call(t
         "consumed_segment_ids": kw["inputs"]["selected_segment_ids"],
     })
     kwargs = dict(svc=svc, deps=deps, state_lock=asyncio.Lock(), running={},
-                  load_cross_tail_for_ai=lambda **_kw: [], format_all_chat_history_for_ai=lambda **_kw: "A lived span.",
+                  load_cross_tail_for_ai=lambda **_kw: pytest.fail("historical work must not load live tails"),
+                  format_all_chat_history_for_ai=history,
                   conversation_id="import:dm:example", historical=True, **scope)
     if fits:
         result = await consolidation._run_consolidation_pipeline_once(**kwargs)
@@ -1587,6 +1625,7 @@ async def test_historical_selection_shrinks_whole_prefix_before_any_model_call(t
             await consolidation._run_consolidation_pipeline_once(**kwargs)
         assert not [call for call in svc.calls if call[0] in {"chat", "apply"}]
     assert captures == [[row["segment_id"] for row in segments[:count]] for count in (3, 2, 1)]
+    assert len(summary_reads) == 1 and len(rendered) == 3
     assert kwargs["running"] == {}
     with sqlite_connect(path) as con:
         con.row_factory = sqlite3.Row
