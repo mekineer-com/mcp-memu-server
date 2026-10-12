@@ -21,6 +21,10 @@ through `a889544` was checked before publishing this map. Repair plans and audit
 maps were navigation leads, not evidence of present behavior. No tests, services
 or model calls were run for this documentation pass.
 
+Later MCP changes through `51bbdf3` were traced at the changed seams below:
+current background summaries, DM aliases, APImw publication and photo claims.
+This updates those boundaries, not the original whole-map verification scope.
+
 ## Route And Owners
 
 ```text
@@ -170,8 +174,11 @@ memories and Resource-owned prior context, not mutable current retrieval history
 
 `_run_consolidation_pipeline_once` retains captured supporting blocks and may add
 fresh cross-conversation context. Fresh Mem-off tails use the same bounded
-renderer; already captured rows/summaries are excluded from that supplemental
-work. `cross_history._format_all_chat_history_for_ai(memory_context=True)` keeps
+renderer after unpaid time/size admission; already captured raw rows are excluded
+from that supplemental work. Saved supporting blocks and current rolling prose
+coexist, so later rollup progress is not lost. Import sizing and prefix shrinking
+include current summary rows without loading live raw tails.
+`cross_history._format_all_chat_history_for_ai(memory_context=True)` keeps
 raw Mem-off cross-tail rows out of the primary history. Thus Resource evidence
 is durable, but the entire later prompt is not claimed to be a frozen snapshot.
 
@@ -197,6 +204,23 @@ ordinary consolidation clock. Its cursor/stage/error/pending IDs stay in
 `import_state`, separate from ordinary digest progress.
 
 ## Failure And Retry Ownership
+
+### Reply-Adjacent Work
+
+APImw `_turn_launch_apimw` captures the database generation before task launch.
+`_apimw_persist` publishes valid context and `apimw_subconscious_insight` under a
+short Soul lock, then embeds outside it. Archival item creation and error writes
+recheck that generation, retirement and pause state; consumed insights are never
+restored by archival completion. State and item commits remain independent, so
+embedding failure/cancellation can leave published state without an archival item.
+
+Iris photo workers retain `_image_finalize_tasks` FIFO/coalescing and reserve
+the existing memory-work claim before native image Memorize. Provider waits hold
+no reply lock; `finally` releases the claim and preserves queued automatic work
+even after photo failure. Completed-Memorize Retry reserves that same claim before
+dispatching follow-on reflection. `_finish_memorize_claim` clears stale active
+progress and Cancel before handing off a fresh job. These are process-local
+claims, not restart recovery; unfinished photo filing is not automatically resumed.
 
 Live `_MEMORIZE_PROGRESS`, busy claims, cancellation flags and ST plugin
 `localTasks` are process-local status, **not a durable job queue**. ST
