@@ -24,6 +24,8 @@ or model calls were run for this documentation pass.
 Later MCP changes through `51bbdf3` were traced at the changed seams below:
 current background summaries, DM aliases, APImw publication and photo claims.
 This updates those boundaries, not the original whole-map verification scope.
+Provider-wait and media-failure seams below were additionally traced against
+memU `1826793`, with fictional-provider and local-subprocess regression checks.
 
 ## Route And Owners
 
@@ -204,6 +206,23 @@ ordinary consolidation clock. Its cursor/stage/error/pending IDs stay in
 `import_state`, separate from ordinary digest progress.
 
 ## Failure And Retry Ownership
+
+### Provider Waits
+
+memU's existing HTTP clients bound each call, including throttle/retry waits,
+with the operation's total elapsed timeout. Chat remains single-attempt; vision
+and HTTP-client embeddings retry only connection failures or an explicit 429
+`Retry-After`, never an ambiguous read/protocol failure or 5xx. Gemini text/media
+embeddings and transcription have total deadlines too. Completion parsing rejects
+empty or unsupported responses before success hooks run. Audio/video preprocessing
+lets provider failures escape; local file/ffmpeg fallbacks remain unchanged.
+Failures propagate to callers; deadlines do not roll back committed evidence.
+
+`ClaudeCLIClient` directly awaits its subprocess and kills/reaps the direct child
+on task cancellation or its configured timeout, retaining prompt-file cleanup.
+MCP's flag-based Cancel admission/boundary is unchanged; it does not become an
+immediate interruption of accepted work. Child cleanup cannot undo remote work
+already accepted and does not promise descendant-process termination.
 
 ### Reply-Adjacent Work
 
