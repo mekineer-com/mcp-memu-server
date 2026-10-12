@@ -103,6 +103,12 @@ Unlinked named participants retain their display labels in source context but
 remain unidentified for deterministic memory attribution and dedupe. Explicit
 source links and model-selected declared-relationship roster references remain
 separate supported evidence; this repair does not rewrite old stored memories.
+Extraction uses raw primary message bodies, not generated speaker headings, to
+find mentioned declared people. In ambiguous contexts, copied display rows show
+existing linked IDs or unlinked sender references; saved rows/labels stay intact.
+An unresolved cited participant sharing any of the owner/Soul's cited labels
+blocks only implicit assignment. The memory still saves without that link;
+valid explicit Soul choices remain trusted, including absent-person subjects.
 
 Reply entry validates identity selectors with the same resolver as retrieval,
 before reading a Soul or calling a provider. Anchor enrichment normalizes the
