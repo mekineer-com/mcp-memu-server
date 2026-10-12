@@ -358,6 +358,8 @@ async def _run_background_rollup_for_conversation(
             return "skipped_primary_chat"
 
         def apply_updates(updates: dict[str, Any]) -> bool:
+            if _sillytavern_source_deleted(cid, uid, sid):
+                return False
             if not db_path.exists():
                 return False
             if _sqlite_current_path(uid, sid) != db_path:
@@ -1919,6 +1921,8 @@ def _current_history_for_ai(
     history: list[dict[str, Any]], state: dict[str, Any] | None,
     *, is_live_turn: bool = False,
 ) -> list[dict[str, Any]]:
+    if _sillytavern_source_deleted(conversation_id, user_id, soul_id):
+        return []
     policy = _cross_history._source_memorize_policy(
         conversation_id, {"memorize_chat": (state or {}).get("memorize_chat")},
     )
@@ -2479,6 +2483,46 @@ async def _run_memorize_segments(
 
 # ---- Memorize endpoint ----
 
+def _sillytavern_source_deleted(cid: str, uid: str, sid: str) -> bool:
+    return _message_log.derive_source_label(cid) == "sillytavern" and _conversation_sources.sillytavern_source_deleted(
+        storage_dir=_get_storage_dir(_CONFIG), user_id=uid, soul_id=sid, conversation_id=cid,
+    )
+
+
+@app.delete("/conversation/{conversation_id}/source", operation_id="retire_conversation_source")
+async def retire_conversation_source(conversation_id: str, payload: dict[str, Any] = Body(...)):
+    cid = _canonical_conversation_id(conversation_id)
+    scope = _extract_scope(_safe_payload(payload)) or {}
+    uid, sid = str(scope.get("user_id") or ""), str(scope.get("soul_id") or "")
+    if not uid or not sid or not cid or _message_log.derive_source_label(cid) != "sillytavern":
+        raise HTTPException(status_code=400, detail="ST source retirement requires a chat and Soul scope")
+    db_path = _sqlite_current_path(uid, sid)
+    if db_path is None or not db_path.exists():
+        raise HTTPException(status_code=404, detail="Soul does not exist")
+    async with _get_memorize_lock(_memorize_lock_key(uid, sid)):
+        con = _sqlite_connect(db_path, mode="rw")
+        try:
+            con.row_factory = sqlite3.Row
+            _sqlite_ensure_conversation_state_schema(con)
+            con.execute("BEGIN IMMEDIATE")
+            row = _conversation_state_row(con, cid, user_id=uid, soul_id=sid)
+            _conversation_sources.retire_sillytavern_source(
+                storage_dir=_get_storage_dir(_CONFIG), user_id=uid, soul_id=sid, conversation_id=cid,
+            )
+            if row is not None:
+                _write_conversation_state(cid, user_id=uid, soul_id=sid, connection=con, updates={
+                    "rolling_summary": None, "rolling_summary_cursor_id": None,
+                    "rolling_summary_cursor_source_message_id": None, "rolling_summary_cursor_ts": None,
+                    "rolling_summary_updated_at": datetime.now(UTC).isoformat(),
+                })
+            con.commit()
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=f"ST source retirement failed: {exc}") from exc
+        finally:
+            con.close()
+    return {"ok": True, "status": "retired"}
+
+
 @app.post("/memorize", operation_id="memorize")
 async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, force: bool = False, tail: bool = False, rebuild: bool = False):
     intent = payload.get("intent")
@@ -2504,6 +2548,8 @@ async def memorize(payload: dict[str, Any], background_tasks: BackgroundTasks, f
         if db_path is None or not db_path.exists():
             raise HTTPException(status_code=404, detail="Soul does not exist")
         async with _get_memorize_lock(_memorize_lock_key(uid, sid)):
+            if _sillytavern_source_deleted(cid, uid, sid):
+                raise HTTPException(status_code=409, detail="ST source has been deleted")
             _conversation_sources.persist_sillytavern_history_snapshot(
                 storage_dir=_get_storage_dir(_CONFIG), user_id=uid, soul_id=sid,
                 conversation_id=cid, history=rows, chat_name=_pick_str(safe, "chat_name"),
@@ -2641,6 +2687,8 @@ def _memorize_targets_complete(user_id: str, soul_id: str, targets: dict[str, An
                 continue
             row = _conversation_state_row(con, cid, user_id=user_id, soul_id=soul_id)
             if row is None:
+                continue
+            if _sillytavern_source_deleted(cid, user_id, soul_id):
                 continue
             prefix = "digest" if target.get("memory_producing", True) else "rolling_summary"
             cursor_field = "digest_cursor" if prefix == "digest" else "rolling_summary_cursor_id"
@@ -3702,7 +3750,8 @@ def _build_cross_conversation_payload(
               else trigger_memorize_default}, filing_policy,
     )
     trigger_chat_name = str(safe.get("chat_name") or "").strip()
-    trigger_tail = _normalize_conversation(trigger_history) if trigger_memorize is not None else []
+    trigger_tail = (_normalize_conversation(trigger_history)
+                    if trigger_memorize is not None and not _sillytavern_source_deleted(cid, uid, soul_id) else [])
 
     for i, msg in enumerate(trigger_tail):
         msg["source_label"] = trigger_label

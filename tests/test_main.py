@@ -5188,6 +5188,137 @@ async def test_conversation_retrieve_owner_projection(monkeypatch, human_name, c
     assert request == original
 
 
+@pytest.mark.asyncio
+async def test_retire_st_source_preserves_work_and_refuses_late_publication(monkeypatch):
+    from fastapi import BackgroundTasks
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid, live = "integrity:retired", "integrity:surviving"
+    storage = main._get_storage_dir(main._CONFIG)
+    source = {"storage_dir": storage, **scope, "conversation_id": cid}
+    rows = [{"role": "user", "content": "Accepted fictional text", "source_conversation_index": 0,
+             "source_conversation_id": cid, "memorize_chat": True}]
+    conversation_sources.persist_sillytavern_history_snapshot(**source, history=rows, source_message_count=1)
+    main._write_conversation_state(cid, **scope, updates={"memorize_chat": False, "digest_cursor": 0,
+        "last_memorize_at": datetime.now(UTC).isoformat(), "pending_segment_ids": [cid + ":0-0"],
+        "rolling_summary": "Old supporting prose", "rolling_summary_cursor_id": 0,
+        "rolling_summary_cursor_source_message_id": "old-id", "rolling_summary_cursor_ts": 100})
+    main._write_conversation_state(live, **scope, updates={"digest_cursor": 2,
+        "last_memorize_at": datetime.now(UTC).isoformat()})
+    targets = {cid: {"cursor": 9}, live: {"cursor": 2}}
+    assert not main._memorize_targets_complete(*scope.values(), targets)
+    frozen = {"conversation_id": cid, "conversation": [dict(rows[0])],
+        "_final_cursors": {cid: {"cursor": 0, "memory_producing": True}},
+        "_st_cursor_ceiling": {cid: {"end": 0, "ceiling": 0}}}
+    main._write_conversation_state(cid, **scope, updates={"digest_cursor": -1})
+    assert await main.retire_conversation_source(cid, {"user": scope}) == {"ok": True, "status": "retired"}
+    state = main._load_turn_state_and_soul_card(cid, **scope)[0]
+    assert state["digest_cursor"] == -1 and state["pending_segment_ids"] == [cid + ":0-0"]
+    assert state["rolling_summary"] is None and state["rolling_summary_cursor_id"] is None
+    assert state["rolling_summary_cursor_source_message_id"] is None and state["rolling_summary_cursor_ts"] is None
+    assert state["rolling_summary_updated_at"]
+    assert main._memorize_targets_complete(*scope.values(), targets)
+    assert main._prepare_frozen_memorize(frozen, *scope.values())
+    assert frozen["conversation"] == rows and frozen["_st_cursor_ceiling"][cid] == {"end": 0, "ceiling": 0}
+    with main._sqlite_connect(main._sqlite_current_path(**scope)) as con:
+        con.row_factory = sqlite3.Row
+        # A leftover summary after a partial cleanup must still be excluded by the marker.
+        con.execute("UPDATE conversations SET rolling_summary='Residual context' WHERE conversation_id=?", (cid,))
+        con.commit()
+        assert cid not in main._read_background_rolling_summaries_from_conversations(con)
+    assert main._current_history_for_ai(cid, *scope.values(), rows, state) == []
+    with pytest.raises(HTTPException, match="deleted") as exc:
+        await main.memorize({"user": scope, "conversation_id": cid, "intent": "publish_only",
+                             "source_message_count": 1, "conversation": rows}, BackgroundTasks())
+    assert exc.value.status_code == 409
+    assert conversation_sources._read_sillytavern_snapshot(**source)[1]["source_message_count"] == 1
+    assert not main._sillytavern_source_deleted(cid, scope["user_id"], "OtherSoul")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prior", [None, "Previous context"])
+async def test_retirement_prevents_pending_rollup_from_restoring_context(monkeypatch, prior):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "integrity:rollup-retirement"
+    main._write_conversation_state(cid, **scope, updates={"memorize_chat": False, "rolling_summary": prior})
+    rows = [{"role": "unknown", "content": "Fictional tail", "source_conversation_index": i,
+             "received_at": f"2020-01-01T0{i}:00:00+00:00"} for i in (0, 1)]
+    conversation_sources.persist_sillytavern_history_snapshot(storage_dir=main._get_storage_dir(main._CONFIG),
+        **scope, conversation_id=cid, history=rows, source_message_count=2)
+    monkeypatch.setattr(main, "_BACKGROUND_SUMMARY_TOKENS", 1)
+    monkeypatch.setattr(main, "_background_sleep_gap_detected", lambda **_kw: True)
+    async def summarize(**_kwargs):
+        await main.retire_conversation_source(cid, {"user": scope})
+        return "Must not restore this summary"
+    service = SimpleNamespace(user_config=SimpleNamespace(user_name="TestHuman"), summarize_background_chat_rollup=summarize)
+    assert await main._run_background_rollup_for_conversation(conversation_id=cid, **scope,
+        safe_payload={}, service=service) == "skipped_state_changed"
+    state = main._load_turn_state_and_soul_card(cid, **scope)[0]
+    assert state["rolling_summary"] is None and state["rolling_summary_cursor_id"] is None
+    assert state["rolling_summary_updated_at"]
+
+
+@pytest.mark.asyncio
+async def test_retired_unsaved_retry_processes_surviving_st_source(monkeypatch):
+    from fastapi import BackgroundTasks
+    from unittest.mock import AsyncMock
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    dead, live = "integrity:deleted-retry", "integrity:live-retry"
+    storage = main._get_storage_dir(main._CONFIG)
+    for cid in (dead, live):
+        rows = [{"role": "user", "content": f"Fictional message {i}", "source_conversation_index": i,
+                 "received_at": "2020-01-01T12:00:00+00:00"} for i in range(2)]
+        conversation_sources.persist_sillytavern_history_snapshot(
+            storage_dir=storage, **scope, conversation_id=cid, history=rows, source_message_count=2)
+        main._write_conversation_state(cid, **scope, updates={"digest_cursor": 0,
+            "last_memorize_at": datetime.now(UTC).isoformat()})
+    failure = {"conversation_id": dead, "paused": True, "error": "Fictional interrupted work",
+               "targets": {dead: {"cursor": 9}, live: {"cursor": 1}}}
+    main._write_conversation_state(dead, **scope, updates={"memorize_failure": failure})
+    await main.retire_conversation_source(dead, {"user": scope})
+    captured = []
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
+            captured.extend(json.loads(segment["raw_text"]) for segment in kwargs["segments"])
+            return [{}]
+    service = Service()
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a: service)
+    monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
+    tasks = BackgroundTasks()
+    try:
+        response = await main.retry_memorize(**scope, background_tasks=tasks)
+        assert response.status_code == 202
+        await tasks()
+        assert len(captured) == 1 and [row["source_conversation_id"] for row in captured[0]] == [live]
+        assert main._load_turn_state_and_soul_card(live, **scope)[0]["digest_cursor"] == 1
+        assert main._paid_work_state(**scope)["memorize_failure"] is None
+        assert main._sillytavern_source_deleted(dead, *scope.values())
+    finally:
+        if hasattr(service, "engine"):
+            service.database.close()
+
+
+@pytest.mark.asyncio
+async def test_retirement_requires_st_scope_and_never_rewrites_malformed_source():
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "integrity:malformed-retirement"
+    main._write_conversation_state(cid, **scope, updates={"rolling_summary": "Keep existing context"})
+    with pytest.raises(HTTPException) as invalid:
+        await main.retire_conversation_source("whatsapp:dm:test", {"user": scope})
+    assert invalid.value.status_code == 400
+    with pytest.raises(HTTPException) as wrong_owner:
+        await main.retire_conversation_source(cid, {"user": {**scope, "user_id": "OtherOwner"}})
+    assert wrong_owner.value.status_code == 409
+    source = {"storage_dir": main._get_storage_dir(main._CONFIG), **scope, "conversation_id": cid}
+    path = conversation_sources._chat_snapshot_path(**source, source_label="sillytavern")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{malformed")
+    with pytest.raises(HTTPException) as unreadable:
+        await main.retire_conversation_source(cid, {"user": scope})
+    assert unreadable.value.status_code == 409 and path.read_text() == "{malformed"
+    assert not conversation_sources.sillytavern_source_deleted(**source)
+    assert main._load_turn_state_and_soul_card(cid, **scope)[0]["rolling_summary"] == "Keep existing context"
+
+
 def test_auto_consolidation_policy() -> None:
     policy = main._memorize_endpoint._auto_consolidation_enabled
     assert policy(force=False, cross_memorize=False)

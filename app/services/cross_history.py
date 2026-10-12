@@ -974,6 +974,11 @@ def _read_background_rolling_summaries_from_conversations(
         summary = str(row["rolling_summary"] or "").strip()
         if not summary:
             continue
+        if _message_log.derive_source_label(cid) == "sillytavern" and _conversation_sources.sillytavern_source_deleted(
+            storage_dir=_m()._get_storage_dir(_m()._CONFIG), user_id=row["user_id"],
+            soul_id=row["soul_id"], conversation_id=cid,
+        ):
+            continue
         out[cid] = {
             "source_conversation_id": cid,
             "source_label": _message_log.derive_source_label(cid),

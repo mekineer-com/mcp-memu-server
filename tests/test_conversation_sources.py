@@ -1151,6 +1151,41 @@ def test_sillytavern_snapshot_round_trip_with_floor(tmp_path: Path) -> None:
     assert all(row["chat_name"] == "Echo" for row in rows)
 
 
+def test_sillytavern_retirement_preserves_rows_and_decodes_tail_once(tmp_path, monkeypatch):
+    scope = {"storage_dir": tmp_path, "user_id": "TestOwner", "soul_id": "TestSoul",
+             "conversation_id": "integrity:retired"}
+    history = [{"role": "user", "content": "Fictional history", "source_conversation_index": 3}]
+    conversation_sources.persist_sillytavern_history_snapshot(**scope, history=history, source_message_count=4)
+    path, original = conversation_sources._read_sillytavern_snapshot(**scope)
+    loads = []
+    decode = json.loads
+    def counted(text):
+        loads.append(True)
+        return decode(text)
+    monkeypatch.setattr(conversation_sources.json, "loads", counted)
+    assert len(conversation_sources.load_sillytavern_tail(**scope, since_cursor=-1, recent_fallback_messages=0)) == 1
+    assert len(loads) == 1
+    conversation_sources.retire_sillytavern_source(**scope)
+    assert decode(path.read_text()) == {**original, "deleted": True}
+    assert conversation_sources.load_sillytavern_tail(**scope, since_cursor=-1, recent_fallback_messages=8) == []
+    assert conversation_sources.sillytavern_source_deleted(**scope)
+    with pytest.raises(ValueError, match="has been deleted"):
+        conversation_sources.persist_sillytavern_history_snapshot(**scope, history=[])
+
+
+@pytest.mark.parametrize("content", [None, "{", '{"deleted":true,"history":[]}'])
+def test_sillytavern_unavailable_snapshot_is_not_retirement(tmp_path, content):
+    scope = {"storage_dir": tmp_path, "user_id": "TestOwner", "soul_id": "TestSoul",
+             "conversation_id": "integrity:unavailable"}
+    path = conversation_sources._chat_snapshot_path(**scope, source_label="sillytavern")
+    if content is not None:
+        path.parent.mkdir(parents=True)
+        path.write_text(content)
+    assert not conversation_sources.sillytavern_source_deleted(**scope)
+    with pytest.raises((FileNotFoundError, ValueError)):
+        conversation_sources.load_sillytavern_tail(**scope, since_cursor=-1, recent_fallback_messages=0)
+
+
 def test_sillytavern_snapshot_write_is_atomic_replace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     storage_dir = tmp_path / "resources"
     replacements: list[tuple[Path, Path]] = []

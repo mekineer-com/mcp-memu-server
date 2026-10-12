@@ -980,6 +980,14 @@ def persist_chat_history_snapshot(
         conversation_id=conversation_id,
         source_label=source_label,
     )
+    if source_label == "sillytavern" and sillytavern_source_deleted(
+        storage_dir=storage_dir, user_id=user_id, soul_id=soul_id, conversation_id=conversation_id,
+    ):
+        raise ValueError("SillyTavern source has been deleted")
+    _write_chat_snapshot(path, payload)
+
+
+def _write_chat_snapshot(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_name: str | None = None
     try:
@@ -1000,6 +1008,46 @@ def persist_chat_history_snapshot(
                 os.unlink(tmp_name)
             except FileNotFoundError:
                 pass
+
+
+def _read_sillytavern_snapshot(
+    *, storage_dir: Path, user_id: str, soul_id: str, conversation_id: str,
+) -> tuple[Path, dict[str, Any] | None]:
+    path = _chat_snapshot_path(storage_dir=storage_dir, user_id=user_id, soul_id=soul_id,
+                               conversation_id=conversation_id, source_label="sillytavern")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return path, None
+    expected = {"conversation_id": conversation_id, "user_id": user_id,
+                "soul_id": soul_id, "source_label": "sillytavern"}
+    if (not isinstance(raw, dict) or any(raw.get(key) != value for key, value in expected.items())
+            or not isinstance(raw.get("history"), list)
+            or any(not isinstance(row, dict) for row in raw["history"])):
+        raise ValueError(f"Invalid scoped SillyTavern snapshot: {path}")
+    return path, raw
+
+
+def sillytavern_source_deleted(
+    *, storage_dir: Path, user_id: str, soul_id: str, conversation_id: str,
+) -> bool:
+    try:
+        _path, raw = _read_sillytavern_snapshot(storage_dir=storage_dir, user_id=user_id,
+                                               soul_id=soul_id, conversation_id=conversation_id)
+    except (OSError, ValueError):
+        return False
+    return raw is not None and raw.get("deleted") is True
+
+
+def retire_sillytavern_source(
+    *, storage_dir: Path, user_id: str, soul_id: str, conversation_id: str,
+) -> None:
+    path, raw = _read_sillytavern_snapshot(storage_dir=storage_dir, user_id=user_id,
+                                          soul_id=soul_id, conversation_id=conversation_id)
+    if raw is None:
+        raw = {"conversation_id": conversation_id, "user_id": user_id, "soul_id": soul_id,
+               "source_label": "sillytavern", "history": []}
+    _write_chat_snapshot(path, {**raw, "deleted": True})
 
 
 def persist_sillytavern_history_snapshot(
@@ -1114,7 +1162,16 @@ def load_chat_snapshot_tail(
     )
     if not path.exists():
         raise FileNotFoundError(f"{source_label} snapshot missing: {path}")
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    if source_label == "sillytavern":
+        _path, raw = _read_sillytavern_snapshot(
+            storage_dir=storage_dir, user_id=user_id, soul_id=soul_id, conversation_id=conversation_id,
+        )
+        if raw is None:
+            raise FileNotFoundError(f"sillytavern snapshot missing: {path}")
+        if raw.get("deleted") is True:
+            return []
+    else:
+        raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"{source_label} snapshot must be an object: {path}")
     history = raw.get("history")

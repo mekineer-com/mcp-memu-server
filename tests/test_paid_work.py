@@ -1400,7 +1400,7 @@ async def test_retry_names_unreadable_source_without_clearing_failure(monkeypatc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["success", "pre_save", "review", "historical"])
+@pytest.mark.parametrize("mode", ["success", "pre_save", "review", "historical", "retired_review"])
 async def test_joined_background_worker_retry_and_resource_reflection(monkeypatch, request, mode):
     from memu.app.service import MemoryService
     from pydantic import BaseModel
@@ -1411,6 +1411,8 @@ async def test_joined_background_worker_retry_and_resource_reflection(monkeypatc
 
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     cid, quiet, large, short = ("replika:joined", "replika:quiet", "replika:work", "replika:short")
+    if mode == "retired_review":
+        cid = "integrity:joined-retired"
     path = main._sqlite_current_path(**scope)
     svc = MemoryService(database_config={"metadata_store": {"provider": "sqlite", "dsn": f"sqlite:///{path}"}},
         user_config={"model": Scope, "user_name": "TestOwner"}, memorize_config={"memory_types": ["knowledge"]})
@@ -1481,12 +1483,16 @@ async def test_joined_background_worker_retry_and_resource_reflection(monkeypatc
     review = svc._memorize_persist_and_index
     async def fail_review(state, context, **kwargs):
         nonlocal failed
-        if mode == "review" and state.get("resources") and not failed:
+        if mode in {"review", "retired_review"} and state.get("resources") and not failed:
             failed = True
             change_flags()
             raise RuntimeError("Injected saved review failure")
         return await review(state, context, **kwargs)
     monkeypatch.setattr(svc, "_memorize_persist_and_index", fail_review)
+    if mode == "retired_review":
+        main._conversation_sources.persist_sillytavern_history_snapshot(
+            storage_dir=main._get_storage_dir(main._CONFIG), **scope, conversation_id=cid,
+            history=source[cid], source_message_count=1)
     safe = main._build_cross_conversation_payload(cid, *scope.values(), {}, source[cid], -1, True, strict_sources=True)
     assert quiet in safe["_background_rolling_summaries"] and quiet not in safe["_final_cursors"]
     accepted = safe["conversation"]
@@ -1502,11 +1508,14 @@ async def test_joined_background_worker_retry_and_resource_reflection(monkeypatc
             processed_cursor=-1, safe=safe, resource_url="unused", chat_key=None, merged_len=len(accepted),
             force=True, sleep_stats=None, segments_dir=segments_dir, cross_memorize=True,
             final_cursors=safe["_final_cursors"])
-    if mode in {"pre_save", "review"}:
+    if mode in {"pre_save", "review", "retired_review"}:
         with pytest.raises(RuntimeError, match="Injected"):
             await run()
         failure = main._paid_work_state(**scope)["memorize_failure"]
         assert failure["filing_policy"][quiet] is False and quiet not in failure["targets"]
+        if mode == "retired_review":
+            await main.retire_conversation_source(cid, {"user": scope})
+            assert main._paid_work_state(**scope)["memorize_failure"]["segment_work"]
         before = sum(kind == "extract" for kind, _ in calls)
         before_retry = list(calls)
         tasks = BackgroundTasks()
@@ -1514,7 +1523,7 @@ async def test_joined_background_worker_retry_and_resource_reflection(monkeypatc
         assert (response if isinstance(response, dict) else json.loads(response.body))["status"] == "accepted"
         await tasks()
         assert sum(kind == "extract" for kind, _ in calls) == before + int(mode == "pre_save")
-        if mode == "review":
+        if mode in {"review", "retired_review"}:
             assert calls == before_retry
         assert main._paid_work_state(**scope)["memorize_failure"] is None
     else:
