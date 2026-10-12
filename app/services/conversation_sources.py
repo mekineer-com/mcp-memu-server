@@ -342,8 +342,9 @@ def _collect_whatsapp_session_entries(
     sessions_index: dict[str, Any],
     *,
     conversation_id: str,
+    hermes_home: Path | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
-    chat_type, target = _split_whatsapp_conversation_id(conversation_id)
+    target, local_ids, chat_type = _web_source_chat_match(conversation_id, hermes_home=hermes_home)
     if not chat_type:
         return [], ""
 
@@ -367,7 +368,10 @@ def _collect_whatsapp_session_entries(
             _normalize_whatsapp_match_token(str(origin.get("chat_id") or "")),
             _normalize_whatsapp_match_token(_parse_session_key_chat_token(str(session_key), chat_type=chat_type)),
         ]
-        if target_norm:
+        if chat_type == "dm":
+            if not any(_normalize_whatsapp_identifier(token) in local_ids for token in token_candidates):
+                continue
+        elif target_norm:
             if target_norm not in token_candidates:
                 continue
 
@@ -458,6 +462,7 @@ def load_whatsapp_assistant_source_speakers(
     entries, _chat_type = _collect_whatsapp_session_entries(
         _load_sessions_index(sessions_path),
         conversation_id=conversation_id,
+        hermes_home=hermes_home,
     )
     session_ids = [
         sid
@@ -581,12 +586,16 @@ def _load_whatsapp_source_ref_map(web_source_db_path: Path) -> dict[str, str]:
 
 def _web_source_chat_match(
     conversation_id: str,
+    *, hermes_home: Path | None = None,
 ) -> tuple[str, set[str], str]:
     chat_type, target = _split_whatsapp_conversation_id(conversation_id)
     if not chat_type:
         return "", set(), ""
     target_local = _normalize_whatsapp_identifier(target)
-    return target, {target_local} if target_local else set(), chat_type
+    local_ids = {target_local} if target_local else set()
+    if chat_type == "dm":
+        local_ids.update(_expand_whatsapp_policy_aliases(target, hermes_home))
+    return target, local_ids, chat_type
 
 
 def whatsapp_web_source_message_rowid(
@@ -597,7 +606,7 @@ def whatsapp_web_source_message_rowid(
     web_source_db_path: Path | None = None,
 ) -> int | None:
     db_path = _web_source_db_path(hermes_home=hermes_home, web_source_db_path=web_source_db_path)
-    target, local_ids, chat_type = _web_source_chat_match(conversation_id)
+    target, local_ids, chat_type = _web_source_chat_match(conversation_id, hermes_home=hermes_home)
     if not chat_type or not local_ids:
         return None
     if not db_path.exists():
@@ -790,7 +799,7 @@ def _load_whatsapp_web_source_tail(
     db_path = _web_source_db_path(hermes_home=hermes_home, web_source_db_path=web_source_db_path)
     if not db_path.exists():
         raise FileNotFoundError(f"WhatsApp web_source db missing: {db_path}")
-    target, local_ids, chat_type = _web_source_chat_match(conversation_id)
+    target, local_ids, chat_type = _web_source_chat_match(conversation_id, hermes_home=hermes_home)
     if not chat_type or not local_ids:
         return []
 

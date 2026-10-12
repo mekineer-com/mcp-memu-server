@@ -614,6 +614,71 @@ def test_web_source_cursor_missing_db_does_not_create_empty_sqlite(tmp_path: Pat
     assert not db_path.exists()
 
 
+@pytest.mark.parametrize("requested", ["fictional-phone@c.us", "fictional-lid@lid"])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_whatsapp_dm_aliases_share_history_checkpoints_and_speaker_evidence(tmp_path, monkeypatch, requested, mixed):
+    from app import main
+    phone, lid = "fictional-phone@c.us", "fictional-lid@lid"
+    alternate = lid if requested == phone else phone
+    session = tmp_path / "whatsapp" / "session"
+    session.mkdir(parents=True)
+    (session / "lid-mapping-fictional-lid.json").write_text(json.dumps("fictional-phone"))
+    (session / "lid-mapping-fictional-phone_reverse.json").write_text(json.dumps("fictional-lid"))
+    (session / "lid-mapping-fictional-group.json").write_text(json.dumps("fictional-phone"))
+    web = tmp_path / "web_source.db"
+    peers = [(phone, "peer-phone"), (lid, "peer-lid")] if mixed else [(alternate, "peer-alternate")]
+    messages = [{"msg_key": key, "timestamp": 100 + index, "body": key, "chat_id": jid, "from_id": jid}
+                for index, (jid, key) in enumerate(peers)]
+    messages.append({"msg_key": "SENT-ID", "timestamp": 103, "body": "A saved Soul reply",
+                     "chat_id": alternate, "from_id": alternate, "from_me": True})
+    _write_web_source_db(web, messages=[
+        {"msg_key": "unrelated", "timestamp": 99, "body": "Other DM", "chat_id": "unrelated@lid", "from_id": "unrelated@lid"},
+        *messages,
+        {"msg_key": "group", "timestamp": 104, "body": "Group", "chat_id": "fictional-group@g.us", "from_id": phone},
+    ])
+    sessions, channels = tmp_path / "sessions.json", tmp_path / "channels.db"
+    sessions.write_text(json.dumps({"agent:main:whatsapp:dm:fictional-phone": {
+        "session_id": "alias-session", "platform": "whatsapp",
+        "origin": {"chat_type": "dm", "chat_id": phone}}}))
+    _write_sessions_table(channels, [("alias-session", None)])
+    with sqlite3.connect(channels) as con:
+        con.execute("CREATE TABLE messages (session_id TEXT, role TEXT, source_message_id TEXT, sender_id TEXT, sender_name TEXT)")
+        con.execute("INSERT INTO messages VALUES (?, 'assistant', ?, ?, ?)",
+                    ("alias-session", "SENT-ID", "soul:TestSoul", "TestSoul"))
+    cid = "whatsapp:dm:" + requested
+    speakers = conversation_sources.load_whatsapp_assistant_source_speakers(
+        conversation_id=cid, hermes_home=tmp_path, sessions_index_path=sessions, state_db_path=channels)
+    assert speakers == {"SENT-ID": "TestSoul"}
+    kwargs = dict(conversation_id=cid, hermes_home=tmp_path, web_source_db_path=web,
+                  soul_id="TestSoul", assistant_source_speakers=speakers)
+    rows = conversation_sources.load_whatsapp_web_source_tail(**kwargs, since_cursor=-1, recent_fallback_messages=0)
+    expected = [row["msg_key"] for row in messages]
+    assert [row["source_message_id"] for row in rows] == expected
+    assert all(row["source_conversation_id"] == cid for row in rows)
+    assert rows[-1]["role"] == "assistant" and rows[-1]["speaker"] == "TestSoul"
+    checkpoint = conversation_sources.whatsapp_web_source_message_rowid(
+        cid, expected[0], hermes_home=tmp_path, web_source_db_path=web)
+    assert checkpoint == rows[0]["source_conversation_index"] == 2
+    assert [row["source_message_id"] for row in conversation_sources.load_whatsapp_web_source_tail_after_rowid(
+        **kwargs, after_rowid=checkpoint)] == expected[1:]
+    assert [row["source_message_id"] for row in conversation_sources.load_whatsapp_web_source_tail(
+        **kwargs, since_cursor=checkpoint, recent_fallback_messages=0)] == expected[1:]
+    assert [row["source_message_id"] for row in conversation_sources.load_whatsapp_web_source_tail(
+        **{**kwargs, "conversation_id": "whatsapp:group:fictional-group@g.us"},
+        since_cursor=-1, recent_fallback_messages=0)] == ["group"]
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    soul_db = tmp_path / "TestSoul.db"
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_a, **_kw: soul_db)
+    monkeypatch.setattr(main, "_resolve_cross_source_paths", lambda: (tmp_path, tmp_path, sessions, channels))
+    monkeypatch.setattr(main, "_resolve_whatsapp_web_source_config", lambda: web)
+    main._write_conversation_state(cid, **scope, updates={})
+    with sqlite3.connect(soul_db) as con:
+        con.row_factory = sqlite3.Row
+        tails = cross_history._load_cross_memorize_tails_from_sources(con, **scope, strict=True)
+    assert [row["source_message_id"] for row in tails[cid]] == expected
+    assert tails[cid][-1]["role"] == "assistant"
+
+
 def test_load_whatsapp_web_source_tail_splits_soul_prefix_and_uses_contacts(tmp_path: Path) -> None:
     web_db = tmp_path / "web_source.db"
     _write_web_source_db(
