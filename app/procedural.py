@@ -219,6 +219,21 @@ def _normalize(v: list[float]) -> list[float]:
     return [x / mag for x in v]
 
 
+def get_item(db_path: Path, *, domain: str, item_id: str) -> dict[str, Any] | None:
+    if not db_path.exists():
+        return None
+    con = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        row = con.execute(
+            "SELECT id, domain, summary "
+            "FROM procedural_memory_items WHERE domain = ? AND id = ?", (domain, item_id),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        con.close()
+
+
 def lookup(
     db_path: Path,
     *,

@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from app.config import EMBEDDING_MODEL
+from app.services.apimw import render_prior_context
 from app.services.intention_state import (
     format_intentions_for_prompt as _format_intentions_for_prompt,
     validate_intentions as _validate_intentions,
@@ -342,8 +343,11 @@ async def _run_retrieve(
                 finally:
                     con.close()
         if state_out:
-            prior_context = state_out.get("prior_context")
-            if prior_context is not None and str(prior_context).strip():
+            prior_context = render_prior_context(
+                state_out.get("prior_context"), svc=svc, scope=scope,
+                procedural_db_path=procedural_db_path(config),
+            )
+            if prior_context:
                 out["prior_context"] = prior_context
             memory_cache = state_out.get("memory_cache") or []
             if memory_cache:

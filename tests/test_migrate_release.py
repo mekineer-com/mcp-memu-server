@@ -6,6 +6,39 @@ import pytest
 import migrate_release
 
 
+def test_prior_context_upgrade_expires_only_legacy_queue_and_preserves_evidence(tmp_path, monkeypatch):
+    database = tmp_path / "FictionalSoul.db"
+    selection = [{"id": "selected-memory", "shaped_by": {"id": "seed", "predicate": "evokes"}},
+                 {"id": "guidance", "memory_type": "procedural", "domain": "mental_health"}]
+    with sqlite3.connect(database) as con:
+        con.execute("CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY, prior_context TEXT, undo_snapshot TEXT)")
+        con.executemany("INSERT INTO conversations VALUES (?, ?, 'Keep Undo')", [
+            ("legacy", "[knowledge] (today) Old queued prose"), ("empty", ""),
+            ("malformed", json.dumps([{"id": ""}])), ("json_prose", json.dumps("Old queued prose")),
+            ("current", json.dumps(selection)), ("absent", None)])
+        con.execute("CREATE TABLE soul_state (id INTEGER, prior_context_ids_since_consolidation TEXT)")
+        con.execute("INSERT INTO soul_state VALUES (1, '[\"selected-memory\"]')")
+        con.execute("CREATE TABLE resources (id TEXT, memory_prior_context TEXT)")
+        con.execute("INSERT INTO resources VALUES ('evidence', '[\"selected-memory\"]')")
+        con.execute("CREATE TABLE memory_items (id TEXT, summary TEXT, extra TEXT)")
+        con.execute("INSERT INTO memory_items VALUES ('selected-memory', 'Keep memory prose', '{}')")
+    monkeypatch.setattr(migrate_release, "_initialize_schema", lambda *_args: None)
+    migrate_release.migrate_database(database, "fictional-profile")
+    with sqlite3.connect(database) as con:
+        rows = dict(con.execute("SELECT conversation_id, prior_context FROM conversations"))
+        assert rows["legacy"] is rows["empty"] is rows["absent"] is None
+        assert rows["malformed"] is rows["json_prose"] is None
+        assert json.loads(rows["current"]) == selection
+        assert con.execute("SELECT DISTINCT undo_snapshot FROM conversations").fetchall() == [("Keep Undo",)]
+        assert con.execute("SELECT prior_context_ids_since_consolidation FROM soul_state").fetchone()[0] == '["selected-memory"]'
+        assert con.execute("SELECT memory_prior_context FROM resources").fetchone()[0] == '["selected-memory"]'
+        assert con.execute("SELECT summary FROM memory_items").fetchone()[0] == "Keep memory prose"
+        con.execute("UPDATE conversations SET prior_context = ? WHERE conversation_id = 'legacy'", (json.dumps(selection),))
+    migrate_release.migrate_database(database, "fictional-profile")
+    with sqlite3.connect(database) as con:
+        assert json.loads(con.execute("SELECT prior_context FROM conversations WHERE conversation_id = 'legacy'").fetchone()[0]) == selection
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 def test_subconscious_insight_migration_preserves_state_and_memory_metadata(tmp_path, monkeypatch, legacy):
     database = tmp_path / "FictionalSoul.db"

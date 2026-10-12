@@ -255,6 +255,28 @@ recheck that generation, retirement and pause state; consumed insights are never
 restored by archival completion. State and item commits remain independent, so
 embedding failure/cancellation can leave published state without an archival item.
 
+`conversations.prior_context` holds the ordered pending selection as JSON
+references, not finished memory prose. APImw retains selected IDs, optional graph
+presentation references and procedural `(domain, id)` references. Shared
+`apimw.render_prior_context` fetches only current active rows for that owner/Soul,
+independently of the new query's filters; procedural references use a read-only
+exact sidecar lookup. Missing/deleted/merged/superseded rows are omitted, not
+replaced or re-searched. Current memory/seed prose and relative dates are rendered
+at prompt construction for retrieval output and import allowance estimation.
+Already prepared `/turn` prompts remain caller-authored snapshots.
+
+Retrieval and failed/dry-run replies do not consume this selection; successful
+turn publication clears it. Undo still does not restore it. The separate
+Soul-wide prior-context ID history and Resource-owned consolidation evidence are
+unchanged. The state PATCH boundary accepts only normalized reference lists or
+null. There is no runtime legacy-prose reader or second pending-context field.
+
+Before starting this code against existing databases, back up and run the
+explicit release upgrade. `2026-10-12-prior-context-references` expires legacy
+queued prose once, as Marcos approved, while preserving valid current references
+and all memories, chat/Undo state and reflection evidence. The migration ledger
+prevents repeat expiration. Source repair tests did not apply it to live DBs.
+
 Iris photo workers retain `_image_finalize_tasks` FIFO/coalescing and reserve
 the existing memory-work claim before native image Memorize. Provider waits hold
 no reply lock; `finally` releases the claim and preserves queued automatic work

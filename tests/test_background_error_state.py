@@ -329,7 +329,7 @@ def test_apimw_failure_preserves_prior_context() -> None:
             sqlite_current_path=lambda _user, _soul: db_path,
             soul_id="SoulE",
             user_id="UserE",
-            updates={"prior_context": "some stale context"},
+            updates={"prior_context": [{"id": "selected-memory"}]},
         )
 
         # Simulate APImw failure: write error only.
@@ -344,7 +344,7 @@ def test_apimw_failure_preserves_prior_context() -> None:
             },
         )
 
-        assert state["prior_context"] == "some stale context"
+        assert state["prior_context"] == [{"id": "selected-memory"}]
         assert state["last_background_error"].startswith("apimw_failed:")
 
         # Verify via fresh read.
@@ -356,7 +356,7 @@ def test_apimw_failure_preserves_prior_context() -> None:
         finally:
             con.close()
 
-        assert loaded["prior_context"] == "some stale context"
+        assert loaded["prior_context"] == [{"id": "selected-memory"}]
 
 
 def test_apimw_success_writes_prior_context() -> None:
@@ -381,10 +381,10 @@ def test_apimw_success_writes_prior_context() -> None:
             sqlite_current_path=lambda _user, _soul: db_path,
             soul_id="SoulF",
             user_id="UserF",
-            updates={"prior_context": "fresh context after recovery"},
+            updates={"prior_context": [{"id": "new-memory"}]},
         )
 
-        assert state["prior_context"] == "fresh context after recovery"
+        assert state["prior_context"] == [{"id": "new-memory"}]
 
 
 @pytest.mark.asyncio

@@ -1,12 +1,114 @@
 import asyncio
 from copy import deepcopy
+from datetime import UTC, datetime
+import json
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
 
 from app import main
-from tests import AnchorService
+from tests import AnchorService, SavedBatchService
 from app.services import apimw, conversation_sources
+from app import procedural
+from fastapi import HTTPException
+from memu.database.models import Triple
+
+
+@pytest.mark.asyncio
+async def test_prior_context_renders_current_scoped_rows_without_consuming_selection(tmp_path, monkeypatch):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "chat:prior-context"
+    svc = SavedBatchService.make_engine(scope)
+    repo = svc.database.memory_item_repo
+    day = datetime(2026, 1, 2, 12, tzinfo=UTC)
+    def item(summary, user=scope):
+        return repo.create_item(memory_type="knowledge", summary=summary, embedding=[1.0, 0.0],
+                                user_data=user, happened_at=day)
+    first, seed, last, deleted, merged, superseded = [item(name) for name in (
+        "Old selected prose", "Old supporting prose", "Last selected memory", "Deleted prose",
+        "Merged prose", "Superseded prose")]
+    foreign = item("Other Soul private prose", {"user_id": "TestOwner", "soul_id": "OtherSoul"})
+    selection = [{"id": last.id}, {"id": first.id, "via_graph": "evokes",
+                  "shaped_by": {"id": seed.id, "predicate": "evokes"}},
+                 *({"id": row.id} for row in (deleted, merged, superseded, foreign)),
+                 {"id": "guidance", "memory_type": "procedural", "domain": "mental_health"}]
+    main._write_conversation_state(cid, **scope, updates={"prior_context": selection,
+        "append_prior_context_ids_since_consolidation": [first.id, last.id]})
+    repo.update_item(item_id=first.id, summary="Corrected selected prose")
+    repo.update_item(item_id=seed.id, summary="Corrected supporting prose")
+    repo.hard_delete_item(deleted.id, where=scope)
+    repo.update_item(item_id=merged.id, merged_into=last.id)
+    svc.database.triple_repo.add(Triple(subject_id=superseded.id, subject_kind="memory",
+        predicate="evolved_into", object_id=last.id, object_kind="memory"), user_data=scope)
+    sidecar = tmp_path / "procedural.db"
+    with sqlite3.connect(sidecar) as con:
+        procedural.ensure_schema(con)
+        con.executemany("INSERT INTO procedural_memory_items (id, domain, summary) VALUES (?, ?, ?)",
+            [("guidance", "mental_health", "Old curated guidance"),
+             ("guidance", "another_domain", "Wrong domain guidance")])
+        con.execute("UPDATE procedural_memory_items SET summary = 'Current curated guidance' WHERE domain = 'mental_health'")
+    current = apimw.render_prior_context(selection, svc=svc, scope=scope, procedural_db_path=sidecar,
+                                        now=datetime(2026, 1, 3, 12, tzinfo=UTC))
+    assert "yesterday" in current and "today" not in current
+    assert "Corrected selected prose" in current and "Corrected supporting prose" in current
+    assert current.index(last.summary) < current.index("Corrected selected prose")
+    assert "Current curated guidance" in current
+    assert all(text not in current for text in ("Old selected", "Old supporting", "Deleted prose",
+        "Merged prose", "Superseded prose", "Other Soul", "Old curated", "Wrong domain"))
+    repo.hard_delete_item(seed.id, where=scope)
+    with sqlite3.connect(sidecar) as con:
+        con.execute("DELETE FROM procedural_memory_items WHERE domain = 'mental_health'")
+    current = apimw.render_prior_context(selection, svc=svc, scope=scope, procedural_db_path=sidecar)
+    assert "Corrected selected prose" in current and "Corrected supporting" not in current
+    assert "guidance" not in current
+    absent = tmp_path / "absent.db"
+    assert procedural.get_item(absent, domain="mental_health", item_id="guidance") is None
+    assert not absent.exists()
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_kw: svc)
+    async def retrieve(*_a, **_kw):
+        return {"needs_retrieval": False, "items": []}
+    monkeypatch.setattr(svc, "retrieve", retrieve)
+    out = await main._run_retrieve({"user": scope, "where": {**scope, "id__in": [last.id]},
+                                    "conversation_id": cid, "query": "Fictional garden"})
+    assert out["prior_context"] == current
+    state = main._load_turn_state_and_soul_card(cid, **scope)[0]
+    assert state["prior_context"] == selection
+    with main._sqlite_connect(main._sqlite_current_path(**scope)) as con:
+        stored = con.execute("SELECT prior_context FROM conversations WHERE conversation_id = ?", (cid,)).fetchone()[0]
+        assert json.loads(stored) == selection and "prose" not in stored
+    updated, _, _ = main._turn_state_write(cid, scope["user_id"], scope["soul_id"], "", [], [],
+        svc=svc, scope=scope, prepared_annulments=[])
+    assert updated["prior_context"] is None
+    assert updated["prior_context_ids_since_consolidation"] == [first.id, last.id]
+    await main.conversation_turn_undo(cid, {"user": scope, "turn_id": updated["undo_snapshot"]["turn_id"]})
+    assert main._load_turn_state_and_soul_card(cid, **scope)[0]["prior_context"] is None
+
+
+@pytest.mark.parametrize("invalid", ["Old prose", ["memory"], [{}], [{"id": ""}],
+    [{"id": "memory", "summary": "Duplicated prose"}],
+    [{"id": "guidance", "memory_type": "procedural"}],
+    [{"id": "memory", "shaped_by": {"id": "seed"}}],
+    [{"id": "memory", "memory_type": "knowledge"}], [{"id": "memory", "domain": "mental_health"}]])
+def test_prior_context_refuses_nonreference_state_before_writes(invalid):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "chat:invalid-prior-context"
+    before = main._write_conversation_state(cid, **scope, updates={})[0]
+    with pytest.raises(HTTPException) as failure:
+        main._write_conversation_state(cid, **scope, updates={"prior_context": invalid, "memory_cache": ["Must not save"]})
+    assert failure.value.status_code == 400
+    assert main._load_turn_state_and_soul_card(cid, **scope)[0] == before
+
+
+def test_prior_context_normalizes_identifiers_without_mutating_input():
+    from app.services.state import normalize_prior_context
+    references = [{"id": " memory ", "shaped_by": {"id": " seed ", "predicate": " evokes "}},
+                  {"id": " guidance ", "memory_type": " procedural ", "domain": " mental_health "}]
+    original = deepcopy(references)
+    assert normalize_prior_context(references) == [
+        {"id": "memory", "shaped_by": {"id": "seed", "predicate": "evokes"}},
+        {"id": "guidance", "memory_type": "procedural", "domain": "mental_health"}]
+    assert references == original
 
 
 @pytest.mark.asyncio
@@ -15,7 +117,7 @@ async def test_apimw_embedding_wait_preserves_replies_and_publication(monkeypatc
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     cid = "chat:apimw-concurrent"
     monkeypatch.setattr(main, "_MEMORIZE_LOCKS", {})
-    main._write_conversation_state(cid, **scope, updates={"prior_context": "Old context",
+    main._write_conversation_state(cid, **scope, updates={"prior_context": [{"id": "old"}],
         "last_background_error": "apimw_failed: old", "last_background_error_at": "2026-01-01T00:00:00Z"})
     path = main._sqlite_current_path(**scope)
     identity = apimw._apimw_database_identity(path)
@@ -36,12 +138,12 @@ async def test_apimw_embedding_wait_preserves_replies_and_publication(monkeypatc
         main._write_conversation_state(cid, **scope, updates={"apimw_subconscious_insight": "New database note"})
     kwargs = dict(svc=svc, result_json={"subconscious_insight": "Fictional quiet signal"},
                   items_by_id={}, id_map={}, scope=scope, conversation_id=cid,
-                  **scope, expected_prior_context="Old context", database_identity=identity)
+                  **scope, expected_prior_context=[{"id": "old"}], database_identity=identity)
     if change in {"before_start", "stale_prior"}:
         if change == "before_start":
             replace()
         else:
-            main._write_conversation_state(cid, **scope, updates={"prior_context": "New context"})
+            main._write_conversation_state(cid, **scope, updates={"prior_context": [{"id": "new"}]})
         before = state()
         await main._apimw_persist(**kwargs)
         assert not entered.is_set() and items == [] and state() == before

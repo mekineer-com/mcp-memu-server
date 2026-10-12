@@ -2,6 +2,7 @@
 """Apply one release's rerunnable schema and data migrations to every soul DB."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -17,6 +18,8 @@ from app.config import (
     sqlite_file_from_dsn,
 )
 from memu.database.sqlite.sqlite import SQLiteStore
+from app.db import json_to_db
+from app.services.state import normalize_prior_context
 
 
 class ReleaseScope(BaseModel):
@@ -46,8 +49,24 @@ WHERE json_type(extra, '$.apimw_message_to_self') IS NOT NULL
 """)
 
 
+def _expire_prior_context_prose(connection: sqlite3.Connection) -> None:
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(conversations)")}
+    if "prior_context" not in columns:
+        return
+    for conversation_id, raw in connection.execute(
+        "SELECT conversation_id, prior_context FROM conversations WHERE prior_context IS NOT NULL"
+    ).fetchall():
+        try:
+            references = normalize_prior_context(json.loads(raw))
+        except (ValueError, TypeError):
+            references = None
+        connection.execute("UPDATE conversations SET prior_context = ? WHERE conversation_id = ?",
+                           (json_to_db(references), conversation_id))
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     ("2026-10-12-subconscious-insight", _rename_subconscious_insight),
+    ("2026-10-12-prior-context-references", _expire_prior_context_prose),
 )
 
 

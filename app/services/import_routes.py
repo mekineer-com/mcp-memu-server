@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from memu.app.dossier_revision import estimate_prompt_tokens
-from app.services import consolidation, conversation_sources, cross_history, memorize_endpoint
+from app.services import apimw, consolidation, conversation_sources, cross_history, memorize_endpoint
 from app.services.consolidation import consolidation_input_budget
 from app.services.state import effective_digest_cursor_from_row
 from app.services.segment import _message_happened_at
@@ -476,7 +476,9 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
             scoped["soul_id"], anchor_context=anchors, soul_card=card,
             response_sentences=int(runtime._CONFIG.get("turn_response_sentences", 3)))
         user = runtime._build_turn_prompt(
-            user_message="", history=history, prior_context=state.get("prior_context"), retrieve_rag=None,
+            user_message="", history=history, prior_context=apimw.render_prior_context(
+                state.get("prior_context"), svc=svc, scope=scoped,
+                procedural_db_path=runtime._procedural_db_path(runtime._CONFIG)), retrieve_rag=None,
             all_categories_summary=svc.build_dossier_index(scoped, dossiers=dossiers), memory_cache=state.get("memory_cache"),
             intentions_active=state.get("intentions_active"), apimw_subconscious_insight=state.get("apimw_subconscious_insight"),
             conversations_block=block, conversation_id=cid,

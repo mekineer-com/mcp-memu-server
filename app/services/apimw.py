@@ -6,11 +6,15 @@ import asyncio
 import json
 import random
 import uuid
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 from fastapi import HTTPException
 
 from app.services.conversation_id import canonical_conversation_id
 from app.services.intention_state import validate_intentions
+from app import procedural
+from app.services.turn_contract import format_memory_line, format_shaped_by_line
 
 _main: Any = None
 
@@ -61,6 +65,38 @@ def _parse_apimw_json_response(text: str) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def render_prior_context(
+    selection: list[dict[str, Any]] | None, *, svc: Any, scope: dict[str, Any],
+    procedural_db_path: Path, now: datetime | None = None,
+) -> str:
+    if not selection:
+        return ""
+    ids = {reference["id"] for reference in selection if reference.get("memory_type") != "procedural"}
+    ids.update(reference["shaped_by"]["id"] for reference in selection if reference.get("shaped_by"))
+    identity = {key: scope[key] for key in ("user_id", "soul_id")}
+    pool = svc._get_database().memory_item_repo.list_items_by_ids(ids, identity) if ids else {}
+    lines = []
+    for reference in selection:
+        if reference.get("memory_type") == "procedural":
+            item = procedural.get_item(procedural_db_path, domain=reference["domain"], item_id=reference["id"])
+            if item is not None:
+                item["memory_type"] = "procedural"
+        else:
+            row = pool.get(reference["id"])
+            item = svc._model_dump_without_embeddings(row) if row is not None else None
+        if item is None:
+            continue
+        if reference.get("via_graph"):
+            item["via_graph"] = reference["via_graph"]
+        lines.append(format_memory_line(item, now=now))
+        shaped_by = reference.get("shaped_by")
+        if shaped_by and (seed := pool.get(shaped_by["id"])) is not None and seed.memory_type != "narrative_self":
+            lines.append(format_shaped_by_line({
+                **svc._model_dump_without_embeddings(seed), "predicate": shaped_by["predicate"],
+            }, now=now))
+    return "\n".join(lines)
 
 
 def _apimw_retrieval_config(payload: dict[str, Any], top_k: int) -> dict[str, Any]:
@@ -303,7 +339,7 @@ async def _apimw_persist(
     conversation_id: str,
     user_id: str,
     soul_id: str,
-    expected_prior_context: str = "",
+    expected_prior_context: list[dict[str, Any]] | None = None,
     database_identity: Any = None,
 ) -> None:
     conversation_id = canonical_conversation_id(conversation_id)
@@ -317,14 +353,14 @@ async def _apimw_persist(
         resolved_prior_context_ids: list[str] = []
 
         fresh_row, _, _ = _m()._load_turn_state_and_soul_card(conversation_id, user_id=user_id, soul_id=soul_id)
-        existing_prior = str(fresh_row.get("prior_context") or "").strip()
-        if existing_prior != str(expected_prior_context or "").strip():
+        existing_prior = fresh_row.get("prior_context") or []
+        if existing_prior != (expected_prior_context or []):
             _m().logger.warning("apimw: stale prior_context for %s; skipping APImw persist", conversation_id)
             return
 
         prior_context_ids_raw = result_json.get("prior_context") or []
         if isinstance(prior_context_ids_raw, list) and prior_context_ids_raw:
-            prior_context_lines: list[str] = []
+            prior_context_refs: list[dict[str, Any]] = []
             for raw_memory_id in prior_context_ids_raw:
                 numbered = str(raw_memory_id).strip()
                 if not numbered:
@@ -334,13 +370,17 @@ async def _apimw_persist(
                 item = items_by_id.get(memory_id)
                 if not item:
                     continue
-                prior_context_lines.append(_m()._format_memory_line(item))
+                reference = {"id": memory_id}
+                if item.get("memory_type") == "procedural":
+                    reference.update(memory_type="procedural", domain=item["domain"])
+                if item.get("via_graph"):
+                    reference["via_graph"] = item["via_graph"]
                 shaped_by = item.get("shaped_by")
                 if isinstance(shaped_by, dict):
-                    prior_context_lines.append(_m()._format_shaped_by_line(shaped_by))
-            if prior_context_lines:
-                new_prior = "\n".join(prior_context_lines)
-                updates["prior_context"] = new_prior
+                    reference["shaped_by"] = {"id": shaped_by["id"], "predicate": shaped_by["predicate"]}
+                prior_context_refs.append(reference)
+            if prior_context_refs:
+                updates["prior_context"] = prior_context_refs
 
         if subconscious_insight:
             updates["apimw_subconscious_insight"] = f"[subconscious] {subconscious_insight}"
@@ -507,7 +547,7 @@ async def _run_apimw(
             conversation_id=conversation_id,
             user_id=user_id,
             soul_id=soul_id,
-            expected_prior_context=str(state_row.get("prior_context") or ""),
+            expected_prior_context=state_row.get("prior_context"),
             database_identity=database_identity,
         )
 

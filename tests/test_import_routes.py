@@ -595,7 +595,7 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
     main._write_conversation_state(cid, user_id="TestOwner", soul_id="TestSoul",
         updates={"digest_cursor": 2, "last_memorize_at": "2025-01-01T12:00:00Z",
                  "last_display_segment_start_index": 0, "last_display_segment_end_index": 2,
-                 "last_display_segment_at": "2025-01-01T12:00:00Z"})
+                 "last_display_segment_at": "2025-01-01T12:00:00Z", "prior_context": [{"id": "pending-memory"}]})
     other = "chat:other-fictional"
     main._write_conversation_state(other, user_id="TestOwner", soul_id="TestSoul", updates={})
     conversation_sources.persist_sillytavern_history_snapshot(
@@ -608,7 +608,11 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
                SimpleNamespace(anchor_role="user", summary="My human prefers early walks.")]
     svc = SimpleNamespace(user_config=SimpleNamespace(user_name="TestHuman"),
                           _claude_code=False, llm_profiles=SimpleNamespace(profiles={"default": profile}),
-                          list_active_dossiers=lambda _: anchors, build_dossier_index=lambda _, **_kw: "Known dossier index")
+                          list_active_dossiers=lambda _: anchors, build_dossier_index=lambda _, **_kw: "Known dossier index",
+                          _get_database=lambda: SimpleNamespace(memory_item_repo=SimpleNamespace(
+                              list_items_by_ids=lambda ids, identity: {"pending-memory": {"id": "pending-memory",
+                                  "memory_type": "knowledge", "summary": "Current pending memory wording"}})),
+                          _model_dump_without_embeddings=dict)
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _, **_kwargs: svc)
     prompts = []
     build = main._build_turn_prompt
@@ -626,6 +630,7 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
     assert first["ok"] and prompts[-1].count("[TestSpeaker] stored 2") == 1
     assert "another chat" in prompts[-1] and "sitting recap" in prompts[-1]
     assert "My Nomi Conversations:" in prompts[-1] and "Known dossier index" in prompts[-1]
+    assert "Prior Context:" in prompts[-1] and "Current pending memory wording" in prompts[-1]
     client = TestClient(main.app)
     response = client.post("/imports/validate", json=preview.model_dump(mode="json"))
     assert response.status_code == 200 and response.json()["ok"]

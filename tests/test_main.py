@@ -7287,20 +7287,28 @@ async def test_apimw_persist_remaps_numbered_prior_context_ids(monkeypatch: pyte
 
     await main._apimw_persist(
         svc=SimpleNamespace(),
-        result_json={"prior_context": ["1", "mem_raw", "2", "1"]},
+        result_json={"prior_context": ["1", "missing", "mem_raw", "2", "1", "3"]},
         items_by_id={
-            "mem_one": {"id": "mem_one", "memory_type": "profile", "summary": "Marcos likes continuity."},
+            "mem_one": {"id": "mem_one", "memory_type": "profile", "summary": "TestOwner likes continuity.",
+                        "via_graph": "evokes", "shaped_by": {"id": "seed", "predicate": "evokes", "summary": "Old seed prose"}},
             "mem_two": {"id": "mem_two", "memory_type": "behavior", "summary": "I paused before replying."},
             "mem_raw": {"id": "mem_raw", "memory_type": "knowledge", "summary": "Raw IDs can still appear."},
+            "procedure": {"id": "procedure", "memory_type": "procedural", "domain": "mental_health", "summary": "Curated guidance"},
         },
-        id_map={"1": "mem_one", "2": "mem_two"},
+        id_map={"1": "mem_one", "2": "mem_two", "3": "procedure"},
         scope={"user_id": "u", "soul_id": "s"},
         conversation_id="c",
         user_id="u",
         soul_id="s",
     )
 
-    assert captured_updates["append_prior_context_ids_since_consolidation"] == ["mem_one", "mem_raw", "mem_two"]
+    assert captured_updates["prior_context"] == [
+        {"id": "mem_one", "via_graph": "evokes", "shaped_by": {"id": "seed", "predicate": "evokes"}},
+        {"id": "mem_raw"}, {"id": "mem_two"},
+        {"id": "mem_one", "via_graph": "evokes", "shaped_by": {"id": "seed", "predicate": "evokes"}},
+        {"id": "procedure", "memory_type": "procedural", "domain": "mental_health"},
+    ]
+    assert captured_updates["append_prior_context_ids_since_consolidation"] == ["mem_one", "missing", "mem_raw", "mem_two", "procedure"]
 
 
 @pytest.mark.asyncio

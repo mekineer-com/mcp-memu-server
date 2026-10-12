@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -22,6 +23,43 @@ from app.services import soul_state as _soul_state
 
 
 _MISSING = object()
+
+
+def normalize_prior_context(value: Any) -> list[dict[str, Any]] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("prior_context must be a list of memory references or null")
+    normalized = []
+    for reference in value:
+        if not isinstance(reference, dict) or not isinstance(reference.get("id"), str) or not reference["id"].strip():
+            raise ValueError("prior_context references require a nonempty id")
+        if reference.keys() - {"id", "via_graph", "shaped_by", "memory_type", "domain"}:
+            raise ValueError("prior_context stores references, not memory prose")
+        for field in ("via_graph", "memory_type", "domain"):
+            if field in reference and not isinstance(reference[field], str):
+                raise ValueError(f"prior_context {field} must be text")
+        reference = {**reference, "id": reference["id"].strip()}
+        if "memory_type" in reference:
+            reference["memory_type"] = reference["memory_type"].strip()
+            if reference["memory_type"] != "procedural":
+                raise ValueError("prior_context memory_type only identifies procedural references")
+        if "domain" in reference:
+            if reference.get("memory_type") != "procedural":
+                raise ValueError("prior_context domain is only for procedural references")
+            reference["domain"] = reference["domain"].strip()
+        if reference.get("memory_type") == "procedural" and not reference.get("domain", "").strip():
+            raise ValueError("procedural prior_context requires a domain")
+        shaped_by = reference.get("shaped_by")
+        if shaped_by is not None and (
+            not isinstance(shaped_by, dict) or shaped_by.keys() != {"id", "predicate"}
+            or any(not isinstance(shaped_by.get(field), str) or not shaped_by[field].strip() for field in ("id", "predicate"))
+        ):
+            raise ValueError("prior_context shaped_by requires an id and predicate")
+        if shaped_by is not None:
+            reference["shaped_by"] = {field: shaped_by[field].strip() for field in ("id", "predicate")}
+        normalized.append(reference)
+    return normalized
 
 
 def normalize_import_state(value: Any) -> dict[str, Any] | None:
@@ -75,7 +113,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
     if row is None:
         return None
     digest_cursor = int(row["digest_cursor"] or 0)
-    prior_context = row["prior_context"]
+    prior_context = normalize_prior_context(json.loads(row["prior_context"])) if row["prior_context"] is not None else None
     return {
         "conversation_id": row["conversation_id"],
         "soul_id": row["soul_id"],
@@ -107,7 +145,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
             else None
         ),
         "rolling_summary_updated_at": row["rolling_summary_updated_at"] if "rolling_summary_updated_at" in row.keys() else None,
-        "prior_context": None if prior_context is None else str(prior_context),
+        "prior_context": prior_context,
         "pending_segment_ids": normalize_text_list(row["pending_segment_ids"]),
         "import_state": normalize_import_state(json_from_db(row["import_state"])),
         "last_memorize_at": row["last_memorize_at"],
@@ -253,6 +291,11 @@ def write_conversation_state(
 
     owns_connection = connection is None
     raw_updates = dict(updates) if updates else {}
+    if "prior_context" in raw_updates:
+        try:
+            raw_updates["prior_context"] = normalize_prior_context(raw_updates["prior_context"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     patch_import = any(key in raw_updates for key in (
         "import_memorize_cursor", "append_import_pending_segment_ids", "import_error", "import_stage", "import_ordinary_waiting",
         "import_segment_work"))
@@ -488,9 +531,6 @@ INSERT OR IGNORE INTO conversations (
         if "last_display_segment_at" in field_updates:
             raw_display_at = field_updates.get("last_display_segment_at")
             field_updates["last_display_segment_at"] = None if raw_display_at is None else (str(raw_display_at).strip() or None)
-        if "prior_context" in field_updates:
-            raw_prior_context = field_updates.get("prior_context")
-            field_updates["prior_context"] = None if raw_prior_context is None else str(raw_prior_context)
         if "pending_segment_ids" in field_updates:
             field_updates["pending_segment_ids"] = normalize_text_list(field_updates["pending_segment_ids"])
         if "import_state" in field_updates:
@@ -505,7 +545,7 @@ INSERT OR IGNORE INTO conversations (
             params: list[Any] = []
             for key, value in field_updates.items():
                 assignments.append(f"{key} = ?")
-                if key in {"pending_segment_ids", "undo_snapshot", "import_state"}:
+                if key in {"pending_segment_ids", "undo_snapshot", "import_state", "prior_context"}:
                     params.append(json_to_db(value))
                 elif key == "memorize_chat":
                     params.append(1 if bool(value) else 0)

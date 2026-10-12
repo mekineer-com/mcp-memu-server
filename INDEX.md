@@ -38,7 +38,7 @@ mcp-memu-server/
 ├── app/services/soul_summaries.py # SQL-only summary writes; shared journal finishing after caller commit
 ├── app/services/soul_state.py # Shared Soul state, durable Memorize failure and common activity-pause predicate
 ├── run.py                   # Entry point: config load, sys.path setup, single-instance pid guard, uvicorn start
-├── migrate_release.py       # Explicit, rerunnable release migrations; preserves pending subconscious insight and saved-memory metadata during the identifier rename
+├── migrate_release.py       # Explicit, rerunnable release migrations; subconscious identifier rename and one-time expiration of legacy queued Prior Context prose
 ├── _archive/database-tools/ # Historical one-time tools; not part of runtime or active tests
 ├── config.json              # Runtime config (llm, storage, listen, dossier policy, memu path)
 ├── config.example.json      # Minimal installable template
@@ -196,7 +196,7 @@ guess a chat from the last reporting app.
 | `app/services/conversation_sources.py` | Source adapters: WhatsApp from `web_source.db`; ST/Atomic/Replika from resource chat snapshots (`st_chats` / `atomic_chats` / `replika_chats`); Mentra from `openalma/mentra/transcripts`. ST snapshots preserve original message positions and the unfiltered saved count. Handles atomic writes, cursor slicing, floor backfill, and role normalization. |
 | `app/services/import_routes.py` | Echo's scoped registration, unpaid current-tail validation, Process/Retry/status and bounded outer historical loop. Holds the existing claim through extraction plus one consolidation, resumes pending spans first, records the failed phase, and releases coalesced ordinary work. |
 | `app/services/cross_history.py` | Shared all-chat formatting and source selection: current Channels policy or captured Retry flags; live background summary + unsummarized tail; saved supporting context for reflection; display-segment cleanup |
-| `app/services/apimw.py` | APImw background memory-weaving pipeline: retrieve → synthesize prior-context/subconscious insight → persist |
+| `app/services/apimw.py` | APImw background memory-weaving pipeline: retrieve → synthesize prior-context/subconscious insight → persist references; shared unpaid Prior Context hydration/rendering for replies and import sizing |
 | `app/services/admin_routes.py` | Health/version/shutdown/diag endpoint handlers |
 | `app/services/payload.py` | Shared payload/scope/normalization helpers; `_label_owner_messages` copies proven-owner lines to the Soul's canonical `user_name`, with optional live `source_owner_id` evidence and unchanged source data/IDs |
 | `app/services/service_factory.py` | `MemoryService` cache + construction, llm profile merge, config readers, profile-aware semantic-dedupe defaults (per embedding profile; numeric config values are operator recovery overrides only) |
