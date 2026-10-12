@@ -137,6 +137,12 @@ Soul-wide payload. Manual saved-ST processing also assembles cross-conversation
 tails. `_prepare_frozen_memorize` subtracts fresh completed checkpoints without
 refreshing captured rows; automatic coalescing retains a captured waiting payload.
 ST cursor ceilings account for a saved chat shrinking during accepted work.
+Before automatic free-slot admission, `_schedule_auto_memorize` removes explicitly
+retired ST sources from captured rows, checkpoints, rolling summaries and ceilings.
+Surviving sources retain their captured data and bounds. A deleted trigger keeps
+its bookkeeping ID and already-established timing eligibility, but the surviving
+primary token threshold still applies. Accepted/manual/Retry work is not filtered
+again; missing original files alone do not invalidate valid frozen captures.
 
 `app/services/cross_history.py` owns `_source_memorize_policy`,
 `_load_cross_memorize_tails_from_sources`,
@@ -267,6 +273,11 @@ stages:
    together. It merges intentions against fresh state and preserves newly queued
    work. Dossier/narrative journal finishing follows the database commit.
 
+Shared `xml_utils.extract_xml_fragment` shields opaque XML/root boundaries and
+normalizes literal punctuation only in prose. Tags/attributes remain strict;
+scalar edge fields reject children rather than discarding nested text. Complete
+tag-shaped literal prose still requires entities or CDATA; this is not XML salvage.
+
 Ordinary consolidation is interval/size-gated; a `not_due` result leaves pending
 evidence durable. Historical Echo consolidation uses bounded whole segments,
 maintains dossiers/identity, skips weekly reflection and does not advance the
@@ -294,7 +305,7 @@ admission; GET reads and independent Atomic Workspace notes do not.
 
 An admitted edit holds the existing claim until its handler finishes, preventing
 a memory job from starting during paid edit preparation. `None` distinguishes an
-edit from ordinary (`False`) or historical (`True`) memory processing, so edits
+edit or photo from ordinary (`False`) or historical (`True`) memory processing, so they
 cannot unpause interrupted recovery. Existing claim release rechecks queued
 automatic work even if the edit fails. Snapshot checks and dead tabs remain:
 unsaved drafts can still become stale while memory processing runs.
@@ -348,10 +359,13 @@ and all memories, chat/Undo state and reflection evidence. The migration ledger
 prevents repeat expiration. Source repair tests did not apply it to live DBs.
 
 Iris photo workers retain `_image_finalize_tasks` FIFO/coalescing and reserve
-the existing memory-work claim before native image Memorize. Provider waits hold
+the existing memory-work claim as `None` before native image Memorize, so a photo
+cannot hide interrupted Memorize or its Retry. Provider waits hold
 no reply lock; `finally` releases the claim and preserves queued automatic work
 even after photo failure. Completed-Memorize Retry reserves that same claim before
-dispatching follow-on reflection. `_finish_memorize_claim` clears stale active
+dispatching follow-on reflection. Claim release keeps waiting captures while
+durable Memorize/consolidation recovery remains required; it does not bypass Retry.
+`_finish_memorize_claim` clears stale active
 progress and Cancel before handing off a fresh job. These are process-local
 claims, not restart recovery; unfinished photo filing is not automatically resumed.
 Photo finalization checks registered work before saved memory rows. An explicit
