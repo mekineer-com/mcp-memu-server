@@ -26,6 +26,8 @@ current background summaries, DM aliases, APImw publication and photo claims.
 This updates those boundaries, not the original whole-map verification scope.
 Provider-wait and media-failure seams below were additionally traced against
 memU `1826793`, with fictional-provider and local-subprocess regression checks.
+The WhatsApp policy-editor boundary was traced through OpenAlma `26685dd`;
+Channels/MCP policy readers were unchanged and checked with disposable data.
 
 ## Route And Owners
 
@@ -98,6 +100,14 @@ floors. Turning Mem off must not replay already-memorized source rows. The same
 boundary feeds background rollup, current context and saved-source Retry.
 `conversation_sources.py` owns actual source projection/read bounds.
 Ordinary processing excludes registered historical evidence; Echo owns that range.
+
+OpenAlma `launcher/policy.py` owns policy-editor lookup and publication. Display
+combines known DM aliases using the same routing/explicit-Mem precedence as the
+Channels/MCP readers; missing Mem is defaulted only after aggregation. Saving
+updates each existing alias row's policy/Mem while retaining its metadata. The
+`app.policy_save` route stages the default and rows in one JSON write after
+rejecting conflicting alias choices. Group-key normalization is preserved;
+groups do not walk person mappings. Captured Retry filing policy is unchanged.
 
 - **Primary / Mem-on:** `memorize_chat=True`; message-by-message evidence after
   the digest checkpoint, used for extraction provenance and allowed source days.
