@@ -175,7 +175,7 @@ source days, not broadened by background-only dates. The default type registry i
 `memorize_parsing._parse_memory_type_response_xml` preserves literal less-than
 signs inside memory content without repairing structural XML. CDATA, comments
 and processing instructions do not change content nesting; broken structure still
-fail before persistence. Weekly companion prose uses all child/tail text when
+fails before persistence. Weekly companion prose uses all child/tail text when
 preparing its embedding and final write, not just the first XML text node.
 
 The important naming trap: **`_memorize_categorize_items` performs the primary
