@@ -5,6 +5,10 @@
 
 `# Marcos' reminder: a category is a dossier.`
 
+For the end-to-end flow, source ownership, save boundaries and Retry, read
+[MEMORIZE_PIPELINE.md](MEMORIZE_PIPELINE.md). This index locates code; the map
+explains how the client, server and engine stages fit together.
+
 ## Layout
 
 ```

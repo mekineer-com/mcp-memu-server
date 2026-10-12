@@ -1,0 +1,239 @@
+# Memorize Pipeline Map
+
+Maintained developer navigation for saved conversations, not a product manual or
+repair log. MCP owns client-independent selection, admission, checkpoints and
+recovery; memU owns extraction, memory storage and dossier operations. A category
+is a dossier. Follow both sides of a boundary before changing either side.
+
+## Reviewed Baseline
+
+Static source trace, 2026-10-12:
+
+| Repository | Reviewed HEAD (`buildfix`) |
+| --- | --- |
+| `mcp-memu-server` | `a88954469f8ff2ba58690ea5e2dd4491d15deca5` |
+| `memu` | `3aeed83b8e5e0355513e7305ab5d0c381edcd4fd` |
+| ST `memu-extension` (publication/polling seams) | `b4aae13bcf2a8d5c8d252e88ce7f1fe0bc3b3f0f` |
+| ST `memu-plugin` (forwarding/status seams) | `c01a4adb8c4ed0eafec213840e36ed80bb97b8a3` |
+
+The initial MCP trace used `ef2bf55`; the committed background-cursor change
+through `a889544` was checked before publishing this map. Repair plans and audit
+maps were navigation leads, not evidence of present behavior. No tests, services
+or model calls were run for this documentation pass.
+
+## Route And Owners
+
+```text
+client-owned saved source
+  -> MCP publication / supported source reader
+  -> Soul-wide selection + captured filing policy + rolling context
+  -> admitted conversation segment(s)
+  -> memU routing + type extraction + prepared embeddings
+  -> primary save WITH source checkpoint and pending/post-save markers
+  -> dedupe -> dynamic dossier review
+  -> pending Resource evidence -> consolidation when due
+  -> failures retained by stage -> explicit Retry of unfinished work
+```
+
+The ordinary automatic/manual cross-conversation path and its save/recovery
+callbacks are traced below. Historical imports reuse those seams with separate
+state. This is not a claim that every public `memorize` variant, non-conversation
+modality or client UI has identical admission and transaction behavior.
+
+### Saved-Source Boundary
+
+| Source owner | MCP read/publication seam | What must survive the boundary |
+| --- | --- | --- |
+| SillyTavern owns saved chat JSONL | `main.memorize` -> `conversation_sources.persist_sillytavern_history_snapshot` / `load_sillytavern_tail` | Scoped chat identity, original positions, full saved `source_message_count`, message role/name/time |
+| WhatsApp owns originals; Hermes Channels owns the local source projection and routing/Mem settings | `conversation_sources.load_whatsapp_web_source_tail`, `load_whatsapp_channel_settings`; assistant attribution uses saved Hermes source speakers | Stable message key plus web-source row position, owner/peer/Soul evidence, chat identity, active-since floor; routing is not Mem policy |
+| Atomic supplies its completed session transcript | `main.atomic_session_end` -> `persist_atomic_history_snapshot` / `load_atomic_tail` | Scoped session identity, transcript rows and activity recap; not a second memory engine |
+| Iris supplies transcript events through Mentra ingress | `mentra_routes.mentra_transcripts_append` -> `persist_mentra_history_snapshot` / `load_mentra_tail` | Shared `mentra:iris` conversation, sitting/sequence evidence and saved event content; photo filing is a separate path |
+| OpenAlma/Echo owns imported chat storage | `conversation_sources.import_source_path`, `load_import_tail`; `import_routes.register_import_routes` | Stored positions, immutable historical/current classification, source day, scoped chat and fixed registered history bound |
+| MCP owns activity recaps | `activity_messages.record_activity_message` / `activity_message_rows`; callers include `free_turn._run_free_turn_chain` | One recap per completed free turn, not the underlying command/tool stream; activity row index is the checkpoint |
+
+For ST, extension `src/memory/memorize.ts` owns `bindSavedSource`,
+`withSavedSourceQueue` and `publishSavedSource`: publication reads `/api/chats/get`,
+not the currently displayed unsaved chat. `buildTurnHistory` filters system/empty
+rows but preserves original indices. `src/memory/exports.ts` saves replies before
+`automatic` publication; deletion saves before `publish_only`. Plugin
+`src/memu-endpoint.ts:proxyMemorizeConversation` forwards the source to MCP and
+creates a local task ID only after accepted admission.
+
+In `main.memorize`, ST snapshot publication precedes processing admission:
+`publish_only` stops there; `automatic` may defer/coalesce; `manual` enters
+`_memorize_owned`. Published source is not proof that extraction ran. Snapshot
+writes use `conversation_sources._write_chat_snapshot` (temporary file + replace).
+They are separate from memory-engine SQLite commits.
+
+Do not confuse **source ownership** with **speaker identity**. The shared user
+and Soul scope do not make every imported `user` row the owner. See
+`payload._label_owner_messages`, `conversation_sources._import_source_message`
+and memU `memorize_speakers._build_speaker_map`: explicit `source_owner_id`, source
+roles/references and established entity links carry attribution. Generic imported
+roles alone do not assert owner identity. Preserve that evidence, not just prose.
+
+## Selection And Context
+
+Start in committed `app/main.py`: `_prepare_auto_memorize`,
+`_build_cross_conversation_payload`, `_schedule_auto_memorize`,
+`_memorize_owned`, `_prepare_frozen_memorize`. Automatic eligibility checks the
+trigger's unmemorized sleep gap and primary token budget, then captures a
+Soul-wide payload. Manual saved-ST processing also assembles cross-conversation
+tails. `_prepare_frozen_memorize` subtracts fresh completed checkpoints without
+refreshing captured rows; automatic coalescing retains a captured waiting payload.
+ST cursor ceilings account for a saved chat shrinking during accepted work.
+
+`app/services/cross_history.py` owns `_source_memorize_policy`,
+`_load_cross_memorize_tails_from_sources`,
+`_read_background_rolling_summaries_from_conversations` and source cursor
+resolution. `_resolve_background_cursor` uses the later of the rolling-summary
+checkpoint and effective completed Memorize checkpoint, including timestamp
+floors. Turning Mem off must not replay already-memorized source rows. The same
+boundary feeds background rollup, current context and saved-source Retry.
+`conversation_sources.py` owns actual source projection/read bounds.
+Ordinary processing excludes registered historical evidence; Echo owns that range.
+
+- **Primary / Mem-on:** `memorize_chat=True`; message-by-message evidence after
+  the digest checkpoint, used for extraction provenance and allowed source days.
+- **Mem-off:** `memorize_chat=False`; existing rolling prose plus a bounded new
+  tail supplies supporting context, not independent primary extraction evidence.
+  WhatsApp `full`/`listen_only` can each be Mem-on or Mem-off; `excluded` sources
+  are skipped on fresh selection. A captured `filing_policy` overrides fresh policy
+  during failure recovery.
+- **Activities:** saved recaps are already summaries, but
+  `activity_message_rows` marks them Mem-on. They participate in digest checkpoints
+  and extraction without reconstructing tool streams or immediate free-turn
+  Memorize. Mentra transcript selection is also always Mem-on at this baseline.
+
+memU `src/memu/app/memorize_segments.py:_render_episode_with_background_context`
+groups Mem-off tails **per chat**. Below `background_extra_messages_tokens`
+(default 100 estimated tokens), keep a short real tail; at or above it, batch the
+qualifying chats in one call with a separate summary for each. Preserve prior
+rolling prose and readable source identity. This rule does not summarize primary
+chats. `src/memu/utils/conversation.py` is the shared grouped display renderer.
+
+Keep inline supporting context distinct from durable rolling state:
+`main._run_background_rollup_for_conversation` separately prepares and conditionally
+commits `rolling_summary` with its own cursor. Memorize primary publication does
+not advance Mem-off rolling cursors. Its generated follow-up summaries are captured
+with that segment, not installed as the next rolling summary.
+
+## Extraction And Commit Boundaries
+
+MCP `app/services/memorize_endpoint.py:memorize_endpoint` allocates segment ranges
+and schedules `run_memorize_segments`. The worker prepares saved segment files and
+calls memU `src/memu/app/memorize.py:memorize_segments_batch`, supplying
+`on_segment_saved` and `on_dedupe_complete`. A cross-conversation batch uses one
+segment job; other conversation calls can produce several sequential units.
+
+`memorize_segments_batch` separates primary/background rows, renders supporting
+context once, routes episodes (`_route_segment`), selects dossier context and
+extracts applicable memory types. Dates are validated against selected **primary**
+source days, not broadened by background-only dates. The default type registry is
+`src/memu/prompts/memory_type/__init__.py`; speaker attribution is in
+`memorize_speakers.py`. Preparation/model work is not the primary commit.
+
+The important naming trap: **`_memorize_categorize_items` performs the primary
+save; `_memorize_persist_and_index` performs post-save dynamic dossier review.**
+The traced conversation batch invokes these per extracted source unit, not in
+one all-or-nothing transaction for the whole request.
+
+| Boundary | Owner and durable result |
+| --- | --- |
+| Before primary save | `_prepare_plan` prepares embeddings/supersession work. MCP segment files/manifest exist, but no committed Resource yet proves acceptance. Preparation may repeat on Retry. |
+| Primary SQLite save | `_memorize_categorize_items` -> `_process_plan` writes Resource, episode/generalized items, filing links/candidates and associated triples. Before `session.commit`, `on_segment_saved` calls MCP `publish_job` in that **same session**: primary source cursors, pending segment ID and `segment_work[segment_id]="dedupe"` become durable with those memories. Historical cursor/pending work goes into `import_state` instead. |
+| Post-save dedupe | `memorize_dedupe._memorize_dedupe_merge` commits merges and `on_dedupe_complete`'s MCP `"review"` phase together in its own transaction. The primary save already exists. |
+| Post-save dynamic dossier review | `_memorize_persist_and_index` prepares/generates/applies candidate decisions, committing each applied decision. MCP clears completed phase work only after successful postprocessing. A later failure does not undo earlier saves or review decisions. |
+
+For these normal conversation calls, `_process_plan` upgrades the segment file to
+an envelope containing `content`, the exact rendered `segment_background_context`
+and `segment_background_conversation_ids`. The complete accepted message list
+retains its row count; summaries are **not fake indexed messages**. Resource
+`local_path` owns that file; Resource also captures selected prior-context IDs.
+Changing the envelope, range allocation or callback contract requires checking
+the later Resource reader, not only extraction prompts.
+
+Files and SQLite are not a single transaction. `run_memorize_segments`'s
+`release_uncommitted` removes files/manifest reservations without committed
+Resources on handled failure, while keeping committed evidence. That cleanup is
+not a hard-kill recovery guarantee. Do not generalize the conversation callback
+boundary to image filing: memU's public image path has early Resource creation.
+
+## Consolidation
+
+MCP `app/services/consolidation.py:gather_consolidation_inputs` gathers pending
+work across the Soul, refusing unfinished Memorize postprocessing. It resolves
+each selected segment through scoped **Resource ownership**, reads its saved
+file and checks the segment's exact row count. Missing/ambiguous/unreadable
+ownership fails rather than silently dropping evidence. It uses active selected
+memories and Resource-owned prior context, not mutable current retrieval history.
+
+`_run_consolidation_pipeline_once` retains captured supporting blocks and may add
+fresh cross-conversation context. Fresh Mem-off tails use the same bounded
+renderer; already captured rows/summaries are excluded from that supplemental
+work. `cross_history._format_all_chat_history_for_ai(memory_context=True)` keeps
+raw Mem-off cross-tail rows out of the primary history. Thus Resource evidence
+is durable, but the entire later prompt is not claimed to be a frozen snapshot.
+
+The model stages are dossier revision, identity/anchor maintenance and ordinary
+weekly reflection. Their publication boundaries are separate from those model
+stages:
+
+1. `prepare_dossier_consolidation_context` batches ordinary dossier revisions,
+   then applies them via memU `dossier.apply_dossier_revision`. Each successful
+   dossier revision is durable independently of the later stages.
+2. `run_consolidation_llm` prepares identity/anchors/narrative/life-goal changes;
+   ordinary processing also generates weekly intentions, edges and companion
+   reflection. This generation itself does not publish the final state.
+3. `write_consolidation_outputs` commits anchors, narrative/history, life goals,
+   ordinary reflection outputs and subtraction of **only selected pending IDs**
+   together. It merges intentions against fresh state and preserves newly queued
+   work. Dossier/narrative journal finishing follows the database commit.
+
+Ordinary consolidation is interval/size-gated; a `not_due` result leaves pending
+evidence durable. Historical Echo consolidation uses bounded whole segments,
+maintains dossiers/identity, skips weekly reflection and does not advance the
+ordinary consolidation clock. Its cursor/stage/error/pending IDs stay in
+`import_state`, separate from ordinary digest progress.
+
+## Failure And Retry Ownership
+
+Live `_MEMORIZE_PROGRESS`, busy claims, cancellation flags and ST plugin
+`localTasks` are process-local status, **not a durable job queue**. ST
+`src/memory/summary-poller.ts` projects progress and refreshes derived memory UI;
+a local task ID or SUCCESS is not the engine's evidence/checkpoint store.
+
+| Unfinished work | Durable owner and recovery entry |
+| --- | --- |
+| Ordinary extraction/save/post-save work | Soul `memorize_failure` holds targets, captured filing policy and segment phases. `main.retry_memorize` (`/memorize/retry`) -> `import_routes.run_waiting_memorize` / `recover_memorize`. memU `resume_memorize_segment` resumes committed dedupe/review **without extraction**. Remaining unsaved work is rebuilt from saved sources by `_saved_memorize_payload` under captured filing policy; pre-save model work may repeat. |
+| Ordinary consolidation | Pending Resources/IDs plus Soul `last_consolidation_error` / error time. `main.retry_consolidation` runs forced consolidation; committed dossier revisions remain. Pending IDs are consumed by final publication, not cleared on failure. |
+| Historical import | `import_state` owns historical cursor, pending IDs, segment phases, stage/error and `ordinary_waiting`. `import_routes.run_import_batch` / `run_import` and `/imports/retry` recover historical work; completed history hands waiting ordinary work to `run_waiting_memorize`. Ordinary Retry refuses unfinished import history. |
+| Independent background rollup | Conversation rolling summary/cursor plus `last_background_error`; `_run_background_rollup_for_conversation` owns conditional writes. Do not treat this as a committed primary segment or invent a separate segment-recovery ledger for it. |
+
+`state.write_conversation_state` supports caller-owned connections;
+`state.patch_memorize_failure` preserves fresh phases/targets and refuses clearing
+unfinished postprocessing. `soul_state.activity_pause` plus
+`main._soul_activity_pause` expose unresolved Memorize/consolidation/import failure
+to activity admission. A dormant interrupted-run marker requires explicit Retry;
+there is no automatic durable task resumption after restart.
+
+ST source retirement is another boundary, not memory deletion:
+`main.retire_conversation_source` / `conversation_sources.retire_sillytavern_source`
+exclude fresh source reads and clear rolling state while leaving accepted work,
+filed memories and Resource recovery intact. Follow checkpoint completion and
+Retry anchoring before changing retirement behavior.
+
+## Upkeep And Verification Scope
+
+When changing a stage, review its immediate producer, consumer and failure
+callback; update this map and the reviewed pins when that boundary changes.
+Keep function names and ownership here, not line numbers, endpoint inventories,
+repair status or prompt copies. Re-trace changed working-tree source against an
+explicit revision before adopting it as maintained fact.
+
+The described normal-call ownership and commit ordering are source-traced; no
+unresolved policy choice is inferred from old audit recommendations. Runtime
+failure/Retry, restart behavior, provider responses and filesystem interruption
+were not exercised. Other client UIs and non-conversation modalities need their
+own trace before extending these claims. Update the relevant producer/consumer
+seams and provenance together when later commits change this flow.
