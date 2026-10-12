@@ -175,6 +175,24 @@ def test_display_names_are_per_soul_and_immutable(tmp_path):
     assert client.get("/souls/CanonicalSoul").json()["user_name"] == "TestHuman"
 
 
+def test_optional_narrative_read_is_live_scoped_and_unpaid(tmp_path):
+    client, _cfg = client_for(tmp_path)
+    for name in ("FirstSoul", "SecondSoul"):
+        assert post(client, name).status_code == 200
+    with sqlite3.connect(tmp_path / "FirstSoul.db") as writer:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("UPDATE soul_state SET narrative_self = 'I enjoy painting.' WHERE id = 1")
+        writer.commit()
+        assert "narrative_self" not in client.get("/souls/FirstSoul").json()
+        assert client.get("/souls/FirstSoul?include_narrative=true").json()["narrative_self"] == "I enjoy painting."
+        assert client.get("/souls/SecondSoul?include_narrative=true").json()["narrative_self"] == ""
+        writer.execute("UPDATE soul_state SET narrative_self = 'I enjoy painting and walking.' WHERE id = 1")
+        writer.commit()
+        assert client.get("/souls/FirstSoul?include_narrative=true").json()["narrative_self"] == "I enjoy painting and walking."
+    assert client.get("/souls/AbsentSoul?include_narrative=true").status_code == 409
+    assert not (tmp_path / "AbsentSoul.db").exists()
+
+
 @pytest.mark.parametrize("path", ["/souls", "/integration/mentra/souls"])
 @pytest.mark.parametrize("consent", [False, True])
 @pytest.mark.parametrize("name", [None, "", " ", "Bad\x00Name"])

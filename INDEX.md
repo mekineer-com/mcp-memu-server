@@ -135,7 +135,7 @@ mcp-memu-server/
 | `/categories/search` | POST | Search categories |
 | `/clear` | POST | Delete memories in scope |
 | `/souls` | GET/POST | Discover or create canonical scoped soul databases; enabled-gated keyless Mentra alias at `/integration/mentra/souls` |
-| `/souls/{soul_id}` | GET | Read immutable per-Soul human name without creating schema or a service; shared Mentra alias |
+| `/souls/{soul_id}` | GET | Read immutable per-Soul human name without creating schema or a service; optional `include_narrative=true` adds a live WAL-aware narrative read. Shared Mentra alias |
 | `/integration/atomic/memories` | POST | Create one exact, approved human-authored `knowledge` memory for an owner+soul scope |
 | `/config` | GET/POST | Read or update runtime config |
 | `/reload` | POST | Reload config from disk |
@@ -156,7 +156,9 @@ Both methods share their implementation with `/integration/mentra/souls`, whose
 only dependency is Mentra's enabled gate, with no connection key.
 Local routes follow the trusted-local API convention. `GET /souls/{soul_id}`
 returns `{soul_id, user_name}` through a direct read-only query; missing bindings
-fail rather than creating or migrating a DB. New creation defaults an omitted
+fail rather than creating or migrating a DB. `include_narrative=true` also returns
+`narrative_self` using a separate WAL-aware read-only connection; this opt-in read
+may create SQLite side files but never schema, state or an AI service. New creation defaults an omitted
 name to the canonical owner and publishes the stored name with the staged DB.
 Existing-Soul consent does not overwrite it. Scope/speaker IDs remain unchanged;
 the stored name supplies human anchor and extraction/reflection prompt labels.

@@ -14,7 +14,7 @@ from fastapi import HTTPException
 
 from app import main
 from tests import AnchorService, SavedBatchService
-from app.services import consolidation, conversation_sources, crud_endpoints, retrieve_orchestration, segment, service_factory
+from app.services import consolidation, conversation_sources, crud_endpoints, retrieve_orchestration, segment, service_factory, soul_summaries
 from memu.app.dossier import DossierRevisionStaleError
 from memu.app.graph import DossierMembershipConflictError, EntityActionConflictError, EntityMergeConflictError
 from memu.app.memorize_segments import grouped_chat_happened_at
@@ -9457,6 +9457,72 @@ async def test_conversation_turn_does_not_retry_parse_failure(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("response_identity", ["Roleplay explorer.", "Inspector identity.", ""])
+async def test_conversation_turn_keeps_response_identity_out_of_native_continuation(monkeypatch, response_identity):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "sillytavern:identity-boundary"
+    narrative = "I am the real shared fictional Soul."
+    main._write_conversation_state(cid, **scope, updates={})
+    with main._sqlite_connect(main._sqlite_current_path(**scope)) as con:
+        con.row_factory = sqlite3.Row
+        soul_summaries.write_live(con, kind="narrative_self", summary=narrative)
+
+    class Service(AnchorService):
+        _claude_code = True
+
+        def __init__(self):
+            self.calls = []
+
+        async def chat(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            contract = {"working_thought": None, "annulments": [], "rehearsal": "Fictional task.",
+                        "response_target": "respond", "response": "A fictional reply."}
+            if kwargs["op"] == "turn":
+                contract["continue_reason"] = "Finish the fictional task."
+            else:
+                contract.update(response_target=None, response="", activity_recap="I finished the fictional task.")
+            return json.dumps(contract)
+
+    svc = Service()
+    queued = []
+    native_queue = main._queue_free_turn_chain
+
+    def capture_queue(**kwargs):
+        queued.append(kwargs)
+        return native_queue(**kwargs)
+
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_kw: svc)
+    monkeypatch.setattr(main, "_load_soul_gen_config", lambda *_a, **_kw: {})
+    monkeypatch.setattr(main, "_prepare_auto_memorize", lambda *_a, **_kw: (0, None))
+    monkeypatch.setattr(main, "_record_call", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main, "_queue_free_turn_chain", capture_queue)
+    monkeypatch.setitem(main._CONFIG, "retrieve", {"apimw_enabled": False})
+    before = set(main._BACKGROUND_TASKS)
+    out = await main.conversation_turn(cid, {
+        "user": scope, "message": "Inspect the fictional garden.", "chat_name": "Fictional garden",
+        **({"soul_card": "Roleplay explorer."} if response_identity else {}),
+        "prompt_override_payload": {"user_prompt": "Inspect the fictional garden.",
+                                    "system_prompt": response_identity, "memory_cache": [],
+                                    "retrieve_rag": {"items": [], "categories": [], "resources": []}},
+    })
+    await asyncio.gather(*(main._BACKGROUND_TASKS - before))
+    assert out["continuation_queued"] is True
+    assert len(queued) == 1 and queued[0]["soul_card"] == narrative
+    assert len(svc.calls) == 2
+    response, continuation = svc.calls
+    if response_identity:
+        assert response[1]["system_prompt"] == response_identity
+        assert response_identity not in continuation[1]["system_prompt"]
+    else:
+        assert narrative in response[1]["system_prompt"]
+    assert narrative in continuation[1]["system_prompt"]
+    assert continuation[1]["resume_session_id"] == response[1]["session_id"]
+    assert continuation[1]["resume_session_id"]
+    assert "Finish the fictional task." in continuation[0]
+    assert "TestOwner::TestSoul" not in main._FREE_TURN_INFLIGHT
+
+
+@pytest.mark.asyncio
 async def test_free_turn_chain_caps_at_three_without_direct_memorize(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -9978,6 +10044,7 @@ def test_free_turn_follow_up_payload_excludes_caller_timezone_and_runtime_overri
         {
             "user": {"user_id": "TestOwner", "soul_id": "TestSoul"},
             "chat_name": "Test chat",
+            "soul_card": "A response-only roleplay identity.",
             "claude_code": False,
             "llm_profiles": {"default": {"api_key": "test-key", "chat_model": "test-model"}},
             "time_zone": "America/Lima",
@@ -9986,6 +10053,7 @@ def test_free_turn_follow_up_payload_excludes_caller_timezone_and_runtime_overri
     )
 
     assert payload["chat_name"] == "Test chat"
+    assert "soul_card" not in payload
     assert "claude_code" not in payload
     assert "llm_profiles" not in payload
     assert "time_zone" not in payload
@@ -10203,22 +10271,34 @@ async def test_due_free_turn_follow_up_from_sillytavern_queues_private_whatsapp(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db_path = tmp_path / "SiriTest.db"
+    db_path = tmp_path / "TestSoul.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
     monkeypatch.setattr(main, "_free_turn_followup_db_paths", lambda: [db_path])
-    monkeypatch.setattr(main._owner, "read_owner", lambda _config: "u1")
+    monkeypatch.setattr(main._owner, "read_owner", lambda _config: "TestOwner")
 
     followup_id = main._schedule_free_turn_follow_up(
-        user_id="u1",
-        soul_id="Siri",
+        user_id="TestOwner",
+        soul_id="TestSoul",
         conversation_id="sillytavern:chat-1",
         continue_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
-        continue_reason="Tell Marcos what I found.",
-        safe_payload={"user": {"user_id": "u1", "soul_id": "Siri"}},
+        continue_reason="Report the fictional garden findings.",
+        safe_payload={"user": {"user_id": "TestOwner", "soul_id": "TestSoul"}},
     )
     assert followup_id
+    with main._sqlite_connect(db_path) as con:
+        stored = json.loads(con.execute("SELECT payload_json FROM free_turn_followups WHERE id = ?", (followup_id,)).fetchone()[0])
+        stored["soul_card"] = "An old queued roleplay identity."
+        con.execute("UPDATE free_turn_followups SET payload_json = ? WHERE id = ?", (json.dumps(stored), followup_id))
+    calls = []
+    original_rows = []
+    native_runner = main._run_free_turn_followup
+
+    async def capture_runner(row, path):
+        original_rows.append(row)
+        await native_runner(row, path)
 
     async def _fake_retrieve(_conversation_id: str, _payload: dict[str, Any]) -> dict[str, Any]:
+        calls.append(_payload)
         return {
             "ok": True,
             "turn_user_prompt": "fresh prompt",
@@ -10230,12 +10310,21 @@ async def test_due_free_turn_follow_up_from_sillytavern_queues_private_whatsapp(
         }
 
     async def _fake_turn(_conversation_id: str, _payload: dict[str, Any]) -> dict[str, Any]:
+        calls.append(_payload)
         return {"ok": True, "response_target": "respond", "response": "I found it."}
 
     monkeypatch.setattr(main, "conversation_retrieve", _fake_retrieve)
     monkeypatch.setattr(main, "conversation_turn", _fake_turn)
+    monkeypatch.setattr(main, "_run_free_turn_followup", capture_runner)
 
     assert await main._run_due_free_turn_followups_once() == 1
+    assert len(calls) == 2
+    for payload in calls:
+        assert "soul_card" not in payload
+        assert payload["follow_up_reason"] == stored["follow_up_reason"]
+        assert stored["follow_up_reason"] in payload["self_turn_directive"]
+        assert payload["user"] == {"user_id": "TestOwner", "soul_id": "TestSoul", "conversation_id": "sillytavern:chat-1"}
+    assert original_rows[0]["payload"] == stored
 
     con = main._sqlite_connect(db_path)
     try:
@@ -10246,6 +10335,7 @@ async def test_due_free_turn_follow_up_from_sillytavern_queues_private_whatsapp(
         con.close()
 
     assert followup["status"] == "completed"
+    assert json.loads(followup["payload_json"]) == stored
     assert len(outbounds) == 1
     assert outbounds[0]["origin_conversation_id"] == "sillytavern:chat-1"
     assert outbounds[0]["target"] == "private"

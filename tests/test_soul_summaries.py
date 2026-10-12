@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -236,13 +237,17 @@ def test_narrative_suggestion_preserves_concurrent_card(monkeypatch, tmp_path, c
     monkeypatch.setattr(category_summary_journal, "JOURNAL_DIR", tmp_path / "journals")
     snapshots = []
     memories = []
+    service_payloads = []
+    prompts = []
 
     class Service:
+        user_config = SimpleNamespace(user_name="FictionalHuman")
         database = type("Database", (), {"memory_item_repo": type("Repo", (), {"create_item": staticmethod(lambda **kwargs: memories.append(kwargs))})()})()
         def build_dossier_index(self, _scope):
             return ""
 
-        async def chat(self, *_args, **_kwargs):
+        async def chat(self, prompt, **kwargs):
+            prompts.append((prompt, kwargs["system_prompt"]))
             if concurrent_edit:
                 with sqlite3.connect(path) as writer:
                     writer.execute("UPDATE soul_state SET narrative_self = 'Newer card'")
@@ -251,12 +256,17 @@ def test_narrative_suggestion_preserves_concurrent_card(monkeypatch, tmp_path, c
         async def embed(self, *_args, **_kwargs):
             return [[1.0, 0.0]]
 
+    runtime_payload = {"user_id": "TestOwner", "suggestion": "A fictional suggestion", "claude_code": False,
+                       "llm_profiles": {"default": {"chat_model": "fictional-captured-model"}}}
+    def service_from_payload(payload):
+        service_payloads.append(payload)
+        return Service()
     request = crud_endpoints.narrative_suggestion_endpoint(
-        soul_id="TestSoul", payload={"user_id": "TestOwner", "suggestion": "A fictional suggestion"},
+        soul_id="TestSoul", payload=runtime_payload,
         sqlite_current_path=lambda _u, _s: path, sqlite_connect=main._sqlite_connect,
         sqlite_ensure_conversation_state_schema=main._sqlite_ensure_conversation_state_schema,
         sqlite_ensure_nonempty=main._sqlite_ensure_nonempty,
-        get_service_from_payload=lambda _payload: Service(),
+        get_service_from_payload=service_from_payload,
         build_retrieve_identity_context=lambda _name: "",
         snapshot_previous_narrative_self=lambda *_args, **kwargs: snapshots.append(kwargs),
     )
@@ -267,6 +277,11 @@ def test_narrative_suggestion_preserves_concurrent_card(monkeypatch, tmp_path, c
         assert "changed" in stale.value.detail
     else:
         assert asyncio.run(request) == {"narrative_self": "Suggested card"}
+    assert service_payloads == [{**runtime_payload, "user": {"user_id": "TestOwner", "soul_id": "TestSoul"}}]
+    assert "FictionalHuman's suggestion:\nA fictional suggestion" in prompts[0][0]
+    assert "received a suggestion from FictionalHuman" in prompts[0][1]
+    assert "It's up to me to decide if I want that." in prompts[0][1]
+    assert "TestOwner" not in prompts[0][0] + prompts[0][1]
     with sqlite3.connect(path) as check:
         assert check.execute("SELECT narrative_self, summaries_revision FROM soul_state").fetchone() == (
             ("Newer card", 0) if concurrent_edit else ("Suggested card", 1)
@@ -301,6 +316,7 @@ def test_failed_narrative_save_does_not_journal(monkeypatch, tmp_path, surface) 
         from app.services import crud_endpoints
 
         class Service:
+            user_config = SimpleNamespace(user_name="FictionalHuman")
             def build_dossier_index(self, _scope):
                 return ""
 

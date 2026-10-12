@@ -4560,7 +4560,7 @@ async def conversation_turn(
                     initial_reason=continuation_reason,
                     initial_contract=turn_contract,
                     safe_payload=safe,
-                    soul_card=soul_card,
+                    soul_card=str(conversation_state_before.get("narrative_self") or "").strip() or None,
                 )
             else:
                 logger.warning("free_turn: continuation requested but claude_code is disabled")

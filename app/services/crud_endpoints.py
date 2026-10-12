@@ -502,7 +502,8 @@ async def narrative_suggestion_endpoint(
     displayed_narrative = ""
     current_narrative = ""
     scope = {"user_id": uid, "soul_id": sid}
-    svc = get_service_from_payload({"user": scope})
+    svc = get_service_from_payload({**payload, "user": scope})
+    user_name = svc.user_config.user_name
     all_cats_summary = svc.build_dossier_index(scope)
     if db_path is not None and db_path.exists():
         con = sqlite_connect(db_path)
@@ -518,7 +519,7 @@ async def narrative_suggestion_endpoint(
     identity_context = build_retrieve_identity_context(sid)
     system_prompt = (
         f"{identity_context}\n\n"
-        f"I, {sid}, have received a suggestion from {uid} about how I might be. "
+        f"I, {sid}, have received a suggestion from {user_name} about how I might be. "
         "They want me to be a certain way. It's up to me to decide if I want that. "
         "I might find it aligns with who I already am, stirs something worth integrating, "
         "or doesn't fit me at all. My call.\n\n"
@@ -534,7 +535,7 @@ async def narrative_suggestion_endpoint(
     user_prompt = (
         f"My current narrative_self:\n{current_narrative or '(empty)'}\n\n"
         f"My synthesized self-picture across categories:\n{all_cats_summary or '(empty)'}\n\n"
-        f"{uid}'s suggestion:\n{suggestion}"
+        f"{user_name}'s suggestion:\n{suggestion}"
     )
 
     raw = await svc.chat(

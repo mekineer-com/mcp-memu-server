@@ -168,6 +168,13 @@ def register_soul_routes(
         return create_soul(get_config(), body)
 
     @app.get(f"{prefix}/souls/{{soul_id}}", dependencies=dependencies)
-    def soul_metadata(soul_id: str) -> dict[str, str]:
+    def soul_metadata(soul_id: str, include_narrative: bool = False) -> dict[str, str]:
         soul_id = _soul_id(soul_id)
-        return {"soul_id": soul_id, "user_name": read_soul_name(_path(get_config(), soul_id))}
+        path = _path(get_config(), soul_id)
+        metadata = {"soul_id": soul_id, "user_name": read_soul_name(path)}
+        if include_narrative:
+            # Mutable prose must include committed WAL changes, unlike the write-once binding.
+            with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as con:
+                row = con.execute("SELECT narrative_self FROM soul_state WHERE id = 1").fetchone()
+            metadata["narrative_self"] = str(row[0] or "") if row else ""
+        return metadata

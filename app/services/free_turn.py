@@ -344,7 +344,6 @@ def _free_turn_followup_payload(safe: dict[str, Any]) -> dict[str, Any]:
         "user_name",
         "chat_name",
         "chat_type",
-        "soul_card",
         "memorize_chat",
         "allow_public_response",
     ):
@@ -568,7 +567,8 @@ async def _run_free_turn_followup(
     if not mark_inflight(free_turn_follow_up_inflight, marker):
         return
     try:
-        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        payload = dict(row["payload"]) if isinstance(row.get("payload"), dict) else {}
+        payload.pop("soul_card", None)
         user_id = str(row.get("user_id") or "").strip()
         require_owner(user_id)
         soul_id = str(row.get("soul_id") or "").strip()
