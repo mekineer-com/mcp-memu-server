@@ -36,7 +36,7 @@ async def test_st_apimw_captures_srmm_and_reflection_with_admission_top_k(monkey
 
         async def chat(self, prompt, **kwargs):
             calls.append((self, kwargs))
-            return '{"prior_context":[],"message_to_self":null}'
+            return '{"prior_context":[],"subconscious_insight":null}'
 
     def construct(payload, *, operation=None):
         assert operation in {"retrieve", "st_reply"}

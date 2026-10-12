@@ -421,7 +421,7 @@ def test_turn_state_write_consumes_prior_context_after_successful_turn(monkeypat
         lambda *_a, **_k: (
             {
                 "prior_context": "APImw memory line",
-                "apimw_message_to_self": "old whisper",
+                "apimw_subconscious_insight": "old whisper",
                 "memory_cache": [],
                 "intentions_active": [],
             },
@@ -450,7 +450,7 @@ def test_turn_state_write_consumes_prior_context_after_successful_turn(monkeypat
     )
 
     assert captured["prior_context"] is None
-    assert captured["apimw_message_to_self"] is None
+    assert captured["apimw_subconscious_insight"] is None
     assert captured["undo_snapshot"]["annulment_memory_ids"] == []
     first_id = captured["undo_snapshot"]["turn_id"]
     assert main.uuid.UUID(first_id).version == 4
@@ -881,7 +881,7 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
         "prior_context": "APImw memory line",
         "memory_cache": ["working thought"],
         "intentions_active": [],
-        "apimw_message_to_self": "[subconscious] quiet note",
+        "apimw_subconscious_insight": "[subconscious] quiet note",
     }
 
     monkeypatch.setattr(
@@ -7301,7 +7301,7 @@ async def test_apimw_persist_remaps_numbered_prior_context_ids(monkeypatch: pyte
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("message", ["remember the quiet signal", "x" * 500])
-async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest.MonkeyPatch, message):
+async def test_apimw_persist_writes_one_shot_subconscious_insight(monkeypatch: pytest.MonkeyPatch, message):
     captured_updates: dict[str, object] = {}
     captured_item: dict[str, object] = {}
 
@@ -7331,7 +7331,7 @@ async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest
             embed=_embed,
             database=SimpleNamespace(memory_item_repo=SimpleNamespace(create_item=_create_item)),
         ),
-        result_json={"message_to_self": message},
+        result_json={"subconscious_insight": message},
         items_by_id={},
         id_map={},
         scope={"user_id": "u", "soul_id": "s"},
@@ -7340,11 +7340,11 @@ async def test_apimw_persist_writes_one_shot_message_to_self(monkeypatch: pytest
         soul_id="s",
     )
 
-    assert captured_updates["apimw_message_to_self"] == f"[subconscious] {message}"
+    assert captured_updates["apimw_subconscious_insight"] == f"[subconscious] {message}"
     assert captured_item["memory_type"] == "subconscious"
     assert captured_item["summary"] == message
     assert captured_item["embedding"] == [0.1, 0.2]
-    assert captured_item["extra"] == {"apimw_message_to_self": True}
+    assert captured_item["extra"] == {"apimw_subconscious_insight": True}
     assert captured_item["conversation_id"] == "whatsapp:group:test-group@g.us"
     assert captured_item["user_data"]["conversation_id"] == "whatsapp:group:test-group@g.us"
 
@@ -7359,7 +7359,7 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
         captured["trace_id"] = str(kwargs.get("trace_id") or "")
         return (
             "*looks up softly*\n\n"
-            '{"prior_context":["1"],"message_to_self":"remember the quiet signal"}'
+            '{"prior_context":["1"],"subconscious_insight":"remember the quiet signal"}'
         )
 
     svc = SimpleNamespace(
@@ -7389,7 +7389,7 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
 
     assert result_json == {
         "prior_context": ["1"],
-        "message_to_self": "remember the quiet signal",
+        "subconscious_insight": "remember the quiet signal",
     }
     assert items_by_id["mem_one"]["summary"] == "Marcos likes continuity."
     assert id_map == {"1": "mem_one"}
@@ -7414,9 +7414,13 @@ async def test_apimw_synthesize_accepts_prose_wrapped_json(monkeypatch: pytest.M
     assert captured["system_prompt"].startswith("Today is ")
     assert "You are your soul's subconscious: a background process that runs between your turns." in captured["system_prompt"]
     assert "- conceptual understanding" in captured["system_prompt"]
-    assert "The message_to_self should NOT have anything obvious:" in captured["system_prompt"]
+    assert "An optional higher-order insight may also emerge:" in captured["system_prompt"]
+    assert "This insight should add something non-obvious:" in captured["system_prompt"]
     assert "first My Memories item" not in captured["system_prompt"]
-    assert "conscious self" in captured["system_prompt"]
+    assert "- subconscious_insight: string or null" in captured["system_prompt"]
+    assert "a brief thought the subconscious would naturally surface as a conclusion relevant to what you are experiencing. One sentence." in captured["system_prompt"]
+    assert "Specify an observation, not a directive" in captured["system_prompt"]
+    assert "conscious self" not in captured["system_prompt"]
     assert "Seeking Happiness for Myself and Others" not in captured["user_prompt"]
     assert "life goals" not in captured["system_prompt"].lower()
 
@@ -7438,7 +7442,7 @@ async def test_apimw_persist_skips_when_prior_context_changed(monkeypatch: pytes
 
     await main._apimw_persist(
         svc=SimpleNamespace(),
-        result_json={"prior_context": ["mem_one"], "message_to_self": "notice this"},
+        result_json={"prior_context": ["mem_one"], "subconscious_insight": "notice this"},
         items_by_id={"mem_one": {"id": "mem_one", "memory_type": "profile", "summary": "Marcos likes continuity."}},
         id_map={},
         scope={"user_id": "u", "soul_id": "s"},

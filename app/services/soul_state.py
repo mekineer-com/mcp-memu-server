@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS soul_state (
     retrieve_rewrite_angle INTEGER DEFAULT 0,
     retrieval_ids_since_consolidation JSON DEFAULT '[]',
     prior_context_ids_since_consolidation JSON DEFAULT '[]',
-    apimw_message_to_self TEXT,
+    apimw_subconscious_insight TEXT,
     last_consolidation_at DATETIME,
     last_consolidation_error TEXT,
     last_consolidation_error_at DATETIME,
@@ -85,7 +85,7 @@ def read(con: sqlite3.Connection) -> dict[str, Any]:
         "retrieve_rewrite_angle": int(row["retrieve_rewrite_angle"] or 0),
         "retrieval_ids_since_consolidation": normalize_text_list(row["retrieval_ids_since_consolidation"]),
         "prior_context_ids_since_consolidation": normalize_text_list(row["prior_context_ids_since_consolidation"]),
-        "apimw_message_to_self": (str(row["apimw_message_to_self"] or "").strip() or None),
+        "apimw_subconscious_insight": (str(row["apimw_subconscious_insight"] or "").strip() or None),
         "last_consolidation_at": row["last_consolidation_at"],
         "last_consolidation_error": row["last_consolidation_error"],
         "last_consolidation_error_at": row["last_consolidation_error_at"],
@@ -105,7 +105,7 @@ def defaults() -> dict[str, Any]:
         "retrieve_rewrite_angle": 0,
         "retrieval_ids_since_consolidation": [],
         "prior_context_ids_since_consolidation": [],
-        "apimw_message_to_self": None,
+        "apimw_subconscious_insight": None,
         "last_consolidation_at": None,
         "last_consolidation_error": None,
         "last_consolidation_error_at": None,
@@ -124,7 +124,7 @@ _VALID_FIELDS = {
     "memorize_failure",
     "memory_cache", "intentions_active",
     "retrieve_rewrite_angle", "retrieval_ids_since_consolidation",
-    "prior_context_ids_since_consolidation", "apimw_message_to_self",
+    "prior_context_ids_since_consolidation", "apimw_subconscious_insight",
     "last_consolidation_at", "last_consolidation_error",
     "last_consolidation_error_at",
 }
@@ -148,9 +148,9 @@ def write(con: sqlite3.Connection, updates: dict[str, Any]) -> None:
         fields["retrieval_ids_since_consolidation"] = normalize_text_list(fields["retrieval_ids_since_consolidation"])
     if "prior_context_ids_since_consolidation" in fields:
         fields["prior_context_ids_since_consolidation"] = normalize_text_list(fields["prior_context_ids_since_consolidation"])
-    if "apimw_message_to_self" in fields:
-        raw_message = fields["apimw_message_to_self"]
-        fields["apimw_message_to_self"] = None if raw_message is None else (str(raw_message).strip() or None)
+    if "apimw_subconscious_insight" in fields:
+        raw_insight = fields["apimw_subconscious_insight"]
+        fields["apimw_subconscious_insight"] = None if raw_insight is None else (str(raw_insight).strip() or None)
 
     fields["updated_at"] = datetime.now(UTC).isoformat()
     assignments = []

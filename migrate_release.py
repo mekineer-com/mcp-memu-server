@@ -25,7 +25,30 @@ class ReleaseScope(BaseModel):
 
 
 Migration = tuple[str, Callable[[sqlite3.Connection], None]]
-MIGRATIONS: tuple[Migration, ...] = ()
+
+
+def _rename_subconscious_insight(connection: sqlite3.Connection) -> None:
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(soul_state)")}
+    if "apimw_message_to_self" in columns:
+        connection.execute(
+            "ALTER TABLE soul_state RENAME COLUMN apimw_message_to_self TO apimw_subconscious_insight"
+        )
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_items'"
+    ).fetchone():
+        connection.execute("""
+UPDATE memory_items
+SET extra = json_remove(
+    json_set(extra, '$.apimw_subconscious_insight', extra -> '$.apimw_message_to_self'),
+    '$.apimw_message_to_self'
+)
+WHERE json_type(extra, '$.apimw_message_to_self') IS NOT NULL
+""")
+
+
+MIGRATIONS: tuple[Migration, ...] = (
+    ("2026-10-12-subconscious-insight", _rename_subconscious_insight),
+)
 
 
 def _initialize_schema(database: Path, embedding_profile: str) -> None:

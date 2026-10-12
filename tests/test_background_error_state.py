@@ -233,10 +233,10 @@ def test_empty_background_error_state_defaults_to_none() -> None:
         assert state["last_background_error_at"] is None
         assert state["last_consolidation_error"] is None
         assert state["last_consolidation_error_at"] is None
-        assert state["apimw_message_to_self"] is None
+        assert state["apimw_subconscious_insight"] is None
 
 
-def test_apimw_message_to_self_is_soul_scoped() -> None:
+def test_apimw_subconscious_insight_is_soul_scoped() -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp_dir = Path(td)
         db_path, sqlite_dir = _tmp_sqlite_setup(tmp_dir, soul_id="SoulC")
@@ -246,10 +246,10 @@ def test_apimw_message_to_self_is_soul_scoped() -> None:
             sqlite_current_path=lambda _user, _soul: db_path,
             soul_id="SoulC",
             user_id="UserC",
-            updates={"apimw_message_to_self": "notice the quiet signal"},
+            updates={"apimw_subconscious_insight": "notice the quiet signal"},
         )
 
-        assert state["apimw_message_to_self"] == "notice the quiet signal"
+        assert state["apimw_subconscious_insight"] == "notice the quiet signal"
 
         con = sqlite3.connect(db_path)
         try:
@@ -258,7 +258,7 @@ def test_apimw_message_to_self_is_soul_scoped() -> None:
         finally:
             con.close()
 
-        assert soul["apimw_message_to_self"] == "notice the quiet signal"
+        assert soul["apimw_subconscious_insight"] == "notice the quiet signal"
 
         other_state, _ = write_conversation_state(
             "conv-other",
@@ -267,16 +267,16 @@ def test_apimw_message_to_self_is_soul_scoped() -> None:
             user_id="UserC",
             updates={},
         )
-        assert other_state["apimw_message_to_self"] == "notice the quiet signal"
+        assert other_state["apimw_subconscious_insight"] == "notice the quiet signal"
 
         cleared_state, _ = write_conversation_state(
             "conv-other",
             sqlite_current_path=lambda _user, _soul: db_path,
             soul_id="SoulC",
             user_id="UserC",
-            updates={"apimw_message_to_self": None},
+            updates={"apimw_subconscious_insight": None},
         )
-        assert cleared_state["apimw_message_to_self"] is None
+        assert cleared_state["apimw_subconscious_insight"] is None
 
 
 def test_consolidation_error_fields_round_trip_through_state() -> None:

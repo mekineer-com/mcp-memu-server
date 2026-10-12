@@ -478,7 +478,7 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         user = runtime._build_turn_prompt(
             user_message="", history=history, prior_context=state.get("prior_context"), retrieve_rag=None,
             all_categories_summary=svc.build_dossier_index(scoped, dossiers=dossiers), memory_cache=state.get("memory_cache"),
-            intentions_active=state.get("intentions_active"), apimw_message_to_self=state.get("apimw_message_to_self"),
+            intentions_active=state.get("intentions_active"), apimw_subconscious_insight=state.get("apimw_subconscious_insight"),
             conversations_block=block, conversation_id=cid,
             response_sentences=int(runtime._CONFIG.get("turn_response_sentences", 3)))
         try:

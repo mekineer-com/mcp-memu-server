@@ -3636,7 +3636,7 @@ async def conversation_retrieve(
                     all_categories_summary=all_categories_summary,
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
-                    apimw_message_to_self=_state_row.get("apimw_message_to_self"),
+                    apimw_subconscious_insight=_state_row.get("apimw_subconscious_insight"),
                     conversations_block=response_chat_history_for_ai or None,
                     chat_label=chat_label_for_prompt,
                     conversation_id=cid,
@@ -3701,7 +3701,7 @@ async def conversation_retrieve(
                     all_categories_summary=all_categories_summary,
                     memory_cache=memory_cache,
                     intentions_active=intentions_active,
-                    apimw_message_to_self=_state_row.get("apimw_message_to_self"),
+                    apimw_subconscious_insight=_state_row.get("apimw_subconscious_insight"),
                     conversations_block=response_chat_history_for_ai or None,
                     chat_label=chat_label_for_prompt,
                     conversation_id=cid,
@@ -4314,7 +4314,7 @@ def _turn_state_write(
     if isinstance(memorize_chat, bool):
         updates["memorize_chat"] = memorize_chat
     updates["prior_context"] = None
-    updates["apimw_message_to_self"] = None
+    updates["apimw_subconscious_insight"] = None
     try:
         state_out, state_path = _write_conversation_state(
             cid,

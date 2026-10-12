@@ -820,7 +820,7 @@ def test_build_turn_prompt_memory_key_includes_episode_when_present() -> None:
     assert "Key: [profile] what's said or declared · [episode] episodic memory" in prompt
 
 
-def test_build_turn_prompt_renders_apimw_message_to_self_under_working_thoughts() -> None:
+def test_build_turn_prompt_renders_apimw_subconscious_insight_under_working_thoughts() -> None:
     prompt = build_turn_prompt(
         user_message="hello",
         history=[],
@@ -836,7 +836,7 @@ def test_build_turn_prompt_renders_apimw_message_to_self_under_working_thoughts(
         all_categories_summary=None,
         memory_cache=["previous thought"],
         intentions_active=[],
-        apimw_message_to_self="[subconscious] notice this before answering.",
+        apimw_subconscious_insight="[subconscious] notice this before answering.",
     )
 
     assert "- [subconscious] notice this before answering." not in prompt

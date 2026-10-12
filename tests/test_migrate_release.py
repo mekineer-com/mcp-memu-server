@@ -1,8 +1,35 @@
+import json
 import sqlite3
 
 import pytest
 
 import migrate_release
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_subconscious_insight_migration_preserves_state_and_memory_metadata(tmp_path, monkeypatch, legacy):
+    database = tmp_path / "FictionalSoul.db"
+    field = "apimw_message_to_self" if legacy else "apimw_subconscious_insight"
+    with sqlite3.connect(database) as connection:
+        connection.execute(f"CREATE TABLE soul_state (id INTEGER PRIMARY KEY, {field} TEXT)")
+        connection.execute("INSERT INTO soul_state VALUES (1, '[subconscious] A quiet pattern')")
+        connection.execute("CREATE TABLE memory_items (id INTEGER PRIMARY KEY, extra JSON)")
+        connection.execute("INSERT INTO memory_items VALUES (1, ?)", (json.dumps({field: True, "retained": "evidence"}),))
+        connection.execute("INSERT INTO memory_items VALUES (2, ?)", (json.dumps({"retained": "other"}),))
+    monkeypatch.setattr(migrate_release, "_initialize_schema", lambda *_args: None)
+
+    migrate_release.migrate_database(database, "fictional-profile")
+    migrate_release.migrate_database(database, "fictional-profile")
+
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(soul_state)")}
+        assert "apimw_message_to_self" not in columns
+        assert connection.execute("SELECT apimw_subconscious_insight FROM soul_state").fetchone()[0] == "[subconscious] A quiet pattern"
+        assert json.loads(connection.execute("SELECT extra FROM memory_items WHERE id = 1").fetchone()[0]) == {
+            "apimw_subconscious_insight": True, "retained": "evidence",
+        }
+        assert json.loads(connection.execute("SELECT extra FROM memory_items WHERE id = 1").fetchone()[0])["apimw_subconscious_insight"] is True
+        assert json.loads(connection.execute("SELECT extra FROM memory_items WHERE id = 2").fetchone()[0]) == {"retained": "other"}
 
 
 def test_release_upgrade_runs_before_current_schema_initialization(tmp_path, monkeypatch):

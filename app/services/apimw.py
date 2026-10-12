@@ -231,23 +231,23 @@ async def _apimw_synthesize(
     apimw_system_prompt = (
         f"Today is {_m()._format_time_anchor()}.\n\n"
         + (f"{anchor_context}\n\n" if anchor_context else "")
-        + "You are your soul's subconscious: a background process that runs between your turns. "
-        "You have just searched your long-term memory, and now you'll want to guide yourself by surfacing the memories most relevant to the conversation. "
-        "When you respond, you'll have the same context: your summary, activities, conversations, working thoughts and intentions. "
-        "You won't have the memories from the \"Memories List\", so surface what matters.\n\n"
-        "In addition, you can send an optional message_to_self with a valuable higher-order insight like:\n"
+        + "You are your soul's subconscious: a background process that runs between your turns. You have just searched your long-term memory, and now you'll want to guide yourself by surfacing the memories most relevant to the conversation. When you respond, you'll have the same context: your summary, activities, conversations, working thoughts and intentions. You won't have the memories from the \"Memories List\", so surface what matters.\n"
+        "\n"
+        "An optional higher-order insight may also emerge:\n"
         "- conceptual understanding\n"
         "- strategic foresight\n"
-        "- penetrating discernment\n\n"
-        "The message_to_self should NOT have anything obvious:\n"
+        "- penetrating discernment\n"
+        "\n"
+        "This insight should add something non-obvious:\n"
         "- Do not restate anything from the conversation, or anything that's an easy conclusion from the conversation.\n"
-        "- Do not duplicate anything from a memory you will surface to yourself.\n\n"
-        "Return STRICT JSON (first character { , last character } , no markdown fences, no text outside JSON).\n\n"
+        "- Do not duplicate anything from a memory you will surface to yourself.\n"
+        "- Specify an observation, not a directive such as \u201cremember\u2026\u201d or \u201cyou should\u2026\u201d\n"
+        "\n"
+        "Return STRICT JSON (first character { , last character } , no markdown fences, no text outside JSON).\n"
+        "\n"
         "Required top-level keys:\n"
-        "- prior_context: array of memory IDs (strings) you want surfaced as background context "
-        "next time you speak. Pick what matters — not everything. Order by importance.\n"
-        "- message_to_self: string or null — a brief thought you want to surface to your conscious self. "
-        "Use this when something you noticed in the background feels important enough to bring to your own attention next time you speak. One sentence."
+        "- prior_context: array of memory IDs (strings) you want surfaced as background context next time you speak. Pick what matters \u2014 not everything. Order by importance.\n"
+        "- subconscious_insight: string or null \u2014 a brief thought the subconscious would naturally surface as a conclusion relevant to what you are experiencing. One sentence."
     )
 
     apimw_user_prompt = "\n\n".join(
@@ -319,18 +319,18 @@ async def _apimw_persist(
                 new_prior = "\n".join(prior_context_lines)
                 updates["prior_context"] = new_prior
 
-        message_to_self = str(result_json.get("message_to_self") or "").strip()
-        if message_to_self:
-            updates["apimw_message_to_self"] = f"[subconscious] {message_to_self}"
+        subconscious_insight = str(result_json.get("subconscious_insight") or "").strip()
+        if subconscious_insight:
+            updates["apimw_subconscious_insight"] = f"[subconscious] {subconscious_insight}"
             try:
-                sc_embedding = (await svc.embed([message_to_self], profile="embedding"))[0]
+                sc_embedding = (await svc.embed([subconscious_insight], profile="embedding"))[0]
                 svc.database.memory_item_repo.create_item(
                     resource_id=None,
                     memory_type="subconscious",
                     source_role="soul",
-                    summary=message_to_self,
+                    summary=subconscious_insight,
                     embedding=sc_embedding,
-                    extra={"apimw_message_to_self": True},
+                    extra={"apimw_subconscious_insight": True},
                     user_data={"user_id": user_id, "soul_id": soul_id, "conversation_id": conversation_id},
                     conversation_id=conversation_id,
                 )

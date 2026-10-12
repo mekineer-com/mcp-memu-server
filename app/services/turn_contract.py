@@ -564,7 +564,7 @@ def build_turn_context_block(
     all_categories_summary: str | None,
     memory_cache: Any,
     intentions_active: Any,
-    apimw_message_to_self: str | None = None,
+    apimw_subconscious_insight: str | None = None,
     cross_conversation_history: list[dict[str, Any]] | None = None,
     conversations_block: str | None = None,
     chat_label: str | None = None,
@@ -579,9 +579,9 @@ def build_turn_context_block(
     cache_lines = format_working_thoughts_lines(memory_cache)
     working_thought_lines = list(cache_lines)
 
-    message_to_self = _text(apimw_message_to_self)
-    if message_to_self:
-        working_thought_lines.append(f"{len(working_thought_lines) + 1}. {message_to_self}")
+    subconscious_insight = _text(apimw_subconscious_insight)
+    if subconscious_insight:
+        working_thought_lines.append(f"{len(working_thought_lines) + 1}. {subconscious_insight}")
     if memories_block is None:
         category_paragraph, rendered_memories_block, item_terms = _render_retrieve(
             retrieve_rag,
@@ -665,7 +665,7 @@ def build_turn_prompt(
     all_categories_summary: str | None,
     memory_cache: Any,
     intentions_active: Any,
-    apimw_message_to_self: str | None = None,
+    apimw_subconscious_insight: str | None = None,
     cross_conversation_history: list[dict[str, Any]] | None = None,
     conversations_block: str | None = None,
     chat_label: str | None = None,
@@ -687,7 +687,7 @@ def build_turn_prompt(
         all_categories_summary=all_categories_summary,
         memory_cache=memory_cache,
         intentions_active=intentions_active,
-        apimw_message_to_self=apimw_message_to_self,
+        apimw_subconscious_insight=apimw_subconscious_insight,
         cross_conversation_history=cross_conversation_history,
         conversations_block=conversations_block,
         chat_label=chat_label,
