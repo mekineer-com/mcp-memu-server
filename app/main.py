@@ -341,86 +341,136 @@ async def _run_background_rollup_for_conversation(
     async with state_lock:
         if _memorize_lock_key(uid, sid) in _FORCED_MEMORIZE_INFLIGHT:
             return "skipped_memorize_running"
-        state_row, _, db_path = _load_turn_state_and_soul_card(
-            cid,
-            user_id=uid,
-            soul_id=sid,
-        )
-        if _cross_history._source_memorize_policy(cid, state_row) is not False:
-            return "skipped_primary_chat"
+        db_path = _sqlite_current_path(uid, sid)
         if db_path is None or not db_path.exists():
             return "skipped_no_db"
+        identity = db_path.stat()
+        con = _sqlite_connect(db_path, mode="rw")
+        try:
+            con.row_factory = sqlite3.Row
+            _sqlite_ensure_conversation_state_schema(con)
+            state_row = _conversation_state_from_row(_conversation_state_row(con, cid, user_id=uid, soul_id=sid))
+        finally:
+            con.close()
+        if state_row is None:
+            return "skipped_missing_state"
+        if _cross_history._source_memorize_policy(cid, state_row) is not False:
+            return "skipped_primary_chat"
 
-        rolling_cursor_id = state_row.get("rolling_summary_cursor_id")
-        _, hermes_home_path, _, _ = _resolve_cross_source_paths()
-        rolling_cursor_id, min_timestamp, web_source = _resolve_source_cursor(
-            cid,
-            int(rolling_cursor_id) if rolling_cursor_id is not None else -1,
-            state_row.get("rolling_summary_cursor_source_message_id"),
-            state_row.get("rolling_summary_cursor_ts"),
-            rolling=True,
-            hermes_home_path=hermes_home_path,
-        )
-        tail = _load_background_rollup_tail(
-            conversation_id=cid,
-            user_id=uid,
-            soul_id=sid,
-            rolling_summary_cursor_id=rolling_cursor_id,
-            min_timestamp=min_timestamp,
-            import_state=state_row.get("import_state"),
-        )
-        if len(tail) < 2:
-            return "skipped_short_tail"
+        def apply_updates(updates: dict[str, Any]) -> bool:
+            if not db_path.exists():
+                return False
+            if _sqlite_current_path(uid, sid) != db_path:
+                return False
+            current_identity = db_path.stat()
+            if (identity.st_dev, identity.st_ino) != (current_identity.st_dev, current_identity.st_ino):
+                return False
+            if _soul_activity_pause(uid, sid) or _memorize_lock_key(uid, sid) in _FORCED_MEMORIZE_INFLIGHT:
+                return False
+            con = _sqlite_connect(db_path, mode="rw")
+            try:
+                con.row_factory = sqlite3.Row
+                con.execute("BEGIN IMMEDIATE")
+                current = _conversation_state_from_row(_conversation_state_row(con, cid, user_id=uid, soul_id=sid))
+                if current is None or _cross_history._source_memorize_policy(cid, current) is not False:
+                    return False
+                fields = ("rolling_summary", "rolling_summary_cursor_id", "rolling_summary_cursor_source_message_id",
+                          "rolling_summary_cursor_ts", "rolling_summary_updated_at")
+                if any(current.get(field) != state_row.get(field) for field in fields):
+                    return False
+                if (current.get("import_state") or {}).get("history_end_index") != (state_row.get("import_state") or {}).get("history_end_index"):
+                    return False
+                if any(current.get(field) != state_row.get(field) for field in ("last_background_error", "last_background_error_at")):
+                    updates.pop("last_background_error", None)
+                    updates.pop("last_background_error_at", None)
+                _write_conversation_state(cid, user_id=uid, soul_id=sid, updates=updates, connection=con)
+                con.commit()
+                return True
+            finally:
+                con.close()
 
-        tail_end_cursor = int(tail[-1].get("source_conversation_index") or 0)
-        if tail_end_cursor <= 0:
-            return "skipped_short_tail"
+        def record_failure(exc: Exception) -> None:
+            apply_updates({
+                "last_background_error": f"background_rollup_failed: {type(exc).__name__}: {str(exc)[:220]}"[:300],
+                "last_background_error_at": datetime.now(UTC).isoformat(),
+            })
 
-        sleep_history: list[dict[str, Any]] = []
-        tokenize_messages: list[dict[str, Any]] = []
-        for msg in tail:
-            content = str(msg.get("content") or "").strip()
-            if not content:
-                continue
-            ts_ms = _parse_turn_ts_ms(msg.get("received_at"))
-            if ts_ms is None:
-                continue
-            sleep_history.append({"content": content, "ts_ms": ts_ms})
-            tokenize_messages.append({"content": content})
-        if len(sleep_history) < 2:
-            return "skipped_short_tail"
+        try:
+            rolling_cursor_id = state_row.get("rolling_summary_cursor_id")
+            _, hermes_home_path, _, _ = _resolve_cross_source_paths()
+            rolling_cursor_id, min_timestamp, web_source = _resolve_source_cursor(
+                cid,
+                int(rolling_cursor_id) if rolling_cursor_id is not None else -1,
+                state_row.get("rolling_summary_cursor_source_message_id"),
+                state_row.get("rolling_summary_cursor_ts"),
+                rolling=True,
+                hermes_home_path=hermes_home_path,
+            )
+            tail = _load_background_rollup_tail(
+                conversation_id=cid,
+                user_id=uid,
+                soul_id=sid,
+                rolling_summary_cursor_id=rolling_cursor_id,
+                min_timestamp=min_timestamp,
+                import_state=state_row.get("import_state"),
+            )
+            if len(tail) < 2:
+                return "skipped_short_tail"
 
-        token_estimate = _estimate_tokens(tokenize_messages)
-        if token_estimate < int(_BACKGROUND_SUMMARY_TOKENS):
-            return "skipped_tokens"
-        if not _background_sleep_gap_detected(
-            history=sleep_history,
-            safe=safe_payload,
-            min_chunk_tokens=int(_BACKGROUND_SUMMARY_TOKENS),
-        ):
-            return "skipped_lull"
+            tail_end_cursor = int(tail[-1].get("source_conversation_index") or 0)
+            if tail_end_cursor <= 0:
+                return "skipped_short_tail"
 
-        prior_summary = str(state_row.get("rolling_summary") or "").strip() or None
-        llm_service = service or _get_service_from_payload(
-            {
-                **safe_payload,
-                "user": {"user_id": uid, "soul_id": sid, "conversation_id": cid},
-                "conversation_id": cid,
-            }
-        )
-        tail = _label_owner_messages(
-            tail, user_id=uid, user_name=llm_service.user_config.user_name, conversation_id=cid,
-        )
-        summary_input = [
-            {
-                "role": str(msg.get("role") or "unknown"),
-                "name": str(msg.get("speaker") or "").strip() or None,
-                "content": str(msg.get("content") or ""),
-                "source_label": msg.get("source_label"),
-                "_message_index": int(msg.get("source_conversation_index") or 0),
-            }
-            for msg in tail
-        ]
+            sleep_history: list[dict[str, Any]] = []
+            tokenize_messages: list[dict[str, Any]] = []
+            for msg in tail:
+                content = str(msg.get("content") or "").strip()
+                if not content:
+                    continue
+                ts_ms = _parse_turn_ts_ms(msg.get("received_at"))
+                if ts_ms is None:
+                    continue
+                sleep_history.append({"content": content, "ts_ms": ts_ms})
+                tokenize_messages.append({"content": content})
+            if len(sleep_history) < 2:
+                return "skipped_short_tail"
+
+            token_estimate = _estimate_tokens(tokenize_messages)
+            if token_estimate < int(_BACKGROUND_SUMMARY_TOKENS):
+                return "skipped_tokens"
+            if not _background_sleep_gap_detected(
+                history=sleep_history,
+                safe=safe_payload,
+                min_chunk_tokens=int(_BACKGROUND_SUMMARY_TOKENS),
+            ):
+                return "skipped_lull"
+
+            prior_summary = str(state_row.get("rolling_summary") or "").strip() or None
+            llm_service = service or _get_service_from_payload(
+                {
+                    **safe_payload,
+                    "user": {"user_id": uid, "soul_id": sid, "conversation_id": cid},
+                    "conversation_id": cid,
+                }
+            )
+            tail = _label_owner_messages(
+                tail, user_id=uid, user_name=llm_service.user_config.user_name, conversation_id=cid,
+            )
+            summary_input = [
+                {
+                    "role": str(msg.get("role") or "unknown"),
+                    "name": str(msg.get("speaker") or "").strip() or None,
+                    "content": str(msg.get("content") or ""),
+                    "source_label": msg.get("source_label"),
+                    "_message_index": int(msg.get("source_conversation_index") or 0),
+                }
+                for msg in tail
+            ]
+        except Exception as exc:
+            record_failure(exc)
+            raise
+
+    try:
         new_summary = str(
             await llm_service.summarize_background_chat_rollup(
                 prior_summary=prior_summary,
@@ -449,13 +499,12 @@ async def _run_background_rollup_for_conversation(
                 rolling_summary_cursor_source_message_id=checkpoint["source_message_id"],
                 rolling_summary_cursor_ts=checkpoint["ts"],
             )
-        _write_conversation_state(
-            cid,
-            soul_id=sid,
-            user_id=uid,
-            updates=updates,
-        )
-        return "rolled_up"
+    except Exception as exc:
+        async with state_lock:
+            record_failure(exc)
+        raise
+    async with state_lock:
+        return "rolled_up" if apply_updates(updates) else "skipped_state_changed"
 
 
 def _queue_background_rollup_task(
@@ -483,14 +532,7 @@ def _queue_background_rollup_task(
     def _on_done(done_task: asyncio.Task) -> None:
         try:
             done_task.result()
-        except Exception as exc:
-            _set_background_error(
-                conversation_id,
-                soul_id=soul_id,
-                user_id=user_id,
-                code="background_rollup_failed",
-                detail=f"{type(exc).__name__}: {str(exc)[:220]}",
-            )
+        except Exception:
             logger.exception("background rollup task failed for %s", marker)
         finally:
             _BACKGROUND_TASKS.discard(done_task)

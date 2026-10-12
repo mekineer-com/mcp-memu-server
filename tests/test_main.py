@@ -4006,21 +4006,10 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
     monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
     if claim != "idle":
         main._FORCED_MEMORIZE_INFLIGHT[main._memorize_lock_key("u1", "Echo" if claim == "same_soul" else "OtherSoul")] = False
-    db_path = tmp_path / "Echo.db"
-    db_path.write_text("", encoding="utf-8")
-    monkeypatch.setattr(
-        main,
-        "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: (
-            {
-                "memorize_chat": False,
-                "rolling_summary": "old summary",
-                "rolling_summary_cursor_id": 10,
-            },
-            None,
-            db_path,
-        ),
-    )
+    db_path = main._sqlite_current_path("u1", "Echo")
+    main._write_conversation_state("whatsapp:dm:bg-chat", user_id="u1", soul_id="Echo", updates={
+        "memorize_chat": False, "rolling_summary": "old summary", "rolling_summary_cursor_id": 10,
+    })
     monkeypatch.setattr(main, "_estimate_tokens", lambda *_a, **_k: 1200)
     monkeypatch.setattr(main, "_background_sleep_gap_detected", lambda **_kwargs: True)
     monkeypatch.setattr(
@@ -4064,20 +4053,6 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
             assert soul_name == "Echo"
             return "rolled summary"
 
-    captured_updates: dict[str, Any] = {}
-
-    def _capture_write_state(
-        _conversation_id: str,
-        *,
-        soul_id: str,
-        user_id: str,
-        updates: dict[str, Any],
-    ) -> tuple[dict[str, Any], Path]:
-        captured_updates.update(updates)
-        return {}, db_path
-
-    monkeypatch.setattr(main, "_write_conversation_state", _capture_write_state)
-
     status = await main._run_background_rollup_for_conversation(
         conversation_id="whatsapp:dm:bg-chat",
         user_id="u1",
@@ -4085,8 +4060,9 @@ async def test_run_background_rollup_for_conversation_updates_summary_and_cursor
         safe_payload={},
         service=_FakeSvc(),
     )
+    captured_updates = main._load_turn_state_and_soul_card("whatsapp:dm:bg-chat", user_id="u1", soul_id="Echo")[0]
     if claim == "same_soul":
-        assert status == "skipped_memorize_running" and not captured_updates
+        assert status == "skipped_memorize_running" and captured_updates["rolling_summary"] == "old summary"
         return
     assert status == "rolled_up"
     assert captured_updates["rolling_summary"] == "rolled summary"
@@ -4130,17 +4106,124 @@ async def test_background_readers_share_native_sources_and_import_bounds(tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["reply", "appended", "advanced", "policy", "claim", "paused", "import",
+                                    "deleted", "deleted_db", "replaced_db", "failure", "newer_error", "failure_newer_error"])
+async def test_rollup_provider_wait_releases_reply_lock_and_rechecks_state(monkeypatch, change):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "chat:rollup-wait"
+    initial = {"memorize_chat": False, "rolling_summary": "Old fictional summary", "rolling_summary_cursor_id": 10}
+    main._write_conversation_state(cid, **scope, updates=initial)
+    path = main._sqlite_current_path(**scope)
+    key = main._memorize_lock_key(**scope)
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
+    monkeypatch.setattr(main, "_soul_activity_pause", lambda *_a: None)
+    monkeypatch.setattr(main, "_estimate_tokens", lambda *_a: 1200)
+    monkeypatch.setattr(main, "_background_sleep_gap_detected", lambda **_kw: True)
+    tail = [{"role": "user", "speaker": "TestOwner", "content": f"Fictional message {index}",
+             "source_conversation_index": index, "received_at": f"2026-01-01T{index}:00:00Z"}
+            for index in (11, 12)]
+    monkeypatch.setattr(main, "_load_background_rollup_tail", lambda **_kw: tail)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class Service(AnchorService):
+        async def summarize_background_chat_rollup(self, *, messages, **_kw):
+            assert len(messages) == 2
+            started.set()
+            await release.wait()
+            if change.startswith("failure"):
+                raise RuntimeError("Fictional provider failure")
+            return "New fictional summary"
+
+    task = asyncio.create_task(main._run_background_rollup_for_conversation(
+        conversation_id=cid, **scope, safe_payload={}, service=Service()))
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        lock = main._get_memorize_lock(key)
+        await asyncio.wait_for(lock.acquire(), 0.5)
+        try:
+            # Reply-side writes must complete while the provider is still waiting.
+            main._write_conversation_state(cid, **scope, updates={"memory_cache": ["Fictional concurrent reply memory"]})
+            if change == "advanced":
+                main._write_conversation_state(cid, **scope, updates={"rolling_summary_cursor_id": 20})
+            elif change == "policy":
+                main._write_conversation_state(cid, **scope, updates={"memorize_chat": True})
+            elif change == "claim":
+                main._FORCED_MEMORIZE_INFLIGHT[key] = False
+            elif change == "paused":
+                monkeypatch.setattr(main, "_soul_activity_pause", lambda *_a: "Fictional pause")
+            elif change == "import":
+                main._write_conversation_state(cid, **scope, updates={"import_state": {
+                    "history_end_index": 5, "memorize_cursor": 0, "pending_segment_ids": [], "stage": "complete", "error": None,
+                }})
+            elif change == "deleted":
+                with main._sqlite_connect(path) as con:
+                    con.execute("DELETE FROM conversations WHERE conversation_id = ?", (cid,))
+            elif change == "deleted_db":
+                path.unlink()
+            elif change == "replaced_db":
+                path.rename(path.with_suffix(".old"))
+                main._write_conversation_state(cid, **scope, updates=initial)
+            elif change == "appended":
+                tail.append({**tail[-1], "content": "A newer fictional row", "source_conversation_index": 13})
+            elif change in {"newer_error", "failure_newer_error"}:
+                main._write_conversation_state(cid, **scope, updates={
+                    "last_background_error": "apimw_failed: Newer fictional failure", "last_background_error_at": "2026-01-03T00:00:00Z",
+                })
+        finally:
+            lock.release()
+        release.set()
+        if change.startswith("failure"):
+            with pytest.raises(RuntimeError, match="Fictional provider failure"):
+                await task
+        else:
+            expected = "rolled_up" if change in {"reply", "appended", "newer_error"} else "skipped_state_changed"
+            assert await task == expected
+        if change == "deleted_db":
+            assert not path.exists()
+            return
+        with main._sqlite_connect(path, mode="rw") as con:
+            con.row_factory = sqlite3.Row
+            state = main._conversation_state_from_row(main._conversation_state_row(con, cid, **scope))
+        if change == "deleted":
+            assert state is None
+            return
+        if change != "replaced_db":
+            assert main._load_turn_state_and_soul_card(cid, **scope)[0]["memory_cache"] == ["Fictional concurrent reply memory"]
+        assert state["rolling_summary"] == ("New fictional summary" if change in {"reply", "appended", "newer_error"} else initial["rolling_summary"])
+        if change in {"reply", "appended"}:
+            assert state["rolling_summary_cursor_id"] == 12
+        if change == "failure":
+            assert "Fictional provider failure" in state["last_background_error"]
+        elif change in {"newer_error", "failure_newer_error"}:
+            assert state["last_background_error"] == "apimw_failed: Newer fictional failure"
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_rollup_capture_failure_keeps_scoped_error(monkeypatch):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "chat:rollup-capture-failure"
+    main._write_conversation_state(cid, **scope, updates={"memorize_chat": False})
+    def fail(**_kw):
+        raise OSError("Fictional source failure")
+    monkeypatch.setattr(main, "_load_background_rollup_tail", fail)
+    with pytest.raises(OSError, match="Fictional source failure"):
+        await main._run_background_rollup_for_conversation(conversation_id=cid, **scope, safe_payload={})
+    state = main._load_turn_state_and_soul_card(cid, **scope)[0]
+    assert "Fictional source failure" in state["last_background_error"]
+
+
+@pytest.mark.asyncio
 async def test_run_background_rollup_for_conversation_skips_primary_chat(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db_path = tmp_path / "Echo.db"
-    db_path.write_text("", encoding="utf-8")
-    monkeypatch.setattr(
-        main,
-        "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: ({"memorize_chat": True}, None, db_path),
-    )
+    main._write_conversation_state("whatsapp:dm:primary", user_id="u1", soul_id="Echo",
+                                   updates={"memorize_chat": True})
 
     class _UnexpectedSvc:
         async def summarize_background_chat_rollup(self, **_kwargs):
