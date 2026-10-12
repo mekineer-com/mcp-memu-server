@@ -190,6 +190,12 @@ one all-or-nothing transaction for the whole request.
 | Post-save dedupe | `memorize_dedupe._memorize_dedupe_merge` commits merges and `on_dedupe_complete`'s MCP `"review"` phase together in its own transaction. The primary save already exists. |
 | Post-save dynamic dossier review | `_memorize_persist_and_index` prepares/generates/applies candidate decisions, committing each applied decision. MCP clears completed phase work only after successful postprocessing. A later failure does not undo earlier saves or review decisions. |
 
+Correction preparation fails on an invalid old-fact embedding before the primary
+save; a valid vector with no matching fact still creates the new memory normally.
+Memory deletion removes graph edges by their current memory endpoints, not by
+historical `source_memory_id`. Deleting a merged-away predecessor cannot erase a
+mention now owned by its survivor; deleting that survivor still removes the edge.
+
 For these normal conversation calls, `_process_plan` upgrades the segment file to
 an envelope containing `content`, the exact rendered `segment_background_context`
 and `segment_background_conversation_ids`. The complete accepted message list
