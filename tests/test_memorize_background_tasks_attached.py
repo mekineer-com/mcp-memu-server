@@ -651,6 +651,153 @@ def test_rebuild_preserves_display_name_with_real_service_reacquisition(client, 
     assert service.user_config.user_name == "DifferentHuman"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["public_turn", "shared"])
+@pytest.mark.parametrize("rebuild", [False, True])
+async def test_reply_publication_tracks_rebuild_without_invalidating_active_settings(
+    monkeypatch, tmp_path, surface, rebuild,
+):
+    from shutil import copyfile
+
+    from sqlalchemy import event
+    from sqlalchemy.pool import QueuePool
+
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "chat:rebuild-retained-service"
+    payload = _make_stub_payload(scope["user_id"], scope["soul_id"], cid)
+    payload.update(message="Fictional reply", chat_name="Fictional chat", history=[], debug=True,
+                   prompt_override_payload={"user_prompt": "Fictional prompt", "system_prompt": "Fictional system",
+                                            "memory_cache": [], "retrieve_rag": {"items": [], "categories": [], "resources": []}})
+    monkeypatch.setattr(main_module, "_LOG_PROMPTS", False)
+    monkeypatch.setitem(main_module._CONFIG, "claude_code", False)
+    monkeypatch.setattr(main_module._service_factory, "_SERVICES", {})
+    monkeypatch.setattr(main_module._service_factory, "_SERVICE_STORAGE_FP", {})
+    monkeypatch.setattr(main_module, "_FORCED_MEMORIZE_INFLIGHT", {})
+    monkeypatch.setattr(main_module._memorize_endpoint, "run_memorize_segments", _noop_run)
+    monkeypatch.setattr(main_module, "_retrieve_apimw_enabled_from_cfg", lambda _cfg: False)
+    monkeypatch.setattr(main_module, "_prepare_auto_memorize", lambda *_args, **_kwargs: (0, None))
+    owner.create_owner(main_module._CONFIG, scope["user_id"])
+    souls.create_soul(main_module._CONFIG, souls.SoulCreate(
+        soul_id=scope["soul_id"], use_existing=False, user_name="TestHuman",
+    ))
+    path = main_module._sqlite_current_path(**scope)
+    assert path.is_relative_to(tmp_path)
+    old_service = main_module._get_service_from_payload(payload, operation="st_reply")
+    engine = old_service.database._sessions.engine
+    assert isinstance(engine.pool, QueuePool)
+    intentions = [{"id": "fictional-task", "text": "Sketch a fictional coast"}]
+    main_module._write_conversation_state(cid, **scope, updates={
+        "intentions_active": intentions, "memory_cache": ["before rebuild"],
+    })
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql("PRAGMA journal_mode").scalar_one() == "wal"
+        old_handle = connection.connection.driver_connection
+    assert engine.pool.checkedout() == 0
+    old_identity = (path.stat().st_dev, path.stat().st_ino)
+    checkouts = []
+    event.listen(engine, "checkout", lambda connection, *_args: checkouts.append(connection))
+    waiting, resume = asyncio.Event(), asyncio.Event()
+    reply_services = []
+
+    async def fake_chat(service, *_args, **_kwargs):
+        reply_services.append(service)
+        waiting.set()
+        await resume.wait()
+        return json.dumps({"working_thought": "after rebuild", "rehearsal": None,
+                           "response_target": "respond", "response": "Fictional answer", "annulments": [{
+            "intention_id": "fictional-task", "status": "completed", "note": "",
+        }]})
+
+    async def fake_embed(_service, texts, **_kwargs):
+        return [[1.0] + [0.0] * 3071 for _ in texts]
+
+    monkeypatch.setattr(main_module.MemoryService, "chat", fake_chat)
+    monkeypatch.setattr(main_module.MemoryService, "embed", fake_embed)
+
+    async def late_write():
+        if surface == "public_turn":
+            return await main_module.conversation_turn(cid, payload)
+        reply = json.loads(await old_service.chat("Fictional reply"))
+        prepared = await main_module._prepare_annulment_memories(
+            svc=old_service, intentions_before=intentions, annulments=reply["annulments"],
+        )
+        async with main_module._get_memorize_lock(main_module._memorize_lock_key(scope["user_id"], scope["soul_id"])):
+            return main_module._save_actual_annulments(
+                service=old_service, **scope, conversation_id=cid, current_intentions=intentions,
+                annulment_ids=["fictional-task"], prepared=prepared,
+            )
+
+    task = asyncio.create_task(late_write())
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=5)
+        if reply_services[-1] is not old_service:
+            old_service = reply_services[-1]
+            engine = old_service.database._sessions.engine
+            assert isinstance(engine.pool, QueuePool)
+            with engine.connect() as connection:
+                old_handle = connection.connection.driver_connection
+            event.listen(engine, "checkout", lambda connection, *_args: checkouts.append(connection))
+        assert engine.pool.checkedout() == 0
+        checkouts.clear()
+        if rebuild:
+            background = BackgroundTasks()
+            response = await main_module.memorize(payload, background, rebuild=True)
+            assert response.status_code == 202
+            await background()
+            archive, = (candidate for candidate in path.parent.glob("TestSoul.bak-*")
+                        if not candidate.name.endswith(("-wal", "-shm")))
+            assert (archive.stat().st_dev, archive.stat().st_ino) == old_identity
+            assert (path.stat().st_dev, path.stat().st_ino) != old_identity
+        else:
+            # A settings refresh must not revalidate the active reply's old model.
+            llm = main_module._CONFIG["llm"]
+            monkeypatch.setitem(llm["reply_models"], "srmm", {"source": "configured"})
+            monkeypatch.setitem(llm["step_models"], "memory_extract", {"source": "srmm"})
+            main_module._clear_cached_services()
+        assert all(service is not old_service for service in main_module._service_factory._SERVICES.values())
+        resume.set()
+        result = await asyncio.wait_for(task, timeout=5)
+        if surface == "public_turn":
+            assert result["ok"] and result["response"] == "Fictional answer"
+            memory_ids = result["annulment_memory_ids"]
+        else:
+            memory_ids = result
+        with sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) as con:
+            live_intentions, live_cache = con.execute(
+                "SELECT intentions_active, memory_cache FROM soul_state WHERE id = 1"
+            ).fetchone()
+            live_memories = con.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0]
+        assert json.loads(live_intentions or "[]") == []
+        assert ("after rebuild" in json.loads(live_cache or "[]")) == (surface == "public_turn")
+        if not rebuild:
+            assert checkouts and checkouts[-1] is old_handle
+            assert len(memory_ids) == live_memories == 1
+            return
+        assert not checkouts and memory_ids == [] and live_memories == 0
+
+        # Inspect a copy so opening the archive cannot checkpoint the evidence.
+        copy = tmp_path / "archive-evidence.db"
+        for suffix in ("", "-wal"):
+            source = Path(str(archive) + suffix)
+            if source.exists():
+                copyfile(source, Path(str(copy) + suffix))
+        with sqlite3.connect(f"{copy.as_uri()}?mode=ro", uri=True) as con:
+            archived_intentions, archived_cache = con.execute(
+                "SELECT intentions_active, memory_cache FROM soul_state WHERE id = 1"
+            ).fetchone()
+            archived_memories = con.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0]
+        assert archived_memories == 0
+        assert json.loads(archived_intentions) == intentions
+        assert json.loads(archived_cache) == ["before rebuild"]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        old_service.database.close()
+        for service in main_module._service_factory._SERVICES.values():
+            service.database.close()
+        main_module._clear_cached_services()
+
+
 @pytest.mark.parametrize("positions", [(0, 1, 2, 3), (0, 3, 7, 9)])
 def test_rebuild_includes_open_sleep_tail_with_original_positions_and_name(client, monkeypatch, positions):
     uid, sid, cid = "TestOwner", "TestSoul", "chat:rebuild-sleep-tail"

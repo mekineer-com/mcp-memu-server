@@ -491,6 +491,7 @@ def _get_service_from_payload(
             claude_code_timeout_seconds=_cfg_int(config, "claude_code_timeout_seconds", 3600, minimum=1),
         )
         _close_service_when_unused(svc)
+        svc._storage_fingerprint = storage_fp
         if log_prompts:
             svc.intercept_before_llm_call(prompt_log_before, name="prompt_logger")
             svc.intercept_after_llm_call(prompt_log_after, name="response_logger")

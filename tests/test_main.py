@@ -9911,6 +9911,7 @@ def test_annulment_memory_and_state_commit_together(monkeypatch, tmp_path, reque
         user_config={"model": main.STUserModel, "user_name": scope["user_id"]},
     )
     request.addfinalizer(service.database.close)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args, **_kwargs: service)
     returned_row_factories = []
     event.listen(service.database._sessions.engine, "checkin",
         lambda connection, _record: returned_row_factories.append(connection.row_factory))

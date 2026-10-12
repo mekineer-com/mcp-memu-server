@@ -1705,6 +1705,16 @@ def _persist_actual_annulments(
     return next_intentions, removed, memory_ids
 
 
+def _annulment_service_current(service: MemoryService, scope: dict[str, Any]) -> bool:
+    fingerprint = getattr(service, "_storage_fingerprint", None)
+    if fingerprint is None:
+        return False
+    identity = _apimw._apimw_database_identity(_sqlite_current_path(scope["user_id"], scope["soul_id"]))
+    return identity is not None and identity == (
+        Path(fingerprint["path"]), fingerprint["dev"], fingerprint["ino"],
+    )
+
+
 def _save_actual_annulments(
     *,
     service: MemoryService,
@@ -1716,6 +1726,8 @@ def _save_actual_annulments(
     prepared: list[dict[str, Any]],
 ) -> list[str]:
     scope = {"user_id": user_id, "soul_id": soul_id}
+    if prepared and not _annulment_service_current(service, scope):
+        service = _get_service_from_payload({"user": scope})
     with _annulment_write_session(service, prepared) as (session, con):
         if con is not None:
             current_intentions = _validate_intentions(_soul_state.read(con).get("intentions_active"))
@@ -4674,6 +4686,9 @@ async def conversation_turn(
                 annulments=normalized_annulments,
             )
             async with state_lock:
+                write_service = (_get_service_from_payload(safe, operation=reply_operation)
+                                 if prepared_annulments and not _annulment_service_current(memory_service, scope)
+                                 else memory_service)
                 (
                     conversation_state_after,
                     conversation_state_path,
@@ -4683,7 +4698,7 @@ async def conversation_turn(
                     turn_cache_entry, turn_annulment_ids,
                     retrieved_item_ids,
                     memorize_chat=memorize_chat,
-                    svc=memory_service,
+                    svc=write_service,
                     scope=scope,
                     prepared_annulments=prepared_annulments,
                 )

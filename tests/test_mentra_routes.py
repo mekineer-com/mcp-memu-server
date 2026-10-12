@@ -263,6 +263,7 @@ def _session_app(
 
         assert soul_lock.locked()
         with monkeypatch.context() as patch:
+            patch.setattr(main, "_get_service_from_payload", lambda *_args, **_kwargs: kwargs["service"])
             patch.setattr(main, "_write_conversation_state", write_state)
             patch.setattr(main, "_annulment_write_session", fake_transaction)
             return main._save_actual_annulments(**kwargs)
