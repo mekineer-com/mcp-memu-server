@@ -590,6 +590,9 @@ def test_rebuild_archives_db_and_service_reacquired_after_archive(
     monkeypatch.setattr(main_module, "_write_conversation_state", fake_write_conversation_state)
     monkeypatch.setattr(main_module, "_get_storage_dir", lambda _cfg: tmp_path)
 
+    # Fabricated sidecar bytes test archival, not SQLite's journal reader.
+    monkeypatch.setattr(memorize_endpoint, "read_soul_name", lambda _path: "DifferentHuman")
+    monkeypatch.setattr(souls, "read_soul_name", lambda _path: "DifferentHuman")
     archives = []
     for index in (1, 2):
         source_bytes = db_file.read_bytes()
@@ -683,7 +686,8 @@ def test_rebuild_includes_open_sleep_tail_with_original_positions_and_name(clien
     assert response.json()["expected_cursor"] == positions[-1]
     for field in ("content", "name", "ts_ms", "source_conversation_index", "source_message_id"):
         assert [row[field] for row in recorded] == [row[field] for row in rows]
-    archive, = db_path.parent.glob("TestSoul.bak-*")
+    archive, = (path for path in db_path.parent.glob("TestSoul.bak-*")
+                if not path.name.endswith(("-wal", "-shm")))
     assert souls.read_soul_name(archive) == souls.read_soul_name(db_path) == "DifferentHuman"
 
 
@@ -700,7 +704,6 @@ def test_rebuild_refuses_missing_binding_before_archiving(client, monkeypatch, t
     assert response.status_code == 409
     assert path.read_bytes() == before
     assert not list(tmp_path.glob("*.bak-*"))
-    assert not list(tmp_path.glob("*-wal")) and not list(tmp_path.glob("*-shm"))
 
 
 @pytest.mark.asyncio

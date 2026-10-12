@@ -230,7 +230,7 @@ def test_metadata_refuses_missing_binding_without_writing_or_migrating(tmp_path,
 
 
 @pytest.mark.parametrize("bound", [False, True])
-def test_metadata_stopped_wal_read_has_no_side_effects(tmp_path, bound):
+def test_metadata_stopped_wal_read_preserves_saved_files(tmp_path, bound):
     client, _cfg = client_for(tmp_path)
     path = tmp_path / "WalSoul.db"
     if bound:
@@ -247,7 +247,26 @@ def test_metadata_stopped_wal_read_has_no_side_effects(tmp_path, bound):
     assert response.status_code == (200 if bound else 409)
     if bound:
         assert response.json()["user_name"] == "TestHuman"
-    assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before
+    side_files = {f"{path.name}-wal", f"{path.name}-shm"}
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()
+            if p.is_file() and p.name not in side_files} == before
+
+
+def test_name_lookup_reads_committed_wal_without_writing(tmp_path):
+    path = tmp_path / "WalSoul.db"
+    writer = sqlite3.connect(path)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("CREATE TABLE soul_state (id INTEGER PRIMARY KEY, user_name TEXT)")
+        writer.execute("INSERT INTO soul_state VALUES (1, 'TestHuman')")
+        writer.commit()
+        wal = path.with_name(f"{path.name}-wal")
+        before_main, before_wal = path.read_bytes(), wal.read_bytes()
+        assert souls.read_soul_name(path) == "TestHuman"
+        assert path.read_bytes() == before_main
+        assert wal.read_bytes() == before_wal
+    finally:
+        writer.close()
 
 
 def test_non_file_soul_occupant_is_rejected(tmp_path):

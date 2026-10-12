@@ -87,13 +87,12 @@ def publish_soul_db(path: Path, user_name: str) -> bool:
 
 
 def read_soul_name(path: Path | None) -> str:
-    """Read existing identity without creating files, schema, state or WAL."""
+    """Read existing identity without changing schema or saved state."""
     missing = HTTPException(status_code=409, detail="Soul user name is missing; this database has no persona binding")
     if path is None or not path.is_file() or path.is_symlink():
         raise missing
     try:
-        # The write-once name is committed in the staged main DB, never in WAL.
-        with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro&immutable=1", uri=True)) as con:
+        with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as con:
             row = con.execute("SELECT user_name FROM soul_state WHERE id = 1").fetchone()
         if row is None or not isinstance(row[0], str):
             raise missing
