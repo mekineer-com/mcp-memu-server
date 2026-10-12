@@ -500,6 +500,7 @@ def test_persist_actual_annulments_uses_ids_removed_from_latest_state() -> None:
     svc = SimpleNamespace(database=SimpleNamespace(memory_item_repo=_Repo()))
     next_intentions, removed, memory_ids = main._persist_actual_annulments(
         svc=svc,
+        session=None,
         scope={"user_id": "Fictional User", "soul_id": "Fictional Soul"},
         conversation_id="chat:fictional",
         current_intentions=[
@@ -536,6 +537,12 @@ def test_persist_actual_annulments_uses_ids_removed_from_latest_state() -> None:
     ]
     assert memory_ids == ["memory-1", "memory-2"]
     assert created == ["Completed the current intention.", "Completed the reworded intention."]
+    with pytest.raises(ValueError, match="no prepared completion memory"):
+        main._persist_actual_annulments(svc=svc, session=None,
+            scope={"user_id": "Fictional User", "soul_id": "Fictional Soul"},
+            conversation_id="chat:fictional", current_intentions=[{"id": "new", "text": "New intention"}],
+            annulment_ids=["new"], prepared=[])
+    assert len(created) == 2
 
 
 @pytest.mark.asyncio
@@ -569,7 +576,8 @@ async def test_annulment_memories_are_dated_historical_events() -> None:
     )
     ids = main._persist_annulment_memories(
         svc=svc,
-        scope={"user_id": "Marcos", "soul_id": "Siri"},
+        session=None,
+        scope={"user_id": "Fictional User", "soul_id": "Fictional Soul"},
         conversation_id="chat",
         prepared=prepared,
     )
@@ -9843,20 +9851,75 @@ async def test_free_turn_setup_failure_releases_existing_marker(monkeypatch):
     assert marker not in main._FREE_TURN_INFLIGHT
 
 
-def test_shared_annulment_save_failure_removes_completion_memories(monkeypatch):
-    removed = []
-    service = SimpleNamespace(graph_delete_memories=lambda ids, **kwargs: removed.append((ids, kwargs)))
-    monkeypatch.setattr(main, "_persist_actual_annulments", lambda **kwargs: (
-        [], [{"item": {"id": "finish-sketch"}}], ["completion-memory"],
-    ))
-    monkeypatch.setattr(main, "_write_conversation_state", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("state save failed")))
-    with pytest.raises(RuntimeError, match="state save failed"):
-        main._save_actual_annulments(
-            service=service, user_id="TestOwner", soul_id="TestSoul", conversation_id="mentra:iris",
-            current_intentions=[{"id": "finish-sketch", "text": "Finish my sketch"}],
-            annulment_ids=["finish-sketch"], prepared=[],
-        )
-    assert removed == [(["completion-memory"], {"where": {"user_id": "TestOwner", "soul_id": "TestSoul"}})]
+@pytest.mark.parametrize("surface", ["shared", "turn"])
+@pytest.mark.parametrize("failure", [None, "state", "second_memory"])
+def test_annulment_memory_and_state_commit_together(monkeypatch, tmp_path, request, surface, failure):
+    from sqlalchemy import event
+
+    path = tmp_path / "fictional.db"
+    scope = {"user_id": "Fictional User", "soul_id": "Fictional Soul"}
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: path)
+    service = main.MemoryService(
+        database_config={"metadata_store": {"provider": "sqlite", "dsn": f"sqlite:///{path}"}},
+        user_config={"model": main.STUserModel, "user_name": scope["user_id"]},
+    )
+    request.addfinalizer(service.database.close)
+    returned_row_factories = []
+    event.listen(service.database._sessions.engine, "checkin",
+        lambda connection, _record: returned_row_factories.append(connection.row_factory))
+    monkeypatch.setattr(service, "graph_delete_memories", lambda *_args, **_kwargs:
+        pytest.fail("Atomic rollback must not depend on a cleanup delete"))
+    intentions = [{"id": "first", "text": "Sketch a fictional coast"},
+                  {"id": "second", "text": "Learn fictional tides"}]
+    before, _ = main._write_conversation_state("chat:fictional", **scope, updates={
+        "intentions_active": intentions, "memory_cache": ["old thought"],
+        "prior_context": [{"id": "old-memory"}], "apimw_subconscious_insight": "old insight",
+        "undo_snapshot": {"turn_id": "old-turn"},
+    })
+    prepared = [{"intention_id": item["id"], "summary": f"Completed {item['id']}",
+                 "embedding": [1.0], "happened_at": datetime.now(UTC)} for item in intentions]
+    with sqlite3.connect(path) as con:
+        if failure == "state":
+            con.execute("CREATE TRIGGER reject_state BEFORE UPDATE OF intentions_active ON soul_state BEGIN SELECT RAISE(ABORT, 'fictional state failure'); END")
+        elif failure == "second_memory":
+            con.execute("CREATE TRIGGER reject_memory BEFORE INSERT ON memory_items WHEN NEW.summary = 'Completed second' BEGIN SELECT RAISE(ABORT, 'fictional memory failure'); END")
+
+    def save():
+        if surface == "shared":
+            return main._save_actual_annulments(service=service, **scope, conversation_id="chat:fictional",
+                current_intentions=intentions, annulment_ids=["first", "second"], prepared=prepared)
+        state, _, ids = main._turn_state_write("chat:fictional", scope["user_id"], scope["soul_id"],
+            "new thought", ["first", "second"], [], svc=service, scope=scope, prepared_annulments=prepared)
+        assert state["undo_snapshot"]["annulment_memory_ids"] == ids
+        return ids
+
+    if failure:
+        with pytest.raises(Exception, match="fictional .* failure"):
+            save()
+    else:
+        ids = save()
+        assert len(ids) == 2
+        assert save() == []
+    with main._sqlite_connect(path) as con:
+        con.row_factory = sqlite3.Row
+        after = main._conversation_state_from_row(main._conversation_state_row(con, "chat:fictional"))
+        after.update(main._soul_state.read(con))
+        assert con.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0] == (0 if failure else 2)
+        assert con.execute("SELECT COUNT(*) FROM memory_items_fts").fetchone()[0] == (0 if failure else 2)
+    if failure:
+        assert after == before
+        with sqlite3.connect(path) as con:
+            con.execute("DROP TRIGGER IF EXISTS reject_state")
+            con.execute("DROP TRIGGER IF EXISTS reject_memory")
+        assert len(save()) == 2
+        with sqlite3.connect(path) as con:
+            assert [row[0] for row in con.execute("SELECT memory_ref FROM memory_items ORDER BY memory_ref")] == [1, 2]
+    else:
+        assert after["intentions_active"] == []
+        if surface == "turn":
+            assert after["memory_cache"] == ["old thought", "new thought", "new thought"]
+            assert after["prior_context"] is None
+    assert returned_row_factories and all(factory is None for factory in returned_row_factories)
 
 
 def test_free_turn_prompt_uses_observe_for_listen_only_policy() -> None:

@@ -227,6 +227,7 @@ def test_narrative_suggestion_preserves_concurrent_card(monkeypatch, tmp_path, r
     from memu.app import category_summary_journal
     from app.services import crud_endpoints, narrative_self
     from sqlalchemy.exc import IntegrityError
+    from sqlalchemy import event
 
     path = tmp_path / "soul.db"
     con = sqlite3.connect(path)
@@ -242,6 +243,9 @@ def test_narrative_suggestion_preserves_concurrent_card(monkeypatch, tmp_path, r
         user_config={"model": main.STUserModel, "user_name": "FictionalHuman"},
     )
     request.addfinalizer(svc.database.close)
+    returned_row_factories = []
+    event.listen(svc.database._sessions.engine, "checkin",
+        lambda connection, _record: returned_row_factories.append(connection.row_factory))
     if case == "companion_write_failure":
         with sqlite3.connect(path) as writer:
             writer.execute("CREATE TRIGGER reject_companion BEFORE INSERT ON memory_items WHEN NEW.memory_type = 'reflection' BEGIN SELECT RAISE(ABORT, 'fictional companion failure'); END")
@@ -312,6 +316,7 @@ def test_narrative_suggestion_preserves_concurrent_card(monkeypatch, tmp_path, r
         assert check.execute("SELECT COUNT(*) FROM memory_items WHERE memory_type = 'reflection'").fetchone()[0] == int(companion_saved)
         assert check.execute("SELECT COUNT(*) FROM triples").fetchone()[0] == 0
     assert (tmp_path / "journals").exists() == accepted
+    assert all(factory is None for factory in returned_row_factories)
 
 
 @pytest.mark.parametrize("surface", ["atomic", "suggestion"])

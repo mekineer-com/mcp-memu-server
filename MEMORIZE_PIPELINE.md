@@ -97,6 +97,12 @@ asynchronous deadline; a preparation/admission timeout is definitely unsaved, no
 an ambiguous write result. Synchronous persistence still runs to completion.
 Thoughts retain the shared 600-character cap and report truncation explicitly.
 No write is automatically repeated by Iris after a lost result.
+`main._annulment_write_session` commits intention removal and its prepared
+reflection memories together for Iris and scheduled turns. Ordinary reply
+publication uses the same transaction for Undo, working cache and consumed
+context. Fresh Soul state is read inside that transaction; failures roll back
+memory rows, search entries, reference allocation and state without cleanup
+deletes. Removing an intention without a prepared reflection fails before writes.
 
 ## Selection And Context
 

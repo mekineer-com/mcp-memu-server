@@ -6,6 +6,7 @@ import copy
 import inspect
 import io
 import json
+from contextlib import contextmanager
 from concurrent.futures import CancelledError as FutureCancelledError, ThreadPoolExecutor
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -248,9 +249,22 @@ def _session_app(
     def save_annulments(**kwargs: Any) -> list[str]:
         from app import main
 
+        @contextmanager
+        def fake_transaction(*_args):
+            before_items = dict(memory_items)
+            before_state = copy.deepcopy(calls["working_state"])
+            try:
+                yield None, None
+            except BaseException:
+                memory_items.clear()
+                memory_items.update(before_items)
+                calls["working_state"] = before_state
+                raise
+
         assert soul_lock.locked()
         with monkeypatch.context() as patch:
             patch.setattr(main, "_write_conversation_state", write_state)
+            patch.setattr(main, "_annulment_write_session", fake_transaction)
             return main._save_actual_annulments(**kwargs)
 
     def prepare(*args: Any, **kwargs: Any) -> tuple[int, dict[str, Any] | None]:
@@ -1004,9 +1018,7 @@ def test_live_write_save_failure_keeps_state_and_releases_lock(monkeypatch, tmp_
     assert calls["working_state"] == before and not calls["soul_lock"].locked()
     assert calls["memory_items"] == {}
     if tool == "annul-intention":
-        assert calls["deleted_memories"] == [(["reflection-1"], {
-            "where": {"user_id": START["user_id"], "soul_id": START["soul_id"]},
-        })]
+        assert calls["deleted_memories"] == []
 
 
 def test_live_tools_reject_wrong_scope_ended_sitting_pause_and_invalid_arguments(monkeypatch, tmp_path):

@@ -12,7 +12,7 @@ import uuid
 import warnings
 from collections import deque
 from collections.abc import Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
@@ -1583,12 +1583,34 @@ async def _prepare_annulment_memories(
     ]
 
 
+@contextmanager
+def _annulment_write_session(service: MemoryService, prepared: list[dict[str, Any]]):
+    if not prepared:
+        yield None, None
+        return
+    session_cm = service._sqlite_write_session(service.database)
+    if session_cm is None:
+        raise RuntimeError("Annulment apply requires SQLite")
+    with session_cm as session:
+        connection = session.connection()
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        con = connection.connection.driver_connection
+        previous_row_factory = con.row_factory
+        try:
+            con.row_factory = sqlite3.Row
+            yield session, con
+        finally:
+            con.row_factory = previous_row_factory
+        session.commit()
+
+
 def _persist_annulment_memories(
     *,
     svc: MemoryService,
     scope: dict[str, Any],
     conversation_id: str,
     prepared: list[dict[str, Any]],
+    session: Any,
 ) -> list[str]:
     conversation_id = _canonical_conversation_id(conversation_id)
     if not prepared:
@@ -1596,25 +1618,21 @@ def _persist_annulment_memories(
     soul_label = str(scope.get("soul_id") or "").strip()
     soul_slug = re.sub(r"[^a-z0-9]+", "_", soul_label.lower()).strip("_") or "soul"
     created_ids: list[str] = []
-    try:
-        for row in prepared:
-            item = svc.database.memory_item_repo.create_item(
-                resource_id=None,
-                memory_type="reflection",
-                summary=row["summary"],
-                embedding=row["embedding"],
-                user_data=scope,
-                source_role="soul",
-                speaker_id=f"soul:{soul_slug}",
-                speaker_label=soul_label or "soul",
-                happened_at=row["happened_at"],
-                conversation_id=conversation_id,
-            )
-            created_ids.append(str(item.id))
-    except Exception:
-        if created_ids:
-            svc.graph_delete_memories(created_ids, where=scope)
-        raise
+    for row in prepared:
+        item = svc.database.memory_item_repo.create_item(
+            resource_id=None,
+            memory_type="reflection",
+            summary=row["summary"],
+            embedding=row["embedding"],
+            user_data=scope,
+            source_role="soul",
+            speaker_id=f"soul:{soul_slug}",
+            speaker_label=soul_label or "soul",
+            happened_at=row["happened_at"],
+            conversation_id=conversation_id,
+            session=session,
+        )
+        created_ids.append(str(item.id))
     return created_ids
 
 
@@ -1626,9 +1644,12 @@ def _persist_actual_annulments(
     current_intentions: list[dict[str, str]],
     annulment_ids: list[str],
     prepared: list[dict[str, Any]],
+    session: Any,
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]], list[str]]:
     next_intentions, removed = _remove_intentions(current_intentions, annulment_ids)
     removed_ids = {row["item"]["id"] for row in removed}
+    if removed_ids - {row["intention_id"] for row in prepared}:
+        raise ValueError("Removed intention has no prepared completion memory")
     memory_ids = _persist_annulment_memories(
         svc=svc,
         scope=scope,
@@ -1638,6 +1659,7 @@ def _persist_actual_annulments(
             for row in prepared
             if row["intention_id"] in removed_ids
         ],
+        session=session,
     )
     return next_intentions, removed, memory_ids
 
@@ -1653,27 +1675,27 @@ def _save_actual_annulments(
     prepared: list[dict[str, Any]],
 ) -> list[str]:
     scope = {"user_id": user_id, "soul_id": soul_id}
-    next_intentions, removed, memory_ids = _persist_actual_annulments(
-        svc=service,
-        scope=scope,
-        conversation_id=conversation_id,
-        current_intentions=current_intentions,
-        annulment_ids=annulment_ids,
-        prepared=prepared,
-    )
-    if not removed:
-        return []
-    try:
+    with _annulment_write_session(service, prepared) as (session, con):
+        if con is not None:
+            current_intentions = _validate_intentions(_soul_state.read(con).get("intentions_active"))
+        next_intentions, removed, memory_ids = _persist_actual_annulments(
+            svc=service,
+            scope=scope,
+            conversation_id=conversation_id,
+            current_intentions=current_intentions,
+            annulment_ids=annulment_ids,
+            prepared=prepared,
+            session=session,
+        )
+        if not removed:
+            return []
         _write_conversation_state(
             conversation_id,
             soul_id=soul_id,
             user_id=user_id,
             updates={"intentions_active": next_intentions},
+            connection=con,
         )
-    except Exception:
-        if memory_ids:
-            service.graph_delete_memories(memory_ids, where=scope)
-        raise
     return memory_ids
 
 
@@ -4293,54 +4315,53 @@ def _turn_state_write(
     scope: dict[str, Any],
     prepared_annulments: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], Any, list[str]]:
-    latest_state_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
-    current_memory_cache = _normalize_memory_cache_impl(latest_state_row.get("memory_cache"))
-    current_intentions = _validate_intentions(latest_state_row.get("intentions_active"))
-    next_memory_cache = (
-        _append_memory_cache_entry(current_memory_cache, cache_entry)
-        if cache_entry
-        else list(current_memory_cache)
-    )
-    next_intentions, annulled_intentions, annulment_memory_ids = _persist_actual_annulments(
-        svc=svc,
-        scope=scope,
-        conversation_id=cid,
-        current_intentions=current_intentions,
-        annulment_ids=[item_id for item_id in annulment_ids if item_id],
-        prepared=prepared_annulments,
-    )
-    updates: dict[str, Any] = {
-        "intentions_active": next_intentions,
-        "memory_cache": next_memory_cache,
-    }
-    if not _TURN_PRESERVE_UNDO.get():
-        updates["undo_snapshot"] = {
-            "turn_id": str(uuid.uuid4()),
-            "memory_cache": current_memory_cache,
-            "memory_cache_entry": next_memory_cache[-1] if cache_entry else None,
-            "annulled_intentions": annulled_intentions,
-            "annulment_memory_ids": list(annulment_memory_ids or []),
+    with _annulment_write_session(svc, prepared_annulments) as (session, con):
+        if con is None:
+            latest_state_row, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=soul_id)
+        else:
+            latest_state_row = _soul_state.read(con)
+        current_memory_cache = _normalize_memory_cache_impl(latest_state_row.get("memory_cache"))
+        current_intentions = _validate_intentions(latest_state_row.get("intentions_active"))
+        next_memory_cache = (
+            _append_memory_cache_entry(current_memory_cache, cache_entry)
+            if cache_entry
+            else list(current_memory_cache)
+        )
+        next_intentions, annulled_intentions, annulment_memory_ids = _persist_actual_annulments(
+            svc=svc,
+            scope=scope,
+            conversation_id=cid,
+            current_intentions=current_intentions,
+            annulment_ids=[item_id for item_id in annulment_ids if item_id],
+            prepared=prepared_annulments,
+            session=session,
+        )
+        updates: dict[str, Any] = {
+            "intentions_active": next_intentions,
+            "memory_cache": next_memory_cache,
         }
-    if retrieval_ids_since_consolidation:
-        updates["append_retrieval_ids_since_consolidation"] = retrieval_ids_since_consolidation
-    if isinstance(memorize_chat, bool):
-        updates["memorize_chat"] = memorize_chat
-    updates["prior_context"] = None
-    updates["apimw_subconscious_insight"] = None
-    try:
+        if not _TURN_PRESERVE_UNDO.get():
+            updates["undo_snapshot"] = {
+                "turn_id": str(uuid.uuid4()),
+                "memory_cache": current_memory_cache,
+                "memory_cache_entry": next_memory_cache[-1] if cache_entry else None,
+                "annulled_intentions": annulled_intentions,
+                "annulment_memory_ids": list(annulment_memory_ids or []),
+            }
+        if retrieval_ids_since_consolidation:
+            updates["append_retrieval_ids_since_consolidation"] = retrieval_ids_since_consolidation
+        if isinstance(memorize_chat, bool):
+            updates["memorize_chat"] = memorize_chat
+        updates["prior_context"] = None
+        updates["apimw_subconscious_insight"] = None
         state_out, state_path = _write_conversation_state(
             cid,
             soul_id=soul_id,
             user_id=uid,
             updates=updates,
+            connection=con,
         )
-    except Exception:
-        if annulment_memory_ids:
-            svc.graph_delete_memories(annulment_memory_ids, where=scope)
-        raise
     return state_out, state_path, annulment_memory_ids
-
-
 
 
 @app.post("/conversation/{conversation_id}/turn", operation_id="conversation_turn")

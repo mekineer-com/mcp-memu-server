@@ -592,9 +592,9 @@ async def narrative_suggestion_endpoint(
                         embedding=companion_embedding, user_data=scope, source_role="soul",
                         happened_at=datetime.now(UTC), session=session,
                     )
-                session.commit()
             finally:
                 con.row_factory = previous_row_factory
+            session.commit()
         if changed:
             _soul_summaries.journal_committed_write(
                 kind="narrative_self", before=before, after=new_narrative,
