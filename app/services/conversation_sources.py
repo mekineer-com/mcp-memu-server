@@ -34,6 +34,10 @@ _GATEWAY_NOTICE_PREFIXES = (
 )
 
 
+def is_source_unavailable_error(exc: BaseException) -> bool:
+    return isinstance(exc, (OSError, ValueError, sqlite3.DatabaseError)) and not isinstance(exc, sqlite3.ProgrammingError)
+
+
 def mentra_storage_dir() -> Path:
     openalma_dir = Path(__file__).resolve().parents[3] / "openalma"
     if not openalma_dir.is_dir():
@@ -854,7 +858,7 @@ def _load_whatsapp_web_source_tail(
                 [target, *sorted(local_ids)],
             ).fetchone()
             if not any_rows:
-                raise RuntimeError(
+                raise ValueError(
                     f"web_source returned no rows for conversation_id={conversation_id!r} "
                     f"— likely canonical WhatsApp ID mismatch or web_source clone not synced"
                 )
@@ -1120,13 +1124,13 @@ def persist_mentra_history_snapshot(
     )
 
 
-def load_mentra_history_snapshot(
+def _read_mentra_snapshot(
     *,
     storage_dir: Path,
     user_id: str,
     soul_id: str,
     conversation_id: str,
-) -> list[dict[str, Any]]:
+) -> tuple[Path, dict[str, Any] | None]:
     path = _chat_snapshot_path(
         storage_dir=storage_dir,
         user_id=user_id,
@@ -1134,16 +1138,32 @@ def load_mentra_history_snapshot(
         conversation_id=conversation_id,
         source_label="mentra",
     )
-    if not path.exists():
-        return []
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict) or raw.get("conversation_id") != conversation_id:
-        raise RuntimeError(f"mentra snapshot identity mismatch: {path}")
-    if raw.get("source_label") != "mentra" or not isinstance(raw.get("history"), list):
-        raise RuntimeError(f"mentra snapshot is invalid: {path}")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return path, None
+    expected = {"conversation_id": conversation_id, "user_id": user_id,
+                "soul_id": soul_id, "source_label": "mentra"}
+    if not isinstance(raw, dict) or any(raw.get(key) != value for key, value in expected.items()):
+        raise ValueError(f"mentra snapshot identity mismatch: {path}")
+    if not isinstance(raw.get("history"), list):
+        raise ValueError(f"mentra snapshot is invalid: {path}")
     if not all(isinstance(row, dict) for row in raw["history"]):
-        raise RuntimeError(f"mentra snapshot history contains an invalid row: {path}")
-    return list(raw["history"])
+        raise ValueError(f"mentra snapshot history contains an invalid row: {path}")
+    return path, raw
+
+
+def load_mentra_history_snapshot(
+    *,
+    storage_dir: Path,
+    user_id: str,
+    soul_id: str,
+    conversation_id: str,
+) -> list[dict[str, Any]]:
+    _path, raw = _read_mentra_snapshot(
+        storage_dir=storage_dir, user_id=user_id, soul_id=soul_id, conversation_id=conversation_id,
+    )
+    return list(raw["history"]) if raw is not None else []
 
 
 def load_chat_snapshot_tail(
@@ -1179,6 +1199,12 @@ def load_chat_snapshot_tail(
             raise FileNotFoundError(f"sillytavern snapshot missing: {path}")
         if raw.get("deleted") is True:
             return []
+    elif source_label == "mentra":
+        _path, raw = _read_mentra_snapshot(
+            storage_dir=storage_dir, user_id=user_id, soul_id=soul_id, conversation_id=conversation_id,
+        )
+        if raw is None:
+            raise FileNotFoundError(f"mentra snapshot missing: {path}")
     else:
         raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):

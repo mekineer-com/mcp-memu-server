@@ -242,6 +242,7 @@ def patch_memorize_failure(
     con: sqlite3.Connection, replacement: Any = _MISSING, *,
     segment_work: Mapping[str, str] | None = None, finish: bool = False,
     resolve_source_checkpoint: Callable[[str, str], int | None] | None = None,
+    expected_failure: Any = _MISSING,
 ) -> Any:
     current = _soul_state.read(con).get("memorize_failure")
     work = dict((current or {}).get("segment_work") or {})
@@ -256,7 +257,13 @@ def patch_memorize_failure(
     if replacement is None:
         if work:
             raise RuntimeError("Memorize postprocessing is still unfinished")
-        return None
+        # Phase publication changes the work ledger, not the failure being completed.
+        if current is None or expected_failure is _MISSING or (
+            {key: value for key, value in current.items() if key != "segment_work"}
+            == {key: value for key, value in (expected_failure or {}).items() if key != "segment_work"}
+        ):
+            return None
+        replacement = _MISSING
     updated = {**(current or {}), **({} if replacement is _MISSING else replacement)}
     if current:
         updated["conversation_id"] = current["conversation_id"]
@@ -378,6 +385,7 @@ INSERT OR IGNORE INTO conversations (
                 con, soul_updates.get("memorize_failure", _MISSING),
                 segment_work=raw_updates.pop("memorize_segment_work", None), finish=finish_work,
                 resolve_source_checkpoint=resolve_source_checkpoint,
+                expected_failure=raw_updates.pop("_expected_memorize_failure", _MISSING),
             )
         for append_key, field in (
             ("append_retrieval_ids_since_consolidation", "retrieval_ids_since_consolidation"),

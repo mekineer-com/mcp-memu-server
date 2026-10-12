@@ -735,7 +735,8 @@ async def run_memorize_segments(
                     raise RuntimeError("Failed Memorize still has unfinished source checkpoints; restore the source and Retry.")
                 ctx.write_conversation_state(
                     conversation_id, user_id=uid, soul_id=soul_id,
-                    updates={"memorize_failure": None, "finish_segment_work": True},
+                    updates={"memorize_failure": None, "finish_segment_work": True,
+                             "_expected_memorize_failure": failure_record},
                 )
                 failure_record = None
             # Auto-trigger consolidation in background (releases memorize lock before LLM calls).

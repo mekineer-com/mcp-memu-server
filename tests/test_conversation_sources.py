@@ -9,6 +9,18 @@ from app.services import conversation_sources
 from app.services import cross_history, state
 
 
+@pytest.mark.parametrize("error, unavailable", [
+    (OSError("source"), True), (FileNotFoundError("source"), True),
+    (ValueError("source"), True), (json.JSONDecodeError("source", "", 0), True),
+    (sqlite3.DatabaseError("source"), True), (sqlite3.OperationalError("source"), True),
+    (sqlite3.ProgrammingError("binding"), False), (sqlite3.InterfaceError("interface"), False),
+    (sqlite3.Error("unclassified"), False), (RuntimeError("invariant"), False),
+    (TypeError("bug"), False), (KeyError("bug"), False),
+])
+def test_source_unavailable_error_classification(error, unavailable):
+    assert conversation_sources.is_source_unavailable_error(error) is unavailable
+
+
 @pytest.mark.parametrize("name", ["Ardent", "ardent", "Beacon Vale", "星", "A" * 80])
 @pytest.mark.parametrize("bold", ["", "*", "**"])
 def test_soul_prefix_requires_marker_and_preserves_exact_valid_name(name, bold):
@@ -340,6 +352,55 @@ def test_mentra_snapshot_uses_sequence_cursor_and_honest_record_labels(tmp_path:
             storage_dir=tmp_path, user_id="Fictional User", soul_id="Codexia",
             conversation_id="mentra:test-device", since_cursor=0, recent_fallback_messages=0,
         )
+
+
+@pytest.mark.parametrize("reader", [
+    conversation_sources.load_mentra_history_snapshot, conversation_sources.load_mentra_tail,
+])
+@pytest.mark.parametrize("damage", [
+    None, [],
+    {"conversation_id": "mentra:other"}, {"user_id": "OtherOwner"},
+    {"soul_id": "OtherSoul"}, {"source_label": "atomic"},
+    {"user_id": None}, {"soul_id": None},
+    {"history": None}, {"history": {}}, {"history": ["invalid row"]},
+])
+def test_mentra_readers_reject_invalid_scoped_snapshots(tmp_path, reader, damage):
+    scope = dict(storage_dir=tmp_path, user_id="TestOwner", soul_id="TestSoul",
+                 conversation_id="mentra:iris")
+    conversation_sources.persist_mentra_history_snapshot(**scope, history=[])
+    path = next((tmp_path / "transcripts").rglob("latest_history.json"))
+    raw = json.loads(path.read_text())
+    if isinstance(damage, dict):
+        raw.update(damage)
+    else:
+        raw = damage
+    path.write_text(json.dumps(raw))
+    before = path.read_bytes()
+    tail_args = {"since_cursor": -1, "recent_fallback_messages": 0} if reader is conversation_sources.load_mentra_tail else {}
+    with pytest.raises(ValueError, match="mentra snapshot"):
+        reader(**scope, **tail_args)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("reader", [
+    conversation_sources.load_mentra_history_snapshot, conversation_sources.load_mentra_tail,
+])
+def test_mentra_readers_preserve_missing_empty_and_programming_error_semantics(tmp_path, monkeypatch, reader):
+    scope = dict(storage_dir=tmp_path, user_id="TestOwner", soul_id="TestSoul",
+                 conversation_id="mentra:iris")
+    tail_args = {"since_cursor": -1, "recent_fallback_messages": 0} if reader is conversation_sources.load_mentra_tail else {}
+    before = set(tmp_path.iterdir())
+    assert reader(**scope, **tail_args) == []
+    assert set(tmp_path.iterdir()) == before
+    conversation_sources.persist_mentra_history_snapshot(**scope, history=[])
+    assert reader(**scope, **tail_args) == []
+    error = RuntimeError("Fictional reader invariant failure")
+    def broken_read(*_args, **_kwargs):
+        raise error
+    monkeypatch.setattr(Path, "read_text", broken_read)
+    with pytest.raises(RuntimeError) as raised:
+        reader(**scope, **tail_args)
+    assert raised.value is error
 
 
 def test_mentra_storage_dir_stays_with_openalma_apps() -> None:
@@ -1354,12 +1415,12 @@ def test_load_whatsapp_web_source_tail_raises_on_initial_read_with_no_matching_r
     web_db = tmp_path / "web_source.db"
     _write_web_source_db(web_db, messages=[])
 
-    with pytest.raises(RuntimeError, match="canonical WhatsApp ID mismatch"):
+    with pytest.raises(ValueError, match="canonical WhatsApp ID mismatch"):
         conversation_sources.load_whatsapp_web_source_tail(
             conversation_id="whatsapp:dm:99999999999",
             since_cursor=-1,
             recent_fallback_messages=0,
-            soul_id="Siri",
+            soul_id="TestSoul",
             web_source_db_path=web_db,
         )
 

@@ -2290,7 +2290,9 @@ def _stamp_assistant_display_name(*args: Any, **kwargs: Any) -> Any:
 def _load_tail_for_source_conversation(*args: Any, **kwargs: Any) -> Any:
     try:
         return _cross_history._load_tail_for_source_conversation(*args, **kwargs)
-    except (OSError, ValueError, sqlite3.Error) as exc:
+    except Exception as exc:
+        if not _conversation_sources.is_source_unavailable_error(exc):
+            raise
         raise HTTPException(status_code=409, detail=f"Chat source {kwargs['conversation_id']} is unavailable; restore it before retrying: {exc}") from exc
 
 def _resolve_source_cursor(*args: Any, **kwargs: Any) -> Any:
@@ -2380,7 +2382,7 @@ async def _run_consolidation_task(
             )
         if release_memorize_claim:
             await _finish_memorize_claim(_memorize_lock_key(uid, soul_id), False)
-        return {"ok": True, "status": "skipped"}
+        return {"ok": True, "status": "skipped", "reason": "in_progress"}
     if progress_key and memorize_progress is not None:
         _memorize_endpoint._set_memorize_progress(
             memorize_progress,
@@ -2410,6 +2412,11 @@ async def _run_consolidation_task(
         )
         if out.get("status") == "skipped":
             success = out.get("reason") == "not_due"
+            if force and release_memorize_claim and out.get("reason") == "no_pending_segments":
+                _write_conversation_state(conversation_id, user_id=uid, soul_id=soul_id, updates={
+                    "last_consolidation_error": None, "last_consolidation_error_at": None,
+                })
+                success = True
             if progress_key and memorize_progress is not None:
                 _memorize_endpoint._set_memorize_progress(
                     memorize_progress,
@@ -2417,7 +2424,7 @@ async def _run_consolidation_task(
                     active=False,
                     last_result="skipped",
                 )
-            return {"ok": True, "status": "skipped"}
+            return {"ok": True, "status": "skipped", "reason": out.get("reason")}
         success = True
         if progress_key and memorize_progress is not None:
             _memorize_endpoint._set_memorize_progress(
@@ -2458,6 +2465,13 @@ async def _run_consolidation_task(
                     con.commit()
                 finally:
                     con.close()
+            if success and force and release_memorize_claim:
+                import_cid, imported = _soul_import_state(uid, soul_id)
+                if imported.get("stage") == "complete" and imported.get("ordinary_waiting"):
+                    release_memorize_claim = False
+                    await _import_routes.run_waiting_memorize(
+                        sys.modules[__name__], scoped={"user_id": uid, "soul_id": soul_id}, import_cid=import_cid,
+                    )
         finally:
             if release_memorize_claim:
                 await _finish_memorize_claim(_memorize_lock_key(uid, soul_id), success)
@@ -4012,8 +4026,7 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
             tails = _load_cross_memorize_tails_from_sources(con, user_id=uid, soul_id=sid, strict=True)
         except HTTPException as exc:
             cause = exc.__cause__
-            if (exc.status_code != 409 or isinstance(cause, sqlite3.ProgrammingError)
-                    or not isinstance(cause, (OSError, ValueError, sqlite3.DatabaseError))):
+            if exc.status_code != 409 or not _conversation_sources.is_source_unavailable_error(cause):
                 raise
             source_warning = str(exc.detail)
             tails = {}
@@ -4219,6 +4232,11 @@ def _prepare_auto_memorize(
         )
         return unmemorized_tokens, payload if unmemorized_tokens >= _MIN_CHUNK_TOKENS else None
     except Exception as exc:
+        cause = exc.__cause__ if isinstance(exc, HTTPException) else exc
+        if not _conversation_sources.is_source_unavailable_error(cause) or (
+            isinstance(exc, HTTPException) and exc.status_code != 409
+        ):
+            raise
         logger.error("forced memorize source assembly failed for conversation_id=%s: %s", cid, exc)
         _set_background_error(
             cid,
@@ -4232,7 +4250,7 @@ def _prepare_auto_memorize(
                             _FORCED_MEMORIZE_INFLIGHT.get(_memorize_lock_key(uid, soul_id)) is not True):
             _write_conversation_state(cid, user_id=uid, soul_id=soul_id, updates={"memorize_failure": {
                 "conversation_id": cid, "paused": True, "error": f"Memorize source unavailable: {exc}"[:300],
-                "targets": {},
+                "targets": {}, "failure_id": uuid.uuid4().hex,
             }})
         return unmemorized_tokens, None
 

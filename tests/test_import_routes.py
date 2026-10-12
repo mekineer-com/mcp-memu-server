@@ -110,13 +110,28 @@ async def test_import_task_owns_continuation_and_releases_once(monkeypatch, mode
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["success", "empty", "failure", "unavailable"])
+@pytest.mark.parametrize("outcome", ["success", "empty", "empty_failure", "failure", "accepted", "unavailable", "not_due",
+                                    "no_pending_segments", "in_progress", "memorize_postprocessing_pending",
+                                    "failure_requires_retry"])
 async def test_import_wait_survives_batches_and_hands_off_to_saved_cross_chat(monkeypatch, outcome):
     scoped = {"user_id": "TestOwner", "soul_id": "ImportSoul"}
     cid, trigger = "import:dm:wait", "chat:trigger"
     marker = main._memorize_lock_key(**scoped)
     monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
     monkeypatch.setattr(main, "_FORCED_MEMORIZE_RECHECK", {})
+    monkeypatch.setattr(main, "_CONSOLIDATION_RUNNING", {})
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_kw: object())
+    monkeypatch.setattr(conversation_sources, "import_chat_info", lambda **_: {
+        "conversation_id": cid, "history_end_index": 4})
+    async def consolidated(**_kwargs):
+        if outcome == "empty_failure":
+            main._write_conversation_state(cid, **scoped, updates={
+                "last_consolidation_error": "Fictional consolidation failure",
+                "last_consolidation_error_at": "2026-01-02T00:00:00Z",
+            })
+            raise ValueError("Fictional consolidation failure")
+        return {"status": "skipped", "reason": "no_pending_segments"}
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", consolidated)
     main._write_conversation_state(cid, **scoped, updates={"import_state": {
         "history_end_index": 4, "memorize_cursor": -1, "pending_segment_ids": [],
         "stage": "memorize", "error": None,
@@ -144,7 +159,7 @@ async def test_import_wait_survives_batches_and_hands_off_to_saved_cross_chat(mo
         assert (actual_cid, uid, sid) == (trigger, *scoped.values())
         if outcome == "unavailable":
             raise ValueError("Source unavailable")
-        if outcome == "empty":
+        if outcome in {"empty", "empty_failure"}:
             return None
         return {"user": scoped, "conversation_id": trigger, "conversation": [
             {"content": "from trigger"}, {"content": "from another chat"}]}
@@ -154,15 +169,22 @@ async def test_import_wait_survives_batches_and_hands_off_to_saved_cross_chat(mo
         assert main._soul_activity_pause(**scoped)
         assert main._soul_activity_pause(**scoped, import_handoff=True) is None
         async def finish():
-            return outcome == "success"
+            if outcome in {"success", "failure"}:
+                return {"ok": outcome == "success", "status": "ok" if outcome == "success" else "error"}
+            if outcome == "accepted":
+                return {"ok": True, "status": "accepted"}
+            return {"ok": True, "status": "skipped", "reason": outcome}
         tasks.add_task(finish)
     monkeypatch.setattr(main, "_memorize_owned", execute)
     tasks = main.BackgroundTasks()
     assert (await main.retry_memorize(**scoped, background_tasks=tasks))["status"] == "accepted"
+    assert _endpoint("/imports/status")(**scoped, label="TestApp")["followup_error"] is None
     await tasks()
     assert marker not in main._FORCED_MEMORIZE_INFLIGHT
-    assert bool(main._soul_import_state(**scoped)[1]["ordinary_waiting"]) == (outcome in {"failure", "unavailable"})
-    assert bool(main._soul_activity_pause(**scoped)) == (outcome in {"failure", "unavailable"})
+    waiting = outcome not in {"success", "empty", "not_due", "no_pending_segments"}
+    assert bool(main._soul_import_state(**scoped)[1]["ordinary_waiting"]) == waiting
+    assert bool(main._soul_activity_pause(**scoped)) == waiting
+    assert bool(_endpoint("/imports/status")(**scoped, label="TestApp")["followup_error"]) == waiting
 
 
 @pytest.mark.asyncio
@@ -282,6 +304,8 @@ async def test_real_import_completion_memorizes_current_messages_across_chats(tm
         # The cursors committed, but the process stopped before clearing the wait.
         main._write_conversation_state(chat["conversation_id"], **scoped,
                                        updates={"import_ordinary_waiting": trigger})
+        assert _endpoint("/imports/status")(**scoped, label="TestApp")["followup_error"] == (
+            "Waiting for Memorize after import.")
         tasks = main.BackgroundTasks()
         await main.retry_memorize(**scoped, background_tasks=tasks)
         await tasks()
@@ -307,6 +331,114 @@ async def test_real_import_completion_memorizes_current_messages_across_chats(tm
         await main.retry_memorize(**scoped, background_tasks=tasks)
         await tasks()
         assert calls[-1] == ["Pending competing chat"] and main._soul_activity_pause(**scoped) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["remaining_source", "missing_source", "no_pending_segments", "failure"])
+async def test_consolidation_retry_reconciles_completed_import_wait(tmp_path, monkeypatch, outcome):
+    scoped = {"user_id": "TestOwner", "soul_id": "RetrySoul"}
+    source = tmp_path / "imports.db"
+    monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_RECHECK", {})
+    monkeypatch.setattr(main, "_CONSOLIDATION_RUNNING", {})
+    monkeypatch.setattr(main, "_BACKGROUND_TASKS", set())
+    chat = chat_import.store_upload(source, **scoped, label="TestApp", messages=[], history_count=0)
+    _endpoint("/imports/register")(ImportScope(**scoped, label="TestApp"))
+    import_cid, trigger = chat["conversation_id"], "chat:retry-trigger"
+    clock = "2026-01-01T00:00:00Z"
+    main._write_conversation_state(trigger, **scoped, updates={
+        "last_consolidation_at": clock, "last_consolidation_error": "Fictional post-commit failure",
+        "last_consolidation_error_at": "2026-01-02T00:00:00Z",
+    })
+    main._write_conversation_state(import_cid, **scoped, updates={"import_ordinary_waiting": trigger})
+    conversation_sources.persist_sillytavern_history_snapshot(
+        storage_dir=main._get_storage_dir(main._CONFIG), **scoped, conversation_id=trigger,
+        history=[] if outcome == "no_pending_segments" else [
+            {"role": "user", "content": "Remaining fictional story", "received_at": "2026-01-03T12:00:00Z"}],
+    )
+    if outcome == "missing_source":
+        competing = "atomic:missing"
+        main._write_conversation_state(competing, **scoped, updates={})
+        storage = main._get_storage_dir(main._CONFIG)
+        conversation_sources.persist_atomic_history_snapshot(storage_dir=storage, **scoped,
+            conversation_id=competing, history=[{"role": "user", "content": "Missing fictional story",
+                                                "received_at": "2026-01-03T13:00:00Z"}])
+        snapshot = conversation_sources._chat_snapshot_path(storage_dir=storage, **scoped,
+            conversation_id=competing, source_label="atomic")
+    extracts, releases, runs = [], [], []
+    class Service(SavedBatchService):
+        async def extract(self, **kwargs):
+            extracts.extend(json.loads(segment["raw_text"]) for segment in kwargs["segments"])
+            return [{"memory_item_ids": []} for _ in kwargs["segments"]]
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_kw: Service())
+    pipeline = main._run_consolidation_pipeline_once
+    async def consolidated(**kwargs):
+        runs.append(kwargs["force"])
+        if outcome == "no_pending_segments":
+            return await pipeline(**kwargs)
+        if not kwargs["force"]:
+            return {"status": "skipped", "reason": "not_due"}
+        if outcome == "failure":
+            raise ValueError("Fictional repeated consolidation failure")
+        main._write_conversation_state(trigger, **scoped, updates={
+            "last_consolidation_error": None, "last_consolidation_error_at": None,
+        })
+        if outcome == "missing_source":
+            snapshot.unlink()
+        return {"status": "ok", "result": {}}
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once", consolidated)
+    finish = main._finish_memorize_claim
+    async def finished(marker, success):
+        releases.append(success)
+        await finish(marker, success)
+    monkeypatch.setattr(main, "_finish_memorize_claim", finished)
+    assert _endpoint("/imports/status")(**scoped, label="TestApp")["followup_error"]
+    assert (await main.retry_consolidation(trigger, {"user": scoped})).status_code == 202
+    marker = main._memorize_lock_key(**scoped)
+    assert main._FORCED_MEMORIZE_INFLIGHT[marker] is False
+    await asyncio.gather(*list(main._BACKGROUND_TASKS))
+    state = main._paid_work_state(**scoped)
+    failed = outcome in {"failure", "missing_source"}
+    assert releases == [not failed] and marker not in main._FORCED_MEMORIZE_INFLIGHT
+    assert bool(main._soul_import_state(**scoped)[1]["ordinary_waiting"]) == failed
+    assert bool(main._soul_activity_pause(**scoped)) == failed
+    assert bool(_endpoint("/imports/status")(**scoped, label="TestApp")["followup_error"]) == failed
+    assert state["last_consolidation_at"] == clock
+    if outcome == "missing_source":
+        assert state["memorize_failure"]["paused"]
+        assert competing in state["memorize_failure"]["error"]
+    else:
+        assert state["memorize_failure"] is None
+    assert bool(state["last_consolidation_error"]) == (outcome == "failure")
+    assert bool(state["last_consolidation_error_at"]) == (outcome == "failure")
+    assert runs == ([True] if failed else [True, False])
+    assert [[row["content"] for row in batch] for batch in extracts] == (
+        [["Remaining fictional story"]] if outcome == "remaining_source" else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force,release", [(False, True), (True, False)])
+async def test_no_pending_consolidation_does_not_acknowledge_error_outside_retry(monkeypatch, force, release):
+    scoped = {"user_id": "TestOwner", "soul_id": "AckSoul"}
+    cid = "chat:no-pending"
+    error = "Fictional post-commit failure"
+    error_at = "2026-01-02T00:00:00Z"
+    monkeypatch.setattr(main, "_CONSOLIDATION_RUNNING", {})
+    marker = main._memorize_lock_key(**scoped)
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {marker: False})
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_RECHECK", {})
+    main._write_conversation_state(cid, **scoped, updates={
+        "last_consolidation_error": error, "last_consolidation_error_at": error_at,
+    })
+    result = await main._run_consolidation_task(
+        object(), conversation_id=cid, uid=scoped["user_id"], soul_id=scoped["soul_id"],
+        force=force, release_memorize_claim=release,
+    )
+    assert result == {"ok": True, "status": "skipped", "reason": "no_pending_segments"}
+    state = main._paid_work_state(**scoped)
+    assert state["last_consolidation_error"] == error and state["last_consolidation_error_at"] == error_at
+    assert state["last_consolidation_at"] is None
 
 
 def test_new_soul_first_preview_initializes_schema_without_model_calls(tmp_path, monkeypatch):

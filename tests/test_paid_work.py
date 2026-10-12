@@ -1366,6 +1366,9 @@ async def test_retry_validated_empty_source_preserves_unfinished_targets(monkeyp
 @pytest.mark.parametrize("waiting, retained_source, late_failure", [
     (False, "chat", False), (True, "chat", False),
     (False, "activity", False), (True, "activity", False), (True, "chat", True),
+    (False, "chat", "extract_empty"), (True, "chat", "extract_empty"),
+    (False, "chat", "extract_farther"), (True, "chat", "extract_farther"),
+    (False, "chat", "extract_same"), (True, "chat", "extract_same"),
 ])
 async def test_retry_deleted_trigger_processes_retained_source_without_resurrection(
     monkeypatch, waiting, retained_source, late_failure,
@@ -1374,7 +1377,8 @@ async def test_retry_deleted_trigger_processes_retained_source_without_resurrect
     uid, sid, deleted = scoped["user_id"], scoped["soul_id"], "chat:deleted-trigger"
     retained = "chat:retained" if retained_source == "chat" else main._activity_messages.activity_conversation_id(sid)
     main._write_conversation_state(deleted, **scoped, updates={"memorize_failure": {
-        "conversation_id": deleted, "paused": True, "error": "Failed", "targets": {deleted: {"cursor": 9}}}})
+        "conversation_id": deleted, "paused": True, "error": "Failed", "targets": {deleted: {"cursor": 9}},
+        "failure_id": "00000000000000000000000000000001"}})
     main._write_conversation_state(retained, **scoped, updates={})
     path = main._sqlite_current_path(uid, sid)
     with main._sqlite_connect(path) as con:
@@ -1390,17 +1394,30 @@ async def test_retry_deleted_trigger_processes_retained_source_without_resurrect
             history=[{"role": "user", "content": "Fictional retained work", "ts_ms": 1}],
         )
     calls = []
+    expected_later = None
     class Service(SavedBatchService):
         async def extract(self, **kwargs):
+            nonlocal expected_later
             assert main._paid_work_state(**scoped)["memorize_failure"]["conversation_id"] == deleted
             calls.extend(json.loads(segment["raw_text"]) for segment in kwargs["segments"])
+            if late_failure in {"extract_empty", "extract_farther", "extract_same"}:
+                assert main._MEMORIZE_PROGRESS[main._memorize_lock_key(uid, sid)]["phase"] == "extracting"
+                captured = main._paid_work_state(**scoped)["memorize_failure"]
+                fresh = ({**captured, "targets": {}, "failure_id": "00000000000000000000000000000002"}
+                         if late_failure == "extract_same" else later)
+                main._write_conversation_state(retained, **scoped, updates={"memorize_failure": fresh})
+                expected_later = main._paid_work_state(**scoped)["memorize_failure"]
+                if late_failure == "extract_same":
+                    assert captured["failure_id"] == "00000000000000000000000000000001"
+                    assert {**expected_later, "failure_id": captured["failure_id"]} == captured
             return [{"pending_segment_ids": [segment["segment"]["segment_id"]]} for segment in kwargs["segments"]]
     service = Service()
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: service)
     monkeypatch.setattr(main, "_run_consolidation_task", AsyncMock(return_value={"status": "skipped"}))
     later = {"conversation_id": retained, "error": "Later fictional source unavailable", "paused": True,
-             "targets": {retained: {"cursor": 1, "memory_producing": True}}}
-    if late_failure:
+             "targets": {} if late_failure == "extract_empty" else
+                       {retained: {"cursor": 1, "memory_producing": True}}}
+    if late_failure is True:
         worker = main._run_memorize_segments
         async def after_completed_worker(**kwargs):
             success = await worker(**kwargs)
@@ -1408,6 +1425,7 @@ async def test_retry_deleted_trigger_processes_retained_source_without_resurrect
             main._write_conversation_state(retained, **scoped, updates={"memorize_failure": later})
             return success
         monkeypatch.setattr(main, "_run_memorize_segments", after_completed_worker)
+        expected_later = later
     try:
         if waiting:
             await main._import_routes.run_waiting_memorize(main, scoped=scoped, retry=True)
@@ -1416,11 +1434,21 @@ async def test_retry_deleted_trigger_processes_retained_source_without_resurrect
             await main.retry_memorize(**scoped, background_tasks=tasks)
             await tasks()
         assert [[row["content"] for row in rows] for rows in calls] == [["Fictional retained work"]]
-        assert main._paid_work_state(**scoped)["memorize_failure"] == (later if late_failure else None)
+        failure = main._paid_work_state(**scoped)["memorize_failure"]
+        assert failure == expected_later
         if late_failure:
             state = main._load_turn_state_and_soul_card(retained, **scoped)[0]
             assert state["digest_cursor"] == 0 and state["pending_segment_ids"]
-            assert not main._memorize_targets_complete(uid, sid, later["targets"])
+            assert failure["paused"] and failure["error"] == ("Failed" if late_failure == "extract_same" else later["error"])
+            assert not failure.get("segment_work")
+            assert "_expected_memorize_failure" not in state and "_expected_memorize_failure" not in failure
+            assert main._memorize_targets_complete(uid, sid, failure["targets"]) == (late_failure in {"extract_empty", "extract_same"})
+            if late_failure in {"extract_empty", "extract_farther", "extract_same"}:
+                assert failure["conversation_id"] == deleted
+                assert failure["targets"][deleted] == {"cursor": 9}
+                assert failure["targets"][retained]["cursor"] == (1 if late_failure == "extract_farther" else 0)
+            if late_failure == "extract_same":
+                assert failure["failure_id"] == "00000000000000000000000000000002"
         with main._sqlite_connect(path) as con:
             assert con.execute("SELECT conversation_id FROM conversations").fetchall() == [(retained,)]
     finally:

@@ -69,6 +69,16 @@ async def recover_memorize(runtime: Any, *, scoped: dict, cid: str | None, histo
     })
 
 
+def _memory_work_completed(result: Any) -> bool:
+    if isinstance(result, dict):
+        return bool(result["ok"]) and (
+            result["status"] == "ok" or (
+                result["status"] == "skipped" and result["reason"] in {"not_due", "no_pending_segments"}
+            )
+        )
+    return bool(result)
+
+
 async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | None = None, retry: bool = False) -> None:
     uid, sid = scoped["user_id"], scoped["soul_id"]
     marker = runtime._memorize_lock_key(uid, sid)
@@ -100,24 +110,29 @@ async def run_waiting_memorize(runtime: Any, *, scoped: dict, import_cid: str | 
                     runtime._write_retry_memorize_state(cid, **scoped, updates={"memorize_failure": None})
                 else:
                     handoff_failure = failure
-            if failure and cid is not None:
+            if cid is not None:
                 svc = runtime._get_service_from_payload({"user": scoped}, operation="consolidation")
                 consolidation_started = True
-                await runtime._run_consolidation_task(
+                result = await runtime._run_consolidation_task(
                     svc, conversation_id=cid,
                     soul_id=sid, uid=uid, progress_key=marker, memorize_progress=runtime._MEMORIZE_PROGRESS,
                     completed_memorize_failure=handoff_failure,
                 )
-            success = True
+                success = _memory_work_completed(result)
+            else:
+                success = True
         else:
             tasks = BackgroundTasks()
             await runtime._memorize_owned(payload, tasks, True, admitted=True, batch_owned=True,
                                           import_handoff=True, retry=bool(failure))
             success = True
             for task in tasks.tasks:
-                if not await task.func(*task.args, **task.kwargs):
+                if not _memory_work_completed(await task.func(*task.args, **task.kwargs)):
                     success = False
                     break
+        success = success and not runtime._soul_state.activity_pause(
+            runtime._paid_work_state(uid, sid), memorize_running=False, consolidation_running=False,
+        )
         if success and import_cid:
             runtime._write_conversation_state(import_cid, **scoped, updates={"import_ordinary_waiting": None})
     except (Exception, asyncio.CancelledError) as exc:
@@ -350,11 +365,16 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         task = import_task(runtime, marker)
         followup_error = None
         if record["stage"] == "complete" and record.get("ordinary_waiting"):
+            paid_state = runtime._paid_work_state(**scoped)
             followup_error = runtime._soul_state.activity_pause(
-                runtime._paid_work_state(**scoped),
+                paid_state,
                 memorize_running=runtime._FORCED_MEMORIZE_INFLIGHT.get(marker) is False,
-                consolidation_running=runtime._CONSOLIDATION_RUNNING.get((user_id, soul_id)) is False,
+                consolidation_running=runtime._CONSOLIDATION_RUNNING.get((scoped["user_id"], scoped["soul_id"])) is False,
             )
+            if followup_error is None and marker not in runtime._FORCED_MEMORIZE_INFLIGHT and (
+                scoped["user_id"], scoped["soul_id"]
+            ) not in runtime._CONSOLIDATION_RUNNING:
+                followup_error = runtime._soul_activity_pause(**scoped, state=paid_state)
         return {"conversation_id": chat["conversation_id"], "import_state": record,
                 "followup_error": followup_error,
                 "deferred_history": chat["history_end_index"] > record["history_end_index"],

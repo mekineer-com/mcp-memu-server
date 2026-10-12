@@ -2232,7 +2232,7 @@ async def test_consolidation_pipeline_busy_caller_cannot_release_owner(
             object(), conversation_id="cid-owner", soul_id=key[1], uid=key[0],
             progress_key="owner", memorize_progress=progress,
         )
-        assert refused == {"ok": True, "status": "skipped"}
+        assert refused == {"ok": True, "status": "skipped", "reason": "in_progress"}
         assert progress["owner"] == owner_progress
         assert marker in main._MEMORIZE_CANCEL
         assert key in main._CONSOLIDATION_RUNNING
@@ -4567,7 +4567,7 @@ def test_auto_memorize_marks_background_error_when_source_assembly_fails(
     monkeypatch.setattr(
         main,
         "_build_cross_conversation_payload",
-        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")),
+        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("boom")),
     )
     captured: dict[str, str] = {}
     monkeypatch.setattr(
@@ -4585,7 +4585,7 @@ def test_auto_memorize_marks_background_error_when_source_assembly_fails(
 
     assert queued is None
     assert captured["code"] == "forced_memorize_source_failed"
-    assert "RuntimeError: boom" in captured["detail"]
+    assert "ValueError: boom" in captured["detail"]
 
 
 def test_auto_memorize_triggers_on_summed_primary_tails(monkeypatch: pytest.MonkeyPatch):
@@ -10410,6 +10410,37 @@ def test_free_turn_follow_up_schedule_persists_pending_row(
     payload = json.loads(row["payload_json"])
     assert payload["user"]["conversation_id"] == "whatsapp:group:18322935409-1579788049@g.us"
     assert payload["follow_up_reason"] == "Check whether Marcos got home safely."
+
+
+@pytest.mark.parametrize("error", [OSError("Fictional source missing"), ValueError("Fictional bad source"),
+    RuntimeError("Fictional invariant failure"), TypeError("Fictional bug"),
+    sqlite3.ProgrammingError("Fictional binding bug"), sqlite3.InterfaceError("Fictional interface bug")])
+def test_automatic_source_failure_events_do_not_mask_programming_errors(monkeypatch, error):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "chat:source-error-kind"
+    initial, _ = main._write_conversation_state(cid, **scope, updates={})
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
+    monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 1)
+    monkeypatch.setattr(main, "_unmemorized_sleep_gap_detected", lambda *_a, **_kw: True)
+    def broken(*_args, **_kwargs):
+        raise error
+    monkeypatch.setattr(main, "_build_cross_conversation_payload", broken)
+    history = [{"role": "user", "content": "Fictional saved source", "source_conversation_index": 0}]
+    def prepare():
+        return main._prepare_auto_memorize(cid, *scope.values(), {}, initial, history, dry_run=False)
+    if isinstance(error, (OSError, ValueError)):
+        assert prepare()[1] is None
+        first = main._paid_work_state(**scope)["memorize_failure"]
+        assert prepare()[1] is None
+        second = main._paid_work_state(**scope)["memorize_failure"]
+        assert first["failure_id"] != second["failure_id"]
+        assert {key: value for key, value in first.items() if key != "failure_id"} == {
+            key: value for key, value in second.items() if key != "failure_id"}
+        assert second["paused"] and str(error) in second["error"]
+    else:
+        with pytest.raises(type(error)) as raised:
+            prepare()
+        assert raised.value is error and main._paid_work_state(**scope)["memorize_failure"] is None
 
 
 def test_free_turn_discovery_uses_injected_paths_and_canonical_soul_exclusions(tmp_path, monkeypatch):

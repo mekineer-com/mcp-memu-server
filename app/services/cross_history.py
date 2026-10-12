@@ -954,7 +954,7 @@ def _load_cross_memorize_tails_from_sources(
         except Exception as exc:
             _m().logger.error("cross-memorize source read failed for conversation_id=%s: %s", cid, exc)
             if strict:
-                if isinstance(exc, (OSError, ValueError, sqlite3.Error)):
+                if _conversation_sources.is_source_unavailable_error(exc):
                     raise HTTPException(status_code=409, detail=f"Chat source {cid} is unavailable; restore it before retrying: {exc}") from exc
                 raise
             is_lid_gap = "LID↔phone mapping gap" in str(exc)
