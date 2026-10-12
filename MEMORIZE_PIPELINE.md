@@ -172,6 +172,11 @@ extracts applicable memory types. Dates are validated against selected **primary
 source days, not broadened by background-only dates. The default type registry is
 `src/memu/prompts/memory_type/__init__.py`; speaker attribution is in
 `memorize_speakers.py`. Preparation/model work is not the primary commit.
+`memorize_parsing._parse_memory_type_response_xml` preserves literal less-than
+signs inside memory content without repairing structural XML. CDATA, comments
+and processing instructions do not change content nesting; broken structure still
+fail before persistence. Weekly companion prose uses all child/tail text when
+preparing its embedding and final write, not just the first XML text node.
 
 The important naming trap: **`_memorize_categorize_items` performs the primary
 save; `_memorize_persist_and_index` performs post-save dynamic dossier review.**

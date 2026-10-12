@@ -473,6 +473,50 @@ def test_weekly_reflection_requires_complete_intention_list() -> None:
     )["intentions"] == []
 
 
+@pytest.mark.parametrize("prose", ["", " ", "<em> </em>"])
+def test_weekly_reflection_rejects_blank_companion_prose(prose) -> None:
+    with pytest.raises(ValueError, match="requires companion_memory"):
+        _parse_weekly_reflection_xml(
+            "<weekly_reflection><intentions/><edges/>"
+            f"<companion_memory>{prose}</companion_memory></weekly_reflection>"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("prose", "expected"), [
+    ("I noticed <em>how much</em> we grew.", "I noticed how much we grew."),
+    ("<em>We grew.</em> Together.", "We grew. Together."),
+    ("<![CDATA[We felt <3 & steady.]]>", "We felt <3 & steady."),
+])
+async def test_weekly_reflection_preserves_complete_prose_through_embedding(prose, expected) -> None:
+    svc = _DossierContextService()
+    original_chat = svc.chat
+    embedded = []
+
+    async def chat(prompt, **kwargs):
+        if kwargs["step"] == "weekly":
+            return (
+                "<weekly_reflection><intentions/><edges/><companion_memory>"
+                f"{prose}</companion_memory></weekly_reflection>"
+            )
+        return await original_chat(prompt, **kwargs)
+
+    async def embed(texts, **_kwargs):
+        embedded.extend(texts)
+        return [[1.0] for _ in texts]
+
+    svc.chat, svc.embed = chat, embed
+    inputs = _inputs()
+    await prepare_dossier_consolidation_context(
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser",
+    )
+    result = await run_consolidation_llm(
+        svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser",
+    )
+    assert result["companion_memory"] == expected
+    assert embedded == [expected]
+
+
 def test_episode_rendering_prefers_full_summary_and_falls_back_to_item() -> None:
     at = datetime(2026, 1, 1, tzinfo=UTC)
     rendered = _format_episode_memories([

@@ -217,7 +217,8 @@ def _parse_weekly_reflection_xml(raw: str) -> dict[str, Any]:
     intentions = validate_intention_replacement(intentions)
 
     edges, edge_invalidations = _parse_edges(root)
-    companion_memory = xml_text(root, "companion_memory")
+    companion_node = root.find("companion_memory")
+    companion_memory = "" if companion_node is None else "".join(companion_node.itertext()).strip()
     if not companion_memory:
         raise ValueError("Weekly reflection requires companion_memory")
 
