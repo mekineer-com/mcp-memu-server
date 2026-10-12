@@ -28,6 +28,8 @@ Provider-wait and media-failure seams below were additionally traced against
 memU `1826793`, with fictional-provider and local-subprocess regression checks.
 The WhatsApp policy-editor boundary was traced through OpenAlma `26685dd`;
 Channels/MCP policy readers were unchanged and checked with disposable data.
+Speaker attribution was traced through memU `050c3cc`, historical recall metadata
+through `c83a969`, and reply identity/anchor enrichment through MCP `42375a0`.
 
 ## Route And Owners
 
@@ -79,6 +81,16 @@ and Soul scope do not make every imported `user` row the owner. See
 and memU `memorize_speakers._build_speaker_map`: explicit `source_owner_id`, source
 roles/references and established entity links carry attribution. Generic imported
 roles alone do not assert owner identity. Preserve that evidence, not just prose.
+The shared speaker builder does not resolve a participant from a name or alias.
+Unlinked named participants retain their display labels in source context but
+remain unidentified for deterministic memory attribution and dedupe. Explicit
+source links and model-selected declared-relationship roster references remain
+separate supported evidence; this repair does not rewrite old stored memories.
+
+Reply entry validates identity selectors with the same resolver as retrieval,
+before reading a Soul or calling a provider. Anchor enrichment normalizes the
+identity-context role like the engine without changing caller-authored queries.
+Fixed Atomic/Iris context timing and intentional exclusions are unchanged.
 
 ## Selection And Context
 
