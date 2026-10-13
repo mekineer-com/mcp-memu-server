@@ -5469,23 +5469,53 @@ async def test_retirement_prevents_pending_rollup_from_restoring_context(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_retired_unsaved_retry_processes_surviving_st_source(monkeypatch):
+@pytest.mark.parametrize("missing", ["retired_st", "missing_db", "missing_anchor", "empty", "revoked"])
+async def test_retired_unsaved_retry_processes_surviving_st_source(monkeypatch, missing):
     from fastapi import BackgroundTasks
     from unittest.mock import AsyncMock
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
-    dead, live = "integrity:deleted-retry", "integrity:live-retry"
+    dead = "integrity:deleted-retry" if missing == "retired_st" else "whatsapp:dm:fictional-retry"
+    live = "integrity:live-retry"
     storage = main._get_storage_dir(main._CONFIG)
     for cid in (dead, live):
         rows = [{"role": "user", "content": f"Fictional message {i}", "source_conversation_index": i,
                  "received_at": "2020-01-01T12:00:00+00:00"} for i in range(2)]
-        conversation_sources.persist_sillytavern_history_snapshot(
-            storage_dir=storage, **scope, conversation_id=cid, history=rows, source_message_count=2)
+        if cid == live or missing == "retired_st":
+            conversation_sources.persist_sillytavern_history_snapshot(
+                storage_dir=storage, **scope, conversation_id=cid, history=rows, source_message_count=2)
         main._write_conversation_state(cid, **scope, updates={"digest_cursor": 0,
             "last_memorize_at": datetime.now(UTC).isoformat()})
+    dead_target = {"cursor": 9}
+    if missing == "missing_anchor":
+        dead_target["source_message_id"] = "fictional-missing-anchor"
+        monkeypatch.setattr(main, "_resolve_web_source_checkpoint", lambda *_a: None)
     failure = {"conversation_id": dead, "paused": True, "error": "Fictional interrupted work",
-               "targets": {dead: {"cursor": 9}, live: {"cursor": 1}}}
+               "targets": {dead: dead_target, live: {"cursor": 1}}}
     main._write_conversation_state(dead, **scope, updates={"memorize_failure": failure})
-    await main.retire_conversation_source(dead, {"user": scope})
+    if missing == "retired_st":
+        await main.retire_conversation_source(dead, {"user": scope})
+    else:
+        home = Path(main._CONFIG["hermes"]["home"])
+        (home / "memu.json").write_text(json.dumps({"whatsapp": {"channels": {
+            "fictional-retry": {"policy": "full", "memorize": True}}}}))
+        if missing == "revoked":
+            from tests.test_conversation_sources import _write_web_source_db
+            web = home / "web_source.db"
+            _write_web_source_db(web, messages=[{"msg_key": "fictional-revoked", "timestamp": 100,
+                "chat_id": "fictional-retry@c.us", "from_id": "fictional-retry@c.us",
+                "body": "Fictional revoked row", "revoked": True}])
+            monkeypatch.setitem(main._CONFIG["hermes"], "whatsapp_web_source_db", str(web))
+            dead_target.update(source_message_id="fictional-revoked", ts=100)
+            main._write_conversation_state(dead, **scope, updates={"memorize_failure": failure})
+            assert main._resolve_web_source_checkpoint(dead, "fictional-revoked") == 1
+            assert conversation_sources.load_whatsapp_web_source_tail(conversation_id=dead,
+                since_cursor=-1, recent_fallback_messages=0, soul_id=scope["soul_id"],
+                hermes_home=home, web_source_db_path=web) == []
+        if missing in ("missing_anchor", "empty"):
+            original_tail = main._load_tail_for_source_conversation
+            monkeypatch.setattr(main, "_load_tail_for_source_conversation",
+                lambda original=original_tail, **kw: [] if kw["conversation_id"] == dead else original(**kw))
+    assert not main._memorize_targets_complete(*scope.values(), failure["targets"])
     captured = []
     class Service(SavedBatchService):
         async def extract(self, **kwargs):
@@ -5502,10 +5532,215 @@ async def test_retired_unsaved_retry_processes_surviving_st_source(monkeypatch):
         assert len(captured) == 1 and [row["source_conversation_id"] for row in captured[0]] == [live]
         assert main._load_turn_state_and_soul_card(live, **scope)[0]["digest_cursor"] == 1
         assert main._paid_work_state(**scope)["memorize_failure"] is None
-        assert main._sillytavern_source_deleted(dead, *scope.values())
+        if missing == "retired_st":
+            assert main._sillytavern_source_deleted(dead, *scope.values())
+        else:
+            assert main._load_turn_state_and_soul_card(dead, **scope)[0]["digest_cursor"] == 0
+            (home / "memu.json").write_text(json.dumps({"whatsapp": {"channels": {
+                "fictional-retry": {"policy": "full", "memorize": True}}}}))
+            restored = [{"role": "user", "content": "Restored fictional row", "source_conversation_id": dead,
+                         "source_conversation_index": 9, "source_message_id": "fictional-restored", "ts_ms": 100000}]
+            original_tail = main._load_tail_for_source_conversation
+            monkeypatch.setattr(main, "_load_tail_for_source_conversation",
+                lambda original=original_tail, **kw: restored if kw["conversation_id"] == dead else original(**kw))
+            monkeypatch.setattr(main, "_resolve_web_source_checkpoint", lambda *_a: 9)
+            payload = main._saved_memorize_payload(dead, *scope.values())
+            assert payload and any(row["content"] == "Restored fictional row" for row in payload["conversation"])
+            assert not main._memorize_targets_complete(*scope.values(), {dead: dead_target})
     finally:
         if hasattr(service, "engine"):
             service.database.close()
+
+
+@pytest.mark.parametrize("error_type", [OSError, ValueError, sqlite3.DatabaseError, sqlite3.ProgrammingError, TypeError, RuntimeError])
+@pytest.mark.parametrize("source", ["whatsapp:dm:fictional-boundary", "integrity:strict-source"])
+def test_unavailable_wa_auto_primary_does_not_pause_other_clients(monkeypatch, caplog, error_type, source):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    state = {"memorize_chat": True, "digest_cursor": 0, "last_memorize_at": "2020-01-01T00:00:00+00:00",
+             "digest_cursor_source_message_id": "fictional-anchor", "digest_cursor_ts": 100}
+    def unavailable(*_a, **_kw):
+        raise error_type("Fictional unavailable source")
+    monkeypatch.setattr(main, "_resolve_source_cursor", unavailable)
+    if source.startswith("whatsapp:"):
+        home = Path(main._CONFIG["hermes"]["home"])
+        (home / "memu.json").write_text(json.dumps({"whatsapp": {"channels": {
+            "fictional-boundary": {"policy": "full", "memorize": True}}}}))
+    call = lambda: main._prepare_auto_memorize(source, *scope.values(), {}, state,
+        [{"role": "user", "content": "Fictional payload", "source_conversation_index": 1}], dry_run=False)
+    if source.startswith("whatsapp:") and conversation_sources.is_source_unavailable_error(error_type()):
+        assert call() == (0, None)
+        assert main._paid_work_state(**scope)["memorize_failure"] is None
+        assert any(source in record.getMessage() and "Fictional unavailable source" in record.getMessage()
+                   for record in caplog.records)
+    else:
+        with pytest.raises(error_type, match="Fictional unavailable"):
+            call()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail", [False, True])
+async def test_unavailable_wa_retry_resumes_saved_phase_before_unsaved_discard(monkeypatch, fail):
+    from fastapi import BackgroundTasks
+    from unittest.mock import AsyncMock
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "whatsapp:dm:fictional-saved-retry"
+    home = Path(main._CONFIG["hermes"]["home"])
+    (home / "memu.json").write_text(json.dumps({"whatsapp": {"channels": {
+        "fictional-saved-retry": {"policy": "full", "memorize": True}}}}))
+    main._write_conversation_state(cid, **scope, updates={"digest_cursor": 0,
+        "last_memorize_at": "2020-01-01T00:00:00+00:00", "memorize_failure": {
+            "conversation_id": cid, "paused": True, "error": "Fictional interrupted review",
+            "targets": {cid: {"cursor": 9}}}})
+    main._write_conversation_state(cid, **scope, updates={"memorize_segment_work": {"fictional-saved": "review"}})
+    engine = SavedBatchService.make_engine(scope)
+    engine.database.resource_repo.create_resource(url="fictional-saved", modality="conversation",
+        local_path="fictional-saved", caption=None, embedding=None, user_data=scope,
+        segment_id="fictional-saved", conversation_id=cid)
+    resumed = []
+    async def review(state, context, **kw):
+        failure = main._paid_work_state(**scope)["memorize_failure"]
+        assert failure["targets"][cid]["cursor"] == 9
+        assert failure["segment_work"] == {"fictional-saved": "review"}
+        resumed.append(True)
+        if fail:
+            raise RuntimeError("Fictional review still failed")
+        return state
+    monkeypatch.setattr(engine, "_memorize_persist_and_index", review)
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_kw: engine)
+    monkeypatch.setattr(main, "_run_consolidation_pipeline_once",
+                        AsyncMock(return_value={"status": "skipped", "reason": "not_due"}))
+    tasks = BackgroundTasks()
+    try:
+        assert (await main.retry_memorize(**scope, background_tasks=tasks))["status"] == "accepted"
+        assert not resumed
+        await tasks()
+        assert resumed == [True]
+        failure = main._paid_work_state(**scope)["memorize_failure"]
+        if fail:
+            assert failure["segment_work"] == {"fictional-saved": "review"}
+            assert "Fictional review still failed" in failure["error"]
+        else:
+            assert failure is None
+        assert main._load_turn_state_and_soul_card(cid, **scope)[0]["digest_cursor"] == 0
+    finally:
+        engine.database.close()
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("error_type", [OSError, ValueError, sqlite3.DatabaseError, sqlite3.ProgrammingError, TypeError, RuntimeError])
+def test_unavailable_wa_cross_reads_preserve_surviving_chat(monkeypatch, caplog, error_type, wrapped):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    dead, live = "whatsapp:dm:fictional-cross", "integrity:cross-survivor"
+    home = Path(main._CONFIG["hermes"]["home"])
+    (home / "memu.json").write_text(json.dumps({"whatsapp": {"channels": {
+        "fictional-cross": {"policy": "full", "memorize": True}}}}))
+    for cid in (dead, live):
+        main._write_conversation_state(cid, **scope, updates={"digest_cursor": -1})
+    rows = [{"role": "user", "content": "Surviving fictional context", "source_conversation_index": 0}]
+    conversation_sources.persist_sillytavern_history_snapshot(storage_dir=main._get_storage_dir(main._CONFIG),
+        **scope, conversation_id=live, history=rows, source_message_count=1)
+    original = main._load_tail_for_source_conversation
+    def load(**kw):
+        if kw["conversation_id"] != dead:
+            return original(**kw)
+        error = error_type("Fictional unavailable source")
+        if wrapped:
+            raise HTTPException(status_code=409, detail="Fictional source unavailable") from error
+        raise error
+    monkeypatch.setattr(main, "_load_tail_for_source_conversation", load)
+    with main._sqlite_connect(main._sqlite_current_path(**scope)) as con:
+        con.row_factory = sqlite3.Row
+        for reader in (lambda: main._load_cross_memorize_tails_from_sources(con, **scope, strict=True),
+                       lambda: main._load_cross_tail_from_sources(con, **scope)):
+            caplog.clear()
+            if conversation_sources.is_source_unavailable_error(error_type()):
+                result = reader()
+                assert (set(result) == {live} if isinstance(result, dict) else
+                        [row["source_conversation_id"] for row in result] == [live])
+                assert any(dead in record.getMessage() and "Fictional" in record.getMessage()
+                           for record in caplog.records)
+            else:
+                with pytest.raises((error_type, HTTPException, RuntimeError)):
+                    reader()
+
+
+@pytest.mark.parametrize("source_id,anchor,index,ts_ms,target_ts,complete", [
+    ("fictional-missing-anchor", None, 10, 100500, 100, False),
+    ("fictional-missing-anchor", None, 10, 101000, 100, True),
+    ("fictional-missing-anchor", None, 10, 101000, None, False),
+    ("fictional-anchor", 9, 8, 101000, 100, False),
+    ("fictional-anchor", 9, 10, 100500, 100, True),
+    ("fictional-anchor", 9, None, None, 100, True),
+    (None, None, 8, 101000, None, False),
+    (None, None, 9, 101000, None, False),
+    (None, None, 10, 100500, None, True),
+])
+def test_unavailable_wa_missing_anchor_target_keeps_whole_failed_second(
+    monkeypatch, source_id, anchor, index, ts_ms, target_ts, complete,
+):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    cid = "whatsapp:dm:fictional-target-second"
+    main._write_conversation_state(cid, **scope, updates={"digest_cursor": 0,
+        "last_memorize_at": "2020-01-01T00:00:00+00:00"})
+    monkeypatch.setattr(main, "_resolve_web_source_checkpoint", lambda *_a: anchor)
+    monkeypatch.setattr(main, "_load_tail_for_source_conversation", lambda **_kw: [] if index is None else [
+        {"source_conversation_index": index, "ts_ms": ts_ms, "content": "Fictional remaining row"}])
+    targets = {cid: {"cursor": 9, "source_message_id": source_id, "ts": target_ts}}
+    assert main._memorize_targets_complete(*scope.values(), targets) is complete
+    assert main._load_turn_state_and_soul_card(cid, **scope)[0]["digest_cursor"] == 0
+
+
+@pytest.mark.parametrize("missing", ["source", "row"])
+@pytest.mark.parametrize("primary_gap", [False, True])
+def test_unavailable_wa_frozen_prunes_missing_trigger_preserves_survivor(monkeypatch, missing, primary_gap):
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    dead, live = "whatsapp:dm:fictional-frozen", "integrity:frozen-survivor"
+    for cid in (dead, live):
+        main._write_conversation_state(cid, **scope, updates={"digest_cursor": -1})
+    original = main._resolve_source_cursor
+    def resolve(cid, *args, **kw):
+        if cid == dead:
+            if missing == "source":
+                raise OSError("Fictional missing frozen source")
+            return -1, None, True
+        return original(cid, *args, **kw)
+    monkeypatch.setattr(main, "_resolve_source_cursor", resolve)
+    monkeypatch.setattr(main, "_resolve_web_source_checkpoint", lambda *_a: None)
+    monkeypatch.setattr(main, "_MIN_CHUNK_TOKENS", 1)
+    def gap(rows, *_a, **_kw):
+        assert [row["source_conversation_id"] for row in rows] == [live]
+        return primary_gap
+    monkeypatch.setattr(main, "_unmemorized_sleep_gap_detected", gap)
+    safe = {"user": scope, "conversation_id": dead, "_automatic_memorize": True,
+            "conversation": [{"role": "user", "content": "Fictional retained words", "source_conversation_id": cid,
+                              "source_conversation_index": 0, "memorize_chat": True} for cid in (dead, live)],
+            "_final_cursors": {cid: {"cursor": 0, "memory_producing": True} for cid in (dead, live)}}
+    background = "integrity:frozen-supporting"
+    safe["conversation"].append({"role": "unknown", "content": "Fictional supporting gap", "memorize_chat": False,
+                                 "source_conversation_id": background, "source_conversation_index": 0})
+    safe["_final_cursors"][background] = {"cursor": 0, "memory_producing": False}
+    assert main._prepare_frozen_memorize(safe, *scope.values()) is primary_gap
+    assert {row["source_conversation_id"] for row in safe["conversation"]} == {live, background}
+    assert set(safe["_final_cursors"]) == {live, background}
+    assert main._load_turn_state_and_soul_card(dead, **scope)[0]["digest_cursor"] == -1
+
+
+def test_unavailable_wa_primary_live_history_uses_timestamp_floor(monkeypatch, caplog):
+    cid = "whatsapp:dm:fictional-live-floor"
+    home = Path(main._CONFIG["hermes"]["home"])
+    (home / "memu.json").write_text(json.dumps({"whatsapp": {"channels": {
+        "fictional-live-floor": {"policy": "full", "memorize": True}}}}))
+    def unavailable(*_a, **_kw):
+        raise OSError("Fictional primary unavailable")
+    monkeypatch.setattr(main, "_resolve_source_cursor", unavailable)
+    state = {"memorize_chat": True, "digest_cursor": 99, "digest_cursor_ts": 100,
+             "last_memorize_at": "2020-01-01T00:00:00+00:00"}
+    rows = [{"content": str(i), "ts_ms": i * 1000} for i in (99, 100, 101)]
+    assert main._current_history_for_ai(cid, "TestOwner", "TestSoul", rows, state, is_live_turn=True) == rows[1:]
+    assert any(cid in record.getMessage() and "Fictional primary unavailable" in record.getMessage()
+               for record in caplog.records)
+    with pytest.raises(OSError):
+        main._current_history_for_ai(cid, "TestOwner", "TestSoul", rows, state)
 
 
 @pytest.mark.asyncio

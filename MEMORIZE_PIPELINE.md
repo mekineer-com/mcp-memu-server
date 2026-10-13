@@ -423,6 +423,13 @@ exclude fresh source reads and clear rolling state while leaving accepted work,
 filed memories and Resource recovery intact. Follow checkpoint completion and
 Retry anchoring before changing retirement behavior.
 
+WhatsApp availability is not permanent retirement. Unavailable raw history is
+logged and omitted from current reply/Memorize assembly; it does not block sibling
+chats. Retry skips unsaved targets with no readable pending history through their
+captured boundary, without advancing source cursors. Saved Resource dedupe/review
+still runs first and remains failed on error. Restored history stays eligible.
+Diagnostics retain source warnings; other clients' source-failure rules are unchanged.
+
 ## Upkeep And Verification Scope
 
 When changing a stage, review its immediate producer, consumer and failure

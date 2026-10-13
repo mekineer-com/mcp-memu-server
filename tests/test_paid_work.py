@@ -1231,18 +1231,17 @@ async def test_pending_status_keeps_recovery_visible_when_source_count_is_unknow
     assert result["pending_consolidation_segments"] == 2 and result["retry_conversation_id"] == healthy
     assert result["consolidation_state"] == "error"
     assert "progress" in result and not result["memorize_running"] and not result["consolidation_running"]
-    if producing:
+    whatsapp = source.startswith("whatsapp:")
+    if producing and not whatsapp:
         with pytest.raises(HTTPException) as refused:
             await main.retry_memorize(**scoped, background_tasks=BackgroundTasks())
         assert refused.value.status_code == 409
-    if not producing:
+    if not producing or whatsapp:
         with main._sqlite_connect(main._sqlite_current_path(**scoped)) as con:
             con.row_factory = sqlite3.Row
-            with pytest.raises(HTTPException) as refused_background:
-                main._load_cross_memorize_tails_from_sources(con, **scoped, strict=True)
-        assert refused_background.value.status_code == 409
-        assert isinstance(refused_background.value.__cause__, ValueError)
-        # An old context-only bound does not owe extraction or rolling acknowledgement.
+            tails = main._load_cross_memorize_tails_from_sources(con, **scoped, strict=True)
+        assert set(tails) == {healthy}
+        # Unavailable WhatsApp input does not owe a cursor advance; saved consolidation remains failed.
         monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_k: object())
         tasks = BackgroundTasks()
         retried = await main.retry_memorize(**scoped, background_tasks=tasks)

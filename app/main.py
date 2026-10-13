@@ -2042,12 +2042,19 @@ def _current_history_for_ai(
     if not history:
         return []
     _, hermes_home, _, _ = _resolve_cross_source_paths()
-    cursor, floor, _ = _resolve_source_cursor(
-        conversation_id, _effective_digest_cursor_from_row(state),
-        (state or {}).get("digest_cursor_source_message_id"),
-        (state or {}).get("digest_cursor_ts"), rolling=False,
-        hermes_home_path=hermes_home,
-    )
+    try:
+        cursor, floor, _ = _resolve_source_cursor(
+            conversation_id, _effective_digest_cursor_from_row(state),
+            (state or {}).get("digest_cursor_source_message_id"),
+            (state or {}).get("digest_cursor_ts"), rolling=False,
+            hermes_home_path=hermes_home,
+        )
+    except Exception as exc:
+        if not is_live_turn or not _cross_history._whatsapp_source_unavailable(conversation_id, exc):
+            raise
+        logger.error("Live WhatsApp source read failed for %s; using payload history: %s",
+                     conversation_id, exc, exc_info=True)
+        cursor, floor = -1, (state or {}).get("digest_cursor_ts")
     return _turn_history_with_floor(history, cursor, floor)
 
 
@@ -2848,6 +2855,33 @@ def _memorize_targets_complete(user_id: str, soul_id: str, targets: dict[str, An
                        if prefix == "digest" else row[cursor_field])
             expected = target.get("cursor")
             source_id = target.get("source_message_id")
+            if _message_log.derive_source_label(cid).startswith("whatsapp:"):
+                try:
+                    _, hermes, sessions, channels = _resolve_cross_source_paths()
+                    current, floor, _ = _resolve_source_cursor(
+                        cid, current, row[f"{prefix}_cursor_source_message_id"],
+                        row[f"{prefix}_cursor_ts"], rolling=False, hermes_home_path=hermes)
+                    if source_id:
+                        expected = _resolve_web_source_checkpoint(cid, source_id)
+                    if expected is not None and current is not None and int(current) >= int(expected):
+                        continue
+                    pending = _load_tail_for_source_conversation(
+                        conversation_id=cid, user_id=user_id, soul_id=soul_id,
+                        since_cursor=current, recent_fallback_messages=0,
+                        storage_dir=_get_storage_dir(_CONFIG), hermes_home_path=hermes,
+                        sessions_index_path=sessions, state_db_path=channels, min_timestamp=floor)
+                except Exception as exc:
+                    if not _cross_history._whatsapp_source_unavailable(cid, exc):
+                        raise
+                    logger.error("WhatsApp source read failed for %s; skipping unsaved target %s: %s",
+                                 cid, target, exc, exc_info=True)
+                    continue
+                if any((int(msg["source_conversation_index"]) <= int(expected) if expected is not None
+                        else target.get("ts") is None or int(msg["ts_ms"]) // 1000 <= int(target["ts"]))
+                       for msg in pending):
+                    return False
+                logger.warning("Skipping WhatsApp unsaved target %s for %s: no eligible pending history", target, cid)
+                continue
             if source_id:
                 expected = _resolve_web_source_checkpoint(cid, source_id)
                 current_id = row[f"{prefix}_cursor_source_message_id"]
@@ -2910,16 +2944,26 @@ def _prepare_frozen_memorize(safe: dict[str, Any], uid: str, sid: str) -> bool:
         prefix = "digest" if producing else "rolling_summary"
         cursor = (_effective_digest_cursor_from_row(state) if producing else
                   int(state["rolling_summary_cursor_id"]) if state.get("rolling_summary_cursor_id") is not None else -1)
-        cursor, floor, web = _resolve_source_cursor(cid, cursor, state.get(f"{prefix}_cursor_source_message_id"),
-            state.get(f"{prefix}_cursor_ts"), rolling=not producing, hermes_home_path=hermes_home)
-        if web:
-            for row in rows:
-                if int(row.get("source_conversation_index", 0)) < 0:
-                    continue
-                index = _resolve_web_source_checkpoint(cid, str(row.get("source_message_id") or ""))
-                if index is None:
-                    raise HTTPException(status_code=409, detail=f"Captured WhatsApp source is unavailable for {cid}")
-                row["source_conversation_index"] = index
+        try:
+            cursor, floor, web = _resolve_source_cursor(cid, cursor, state.get(f"{prefix}_cursor_source_message_id"),
+                state.get(f"{prefix}_cursor_ts"), rolling=not producing, hermes_home_path=hermes_home)
+            if web:
+                available = []
+                for row in rows:
+                    if int(row.get("source_conversation_index", 0)) >= 0:
+                        source_id = str(row.get("source_message_id") or "")
+                        index = _resolve_web_source_checkpoint(cid, source_id)
+                        if index is None:
+                            logger.warning("Skipping unavailable captured WhatsApp message %s for %s", source_id, cid)
+                            continue
+                        row["source_conversation_index"] = index
+                    available.append(row)
+                rows = available
+        except Exception as exc:
+            if not _cross_history._whatsapp_source_unavailable(cid, exc):
+                raise
+            logger.error("Captured WhatsApp source read failed for %s; skipping: %s", cid, exc, exc_info=True)
+            continue
         if state.get("import_state") and not cid.startswith("import:dm:"):
             cursor = max(cursor, state["import_state"]["history_end_index"] - 1)
         context = [row for row in rows if int(row.get("source_conversation_index", 0)) < 0]
@@ -2938,6 +2982,8 @@ def _prepare_frozen_memorize(safe: dict[str, Any], uid: str, sid: str) -> bool:
     if eligible and safe.get("_automatic_memorize"):
         cid = _extract_conversation_id(safe)
         trigger = [row for row in retained if row.get("source_conversation_id") == cid and row.get("memorize_chat") is not False]
+        if not trigger and _message_log.derive_source_label(cid).startswith("whatsapp:"):
+            trigger = [row for row in retained if row.get("memorize_chat") is not False]
         eligible = (_estimate_primary_memorize_tokens(retained) >= _MIN_CHUNK_TOKENS
                     and (_sillytavern_source_deleted(cid, uid, sid)
                          or _unmemorized_sleep_gap_detected(trigger, -1, safe, min_chunk_tokens=0)))
@@ -3067,21 +3113,28 @@ def _saved_memorize_payload(cid: str, user_id: str, soul_id: str, failure: dict 
         **((failure or {}).get("filing_policy") or {}),
     }
     memory_producing = filing_policy.get(cid, state.get("memorize_chat", True))
-    if memory_producing:
-        saved_cursor = _effective_digest_cursor_from_row(state)
-        cursor, floor, web_source = _resolve_source_cursor(
-            cid, saved_cursor, state.get("digest_cursor_source_message_id"),
-            state.get("digest_cursor_ts"), rolling=False, hermes_home_path=hermes,
+    saved_cursor = _effective_digest_cursor_from_row(state)
+    web_source = _message_log.derive_source_label(cid).startswith("whatsapp:")
+    try:
+        if memory_producing:
+            cursor, floor, web_source = _resolve_source_cursor(
+                cid, saved_cursor, state.get("digest_cursor_source_message_id"),
+                state.get("digest_cursor_ts"), rolling=False, hermes_home_path=hermes,
+            )
+        else:
+            cursor, floor, web_source = _cross_history._resolve_background_cursor(cid, state)
+            saved_cursor = cursor
+        history = _load_tail_for_source_conversation(
+            conversation_id=cid, user_id=user_id, soul_id=soul_id, since_cursor=cursor,
+            recent_fallback_messages=0, storage_dir=storage, hermes_home_path=hermes,
+            sessions_index_path=sessions, state_db_path=channels, min_timestamp=floor,
+            import_state=state.get("import_state"),
         )
-    else:
-        cursor, floor, web_source = _cross_history._resolve_background_cursor(cid, state)
-        saved_cursor = cursor
-    history = _load_tail_for_source_conversation(
-        conversation_id=cid, user_id=user_id, soul_id=soul_id, since_cursor=cursor,
-        recent_fallback_messages=0, storage_dir=storage, hermes_home_path=hermes,
-        sessions_index_path=sessions, state_db_path=channels, min_timestamp=floor,
-        import_state=state.get("import_state"),
-    )
+    except Exception as exc:
+        if not _cross_history._whatsapp_source_unavailable(cid, exc):
+            raise
+        logger.error("Retry WhatsApp source read failed for %s; skipping: %s", cid, exc, exc_info=True)
+        history = []
     payload = _build_cross_conversation_payload(
         cid, user_id, soul_id, {"memorize_chat": memory_producing}, history,
         saved_cursor, bool(memory_producing),
@@ -4037,8 +4090,11 @@ async def diag_memorize_pending(user_id: str = "", soul_id: str = ""):
         con.row_factory = sqlite3.Row
         _sqlite_ensure_conversation_state_schema(con)
         source_warning = None
+        source_warnings = []
         try:
-            tails = _load_cross_memorize_tails_from_sources(con, user_id=uid, soul_id=sid, strict=True)
+            tails = _load_cross_memorize_tails_from_sources(con, user_id=uid, soul_id=sid, strict=True,
+                                                          source_warnings=source_warnings)
+            source_warning = "; ".join(source_warnings) or None
         except HTTPException as exc:
             cause = exc.__cause__
             if exc.status_code != 409 or not _conversation_sources.is_source_unavailable_error(cause):
@@ -4199,14 +4255,20 @@ def _prepare_auto_memorize(
     if conversation_state.get("import_state") is not None and not cid.startswith("import:dm:"):
         digest_cursor = max(digest_cursor, conversation_state["import_state"]["history_end_index"] - 1)
     _, hermes_home_path, _, _ = _resolve_cross_source_paths()
-    resolved_cursor, min_timestamp, trigger_web_source = _resolve_source_cursor(
-        cid,
-        digest_cursor,
-        conversation_state.get("digest_cursor_source_message_id"),
-        conversation_state.get("digest_cursor_ts"),
-        rolling=False,
-        hermes_home_path=hermes_home_path,
-    )
+    try:
+        resolved_cursor, min_timestamp, trigger_web_source = _resolve_source_cursor(
+            cid,
+            digest_cursor,
+            conversation_state.get("digest_cursor_source_message_id"),
+            conversation_state.get("digest_cursor_ts"),
+            rolling=False,
+            hermes_home_path=hermes_home_path,
+        )
+    except Exception as exc:
+        if not _cross_history._whatsapp_source_unavailable(cid, exc):
+            raise
+        logger.error("Automatic WhatsApp source read failed for %s; skipping: %s", cid, exc, exc_info=True)
+        return 0, None
     primary_history = history_full
     if min_timestamp is not None:
         primary_history = [

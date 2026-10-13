@@ -66,6 +66,14 @@ def _resolve_whatsapp_web_source_config() -> Path | None:
     return db_path
 
 
+def _whatsapp_source_unavailable(conversation_id: str, exc: BaseException) -> bool:
+    if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
+        return False
+    if isinstance(exc, HTTPException):
+        return exc.status_code == 409 and _conversation_sources.is_source_unavailable_error(exc.__cause__)
+    return _conversation_sources.is_source_unavailable_error(exc)
+
+
 def _resolve_source_cursor(
     conversation_id: str,
     cursor: int,
@@ -621,7 +629,9 @@ def _load_cross_tail_from_sources(
                 msg["source_conversation_id"] = cid
                 msg["memorize_chat"] = True
         except Exception as exc:
-            _m().logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc)
+            _m().logger.error("cross-context source read failed for conversation_id=%s: %s", cid, exc, exc_info=True)
+            if _whatsapp_source_unavailable(cid, exc):
+                continue
             is_lid_gap = "LID↔phone mapping gap" in str(exc)
             if source_label.startswith("whatsapp:") and not is_lid_gap:
                 raise RuntimeError(f"WhatsApp web_source read failed for {cid}: {exc}") from exc
@@ -883,6 +893,7 @@ def _load_cross_memorize_tails_from_sources(
     exclude_conversation_id: str | None = None,
     strict: bool = False,
     filing_policy: dict[str, bool] | None = None,
+    source_warnings: list[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     storage_dir, hermes_home_path, sessions_index_path, state_db_path = _m()._resolve_cross_source_paths()
     excluded_id = str(exclude_conversation_id or "").strip()
@@ -952,7 +963,11 @@ def _load_cross_memorize_tails_from_sources(
                 continue
             tails[cid] = tail
         except Exception as exc:
-            _m().logger.error("cross-memorize source read failed for conversation_id=%s: %s", cid, exc)
+            _m().logger.error("cross-memorize source read failed for conversation_id=%s: %s", cid, exc, exc_info=True)
+            if _whatsapp_source_unavailable(cid, exc):
+                if source_warnings is not None:
+                    source_warnings.append(f"WhatsApp history {cid} unavailable; skipped: {exc}")
+                continue
             if strict:
                 if _conversation_sources.is_source_unavailable_error(exc):
                     raise HTTPException(status_code=409, detail=f"Chat source {cid} is unavailable; restore it before retrying: {exc}") from exc
