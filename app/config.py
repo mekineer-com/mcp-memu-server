@@ -73,7 +73,7 @@ def default_config() -> dict[str, Any]:
 
     sqlite_path = Path(":memory:")  # placeholder; per-soul dbs resolved per-request
     resources_dir = memu_dir / "resources"
-    channels_data = server_dir.parent / "hermes-channels" / "data"
+    channels_data = "../hermes-channels/data"
 
     return {
         "memu": {
@@ -107,10 +107,10 @@ def default_config() -> dict[str, Any]:
             "sqlite_dir": str(sqlite_path.parent),
         },
         "hermes": {
-            "home": str(channels_data),
-            "state_db_path": str(channels_data / "state.db"),
-            "sessions_index_path": str(channels_data / "sessions" / "sessions.json"),
-            "whatsapp_web_source_db": str(channels_data / "whatsapp" / "web_source.db"),
+            "home": channels_data,
+            "state_db_path": f"{channels_data}/state.db",
+            "sessions_index_path": f"{channels_data}/sessions/sessions.json",
+            "whatsapp_web_source_db": f"{channels_data}/whatsapp/web_source.db",
         },
         "mentra": {
             "enabled": False,

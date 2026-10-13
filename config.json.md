@@ -165,7 +165,11 @@ settings, not top-level `config.json` settings today.
 ## `hermes`
 
 Paths used to read cross-channel history. Defaults point to the sibling
-`hermes-channels/data` directory.
+`hermes-channels/data` directory using config-directory-relative paths. All
+relative values below resolve beside `config.json`, not the process working
+directory. Absolute and `~` paths remain explicit overrides. Existing absolute
+configurations are not guessed or rebased when an installation moves; update
+those deliberately if they should follow the move.
 
 | Setting | Meaning |
 | --- | --- |

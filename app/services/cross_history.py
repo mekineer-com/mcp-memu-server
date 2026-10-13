@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.config import resolve_cfg_path
 from app.services import conversation_sources as _conversation_sources
 from app.services import memorize_endpoint as _memorize_endpoint
 from app.services import message_log as _message_log
@@ -53,16 +54,16 @@ def _resolve_cross_source_paths() -> tuple[Path, Path | None, Path | None, Path 
     hermes_home_raw = str(hermes_cfg.get("home") or "").strip()
     sessions_index_raw = str(hermes_cfg.get("sessions_index_path") or "").strip()
     state_db_raw = str(hermes_cfg.get("state_db_path") or "").strip()
-    hermes_home_path = Path(hermes_home_raw).expanduser().resolve() if hermes_home_raw else None
-    sessions_index_path = Path(sessions_index_raw).expanduser().resolve() if sessions_index_raw else None
-    state_db_path = Path(state_db_raw).expanduser().resolve() if state_db_raw else None
+    hermes_home_path = resolve_cfg_path(hermes_home_raw) if hermes_home_raw else None
+    sessions_index_path = resolve_cfg_path(sessions_index_raw) if sessions_index_raw else None
+    state_db_path = resolve_cfg_path(state_db_raw) if state_db_raw else None
     return _m()._get_storage_dir(_m()._CONFIG), hermes_home_path, sessions_index_path, state_db_path
 
 
 def _resolve_whatsapp_web_source_config() -> Path | None:
     hermes_cfg = _m()._CONFIG.get("hermes") if isinstance(_m()._CONFIG.get("hermes"), dict) else {}
     db_raw = str(hermes_cfg.get("whatsapp_web_source_db") or "").strip()
-    db_path = Path(db_raw).expanduser().resolve() if db_raw else None
+    db_path = resolve_cfg_path(db_raw) if db_raw else None
     return db_path
 
 

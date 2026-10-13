@@ -358,11 +358,56 @@ def test_model_mapping_rejects_native_noncompatible_protocol(cli) -> None:
 def test_default_whatsapp_paths_point_at_channels_data() -> None:
     hermes = default_config()["hermes"]
 
-    assert hermes["home"].endswith("/hermes-channels/data")
-    assert hermes["state_db_path"].endswith("/hermes-channels/data/state.db")
-    assert hermes["sessions_index_path"].endswith("/hermes-channels/data/sessions/sessions.json")
-    assert hermes["whatsapp_web_source_db"].endswith("/hermes-channels/data/whatsapp/web_source.db")
+    assert hermes["home"] == "../hermes-channels/data"
+    assert hermes["state_db_path"] == "../hermes-channels/data/state.db"
+    assert hermes["sessions_index_path"] == "../hermes-channels/data/sessions/sessions.json"
+    assert hermes["whatsapp_web_source_db"] == "../hermes-channels/data/whatsapp/web_source.db"
     assert "whatsapp_history_source" not in hermes
+
+
+@pytest.mark.parametrize("paths", ["generated", "absolute_override", "legacy_absolute", "relative_override"])
+def test_channels_paths_follow_config_location_without_rebasing_explicit_paths(tmp_path, monkeypatch, paths):
+    from app import main
+    server = tmp_path / "before" / "mcp-memu-server"
+    monkeypatch.setattr(app_config, "config_dir", lambda: server)
+    hermes = default_config()["hermes"]
+    external = tmp_path / ("explicit" if paths == "absolute_override" else "before") / "hermes-channels" / "data"
+    if paths in {"absolute_override", "legacy_absolute"}:
+        hermes = {"home": str(external), "state_db_path": str(external / "state.db"),
+                  "sessions_index_path": str(external / "sessions/sessions.json"),
+                  "whatsapp_web_source_db": str(external / "whatsapp/web_source.db")}
+    elif paths == "relative_override":
+        hermes = {"home": "../custom-data", "state_db_path": "../custom-data/state.db",
+                  "sessions_index_path": "../custom-data/sessions/sessions.json",
+                  "whatsapp_web_source_db": "../custom-data/whatsapp/web_source.db"}
+    saved = copy.deepcopy(hermes)
+    monkeypatch.setattr(main, "_CONFIG", {"hermes": hermes, "storage": {"resources_dir": "../memu/resources"}})
+    unrelated = tmp_path / "unrelated-working-directory"
+    unrelated.mkdir()
+    monkeypatch.chdir(unrelated)
+    for location in ("before", "after"):
+        server = tmp_path / location / "mcp-memu-server"
+        expected = external if paths in {"absolute_override", "legacy_absolute"} else server.parent / (
+            "custom-data" if paths == "relative_override" else "hermes-channels/data")
+        expected.mkdir(parents=True, exist_ok=True)
+        (expected / "channel_directory.json").write_text(json.dumps({"platforms": {"whatsapp": [
+            {"id": "fictional@g.us", "name": f"Fictional {location}"}]}}))
+        _, home, sessions, state = main._resolve_cross_source_paths()
+        assert (home, sessions, state, main._resolve_whatsapp_web_source_config()) == (
+            expected, expected / "sessions/sessions.json", expected / "state.db", expected / "whatsapp/web_source.db")
+        assert main._message_log._load_whatsapp_directory_names()["fictional@g.us"] == f"Fictional {location}"
+        assert hermes == saved
+
+
+def test_empty_channels_paths_keep_existing_environment_fallback(tmp_path, monkeypatch):
+    from app import main
+    monkeypatch.setattr(main, "_CONFIG", {"hermes": {}, "storage": {"resources_dir": str(tmp_path)}})
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "explicit-legacy-env"))
+    monkeypatch.setenv("CHANNELS_HOME", str(tmp_path / "explicit-env"))
+    assert main._resolve_cross_source_paths()[1:] == (None, None, None)
+    assert main._resolve_whatsapp_web_source_config() is None
+    assert main._message_log._load_whatsapp_directory_names() == {}
+    assert main._conversation_sources._hermes_base() == tmp_path / "explicit-legacy-env"
 
 
 def test_default_dynamic_category_cluster_size_matches_engine() -> None:

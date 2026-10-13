@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 from memu.utils.conversation import format_grouped_chat_history, format_relative_time_label, normalize_whatsapp_identifier
+
+from app.config import resolve_cfg_path
 
 _main: Any = None
 
@@ -43,7 +44,7 @@ def _load_whatsapp_directory_names() -> dict[str, str]:
     out: dict[str, str] = {}
     if not hermes_home_raw:
         return out
-    hermes_home = Path(hermes_home_raw).expanduser().resolve()
+    hermes_home = resolve_cfg_path(hermes_home_raw)
     directory_path = hermes_home / "channel_directory.json"
     if directory_path.exists():
         try:
