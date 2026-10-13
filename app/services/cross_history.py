@@ -278,15 +278,16 @@ def _prepare_current_whatsapp_history(
                 exclude_external_message=exclude_external_message,
             )
         except Exception as exc:
-            if not is_live_turn or not _whatsapp_source_unavailable(conversation_id, exc):
+            if not is_live_turn:
                 raise
-            _m().logger.warning(
+            _m().logger.error(
                 "%s: live WhatsApp source history load failed; continuing with payload history "
                 "conversation_id=%s soul_id=%s: %s",
                 op,
                 conversation_id,
                 soul_id,
                 exc,
+                exc_info=True,
             )
             source_history = None
         if source_history is not None:

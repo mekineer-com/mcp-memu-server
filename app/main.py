@@ -2028,10 +2028,10 @@ def _current_history_for_ai(
                 conversation_id, state, user_id=user_id, soul_id=soul_id,
             )
         except (OSError, sqlite3.Error, RuntimeError, ValueError, HTTPException) as exc:
-            if not is_live_turn or (_message_log.derive_source_label(conversation_id).startswith("whatsapp:")
-                    and not _cross_history._whatsapp_source_unavailable(conversation_id, exc)):
+            if not is_live_turn:
                 raise
-            logger.warning("Live background source unavailable; using bounded payload history for %s", conversation_id)
+            logger.error("Live background source read failed for %s; using bounded payload history: %s",
+                         conversation_id, exc, exc_info=True)
             if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
                 cursor, _, _ = _cross_history._resolve_background_cursor(conversation_id, state)
                 return _conversation_sources.slice_tail_with_floor(
@@ -2053,7 +2053,10 @@ def _current_history_for_ai(
             hermes_home_path=hermes_home,
         )
     except Exception as exc:
-        if not is_live_turn or not _cross_history._whatsapp_source_unavailable(conversation_id, exc):
+        cause = exc.__cause__ if isinstance(exc, HTTPException) else exc
+        if (not is_live_turn or not _message_log.derive_source_label(conversation_id).startswith("whatsapp:")
+                or not _conversation_sources.is_source_unavailable_error(cause)
+                or (isinstance(exc, HTTPException) and exc.status_code != 409)):
             raise
         logger.error("Live WhatsApp source read failed for %s; using payload history: %s",
                      conversation_id, exc, exc_info=True)

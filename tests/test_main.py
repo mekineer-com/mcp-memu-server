@@ -5747,8 +5747,9 @@ def test_unavailable_wa_primary_live_history_uses_timestamp_floor(monkeypatch, c
 @pytest.mark.parametrize("error", [sqlite3.OperationalError("database is locked"),
     sqlite3.OperationalError("no such column: body"), ValueError("schema is outdated"),
     RuntimeError("reader bug"), TypeError("parser bug")])
-@pytest.mark.parametrize("reader", ["live_primary", "live_background", "http_wrapper"])
-def test_whatsapp_broken_read_never_falls_back_or_becomes_unavailable(monkeypatch, error, reader):
+@pytest.mark.parametrize("reader", ["live_primary", "live_background", "live_cursor", "http_wrapper"])
+@pytest.mark.parametrize("live", [False, True])
+def test_whatsapp_broken_read_live_fallback_keeps_memory_reads_strict(monkeypatch, caplog, error, reader, live):
     cid = "whatsapp:dm:fictional-broken-reader"
     def broken(*_a, **_kw):
         raise error
@@ -5756,18 +5757,49 @@ def test_whatsapp_broken_read_never_falls_back_or_becomes_unavailable(monkeypatc
         monkeypatch.setattr(main, "_load_current_whatsapp_history_from_source", broken)
         call = lambda: main._prepare_current_whatsapp_history(conversation_id=cid, soul_id="TestSoul",
             raw_history=[{"content": "Fictional payload"}], active_since=None, load_source_history=True,
-            external_message_id=None, is_live_turn=True, op="test")
+            external_message_id=None, is_live_turn=live, op="test")
     elif reader == "live_background":
         _background_whatsapp_policy("fictional-broken-reader")
         monkeypatch.setattr(main._cross_history, "_load_background_tail_from_source", broken)
         call = lambda: main._current_history_for_ai(cid, "TestOwner", "TestSoul",
-            [{"content": "Fictional payload"}], {"memorize_chat": False}, is_live_turn=True)
+            [{"content": "Fictional payload"}], {"memorize_chat": False}, is_live_turn=live)
+    elif reader == "live_cursor":
+        monkeypatch.setattr(main._cross_history, "_source_memorize_policy", lambda *_a: True)
+        monkeypatch.setattr(main, "_resolve_source_cursor", broken)
+        call = lambda: main._current_history_for_ai(cid, "TestOwner", "TestSoul",
+            [{"content": "Fictional payload"}], _retrieve_state_row(), is_live_turn=live)
     else:
         monkeypatch.setattr(main._cross_history, "_load_tail_for_source_conversation", broken)
         call = lambda: main._load_tail_for_source_conversation(conversation_id=cid)
-    with pytest.raises(type(error)) as raised:
-        call()
-    assert raised.value is error
+    fallback = (reader == "live_primary"
+                or (reader == "live_background" and not isinstance(error, TypeError))
+                or (reader == "live_cursor" and isinstance(error, (sqlite3.OperationalError, ValueError))))
+    if live and fallback:
+        assert [row["content"] for row in call()] == ["Fictional payload"]
+        assert any(record.levelno == logging.ERROR and str(error) in record.getMessage()
+                   and record.exc_info and record.exc_info[1] is error for record in caplog.records)
+    else:
+        with pytest.raises(type(error)) as raised:
+            call()
+        assert raised.value is error
+
+
+@pytest.mark.parametrize("status", [400, 409])
+@pytest.mark.parametrize("cause", [sqlite3.OperationalError("Fictional lock"), sqlite3.ProgrammingError("Fictional binding")])
+def test_live_whatsapp_cursor_fallback_preserves_http_and_programming_error_rules(monkeypatch, status, cause):
+    def broken(*_a, **_kw):
+        raise HTTPException(status, "Fictional source read failure") from cause
+    monkeypatch.setattr(main._cross_history, "_source_memorize_policy", lambda *_a: True)
+    monkeypatch.setattr(main, "_resolve_source_cursor", broken)
+    history = [{"content": "Fictional payload"}]
+    call = lambda: main._current_history_for_ai("whatsapp:dm:fictional-wrapped", "TestOwner", "TestSoul",
+                                              history, _retrieve_state_row(), is_live_turn=True)
+    if status == 409 and isinstance(cause, sqlite3.OperationalError):
+        assert call() == history
+    else:
+        with pytest.raises(HTTPException) as raised:
+            call()
+        assert raised.value.status_code == status and raised.value.__cause__ is cause
 
 
 @pytest.mark.asyncio
@@ -8221,23 +8253,33 @@ def test_filter_current_whatsapp_history_requires_ts_when_cutoff_active(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("error", [FileNotFoundError("Fictional source missing"),
+    sqlite3.OperationalError("database is locked"), ValueError("Fictional outdated schema")])
 async def test_live_conversation_retrieve_degrades_source_history_load_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    error,
 ) -> None:
     db_path = tmp_path / "Live.db"
     monkeypatch.setattr(main, "_current_whatsapp_active_since_for_soul", lambda *_a, **_k: None)
     monkeypatch.setattr(
         main,
         "_load_turn_state_and_soul_card",
-        lambda *_a, **_k: (_retrieve_state_row(), None, db_path),
+        lambda *_a, **_k: ({**_retrieve_state_row(), "digest_cursor_source_message_id": "fictional-anchor",
+                           "digest_cursor_ts": 100}, None, db_path),
     )
     monkeypatch.setattr(
         main,
         "_load_current_whatsapp_history_from_source",
-        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("web source down")),
+        lambda *_a, **_k: (_ for _ in ()).throw(error),
     )
+    monkeypatch.setattr(main, "_resolve_source_cursor", lambda *_a, **_k: (_ for _ in ()).throw(error))
+    monkeypatch.setattr(main._cross_history, "_source_memorize_policy", lambda *_a: True)
     captured: dict[str, Any] = {}
+    def build_queries(**kwargs):
+        captured["history_for_ai"] = kwargs["history"]
+        return ["Fictional retrieval query"]
+    monkeypatch.setattr(main, "_build_retrieve_soul_context_queries", build_queries)
 
     async def _fake_run_retrieve(safe: dict[str, Any], *, conversation_id: str | None = None, anchor_context: str | None = None, service=None) -> dict[str, Any]:
         captured["safe"] = safe
@@ -8251,7 +8293,8 @@ async def test_live_conversation_retrieve_degrades_source_history_load_failure(
             "user": {"user_id": "u1", "soul_id": "Echo"},
             "message": "new",
             "query": "new",
-            "history": [{"role": "user", "content": "payload history"}],
+            "history": [{"role": "user", "content": "payload history", "ts_ms": 101000},
+                        {"role": "user", "content": "Older fictional history", "ts_ms": 99000}],
             "load_source_history": True,
             "is_live_turn": True,
         },
@@ -8259,6 +8302,7 @@ async def test_live_conversation_retrieve_degrades_source_history_load_failure(
 
     assert out["ok"] is True
     assert captured["safe"]["history"][0]["content"] == "payload history"
+    assert [row["content"] for row in captured["history_for_ai"]] == ["payload history"]
 
 
 @pytest.mark.asyncio
