@@ -1392,6 +1392,7 @@ def _mark_whatsapp_outbound(
     soul_id: str,
     outbound_id: str,
     status: str,
+    claimed_at: str,
     provider_message_id: str | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
@@ -1400,6 +1401,7 @@ def _mark_whatsapp_outbound(
         soul_id=soul_id,
         outbound_id=outbound_id,
         status=status,
+        claimed_at=claimed_at,
         provider_message_id=provider_message_id,
         error=error,
         sqlite_current_path=_sqlite_current_path,
@@ -5404,6 +5406,7 @@ async def whatsapp_outbounds_mark(payload: dict[str, Any] = Body(...)):
         soul_id=str(payload.get("soul_id") or ""),
         outbound_id=str(payload.get("outbound_id") or payload.get("id") or ""),
         status=str(payload.get("status") or ""),
+        claimed_at=str(payload.get("claimed_at") or ""),
         provider_message_id=str(payload.get("provider_message_id") or "").strip() or None,
         error=str(payload.get("error") or "").strip() or None,
     )

@@ -10293,9 +10293,13 @@ def test_public_turn_missing_target_with_response_defaults_to_respond() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reclaimer", ["hermes-test", "restarted-hermes"])
+@pytest.mark.parametrize("stale_status", ["sent", "failed"])
 async def test_whatsapp_outbound_claim_and_mark(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    reclaimer: str,
+    stale_status: str,
 ) -> None:
     db_path = tmp_path / "TestSoul.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
@@ -10331,11 +10335,40 @@ async def test_whatsapp_outbound_claim_and_mark(
         assert claimed_again["outbounds"] == []
     now += timedelta(seconds=1)
     reclaimed = await main.whatsapp_outbounds_claim(
-        {"user_id": "TestOwner", "soul_id": "TestSoul", "claimed_by": "restarted-hermes", "limit": 10}
+        {"user_id": "TestOwner", "soul_id": "TestSoul", "claimed_by": reclaimer, "limit": 10}
     )
     assert [row["id"] for row in reclaimed["outbounds"]] == [out_id]
-    assert reclaimed["outbounds"][0]["claimed_by"] == "restarted-hermes"
+    assert reclaimed["outbounds"][0]["claimed_by"] == reclaimer
     assert main._whatsapp_outbounds._poll_marker_path(db_path, "free-turn-followups").read_text() == "future follow-up"
+    with sqlite3.connect(db_path) as con:
+        before = con.execute("SELECT * FROM whatsapp_pending_outbounds WHERE id=?", (out_id,)).fetchone()
+    with pytest.raises(HTTPException) as stale:
+        await main.whatsapp_outbounds_mark({
+            "user_id": "TestOwner", "soul_id": "TestSoul", "outbound_id": out_id,
+            "status": stale_status, "claimed_at": claimed["outbounds"][0]["claimed_at"],
+            "provider_message_id": "fictional-stale-id", "error": "Fictional old sender result",
+        })
+    assert stale.value.status_code == 409
+    for proof in (None, "", " \t "):
+        payload = {"user_id": "TestOwner", "soul_id": "TestSoul", "outbound_id": out_id, "status": "sent"}
+        if proof is not None:
+            payload["claimed_at"] = proof
+        with pytest.raises(HTTPException) as missing:
+            await main.whatsapp_outbounds_mark(payload)
+        assert missing.value.status_code == 400
+    for proof in (" " + reclaimed["outbounds"][0]["claimed_at"], reclaimed["outbounds"][0]["claimed_at"] + " "):
+        with pytest.raises(HTTPException) as altered:
+            await main.whatsapp_outbounds_mark({"user_id": "TestOwner", "soul_id": "TestSoul",
+                "outbound_id": out_id, "status": "sent", "claimed_at": proof})
+        assert altered.value.status_code == 409
+    for scope in ({"user_id": "OtherOwner", "soul_id": "TestSoul"},
+                  {"user_id": "TestOwner", "soul_id": "OtherSoul"}):
+        with pytest.raises(HTTPException) as wrong_scope:
+            await main.whatsapp_outbounds_mark({**scope, "outbound_id": out_id, "status": "sent",
+                                                "claimed_at": reclaimed["outbounds"][0]["claimed_at"]})
+        assert wrong_scope.value.status_code == 409
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT * FROM whatsapp_pending_outbounds WHERE id=?", (out_id,)).fetchone() == before
 
     marked = await main.whatsapp_outbounds_mark(
         {
@@ -10343,6 +10376,7 @@ async def test_whatsapp_outbound_claim_and_mark(
             "soul_id": "TestSoul",
             "outbound_id": out_id,
             "status": "sent",
+            "claimed_at": reclaimed["outbounds"][0]["claimed_at"],
             "provider_message_id": "wa-msg-1",
         }
     )
@@ -10491,7 +10525,8 @@ def test_whatsapp_outbound_writes_never_create_missing_db(tmp_path, monkeypatch,
             main._insert_whatsapp_outbound(**scope, origin_conversation_id="whatsapp:dm:fictional",
                                           target="respond", response_text="Fictional reply")
         else:
-            main._mark_whatsapp_outbound(**scope, outbound_id="fictional-absent", status="sent")
+            main._mark_whatsapp_outbound(**scope, outbound_id="fictional-absent", status="sent",
+                                        claimed_at="2026-01-01T00:00:00+00:00")
     assert error.value.sqlite_errorcode == sqlite3.SQLITE_CANTOPEN
     assert not db_path.exists() and set(tmp_path.iterdir()) == before
 

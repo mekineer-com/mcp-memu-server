@@ -263,6 +263,7 @@ def _mark_whatsapp_outbound(
     soul_id: str,
     outbound_id: str,
     status: str,
+    claimed_at: str,
     sqlite_current_path: Callable[[str | None, str | None], Path | None],
     provider_message_id: str | None = None,
     error: str | None = None,
@@ -271,10 +272,13 @@ def _mark_whatsapp_outbound(
     sid = str(soul_id or "").strip()
     out_id = str(outbound_id or "").strip()
     final_status = str(status or "").strip().lower()
+    claimed_at = str(claimed_at or "")
     if not uid or not sid or not out_id:
         raise HTTPException(status_code=400, detail="user_id, soul_id, and outbound_id are required")
     if final_status not in {"sent", "failed"}:
         raise HTTPException(status_code=400, detail="status must be sent|failed")
+    if not claimed_at.strip():
+        raise HTTPException(status_code=400, detail="claimed_at is required")
     db_path = sqlite_current_path(uid, sid)
     if db_path is None:
         raise HTTPException(status_code=400, detail="sqlite path unavailable for outbound scope")
@@ -291,7 +295,7 @@ UPDATE whatsapp_pending_outbounds
 SET status = ?, updated_at = ?, sent_at = ?, failed_at = ?,
     provider_message_id = COALESCE(?, provider_message_id),
     last_error = ?
-WHERE id = ? AND user_id = ? AND soul_id = ? AND status = 'claimed'
+WHERE id = ? AND user_id = ? AND soul_id = ? AND status = 'claimed' AND claimed_at = ?
 """,
             (
                 final_status,
@@ -303,10 +307,11 @@ WHERE id = ? AND user_id = ? AND soul_id = ? AND status = 'claimed'
                 out_id,
                 uid,
                 sid,
+                claimed_at,
             ),
         )
         if cur.rowcount != 1:
-            raise HTTPException(status_code=409, detail="outbound is not claimed or does not exist")
+            raise HTTPException(status_code=409, detail="outbound claim is no longer current or does not exist")
         row = con.execute(
             "SELECT * FROM whatsapp_pending_outbounds WHERE id = ? LIMIT 1",
             (out_id,),

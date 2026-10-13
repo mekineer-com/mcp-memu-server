@@ -112,7 +112,7 @@ mcp-memu-server/
 | `/integration/atomic/similar/{item_id}` | GET | Pure cosine-similarity graph (no DB expansion) |
 | `/integration/atomic/search` | GET | Read-only exact-`M#`/FTS/vector search with optional memory-only and pre-limit entity/dossier exclusions |
 | `/integration/whatsapp/outbounds/claim` | POST | Claim queued WhatsApp replies/attachments for delivery |
-| `/integration/whatsapp/outbounds/mark` | POST | Mark a claimed WhatsApp outbound sent or failed |
+| `/integration/whatsapp/outbounds/mark` | POST | Mark a claimed WhatsApp outbound sent or failed using its exact returned `claimed_at`; stale claims receive 409, missing claim evidence 400. Insert/mark never create a missing Soul DB |
 | `/integration/memu/retrieve` | POST | MCP retrieve wrapper |
 | `/integration/memu/memorize` | POST | MCP memorize wrapper (`force` supported) |
 | `/integration/memu/consolidate` | POST | MCP force-consolidation wrapper |
