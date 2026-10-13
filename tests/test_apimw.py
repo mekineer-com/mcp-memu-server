@@ -206,7 +206,60 @@ async def test_apimw_launcher_rejects_rebuild_before_worker_start(monkeypatch):
     main._write_conversation_state(cid, **scope, updates={"apimw_subconscious_insight": "New database note"})
     await asyncio.gather(*tasks)
     assert main._load_turn_state_and_soul_card(cid, **scope)[0]["apimw_subconscious_insight"] == "New database note"
-    assert cid not in main._APIMW_INFLIGHT
+    assert not main._APIMW_INFLIGHT
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("other", [("TestOwner", "OtherSoul", "shared-chat"),
+                                  ("OtherOwner", "TestSoul", "shared-chat"),
+                                  ("TestOwner", "TestSoul", "other-chat")])
+@pytest.mark.parametrize("fails", [False, True])
+async def test_apimw_admission_and_cleanup_are_scoped(monkeypatch, other, fails):
+    first = ("TestOwner", "TestSoul", "shared-chat")
+    releases = {scope: asyncio.Event() for scope in (first, other)}
+    tasks = {}
+    monkeypatch.setattr(main, "_APIMW_INFLIGHT", set())
+    monkeypatch.setattr(main, "_BACKGROUND_TASKS", set())
+    monkeypatch.setattr(main, "_apimw_cadence_due", lambda *_a: True)
+    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", lambda *_a, **_kw: ({}, None, None))
+    monkeypatch.setattr(main, "_current_history_for_ai", lambda *_a, **_kw: [])
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_kw: None)
+
+    async def run(_payload, *, user_id, soul_id, conversation_id, **_kwargs):
+        scope = (user_id, soul_id, conversation_id)
+        await releases[scope].wait()
+        if fails and scope == first:
+            raise RuntimeError("fictional APImw failure")
+
+    def launch(scope):
+        uid, sid, cid = scope
+        return main._turn_launch_apimw(cid, uid, sid, {}, [])
+
+    monkeypatch.setattr(main, "_run_apimw", run)
+    try:
+        for scope in (first, other):
+            before = set(main._BACKGROUND_TASKS)
+            assert launch(scope) == "started"
+            tasks[scope] = (main._BACKGROUND_TASKS - before).pop()
+            assert launch(scope) == "skipped_inflight"
+        releases[first].set()
+        await asyncio.gather(tasks[first], return_exceptions=True)
+        assert len(main._APIMW_INFLIGHT) == 1
+        assert launch(other) == "skipped_inflight"
+
+        def fail_load(*_args, **_kwargs):
+            raise sqlite3.OperationalError("fictional state load failure")
+
+        monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fail_load)
+        assert launch(first) == "failed_to_start"
+        assert len(main._APIMW_INFLIGHT) == 1
+        assert launch(other) == "skipped_inflight"
+    finally:
+        for release in releases.values():
+            release.set()
+        await asyncio.gather(*tasks.values(), return_exceptions=True)
+    assert not main._APIMW_INFLIGHT
+    assert not main._BACKGROUND_TASKS
 
 
 @pytest.mark.asyncio
@@ -214,6 +267,7 @@ async def test_apimw_launcher_rejects_rebuild_before_worker_start(monkeypatch):
 async def test_st_apimw_captures_srmm_and_reflection_with_admission_top_k(monkeypatch, cli):
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     cid = "integrity:fictional-apimw"
+    monkeypatch.setattr(main, "_APIMW_INFLIGHT", set())
     entered, release = asyncio.Event(), asyncio.Event()
     services, calls, persisted = [], [], []
     path = main._sqlite_current_path(**scope)
@@ -297,4 +351,4 @@ async def test_st_apimw_captures_srmm_and_reflection_with_admission_top_k(monkey
     assert [service.model for service in services] == ["captured", "captured"]
     assert persisted == [services[1]]
     assert payload == original
-    assert cid not in main._APIMW_INFLIGHT
+    assert not main._APIMW_INFLIGHT

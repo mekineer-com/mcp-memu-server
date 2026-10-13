@@ -596,7 +596,8 @@ def _turn_launch_apimw(
     cadence_threshold = _m()._apimw_cadence_from_cfg(_m()._CONFIG)
     if not _m()._apimw_cadence_due(uid, soul_id, cadence_threshold):
         return "skipped_cadence"
-    if not _m()._mark_apimw_inflight(cid):
+    marker = json.dumps([uid, soul_id, cid])
+    if not _m()._mark_apimw_inflight(marker):
         return "skipped_inflight"
     apimw_task: asyncio.Task | None = None
     try:
@@ -648,12 +649,12 @@ def _turn_launch_apimw(
                 _m().logger.exception("APImw background pipeline failed for %s", cid)
             finally:
                 _m()._BACKGROUND_TASKS.discard(task)
-                _m()._clear_apimw_inflight(cid)
+                _m()._clear_apimw_inflight(marker)
 
         apimw_task.add_done_callback(_on_apimw_done)
     except Exception:
         if apimw_task is None:
-            _m()._clear_apimw_inflight(cid)
+            _m()._clear_apimw_inflight(marker)
         _m().logger.exception("APImw background pipeline failed to start for %s", cid)
         return "failed_to_start"
     return "started"

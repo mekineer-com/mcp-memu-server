@@ -348,7 +348,9 @@ already accepted and does not promise descendant-process termination.
 
 ### Reply-Adjacent Work
 
-APImw `_turn_launch_apimw` captures the database generation before task launch.
+APImw `_turn_launch_apimw` uses an owner/Soul/conversation in-flight marker and
+captures the database generation before task launch. Completion or failed startup
+releases only that marker; the existing Soul-wide turn cadence is unchanged.
 `_apimw_persist` publishes valid context and `apimw_subconscious_insight` under a
 short Soul lock, then embeds outside it. Archival item creation and error writes
 recheck that generation, retirement and pause state; consumed insights are never
