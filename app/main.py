@@ -5452,8 +5452,10 @@ try:
     mcp.mount_http(mount_path=http_path)
     mcp.mount_sse(mount_path=sse_path)
     _has_mcp = True
-except (ImportError, TypeError):
+except (ImportError, TypeError) as exc:
     _has_mcp = False
+    _STARTUP_WARNINGS.append(f"MCP transport disabled: {exc}")
+    logger.exception("MCP transport setup failed")
 
 
 try:
