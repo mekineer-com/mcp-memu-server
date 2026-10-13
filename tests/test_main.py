@@ -10301,6 +10301,8 @@ async def test_whatsapp_outbound_claim_and_mark(
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _user_id, _soul_id: db_path)
     now = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
     monkeypatch.setattr(main._whatsapp_outbounds, "datetime", SimpleNamespace(now=lambda _tz: now))
+    with sqlite3.connect(db_path) as con:
+        con.execute("PRAGMA user_version=1")
 
     out_id = main._insert_whatsapp_outbound(
         user_id="TestOwner",
@@ -10422,6 +10424,8 @@ def test_sqlite_connect_native_modes_preserve_path_and_pragmas(tmp_path, monkeyp
 async def test_whatsapp_outbound_claim_sees_committed_wal_only_row(tmp_path, monkeypatch):
     db_path = tmp_path / "TestSoul.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: db_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute("PRAGMA user_version=1")
     out_id = main._insert_whatsapp_outbound(
         user_id="TestOwner", soul_id="TestSoul", origin_conversation_id="whatsapp:dm:fictional",
         target="respond", response_text="fictional reply",
@@ -10447,6 +10451,8 @@ async def test_whatsapp_outbound_claim_sees_committed_wal_only_row(tmp_path, mon
 def test_whatsapp_outbound_claim_deleted_db_does_not_recreate(tmp_path, monkeypatch):
     db_path = tmp_path / "TestSoul.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: db_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute("PRAGMA user_version=1")
     main._insert_whatsapp_outbound(
         user_id="TestOwner", soul_id="TestSoul", origin_conversation_id="whatsapp:dm:fictional",
         target="respond", response_text="fictional reply",
@@ -10462,6 +10468,32 @@ def test_whatsapp_outbound_claim_deleted_db_does_not_recreate(tmp_path, monkeypa
         main._claim_whatsapp_outbounds(user_id="TestOwner", soul_id="TestSoul", claimed_by="hermes-test")
     assert exc.value.sqlite_errorcode == sqlite3.SQLITE_CANTOPEN
     assert not db_path.exists()
+
+
+@pytest.mark.parametrize("operation", ["insert", "mark"])
+@pytest.mark.parametrize("deleted_before_open", [False, True])
+def test_whatsapp_outbound_writes_never_create_missing_db(tmp_path, monkeypatch, operation, deleted_before_open):
+    db_path = tmp_path / "MissingSoul.db"
+    if deleted_before_open:
+        with sqlite3.connect(db_path) as con:
+            con.execute("PRAGMA user_version=1")
+    before = set(tmp_path.iterdir()) - {db_path}
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: db_path)
+    if deleted_before_open:
+        connect = main._whatsapp_outbounds.sqlite_connect
+        def delete_before_open(path, **kwargs):
+            path.unlink()
+            return connect(path, **kwargs)
+        monkeypatch.setattr(main._whatsapp_outbounds, "sqlite_connect", delete_before_open)
+    scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
+    with pytest.raises(sqlite3.OperationalError) as error:
+        if operation == "insert":
+            main._insert_whatsapp_outbound(**scope, origin_conversation_id="whatsapp:dm:fictional",
+                                          target="respond", response_text="Fictional reply")
+        else:
+            main._mark_whatsapp_outbound(**scope, outbound_id="fictional-absent", status="sent")
+    assert error.value.sqlite_errorcode == sqlite3.SQLITE_CANTOPEN
+    assert not db_path.exists() and set(tmp_path.iterdir()) == before
 
 
 @pytest.mark.asyncio
@@ -11264,6 +11296,8 @@ async def test_whatsapp_outbound_insert_claim_row_with_media_path(
 ) -> None:
     db_path = tmp_path / "SiriTest.db"
     monkeypatch.setattr(main, "_sqlite_current_path", lambda _u, _s: db_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute("PRAGMA user_version=1")
 
     out_id = main._insert_whatsapp_outbound(
         user_id="u1",

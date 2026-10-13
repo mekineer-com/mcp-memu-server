@@ -15,7 +15,6 @@ from app.db import (
     json_from_db,
     json_to_db,
     sqlite_connect,
-    sqlite_ensure_nonempty,
 )
 from app.services.conversation_id import canonical_conversation_id
 
@@ -155,11 +154,10 @@ def _insert_whatsapp_outbound(
     db_path = sqlite_current_path(uid, sid)
     if db_path is None:
         raise ValueError("sqlite path unavailable for outbound scope")
-    sqlite_ensure_nonempty(db_path)
     out_id = f"waout_{uuid.uuid4().hex}"
     now_iso = datetime.now(UTC).isoformat()
     target_conversation_id = cid if target_clean == "respond" else None
-    con = sqlite_connect(db_path)
+    con = sqlite_connect(db_path, mode="rw")
     try:
         con.row_factory = sqlite3.Row
         _ensure_whatsapp_outbounds_schema(con)
@@ -280,11 +278,10 @@ def _mark_whatsapp_outbound(
     db_path = sqlite_current_path(uid, sid)
     if db_path is None:
         raise HTTPException(status_code=400, detail="sqlite path unavailable for outbound scope")
-    sqlite_ensure_nonempty(db_path)
     now_iso = datetime.now(UTC).isoformat()
     sent_at = now_iso if final_status == "sent" else None
     failed_at = now_iso if final_status == "failed" else None
-    con = sqlite_connect(db_path)
+    con = sqlite_connect(db_path, mode="rw")
     try:
         con.row_factory = sqlite3.Row
         _ensure_whatsapp_outbounds_schema(con)
