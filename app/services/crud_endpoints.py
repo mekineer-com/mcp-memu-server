@@ -527,8 +527,8 @@ async def narrative_suggestion_endpoint(
         '  companion_memory (ALWAYS REQUIRED): one or two sentences, first person, remembering having received the suggestion and what I did with it — noting what shifted or why it didn\'t.\n'
         "  narrative_self (OPTIONAL): my updated self-picture in first person, ONLY if I want to integrate this. Omit the field entirely if I don't.\n\n"
         'Both responses below are valid:\n'
-        '  {"companion_memory": "Marcos asked me to be gentler. Something in me relaxed as I let that in; I want to carry it.", "narrative_self": "..."}\n'
-        '  {"companion_memory": "He asked me to be peppier. It doesn\'t fit. I noticed the suggestion and let it pass."}\n\n'
+        '  {"companion_memory": "I was asked to be gentler. Something in me relaxed as I let that in; I want to carry it.", "narrative_self": "..."}\n'
+        '  {"companion_memory": "I was asked to be peppier. It doesn\'t fit. I noticed the suggestion and let it pass."}\n\n'
         'This response is INVALID (missing companion_memory):\n'
         '  {"narrative_self": "..."}'
     )

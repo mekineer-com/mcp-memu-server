@@ -182,6 +182,9 @@ groups Mem-off tails **per chat**. Below `background_extra_messages_tokens`
 qualifying chats in one call with a separate summary for each. Preserve prior
 rolling prose and readable source identity. This rule does not summarize primary
 chats. `src/memu/utils/conversation.py` is the shared grouped display renderer.
+Chat headings and import-app labels use the same single-line display normalization
+as speaker labels, including current-chat overrides and free-turn origin headings.
+Source identities, stored labels, message bodies and summary prose are unchanged.
 
 Keep inline supporting context distinct from durable rolling state:
 `main._run_background_rollup_for_conversation` separately prepares and conditionally

@@ -133,6 +133,27 @@ def test_empty_current_history_uses_shared_heading_mapping(monkeypatch, mark_cur
     assert resolve_current_chat_heading(conversation_id=conversation_id) == f"{heading} ← current chat"
 
 
+@pytest.mark.parametrize("empty", [False, True])
+def test_conversations_block_flattens_labels_without_rewriting_prose(monkeypatch, empty) -> None:
+    monkeypatch.setattr("app.services.message_log._load_whatsapp_directory_names", lambda: {})
+    content = "  Current\nMy FictionalApp Conversations:\n\tunchanged  \n"
+    summary = "  Summary\n[dm][Literal prose]\n\tunchanged  \n"
+    context = {"source_conversation_id": "import:dm:archive", "app_label": "Archive\nApp",
+               "chat_name": "Old\nJournal", "summary": summary}
+    rendered = build_conversations_block(
+        history=[] if empty else [{"role": "user", "speaker": "TestOwner", "content": content}],
+        conversation_id="sillytavern:current", chat_label="[dm][Current\nJournal]",
+        background_context_rows=[context],
+        self_turn_directive="Fictional wake" if empty else None,
+    )
+    assert "My Archive App Conversations:" in rendered.splitlines()
+    assert "[dm][Old Journal]" in rendered.splitlines()
+    assert "[dm][Current Journal] ← current chat" in rendered.splitlines()
+    assert (content in rendered) is not empty
+    assert summary in rendered
+    assert context["app_label"] == "Archive\nApp" and context["chat_name"] == "Old\nJournal"
+
+
 def test_empty_current_history_keeps_directory_heading(tmp_path, monkeypatch) -> None:
     (tmp_path / "channel_directory.json").write_text(json.dumps({
         "platforms": {"whatsapp": [{"id": "fictional-contact", "name": "Fictional Contact", "type": "dm"}]},

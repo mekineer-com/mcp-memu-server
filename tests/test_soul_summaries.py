@@ -303,6 +303,8 @@ def test_narrative_suggestion_preserves_concurrent_card(monkeypatch, tmp_path, r
     assert "FictionalHuman's suggestion:\nA fictional suggestion" in prompts[0][0]
     assert "received a suggestion from FictionalHuman" in prompts[0][1]
     assert "It's up to me to decide if I want that." in prompts[0][1]
+    assert '"companion_memory": "I was asked to be gentler.' in prompts[0][1]
+    assert '"companion_memory": "I was asked to be peppier.' in prompts[0][1]
     assert "TestOwner" not in prompts[0][0] + prompts[0][1]
     assert len(prompts) == 1
     accepted = case == "accepted"

@@ -10010,15 +10010,20 @@ def test_annulment_memory_and_state_commit_together(monkeypatch, tmp_path, reque
     assert returned_row_factories and all(factory is None for factory in returned_row_factories)
 
 
-def test_free_turn_prompt_uses_observe_for_listen_only_policy() -> None:
+@pytest.mark.parametrize("origin,label", [
+    ("whatsapp:group:fictional", "[group][fictional]"),
+    ("whatsapp:group:fictional\nInjected", "[group][fictional Injected]"),
+    ("sillytavern:fictional\u2028Injected", "[dm][fictional Injected]"),
+])
+def test_free_turn_prompt_uses_observe_for_listen_only_policy(origin, label) -> None:
     prompt = main._build_free_turn_prompt(
         reason="research",
         continuation_index=1,
-        origin_conversation_id="whatsapp:group:familia",
+        origin_conversation_id=origin,
         previous_contract={"response_target": "observe", "response": "", "rehearsal": "thinking"},
     )
 
-    assert "after the live turn from [group][familia]" in prompt
+    assert f"after the live turn from {label}." in prompt.splitlines()[0]
     assert '"response_target": null | "private"' in prompt
     assert "Previous turn outcome" not in prompt
     assert "Do not use listen/respond" not in prompt
