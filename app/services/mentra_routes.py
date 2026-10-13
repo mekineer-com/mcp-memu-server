@@ -1709,7 +1709,7 @@ def register_mentra_routes(
                 raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
             linked = service.database.memory_item_repo.list_items(
                 {**resource_scope, "resource_id": existing.id},
-                include_embeddings=False,
+                include_embeddings=False, include_merged=True, include_superseded=True,
             )
             if linked:
                 return {"ok": True, "queued": False, "duplicate": True}

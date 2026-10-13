@@ -391,7 +391,11 @@ Photo finalization checks registered work before saved memory rows. An explicit
 re-finalize joins that worker and selects the latest validated sitting to receive
 its outcome; merely starting a replacement sitting does not subscribe it. Error
 delivery requires that observer's active lease, and success clears only that
-photo's warning. Queue acceptance and saved-item duplicate evidence do not assert
+photo's warning. Saved extraction evidence includes merged/superseded items still
+linked to that Resource; engine results continue to contain active items only.
+A Resource without any saved item evidence remains eligible for extraction;
+zero-item runs and deletion of all lineage have no new completion marker.
+Queue acceptance and saved-item duplicate evidence do not assert
 that later dedupe/review completed; no full background-filing Retry is added.
 
 Live `_MEMORIZE_PROGRESS`, busy claims and cancellation flags are process-local

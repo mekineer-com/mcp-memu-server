@@ -124,11 +124,13 @@ def _session_app(
             return dict(resources)
 
     class MemoryItemRepo:
-        def list_items(self, where: dict[str, str], **_kwargs: Any) -> dict[str, Any]:
+        def list_items(self, where: dict[str, str], **kwargs: Any) -> dict[str, Any]:
             return {
                 key: item
                 for key, item in memory_items.items()
                 if getattr(item, "resource_id", None) == where["resource_id"]
+                and (kwargs.get("include_merged") or not getattr(item, "merged_into", None))
+                and (kwargs.get("include_superseded") or not getattr(item, "superseded", False))
             }
 
         def create_item(self, **kwargs: Any) -> Any:
@@ -2648,9 +2650,11 @@ def test_snapshot_finalize_coalesces_completed_registered_future_until_cleanup(
     asyncio.run(asyncio.wait_for(run(), 5))
 
 
+@pytest.mark.parametrize("retired", [None, "merged", "superseded"])
 def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    retired,
 ) -> None:
     client, calls, _ = _session_app(monkeypatch, tmp_path)
     sitting_id = client.post(
@@ -2705,6 +2709,11 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
         f"{base}/finalize",
         json=payload,
     )
+    item = calls["memory_items"]["image-item"]
+    if retired == "merged":
+        item.merged_into = "surviving-memory"
+    elif retired == "superseded":
+        item.superseded = True
     retry = client.post(
         f"{base}/finalize",
         json=payload,
@@ -2718,6 +2727,7 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
     assert finalized.status_code == retry.status_code == 200
     assert finalized.json()["queued"] is True
     assert retry.json()["duplicate"] is True
+    assert retry.json()["queued"] is False
     assert conflict.status_code == 409
     assert len(calls["image_memorize"]) == 1
     assert calls["image_memorize"][0]["modality"] == "image"
