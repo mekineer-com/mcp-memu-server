@@ -388,10 +388,14 @@ delivery requires that observer's active lease, and success clears only that
 photo's warning. Queue acceptance and saved-item duplicate evidence do not assert
 that later dedupe/review completed; no full background-filing Retry is added.
 
-Live `_MEMORIZE_PROGRESS`, busy claims, cancellation flags and ST plugin
-`localTasks` are process-local status, **not a durable job queue**. ST
-`src/memory/summary-poller.ts` projects progress and refreshes derived memory UI;
-a local task ID or SUCCESS is not the engine's evidence/checkpoint store.
+Live `_MEMORIZE_PROGRESS`, busy claims and cancellation flags are process-local
+status, **not a durable job queue**. ST reads progress by owner/Soul without a
+plugin routing cache and discovers active work even without local metadata.
+Polling is serialized; scope/generation/token checks discard stale responses.
+Unknown status preserves an active observation, not a failed-work flag; known
+idle/skipped/cancelled outcomes clear it without completion sync. Cancel success
+acknowledges a request, so the banner waits for terminal progress. A local task
+ID or SUCCESS is not the engine's evidence/checkpoint store or a per-chat receipt.
 
 | Unfinished work | Durable owner and recovery entry |
 | --- | --- |
