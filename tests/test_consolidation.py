@@ -553,6 +553,7 @@ def test_weekly_reflection_rejects_blank_companion_prose(prose) -> None:
     ("<![CDATA[We felt <3 & steady.]]>", "We felt <3 & steady."),
     ("TestOwner & TestPeer felt <3 when a<b and 2 < 3.", "TestOwner & TestPeer felt <3 when a<b and 2 < 3."),
     ("a<b tomorrow & <em>still hopeful</em>.", "a<b tomorrow & still hopeful."),
+    ("tea<coffee; Fictional A's and Fictional B's view -> settled.", "tea<coffee; Fictional A's and Fictional B's view -> settled."),
     ("&amp; &lt; &#60; &#x3c;", "& < < <"),
     ("<![CDATA[literal &amp; </weekly_reflection> <3]]>", "literal &amp; </weekly_reflection> <3"),
     ("Before<!-- </weekly_reflection> --> & after.", "Before & after."),
@@ -589,7 +590,7 @@ async def test_weekly_reflection_preserves_complete_prose_through_embedding(pros
 
 @pytest.mark.parametrize("prose", [
     "<em>broken</strong>", '<em title="broken', "<![CDATA[broken", "<!--broken",
-    "&unknown;", "&#0;", "&#xZZ;", "<em title=broken>text</em>",
+    "&unknown;", "&#0;", "&#xZZ;", "<em title=broken>text</em>", "<b!>", '<b"oops">', "<b'oops'>",
 ])
 def test_weekly_reflection_still_rejects_malformed_xml(prose):
     with pytest.raises((ValueError, ParseError)):

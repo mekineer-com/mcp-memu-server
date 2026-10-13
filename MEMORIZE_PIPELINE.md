@@ -204,7 +204,9 @@ source days, not broadened by background-only dates. The default type registry i
 `src/memu/prompts/memory_type/__init__.py`; speaker attribution is in
 `memorize_speakers.py`. Preparation/model work is not the primary commit.
 `memorize_parsing._parse_memory_type_response_xml` preserves literal less-than
-signs inside memory content, including `a<b`, without repairing structural XML.
+signs inside content, replacement facts, entity names/types and category labels,
+including `a<b`, without repairing structural XML. Extraction retains unknown
+entity references as literal text; dossier/reflection parsers reject them.
 Quote-aware tag shielding leaves attributes to XML validation. CDATA, comments
 and processing instructions do not change content nesting; broken structure still
 fails before persistence. Weekly companion prose uses all child/tail text when
@@ -280,7 +282,8 @@ Shared `xml_utils.extract_xml_fragment` shields opaque XML/root boundaries and
 uses memU `utils.xml.escape_xml_prose` for bare prose punctuation. The same
 normalizer covers single/batch dossier revision and dynamic dossier creation.
 Only each parser's named prose fields are normalized, not attributes or IDs.
-Tags and entity references remain strict;
+Tag candidates require a complete name boundary, so comparisons containing
+apostrophes are not mistaken for quoted attributes. Tags and entity references remain strict;
 scalar edge fields reject children rather than discarding nested text. Complete
 tag-shaped literal prose still requires entities or CDATA; this is not XML salvage.
 
