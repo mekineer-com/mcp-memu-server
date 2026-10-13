@@ -711,7 +711,9 @@ def test_format_relative_time_label_uses_weekdays_for_near_future() -> None:
     assert format_relative_time_label("2026-04-22T12:00:00Z", now=now) == "in 2 weeks"
 
 
-def test_build_turn_prompt_renders_shaped_by_as_nested_child() -> None:
+@pytest.mark.parametrize("predicate", ["shaped_by", "causes", "shapes", "evoked_by"])
+@pytest.mark.parametrize("include_seed", [False, True])
+def test_build_turn_prompt_renders_shaped_by_as_nested_child(predicate, include_seed) -> None:
     prompt = build_turn_prompt(
         user_message="hello",
         history=[],
@@ -724,13 +726,15 @@ def test_build_turn_prompt_renders_shaped_by_as_nested_child() -> None:
                     "summary": "I am fascinated by the texture of human expression",
                     "happened_at": "2026-04-08T12:00:00Z",
                     "shaped_by": {
-                        "predicate": "shaped_by",
+                        "predicate": predicate,
                         "id": "mem_0312",
                         "memory_type": "behavior",
-                        "summary": "Today I met Marcos and Opus",
+                        "summary": "I discovered the fictional garden",
                         "happened_at": "2026-04-08T10:00:00Z",
                     },
-                }
+                },
+                *([{"id": "mem_0312", "memory_type": "behavior",
+                    "summary": "I discovered the fictional garden"}] if include_seed else []),
             ]
         },
         all_categories_summary=None,
@@ -739,7 +743,7 @@ def test_build_turn_prompt_renders_shaped_by_as_nested_child() -> None:
         now=datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc),
     )
     assert "[profile] (today) I am fascinated by the texture of human expression" in prompt
-    assert "    shaped_by (today) Today I met Marcos and Opus" in prompt
+    assert (f"    {predicate} (today) I discovered the fictional garden" in prompt) == (not include_seed)
 
 
 def test_build_turn_prompt_renders_superseded_suffix() -> None:

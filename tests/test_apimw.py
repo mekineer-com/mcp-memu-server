@@ -16,7 +16,8 @@ from memu.database.models import Triple
 
 
 @pytest.mark.asyncio
-async def test_prior_context_renders_current_scoped_rows_without_consuming_selection(tmp_path, monkeypatch):
+@pytest.mark.parametrize("predicate", ["evokes", "causes", "shapes", "evoked_by"])
+async def test_prior_context_renders_current_scoped_rows_without_consuming_selection(tmp_path, monkeypatch, predicate):
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     cid = "chat:prior-context"
     svc = SavedBatchService.make_engine(scope)
@@ -30,7 +31,7 @@ async def test_prior_context_renders_current_scoped_rows_without_consuming_selec
         "Merged prose", "Superseded prose")]
     foreign = item("Other Soul private prose", {"user_id": "TestOwner", "soul_id": "OtherSoul"})
     selection = [{"id": last.id}, {"id": first.id, "via_graph": "evokes",
-                  "shaped_by": {"id": seed.id, "predicate": "evokes"}},
+                  "shaped_by": {"id": seed.id, "predicate": predicate}},
                  *({"id": row.id} for row in (deleted, merged, superseded, foreign)),
                  {"id": "guidance", "memory_type": "procedural", "domain": "mental_health"}]
     main._write_conversation_state(cid, **scope, updates={"prior_context": selection,
@@ -51,6 +52,7 @@ async def test_prior_context_renders_current_scoped_rows_without_consuming_selec
     current = apimw.render_prior_context(selection, svc=svc, scope=scope, procedural_db_path=sidecar,
                                         now=datetime(2026, 1, 3, 12, tzinfo=UTC))
     assert "yesterday" in current and "today" not in current
+    assert f"    {predicate} " in current
     assert "Corrected selected prose" in current and "Corrected supporting prose" in current
     assert current.index(last.summary) < current.index("Corrected selected prose")
     assert "Current curated guidance" in current
