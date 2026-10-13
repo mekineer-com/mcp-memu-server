@@ -106,8 +106,10 @@ separate supported evidence; this repair does not rewrite old stored memories.
 Extraction uses raw primary message bodies, not generated speaker headings, to
 find mentioned declared people. In ambiguous contexts, copied display rows show
 existing linked IDs or unlinked sender references; saved rows/labels stay intact.
-An unresolved cited participant sharing any of the owner/Soul's cited labels
-blocks only implicit assignment. The memory still saves without that link;
+Distinct cited source identities sharing a display label block implicit
+assignment, whether linked or unresolved. All cited labels count, including
+earlier names; repeated rows or renames for one identity do not collide.
+The memory still saves without that link;
 valid explicit Soul choices remain trusted, including absent-person subjects.
 
 Reply entry validates identity selectors with the same resolver as retrieval,
@@ -275,7 +277,10 @@ stages:
    work. Dossier/narrative journal finishing follows the database commit.
 
 Shared `xml_utils.extract_xml_fragment` shields opaque XML/root boundaries and
-normalizes literal punctuation only in prose. Tags/attributes remain strict;
+uses memU `utils.xml.escape_xml_prose` for bare prose punctuation. The same
+normalizer covers single/batch dossier revision and dynamic dossier creation.
+Only each parser's named prose fields are normalized, not attributes or IDs.
+Tags and entity references remain strict;
 scalar edge fields reject children rather than discarding nested text. Complete
 tag-shaped literal prose still requires entities or CDATA; this is not XML salvage.
 
