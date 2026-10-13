@@ -5549,22 +5549,24 @@ async def test_retired_unsaved_retry_processes_surviving_st_source(monkeypatch, 
             service.database.close()
 
 
-@pytest.mark.parametrize("error_type", [OSError, ValueError, sqlite3.DatabaseError, sqlite3.ProgrammingError, TypeError, RuntimeError])
+@pytest.mark.parametrize("error_type, unavailable", [(FileNotFoundError, True), (OSError, False),
+    (ValueError, False), (sqlite3.DatabaseError, False), (sqlite3.OperationalError, False),
+    (sqlite3.ProgrammingError, False), (TypeError, False), (RuntimeError, False)])
 @pytest.mark.parametrize("source", ["whatsapp:dm:fictional-boundary", "integrity:strict-source"])
-def test_unavailable_wa_auto_primary_does_not_pause_other_clients(monkeypatch, caplog, error_type, source):
+def test_unavailable_wa_auto_primary_does_not_pause_other_clients(monkeypatch, caplog, error_type, unavailable, source):
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     state = {"memorize_chat": True, "digest_cursor": 0, "last_memorize_at": "2020-01-01T00:00:00+00:00",
              "digest_cursor_source_message_id": "fictional-anchor", "digest_cursor_ts": 100}
-    def unavailable(*_a, **_kw):
+    def raise_source_error(*_a, **_kw):
         raise error_type("Fictional unavailable source")
-    monkeypatch.setattr(main, "_resolve_source_cursor", unavailable)
+    monkeypatch.setattr(main, "_resolve_source_cursor", raise_source_error)
     if source.startswith("whatsapp:"):
         home = Path(main._CONFIG["hermes"]["home"])
         (home / "memu.json").write_text(json.dumps({"whatsapp": {"channels": {
             "fictional-boundary": {"policy": "full", "memorize": True}}}}))
     call = lambda: main._prepare_auto_memorize(source, *scope.values(), {}, state,
         [{"role": "user", "content": "Fictional payload", "source_conversation_index": 1}], dry_run=False)
-    if source.startswith("whatsapp:") and conversation_sources.is_source_unavailable_error(error_type()):
+    if source.startswith("whatsapp:") and unavailable:
         assert call() == (0, None)
         assert main._paid_work_state(**scope)["memorize_failure"] is None
         assert any(source in record.getMessage() and "Fictional unavailable source" in record.getMessage()
@@ -5624,8 +5626,10 @@ async def test_unavailable_wa_retry_resumes_saved_phase_before_unsaved_discard(m
 
 
 @pytest.mark.parametrize("wrapped", [False, True])
-@pytest.mark.parametrize("error_type", [OSError, ValueError, sqlite3.DatabaseError, sqlite3.ProgrammingError, TypeError, RuntimeError])
-def test_unavailable_wa_cross_reads_preserve_surviving_chat(monkeypatch, caplog, error_type, wrapped):
+@pytest.mark.parametrize("error_type, unavailable", [(FileNotFoundError, True), (OSError, False),
+    (ValueError, False), (sqlite3.DatabaseError, False), (sqlite3.OperationalError, False),
+    (sqlite3.ProgrammingError, False), (TypeError, False), (RuntimeError, False)])
+def test_unavailable_wa_cross_reads_preserve_surviving_chat(monkeypatch, caplog, error_type, unavailable, wrapped):
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     dead, live = "whatsapp:dm:fictional-cross", "integrity:cross-survivor"
     home = Path(main._CONFIG["hermes"]["home"])
@@ -5650,7 +5654,7 @@ def test_unavailable_wa_cross_reads_preserve_surviving_chat(monkeypatch, caplog,
         for reader in (lambda: main._load_cross_memorize_tails_from_sources(con, **scope, strict=True),
                        lambda: main._load_cross_tail_from_sources(con, **scope)):
             caplog.clear()
-            if conversation_sources.is_source_unavailable_error(error_type()):
+            if unavailable:
                 result = reader()
                 assert (set(result) == {live} if isinstance(result, dict) else
                         [row["source_conversation_id"] for row in result] == [live])
@@ -5698,7 +5702,7 @@ def test_unavailable_wa_frozen_prunes_missing_trigger_preserves_survivor(monkeyp
     def resolve(cid, *args, **kw):
         if cid == dead:
             if missing == "source":
-                raise OSError("Fictional missing frozen source")
+                raise FileNotFoundError("Fictional missing frozen source")
             return -1, None, True
         return original(cid, *args, **kw)
     monkeypatch.setattr(main, "_resolve_source_cursor", resolve)
@@ -5728,7 +5732,7 @@ def test_unavailable_wa_primary_live_history_uses_timestamp_floor(monkeypatch, c
     (home / "memu.json").write_text(json.dumps({"whatsapp": {"channels": {
         "fictional-live-floor": {"policy": "full", "memorize": True}}}}))
     def unavailable(*_a, **_kw):
-        raise OSError("Fictional primary unavailable")
+        raise FileNotFoundError("Fictional primary unavailable")
     monkeypatch.setattr(main, "_resolve_source_cursor", unavailable)
     state = {"memorize_chat": True, "digest_cursor": 99, "digest_cursor_ts": 100,
              "last_memorize_at": "2020-01-01T00:00:00+00:00"}
@@ -5736,8 +5740,34 @@ def test_unavailable_wa_primary_live_history_uses_timestamp_floor(monkeypatch, c
     assert main._current_history_for_ai(cid, "TestOwner", "TestSoul", rows, state, is_live_turn=True) == rows[1:]
     assert any(cid in record.getMessage() and "Fictional primary unavailable" in record.getMessage()
                for record in caplog.records)
-    with pytest.raises(OSError):
+    with pytest.raises(FileNotFoundError):
         main._current_history_for_ai(cid, "TestOwner", "TestSoul", rows, state)
+
+
+@pytest.mark.parametrize("error", [sqlite3.OperationalError("database is locked"),
+    sqlite3.OperationalError("no such column: body"), ValueError("schema is outdated"),
+    RuntimeError("reader bug"), TypeError("parser bug")])
+@pytest.mark.parametrize("reader", ["live_primary", "live_background", "http_wrapper"])
+def test_whatsapp_broken_read_never_falls_back_or_becomes_unavailable(monkeypatch, error, reader):
+    cid = "whatsapp:dm:fictional-broken-reader"
+    def broken(*_a, **_kw):
+        raise error
+    if reader == "live_primary":
+        monkeypatch.setattr(main, "_load_current_whatsapp_history_from_source", broken)
+        call = lambda: main._prepare_current_whatsapp_history(conversation_id=cid, soul_id="TestSoul",
+            raw_history=[{"content": "Fictional payload"}], active_since=None, load_source_history=True,
+            external_message_id=None, is_live_turn=True, op="test")
+    elif reader == "live_background":
+        _background_whatsapp_policy("fictional-broken-reader")
+        monkeypatch.setattr(main._cross_history, "_load_background_tail_from_source", broken)
+        call = lambda: main._current_history_for_ai(cid, "TestOwner", "TestSoul",
+            [{"content": "Fictional payload"}], {"memorize_chat": False}, is_live_turn=True)
+    else:
+        monkeypatch.setattr(main._cross_history, "_load_tail_for_source_conversation", broken)
+        call = lambda: main._load_tail_for_source_conversation(conversation_id=cid)
+    with pytest.raises(type(error)) as raised:
+        call()
+    assert raised.value is error
 
 
 @pytest.mark.asyncio
@@ -5825,14 +5855,14 @@ def test_current_background_history_live_fallback_and_source_id_rebase(monkeypat
     def source(**kwargs):
         assert kwargs["rolling_summary_cursor_id"] == 7
         if outcome != "rebased":
-            raise OSError("Fictional unavailable source")
+            raise FileNotFoundError("Fictional unavailable source")
         return [{"role": "unknown", "content": "Rebased tail", "source_message_id": "new-id",
                  "source_conversation_index": 1}]
     monkeypatch.setattr(main, "_load_background_rollup_tail", source)
     payload = [{"content": f"payload-{i}", "ts_ms": 90_000 if i == 0 else 100_000 + i * 1000}
                for i in range(12)]
     if outcome == "strict_error":
-        with pytest.raises(OSError, match="Fictional unavailable"):
+        with pytest.raises(FileNotFoundError, match="Fictional unavailable"):
             main._current_history_for_ai(cid, "TestOwner", "TestSoul", payload, state)
     else:
         rows = main._current_history_for_ai(cid, "TestOwner", "TestSoul", payload, state, is_live_turn=True)
@@ -5877,7 +5907,7 @@ def test_live_background_source_failure_honors_memorize_boundary(monkeypatch, so
            if source == "whatsapp" else {})})
     state = main._load_turn_state_and_soul_card(cid, user_id="TestOwner", soul_id="TestSoul")[0]
     def unavailable(**_kw):
-        raise OSError("Fictional source unavailable")
+        raise FileNotFoundError("Fictional source unavailable")
     monkeypatch.setattr(main, "_load_background_rollup_tail", unavailable)
     rows = [{"role": "user", "content": str(ts), "ts_ms": ts * 1000} for ts in (150, 201, 202)]
     result = main._current_history_for_ai(cid, "TestOwner", "TestSoul", rows, state, is_live_turn=True)
@@ -8205,7 +8235,7 @@ async def test_live_conversation_retrieve_degrades_source_history_load_failure(
     monkeypatch.setattr(
         main,
         "_load_current_whatsapp_history_from_source",
-        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("web source down")),
+        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("web source down")),
     )
     captured: dict[str, Any] = {}
 
@@ -8341,7 +8371,7 @@ async def test_live_conversation_turn_degrades_source_history_load_failure(
     monkeypatch.setattr(
         main,
         "_load_current_whatsapp_history_from_source",
-        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("web source down")),
+        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("web source down")),
     )
 
     out = await main.conversation_turn(

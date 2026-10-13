@@ -2027,8 +2027,9 @@ def _current_history_for_ai(
             return _cross_history._load_background_tail_from_source(
                 conversation_id, state, user_id=user_id, soul_id=soul_id,
             )
-        except (OSError, sqlite3.Error, RuntimeError, ValueError, HTTPException):
-            if not is_live_turn:
+        except (OSError, sqlite3.Error, RuntimeError, ValueError, HTTPException) as exc:
+            if not is_live_turn or (_message_log.derive_source_label(conversation_id).startswith("whatsapp:")
+                    and not _cross_history._whatsapp_source_unavailable(conversation_id, exc)):
                 raise
             logger.warning("Live background source unavailable; using bounded payload history for %s", conversation_id)
             if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
@@ -2314,7 +2315,10 @@ def _load_tail_for_source_conversation(*args: Any, **kwargs: Any) -> Any:
     try:
         return _cross_history._load_tail_for_source_conversation(*args, **kwargs)
     except Exception as exc:
-        if not _conversation_sources.is_source_unavailable_error(exc):
+        cid = kwargs["conversation_id"]
+        if not (_cross_history._whatsapp_source_unavailable(cid, exc)
+                if _message_log.derive_source_label(cid).startswith("whatsapp:")
+                else _conversation_sources.is_source_unavailable_error(exc)):
             raise
         raise HTTPException(status_code=409, detail=f"Chat source {kwargs['conversation_id']} is unavailable; restore it before retrying: {exc}") from exc
 

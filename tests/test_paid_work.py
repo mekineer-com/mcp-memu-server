@@ -1184,8 +1184,8 @@ async def test_paused_atomic_session_creates_no_state_or_snapshot(monkeypatch):
 @pytest.mark.parametrize("source, producing, error_type", [
     (source, True, error_type)
     for source in ("chat:unreadable-status", "whatsapp:dm:15550000001")
-    for error_type in (OSError, ValueError, sqlite3.DatabaseError, sqlite3.OperationalError)
-] + [("whatsapp:dm:15550000001", False, ValueError)])
+    for error_type in (FileNotFoundError, OSError, ValueError, sqlite3.DatabaseError, sqlite3.OperationalError)
+] + [("whatsapp:dm:15550000001", False, kind) for kind in (FileNotFoundError, ValueError)])
 async def test_pending_status_keeps_recovery_visible_when_source_count_is_unknown(
     tmp_path, monkeypatch, source, producing, error_type,
 ):
@@ -1221,8 +1221,13 @@ async def test_pending_status_keeps_recovery_visible_when_source_count_is_unknow
         def broken_background(**_kwargs):
             assert _kwargs["min_timestamp"] == 123.0
             assert _kwargs["web_source_db_path"] == tmp_path / "web_source.db"
-            raise ValueError("Fictional external source unreadable")
+            raise error_type("Fictional external source unreadable")
         monkeypatch.setattr(main._conversation_sources, "load_whatsapp_web_source_tail_after_rowid", broken_background)
+    if source.startswith("whatsapp:") and error_type is not FileNotFoundError:
+        with pytest.raises(error_type, match="Fictional external source unreadable"):
+            await main.diag_memorize_pending(**scoped)
+        assert main._paid_work_state(**scoped)["memorize_failure"] == failure
+        return
     result = await main.diag_memorize_pending(**scoped)
     assert result["paused"] and result["pause_reason"] == "Saved source failed"
     assert result["memorize_failure"] == failure and result["retry_operation"] == "memorize"

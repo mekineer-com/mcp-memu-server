@@ -71,8 +71,8 @@ def _whatsapp_source_unavailable(conversation_id: str, exc: BaseException) -> bo
     if not _message_log.derive_source_label(conversation_id).startswith("whatsapp:"):
         return False
     if isinstance(exc, HTTPException):
-        return exc.status_code == 409 and _conversation_sources.is_source_unavailable_error(exc.__cause__)
-    return _conversation_sources.is_source_unavailable_error(exc)
+        return exc.status_code == 409 and _conversation_sources.is_whatsapp_source_unavailable_error(exc.__cause__)
+    return _conversation_sources.is_whatsapp_source_unavailable_error(exc)
 
 
 def _resolve_source_cursor(
@@ -278,7 +278,7 @@ def _prepare_current_whatsapp_history(
                 exclude_external_message=exclude_external_message,
             )
         except Exception as exc:
-            if not is_live_turn:
+            if not is_live_turn or not _whatsapp_source_unavailable(conversation_id, exc):
                 raise
             _m().logger.warning(
                 "%s: live WhatsApp source history load failed; continuing with payload history "
@@ -970,7 +970,8 @@ def _load_cross_memorize_tails_from_sources(
                     source_warnings.append(f"WhatsApp history {cid} unavailable; skipped: {exc}")
                 continue
             if strict:
-                if _conversation_sources.is_source_unavailable_error(exc):
+                if (not _message_log.derive_source_label(cid).startswith("whatsapp:")
+                        and _conversation_sources.is_source_unavailable_error(exc)):
                     raise HTTPException(status_code=409, detail=f"Chat source {cid} is unavailable; restore it before retrying: {exc}") from exc
                 raise
             is_lid_gap = "LID↔phone mapping gap" in str(exc)

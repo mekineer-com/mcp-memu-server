@@ -21,6 +21,26 @@ def test_source_unavailable_error_classification(error, unavailable):
     assert conversation_sources.is_source_unavailable_error(error) is unavailable
 
 
+@pytest.mark.parametrize("error, unavailable", [
+    (FileNotFoundError("missing history"), True),
+    (OSError("device error"), False), (PermissionError("access denied"), False),
+    (ValueError("schema or parser bug"), False), (json.JSONDecodeError("bad JSON", "", 0), False),
+    (sqlite3.OperationalError("no such column: body"), False),
+    (sqlite3.OperationalError("database is locked"), False),
+    (sqlite3.DatabaseError("malformed database"), False),
+    (sqlite3.ProgrammingError("binding"), False), (RuntimeError("invariant"), False),
+])
+def test_whatsapp_source_error_classification(error, unavailable):
+    assert cross_history._whatsapp_source_unavailable("whatsapp:dm:fictional", error) is unavailable
+
+
+def test_whatsapp_source_native_open_failure_is_unavailable(tmp_path):
+    with pytest.raises(sqlite3.OperationalError) as error:
+        sqlite3.connect(f"{(tmp_path / 'absent.db').as_uri()}?mode=ro", uri=True)
+    assert cross_history._whatsapp_source_unavailable("whatsapp:dm:fictional", error.value)
+    assert not (tmp_path / "absent.db").exists()
+
+
 @pytest.mark.parametrize("name", ["Ardent", "ardent", "Beacon Vale", "星", "A" * 80])
 @pytest.mark.parametrize("bold", ["", "*", "**"])
 def test_soul_prefix_requires_marker_and_preserves_exact_valid_name(name, bold):
@@ -1473,7 +1493,7 @@ def test_load_whatsapp_web_source_tail_raises_on_initial_read_with_no_matching_r
     web_db = tmp_path / "web_source.db"
     _write_web_source_db(web_db, messages=[])
 
-    with pytest.raises(ValueError, match="canonical WhatsApp ID mismatch"):
+    with pytest.raises(FileNotFoundError, match="canonical WhatsApp ID mismatch"):
         conversation_sources.load_whatsapp_web_source_tail(
             conversation_id="whatsapp:dm:99999999999",
             since_cursor=-1,
@@ -1481,6 +1501,31 @@ def test_load_whatsapp_web_source_tail_raises_on_initial_read_with_no_matching_r
             soul_id="TestSoul",
             web_source_db_path=web_db,
         )
+
+
+@pytest.mark.parametrize("failure", ["reactions", "author_id", "lock", "corrupt"])
+def test_whatsapp_native_broken_history_is_not_unavailable(tmp_path, monkeypatch, failure):
+    web_db = tmp_path / "web_source.db"
+    _write_web_source_db(web_db, messages=[])
+    connect = sqlite3.connect
+    con = connect(web_db)
+    try:
+        if failure == "lock":
+            con.execute("BEGIN EXCLUSIVE")
+        elif failure == "corrupt":
+            con.close()
+            web_db.write_bytes(b"Fictional invalid database")
+        else:
+            con.execute(f"ALTER TABLE whatsapp_messages DROP COLUMN {failure}")
+            con.commit()
+        monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: connect(*a, **kw, timeout=0))
+        with pytest.raises((ValueError, sqlite3.DatabaseError)) as error:
+            conversation_sources.load_whatsapp_web_source_tail(
+                conversation_id="whatsapp:dm:99999999999", since_cursor=-1,
+                recent_fallback_messages=0, soul_id="TestSoul", web_source_db_path=web_db)
+        assert not cross_history._whatsapp_source_unavailable("whatsapp:dm:99999999999", error.value)
+    finally:
+        con.close()
 
 
 def test_load_whatsapp_web_source_tail_no_error_on_initial_read_with_messages_filtered_by_timestamp(

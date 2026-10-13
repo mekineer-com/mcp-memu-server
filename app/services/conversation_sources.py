@@ -38,6 +38,13 @@ def is_source_unavailable_error(exc: BaseException) -> bool:
     return isinstance(exc, (OSError, ValueError, sqlite3.DatabaseError)) and not isinstance(exc, sqlite3.ProgrammingError)
 
 
+def is_whatsapp_source_unavailable_error(exc: BaseException) -> bool:
+    return isinstance(exc, FileNotFoundError) or (
+        isinstance(exc, sqlite3.OperationalError)
+        and getattr(exc, "sqlite_errorcode", 0) & 0xff == sqlite3.SQLITE_CANTOPEN
+    )
+
+
 def mentra_storage_dir() -> Path:
     openalma_dir = Path(__file__).resolve().parents[3] / "openalma"
     if not openalma_dir.is_dir():
@@ -858,7 +865,7 @@ def _load_whatsapp_web_source_tail(
                 [target, *sorted(local_ids)],
             ).fetchone()
             if not any_rows:
-                raise ValueError(
+                raise FileNotFoundError(
                     f"web_source returned no rows for conversation_id={conversation_id!r} "
                     f"— likely canonical WhatsApp ID mismatch or web_source clone not synced"
                 )
