@@ -221,6 +221,15 @@ def test_consolidation_keeps_rendered_chat_whitespace() -> None:
 @pytest.mark.parametrize("due_ids", [("first",), ("first", "second"), ("first", "second", "third")])
 async def test_dossier_context_uses_one_holistic_call_and_preserves_due_order(due_ids) -> None:
     svc = _DossierContextService(due_ids=due_ids)
+    original_chat = svc.chat
+
+    async def chat(prompt, **kwargs):
+        raw = await original_chat(prompt, **kwargs)
+        for dossier_id in due_ids:
+            raw = raw.replace(f"{dossier_id} description", "R&D, a<b; &amp; &lt; &amp;amp;.")
+        return raw
+
+    svc.chat = chat
     inputs = _inputs()
     result = await prepare_dossier_consolidation_context(
         svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser"
@@ -228,6 +237,7 @@ async def test_dossier_context_uses_one_holistic_call_and_preserves_due_order(du
     assert result is inputs
     assert [call for call in svc.calls if call[0] == "chat"] == [("chat", "dossiers")]
     assert [call[1] for call in svc.calls if call[0] == "apply"] == list(due_ids)
+    assert all(call[2]["description"] == "R&D, a<b; & < &amp;." for call in svc.calls if call[0] == "apply")
     assert "Complete active life-domain dossiers" in svc.prompts[0]
     assert "Life-domain dossiers needing my care now" in svc.prompts[0]
 

@@ -1,19 +1,9 @@
 from __future__ import annotations
 
-import re
 import xml.etree.ElementTree as ET
 
+from memu.utils.xml import XML_TOKEN, escape_xml_prose
 
-_START = r"(?:[A-Za-z_:]|[^\x00-\x7f])"
-_NAME = _START + r"(?:[A-Za-z0-9_.:-]|[^\x00-\x7f])*"
-# Shield opaque XML and tag candidates; ElementTree still validates the grammar.
-_XML_TOKEN = re.compile(
-    r"(?P<opaque><!\[CDATA\[.*?\]\]>|<!--.*?-->|<\?.*?\?>)"
-    rf"""|(?P<tag></?{_START}(?:[^<>"']|"[^"]*"|'[^']*')*>)"""
-    rf"|(?P<damaged></?{_NAME}(?=\s+{_NAME}\s*=|[/=>])[^<>]*)"
-    rf"|(?P<bare>&(?!{_NAME};|#[^;\s<&]*;)|<)",
-    re.DOTALL,
-)
 _PROSE_TAGS = {"narrative_self", "description", "prose", "section", "body",
                "add", "remove", "intention", "companion_memory"}
 
@@ -21,7 +11,7 @@ _PROSE_TAGS = {"narrative_self", "description", "prose", "section", "body",
 def extract_xml_fragment(raw: str, root_tag: str) -> ET.Element:
     text = str(raw or "").strip()
     start, depth = None, 0
-    for match in _XML_TOKEN.finditer(text):
+    for match in XML_TOKEN.finditer(text):
         if match.lastgroup != "tag":
             continue
         token = match.group(0)
@@ -36,23 +26,7 @@ def extract_xml_fragment(raw: str, root_tag: str) -> ET.Element:
             break
     else:
         raise ValueError(f"Missing <{root_tag}> root")
-    prose_depth = 0
-
-    def escape_prose(match: re.Match[str]) -> str:
-        nonlocal prose_depth
-        token = match.group(0)
-        if match.lastgroup == "tag":
-            name = token.lstrip("</").split(None, 1)[0].rstrip("/>")
-            if name in _PROSE_TAGS:
-                prose_depth += -1 if token.startswith("</") else 0 if token.endswith("/>") else 1
-        elif match.lastgroup == "bare" and prose_depth > 0:
-            if token == "&":
-                return "&amp;"
-            if fragment[match.end():match.end() + 1] not in {"/", "!", "?"}:
-                return "&lt;"
-        return token
-
-    return ET.fromstring(_XML_TOKEN.sub(escape_prose, fragment))
+    return ET.fromstring(escape_xml_prose(fragment, _PROSE_TAGS))
 
 
 def xml_text(element: ET.Element | None, path: str) -> str | None:

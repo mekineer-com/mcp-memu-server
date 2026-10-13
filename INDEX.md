@@ -213,7 +213,7 @@ guess a chat from the last reporting app.
 | `app/services/soul_state.py` | Soul-level singleton state: `narrative_self`, `memory_cache`, `intentions_active`; the dossier index is projected from memU, never stored |
 | `app/services/soul_summaries.py` | Journaled live/previous/approved soul-summary writes and review revision guards |
 | `app/services/message_log.py` | Cross-conversation history rendering: `format_merged_history()`, source-label derivation, WhatsApp normalization, activity-log block |
-| `app/services/xml_utils.py` | `extract_xml_fragment()`, `xml_text()` — used by consolidation pipeline |
+| `app/services/xml_utils.py` | Consolidation root extraction and scalar validation; prose token shielding/normalization reuses memU `utils/xml.py` |
 | `app/services/narrative_self.py` | `snapshot_previous_narrative_self()` — writes `evolved_into` Triple before consolidation overwrites identity |
 | `app/services/segment.py` | Consolidation segment helpers: `parse_segment_range()`, `build_segment_inputs()`, `create_companion_memory()` |
 | `app/procedural.py` | Procedural-memory sidecar: YAML corpora → `procedural.db` with embeddings; top-k cosine lookup at retrieve time. Soul never writes here. |
