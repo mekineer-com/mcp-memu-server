@@ -554,6 +554,10 @@ def test_weekly_reflection_rejects_blank_companion_prose(prose) -> None:
     ("TestOwner & TestPeer felt <3 when a<b and 2 < 3.", "TestOwner & TestPeer felt <3 when a<b and 2 < 3."),
     ("a<b tomorrow & <em>still hopeful</em>.", "a<b tomorrow & still hopeful."),
     ("tea<coffee; Fictional A's and Fictional B's view -> settled.", "tea<coffee; Fictional A's and Fictional B's view -> settled."),
+    ("a<b!", "a<b!"),
+    ("x<y? ok", "x<y? ok"),
+    ("Guest<Other's car", "Guest<Other's car"),
+    ('a<b"yes"', 'a<b"yes"'),
     ("&amp; &lt; &#60; &#x3c;", "& < < <"),
     ("<![CDATA[literal &amp; </weekly_reflection> <3]]>", "literal &amp; </weekly_reflection> <3"),
     ("Before<!-- </weekly_reflection> --> & after.", "Before & after."),
@@ -626,7 +630,7 @@ async def test_identity_xml_preserves_literal_narrative_anchor_and_goal_text():
     inputs = _inputs()
     await prepare_dossier_consolidation_context(svc, inputs=inputs, soul_id="TestSoul", user_id="TestUser")
     raw = await svc.chat("Fictional reflection", step="anchors", system_prompt="Fictional instruction")
-    prose = "I value A & B when a<b and feel <3."
+    prose = "I value A & B when a<b and feel <3. a<b!; x<y? ok; Guest<Other's car; a<b\"yes\""
     raw = raw.replace('<narrative_self action="keep"></narrative_self>',
                       f'<narrative_self action="replace">{prose}</narrative_self>')
     raw = raw.replace("soul description", prose)

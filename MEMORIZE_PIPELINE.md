@@ -285,8 +285,9 @@ Shared `xml_utils.extract_xml_fragment` shields opaque XML/root boundaries and
 uses memU `utils.xml.escape_xml_prose` for bare prose punctuation. The same
 normalizer covers single/batch dossier revision and dynamic dossier creation.
 Only each parser's named prose fields are normalized, not attributes or IDs.
-Tag candidates require a complete name boundary, so comparisons containing
-apostrophes are not mistaken for quoted attributes. Tags and entity references remain strict;
+Tag candidates require a complete name boundary. A name followed by `!`, `?`
+or a quote is shielded as damaged markup only if `>` occurs before the next `<`;
+otherwise the literal less-than is escaped in prose. Tags and entity references remain strict;
 scalar edge fields reject children rather than discarding nested text. Complete
 tag-shaped literal prose still requires entities or CDATA; this is not XML salvage.
 
