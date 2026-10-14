@@ -12,7 +12,7 @@ Part of the memU local stack — unofficial fork based on [memU v1.4.0](https://
 
 ## Requirements
 
-- Python 3.12+
+- Python 3.12
 - `memu` engine checked out and pointed to via `config.json`
 - An LLM provider API key (OpenAI-compatible)
 - No Docker required
@@ -29,11 +29,13 @@ cp config.example.json config.json
 #    llm.api_key, storage.metadata_store.dsn, memu.path
 
 # 3. Install deps
-pip install -e .
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.lock -e . -e ../memu
+.venv/bin/python ../memu/scripts/install-sqlite-vec.py
 
 # 4. Start the server
-python run.py
-# or: uvicorn app.main:app --host 127.0.0.1 --port 8099
+.venv/bin/python run.py
+# or: .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8099
 ```
 
 The server runs on `http://127.0.0.1:8099` by default.
@@ -70,6 +72,17 @@ See `INDEX.md` for the full endpoint list and task→file guide.
 ---
 
 ## Development
+
+`requirements.lock` pins the joint server/memU runtime for the first coordinated
+beta and subsequent installation, update and recovery. Regenerate from this
+directory and verify changed packages before shipping:
+
+```sh
+uv pip compile --universal --python-version 3.12 pyproject.toml ../memu/pyproject.toml -o requirements.lock
+```
+
+`uv.lock` is separate development tooling, not the installer runtime lock.
+Runtime pins do not remove obsolete installed packages or pin build tools.
 
 ```bash
 # Syntax check
