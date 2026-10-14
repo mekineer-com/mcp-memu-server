@@ -122,7 +122,7 @@ def test_main_service_construction_enforces_real_owner_gate(tmp_path, monkeypatc
         main._get_service_from_payload(payload)
 
     owner.create_owner(cfg, "Test Owner")
-    souls.create_soul(cfg, souls.SoulCreate(soul_id="Test Soul", use_existing=False, user_name="VisibleHuman"))
+    souls.publish_soul_db(sqlite_dir / "Test Soul.db", "VisibleHuman")
     with pytest.raises(owner.OwnerMismatchError, match="not 'test owner'"):
         main._get_service_from_payload({
             "user": {"user_id": "test owner", "soul_id": "Test Soul"}, **deepcopy(storage_overrides),

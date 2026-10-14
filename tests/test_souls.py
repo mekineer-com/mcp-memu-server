@@ -27,7 +27,7 @@ def client_for(tmp_path, *, with_owner=True):
 
 
 def post(client, name, consent=False, path="/souls", headers=None):
-    return client.post(path, json={"soul_id": name, "user_name": "TestHuman", "use_existing": consent}, headers=headers)
+    return client.post(path, json={"soul_id": name, "use_existing": consent}, headers=headers)
 
 
 def test_exact_names_discovery_and_confirmation(tmp_path, monkeypatch):
@@ -156,23 +156,19 @@ def test_publication_uses_reopenable_temporary_file_and_cleans_it(tmp_path, monk
     assert souls.read_soul_name(path) == "TestOwner"
 
 
-def test_display_names_are_per_soul_and_immutable(tmp_path):
+def test_new_names_use_owner_and_existing_names_are_immutable(tmp_path):
     client, _cfg = client_for(tmp_path)
-    for soul_id, user_name in (("FirstSoul", "FirstHuman"), ("SecondSoul", "SecondHuman")):
+    for soul_id in ("FirstSoul", "SecondSoul"):
         assert client.post("/souls", json={
-            "soul_id": soul_id, "user_name": user_name, "use_existing": False,
+            "soul_id": soul_id, "user_name": "UnusedClientName", "use_existing": False,
         }).status_code == 200
-        assert client.get(f"/souls/{soul_id}").json() == {"soul_id": soul_id, "user_name": user_name}
-        assert client.post("/souls", json={
-            "soul_id": soul_id, "user_name": "ReplacementHuman", "use_existing": True,
-        }).status_code == 200
-        assert client.get(f"/souls/{soul_id}").json()["user_name"] == user_name
-    for name in ("SameName", "samename"):
-        response = client.post("/souls", json={"soul_id": "SameName", "user_name": name, "use_existing": False})
-        assert response.status_code == 422
-    assert not (tmp_path / "SameName.db").exists()
-    assert post(client, "CanonicalSoul").status_code == 200
-    assert client.get("/souls/CanonicalSoul").json()["user_name"] == "TestHuman"
+        assert client.get(f"/souls/{soul_id}").json() == {"soul_id": soul_id, "user_name": "TestOwner"}
+    path = tmp_path / "ExistingSoul.db"
+    souls.publish_soul_db(path, "ExistingHuman")
+    before = path.read_bytes()
+    assert post(client, "ExistingSoul", True).status_code == 200
+    assert client.get("/souls/ExistingSoul").json()["user_name"] == "ExistingHuman"
+    assert path.read_bytes() == before
 
 
 def test_optional_narrative_read_is_live_scoped_and_unpaid(tmp_path):
@@ -195,18 +191,13 @@ def test_optional_narrative_read_is_live_scoped_and_unpaid(tmp_path):
 
 @pytest.mark.parametrize("path", ["/souls", "/integration/mentra/souls"])
 @pytest.mark.parametrize("consent", [False, True])
-@pytest.mark.parametrize("name", [None, "", " ", "Bad\x00Name"])
-def test_creation_requires_explicit_valid_human_name(tmp_path, path, consent, name):
+def test_creation_initializes_internal_name_without_client_input(tmp_path, path, consent):
     client, cfg = client_for(tmp_path)
     cfg["mentra"]["enabled"] = True
     body = {"soul_id": "NewSoul", "use_existing": consent}
-    if name is not None:
-        body["user_name"] = name
-    assert client.post(path, json=body).status_code == 422
-    assert not list(tmp_path.glob("*.db"))
-    assert client.post(path, json={**body, "user_name": " TestHuman "}).json()["created"] is True
+    assert client.post(path, json=body).json()["created"] is True
     assert client.post(path, json={"soul_id": "NewSoul", "use_existing": True}).json()["created"] is False
-    assert client.get("/souls/NewSoul").json()["user_name"] == "TestHuman"
+    assert client.get("/souls/NewSoul").json()["user_name"] == "TestOwner"
 
 
 @pytest.mark.parametrize("state", ["missing", "no_table", "no_column", "no_row", "blank"])
@@ -315,7 +306,7 @@ def test_failed_creation_publishes_nothing_and_can_retry(tmp_path, monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(sqlite3, "connect", lambda *_a, **_k: (_ for _ in ()).throw(sqlite3.OperationalError("failed")))
         with pytest.raises(sqlite3.OperationalError):
-            souls.create_soul(cfg, souls.SoulCreate(soul_id="Retry Soul", user_name="TestHuman", use_existing=False))
+            souls.create_soul(cfg, souls.SoulCreate(soul_id="Retry Soul", use_existing=False))
     assert set(tmp_path.iterdir()) == before
     assert post(client, "Retry Soul").json()["created"] is True
 

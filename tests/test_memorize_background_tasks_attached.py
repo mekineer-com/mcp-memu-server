@@ -640,7 +640,7 @@ def test_rebuild_archives_db_and_service_reacquired_after_archive(
 
 def test_rebuild_preserves_display_name_with_real_service_reacquisition(client, monkeypatch):
     owner.create_owner(main_module._CONFIG, "TestOwner")
-    souls.create_soul(main_module._CONFIG, souls.SoulCreate(soul_id="TestSoul", use_existing=False, user_name="DifferentHuman"))
+    souls.publish_soul_db(souls._path(main_module._CONFIG, "TestSoul"), "DifferentHuman")
     db_path = main_module._sqlite_current_path("TestOwner", "TestSoul")
     monkeypatch.setattr(main_module._memorize_endpoint, "run_memorize_segments", _noop_run)
     response = client.post("/memorize?rebuild=true", json=_make_stub_payload("TestOwner", "TestSoul", "chat:rebuild"))
@@ -677,9 +677,7 @@ async def test_reply_publication_tracks_rebuild_without_invalidating_active_sett
     monkeypatch.setattr(main_module, "_retrieve_apimw_enabled_from_cfg", lambda _cfg: False)
     monkeypatch.setattr(main_module, "_prepare_auto_memorize", lambda *_args, **_kwargs: (0, None))
     owner.create_owner(main_module._CONFIG, scope["user_id"])
-    souls.create_soul(main_module._CONFIG, souls.SoulCreate(
-        soul_id=scope["soul_id"], use_existing=False, user_name="TestHuman",
-    ))
+    souls.publish_soul_db(souls._path(main_module._CONFIG, scope["soul_id"]), "TestHuman")
     path = main_module._sqlite_current_path(**scope)
     assert path.is_relative_to(tmp_path)
     old_service = main_module._get_service_from_payload(payload, operation="st_reply")
@@ -802,7 +800,7 @@ async def test_reply_publication_tracks_rebuild_without_invalidating_active_sett
 def test_rebuild_includes_open_sleep_tail_with_original_positions_and_name(client, monkeypatch, positions):
     uid, sid, cid = "TestOwner", "TestSoul", "chat:rebuild-sleep-tail"
     owner.create_owner(main_module._CONFIG, uid)
-    souls.create_soul(main_module._CONFIG, souls.SoulCreate(soul_id=sid, use_existing=False, user_name="DifferentHuman"))
+    souls.publish_soul_db(souls._path(main_module._CONFIG, sid), "DifferentHuman")
     db_path = main_module._sqlite_current_path(uid, sid)
     main_module._write_conversation_state(cid, user_id=uid, soul_id=sid, updates={
         "digest_cursor": positions[-1], "last_memorize_at": "2026-10-02T10:01:00+00:00",

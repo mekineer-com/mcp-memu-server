@@ -153,8 +153,8 @@ and sitting ownership, not separate chats. No old-chat conversion or fallback re
 ### Soul Setup Contract
 
 `GET /souls` returns exact `*.db` filename stems except the configured base DB and
-symlinks. `POST /souls` accepts `{soul_id, use_existing: bool, user_name?: str}`;
-`user_name` is required for creation and omitted when reusing a Soul. It returns
+symlinks. `POST /souls` accepts `{soul_id, use_existing: bool}`;
+new Souls initialize their internal human name from the saved OpenAlma owner. It returns
 `{soul_id, created: bool}`.
 Both methods share their implementation with `/integration/mentra/souls`, whose
 only dependency is Mentra's enabled gate, with no connection key.
@@ -162,8 +162,8 @@ Local routes follow the trusted-local API convention. `GET /souls/{soul_id}`
 returns `{soul_id, user_name}` through a direct read-only query; missing bindings
 fail rather than creating or migrating a DB. `include_narrative=true` also returns
 `narrative_self` using a separate WAL-aware read-only connection; this opt-in read
-may create SQLite side files but never schema, state or an AI service. New creation defaults an omitted
-name to the canonical owner and publishes the stored name with the staged DB.
+may create SQLite side files but never schema, state or an AI service. Creation
+publishes the stored name with the staged DB; existing bindings stay unchanged.
 Existing-Soul consent does not overwrite it. Scope/speaker IDs remain unchanged;
 the stored name supplies human anchor and extraction/reflection prompt labels.
 

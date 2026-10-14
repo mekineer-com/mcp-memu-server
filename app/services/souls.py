@@ -32,7 +32,6 @@ _CREATE_LOCK = threading.Lock()
 class SoulCreate(BaseModel):
     soul_id: str
     use_existing: StrictBool
-    user_name: str | None = None
 
 
 def _base_dsn(config: dict[str, Any]) -> str:
@@ -132,15 +131,7 @@ def create_soul(config: dict[str, Any], body: SoulCreate) -> dict[str, Any]:
         path = _path(config, soul_id)
         created = False
         if not path.exists():
-            if not body.user_name or not body.user_name.strip():
-                raise HTTPException(status_code=422, detail="Enter the name this Soul should call you")
-            try:
-                user_name = validate_user_id(body.user_name)
-            except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
-            if user_name.casefold() == soul_id.casefold():
-                raise HTTPException(status_code=422, detail="Soul name must differ from the user's name")
-            created = publish_soul_db(path, user_name)
+            created = publish_soul_db(path, owner_id)
         if not created and not body.use_existing:
             raise HTTPException(
                 status_code=409,
