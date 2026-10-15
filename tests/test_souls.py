@@ -15,7 +15,7 @@ from app.services.mentra_routes import register_mentra_routes
 def client_for(tmp_path, *, with_owner=True):
     cfg = {
         "storage": {"metadata_store": {"dsn": f"sqlite:///{tmp_path / 'memu.db'}"}},
-        "mentra": {"enabled": False},
+        "mentra": {},
     }
     app = FastAPI()
     souls.register_soul_routes(app, get_config=lambda: cfg)
@@ -102,14 +102,11 @@ def test_invalid_names_fail_without_creating_a_database(tmp_path, name):
     assert not list(tmp_path.glob("*.db"))
 
 
-def test_mentra_alias_requires_enabled_and_uses_same_contract(tmp_path):
+def test_mentra_alias_uses_same_contract_without_enable_setting(tmp_path):
     client, cfg = client_for(tmp_path, with_owner=False)
     alias = "/integration/mentra/souls"
     owner_alias = "/integration/mentra/owner"
-    assert client.get(alias).status_code == 404
-    assert post(client, "Echo", path=alias).status_code == 404
-    assert client.get(owner_alias).status_code == 404
-    cfg["mentra"]["enabled"] = True
+    assert client.get(owner_alias).json() == {"user_id": None}
     assert post(client, "Echo", path=alias).status_code == 409
 
     assert client.get("/owner").json() == {"user_id": None}
@@ -121,11 +118,6 @@ def test_mentra_alias_requires_enabled_and_uses_same_contract(tmp_path):
     assert client.get(alias).json() == {"souls": ["Echo"]}
     assert client.get(owner_alias).json() == {"user_id": "Fictional User"}
     assert client.post(owner_alias, json={"user_id": "Other"}).status_code == 405
-    cfg["mentra"]["enabled"] = False
-    assert client.get(alias).status_code == 404
-    assert post(client, "Another Soul", path=alias).status_code == 404
-    assert client.get(owner_alias).status_code == 404
-    assert not (tmp_path / "Another Soul.db").exists()
 
 
 def test_concurrent_creation_never_overwrites(tmp_path):
@@ -193,7 +185,6 @@ def test_optional_narrative_read_is_live_scoped_and_unpaid(tmp_path):
 @pytest.mark.parametrize("consent", [False, True])
 def test_creation_initializes_internal_name_without_client_input(tmp_path, path, consent):
     client, cfg = client_for(tmp_path)
-    cfg["mentra"]["enabled"] = True
     body = {"soul_id": "NewSoul", "use_existing": consent}
     assert client.post(path, json=body).json()["created"] is True
     assert client.post(path, json={"soul_id": "NewSoul", "use_existing": True}).json()["created"] is False

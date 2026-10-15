@@ -147,17 +147,16 @@ def register_soul_routes(
     *,
     get_config: Callable[[], dict[str, Any]],
     prefix: str = "",
-    dependencies: list[Any] | None = None,
 ) -> None:
-    @app.get(f"{prefix}/souls", dependencies=dependencies)
+    @app.get(f"{prefix}/souls")
     def souls() -> dict[str, list[str]]:
         return {"souls": list_souls(get_config())}
 
-    @app.post(f"{prefix}/souls", dependencies=dependencies)
+    @app.post(f"{prefix}/souls")
     def souls_create(body: SoulCreate) -> dict[str, Any]:
         return create_soul(get_config(), body)
 
-    @app.get(f"{prefix}/souls/{{soul_id}}", dependencies=dependencies)
+    @app.get(f"{prefix}/souls/{{soul_id}}")
     def soul_metadata(soul_id: str, include_narrative: bool = False) -> dict[str, str]:
         soul_id = _soul_id(soul_id)
         path = _path(get_config(), soul_id)

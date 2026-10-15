@@ -56,7 +56,6 @@ def _configured() -> dict[str, Any]:
             "metadata_store": {"embedding_profile": "gemini-embedding-2:3072"}
         },
         "mentra": {
-            "enabled": True,
             "gemini_api_key": "permanent-secret",
             "model": "gemini-2.5-flash-native-audio-preview-12-2025",
             "voice": "Kore",
@@ -321,29 +320,19 @@ def _session_app(
     return TestClient(app, raise_server_exceptions=raise_server_exceptions), calls, config
 
 
-def test_mentra_health_requires_enabled_and_earcons_remain_public() -> None:
-    config = {"mentra": {"enabled": False}}
+def test_mentra_health_and_earcons() -> None:
+    config = {"mentra": {}}
     app = FastAPI()
     register_mentra_routes(app, get_config=lambda: config, get_activity_pause=lambda *_args: None)
     client = TestClient(app)
 
-    assert client.get("/integration/mentra/health").status_code == 404
     assert client.get("/integration/mentra/unrelated").status_code == 404
-    for path in ("/installation/seen", "/host/seen", "/session/start",
-                 "/session/missing/token", "/session/missing/heartbeat",
-                 "/session/missing/end", "/session/missing/recall",
-                 "/session/missing/working-state", "/session/missing/working-thought",
-                 "/session/missing/annul-intention",
-                 "/session/missing/snapshot", "/session/missing/snapshot/replay",
-                 "/session/missing/snapshot/finalize", "/session/missing/transcripts/append"):
-        assert client.post(f"/integration/mentra{path}", json={}).status_code == 404
 
     earcon = client.get("/integration/mentra/earcons/listen-start.wav")
     assert earcon.status_code == 200
     assert earcon.headers["content-type"] == "audio/wav"
     assert earcon.content.startswith(b"RIFF")
 
-    config["mentra"]["enabled"] = True
     accepted = client.get("/integration/mentra/health")
     assert accepted.status_code == 200
     assert accepted.json() == {"ok": True}
@@ -356,11 +345,7 @@ def test_mentra_status_reports_configuration_and_lease_state(
     client, _, config = _session_app(monkeypatch, tmp_path)
     path = "/integration/mentra/status?user_id=Fictional%20User&soul_id=Codexia"
 
-    config["mentra"]["enabled"] = False
-    assert client.get(path).json()["state"] == "disabled"
     assert client.get(path).status_code == 200
-    assert client.post("/integration/mentra/session/start", json=START).status_code == 404
-    config["mentra"]["enabled"] = True
     config["mentra"]["model"] = ""
     assert client.get(path).json()["state"] == "degraded"
     config["mentra"]["model"] = "gemini-2.5-flash-native-audio-preview-12-2025"
@@ -386,14 +371,11 @@ def test_mentra_status_reports_configuration_and_lease_state(
         return []
 
     monkeypatch.setattr(mentra_routes.conversation_sources, "load_mentra_history_snapshot", read_snapshot)
-    config["mentra"]["enabled"] = False
-    disabled_live = client.get(path).json()
-    assert disabled_live["active"] is True and disabled_live["busy"] is True
+    live = client.get(path).json()
+    assert live["active"] is True and live["busy"] is True
     assert snapshot_threads == ["worker"]
     assert client.get("/integration/mentra/status").json()["busy"] is True
-    assert client.post("/integration/mentra/session/start", json=START).status_code == 404
     assert mentra_routes._leases[START["soul_id"]].sitting_id == sitting_id
-    config["mentra"]["enabled"] = True
 
     mentra_routes._image_finalize_errors[(START["user_id"], START["soul_id"], sitting_id)] = {
         "mentra_media/phone-1/fictional.png"
@@ -812,7 +794,7 @@ def test_mentra_status_discovery_and_global_busy(monkeypatch: pytest.MonkeyPatch
     assert other["active"] is False and other["busy"] is True
 
 
-def test_start_enabled_and_validation_precede_bootstrap(
+def test_start_validation_precedes_bootstrap(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -823,8 +805,6 @@ def test_start_enabled_and_validation_precede_bootstrap(
     assert client.post(
         "/integration/mentra/session/start", json=invalid_device
     ).status_code == 422
-    config["mentra"]["enabled"] = False
-    assert client.post("/integration/mentra/session/start", json=START).status_code == 404
     assert calls["service"] == 0
     assert calls["token"] == []
 
@@ -3120,14 +3100,14 @@ def test_partial_mentra_config_update_preserves_omitted_fields(
     monkeypatch.setattr(main, "_save_config", lambda value: saved.update(value))
     monkeypatch.setattr(main, "_clear_cached_services", lambda: None)
 
-    response = TestClient(main.app).post("/config", json={"mentra": {"enabled": False}})
+    response = TestClient(main.app).post("/config", json={"mentra": {"voice": "Puck"}})
 
     assert response.status_code == 200
-    assert saved["mentra"] == {**on_disk["mentra"], "enabled": False}
+    assert saved["mentra"] == {**on_disk["mentra"], "voice": "Puck"}
     assert saved["unrelated_on_disk"] == "keep"
     assert response.json()["config"]["mentra"]["gemini_api_key"] == "***"
 
     path.write_text("{broken", encoding="utf-8")
     saved.clear()
-    assert TestClient(main.app).post("/config", json={"mentra": {"enabled": True}}).status_code == 400
+    assert TestClient(main.app).post("/config", json={"mentra": {"voice": "Kore"}}).status_code == 400
     assert not saved

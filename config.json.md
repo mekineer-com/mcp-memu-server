@@ -187,7 +187,6 @@ ingress. Gemini credentials and constrained provider session tokens remain requi
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `false` | Enable Mentra discovery and session routes. Status remains readable when disabled to protect active sittings from Stop; static earcons stay public. |
 | `public_base_url` | `""` | OpenAlma URL reachable over the trusted private connection, used by launcher/distribution integration. |
 | `gemini_api_key` | `""` | Gemini Live credential used to mint constrained session tokens. |
 | `model` | current Gemini native-audio preview model | Gemini Live model. |

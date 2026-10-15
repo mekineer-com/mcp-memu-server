@@ -417,7 +417,6 @@ def test_default_dynamic_category_cluster_size_matches_engine() -> None:
 def test_default_mentra_contract_is_keyless_and_loopback() -> None:
     config = default_config()
     assert config["listen"]["host"] == "127.0.0.1"
-    assert config["mentra"]["enabled"] is False
     assert "integration_bearer_token" not in config["mentra"]
     assert "gemini_api_key" in config["mentra"]
 
