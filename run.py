@@ -341,6 +341,7 @@ def main() -> None:
         "app.main:app",
         host=host,
         port=port,
+        loop="app.services.windows_asyncio:new_event_loop" if sys.platform == "win32" else "auto",
         log_level="info",
         log_config=_build_uvicorn_log_config(uvicorn, cfg),
     )

@@ -483,7 +483,7 @@ def test_mentra_readers_do_not_backfill_publication_evidence(tmp_path):
     assert not (tmp_path / "transcripts" / ".published").exists()
 
 
-def test_mentra_storage_dir_rejects_incomplete_application_layout(
+def test_mentra_storage_dir_can_be_created_on_first_use(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     fake_source = (
@@ -491,8 +491,8 @@ def test_mentra_storage_dir_rejects_incomplete_application_layout(
     )
     monkeypatch.setattr(conversation_sources, "__file__", str(fake_source))
 
-    with pytest.raises(RuntimeError, match="OpenAlma application directory is missing"):
-        conversation_sources.mentra_storage_dir()
+    assert conversation_sources.mentra_storage_dir() == tmp_path / "openalma" / "mentra"
+    assert not (tmp_path / "openalma").exists()
 
 
 def test_mentra_snapshot_replace_failure_keeps_prior_history(

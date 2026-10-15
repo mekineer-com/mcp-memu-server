@@ -47,8 +47,6 @@ def is_whatsapp_source_unavailable_error(exc: BaseException) -> bool:
 
 def mentra_storage_dir() -> Path:
     openalma_dir = Path(__file__).resolve().parents[3] / "openalma"
-    if not openalma_dir.is_dir():
-        raise RuntimeError(f"OpenAlma application directory is missing: {openalma_dir}")
     return openalma_dir / "mentra"
 
 

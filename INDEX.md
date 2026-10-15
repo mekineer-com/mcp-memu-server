@@ -198,6 +198,7 @@ guess a chat from the last reporting app.
 | `app/services/cross_history.py` | Shared all-chat formatting and source selection: current Channels policy or captured Retry flags; live background summary + unsummarized tail; saved supporting context for reflection; display-segment cleanup |
 | `app/services/apimw.py` | APImw background memory-weaving pipeline: retrieve → synthesize prior-context/subconscious insight → persist references; shared unpaid Prior Context hydration/rendering for replies and import sizing |
 | `app/services/admin_routes.py` | Health/version/shutdown/diag endpoint handlers |
+| `app/services/windows_asyncio.py` | Windows plain-TCP reset cleanup using the standard Proactor teardown; subprocess transports and non-Windows event loops stay unchanged |
 | `app/services/payload.py` | Shared payload/scope/normalization helpers; `_label_owner_messages` copies proven-owner lines to the Soul's canonical `user_name`, with optional live `source_owner_id` evidence and unchanged source data/IDs |
 | `app/services/service_factory.py` | `MemoryService` cache + construction, llm profile merge, config readers, profile-aware semantic-dedupe defaults (per embedding profile; numeric config values are operator recovery overrides only) |
 | `app/services/retrieve_orchestration.py` | Retrieve domain helpers: query/where extraction, identity-context builder, `_run_retrieve` implementation |
