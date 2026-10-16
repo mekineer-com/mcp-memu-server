@@ -61,6 +61,17 @@ def test_example_is_valid_json_and_non_empty() -> None:
     assert example["storage"]["metadata_store"]["dsn"]
 
 
+def test_mental_health_defaults_off_without_resetting_saved_choice() -> None:
+    cfg = default_config()
+    assert cfg["retrieve"]["mental_health_query"] is False
+    cfg["retrieve"]["mental_health_query"] = True
+    app_config.save_config(cfg)
+    assert app_config.load_config()["retrieve"]["mental_health_query"] is True
+    cfg["retrieve"]["top_k"] = 7
+    updated = app_config.merge_model_config(cfg, {"retrieve": {"mental_health_query": False}})
+    assert updated["retrieve"] == {**cfg["retrieve"], "mental_health_query": False}
+
+
 def _mapping_config() -> dict:
     return {"claude_code": False, "llm": {
         "provider": "openai", "base_url": "https://fictional.example/v1", "api_key": "base-secret",

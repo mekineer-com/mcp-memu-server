@@ -128,7 +128,7 @@ def default_config() -> dict[str, Any]:
             "apimw_cadence": 5,
             "apimw_memory_count": 20,
             "apimw_random_count": 5,
-            "mental_health_query": True,
+            "mental_health_query": False,
         },
         "consolidation_interval_days": 7,
         "claude_code": False,
@@ -569,7 +569,7 @@ def merge_model_config(current: dict[str, Any], body: dict[str, Any]) -> dict[st
     reject_masks(body.get("llm"))
     reject_masks(body.get("mentra"))
     merged = {**copy.deepcopy(current), **copy.deepcopy(body)}
-    for field in ("llm", "mentra"):
+    for field in ("llm", "mentra", "retrieve"):
         if field not in body:
             continue
         if not isinstance(body[field], dict):

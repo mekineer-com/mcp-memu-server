@@ -156,7 +156,7 @@ completed calibration on new Gemini-era `memorize()` output; no such output exis
 | `apimw_cadence` | `5` | Eligible turn cadence for APImw. |
 | `apimw_memory_count` | `20` | Number of retrieved memories offered to APImw. |
 | `apimw_random_count` | `5` | Additional random memories offered to APImw. |
-| `mental_health_query` | `true` | Include the configured mental-health retrieval angle. |
+| `mental_health_query` | `false` | Shared Mental Health Addon setting for ST and WhatsApp. Include the configured mental-health retrieval angle when enabled. |
 
 The engine currently ranks memory items with fixed weights `0.5` similarity, `0.3` recency,
 and `0.2` importance. `recency_decay_days` and lower-level retrieval settings are memU request
