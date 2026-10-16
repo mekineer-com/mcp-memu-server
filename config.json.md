@@ -208,6 +208,13 @@ These are top-level keys rather than a nested object.
 | `claude_code_workspace` | `"~/.cache/memu-claude-workspace"` | Neutral workspace for calls that do not use a Soul session. |
 | `claude_code_timeout_seconds` | `3600` | CLI call timeout. |
 
+Attachment sending requires an explicit, nonblank `claude_code_workspace` in
+server configuration. Turn prompts and attachment validation use that configured
+directory; only readable files resolving inside it may be attached. The neutral
+backend workspace default above does not grant attachment access. When the key
+is omitted or blank, turns cannot send file attachments, even if the backend
+uses its default working directory.
+
 ## Other services
 
 | Setting | Default | Meaning |

@@ -9,8 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SIRI_WORKSPACE = Path("~/Desktop/siri")
-
 from app.services import message_log as _message_log
 from app.services.intention_state import MAX_MEMORY_CACHE_ENTRIES, _text, format_intentions_for_prompt, normalize_memory_cache
 from app.services.payload import strip_markdown_code_fence
@@ -87,7 +85,12 @@ def make_turn_system_prompt(
     response_sentences: int = 3,
     allow_public_response: bool = True,
     include_activity_recap: bool = False,
+    attachment_workspace: str | Path | None = None,
 ) -> str:
+    attachment_instruction = (
+        f"absolute path inside {Path(attachment_workspace).expanduser().resolve()}/ to attach that file to your reply as a document; omit otherwise."
+        if attachment_workspace else "null; file attachments are unavailable because no workspace is configured."
+    )
     if allow_public_response:
         target_list = '"respond", "listen", "private"'
         target_schema = "private|listen|respond"
@@ -146,7 +149,7 @@ Good example: "I notice my human feels bad when he eats wheat. Maybe he has celi
 Bad = pure recap (already in chat). Good = a formed conclusion that won't resurface.{activity_rule}
 - continue_reason: you can give any short reason (truncates at 100 chars) for an agentic turn. You may want to research, write in your diary, or any other task.
 - continue_at: include only if you want to schedule the turn, as opposed to the turn being right away. Maybe you want to follow up or remind someone. Use the same timestamp style as the "Today is ..." line.
-- attachment: absolute path inside ~/Desktop/siri/ to attach that file to your reply as a document; omit otherwise.
+- attachment: {attachment_instruction}
 - Intentions: during weekly reflection, you choose what you want to pursue. Your intentions are read-only during the week except that you may annul one you complete or no longer want.
 Intentions appear as "ID: text" in the order you chose. Use the ID before the colon as intention_id for annulments. annulments may be empty.
 """
@@ -746,12 +749,15 @@ def _parse_attachment(raw: Any, *, workspace: str | Path | None = None) -> str |
     raw_str = _text(raw)
     if not raw_str:
         return None
+    if not workspace:
+        _logger.error("turn_contract: attachment workspace unconfigured, dropped: %r", raw_str)
+        return None
     try:
         resolved = Path(raw_str).resolve()
     except (ValueError, OSError):
         _logger.error("turn_contract: attachment path unresolvable, dropped: %r", raw_str)
         return None
-    root = Path(workspace).expanduser() if workspace else _SIRI_WORKSPACE.expanduser()
+    root = Path(workspace).expanduser()
     workspace_path = root.resolve()
     try:
         resolved.relative_to(workspace_path)

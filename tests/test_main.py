@@ -9398,6 +9398,8 @@ async def test_conversation_retrieve_preserves_saved_sillytavern_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    workspace = str(tmp_path / "fictional-workspace")
+    monkeypatch.setitem(main._CONFIG, "claude_code_workspace", workspace)
     db_path = tmp_path / "Echo.db"
     storage_dir = tmp_path / "resources"
     con = main._sqlite_connect(db_path)
@@ -9425,6 +9427,7 @@ async def test_conversation_retrieve_preserves_saved_sillytavern_source(
         "message": "latest",
         "query": "latest",
         "chat_name": "Echo",
+        "build_turn_prompt": True,
         "history": [
             {"role": "user", "name": "TestOwner", "content": "m1"},
             {"role": "assistant", "name": "Echo", "content": "a1"},
@@ -9438,6 +9441,7 @@ async def test_conversation_retrieve_preserves_saved_sillytavern_source(
     )
     out = await main.conversation_retrieve("integrity:chat-1", payload)
     assert out["ok"] is True
+    assert f"- attachment: absolute path inside {workspace}/" in out["turn_system_prompt"]
 
     con = main._sqlite_connect(db_path)
     try:
@@ -10035,7 +10039,9 @@ async def test_conversation_turn_does_not_retry_parse_failure(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("response_identity", ["Roleplay explorer.", "Inspector identity.", ""])
 @pytest.mark.parametrize("api_response", [False, True])
-async def test_conversation_turn_keeps_response_identity_out_of_native_continuation(monkeypatch, response_identity, api_response):
+async def test_conversation_turn_keeps_response_identity_out_of_native_continuation(tmp_path, monkeypatch, response_identity, api_response):
+    workspace = str(tmp_path / "fictional-workspace")
+    monkeypatch.setitem(main._CONFIG, "claude_code_workspace", workspace)
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     cid = "sillytavern:identity-boundary"
     narrative = "I am the real shared fictional Soul."
@@ -10095,7 +10101,9 @@ async def test_conversation_turn_keeps_response_identity_out_of_native_continuat
         assert response_identity not in continuation[1]["system_prompt"]
     else:
         assert narrative in response[1]["system_prompt"]
+        assert f"- attachment: absolute path inside {workspace}/" in response[1]["system_prompt"]
     assert narrative in continuation[1]["system_prompt"]
+    assert f"- attachment: absolute path inside {workspace}/" in continuation[1]["system_prompt"]
     if api_response:
         assert "session_id" not in response[1]
         assert continuation[1]["session_id"]

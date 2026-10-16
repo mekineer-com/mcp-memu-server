@@ -499,6 +499,7 @@ def register_import_routes(app: FastAPI, *, runtime: Any) -> None:
         anchors = runtime._render_anchor_context({row.anchor_role: row for row in dossiers if row.anchor_role})
         system = runtime._make_turn_system_prompt(
             scoped["soul_id"], anchor_context=anchors, soul_card=card,
+            attachment_workspace=runtime._attachment_workspace(),
             response_sentences=int(runtime._CONFIG.get("turn_response_sentences", 3)))
         user = runtime._build_turn_prompt(
             user_message="", history=history, prior_context=apimw.render_prior_context(

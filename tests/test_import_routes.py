@@ -713,6 +713,15 @@ def test_registration_keeps_first_file_bound_without_resetting_progress(tmp_path
 
 
 def test_preview_counts_stored_display_and_cross_context_without_calls_or_inserts(tmp_path, monkeypatch):
+    workspace = str(tmp_path / "fictional-workspace")
+    monkeypatch.setitem(main._CONFIG, "claude_code_workspace", workspace)
+    systems = []
+    make_system = main._make_turn_system_prompt
+    def capture_system(*args, **kwargs):
+        text = make_system(*args, **kwargs)
+        systems.append(text)
+        return text
+    monkeypatch.setattr(main, "_make_turn_system_prompt", capture_system)
     source, db = tmp_path / "imports.db", tmp_path / "TestSoul.db"
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul", "label": "Nomi"}
     monkeypatch.setattr(conversation_sources, "import_source_path", lambda: source)
@@ -761,6 +770,7 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
                "source_day": "2025-01-02", "position": 3}
     preview = ImportPreview(**scope, conversation_id=cid, current_messages=[message])
     first = validate(preview)
+    assert f"- attachment: absolute path inside {workspace}/" in systems[-1]
     assert first["processed_start_day"] == first["processed_end_day"] == "2025-01-01"
     assert first["ok"] and prompts[-1].count("[TestSpeaker] stored 2") == 1
     assert "another chat" in prompts[-1] and "sitting recap" in prompts[-1]

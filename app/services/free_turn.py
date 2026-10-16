@@ -135,6 +135,7 @@ async def _run_free_turn_chain(
     try:
         free_turn_system_prompt = make_turn_system_prompt(
             soul_id,
+            attachment_workspace=_attachment_workspace(config),
             anchor_context=render_anchor_context(
                 service._get_database().memory_category_repo.list_anchor_categories(
                     {"user_id": user_id, "soul_id": soul_id}

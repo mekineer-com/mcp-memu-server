@@ -3875,6 +3875,7 @@ async def conversation_retrieve(
 
                 out["turn_system_prompt"] = _make_turn_system_prompt(
                     soul_id,
+                    attachment_workspace=_attachment_workspace(),
                     anchor_context=anchor_context,
                     soul_card=soul_card,
                     response_sentences=int(_CONFIG.get("turn_response_sentences", 3)),
@@ -4701,6 +4702,7 @@ async def conversation_turn(
         safe["source_owner_id"] = current_row.get("source_owner_id")
         turn_system_prompt = override_system_prompt or _make_turn_system_prompt(
             soul_id,
+            attachment_workspace=_attachment_workspace(),
             anchor_context=_render_anchor_context(
                 memory_service._get_database().memory_category_repo.list_anchor_categories(
                     {"user_id": uid, "soul_id": soul_id}
