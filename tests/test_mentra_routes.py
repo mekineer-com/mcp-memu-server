@@ -2093,6 +2093,68 @@ def test_sequence_and_duplicate_lookup_tolerate_compacted_prefix() -> None:
     assert merged[-1]["received_at"].endswith("Z")
 
 
+@pytest.mark.parametrize("source", ["phone", "glasses", "bluetooth", "bluetoothClassic", None])
+def test_transcript_source_survives_storage_tail_and_label_only_replays(monkeypatch, tmp_path, source):
+    client, _, _ = _session_app(monkeypatch, tmp_path)
+    sitting = client.post("/integration/mentra/session/start", json=START).json()["session_id"]
+    endpoint = f"/integration/mentra/session/{sitting}/transcripts/append"
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    event = {"event_id": f"{sitting}:1", "sequence": 1, "event_kind": "transcript",
+             "role": "user", "content": "A fictional view.", "status": "interrupted"}
+    if source is not None:
+        event["mic_source"] = source
+    client.post(endpoint, json={**scope, "events": [event]}).raise_for_status()
+    for replay_source in (None, "glasses", "phone"):
+        replay = {**event, "mic_source": replay_source}
+        response = client.post(endpoint, json={**scope, "events": [replay]})
+        response.raise_for_status()
+        assert response.json()["duplicates"] == 1
+    stored = conversation_sources.load_mentra_history_snapshot(
+        storage_dir=tmp_path, **scope, conversation_id="mentra:iris")
+    tail = conversation_sources.load_mentra_tail(
+        storage_dir=tmp_path, **scope, conversation_id="mentra:iris",
+        since_cursor=0, recent_fallback_messages=8)
+    assert stored[0].get("mic_source") == tail[0].get("mic_source") == source
+    assert stored[0]["content"] == event["content"]
+    assert tail[0]["chat_name"] == "Iris"
+    assert tail[0]["content"] == "A fictional view. [interrupted]"
+    assert tail[0]["event_id"] == event["event_id"]
+    assert tail[0]["source_conversation_index"] == 1
+    from app.services.turn_contract import build_conversations_block
+    from app.services.payload import _normalize_conversation, _normalize_turn_history
+    from memu.app.memorize_segments import _render_grouped_chat_messages
+
+    label = "Smartglasses" if source == "glasses" else "Phone" if source else "Iris"
+    for rendered in (
+        build_conversations_block(history=tail, conversation_id="mentra:iris", soul_name=scope["soul_id"]),
+        _render_grouped_chat_messages(_normalize_conversation(_normalize_conversation(tail)),
+                                      soul_name=scope["soul_id"]),
+        build_conversations_block(history=_normalize_turn_history(tail), conversation_id="mentra:iris",
+                                  soul_name=scope["soul_id"]),
+    ):
+        assert "My Video Conversations:" in rendered
+        assert f"[dm][{label}]" in rendered
+        assert "A fictional view. [interrupted]" in rendered
+    conflict = client.post(endpoint, json={**scope, "events": [{**event, "content": "Different speech."}]})
+    assert conflict.status_code == 409
+
+
+@pytest.mark.parametrize("patch", [
+    {"mic_source": "unknown"},
+    {"role": "assistant", "mic_source": "phone"},
+    {"event_kind": "sitting_summary", "role": "assistant", "status": None, "mic_source": "phone"},
+    {"event_kind": "image", "status": None, "content": "Shared a photo.",
+     "media_ref": "mentra_media/sitting/photo.jpg", "mic_source": "phone"},
+    {"event_kind": "transcript_gap", "status": None, "content": "Transcript unavailable.", "mic_source": "phone"},
+])
+def test_transcript_source_is_only_valid_on_spoken_user_events(patch):
+    with pytest.raises(ValueError):
+        mentra_routes.MentraTranscriptEvent.model_validate({
+            "event_id": "fictional:1", "sequence": 1, "event_kind": "transcript",
+            "role": "user", "content": "Fictional speech.", "status": "complete", **patch,
+        })
+
+
 def test_transcript_chunks_preserve_boundary_whitespace_and_unicode(monkeypatch, tmp_path):
     client, _, _ = _session_app(monkeypatch, tmp_path)
     sitting = client.post("/integration/mentra/session/start", json=START).json()["session_id"]

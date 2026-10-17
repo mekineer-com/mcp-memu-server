@@ -1124,7 +1124,7 @@ def persist_mentra_history_snapshot(
         soul_id=soul_id,
         conversation_id=conversation_id,
         history=history,
-        chat_name="Smartglasses",
+        chat_name="Iris",
         source_label="mentra",
     )
     path = _chat_snapshot_path(
@@ -1293,7 +1293,7 @@ def load_chat_snapshot_tail(
                 row["ts_ms"] = int(received.timestamp() * 1000)
             except (ValueError, OverflowError):
                 raise ValueError(f"mentra snapshot row has invalid received_at: {path}") from None
-            for key in ("event_id", "sequence", "event_kind", "transcript_status", "media_ref"):
+            for key in ("event_id", "sequence", "event_kind", "transcript_status", "media_ref", "mic_source"):
                 if item.get(key) is not None:
                     row[key] = item[key]
         elif source_label == "sillytavern" and item.get("source_message_id") is not None:

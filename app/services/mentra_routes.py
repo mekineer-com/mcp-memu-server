@@ -343,6 +343,7 @@ class MentraTranscriptEvent(BaseModel):
     content: str
     status: Literal["complete", "interrupted"] | None = None
     media_ref: str | None = None
+    mic_source: Literal["phone", "glasses", "bluetooth", "bluetoothClassic"] | None = None
 
     @field_validator("event_id")
     @classmethod
@@ -370,6 +371,8 @@ class MentraTranscriptEvent(BaseModel):
 
     @model_validator(mode="after")
     def validate_kind(self) -> MentraTranscriptEvent:
+        if self.mic_source is not None and (self.event_kind != "transcript" or self.role != "user"):
+            raise ValueError("mic_source is only valid for user transcripts")
         if self.event_kind == "image":
             path = PurePosixPath(self.media_ref or "")
             if (
@@ -459,6 +462,8 @@ def _stored_event(event: MentraTranscriptEvent, *, received_at: str) -> dict[str
         row["transcript_status"] = event.status
     if event.media_ref is not None:
         row["media_ref"] = event.media_ref
+    if event.mic_source is not None:
+        row["mic_source"] = event.mic_source
     return row
 
 

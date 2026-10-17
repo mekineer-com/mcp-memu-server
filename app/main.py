@@ -3806,7 +3806,7 @@ async def conversation_retrieve(
                     background_context_rows=background_context_rows,
                 )
                 if not response_chat_history_for_ai.strip() and cid.startswith("chat:atomic-"):
-                    response_chat_history_for_ai = "My Atomic Conversations:"
+                    response_chat_history_for_ai = "My Memory Map Conversations:"
                 memory_cache = _normalize_memory_cache_impl(out.get("memory_cache"))
                 intentions_active = _validate_intentions(out.get("intentions_active"))
                 atomic_retrieve_rag = out.get("result")

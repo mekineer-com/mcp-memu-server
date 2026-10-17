@@ -44,8 +44,9 @@ def test_normalize_conversation_preserves_speaker_as_name_for_memorize() -> None
         assert normalize(imported)[0]["source_owner_id"] == "TestOwner"
 
 
-def test_normalize_conversation_preserves_mentra_event_metadata() -> None:
-    out = _normalize_conversation([
+@pytest.mark.parametrize("normalize", [_normalize_conversation, _normalize_turn_history])
+def test_normalize_conversation_preserves_mentra_event_metadata(normalize) -> None:
+    out = normalize([
         {
             "role": "assistant",
             "content": "Fictional reflection.",
@@ -54,7 +55,9 @@ def test_normalize_conversation_preserves_mentra_event_metadata() -> None:
             "event_kind": "sitting_summary",
             "transcript_status": "complete",
             "media_ref": "mentra_media/fictional/image.png",
-        }
+        },
+        {"role": "user", "content": "Fictional view.", "event_kind": "transcript",
+         "event_id": "fictional-sitting:3", "sequence": 3, "mic_source": "glasses"},
     ])
 
     assert out[0]["event_id"] == "fictional-sitting:2"
@@ -62,6 +65,9 @@ def test_normalize_conversation_preserves_mentra_event_metadata() -> None:
     assert out[0]["event_kind"] == "sitting_summary"
     assert out[0]["transcript_status"] == "complete"
     assert out[0]["media_ref"] == "mentra_media/fictional/image.png"
+    assert "mic_source" not in out[0]
+    assert out[1]["mic_source"] == "glasses"
+    assert _normalize_conversation(normalize(out))[1]["mic_source"] == "glasses"
 
 
 @pytest.mark.parametrize("user_name", ["FirstHuman", "SecondHuman"])

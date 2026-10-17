@@ -221,6 +221,7 @@ def _normalize_conversation(conv: Any) -> Any:
                             "event_kind",
                             "transcript_status",
                             "media_ref",
+                            "mic_source",
                             "app_label",
                             "source_day",
                             "source_message_id",
@@ -342,6 +343,7 @@ def _normalize_turn_history(value: Any) -> list[dict[str, Any]]:
             "event_kind",
             "transcript_status",
             "media_ref",
+            "mic_source",
         ):
             value = _pick_str(item, key)
             if value:

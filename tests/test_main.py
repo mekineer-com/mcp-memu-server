@@ -1009,7 +1009,7 @@ async def test_atomic_session_start_returns_context_without_turn_contract(monkey
     assert "stale retrieved item" not in snapshot
     assert "Prior Context:" in snapshot
     assert "APImw memory line" in snapshot
-    assert "My Atomic Conversations:" in snapshot
+    assert "My Memory Map Conversations:" in snapshot
     assert "My Working Thoughts:" not in snapshot
     assert "My Intentions:" not in snapshot
     assert "Return STRICT JSON only" not in snapshot
@@ -1504,7 +1504,7 @@ def test_atomic_source_label_and_heading() -> None:
     rendered = turn_contract.build_conversations_block(
         history=[{"role": "user", "content": "Fictional evidence"}], conversation_id="chat:atomic-abc",
     )
-    assert rendered.startswith("My Atomic Conversations:\n")
+    assert rendered.startswith("My Memory Map Conversations:\n")
     assert main._message_log.derive_source_label("chat:plain") == "sillytavern"
 
 
@@ -3802,7 +3802,7 @@ def test_load_tail_for_source_conversation_uses_web_source(
     assert captured["min_timestamp"] == 100.0
 
 
-def test_mentra_bootstrap_marks_prior_tail_as_current_smartglasses_chat(
+def test_mentra_bootstrap_marks_prior_tail_as_current_neutral_iris_chat(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3855,8 +3855,8 @@ def test_mentra_bootstrap_marks_prior_tail_as_current_smartglasses_chat(
         conversation_id="mentra:test-device",
     )
 
-    assert "My Smartglasses Conversations:" in rendered
-    assert "[dm][Smartglasses] ← current chat" in rendered
+    assert "My Video Conversations:" in rendered
+    assert "[dm][Iris] ← current chat" in rendered
     assert "[Codexia] A prior fictional reply." in rendered
 
 

@@ -41,15 +41,15 @@ def test_current_message_starts_today_after_yesterday_history() -> None:
     assert "--- today ---\n[Marcos] Let's head home." in rendered
 
 
-def test_mentra_current_history_uses_smartglasses_section_and_marker() -> None:
+def test_mentra_current_history_uses_video_section_and_neutral_marker() -> None:
     rendered = build_conversations_block(
         history=[{"role": "assistant", "speaker": "Codexia", "content": "Fictional reply."}],
         conversation_id="mentra:test-device",
         soul_name="Codexia",
     )
 
-    assert "My Smartglasses Conversations:" in rendered
-    assert "[dm][Smartglasses] ← current chat" in rendered
+    assert "My Video Conversations:" in rendered
+    assert "[dm][Iris] ← current chat" in rendered
 
 
 def test_current_marker_stays_on_requester_with_foreign_source_rows(monkeypatch) -> None:
@@ -118,8 +118,8 @@ def test_imported_current_history_preserves_heading_and_context(monkeypatch, mar
 @pytest.mark.parametrize("mark_current_chat", [False, True])
 @pytest.mark.parametrize("conversation_id,section,heading", [
     ("replika:dm:Echo:archive", "My Replika Conversation:", "[dm][Echo]"),
-    ("chat:atomic-Echo", "My Atomic Conversations:", "[dm][Echo]"),
-    ("mentra:test-device", "My Smartglasses Conversations:", "[dm][Smartglasses]"),
+    ("chat:atomic-Echo", "My Memory Map Conversations:", "[dm][Echo]"),
+    ("mentra:test-device", "My Video Conversations:", "[dm][Iris]"),
     (None, "My SillyTavern Conversations:", "[dm][sillytavern]"),
 ])
 def test_empty_current_history_uses_shared_heading_mapping(monkeypatch, mark_current_chat, conversation_id, section, heading) -> None:
@@ -415,7 +415,7 @@ def test_build_turn_prompt_keeps_synthetic_atomic_message_in_atomic_section():
         conversation_id="chat:atomic-abc",
     )
 
-    assert "My Atomic Conversations:" in prompt
+    assert "My Memory Map Conversations:" in prompt
     assert "My SillyTavern Conversations:" not in prompt
     assert "[dm][Marcos] ← current chat" in prompt
 
