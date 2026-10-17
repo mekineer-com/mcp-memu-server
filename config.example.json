@@ -6,18 +6,6 @@
     "base_url": "https://api.openai.com/v1",
     "chat_model": "YOUR_CHAT_MODEL",
     "context_window_tokens": null,
-    "step_context_window_tokens": {},
-    "reply_models": {
-      "srmm": {"source": "config"},
-      "other_apps": {"source": "config"}
-    },
-    "step_models": {
-      "preprocess": {"source": "config"},
-      "memory_extract": {"source": "config"},
-      "category_update": {"source": "config"},
-      "reflection": {"source": "config"},
-      "consolidation": {"source": "config"}
-    },
     "embedding": {
       "api_key": "YOUR_GEMINI_API_KEY",
       "base_url": "https://generativelanguage.googleapis.com/"

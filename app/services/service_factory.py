@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from memu.app import MemoryService
 from memu.app.settings import LLMConfig
 
-from app.config import SoulIdError
+from app.config import SoulIdError, validate_chat_profile
 from app.services.souls import read_soul_name
 
 
@@ -270,7 +270,7 @@ def _validated_step_models(
                 raise HTTPException(
                     status_code=500, detail=f"llm.{setting}.{key} must be a positive integer",
                 )
-        model_name = str(raw_value.get("source") or "") if isinstance(raw_value, Mapping) else str(raw_value or "").strip()
+        model_name = str(raw_value.get("chat_model") or "") if isinstance(raw_value, Mapping) else str(raw_value or "").strip()
         if not model_name:
             continue
         if key not in llm_profiles:
@@ -306,6 +306,9 @@ def _get_service_from_payload(
     logger: logging.Logger,
     operation: str | None = None,
 ) -> MemoryService:
+    srmm = payload.get("srmm")
+    if "srmm" in payload:
+        payload = {key: value for key, value in payload.items() if key != "srmm"}
     if operation is not None:
         payload = deepcopy(payload)
         payload.pop("llm_profiles", None)
@@ -324,6 +327,20 @@ def _get_service_from_payload(
     projection_config = {**config, "claude_code": claude_code}
     server_profiles = (default_llm_profiles_from_server_config(projection_config, operation=operation)
                        if operation is not None else default_llm_profiles_from_server_config(projection_config))
+    if operation == "st_reply":
+        if srmm != "config":
+            if not isinstance(srmm, dict):
+                raise HTTPException(status_code=400, detail="srmm is required for SillyTavern replies")
+            try:
+                validate_chat_profile(srmm, "SRMM")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            server_profiles["default"] = deepcopy(srmm)
+        else:
+            try:
+                validate_chat_profile(server_profiles["default"], "SRMM config default")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
     if client_profiles:
         for step_name in _VALID_STEP_MODEL_KEYS:
             if step_name not in client_profiles:

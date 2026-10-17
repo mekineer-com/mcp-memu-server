@@ -292,6 +292,8 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
 
     payload = {
         "user": {"user_id": "u", "soul_id": "echo"},
+        "srmm": {"provider": "openai", "base_url": "https://reply.example/v1", "api_key": "reply-key",
+                 "chat_model": "st_reply", "context_window_tokens": 50000},
         "database_config": {"metadata_store": {
             "provider": " sqlite" if native_projection else "sqlite",
             "dsn": "sqlite:////untrusted/other-soul.db",
@@ -311,16 +313,8 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         cfg["llm"]["step_models"] = {"memory_extract": "server-heavy", "consolidation": "server-reflection"}
     if operation is not None:
         profile = {"provider": "openai", "base_url": "https://example.com/v1", "api_key": "k"}
-        cfg["llm"]["step_models"] = {key: {"source": "configured", "resolved": {**profile, "chat_model": key}}
+        cfg["llm"]["step_models"] = {key: {**profile, "chat_model": key}
                                       for key in service_factory._VALID_STEP_MODEL_KEYS}
-        cfg["llm"]["reply_models"] = {key: {"source": "configured", "resolved": {**profile, "chat_model": model}}
-                                       for key, model in (("srmm", "st_reply"), ("other_apps", "other_reply"))}
-        for key in service_factory._VALID_STEP_MODEL_KEYS - set(steps if not server_mode else ()):
-            cfg["llm"]["step_models"][key] = {"source": "configured", "resolved": {"provider": "openai"}}
-        if operation != "st_reply":
-            cfg["llm"]["reply_models"]["srmm"] = {"source": "configured", "resolved": {"provider": "openai"}}
-        if operation != "other_reply" or server_mode:
-            cfg["llm"]["reply_models"]["other_apps"] = {"source": "configured", "resolved": {"provider": "openai"}}
         cfg["llm"]["step_context_window_tokens"] = {"reflection": "unused-invalid-capacity"} if "reflection" not in steps else {}
         cfg["llm"]["step_temperatures"] = {"reflection": "unused-invalid-temperature"} if "reflection" not in steps else {}
         payload["llm_profiles"] = {"default": {"chat_model": "old-response-role"}}
@@ -332,8 +326,6 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         profile = {"provider": "openai", "api_key": "k", "base_url": "https://example.com/v1", "chat_model": "m"}
         result = {"default": profile, "embedding": {**profile, "embed_model": "gemini-embedding-2"}}
         if operation is not None:
-            if operation == "st_reply" or (operation == "other_reply" and not server_mode):
-                result["default"] = {**profile, "chat_model": operation}
             if not server_mode or operation == "st_reply":
                 result.update({key: {**profile, "chat_model": key} for key in steps})
         return result
@@ -385,12 +377,25 @@ def test_get_service_from_payload_passes_claude_code_settings(monkeypatch: pytes
         assert captured["memorize_config"].get("memory_extract_llm_profile") == (None if effective_mode else "memory_extract")
     if operation is not None:
         assert payload == original
-        assert captured["llm_profiles"]["default"]["chat_model"] == (operation if operation in {"st_reply", "other_reply"} and not effective_mode else "m")
+        assert captured["llm_profiles"]["default"]["chat_model"] == ("st_reply" if operation == "st_reply" else "m")
         assert set(captured["llm_profiles"]) == {"default", "embedding", *(steps if not effective_mode else ())}
         assert captured["retrieve_config"]["item"]["top_k"] == 17
         for step, field in service_factory._STEP_MODEL_TO_MEMORIZE_PROFILE_FIELD.items():
             assert captured["memorize_config"].get(field) == (step if step in steps and not effective_mode else None)
         assert captured["retrieve_config"].get("sufficiency_check_llm_profile") == ("reflection" if "reflection" in steps and not effective_mode else None)
+
+    if operation == "st_reply":
+        changed = {**payload, "srmm": {**payload["srmm"], "chat_model": "changed-reply"}}
+        assert service_factory._get_service_from_payload(changed, **kwargs) is not out
+        assert captured["llm_profiles"]["default"]["chat_model"] == "changed-reply"
+        assert service_factory._get_service_from_payload({**payload, "srmm": "config"}, **kwargs) is not out
+        assert captured["llm_profiles"]["default"]["chat_model"] == "m"
+        for missing in (None, {}, False, {"provider": "openai", "chat_model": "no-key"}):
+            with pytest.raises(HTTPException):
+                service_factory._get_service_from_payload({**payload, "srmm": missing}, **kwargs)
+    else:
+        changed = {**original, "srmm": {"api_key": "must-not-be-used"}}
+        assert service_factory._get_service_from_payload(changed, **kwargs) is out
 
     opposite_payload = {**payload, "claude_code": not effective_mode}
     opposite = service_factory._get_service_from_payload(opposite_payload, **kwargs)

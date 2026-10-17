@@ -434,7 +434,7 @@ async def _run_apimw(
     user_id: str,
     state_row: dict[str, Any],
     current_history: list[dict[str, Any]],
-    service: Any = None,
+    service: Any,
     retrieval_service: Any = None,
     apimw_k: int | None = None,
     apimw_random_count: int | None = None,
@@ -451,9 +451,7 @@ async def _run_apimw(
         apimw_item_top_k = apimw_k if apimw_k is not None else _m()._apimw_memory_count_from_cfg(_m()._CONFIG)
         if apimw_random_count is None:
             apimw_random_count = _m()._apimw_random_count_from_cfg(_m()._CONFIG)
-        svc = service if service is not None else _m()._get_service_from_payload(
-            {"user": scope}, **({"operation": "st_reply"} if is_st else {}),
-        )
+        svc = service
         if retrieval_service is None:
             retrieval_service = _m()._get_service_from_payload(
                 {"user": scope, "retrieve_config": _apimw_retrieval_config(payload, apimw_item_top_k)},
@@ -622,8 +620,10 @@ def _turn_launch_apimw(
             operation="retrieve",
         )
         is_st = _m()._message_log.derive_source_label(cid) == "sillytavern"
+        reply_operation = "other_reply" if safe.get("self_turn_directive") else "st_reply"
         service = _m()._get_service_from_payload(
-            {"user": scope}, **({"operation": "st_reply"} if is_st else {}),
+            {"user": scope, **({"srmm": safe.get("srmm")} if is_st and reply_operation == "st_reply" else {})},
+            **({"operation": reply_operation} if is_st else {}),
         )
         apimw_task = asyncio.create_task(
             _m()._run_apimw(

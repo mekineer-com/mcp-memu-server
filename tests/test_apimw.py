@@ -264,7 +264,8 @@ async def test_apimw_admission_and_cleanup_are_scoped(monkeypatch, other, fails)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cli", [False, True])
-async def test_st_apimw_captures_srmm_and_reflection_with_admission_top_k(monkeypatch, cli):
+@pytest.mark.parametrize("self_turn", [False, True])
+async def test_st_apimw_captures_srmm_and_reflection_with_admission_top_k(monkeypatch, cli, self_turn):
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     cid = "integrity:fictional-apimw"
     monkeypatch.setattr(main, "_APIMW_INFLIGHT", set())
@@ -281,7 +282,7 @@ async def test_st_apimw_captures_srmm_and_reflection_with_admission_top_k(monkey
         def __init__(self, operation, payload):
             self.operation = operation
             self.model = main._CONFIG["apimw_test_model"]
-            self._claude_code = cli if operation == "retrieve" else False
+            self._claude_code = cli if operation in {"retrieve", "other_reply"} else False
             self.retrieve_config = SimpleNamespace(item=SimpleNamespace(top_k=payload.get("retrieve_config", {}).get("item", {}).get("top_k")))
 
         def list_active_dossiers(self, _scope):
@@ -295,11 +296,16 @@ async def test_st_apimw_captures_srmm_and_reflection_with_admission_top_k(monkey
             return '{"prior_context":[],"subconscious_insight":null}'
 
     def construct(payload, *, operation=None):
-        assert operation in {"retrieve", "st_reply"}
+        assert operation in {"retrieve", "other_reply" if self_turn else "st_reply"}
         assert payload["user"] == scope
         assert "llm_profiles" not in payload and "claude_code" not in payload
         if operation == "retrieve":
             assert payload["retrieve_config"]["category"]["top_k"] == 5
+            assert "srmm" not in payload
+        elif not self_turn:
+            assert payload["srmm"] == "config"
+        else:
+            assert "srmm" not in payload
         service = Service(operation, payload)
         services.append(service)
         return service
@@ -333,6 +339,7 @@ async def test_st_apimw_captures_srmm_and_reflection_with_admission_top_k(monkey
     payload = {"user": scope, "message": "Inspect a fictional garden.",
                "llm_profiles": {"default": {"chat_model": "old-reply"}}, "claude_code": not cli,
                "retrieve_config": {"item": {"top_k": 1}, "category": {"top_k": 5}}}
+    payload.update({"self_turn_directive": "Inspect the garden privately"} if self_turn else {"srmm": "config"})
     original = deepcopy(payload)
     before = set(main._BACKGROUND_TASKS)
     assert main._turn_launch_apimw(cid, "TestOwner", "TestSoul", payload, []) == "started"
@@ -346,7 +353,8 @@ async def test_st_apimw_captures_srmm_and_reflection_with_admission_top_k(monkey
         release.set()
         await asyncio.gather(*tasks)
     assert len(services) == 2
-    assert services[1].operation == "st_reply" and services[1]._claude_code is False
+    assert services[1].operation == ("other_reply" if self_turn else "st_reply")
+    assert services[1]._claude_code is (cli if self_turn else False)
     assert calls[0][0] is services[1] and calls[0][1]["profile"] is None
     assert [service.model for service in services] == ["captured", "captured"]
     assert persisted == [services[1]]

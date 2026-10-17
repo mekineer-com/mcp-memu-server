@@ -24,7 +24,6 @@ EMBEDDING_MODEL = "gemini-embedding-2"
 EMBEDDING_BASE_URL = "https://generativelanguage.googleapis.com/"
 EMBEDDING_PROFILE = f"{EMBEDDING_MODEL}:3072"
 MODEL_STEPS = ("preprocess", "memory_extract", "category_update", "reflection", "consolidation")
-REPLY_MODELS = ("srmm", "other_apps")
 _MODEL_OPERATIONS = {
     "st_reply": (), "other_reply": (), "retrieve": ("reflection",),
     "rollup": ("preprocess",),
@@ -92,8 +91,6 @@ def default_config() -> dict[str, Any]:
             "chat_model": "",
             "context_window_tokens": None,
             "step_context_window_tokens": {},
-            "reply_models": {name: {"source": "config"} for name in REPLY_MODELS},
-            "step_models": {name: {"source": "config"} for name in MODEL_STEPS},
             "embedding": {},
             "endpoint_overrides": {},
         },
@@ -282,7 +279,10 @@ def load_config() -> dict[str, Any]:
     cfg = json.loads(p.read_text(encoding="utf-8"))
     if not isinstance(cfg, dict):
         raise ValueError(f"Config must be a JSON object: {p}")
-    cfg = normalize_model_mappings(cfg)
+    cleaned = normalize_model_mappings(cfg)
+    if cleaned != cfg:
+        save_config(cleaned)
+    cfg = cleaned
     ensure_storage_paths(cfg)
     return cfg
 
@@ -515,43 +515,54 @@ def normalize_model_mappings(cfg: dict[str, Any]) -> dict[str, Any]:
     llm = out.setdefault("llm", {})
     if not isinstance(llm, dict):
         raise ValueError("llm must be an object")
-    capacities = llm.get("step_context_window_tokens") or {}
-    if not isinstance(capacities, dict):
-        raise ValueError("llm.step_context_window_tokens must be an object")
-    for field, names in (("reply_models", REPLY_MODELS), ("step_models", MODEL_STEPS)):
-        rows = llm.setdefault(field, {})
+    # Transition cleanup expires 2027-01-17: remove this old-mapping upgrade handling.
+    llm.pop("reply_models", None)
+    llm.pop("st_selected", None)
+    capacities = llm.get("step_context_window_tokens")
+    if isinstance(capacities, dict):
+        capacities.pop("srmm", None)
+    rows = llm.get("step_models")
+    if isinstance(rows, dict):
+        for name, row in list(rows.items()):
+            if isinstance(row, dict) and any(key in row for key in ("source", "selection", "resolved")):
+                del rows[name]
+
+    for field in ("step_models", "step_context_window_tokens", "step_temperatures"):
+        if field not in llm:
+            continue
+        rows = llm[field]
         if not isinstance(rows, dict):
             raise ValueError(f"llm.{field} must be an object")
-        for name in names:
-            row = rows.get(name)
+        for name, row in list(rows.items()):
             if row is None or row == "":
-                row = {"source": "config"}
-            elif isinstance(row, str) and field == "step_models":
-                profile = _base_chat_profile(llm)
-                model = row.strip()
-                if model != profile["chat_model"]:
-                    profile.pop("context_window_tokens", None)
-                profile["chat_model"] = model
-                if capacities.get(name) is not None:
-                    profile["context_window_tokens"] = capacities[name]
-                row = {"source": "configured", "selection": {"provider": profile["provider"], "model": model},
-                       "resolved": profile} if model else {"source": "config"}
-            if not isinstance(row, dict) or row.get("source") not in {"config", "srmm", "st_native", "configured"}:
-                raise ValueError(f"Invalid model selector: llm.{field}.{name}")
-            if row["source"] == "srmm" and field != "step_models":
-                raise ValueError("srmm inheritance is only allowed for advanced steps")
-            for key in ("selection", "resolved"):
-                if key in row and not isinstance(row[key], dict):
-                    raise ValueError(f"llm.{field}.{name}.{key} must be an object")
-            if "resolved" in row and row["resolved"].get("provider") != "openai":
-                raise ValueError(f"llm.{field}.{name}.resolved must use an OpenAI-compatible provider")
-            rows[name] = row
-    if "st_selected" in llm and not isinstance(llm["st_selected"], dict):
-        raise ValueError("llm.st_selected must be an object")
-    snapshot = llm.get("st_selected", {})
-    if "resolved" in snapshot and (not isinstance(snapshot["resolved"], dict) or snapshot["resolved"].get("provider") != "openai"):
-        raise ValueError("llm.st_selected.resolved must use an OpenAI-compatible provider")
+                del rows[name]
+                continue
+            if name not in MODEL_STEPS:
+                raise ValueError(f"Unknown model step: llm.{field}.{name}")
+            if field == "step_models":
+                if isinstance(row, dict):
+                    if row.get("provider") != "openai":
+                        raise ValueError(f"Model mapping {name} requires an OpenAI-compatible profile")
+                elif not isinstance(row, str) or not row.strip():
+                    raise ValueError(f"llm.{field}.{name} must be a model name or connection object")
+        if not rows:
+            del llm[field]
     return out
+
+
+def validate_chat_profile(profile: dict[str, Any], name: str, *, required: bool = True) -> None:
+    if required:
+        if profile.get("provider") != "openai":
+            raise ValueError(f"Model mapping {name} requires an OpenAI-compatible profile")
+        for key in ("base_url", "chat_model"):
+            if not isinstance(profile.get(key), str) or not profile[key].strip():
+                raise ValueError(f"Model mapping {name} needs {key}")
+        if not isinstance(profile.get("api_key"), str):
+            raise ValueError(f"Model mapping {name} needs an explicit api_key (empty for a keyless endpoint)")
+    for key in ("context_window_tokens", "max_tokens"):
+        value = profile.get(key)
+        if value is not None and (type(value) is not int or value <= 0):
+            raise ValueError(f"Model mapping {name}.{key} must be a positive integer")
 
 
 def merge_model_config(current: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
@@ -584,51 +595,37 @@ def merge_model_config(current: dict[str, Any], body: dict[str, Any]) -> dict[st
             meta = storage.get("metadata_store") if isinstance(storage.get("metadata_store"), dict) else {}
             merged["storage"]["metadata_store"] = {**copy.deepcopy(meta), **copy.deepcopy(incoming_meta)}
     incoming = body.get("llm", {})
-    for field in ("reply_models", "step_models", "step_context_window_tokens", "step_temperatures", "embedding"):
+    for field in ("step_models", "step_context_window_tokens", "step_temperatures", "embedding"):
         if field in incoming:
             if not isinstance(incoming[field], dict):
                 raise ValueError(f"llm.{field} must be an object")
             merged["llm"][field] = {**copy.deepcopy((current.get("llm") or {}).get(field) or {}), **copy.deepcopy(incoming[field])}
+            if field != "embedding":
+                for name, value in incoming[field].items():
+                    if value is None:
+                        merged["llm"][field].pop(name, None)
     if "claude_code" in body and type(body["claude_code"]) is not bool:
         raise ValueError("claude_code must be a Boolean")
     return normalize_model_mappings(merged)
 
 
 def _resolve_model_profile(llm: dict[str, Any], name: str, *, validate: bool = True) -> dict[str, Any]:
-    field = "reply_models" if name in REPLY_MODELS else "step_models"
-    row = llm[field][name]
-    selected_name = name
-    if row["source"] == "srmm":
-        selected_name = "srmm"
-        row = llm["reply_models"][selected_name]
-    source = row["source"]
+    row = (llm.get("step_models") or {}).get(name)
     capacities = llm.get("step_context_window_tokens") or {}
-    if source == "config":
-        profile = _base_chat_profile(llm)
-        capacity = capacities.get(selected_name)
-        if capacity is not None:
-            profile["context_window_tokens"] = capacity
-    else:
-        holder = llm.get("st_selected", {}) if source == "st_native" else row
-        profile = copy.deepcopy(holder.get("resolved"))
-        if not isinstance(profile, dict):
-            raise ValueError(f"Model mapping {name} needs a resolved {source} profile")
-    capacity = capacities.get(name) if name in MODEL_STEPS else None
+    base = _base_chat_profile(llm)
+    profile = copy.deepcopy(row) if isinstance(row, dict) else dict(base)
+    if isinstance(row, str):
+        profile["chat_model"] = row.strip()
+        if profile["chat_model"] != base["chat_model"]:
+            profile.pop("context_window_tokens", None)
+    elif isinstance(row, dict) and "context_window_tokens" not in row:
+        if row.get("chat_model") == base["chat_model"] and row.get("base_url") == base["base_url"]:
+            if "context_window_tokens" in base:
+                profile["context_window_tokens"] = base["context_window_tokens"]
+    capacity = capacities.get(name)
     if capacity is not None:
         profile["context_window_tokens"] = capacity
-    if validate or source != "config":
-        if profile.get("provider") != "openai":
-            raise ValueError(f"Model mapping {name} requires an OpenAI-compatible profile")
-        if not isinstance(profile.get("base_url"), str) or not profile["base_url"].strip():
-            raise ValueError(f"Model mapping {name} needs base_url")
-        if not isinstance(profile.get("chat_model"), str) or not profile["chat_model"].strip():
-            raise ValueError(f"Model mapping {name} needs chat_model")
-        if "api_key" not in profile or not isinstance(profile["api_key"], str):
-            raise ValueError(f"Model mapping {name} needs an explicit api_key (empty for a keyless endpoint)")
-    for key in ("context_window_tokens", "max_tokens"):
-        value = profile.get(key)
-        if value is not None and (type(value) is not int or value <= 0):
-            raise ValueError(f"Model mapping {name}.{key} must be a positive integer")
+    validate_chat_profile(profile, name, required=validate or row is not None)
     return profile
 
 
@@ -652,10 +649,7 @@ def default_llm_profiles_from_server_config(cfg: dict[str, Any], *, operation: s
     }
     if operation != "st_reply" and cfg.get("claude_code") is True:
         return profiles
-    if operation in {"st_reply", "other_reply"}:
-        profiles["default"] = _resolve_model_profile(llm, "srmm" if operation == "st_reply" else "other_apps")
-    else:
-        names = _MODEL_OPERATIONS[operation] if operation is not None else MODEL_STEPS
-        for name in names:
-            profiles[name] = _resolve_model_profile(llm, name, validate=operation is not None)
+    names = _MODEL_OPERATIONS[operation] if operation is not None else MODEL_STEPS
+    for name in names:
+        profiles[name] = _resolve_model_profile(llm, name, validate=operation is not None)
     return profiles

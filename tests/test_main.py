@@ -136,8 +136,7 @@ async def test_model_mapping_config_patch_preserves_file_settings(tmp_path, monk
     initial = {"claude_code": False, "llm": {
         "api_key": "fictional-base-key", "chat_model": "base-model",
         "embedding": {"api_key": "fictional-embedding-key"},
-        "reply_models": {"srmm": {"source": "config"}},
-        "step_models": {"memory_extract": {"source": "config"}},
+        "step_models": {"memory_extract": "extract-model"},
     }, "untouched": "file-edit"}
     path.write_text(json.dumps(initial))
     monkeypatch.setattr(main, "_config_path", lambda: path)
@@ -148,16 +147,14 @@ async def test_model_mapping_config_patch_preserves_file_settings(tmp_path, monk
 
     async def body():
         return {"claude_code": True, "llm": {
-            "reply_models": {"other_apps": {"source": "config"}},
-            "step_models": {"reflection": {"source": "srmm"}},
+            "step_models": {"reflection": "reflection-model"},
         }}
 
     response = await main.set_config(SimpleNamespace(json=body))
     saved = json.loads(path.read_text())
     assert saved["llm"]["api_key"] == "fictional-base-key"
     assert saved["llm"]["embedding"] == initial["llm"]["embedding"]
-    assert saved["llm"]["step_models"]["memory_extract"] == {"source": "config"}
-    assert saved["llm"]["reply_models"]["srmm"] == {"source": "config"}
+    assert saved["llm"]["step_models"] == {"memory_extract": "extract-model", "reflection": "reflection-model"}
     assert saved["untouched"] == "file-edit" and saved["claude_code"] is True
     assert "fictional-base-key" not in response.body.decode()
     assert "fictional-embedding-key" not in response.body.decode()
@@ -5148,6 +5145,7 @@ async def test_run_apimw_display_uses_uncapped_floored_history(monkeypatch: pyte
         user_id="TestOwner",
         state_row={"memory_cache": [], "intentions_active": []},
         current_history=history,
+        service=main._get_service_from_payload({}),
     )
 
     assert captured["focus_text"] == "current hello"

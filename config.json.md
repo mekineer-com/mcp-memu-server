@@ -39,10 +39,13 @@ be rebuilt into a new database and atomically installed; mixing embedding spaces
 
 ### `llm.step_models`
 
-Canonical advanced model selectors. Missing entries use the base API settings
-in `llm`, including `llm.chat_model`. Existing scalar model names are normalized
-in memory into configured profiles under that base provider, preserving their
-explicit step capacity; loading an existing file does not rewrite it.
+Optional memory-step settings. Missing entries use the base API connection in
+`llm`. Each entry is either a model name on that connection or a complete
+independent connection object using the same fields as the base: `provider`,
+`base_url`, `api_key`, `chat_model`, and optional `context_window_tokens`,
+`max_tokens`, `temperature` and `endpoint_overrides`. Only OpenAI-compatible
+HTTP profiles (`provider: "openai"`) are supported. An independent connection
+must supply its own key, including an explicit empty string for a keyless endpoint.
 
 - `preprocess`: document/media preprocessing and episode routing.
 - `memory_extract`: memory extraction.
@@ -50,49 +53,39 @@ explicit step capacity; loading an existing file does not rewrite it.
 - `reflection`: retrieval sufficiency and related reflection work.
 - `consolidation`: periodic consolidation.
 
-### Model selector sources
+For example, a different model on the base connection needs only
+`"memory_extract": "example-model"`; it does not copy the base URL or key.
+A model different from the base needs its own configured context-window size.
+An independent step connection inherits base capacity only when its model and
+URL match the base. Keys are never inherited into independent connections.
 
-`llm.reply_models` contains `srmm` (SillyTavern Replies) and `other_apps`.
-Reply and advanced rows use these sources:
+ST is one editor of this shared file. Loading its extension reads hand edits
+without writing remembered choices over them. Advanced Mapping copies selected
+ST connections into these step entries; they work with ST closed. Disabling it
+asks for confirmation, removes active model overrides and their matching
+per-step capacities, and retains profile/model choices in ST for re-enabling.
+Choices copied from SRMM or ST selected are one-time copies, not live references.
 
-- `{"source": "config"}`: use the base API profile, not another mapping row.
-- `{"source": "srmm"}`: advanced-only inheritance of the complete SRMM API profile.
-- `{"source": "st_native"}`: use the shared `llm.st_selected.resolved` snapshot.
-- `{"source": "configured", "selection": {...}, "resolved": {...}}`: retain the qualified ST provider/model choice and its backend-resolved profile.
+SillyTavern Replies (SRMM) lives entirely in ST and accompanies its reply,
+Narrative Suggestion and APImw synthesis requests. It is not stored in this file.
+Other OpenAlma App Replies edits the base API connection. Global `claude_code`
+selects Claude Code for server replies/memory work while SRMM remains API-backed;
+hiding advanced controls in CLI mode does not disable or erase their settings.
+Iris live voice settings remain separate.
 
-Resolved profiles use canonical `provider: "openai"`, `base_url`, `api_key`,
-`chat_model`, and optional `context_window_tokens`, `max_tokens`, `temperature`,
-and `endpoint_overrides`. The protocol must be OpenAI-compatible; a company or
-model name does not establish compatibility. An empty API key is valid for an
-explicitly keyless endpoint. Different models need their own configured capacity;
-missing capacity is left unset for the existing paid-work preflight to refuse.
-
-The plugin resolves secrets on the backend. Config responses mask nested profile
-keys; saves must not echo those masked values. Changed mapping rows replace that
-row only, preserving unrelated rows, base settings and embedding credentials.
-Startup reloads the actual file; normal autosave is sufficient. No live file
-synchronization or shutdown save is required.
-
-Global `claude_code` hides but preserves API mappings. SillyTavern replies,
-Narrative Suggestions and ST APImw synthesis remain API-backed through SRMM.
-Other replies and memory operations use the global mode; only applicable API
-rows are resolved when needed. Iris live voice settings remain separate.
+Partial config saves preserve unrelated settings. A `null` step entry in a
+partial save deletes that entry; empty mapping sections are removed rather than
+saved as placeholders. Nested keys are masked in config responses; do not save
+masked values. The ST plugin resolves profile secrets on the backend.
 
 ### `llm.step_context_window_tokens`
 
-`llm.step_context_window_tokens` uses the same five step names. A non-null named
-capacity overrides the selected profile's capacity for every selector source,
-including SRMM inheritance, before validation. Without an override, the selected
-profile's capacity is preserved; an unrelated base model's capacity is not used.
-Config-source SRMM also retains its existing `step_context_window_tokens.srmm`
-capacity contribution, with the named step's override taking precedence.
-Capacities must be positive integers. Input allowance is 80% of (context size
-minus configured `max_tokens`),
-or 80% of context if no output cap is set. Each enabled stage must fit separately.
-The estimator is approximate; this is headroom, not guaranteed token accuracy.
-The Launcher Memorize section links to this config file and shows estimated
-Context load at the configured threshold. Actual prepared requests are checked
-separately; changing the model must not reuse another model's capacity.
+Optional positive-integer capacities keyed by the same five step names. A named
+capacity overrides the step connection's capacity. No capacity is guessed for
+a different model. Input allowance is 80% of (context size minus configured
+`max_tokens`), or 80% of context if no output cap is set. Each enabled stage
+must fit separately; estimates provide headroom, not guaranteed token accuracy.
+The Launcher links to this config file and shows estimated Context load.
 
 ### `llm.step_temperatures`
 

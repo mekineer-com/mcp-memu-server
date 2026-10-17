@@ -665,7 +665,7 @@ async def test_reply_publication_tracks_rebuild_without_invalidating_active_sett
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     cid = "chat:rebuild-retained-service"
     payload = _make_stub_payload(scope["user_id"], scope["soul_id"], cid)
-    payload.update(message="Fictional reply", chat_name="Fictional chat", history=[], debug=True,
+    payload.update(message="Fictional reply", chat_name="Fictional chat", history=[], debug=True, srmm="config",
                    prompt_override_payload={"user_prompt": "Fictional prompt", "system_prompt": "Fictional system",
                                             "memory_cache": [], "retrieve_rag": {"items": [], "categories": [], "resources": []}})
     monkeypatch.setattr(main_module, "_LOG_PROMPTS", False)
@@ -749,8 +749,8 @@ async def test_reply_publication_tracks_rebuild_without_invalidating_active_sett
         else:
             # A settings refresh must not revalidate the active reply's old model.
             llm = main_module._CONFIG["llm"]
-            monkeypatch.setitem(llm["reply_models"], "srmm", {"source": "configured"})
-            monkeypatch.setitem(llm["step_models"], "memory_extract", {"source": "srmm"})
+            monkeypatch.setitem(llm, "chat_model", "")
+            monkeypatch.setitem(llm, "step_models", {"memory_extract": "changed-memory-model"})
             main_module._clear_cached_services()
         assert all(service is not old_service for service in main_module._service_factory._SERVICES.values())
         resume.set()

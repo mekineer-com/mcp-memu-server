@@ -73,47 +73,66 @@ def test_mental_health_defaults_off_without_resetting_saved_choice() -> None:
 
 
 def _mapping_config() -> dict:
+    connection = {"provider": "openai", "base_url": "https://steps.example/v1", "api_key": "step-secret",
+                  "chat_model": "step-model", "context_window_tokens": 50000, "max_tokens": 2000}
     return {"claude_code": False, "llm": {
         "provider": "openai", "base_url": "https://fictional.example/v1", "api_key": "base-secret",
         "chat_model": "custom-base", "context_window_tokens": 100000,
         "embedding": {"api_key": "embedding-secret", "base_url": "https://embedding.example/"},
-        "reply_models": {"srmm": {"source": "configured", "selection": {"provider": "openrouter", "model": "fictional-reply"},
-            "resolved": {"provider": "openai", "base_url": "https://reply.example/v1", "api_key": "reply-secret",
-                         "chat_model": "fictional-reply", "context_window_tokens": 50000, "max_tokens": 2000}},
-            "other_apps": {"source": "st_native"}},
-        "st_selected": {"selection": {"provider": "openai", "model": "fictional-native"}, "resolved": {
-            "provider": "openai", "base_url": "https://native.example/v1", "api_key": "native-secret",
-            "chat_model": "fictional-native", "context_window_tokens": 60000}},
-        "step_models": {"preprocess": {"source": "config"}, "memory_extract": {"source": "srmm"},
-                        "category_update": {"source": "st_native"}, "consolidation": {"source": "srmm"},
-                        "reflection": {"source": "config"}},
-    }, "storage": {"resources_dir": "untouched"}, "mentra": {"gemini_api_key": "voice-secret", "model": "unchanged-voice"}}
+        "step_models": {"memory_extract": connection, "category_update": "custom-category",
+                        "consolidation": copy.deepcopy(connection)},
+    }, "storage": {"resources_dir": "untouched"},
+        "mentra": {"gemini_api_key": "voice-secret", "model": "unchanged-voice"}}
 
 
 def test_model_mapping_normalization_preserves_scalar_model_and_matching_capacity() -> None:
     cfg = _mapping_config()
     cfg["llm"]["step_models"] = {"memory_extract": "old-model", "preprocess": "another-model"}
     cfg["llm"]["step_context_window_tokens"] = {"memory_extract": 40000}
-    normalized = app_config.normalize_model_mappings(cfg)
-    assert cfg["llm"]["step_models"]["memory_extract"] == "old-model"
-    rows = normalized["llm"]["step_models"]
-    assert rows["memory_extract"]["resolved"]["chat_model"] == "old-model"
-    assert rows["memory_extract"]["resolved"]["context_window_tokens"] == 40000
-    assert "context_window_tokens" not in rows["preprocess"]["resolved"]
-    assert rows["reflection"] == {"source": "config"}
+    assert app_config.normalize_model_mappings(cfg) == cfg
+    profiles = app_config.default_llm_profiles_from_server_config(cfg, operation="memorize")
+    assert profiles["memory_extract"]["chat_model"] == "old-model"
+    assert profiles["memory_extract"]["context_window_tokens"] == 40000
+    assert "context_window_tokens" not in profiles["preprocess"]
 
 
-def test_load_config_normalizes_without_rewriting_existing_file(monkeypatch) -> None:
+# Transition cleanup expires 2027-01-17: remove this old-mapping upgrade handling.
+def test_load_config_cleans_old_mapping_layout_once(monkeypatch) -> None:
     cfg = _mapping_config()
-    cfg["llm"]["step_models"] = {"memory_extract": "saved-scalar-model"}
-    cfg["llm"]["step_context_window_tokens"] = {"memory_extract": 70000}
+    cfg["llm"].update({"reply_models": {"srmm": {"source": "config"}},
+                       "st_selected": {"resolved": {"api_key": "obsolete-secret"}},
+                       "step_context_window_tokens": {"srmm": 40000, "memory_extract": 70000}})
+    cfg["llm"]["step_models"]["reflection"] = {"source": "configured", "resolved": {"api_key": "old"}}
+    cfg["llm"]["step_models"]["preprocess"] = {"source": "config"}
     path = app_config.config_path()
     path.parent.mkdir(parents=True)
-    original = json.dumps(cfg)
+    path.write_text(json.dumps(cfg))
+    save = app_config.save_config
+    calls = []
+    monkeypatch.setattr(app_config, "save_config", lambda value: (calls.append(copy.deepcopy(value)), save(value)))
+    monkeypatch.setattr(app_config, "ensure_storage_paths", lambda value: value["storage"].update({"dsn": "runtime-only"}))
+    app_config.load_config()
+    saved = json.loads(path.read_text())
+    assert "reply_models" not in saved["llm"] and "st_selected" not in saved["llm"]
+    assert "reflection" not in saved["llm"]["step_models"] and "preprocess" not in saved["llm"]["step_models"]
+    assert saved["llm"]["step_context_window_tokens"] == {"memory_extract": 70000}
+    assert saved["llm"]["step_models"]["memory_extract"] == cfg["llm"]["step_models"]["memory_extract"]
+    assert saved["llm"]["step_models"]["category_update"] == "custom-category"
+    assert saved["llm"]["embedding"] == cfg["llm"]["embedding"]
+    assert saved["storage"] == cfg["storage"]
+    app_config.load_config()
+    assert len(calls) == 1
+
+
+def test_load_corrected_config_does_not_rewrite_hand_edits(monkeypatch) -> None:
+    cfg = _mapping_config()
+    path = app_config.config_path()
+    path.parent.mkdir(parents=True)
+    original = json.dumps(cfg, indent=4) + "\n"
     path.write_text(original)
     monkeypatch.setattr(app_config, "ensure_storage_paths", lambda _cfg: None)
-    loaded = app_config.load_config()
-    assert loaded["llm"]["step_models"]["memory_extract"]["resolved"]["context_window_tokens"] == 70000
+    monkeypatch.setattr(app_config, "save_config", lambda _cfg: pytest.fail("rewrote corrected config"))
+    assert app_config.load_config() == cfg
     assert path.read_text() == original
 
 
@@ -124,210 +143,130 @@ def test_load_config_normalizes_without_rewriting_existing_file(monkeypatch) -> 
 ])
 def test_model_mapping_operation_profiles(operation, names) -> None:
     cfg = _mapping_config()
-    cfg["llm"]["step_context_window_tokens"] = {"memory_extract": 70000, "srmm": 40000}
+    cfg["llm"]["step_context_window_tokens"] = {"memory_extract": 70000}
     profiles = app_config.default_llm_profiles_from_server_config(cfg, operation=operation)
     assert set(profiles) == {"default", "embedding"} | names
-    expected = "fictional-reply" if operation == "st_reply" else "fictional-native" if operation == "other_reply" else "custom-base"
-    assert profiles["default"]["chat_model"] == expected
+    assert profiles["default"]["chat_model"] == "custom-base"
     assert profiles["embedding"]["api_key"] == "embedding-secret"
     if "memory_extract" in profiles:
-        assert profiles["memory_extract"]["api_key"] == "reply-secret"
+        assert profiles["memory_extract"]["api_key"] == "step-secret"
         assert profiles["memory_extract"]["context_window_tokens"] == 70000
     if "consolidation" in profiles:
         assert profiles["consolidation"]["context_window_tokens"] == 50000
-    if operation == "st_reply":
-        assert profiles["default"]["context_window_tokens"] == 50000
     if "category_update" in profiles:
-        assert profiles["category_update"]["chat_model"] == "fictional-native"
+        assert profiles["category_update"]["chat_model"] == "custom-category"
+        assert "context_window_tokens" not in profiles["category_update"]
 
 
 @pytest.mark.parametrize("operation", [None, "other_reply", "retrieve", "rollup", "memorize", "consolidation"])
-def test_cli_skips_unresolved_hidden_api_mappings(operation) -> None:
+def test_cli_skips_unused_api_profiles(operation) -> None:
     cfg = _mapping_config()
     cfg["claude_code"] = True
-    del cfg["llm"]["st_selected"]
-    cfg["llm"]["step_models"]["preprocess"] = {"source": "configured"}
     assert set(app_config.default_llm_profiles_from_server_config(cfg, operation=operation)) == {"default", "embedding"}
-    assert app_config.default_llm_profiles_from_server_config(cfg, operation="st_reply")["default"]["chat_model"] == "fictional-reply"
-
-
-def test_unused_native_mapping_does_not_block_retrieval_or_normalization() -> None:
-    cfg = _mapping_config()
-    del cfg["llm"]["st_selected"]
-    app_config.normalize_model_mappings(cfg)
-    assert app_config.default_llm_profiles_from_server_config(cfg, operation="retrieve")["reflection"]["chat_model"] == "custom-base"
-    with pytest.raises(ValueError, match="resolved st_native"):
-        app_config.default_llm_profiles_from_server_config(cfg, operation="other_reply")
-
-
-@pytest.mark.parametrize("capacity", [0, -1, True, "64000"])
-def test_selected_model_capacity_must_be_positive_integer(capacity) -> None:
-    cfg = _mapping_config()
-    cfg["llm"]["reply_models"]["srmm"]["resolved"]["context_window_tokens"] = capacity
-    with pytest.raises(ValueError, match="positive integer"):
-        app_config.default_llm_profiles_from_server_config(cfg, operation="st_reply")
-
-
-@pytest.mark.parametrize("source,reply_source", [
-    ("config", None), ("configured", None), ("st_native", None),
-    ("srmm", "config"), ("srmm", "configured"), ("srmm", "st_native"),
-])
-@pytest.mark.parametrize("selected_capacity,override", [
-    (None, None), (50000, None), (None, 70000), (50000, 70000), (0, 70000),
-])
-def test_named_step_capacity_overlays_selected_profile_without_leaking(
-    source, reply_source, selected_capacity, override,
-) -> None:
-    cfg = _mapping_config()
-    llm = cfg["llm"]
-    selected_source = reply_source or source
-    if selected_source == "config":
-        selected = llm
-    elif selected_source == "st_native":
-        selected = llm["st_selected"]["resolved"]
-    else:
-        selected = llm["reply_models"]["srmm"]["resolved"]
-    selected.pop("context_window_tokens", None)
-    if selected_capacity is not None:
-        selected["context_window_tokens"] = selected_capacity
-    row = {"source": source}
-    if source == "configured":
-        row["resolved"] = copy.deepcopy(selected)
-    if source == "srmm":
-        llm["reply_models"]["srmm"] = {
-            "source": reply_source,
-            **({"resolved": selected} if reply_source == "configured" else {}),
-        }
-    llm["step_models"]["preprocess"] = row
-    llm["step_context_window_tokens"] = {"preprocess": override}
-    original = copy.deepcopy(cfg)
-    profiles = app_config.default_llm_profiles_from_server_config(cfg, operation="rollup")
-    expected = override if override is not None else selected_capacity
-    assert profiles["preprocess"].get("context_window_tokens") == expected
-    assert profiles["preprocess"]["chat_model"] == selected["chat_model"]
-    assert profiles["preprocess"]["api_key"] == selected["api_key"]
-    assert profiles["default"].get("context_window_tokens") == llm.get("context_window_tokens")
-    assert cfg == original
-    profiles["preprocess"]["api_key"] = "changed-copy"
-    assert profiles["default"]["api_key"] != "changed-copy"
-    assert cfg == original
-
-
-@pytest.mark.parametrize("override,expected", [(None, 40000), (70000, 70000)])
-def test_named_capacity_preserves_config_source_srmm_capacity_contribution(override, expected) -> None:
-    cfg = _mapping_config()
-    cfg["llm"]["reply_models"]["srmm"] = {"source": "config"}
-    cfg["llm"]["step_context_window_tokens"] = {"srmm": 40000, "memory_extract": override}
-    profiles = app_config.default_llm_profiles_from_server_config(cfg, operation="memorize")
-    assert profiles["memory_extract"]["context_window_tokens"] == expected
-    assert profiles["consolidation"]["context_window_tokens"] == 40000
-    reply = app_config.default_llm_profiles_from_server_config(cfg, operation="st_reply")
-    assert reply["default"]["context_window_tokens"] == 40000
-
-
-def test_named_capacity_replaces_invalid_config_source_srmm_contribution() -> None:
-    cfg = _mapping_config()
-    cfg["llm"]["reply_models"]["srmm"] = {"source": "config"}
-    cfg["llm"]["step_models"]["preprocess"] = {"source": "srmm"}
-    cfg["llm"]["step_context_window_tokens"] = {"srmm": 0, "preprocess": 70000}
-    profiles = app_config.default_llm_profiles_from_server_config(cfg, operation="rollup")
-    assert profiles["preprocess"]["context_window_tokens"] == 70000
-    assert cfg["llm"]["step_context_window_tokens"]["srmm"] == 0
-
-
-def test_invalid_named_step_capacity_fails_final_validation() -> None:
-    cfg = _mapping_config()
-    cfg["llm"]["step_models"]["preprocess"] = {"source": "srmm"}
-    cfg["llm"]["step_context_window_tokens"] = {"preprocess": 0}
-    with pytest.raises(ValueError, match=r"Model mapping preprocess.context_window_tokens.*positive integer"):
-        app_config.default_llm_profiles_from_server_config(cfg, operation="rollup")
-
-
-def test_named_capacity_does_not_bypass_inherited_output_cap_validation() -> None:
-    cfg = _mapping_config()
-    cfg["llm"]["reply_models"]["srmm"]["resolved"].update({"context_window_tokens": 0, "max_tokens": 0})
-    cfg["llm"]["step_models"]["preprocess"] = {"source": "srmm"}
-    cfg["llm"]["step_context_window_tokens"] = {"preprocess": 70000}
-    with pytest.raises(ValueError, match=r"Model mapping preprocess.max_tokens.*positive integer"):
-        app_config.default_llm_profiles_from_server_config(cfg, operation="rollup")
 
 
 @pytest.mark.parametrize("field", ["context_window_tokens", "max_tokens"])
 @pytest.mark.parametrize("capacity", [0, -1, True, "64000"])
-def test_base_model_capacity_must_be_positive_integer(field, capacity) -> None:
+def test_selected_model_capacity_must_be_positive_integer(field, capacity) -> None:
     cfg = _mapping_config()
-    cfg["llm"]["reply_models"]["srmm"] = {"source": "config"}
-    cfg["llm"][field] = capacity
+    cfg["llm"]["step_models"]["memory_extract"][field] = capacity
     with pytest.raises(ValueError, match="positive integer"):
-        app_config.default_llm_profiles_from_server_config(cfg, operation="st_reply")
+        app_config.default_llm_profiles_from_server_config(cfg, operation="memorize")
 
 
-def test_effective_generic_api_mode_preserves_steps_under_global_cli() -> None:
+@pytest.mark.parametrize("source", ["base", "string", "object"])
+@pytest.mark.parametrize("override", [None, 70000])
+def test_named_step_capacity_overlays_selected_profile_without_leaking(source, override) -> None:
     cfg = _mapping_config()
-    cfg["claude_code"] = True
-    effective = {**cfg, "claude_code": False}
-    profiles = app_config.default_llm_profiles_from_server_config(effective)
-    assert profiles["memory_extract"]["chat_model"] == "fictional-reply"
-    assert cfg["claude_code"] is True
+    cfg["llm"]["step_models"].pop("preprocess", None)
+    if source == "string":
+        cfg["llm"]["step_models"]["preprocess"] = "another-model"
+    elif source == "object":
+        cfg["llm"]["step_models"]["preprocess"] = copy.deepcopy(cfg["llm"]["step_models"]["memory_extract"])
+    if override is not None:
+        cfg["llm"]["step_context_window_tokens"] = {"preprocess": override}
+    original = copy.deepcopy(cfg)
+    profiles = app_config.default_llm_profiles_from_server_config(cfg, operation="rollup")
+    assert profiles["preprocess"].get("context_window_tokens") == (override if override else {
+        "base": 100000, "string": None, "object": 50000,
+    }[source])
+    profiles["preprocess"]["api_key"] = "changed-copy"
+    assert cfg == original and profiles["default"]["api_key"] == "base-secret"
 
 
-def test_config_model_default_and_native_inheritance_are_not_self_references() -> None:
+def test_independent_step_requires_its_own_key_and_does_not_inherit_capacity() -> None:
     cfg = _mapping_config()
-    cfg["llm"]["reply_models"]["srmm"] = {"source": "config"}
-    profiles = app_config.default_llm_profiles_from_server_config(cfg, operation="memorize")
-    assert profiles["memory_extract"]["chat_model"] == "custom-base"
-    cfg["llm"]["reply_models"]["srmm"] = {"source": "srmm"}
-    with pytest.raises(ValueError, match="advanced steps"):
-        app_config.normalize_model_mappings(cfg)
+    row = cfg["llm"]["step_models"]["memory_extract"]
+    del row["api_key"]
+    with pytest.raises(ValueError, match="explicit api_key"):
+        app_config.default_llm_profiles_from_server_config(cfg, operation="memorize")
+    row["api_key"] = ""
+    del row["context_window_tokens"]
+    profile = app_config.default_llm_profiles_from_server_config(cfg, operation="memorize")["memory_extract"]
+    assert profile["api_key"] == "" and "context_window_tokens" not in profile
 
 
-def test_model_config_merge_preserves_secrets_hidden_rows_and_other_settings() -> None:
+def test_named_capacity_overrides_invalid_connection_capacity_but_not_output_cap() -> None:
+    cfg = _mapping_config()
+    connection = cfg["llm"]["step_models"]["memory_extract"]
+    connection["context_window_tokens"] = 0
+    cfg["llm"]["step_context_window_tokens"] = {"memory_extract": 70000}
+    profile = app_config.default_llm_profiles_from_server_config(cfg, operation="memorize")["memory_extract"]
+    assert profile["context_window_tokens"] == 70000
+    connection["max_tokens"] = 0
+    with pytest.raises(ValueError, match="max_tokens.*positive integer"):
+        app_config.default_llm_profiles_from_server_config(cfg, operation="memorize")
+
+
+def test_model_config_merge_preserves_secrets_and_other_settings_and_deletes_only_requested_entries() -> None:
     current = _mapping_config()
     current["storage"] = {
         "resources_dir": "selected-resources", "sqlite_dir": "selected-sqlite",
         "metadata_store": {"provider": "sqlite", "dsn": "sqlite:///selected.db", "ddl_mode": "create"},
     }
-    body = {"llm": {"reply_models": {"srmm": {"source": "config"}}, "embedding": {"base_url": "https://new-embedding.example/"}},
-            "claude_code": True}
-    result = app_config.merge_model_config(current, body)
-    assert result["llm"]["reply_models"]["srmm"] == {"source": "config"}
-    assert result["llm"]["reply_models"]["other_apps"] == current["llm"]["reply_models"]["other_apps"]
-    assert result["llm"]["step_models"] == current["llm"]["step_models"]
-    assert result["llm"]["st_selected"] == current["llm"]["st_selected"]
-    assert result["llm"]["api_key"] == "base-secret" and result["llm"]["embedding"]["api_key"] == "embedding-secret"
+    current["llm"]["step_context_window_tokens"] = {"category_update": 8000, "reflection": 12000}
+    before = copy.deepcopy(current)
+    patch = {"llm": {"step_models": {"category_update": None},
+                     "step_context_window_tokens": {"category_update": None},
+                     "embedding": {"base_url": "https://new-embedding.example/"}}}
+    result = app_config.merge_model_config(current, patch)
+    assert result["llm"]["step_models"] == {k: v for k, v in current["llm"]["step_models"].items() if k != "category_update"}
+    assert result["llm"]["step_context_window_tokens"] == {"reflection": 12000}
+    assert result["llm"]["embedding"]["api_key"] == "embedding-secret"
+    assert result["llm"]["api_key"] == "base-secret"
     assert result["storage"] == current["storage"] and result["mentra"] == current["mentra"]
-    assert current["claude_code"] is False and body["llm"]["reply_models"]["srmm"] == {"source": "config"}
-    for patch in ({"resources_dir": "new-resources"}, {"metadata_store": {"ddl_mode": "validate"}}):
-        updated = app_config.merge_model_config(current, {"storage": patch})["storage"]
+    assert current == before
+    cleared = app_config.merge_model_config(current, {"llm": {
+        "step_models": {key: None for key in current["llm"]["step_models"]},
+        "step_context_window_tokens": {key: None for key in current["llm"]["step_context_window_tokens"]},
+    }})
+    assert "step_models" not in cleared["llm"] and "step_context_window_tokens" not in cleared["llm"]
+    for storage_patch in ({"resources_dir": "new-resources"}, {"metadata_store": {"ddl_mode": "validate"}}):
+        updated = app_config.merge_model_config(current, {"storage": storage_patch})["storage"]
         assert updated["sqlite_dir"] == "selected-sqlite"
-        assert updated["resources_dir"] == patch.get("resources_dir", "selected-resources")
+        assert updated["resources_dir"] == storage_patch.get("resources_dir", "selected-resources")
         assert updated["metadata_store"] == {
-            **current["storage"]["metadata_store"], **patch.get("metadata_store", {}),
+            **current["storage"]["metadata_store"], **storage_patch.get("metadata_store", {}),
         }
     for replacement in (None, "", []):
         assert app_config.merge_model_config(current, {"storage": replacement})["storage"] == replacement
         updated = app_config.merge_model_config(current, {"storage": {"metadata_store": replacement}})["storage"]
         assert updated == {**current["storage"], "metadata_store": replacement}
-    assert current["storage"]["resources_dir"] == "selected-resources"
-    assert current["storage"]["metadata_store"]["ddl_mode"] == "create"
-    before = copy.deepcopy(current)
-    for patch in ({"public_base_url": "http://phone.example.invalid"},
-                  {"gemini_api_key": ""}, {"gemini_api_key": "fictional-new-voice-key"}):
-        body = {"mentra": patch}
-        before_body = copy.deepcopy(body)
-        result = app_config.merge_model_config(current, body)
-        assert result["mentra"] == {**current["mentra"], **patch}
-        assert current == before and body == before_body
+    for body in ({"retrieve": {"mental_health_query": False}}, {"mentra": {"gemini_api_key": "new-voice"}},
+                 {"storage": {"metadata_store": {"ddl_mode": "validate"}}}):
+        updated = app_config.merge_model_config(current, body)
+        for field in ("llm", "mentra", "retrieve", "storage"):
+            if field not in body:
+                assert updated.get(field) == current.get(field)
 
 
 def test_model_mapping_masks_every_nested_profile_without_mutating_config() -> None:
     cfg = _mapping_config()
     masked = app_config.mask_config(cfg)
     assert masked["llm"]["api_key"] == "base...cret"
-    for holder in [masked["llm"]["embedding"], masked["llm"]["reply_models"]["srmm"]["resolved"], masked["llm"]["st_selected"]["resolved"]]:
-        assert holder["api_key"] == "***"
-    assert cfg["llm"]["api_key"] == "base-secret"
-    assert app_config.mask_config(cfg, include_llm_secret=True)["llm"]["st_selected"]["resolved"]["api_key"] == "native-secret"
+    assert masked["llm"]["step_models"]["memory_extract"]["api_key"] == "***"
+    assert masked["llm"]["embedding"]["api_key"] == "***"
+    assert cfg["llm"]["step_models"]["memory_extract"]["api_key"] == "step-secret"
     assert masked["mentra"]["gemini_api_key"] == "***"
 
 
@@ -336,34 +275,20 @@ def test_model_mapping_masks_every_nested_profile_without_mutating_config() -> N
 def test_model_config_rejects_masked_secret_round_trip(secret, field) -> None:
     cfg = _mapping_config()
     before = copy.deepcopy(cfg)
-    body = (
-        {"llm": {"reply_models": {"srmm": {"source": "configured", "resolved": {"api_key": secret}}}}}
-        if field == "llm" else {"mentra": {"gemini_api_key": secret}}
-    )
-    before_body = copy.deepcopy(body)
+    body = ({"llm": {"step_models": {"memory_extract": {"api_key": secret}}}}
+            if field == "llm" else {"mentra": {"gemini_api_key": secret}})
     with pytest.raises(ValueError, match="Masked .*api_key"):
         app_config.merge_model_config(cfg, body)
-    assert cfg == before and body == before_body
-    if secret == "***":
-        body = app_config.mask_config(cfg, include_llm_secret=field == "mentra")
-        before_body = copy.deepcopy(body)
-        with pytest.raises(ValueError, match="Masked .*api_key"):
-            app_config.merge_model_config(cfg, body)
-        assert cfg == before and body == before_body
+    assert cfg == before
 
 
 @pytest.mark.parametrize("cli", [False, True])
 def test_model_mapping_rejects_native_noncompatible_protocol(cli) -> None:
     cfg = _mapping_config()
     cfg["claude_code"] = cli
-    row = cfg["llm"]["reply_models"]["srmm"]
-    row["resolved"]["provider"] = "anthropic"
+    cfg["llm"]["step_models"]["memory_extract"]["provider"] = "anthropic"
     with pytest.raises(ValueError, match="OpenAI-compatible"):
-        app_config.default_llm_profiles_from_server_config(cfg, operation="st_reply")
-    with pytest.raises(ValueError, match="OpenAI-compatible"):
-        app_config.merge_model_config(_mapping_config(), {"llm": {"reply_models": {"srmm": row}}})
-    with pytest.raises(ValueError, match="OpenAI-compatible"):
-        app_config.merge_model_config(cfg, {"llm": {"st_selected": {"resolved": row["resolved"]}}})
+        app_config.normalize_model_mappings(cfg)
 
 
 def test_default_whatsapp_paths_point_at_channels_data() -> None:
