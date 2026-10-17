@@ -2092,7 +2092,7 @@ def _load_mentra_cross_chat_context(
         cross_tail=cross_tail,
         conversation_id=conversation_id,
         soul_id=soul_id,
-        mark_current_chat=True,
+        mark_current_chat=False,
         user_id=user_id,
         user_name=_souls.read_soul_name(db_path),
     )

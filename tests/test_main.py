@@ -1942,6 +1942,7 @@ def test_format_all_chat_history_for_ai_can_render_without_current_chat_marker(
         soul_id="TestSoul",
         chat_label="[group][Fictional Group]",
         mark_current_chat=False,
+        memory_context=True,
     )
 
     assert "current chat" not in rendered
@@ -3802,9 +3803,17 @@ def test_load_tail_for_source_conversation_uses_web_source(
     assert captured["min_timestamp"] == 100.0
 
 
-def test_mentra_bootstrap_marks_prior_tail_as_current_neutral_iris_chat(
+@pytest.mark.parametrize("mic_source,label", [("phone", "Phone"), ("glasses", "Smartglasses"), (None, "Iris")])
+@pytest.mark.parametrize("question_time,reply_time", [
+    ("00:59:00", "01:00:00"), ("01:01:00", "01:00:00"), ("01:00:00", "01:00:00"),
+])
+def test_mentra_bootstrap_does_not_mark_a_previous_sitting_as_current(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    mic_source: str | None,
+    label: str,
+    question_time: str,
+    reply_time: str,
 ) -> None:
     mentra_storage = tmp_path / "mentra"
     monkeypatch.setattr(conversation_sources, "mentra_storage_dir", lambda: mentra_storage)
@@ -3838,10 +3847,19 @@ def test_mentra_bootstrap_marks_prior_tail_as_current_neutral_iris_chat(
             "event_id": "fictional-sitting:1",
             "sequence": 1,
             "event_kind": "transcript",
+            "role": "user",
+            "content": "A prior fictional question.",
+            "mic_source": mic_source,
+            "transcript_status": "complete",
+            "received_at": f"2026-08-23T{question_time}+00:00",
+        }, {
+            "event_id": "fictional-sitting:2",
+            "sequence": 2,
+            "event_kind": "transcript",
             "role": "assistant",
             "content": "A prior fictional reply.",
             "transcript_status": "complete",
-            "received_at": "2026-08-23T01:00:00+00:00",
+            "received_at": f"2026-08-23T{reply_time}+00:00",
         }],
     )
     monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: db_path)
@@ -3856,8 +3874,10 @@ def test_mentra_bootstrap_marks_prior_tail_as_current_neutral_iris_chat(
     )
 
     assert "My Video Conversations:" in rendered
-    assert "[dm][Iris] ← current chat" in rendered
+    assert f"[dm][{label}]" in rendered
+    assert "current chat" not in rendered
     assert "[Codexia] A prior fictional reply." in rendered
+    assert rendered.index("A prior fictional question.") < rendered.index("A prior fictional reply.")
 
 
 def test_cross_payload_preserves_projected_mentra_sequence_cursor(

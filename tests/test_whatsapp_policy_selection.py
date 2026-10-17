@@ -198,14 +198,14 @@ def test_whatsapp_keys_preserve_primary_fallback_and_reflection_rebase(tmp_path,
         assert not payload.message_source_keys(captured).isdisjoint(payload.message_source_keys(distinct))
         rendered = cross_history._format_all_chat_history_for_ai(
             current_history=[captured], cross_tail=[rebased, distinct], conversation_id=cid,
-            soul_id="TestSoul", mark_current_chat=False, background_context_rows=[],
+            soul_id="TestSoul", mark_current_chat=False, memory_context=True, background_context_rows=[],
         )
         assert rendered.count("Captured fictional fact") == 1
         assert "Duplicate rebased fact" not in rendered and "Distinct fictional fact" not in rendered
         distinct["source_conversation_index"] = 501
         rendered = cross_history._format_all_chat_history_for_ai(
             current_history=[captured], cross_tail=[rebased, distinct], conversation_id=cid,
-            soul_id="TestSoul", mark_current_chat=False, background_context_rows=[],
+            soul_id="TestSoul", mark_current_chat=False, memory_context=True, background_context_rows=[],
         )
         assert rendered.count("Captured fictional fact") == 1
         assert "Duplicate rebased fact" not in rendered and "Distinct fictional fact" in rendered

@@ -263,7 +263,10 @@ from that supplemental work. Saved supporting blocks and current rolling prose
 coexist, so later rollup progress is not lost. Import sizing and prefix shrinking
 include current summary rows without loading live raw tails.
 `cross_history._format_all_chat_history_for_ai(memory_context=True)` keeps
-raw Mem-off cross-tail rows out of the primary history. Thus Resource evidence
+raw Mem-off cross-tail rows out of the primary history. Evidence merging,
+deduplication and timestamp ordering belong to that memory-context mode, not to
+current-marker visibility; unmarked Iris bootstrap history retains supplied order.
+Thus Resource evidence
 is durable, but the entire later prompt is not claimed to be a frozen snapshot.
 
 The model stages are dossier revision, identity/anchor maintenance and ordinary

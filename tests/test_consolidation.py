@@ -1125,7 +1125,7 @@ INSERT INTO memory_items (
     for rows in (render_rows, payload._normalize_conversation(render_rows)):
         rendered = cross_history._format_all_chat_history_for_ai(
             current_history=rows, cross_tail=[], conversation_id="conv-a",
-            soul_id=soul_id, mark_current_chat=False,
+            soul_id=soul_id, mark_current_chat=False, memory_context=True,
         )
         assert "[dm][conv-a]" in rendered and "[dm][conv-b]" in rendered
         assert "a separate platform" in rendered

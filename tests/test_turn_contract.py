@@ -220,7 +220,7 @@ def test_unmarked_context_uses_selected_evidence_chat_not_trigger(monkeypatch, t
              "role": "user", "content": "Trigger evidence"}] if with_trigger_tail else []
     rendered = main._format_all_chat_history_for_ai(
         current_history=[selected], cross_tail=tail, conversation_id=trigger,
-        soul_id="TestSoul", mark_current_chat=False,
+        soul_id="TestSoul", mark_current_chat=False, memory_context=True,
     )
     assert rendered.endswith("[dm][Selected evidence]\n[user] " + selected["content"])
     assert "(none)" not in rendered and "\u2190 current chat" not in rendered

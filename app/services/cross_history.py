@@ -766,7 +766,7 @@ def _format_all_chat_history_for_ai(
     current_source_owner_id = current_source_owner_id if user_id and current_source_owner_id == user_id else None
     if current_source_owner_id and user_name:
         current_user_name = user_name
-    if not mark_current_chat:
+    if memory_context:
         history_rows = _current_chat_rows_for_grouped_render(history_rows, conversation_id=conversation_id)
         selected_sources = {
             _source_conversation_key(str(row.get("source_conversation_id") or row.get("conversation_id") or ""))
