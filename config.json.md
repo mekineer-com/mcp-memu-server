@@ -64,7 +64,10 @@ without writing remembered choices over them. Advanced Mapping copies selected
 ST connections into these step entries; they work with ST closed. Disabling it
 asks for confirmation, removes active model overrides and their matching
 per-step capacities, and retains profile/model choices in ST for re-enabling.
-Choices copied from SRMM or ST selected are one-time copies, not live references.
+While ST is open, active entries follow their selected SRMM, ST-selected or
+named-profile source. ST stores only source markers; config.json keeps the
+resolved values for use with ST closed. Selecting config.json keeps those values
+and follows hand edits without warnings.
 
 SillyTavern Replies (SRMM) lives entirely in ST and accompanies its reply,
 Narrative Suggestion and APImw synthesis requests. It is not stored in this file.
