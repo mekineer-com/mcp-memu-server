@@ -73,16 +73,7 @@ See `INDEX.md` for the full endpoint list and task→file guide.
 
 ## Development
 
-`requirements.lock` pins the joint server/memU runtime for the first coordinated
-beta and subsequent installation, update and recovery. Regenerate from this
-directory and verify changed packages before shipping:
-
-```sh
-uv pip compile --universal --python-version 3.12 pyproject.toml ../memu/pyproject.toml -o requirements.lock
-```
-
-`uv.lock` is separate development tooling, not the installer runtime lock.
-Runtime pins do not remove obsolete installed packages or pin build tools.
+Working on the server? See [AGENTS.md](AGENTS.md) and [INDEX.md](INDEX.md).
 
 ```bash
 # Syntax check
