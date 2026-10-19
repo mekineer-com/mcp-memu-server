@@ -118,23 +118,6 @@ def _assert_user_declared_relationship(props: Mapping[str, Any] | None) -> None:
         raise HTTPException(status_code=409, detail="entity is not user-declared")
 
 
-def _assert_relationship_write_path(
-    user_id: str,
-    soul_id: str,
-    *,
-    get_service_from_payload: Callable[[dict[str, Any]], Any],
-    sqlite_current_path: Callable[[str | None, str | None], Path | None],
-    sqlite_ensure_nonempty: Callable[[Path], None],
-) -> Any:
-    scope = {"user_id": user_id, "soul_id": soul_id}
-    svc = get_service_from_payload({"user": scope})
-    db_path = sqlite_current_path(user_id, soul_id)
-    if db_path is None:
-        raise HTTPException(status_code=400, detail="soul_id required for sqlite scope resolution")
-    sqlite_ensure_nonempty(db_path)
-    return svc
-
-
 def _entity_name_matches(entity: Any, name: str) -> bool:
     needle = normalize_entity_name(name)
     properties = getattr(entity, "properties", None)
@@ -299,8 +282,6 @@ async def create_relationship_endpoint(
     soul_id: str,
     payload: dict[str, Any],
     get_service_from_payload: Callable[[dict[str, Any]], Any],
-    sqlite_current_path: Callable[[str | None, str | None], Path | None],
-    sqlite_ensure_nonempty: Callable[[Path], None],
     json_from_db: Callable[[Any], Any],
 ) -> dict[str, Any]:
     sid = str(soul_id or "").strip()
@@ -315,13 +296,7 @@ async def create_relationship_endpoint(
         raise HTTPException(status_code=400, detail="user_id required")
 
     scope = {"user_id": uid, "soul_id": sid}
-    svc = _assert_relationship_write_path(
-        uid,
-        sid,
-        get_service_from_payload=get_service_from_payload,
-        sqlite_current_path=sqlite_current_path,
-        sqlite_ensure_nonempty=sqlite_ensure_nonempty,
-    )
+    svc = get_service_from_payload({"user": scope})
 
     repo = svc.database.entity_repo
     requested_id_raw = str(payload.get("entity_id") or "").strip()
@@ -384,8 +359,6 @@ async def update_relationship_endpoint(
     speaker_id: str,
     payload: dict[str, Any],
     get_service_from_payload: Callable[[dict[str, Any]], Any],
-    sqlite_current_path: Callable[[str | None, str | None], Path | None],
-    sqlite_ensure_nonempty: Callable[[Path], None],
     json_from_db: Callable[[Any], Any],
 ) -> dict[str, Any]:
     sid = str(soul_id or "").strip()
@@ -407,15 +380,10 @@ async def update_relationship_endpoint(
     next_entity_type = str(entity_type_raw).strip() if entity_type_raw is not None else None
     if next_entity_type is not None and not next_entity_type:
         raise HTTPException(status_code=400, detail="entity_type is required")
-    svc = _assert_relationship_write_path(
-        uid,
-        sid,
-        get_service_from_payload=get_service_from_payload,
-        sqlite_current_path=sqlite_current_path,
-        sqlite_ensure_nonempty=sqlite_ensure_nonempty,
-    )
+    scope = {"user_id": uid, "soul_id": sid}
+    svc = get_service_from_payload({"user": scope})
     repo = svc.database.entity_repo
-    matches = repo.list_by_ids({entity_id}, {"user_id": uid, "soul_id": sid})
+    matches = repo.list_by_ids({entity_id}, scope)
     if not matches:
         raise HTTPException(status_code=404, detail="relationship not found")
     props = _relationship_properties(matches[0].properties, json_from_db=json_from_db)
@@ -429,7 +397,7 @@ async def update_relationship_endpoint(
             property_removals.add("relationship")
     entity = repo.update(
         entity_id,
-        where={"user_id": uid, "soul_id": sid},
+        where=scope,
         name=next_name,
         entity_type=next_entity_type,
         aliases=aliases,
@@ -445,8 +413,6 @@ async def delete_relationship_endpoint(
     speaker_id: str,
     user_id: str,
     get_service_from_payload: Callable[[dict[str, Any]], Any],
-    sqlite_current_path: Callable[[str | None, str | None], Path | None],
-    sqlite_ensure_nonempty: Callable[[Path], None],
     json_from_db: Callable[[Any], Any],
 ) -> dict[str, Any]:
     sid = str(soul_id or "").strip()
@@ -457,14 +423,8 @@ async def delete_relationship_endpoint(
         raise HTTPException(status_code=400, detail="user_id required")
     entity_id = _validate_relationship_speaker_id(speaker_id)
 
-    svc = _assert_relationship_write_path(
-        uid,
-        sid,
-        get_service_from_payload=get_service_from_payload,
-        sqlite_current_path=sqlite_current_path,
-        sqlite_ensure_nonempty=sqlite_ensure_nonempty,
-    )
     scope = {"user_id": uid, "soul_id": sid}
+    svc = get_service_from_payload({"user": scope})
     repo = svc.database.entity_repo
     matches = repo.list_by_ids({entity_id}, scope)
     if not matches:

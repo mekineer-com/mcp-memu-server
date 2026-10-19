@@ -3347,8 +3347,6 @@ async def create_relationship(
         soul_id=soul_id,
         payload=payload,
         get_service_from_payload=_get_service_from_payload,
-        sqlite_current_path=_sqlite_current_path,
-        sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
         json_from_db=_json_from_db,
     )
 
@@ -3364,8 +3362,6 @@ async def update_relationship(
         speaker_id=speaker_id,
         payload=payload,
         get_service_from_payload=_get_service_from_payload,
-        sqlite_current_path=_sqlite_current_path,
-        sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
         json_from_db=_json_from_db,
     )
 
@@ -3381,8 +3377,6 @@ async def delete_relationship(
         speaker_id=speaker_id,
         user_id=user_id,
         get_service_from_payload=_get_service_from_payload,
-        sqlite_current_path=_sqlite_current_path,
-        sqlite_ensure_nonempty=_sqlite_ensure_nonempty,
         json_from_db=_json_from_db,
     )
 

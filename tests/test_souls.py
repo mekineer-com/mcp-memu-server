@@ -115,6 +115,7 @@ def test_mentra_alias_uses_same_contract_without_enable_setting(tmp_path):
         "created": True,
     }
     assert post(client, "Echo", path=alias).json()["created"] is True
+    assert client.get("/souls/Echo").json()["user_name"] == "Fictional User"
     assert client.get(alias).json() == {"souls": ["Echo"]}
     assert client.get(owner_alias).json() == {"user_id": "Fictional User"}
     assert client.post(owner_alias, json={"user_id": "Other"}).status_code == 405
@@ -148,19 +149,21 @@ def test_publication_uses_reopenable_temporary_file_and_cleans_it(tmp_path, monk
     assert souls.read_soul_name(path) == "TestOwner"
 
 
-def test_new_names_use_owner_and_existing_names_are_immutable(tmp_path):
+@pytest.mark.parametrize("path", ["/souls", "/integration/mentra/souls"])
+@pytest.mark.parametrize("consent", [False, True])
+def test_new_names_use_owner_and_existing_names_are_immutable(tmp_path, path, consent):
     client, _cfg = client_for(tmp_path)
     for soul_id in ("FirstSoul", "SecondSoul"):
-        assert client.post("/souls", json={
-            "soul_id": soul_id, "user_name": "UnusedClientName", "use_existing": False,
+        assert client.post(path, json={
+            "soul_id": soul_id, "user_name": "UnusedClientName", "use_existing": consent,
         }).status_code == 200
         assert client.get(f"/souls/{soul_id}").json() == {"soul_id": soul_id, "user_name": "TestOwner"}
-    path = tmp_path / "ExistingSoul.db"
-    souls.publish_soul_db(path, "ExistingHuman")
-    before = path.read_bytes()
-    assert post(client, "ExistingSoul", True).status_code == 200
+    db_path = tmp_path / "ExistingSoul.db"
+    souls.publish_soul_db(db_path, "ExistingHuman")
+    before = db_path.read_bytes()
+    assert post(client, "ExistingSoul", True, path=path).json()["created"] is False
     assert client.get("/souls/ExistingSoul").json()["user_name"] == "ExistingHuman"
-    assert path.read_bytes() == before
+    assert db_path.read_bytes() == before
 
 
 def test_optional_narrative_read_is_live_scoped_and_unpaid(tmp_path):
@@ -179,16 +182,6 @@ def test_optional_narrative_read_is_live_scoped_and_unpaid(tmp_path):
         assert client.get("/souls/FirstSoul?include_narrative=true").json()["narrative_self"] == "I enjoy painting and walking."
     assert client.get("/souls/AbsentSoul?include_narrative=true").status_code == 409
     assert not (tmp_path / "AbsentSoul.db").exists()
-
-
-@pytest.mark.parametrize("path", ["/souls", "/integration/mentra/souls"])
-@pytest.mark.parametrize("consent", [False, True])
-def test_creation_initializes_internal_name_without_client_input(tmp_path, path, consent):
-    client, cfg = client_for(tmp_path)
-    body = {"soul_id": "NewSoul", "use_existing": consent}
-    assert client.post(path, json=body).json()["created"] is True
-    assert client.post(path, json={"soul_id": "NewSoul", "use_existing": True}).json()["created"] is False
-    assert client.get("/souls/NewSoul").json()["user_name"] == "TestOwner"
 
 
 @pytest.mark.parametrize("state", ["missing", "no_table", "no_column", "no_row", "blank"])

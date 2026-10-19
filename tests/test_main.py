@@ -7322,7 +7322,7 @@ def test_assert_user_declared_relationship_is_strict():
 
 
 @pytest.mark.asyncio
-async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous_name(tmp_path: Path):
+async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous_name():
     entities = [
         SimpleNamespace(id="a1b2c3d4", name="Taylor", entity_type="person", properties={}),
         SimpleNamespace(id="b2c3d4e5", name="Taylor", entity_type="person", properties={}),
@@ -7352,8 +7352,6 @@ async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous
     common = {
         "soul_id": "test-soul",
         "get_service_from_payload": lambda _payload: service,
-        "sqlite_current_path": lambda _uid, _sid: tmp_path / "test.db",
-        "sqlite_ensure_nonempty": lambda _path: None,
         "json_from_db": main._json_from_db,
     }
     selected = await crud_endpoints.create_relationship_endpoint(
@@ -7399,7 +7397,7 @@ async def test_relationship_create_uses_explicit_entity_id_and_rejects_ambiguous
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("active", [True, False])
-async def test_relationship_update_carries_entity_fields_in_one_repo_write(tmp_path: Path, active: bool):
+async def test_relationship_update_carries_entity_fields_in_one_repo_write(active: bool):
     entity = SimpleNamespace(
         id="a1b2c3d4",
         name="Taylor",
@@ -7428,8 +7426,6 @@ async def test_relationship_update_carries_entity_fields_in_one_repo_write(tmp_p
             "aliases": [],
         },
         get_service_from_payload=lambda _payload: service,
-        sqlite_current_path=lambda _uid, _sid: tmp_path / "test.db",
-        sqlite_ensure_nonempty=lambda _path: None,
         json_from_db=main._json_from_db,
     )
 
@@ -7443,7 +7439,7 @@ async def test_relationship_update_carries_entity_fields_in_one_repo_write(tmp_p
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("active", [True, False])
-async def test_relationship_delete_removes_only_relationship_properties(tmp_path: Path, active: bool):
+async def test_relationship_delete_removes_only_relationship_properties(active: bool):
     entity = SimpleNamespace(
         id="a1b2c3d4",
         name="Taylor",
@@ -7474,8 +7470,6 @@ async def test_relationship_delete_removes_only_relationship_properties(tmp_path
         speaker_id="entity:a1b2c3d4",
         user_id="test-user",
         get_service_from_payload=lambda _payload: service,
-        sqlite_current_path=lambda _uid, _sid: tmp_path / "test.db",
-        sqlite_ensure_nonempty=lambda _path: None,
         json_from_db=main._json_from_db,
     )
 
