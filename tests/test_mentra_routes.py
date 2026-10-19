@@ -1619,6 +1619,11 @@ def test_recall_is_sitting_scoped_read_only_compact_and_unlocked(
     }
     conversation_id, payload = calls["recalls"][0]
     assert conversation_id == conversation_sources.MENTRA_CONVERSATION_ID
+    assert payload["user"] == {
+        "user_id": START["user_id"],
+        "soul_id": START["soul_id"],
+        "conversation_id": conversation_sources.MENTRA_CONVERSATION_ID,
+    }
     assert payload["history"][0]["content"] == "A fictional current-chat line."
     assert payload["force_retrieve"] is True
     assert payload["_read_only_retrieve"] is True
