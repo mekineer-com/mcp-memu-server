@@ -6211,8 +6211,6 @@ async def test_run_memorize_segments_publishes_only_captured_producing_checkpoin
     def fake_write_conversation_state(cid: str, *, updates: dict[str, Any], **_kwargs):
         writes.append((cid, dict(updates)))
         state_rows.setdefault(cid, {}).update(updates)
-        if updates.get("rolling_summary") is None:
-            state_rows[cid]["rolling_summary"] = None
         return dict(state_rows[cid]), tmp_path / "Echo.db"
 
     for cid, initial in state_rows.items():
@@ -6296,111 +6294,11 @@ async def test_run_memorize_segments_publishes_only_captured_producing_checkpoin
     trigger_writes = [updates for cid, updates in writes if cid == "trigger" and "digest_cursor" in updates]
     assert trigger_writes[-1]["digest_cursor_source_message_id"] is None
     assert trigger_writes[-1]["digest_cursor_ts"] is None
+    assert not any(key.startswith("rolling_summary") for _cid, updates in writes for key in updates)
 
 
 @pytest.mark.asyncio
-async def test_run_memorize_segments_retains_segment_background_context_rows_without_final_cursors(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    segments_dir = tmp_path / "segments"
-    segments_dir.mkdir()
-
-    class _FakeService(SavedBatchService):
-        async def extract(self, **_kwargs):
-            return [{"pending_segment_ids": ["trigger:0-1"]}]
-
-    state_rows: dict[str, dict[str, Any]] = {
-        "trigger": {
-            "memorize_chat": True,
-            "digest_cursor": -1,
-            "pending_segment_ids": [],
-        },
-        "whatsapp:dm:bg-chat": {
-            "digest_cursor": -1,
-            "rolling_summary": "old rolled summary",
-            "rolling_summary_cursor_id": 11,
-            "rolling_summary_updated_at": "2026-05-01T00:00:00+00:00",
-        },
-    }
-    writes: list[tuple[str, dict[str, Any]]] = []
-
-    def fake_load_turn_state_and_soul_card(cid: str, **_kwargs):
-        return dict(state_rows.get(cid, {})), None, tmp_path / "Echo.db"
-
-    def fake_write_conversation_state(cid: str, *, updates: dict[str, Any], **_kwargs):
-        writes.append((cid, dict(updates)))
-        state_rows.setdefault(cid, {}).update(updates)
-        return dict(state_rows[cid]), tmp_path / "Echo.db"
-
-    main._write_conversation_state("whatsapp:dm:bg-chat", user_id="u", soul_id="s",
-        updates=state_rows["whatsapp:dm:bg-chat"])
-
-    monkeypatch.setattr(main, "_load_turn_state_and_soul_card", fake_load_turn_state_and_soul_card)
-    monkeypatch.setattr(main, "_write_conversation_state", fake_write_conversation_state)
-
-    await main._run_memorize_segments(
-        memorize_segments=[
-            (
-                "/tmp/day.json",
-                [
-                    {
-                        "role": "user",
-                        "content": "new primary",
-                        "memorize_chat": True,
-                        "source_conversation_id": "trigger",
-                        "source_conversation_index": 0,
-                    },
-                    {
-                        "role": "user",
-                        "content": "new background",
-                        "memorize_chat": False,
-                        "source_conversation_id": "whatsapp:dm:bg-chat",
-                        "source_conversation_index": 12,
-                    },
-                ],
-                0,
-                1,
-                (0, 1),
-            )
-        ],
-        svc=_FakeService(),
-        scope={"user_id": "u", "soul_id": "s"},
-        conversation_id="trigger",
-        soul_id="s",
-        uid="u",
-        processed_cursor=-1,
-        safe={
-            "_background_rolling_summaries": {
-                "whatsapp:dm:bg-chat": {
-                    "summary": "old rolled summary",
-                    "updated_at": "2026-05-01T00:00:00+00:00",
-                    "source_label": "whatsapp:dm",
-                }
-            }
-        },
-        resource_url="/tmp/day.json",
-        chat_key=None,
-        merged_len=2,
-        force=False,
-        sleep_stats=None,
-        segments_dir=segments_dir,
-    )
-
-    clear_writes = [
-        updates for cid, updates in writes
-        if cid == "whatsapp:dm:bg-chat" and "rolling_summary" in updates
-    ]
-    assert clear_writes == []
-    assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary"] == "old rolled summary"
-    assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary_cursor_id"] == 11
-    trigger_writes = [updates for cid, updates in writes if cid == "trigger" and "digest_cursor" in updates]
-    assert trigger_writes[-1]["digest_cursor_source_message_id"] is None
-    assert trigger_writes[-1]["digest_cursor_ts"] is None
-
-
-@pytest.mark.asyncio
-async def test_run_memorize_segments_fresh_background_context_does_not_write_rolling_summary(
+async def test_run_memorize_segments_without_captured_summaries_has_no_background_context_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -6427,13 +6325,11 @@ async def test_run_memorize_segments_fresh_background_context_does_not_write_rol
             "rolling_summary_updated_at": None,
         },
     }
-    writes: list[tuple[str, dict[str, Any]]] = []
 
     def fake_load_turn_state_and_soul_card(cid: str, **_kwargs):
         return dict(state_rows.get(cid, {})), None, tmp_path / "Echo.db"
 
     def fake_write_conversation_state(cid: str, *, updates: dict[str, Any], **_kwargs):
-        writes.append((cid, dict(updates)))
         state_rows.setdefault(cid, {}).update(updates)
         return dict(state_rows[cid]), tmp_path / "Echo.db"
 
@@ -6483,16 +6379,10 @@ async def test_run_memorize_segments_fresh_background_context_does_not_write_rol
 
     assert captured_segments
     assert captured_segments[0]["segment"]["segment_background_context_rows"] == []
-    rolling_summary_writes = [
-        (cid, updates)
-        for cid, updates in writes
-        if "rolling_summary" in updates or "rolling_summary_updated_at" in updates
-    ]
-    assert rolling_summary_writes == []
 
 
 @pytest.mark.asyncio
-async def test_context_only_segment_advances_cursor_without_memory_work(
+async def test_context_only_segment_preserves_background_context_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -6501,7 +6391,6 @@ async def test_context_only_segment_advances_cursor_without_memory_work(
     captured_paths: list[Path] = []
     captured_payloads: list[dict[str, Any]] = []
     recorded_calls: list[dict[str, Any]] = []
-    writes: list[tuple[str, dict[str, Any]]] = []
     state_rows = {
         "trigger": {
             "memorize_chat": True,
@@ -6533,7 +6422,6 @@ async def test_context_only_segment_advances_cursor_without_memory_work(
         return dict(state_rows.get(cid, {})), None, tmp_path / "TestSoul.db"
 
     def fake_write_conversation_state(cid: str, *, updates: dict[str, Any], **_kwargs):
-        writes.append((cid, dict(updates)))
         state_rows.setdefault(cid, {}).update(updates)
         return dict(state_rows[cid]), tmp_path / "TestSoul.db"
 
@@ -6603,14 +6491,11 @@ async def test_context_only_segment_advances_cursor_without_memory_work(
             "context_only": True,
         }
     ]
-    assert state_rows["background"]["rolling_summary_cursor_id"] == 2
-    assert state_rows["background"]["rolling_summary"] == "durable background context"
-    assert not any("rolling_summary" in updates for _cid, updates in writes)
     assert recorded_calls[-1]["pendingSegmentRetryOnly"] is True
 
 
 @pytest.mark.asyncio
-async def test_non_cross_context_only_preserves_rolling_cursor(
+async def test_non_cross_context_only_preserves_digest_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -6619,7 +6504,6 @@ async def test_non_cross_context_only_preserves_rolling_cursor(
     state = {
         "memorize_chat": True,
         "digest_cursor": 2,
-        "rolling_summary_cursor_id": 1,
         "last_memorize_at": "before",
         "pending_segment_ids": [],
     }
@@ -6664,7 +6548,6 @@ async def test_non_cross_context_only_preserves_rolling_cursor(
     )
 
     assert state["digest_cursor"] == 2
-    assert state["rolling_summary_cursor_id"] == 1
     assert state["last_memorize_at"] == "before"
     assert list(segments_dir.glob("*.json")) == []
 
