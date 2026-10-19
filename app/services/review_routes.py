@@ -369,9 +369,7 @@ def register_review_routes(
             item = None
         if item is None:
             raise HTTPException(status_code=404, detail="category not found")
-        if revision is not None:
-            item = {**item, "summaries_revision": revision}
-        return item
+        return {**item, "summaries_revision": revision}
 
 
     async def _memory_graph_category_membership(
@@ -471,6 +469,4 @@ def register_review_routes(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if item is None:
             raise HTTPException(status_code=404, detail="category not found")
-        if revision is not None:
-            item = {**item, "summaries_revision": revision}
-        return item
+        return {**item, "summaries_revision": revision}

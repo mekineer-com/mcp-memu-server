@@ -2950,12 +2950,10 @@ def _prepare_frozen_memorize(safe: dict[str, Any], uid: str, sid: str) -> bool:
                 final[cid] = checkpoint
             continue
         state, _, _ = _load_turn_state_and_soul_card(cid, user_id=uid, soul_id=sid)
-        prefix = "digest" if producing else "rolling_summary"
-        cursor = (_effective_digest_cursor_from_row(state) if producing else
-                  int(state["rolling_summary_cursor_id"]) if state.get("rolling_summary_cursor_id") is not None else -1)
+        cursor = _effective_digest_cursor_from_row(state)
         try:
-            cursor, floor, web = _resolve_source_cursor(cid, cursor, state.get(f"{prefix}_cursor_source_message_id"),
-                state.get(f"{prefix}_cursor_ts"), rolling=not producing, hermes_home_path=hermes_home)
+            cursor, floor, web = _resolve_source_cursor(cid, cursor, state.get("digest_cursor_source_message_id"),
+                state.get("digest_cursor_ts"), rolling=False, hermes_home_path=hermes_home)
             if web:
                 available = []
                 for row in rows:
