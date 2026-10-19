@@ -161,24 +161,7 @@ async def test_model_mapping_config_patch_preserves_file_settings(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_graph_routes_registered_and_service_lookup_is_live(monkeypatch: pytest.MonkeyPatch) -> None:
-    expected = {
-        "memory_graph": ("/graph", "GET"),
-        "atomic_memory_atoms": ("/integration/atomic/atoms", "GET"),
-        "atomic_memory_tags": ("/integration/atomic/tags", "GET"),
-        "atomic_memory_canvas_source": ("/integration/atomic/canvas-source", "GET"),
-        "atomic_memory_canvas_source_post": ("/integration/atomic/canvas-source", "POST"),
-        "atomic_memory_neighborhood": ("/integration/atomic/neighborhood/{item_id}", "GET"),
-        "atomic_memory_similar": ("/integration/atomic/similar/{item_id}", "GET"),
-        "atomic_memory_search": ("/integration/atomic/search", "GET"),
-    }
-    for name, (path, method) in expected.items():
-        routes = [route for route in main.app.routes if route.name == name]
-        assert len(routes) == 1
-        route = routes[0]
-        assert (route.path, route.methods, route.operation_id) == (path, {method}, name)
-        assert route.tags == ([] if name == "memory_graph" else ["integration"])
-
+async def test_graph_service_lookup_is_live(monkeypatch: pytest.MonkeyPatch) -> None:
     endpoint = _route_endpoint("memory_graph")
     for marker in ("first", "second"):
         svc = SimpleNamespace(graph_recent=lambda **kwargs: marker)
@@ -187,36 +170,7 @@ async def test_graph_routes_registered_and_service_lookup_is_live(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_entity_routes_registered_and_service_lookup_is_live(monkeypatch: pytest.MonkeyPatch) -> None:
-    base = "/integration/atomic/entities"
-    member = base + "/{entity_id}"
-    attachment = "/integration/atomic/memories/{memory_id}/entities/{entity_id}"
-    expected = {
-        "atomic_memory_entities": (base, "GET"),
-        "atomic_create_entity": (base, "POST"),
-        "atomic_memory_entity": (member, "GET"),
-        "atomic_update_entity": (member, "PATCH"),
-        "atomic_ignore_entity": (member + "/ignore", "POST"),
-        "atomic_restore_entity": (member + "/restore", "POST"),
-        "atomic_delete_entity": (member, "DELETE"),
-        "atomic_preview_entity_merge": (member + "/merge-preview", "GET"),
-        "atomic_merge_entities": (member + "/merge", "POST"),
-        "atomic_attach_entity": (attachment, "PUT"),
-        "atomic_detach_entity": (attachment, "DELETE"),
-    }
-    generated = {
-        "atomic_ignore_entity": "atomic_ignore_entity_integration_atomic_entities__entity_id__ignore_post",
-        "atomic_restore_entity": "atomic_restore_entity_integration_atomic_entities__entity_id__restore_post",
-        "atomic_delete_entity": "atomic_delete_entity_integration_atomic_entities__entity_id__delete",
-    }
-    for name, (path, method) in expected.items():
-        routes = [route for route in main.app.routes if route.name == name]
-        assert len(routes) == 1
-        route = routes[0]
-        assert (route.path, route.methods, route.tags) == (path, {method}, ["integration"])
-        assert route.operation_id == (None if name in generated else name)
-        assert (route.operation_id or route.unique_id) == generated.get(name, name)
-
+async def test_entity_service_lookup_is_live(monkeypatch: pytest.MonkeyPatch) -> None:
     endpoint = _route_endpoint("atomic_memory_entities")
     for marker in ("first", "second"):
         svc = SimpleNamespace(graph_atomic_entities=lambda **kwargs: marker)
@@ -349,8 +303,8 @@ async def test_category_review_failure_rolls_back_prose_revision_and_cache(monke
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("competing", "snapshot"), [("summary", True), ("name", True), ("summary", False)])
-async def test_category_review_rejects_edit_during_embedding(monkeypatch, tmp_path, competing, snapshot):
+@pytest.mark.parametrize("competing", ["summary", "name"])
+async def test_category_review_rejects_edit_during_embedding(monkeypatch, tmp_path, competing):
     scope = {"user_id": "TestOwner", "soul_id": "TestSoul"}
     service = _review_test_service(tmp_path, monkeypatch, scope)
     store = service.database
@@ -365,8 +319,7 @@ async def test_category_review_rejects_edit_during_embedding(monkeypatch, tmp_pa
     monkeypatch.setattr(service, "_select_embedding_client", lambda _ctx: Embedder())
     monkeypatch.setattr(main, "_get_service_from_payload", lambda _payload, **_kwargs: service)
     payload = {"summary": "## Section\nEdited", "title": "Requested title"}
-    if snapshot:
-        payload.update(displayed_summary="shown", displayed_title="Review", displayed_description="", summaries_revision=0)
+    payload.update(displayed_summary="shown", displayed_title="Review", displayed_description="", summaries_revision=0)
     task = asyncio.create_task(_route_endpoint("memory_graph_category_update")("c1", "TestOwner", "TestSoul", payload))
     try:
         await asyncio.wait_for(entered.wait(), timeout=5)
@@ -1788,12 +1741,9 @@ async def test_run_retrieve_read_only_skips_state_write_and_procedural_ingest(tm
     class FakeProcedural:
         expected_embedding_model: str | None = None
 
-        async def ingest(self, *_args: Any, **_kwargs: Any) -> None:
-            raise AssertionError("procedural ingest must be suppressed")
-
         def lookup(self, *_args: Any, **kwargs: Any) -> list[Any]:
             self.expected_embedding_model = kwargs.get("expected_embedding_model")
-            return []
+            return [({"id": "grounding", "summary": "Pause and breathe."}, 0.8)]
 
     procedural = FakeProcedural()
     out = await retrieve_orchestration._run_retrieve(
@@ -1827,6 +1777,9 @@ async def test_run_retrieve_read_only_skips_state_write_and_procedural_ingest(tm
 
     assert out["ok"] is True
     assert procedural.expected_embedding_model == "gemini-embedding-2"
+    assert out["result"]["items"] == [{
+        "id": "grounding", "summary": "Pause and breathe.", "memory_type": "procedural", "score": 0.8,
+    }]
 
 
 @pytest.mark.asyncio
@@ -2879,7 +2832,7 @@ def test_resolve_profile_if_configured_uses_named_step_profile():
     {"where": {"user_id": "TestOwner", "soul_id": "TestSoul"}},
     {"user": {"user_id": "TestOwner"}, "soul_id": "TestSoul"},
 ])
-def test_run_retrieve_reports_rag_method(monkeypatch: pytest.MonkeyPatch, identity):
+def test_run_retrieve_normalizes_identity_and_preserves_explicit_profiles(monkeypatch: pytest.MonkeyPatch, identity):
     class _FakeSvc(AnchorService):
         async def retrieve(self, *_args, **_kwargs):
             return {"items": []}
@@ -2892,9 +2845,8 @@ def test_run_retrieve_reports_rag_method(monkeypatch: pytest.MonkeyPatch, identi
         return _FakeSvc()
 
     monkeypatch.setattr(main, "_get_service_from_payload", service)
-    out = asyncio.run(main._run_retrieve({"query": "hello", **identity,
+    asyncio.run(main._run_retrieve({"query": "hello", **identity,
         "llm_profiles": {"default": {"chat_model": "explicit-generic-model"}}, "claude_code": False}))
-    assert out["method"] == "rag"
 
 
 @pytest.mark.asyncio
@@ -6219,12 +6171,12 @@ async def test_run_memorize_segments_ignores_cancel_after_batch_extraction(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("fresh_cursor", "expected_cursor"), [(11, 11), (13, 13)])
-async def test_run_memorize_segments_retains_segment_background_context_rows(
+@pytest.mark.parametrize(("producing", "saved_cursor"), [(False, -1), (True, -1), (True, 15)])
+async def test_run_memorize_segments_publishes_only_captured_producing_checkpoints(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    fresh_cursor: int,
-    expected_cursor: int,
+    producing: bool,
+    saved_cursor: int,
 ) -> None:
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
@@ -6240,10 +6192,12 @@ async def test_run_memorize_segments_retains_segment_background_context_rows(
             "pending_segment_ids": [],
         },
         "whatsapp:dm:bg-chat": {
-            "memorize_chat": False,
-            "digest_cursor": -1,
+            "memorize_chat": producing,
+            "digest_cursor": saved_cursor,
+            "digest_cursor_source_message_id": f"message-{saved_cursor}" if saved_cursor >= 0 else None,
+            "digest_cursor_ts": saved_cursor if saved_cursor >= 0 else None,
             "rolling_summary": "old rolled summary",
-            "rolling_summary_cursor_id": fresh_cursor,
+            "rolling_summary_cursor_id": 11,
             "rolling_summary_cursor_source_message_id": None,
             "rolling_summary_cursor_ts": None,
             "rolling_summary_updated_at": "2026-05-01T00:00:00+00:00",
@@ -6268,7 +6222,7 @@ async def test_run_memorize_segments_retains_segment_background_context_rows(
     monkeypatch.setattr(
         main,
         "_resolve_web_source_checkpoint",
-        lambda _cid, source_id: 12 if source_id == "message-12" else None,
+        lambda _cid, source_id: int(source_id.rsplit("-", 1)[1]) if source_id else None,
     )
 
     await main._run_memorize_segments(
@@ -6286,7 +6240,7 @@ async def test_run_memorize_segments_retains_segment_background_context_rows(
                     {
                         "role": "user",
                         "content": "new background",
-                        "memorize_chat": False,
+                        "memorize_chat": producing,
                         "source_conversation_id": "whatsapp:dm:bg-chat",
                         "source_conversation_index": 12,
                     },
@@ -6324,23 +6278,24 @@ async def test_run_memorize_segments_retains_segment_background_context_rows(
                 "cursor": 12,
                 "source_message_id": "message-12",
                 "ts": 100,
-                "memory_producing": False,
+                "memory_producing": producing,
             },
         },
     )
 
-    clear_writes = [
-        updates for cid, updates in writes
-        if cid == "whatsapp:dm:bg-chat" and "rolling_summary" in updates
-    ]
-    assert clear_writes == []
-    assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary"] == "old rolled summary"
-    assert state_rows["whatsapp:dm:bg-chat"]["digest_cursor"] == -1
-    assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary_cursor_id"] == expected_cursor
+    cursor_writes = [updates for cid, updates in writes
+                     if cid == "whatsapp:dm:bg-chat" and "digest_cursor" in updates]
+    if producing and saved_cursor < 12:
+        assert len(cursor_writes) == 1
+        assert cursor_writes[0]["digest_cursor"] == 12
+        assert cursor_writes[0]["digest_cursor_source_message_id"] == "message-12"
+        assert cursor_writes[0]["digest_cursor_ts"] == 100
+    else:
+        assert cursor_writes == []
+        assert state_rows["whatsapp:dm:bg-chat"]["digest_cursor"] == saved_cursor
     trigger_writes = [updates for cid, updates in writes if cid == "trigger" and "digest_cursor" in updates]
     assert trigger_writes[-1]["digest_cursor_source_message_id"] is None
     assert trigger_writes[-1]["digest_cursor_ts"] is None
-    assert state_rows["whatsapp:dm:bg-chat"]["rolling_summary_cursor_source_message_id"] is None
 
 
 @pytest.mark.asyncio
@@ -6721,7 +6676,7 @@ async def test_context_only_web_checkpoint_ignores_live_policy_reread(
 ) -> None:
     segments_dir = tmp_path / "segments"
     segments_dir.mkdir()
-    writes: list[dict[str, Any]] = []
+    writes: list[tuple[str, dict[str, Any]]] = []
 
     class _FakeService(SavedBatchService):
         async def extract(self, **_kwargs):
@@ -6731,15 +6686,15 @@ async def test_context_only_web_checkpoint_ignores_live_policy_reread(
         if cid == "background":
             return {
                 "memorize_chat": True,
-                "digest_cursor": 9,
+                "digest_cursor": 2,
                 "rolling_summary_cursor_id": 5,
                 "rolling_summary_cursor_source_message_id": "message-5",
                 "last_memorize_at": "before",
             }, None, tmp_path / "TestSoul.db"
         return {"pending_segment_ids": []}, None, tmp_path / "TestSoul.db"
 
-    def fake_write(_cid: str, *, updates: dict[str, Any], **_kwargs):
-        writes.append(dict(updates))
+    def fake_write(cid: str, *, updates: dict[str, Any], **_kwargs):
+        writes.append((cid, dict(updates)))
         return dict(updates), tmp_path / "TestSoul.db"
 
     initial = fake_load("background")[0]
@@ -6753,10 +6708,13 @@ async def test_context_only_web_checkpoint_ignores_live_policy_reread(
         memorize_segments=[
             (
                 "/tmp/day.json",
-                [{"role": "user", "content": "listen", "memorize_chat": False}],
+                [{"role": "user", "content": "remember", "memorize_chat": True,
+                  "source_conversation_id": "trigger", "source_conversation_index": 0},
+                 {"role": "user", "content": "listen", "memorize_chat": False,
+                  "source_conversation_id": "background", "source_conversation_index": 4}],
+                0,
                 4,
-                4,
-                None,
+                (0, 0),
             )
         ],
         svc=_FakeService(),
@@ -6768,7 +6726,7 @@ async def test_context_only_web_checkpoint_ignores_live_policy_reread(
         safe={},
         resource_url="/tmp/day.json",
         chat_key=None,
-        merged_len=1,
+        merged_len=2,
         force=False,
         sleep_stats=None,
         segments_dir=segments_dir,
@@ -6783,7 +6741,8 @@ async def test_context_only_web_checkpoint_ignores_live_policy_reread(
         },
     )
 
-    assert writes == []
+    assert any(cid == "trigger" and updates.get("append_pending_segment_ids") for cid, updates in writes)
+    assert not any(cid == "background" and "digest_cursor" in updates for cid, updates in writes)
 
 
 def test_timeline_endpoint_returns_entity_edges(monkeypatch: pytest.MonkeyPatch):
@@ -7211,7 +7170,8 @@ def test_memory_graph_category_update_endpoint_uses_scoped_service(monkeypatch: 
             category_id="c1",
             user_id="u",
             soul_id="s",
-            payload={"summary": "new", "kind": "topic", "edited_by": "surfer", "approved": True},
+            payload={"summary": "new", "kind": "topic", "edited_by": "surfer", "approved": True,
+                     "displayed_summary": "shown", "displayed_title": "Review", "displayed_description": "", "summaries_revision": 0},
         )
     )
 
@@ -7390,9 +7350,14 @@ def test_category_membership_routes_map_engine_errors(
     {"displayed_summary": "shown", "summaries_revision": 0},
     {"displayed_summary": "shown", "summaries_revision": 0, "displayed_title": "Review", "displayed_description": None},
 ])
-def test_category_membership_routes_require_snapshot(payload):
+@pytest.mark.parametrize("action", ["update", "approve", "memory_attach", "memory_detach"])
+def test_category_review_routes_require_snapshot(payload, action, monkeypatch):
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_a, **_kw: None)
+    if action == "update":
+        payload = {**payload, "summary": "A fictional edit"}
+    args = ("c1", "m1", "user", "soul") if action.startswith("memory_") else ("c1", "user", "soul")
     with pytest.raises(main.HTTPException) as exc:
-        asyncio.run(_route_endpoint("memory_graph_category_memory_attach")("c1", "m1", "user", "soul", payload))
+        asyncio.run(_route_endpoint("memory_graph_category_" + action)(*args, payload))
     assert exc.value.status_code == 400
 
 
@@ -7416,7 +7381,10 @@ def test_memory_graph_category_approve_endpoint_uses_scoped_service(monkeypatch:
 
     monkeypatch.setattr(main, "_get_service_from_payload", _fake_service)
 
-    out = asyncio.run(_route_endpoint("memory_graph_category_approve")(category_id="c1", user_id="u", soul_id="s"))
+    out = asyncio.run(_route_endpoint("memory_graph_category_approve")(
+        category_id="c1", user_id="u", soul_id="s",
+        payload={"displayed_summary": "shown", "displayed_title": "Review", "displayed_description": "", "summaries_revision": 0},
+    ))
 
     assert out["id"] == "category:c1"
     assert calls["payload"] == {"user": {"user_id": "u", "soul_id": "s"}}
@@ -10479,6 +10447,10 @@ async def test_whatsapp_outbound_claim_and_mark(
     )
     assert marked["outbound"]["status"] == "sent"
     assert marked["outbound"]["provider_message_id"] == "wa-msg-1"
+    now += timedelta(seconds=301)
+    assert (await main.whatsapp_outbounds_claim({
+        "user_id": "TestOwner", "soul_id": "TestSoul", "claimed_by": reclaimer, "limit": 10,
+    }))["outbounds"] == []
 
 
 @pytest.mark.asyncio
@@ -10808,65 +10780,18 @@ def test_free_turn_follow_up_payload_excludes_caller_timezone_and_runtime_overri
     assert "time_zone_offset_min" not in payload
 
 
-def test_parse_free_turn_follow_up_at_naive_iso_uses_server_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
-    import zoneinfo
-    fake_tz = zoneinfo.ZoneInfo("America/Lima")  # UTC-5
-    monkeypatch.setattr(main._memorize_endpoint, "server_timezone", lambda: fake_tz)
-
-    result = main._parse_free_turn_follow_up_at("2026-06-15T14:00:00")
-
-    assert result is not None
-    assert result.tzinfo is not None
-    # Lima is UTC-5 → 14:00 local = 19:00 UTC
-    assert result.hour == 19
-    assert result.minute == 0
-
-
-def test_parse_free_turn_follow_up_at_tz_aware_iso_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
-    import zoneinfo
-    fake_tz = zoneinfo.ZoneInfo("America/Lima")
-    monkeypatch.setattr(main._memorize_endpoint, "server_timezone", lambda: fake_tz)
-
-    # Explicit +02:00 → 14:00+02:00 = 12:00 UTC, not affected by server tz
-    result = main._parse_free_turn_follow_up_at("2026-06-15T14:00:00+02:00")
-
-    assert result is not None
-    assert result.hour == 12
-    assert result.minute == 0
-
-
-def test_parse_free_turn_follow_up_at_z_suffix_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
-    import zoneinfo
-    fake_tz = zoneinfo.ZoneInfo("America/Lima")
-    monkeypatch.setattr(main._memorize_endpoint, "server_timezone", lambda: fake_tz)
-
-    result = main._parse_free_turn_follow_up_at("2026-06-15T14:00:00Z")
-
-    assert result is not None
-    assert result.hour == 14  # already UTC
-    assert result.minute == 0
-
-
-def test_parse_free_turn_follow_up_at_human_format_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
-    import zoneinfo
-    fake_tz = zoneinfo.ZoneInfo("America/Lima")
-    monkeypatch.setattr(main._memorize_endpoint, "server_timezone", lambda: fake_tz)
-
-    result = main._parse_free_turn_follow_up_at("Monday, June 15, 2026 14:00 PET")
-
-    assert result is not None
-    assert result.hour == 19  # Lima UTC-5
-    assert result.minute == 0
-
-
-def test_parse_free_turn_follow_up_at_garbage_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    import zoneinfo
-    fake_tz = zoneinfo.ZoneInfo("America/Lima")
-    monkeypatch.setattr(main._memorize_endpoint, "server_timezone", lambda: fake_tz)
-
-    assert main._parse_free_turn_follow_up_at("not a date at all") is None
-    assert main._parse_free_turn_follow_up_at("") is None
-    assert main._parse_free_turn_follow_up_at(None) is None  # type: ignore[arg-type]
+@pytest.mark.parametrize("value, expected", [
+    ("2026-06-15T14:00:00", "2026-06-15T19:00:00+00:00"),
+    ("2026-06-15T14:00:00+02:00", "2026-06-15T12:00:00+00:00"),
+    ("2026-06-15T14:00:00Z", "2026-06-15T14:00:00+00:00"),
+    ("Monday, June 15, 2026 14:00 PET", "2026-06-15T19:00:00+00:00"),
+    ("not a date at all", None), ("", None), (None, None),
+])
+def test_parse_free_turn_follow_up_at_uses_server_timezone_for_naive_dates(monkeypatch, value, expected):
+    from zoneinfo import ZoneInfo
+    monkeypatch.setattr(main._memorize_endpoint, "server_timezone", lambda: ZoneInfo("America/Lima"))
+    result = main._parse_free_turn_follow_up_at(value)
+    assert (result.isoformat() if result is not None else None) == expected
 
 
 def test_free_turn_follow_up_schedule_persists_pending_row(

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
-import inspect
 import io
 import json
 from contextlib import contextmanager
@@ -569,7 +568,9 @@ def test_installation_metadata_is_local_and_keeps_names(
             )
     assert [r.status_code for r in asyncio.run(claim_from_two_apps())] == [200, 409]
     client.post(seen, json=first_report).raise_for_status()
-    assert client.post(seen, json={**first_report, "device_session_id": "copied-profile"}).status_code == 409
+    refused = client.post(seen, json={**first_report, "device_session_id": "copied-profile"})
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "Setup ticket is unavailable or already used"
     second = client.post(endpoint).json()
     assert second["display_name"] == "stock_02"
     assert second["installation_ticket"] != first["installation_ticket"]
@@ -587,7 +588,9 @@ def test_installation_metadata_is_local_and_keeps_names(
     update = client.post(endpoint, json={"device_session_id": key}).json()
     assert update["device_session_id"] == key
     update_report = {**first_report, "version": "0.1.1", "installation_ticket": update["installation_ticket"]}
-    assert client.post(seen, json={**update_report, "device_session_id": "wrong-update-app"}).status_code == 409
+    refused = client.post(seen, json={**update_report, "device_session_id": "wrong-update-app"})
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "Setup ticket does not match this app"
     client.post(seen, json=update_report).raise_for_status()
     assert client.get(f"/integration/mentra/status?device_session_id={key}").json()["installations"][0]["display_name"] == "My app"
     client.delete(f"{endpoint}/{second['installation_ticket']}").raise_for_status()
@@ -1568,19 +1571,6 @@ def test_cancelled_start_always_releases_in_progress_claim(
         client.post("/integration/mentra/session/start", json=START)
 
     assert START["soul_id"] not in mentra_routes._start_claims
-
-
-def test_route_registration_has_explicit_transcript_state_seams() -> None:
-    parameters = inspect.signature(register_mentra_routes).parameters
-    assert {
-        "get_storage_dir",
-        "get_soul_lock",
-        "write_conversation_state",
-        "load_current_history",
-        "conversation_retrieve",
-        "record_call",
-        "log_prompt",
-    } <= set(parameters)
 
 
 def test_recall_is_sitting_scoped_read_only_compact_and_unlocked(

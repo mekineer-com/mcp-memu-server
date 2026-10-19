@@ -4,19 +4,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-try:
-    from memu.app.settings import DefaultUserModel
-    from memu.database.models import Triple
-    from memu.database.sqlite.sqlite import SQLiteStore
-    _AVAILABLE = True
-except Exception:
-    _AVAILABLE = False
+from memu.app.settings import DefaultUserModel
+from memu.database.models import Triple
+from memu.database.sqlite.sqlite import SQLiteStore
 
 
 @pytest.fixture()
 def repo():
-    if not _AVAILABLE:
-        pytest.skip("memu not importable")
     # DefaultUserModel (user_id: str | None) is the minimal scope model that
     # avoids the MRO conflict in build_sqlite_table_model.
     return SQLiteStore(dsn="sqlite:///:memory:", scope_model=DefaultUserModel).triple_repo

@@ -772,7 +772,7 @@ def test_preview_counts_stored_display_and_cross_context_without_calls_or_insert
     first = validate(preview)
     assert f"- attachment: absolute path inside {workspace}/" in systems[-1]
     assert first["processed_start_day"] == first["processed_end_day"] == "2025-01-01"
-    assert first["ok"] and prompts[-1].count("[TestSpeaker] stored 2") == 1
+    assert first["ok"] and prompts[-1].count("[TestHuman] stored 2") == 1
     assert "another chat" in prompts[-1] and "sitting recap" in prompts[-1]
     assert "My Nomi Conversations:" in prompts[-1] and "Known dossier index" in prompts[-1]
     assert "Prior Context:" in prompts[-1] and "Current pending memory wording" in prompts[-1]

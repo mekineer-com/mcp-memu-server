@@ -89,11 +89,9 @@ def register_review_routes(
         return revision, displayed
 
 
-    def _category_snapshot(payload: Mapping[str, Any]) -> tuple[int, str, str, str] | None:
+    def _category_snapshot(payload: Mapping[str, Any]) -> tuple[int, str, str, str]:
         snapshot = _summary_snapshot(payload)
         fields = ("displayed_title", "displayed_description")
-        if snapshot is None and not any(field in payload for field in fields):
-            return None
         if snapshot is None or any(not isinstance(payload.get(field), str) for field in fields):
             raise HTTPException(status_code=400, detail="complete category snapshot is required")
         return (snapshot[0], snapshot[1].strip(), payload["displayed_title"].strip(), payload["displayed_description"].strip())
@@ -117,7 +115,7 @@ def register_review_routes(
 
 
     @contextmanager
-    def _category_review_write(svc: Any, category_id: str, scope: dict[str, str], snapshot: tuple[int, str, str, str] | None):
+    def _category_review_write(svc: Any, category_id: str, scope: dict[str, str], snapshot: tuple[int, str, str, str]):
         raw_id = category_id.removeprefix("category:")
         session_cm = svc._sqlite_write_session(svc.database)
         if session_cm is None:
@@ -135,18 +133,16 @@ def register_review_routes(
                 ).get(raw_id)
                 if current is None:
                     raise HTTPException(status_code=404, detail="category not found")
-                revision = None
-                if snapshot is not None:
-                    if (
-                        str(current.summary or current.description or "") != snapshot[1]
-                        or current.name != snapshot[2]
-                        or (current.description or "") != snapshot[3]
-                    ):
-                        raise HTTPException(status_code=409, detail="summary_snapshot_stale")
-                    try:
-                        revision = _soul_summaries.reserve_revision(con, snapshot[0])
-                    except ValueError as exc:
-                        raise HTTPException(status_code=409, detail="summary_snapshot_stale") from exc
+                if (
+                    str(current.summary or current.description or "") != snapshot[1]
+                    or current.name != snapshot[2]
+                    or (current.description or "") != snapshot[3]
+                ):
+                    raise HTTPException(status_code=409, detail="summary_snapshot_stale")
+                try:
+                    revision = _soul_summaries.reserve_revision(con, snapshot[0])
+                except ValueError as exc:
+                    raise HTTPException(status_code=409, detail="summary_snapshot_stale") from exc
                 yield session, revision
                 con.row_factory = previous_row_factory
                 session.commit()
@@ -353,8 +349,8 @@ def register_review_routes(
         if category_kind is not None and category_kind not in {"lore", "topic", "goal"}:
             raise HTTPException(status_code=400, detail="kind must be lore, topic, or goal")
         scope = {"user_id": uid, "soul_id": sid}
-        svc = get_service({"user": scope})
         snapshot = _category_snapshot(payload)
+        svc = get_service({"user": scope})
         try:
             prepared = await svc.prepare_graph_category_update(
                 category_id, summary=summary, title=title, description=description,
@@ -392,8 +388,6 @@ def register_review_routes(
         if not uid or not sid:
             raise HTTPException(status_code=400, detail="user_id and soul_id are required")
         snapshot = _category_snapshot(payload)
-        if snapshot is None:
-            raise HTTPException(status_code=400, detail="summary snapshot is required")
         scope = {"user_id": uid, "soul_id": sid}
         svc = get_service({"user": scope})
         raw_category_id = category_id.removeprefix("category:")
@@ -458,8 +452,8 @@ def register_review_routes(
         if not uid or not sid:
             raise HTTPException(status_code=400, detail="user_id and soul_id are required")
         scope = {"user_id": uid, "soul_id": sid}
-        svc = get_service({"user": scope})
         snapshot = _category_snapshot(payload or {})
+        svc = get_service({"user": scope})
         try:
             kind, _, raw_id = str(category_id or "").partition(":")
             if not raw_id:

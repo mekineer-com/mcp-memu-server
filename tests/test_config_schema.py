@@ -268,6 +268,10 @@ def test_model_mapping_masks_every_nested_profile_without_mutating_config() -> N
     assert masked["llm"]["embedding"]["api_key"] == "***"
     assert cfg["llm"]["step_models"]["memory_extract"]["api_key"] == "step-secret"
     assert masked["mentra"]["gemini_api_key"] == "***"
+    unmasked_llm = app_config.mask_config(cfg, include_llm_secret=True)
+    assert unmasked_llm["llm"]["api_key"] == cfg["llm"]["api_key"]
+    assert unmasked_llm["mentra"]["gemini_api_key"] == "***"
+    assert app_config.mask_config({"llm": {"api_key": ""}})["llm"]["api_key"] == ""
 
 
 @pytest.mark.parametrize("secret", ["***", "abcd...wxyz"])

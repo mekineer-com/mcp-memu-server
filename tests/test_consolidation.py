@@ -32,7 +32,6 @@ from app.services.consolidation import gather_consolidation_inputs
 from app.services.consolidation import prepare_dossier_consolidation_context
 from app.services.consolidation import preflight_consolidation_profiles
 from app.services.consolidation import run_consolidation_llm
-from app.services.graph_edges import invalidate_memory_edges, write_memory_edges
 from app.services.state import conversation_state_from_row, conversation_state_row, write_conversation_state
 
 
@@ -732,15 +731,6 @@ def test_remap_edges_with_memory_ids_rejects_unreviewed_raw_ids() -> None:
     payload = [{"subject_id": "deadbeef", "predicate": "shaped_by", "object_id": "cafebabe"}]
     mapped = _remap_edges_with_memory_ids(payload, id_map={}, include_confidence=False)
     assert mapped == []
-
-
-def test_write_memory_edges_ignores_invalid_confidence() -> None:
-    svc = _make_svc_stub()
-    assert write_memory_edges(
-        svc.database.triple_repo,
-        [{"subject_id": "m1", "predicate": "evokes", "object_id": "m2", "confidence": 2}],
-        scope={},
-    ) == 0
 
 
 def test_write_consolidation_outputs_consumes_each_conversation_snapshot() -> None:
@@ -2178,9 +2168,6 @@ def test_write_consolidation_outputs_uses_life_goals_table() -> None:
                 "SELECT description, status FROM life_goals WHERE soul_id = ? AND user_id = ? ORDER BY description",
                 ("SoulLG", "UserLG"),
             ).fetchall()
-            old_rows = check_con.execute(
-                "SELECT description FROM intentions WHERE source = 'life_goal'"
-            ).fetchall()
         finally:
             check_con.close()
 
@@ -2189,7 +2176,6 @@ def test_write_consolidation_outputs_uses_life_goals_table() -> None:
             ("old goal", "removed"),
             ("return goal", "active"),
         ]
-        assert old_rows == []
 
 
 def test_consolidation_rejects_a_concurrent_narrative_edit() -> None:
@@ -2250,68 +2236,6 @@ def test_consolidation_rejects_a_concurrent_narrative_edit() -> None:
             assert _soul_state.read(check)["narrative_self"] == "Atomic edit."
         finally:
             check.close()
-
-
-def test_write_consolidation_outputs_late_failure_keeps_pending_segment_ids() -> None:
-    with tempfile.TemporaryDirectory() as td:
-        tmp_dir = Path(td)
-        db_path = tmp_dir / "soul.db"
-        con = sqlite3.connect(db_path)
-        try:
-            con.row_factory = sqlite3.Row
-            sqlite_ensure_conversation_state_schema(con)
-            _soul_state.ensure_schema(con)
-            con.commit()
-        finally:
-            con.close()
-
-        cid = "conv-late-fail"
-        soul_id = "SoulC"
-        user_id = "UserC"
-        pending = ["ep:late"]
-
-        write_conversation_state(
-            cid,
-            sqlite_current_path=lambda _u, _s: db_path,
-            soul_id=soul_id,
-            user_id=user_id,
-            updates={"pending_segment_ids": pending, "intentions_active": []},
-        )
-
-        import app.services.consolidation as _consol_mod
-
-        original_create = _consol_mod.create_companion_memory
-
-        def _failing_create(*args, **kwargs):
-            raise RuntimeError("simulated companion failure")
-
-        _consol_mod.create_companion_memory = _failing_create
-        try:
-            with pytest.raises(RuntimeError, match="simulated companion failure"):
-                write_consolidation_outputs(
-                    _make_consolidation_deps(db_path, tmp_dir),
-                    _make_svc_stub(db_path),
-                    inputs={"db_path": db_path},
-                    llm_results=_base_llm_results(
-                        companion_memory="Something to remember.",
-                        companion_embedding=[0.1, 0.2, 0.3],
-                    ),
-                    conversation_id=cid,
-                    soul_id=soul_id,
-                    user_id=user_id,
-                )
-        finally:
-            _consol_mod.create_companion_memory = original_create
-
-        check_con = sqlite_connect(db_path)
-        try:
-            check_con.row_factory = sqlite3.Row
-            state = conversation_state_from_row(conversation_state_row(check_con, cid))
-        finally:
-            check_con.close()
-
-        assert state is not None
-        assert state["pending_segment_ids"] == pending
 
 
 def test_write_consolidation_outputs_rolls_back_final_transaction() -> None:

@@ -1,4 +1,4 @@
-"""Shared edge normalization and consolidation write/invalidate helpers.
+"""Consolidation write/invalidate helpers for already-validated edges.
 
 Confidence convention:
 - If no AI judged the confidence, the field is left NULL.  No fallback.  Mechanical
@@ -8,57 +8,16 @@ Confidence convention:
 """
 from __future__ import annotations
 
-import logging
-import math
 from collections.abc import Mapping
 from typing import Any
 
 from memu.database.models import Triple
 
 ALLOWED_EDGE_PREDICATES = {"caused_by", "evokes", "conflicts_with", "parallels", "shaped_by"}
-log = logging.getLogger(__name__)
-
-
-def _normalize_edges(payload: Any) -> list[dict[str, Any]]:
-    if not isinstance(payload, list):
-        return []
-    out: list[dict[str, Any]] = []
-    for entry in payload:
-        if not isinstance(entry, dict):
-            log.warning("memory edge ignored: expected an object")
-            continue
-        subject_id = str(entry.get("subject_id") or "").strip()
-        predicate = str(entry.get("predicate") or "").strip()
-        object_id = str(entry.get("object_id") or "").strip()
-        if not subject_id or not object_id or predicate not in ALLOWED_EDGE_PREDICATES:
-            log.warning("memory edge ignored: missing endpoint or invalid predicate")
-            continue
-        confidence_raw = entry.get("confidence")
-        if confidence_raw is None:
-            confidence: float | None = None
-        else:
-            try:
-                confidence = float(confidence_raw)
-            except (TypeError, ValueError):
-                log.warning("memory edge ignored: invalid confidence")
-                continue
-            if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
-                log.warning("memory edge ignored: confidence outside 0..1")
-                continue
-        out.append(
-            {
-                "subject_id": subject_id,
-                "predicate": predicate,
-                "object_id": object_id,
-                "confidence": confidence,
-            }
-        )
-    return out
 
 
 def write_memory_edges(triple_repo: Any, payload: Any, *, scope: Mapping[str, Any], session: Any | None = None) -> int:
-    edges = _normalize_edges(payload)
-    for edge in edges:
+    for edge in payload:
         subject_id = edge["subject_id"]
         triple_repo.add(
             Triple(
@@ -67,17 +26,16 @@ def write_memory_edges(triple_repo: Any, payload: Any, *, scope: Mapping[str, An
                 predicate=edge["predicate"],
                 object_id=edge["object_id"],
                 object_kind="memory",
-                confidence=edge["confidence"],
+                confidence=edge.get("confidence"),
                 source_memory_id=subject_id,
             ),
             user_data=scope,
             session=session,
         )
-    return len(edges)
+    return len(payload)
 
 
 def invalidate_memory_edges(triple_repo: Any, payload: Any, *, scope: Mapping[str, Any], session: Any | None = None) -> int:
-    edges = _normalize_edges(payload)
-    for edge in edges:
+    for edge in payload:
         triple_repo.invalidate(edge["subject_id"], edge["predicate"], edge["object_id"], scope=scope, session=session)
-    return len(edges)
+    return len(payload)
