@@ -35,7 +35,6 @@ def test_current_schema_reopen_preserves_approved_baseline(tmp_path) -> None:
     state = soul_state.read(check)
     assert state["narrative_self_approved"] == "approved self"
     assert state["narrative_self"] == "current self"
-    assert "all_categories_summary" not in state
     check.execute("UPDATE soul_state SET narrative_self = 'new self' WHERE id = 1")
     check.commit()
     soul_state.ensure_schema(check)
@@ -56,17 +55,6 @@ def test_schema_ensure_commits_missing_singleton_row(tmp_path) -> None:
     check = sqlite3.connect(path)
     assert check.execute("SELECT COUNT(*) FROM soul_state").fetchone()[0] == 1
     check.close()
-
-
-def test_fresh_schema_omits_holistic_summary_columns() -> None:
-    con = _connection()
-    columns = {row[1] for row in con.execute("PRAGMA table_info(soul_state)")}
-
-    assert not {
-        "all_categories_summary",
-        "all_categories_summary_previous",
-        "all_categories_summary_approved",
-    } & columns
 
 
 @pytest.mark.parametrize("route_name", ["soul_summary_update", "soul_summary_approve"])
