@@ -129,7 +129,7 @@ def load_import_tail(
         if historical:
             params += (record["history_end_index"],)
         columns = ("position, supplied_id, timestamp, source_day, ts_ms, speaker, role, content, historical, "
-                   "(json_type(raw_json, '$.role') IS NULL AND json_extract(raw_json, '$.meta.nature') = 'Customer') AS owner_speaker")
+                   "(role = 'user') AS owner_speaker")
         selected = con.execute(
             f"SELECT {columns} FROM imported_messages WHERE chat_id = ? AND historical = ? AND position > ?"
             + bound + " ORDER BY position", params,

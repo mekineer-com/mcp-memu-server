@@ -86,7 +86,7 @@ def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path
     from datetime import UTC, datetime
     from app import main
     from app.db import sqlite_ensure_conversation_state_schema
-    from app.services.payload import _normalize_conversation
+    from app.services.payload import _label_owner_messages, _normalize_conversation
     from app.services.segment import _message_happened_at
     from memu.app.memorize_parsing import _extract_message_happened_at_map
     from memu.app.memorize_speakers import _build_speaker_map, _attribute_memory
@@ -130,8 +130,11 @@ def test_sql_import_mixed_upload_keeps_registered_modes_and_source_days(tmp_path
     memory = StructuredMemoryEntry("social", "TestSpeaker shared a thought", [], "peer", None, [0], None)
     attributed = _attribute_memory(memory, speaker_map)
     assert attributed.speaker_id is None and attributed.speaker_label is None
-    assert _build_speaker_map(normalized, scope) == {i: ("", "TestSpeaker") for i in range(len(normalized))}
-    assert _build_speaker_map([{**normalized[0], "name": ""}], scope)[0][0] == ""
+    assert normalized[0]["source_owner_id"] == "TestOwner"
+    assert speaker_map == {i: ("user:testowner", "TestSpeaker") for i in range(len(normalized))}
+    owner_map = _build_speaker_map(_label_owner_messages(normalized, user_id="TestOwner", user_name="TestOwner"), scope)
+    owner_memory = _attribute_memory(memory._replace(source_role="user"), owner_map)
+    assert owner_memory.speaker_id == "user:testowner" and owner_memory.speaker_label == "TestOwner"
     assert normalized[0]["role"] == "user"
     assert _message_happened_at(normalized[0]).date().isoformat() == "2025-01-01"
     assert _extract_message_happened_at_map(json.dumps(normalized))[0].date().isoformat() == "2025-01-01"

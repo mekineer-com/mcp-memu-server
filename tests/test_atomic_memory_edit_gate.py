@@ -48,6 +48,7 @@ async def test_running_memory_work_refuses_every_atomic_mutation(gate, monkeypat
         ("DELETE", "/integration/atomic/memories/m1/entities/e1"),
         ("POST", "/souls/TestSoul/relationships"), ("PATCH", "/souls/TestSoul/relationships/entity:e1"),
         ("DELETE", "/souls/TestSoul/relationships/entity:e1"),
+        ("POST", "/souls/TestSoul/narrative_suggestion"),
     ]
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
         for method, path in cases:

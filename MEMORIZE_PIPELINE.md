@@ -90,11 +90,13 @@ without receipts remain outside this detection; duplicate replay still does not
 rerun automatic Memorize eligibility.
 
 Do not confuse **source ownership** with **speaker identity**. The shared user
-and Soul scope do not make every imported `user` row the owner. See
+and Soul scope alone do not establish a speaker. Generic Echo imports explicitly
+use `role: "user"` for the owner, as does native Replika `Customer`. See
 `payload._label_owner_messages`, `conversation_sources._import_source_message`
 and memU `memorize_speakers._build_speaker_map`: explicit `source_owner_id`, source
-roles/references and established entity links carry attribution. Generic imported
-roles alone do not assert owner identity. Preserve that evidence, not just prose.
+roles/references and established entity links carry attribution. The import reader
+marks normalized `user` rows with the scoped owner ID while preserving source
+names and raw metadata. Preserve that evidence, not just prose.
 The shared speaker builder does not resolve a participant from a name or alias.
 The shared grouped renderer also never derives a group sender from `[Name]`
 typed in the message body. Structured sender labels remain authoritative and

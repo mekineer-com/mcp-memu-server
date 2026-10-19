@@ -879,22 +879,22 @@ async def _trace_requests(request: Request, call_next):
             )
 
         edit_marker = None
-        relationship = re.fullmatch(r"/souls/([^/]+)/relationships(?:/[^/]+)?", path)
+        soul_write = re.fullmatch(r"/souls/([^/]+)/(?:relationships(?:/[^/]+)?|narrative_suggestion)", path)
         if request.method in {"POST", "PUT", "PATCH", "DELETE"} and (
             path.startswith(("/memory/", "/category/", "/soul-summary/",
                              "/integration/atomic/entities/", "/integration/atomic/memories/"))
             or path in {"/integration/atomic/entities", "/integration/atomic/memories"}
-            or relationship is not None
+            or soul_write is not None
         ):
             scope = request.query_params
-            if path == "/integration/atomic/memories" or (relationship and request.method != "DELETE"):
+            if path == "/integration/atomic/memories" or (soul_write and request.method != "DELETE"):
                 try:
                     body = await request.json()
                 except ValueError:
                     body = None
                 scope = body if isinstance(body, dict) else {}
             uid = str(scope.get("user_id") or "").strip()
-            sid = str(relationship.group(1) if relationship else scope.get("soul_id") or "").strip()
+            sid = str(soul_write.group(1) if soul_write else scope.get("soul_id") or "").strip()
             if uid and sid:
                 try:
                     marker = _memorize_lock_key(uid, sid)
