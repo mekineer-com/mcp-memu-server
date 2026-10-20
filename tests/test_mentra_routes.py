@@ -3237,6 +3237,9 @@ def test_image_transcript_event_round_trips_media_reference(
                       {"mic_source": "phone"}, {"content": " "}):
             assert client.post(endpoint, json={**scope, "events": [{**event, **patch}]}).status_code == 422
         assert history[0]["content"] == "[Internal visual perception; not spoken aloud] " + event["content"]
+        from memu.utils.conversation import format_grouped_chat_history
+        rendered = format_grouped_chat_history(history, soul_name=scope["soul_id"])
+        assert history[0]["content"] in rendered
         raw = conversation_sources.load_mentra_history_snapshot(
             storage_dir=tmp_path, **scope, conversation_id="mentra:iris",
         )
