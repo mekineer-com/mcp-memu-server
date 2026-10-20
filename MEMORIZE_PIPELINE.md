@@ -408,9 +408,8 @@ The scoped filing receipt owns idempotency, so lost-ack replay survives
 removed/replaced history and conflicting later captions cannot overwrite accepted
 ownership. New receipts use server receipt time for `source_timestamp`; replay
 retains that time and caption. Iris journals `${sessionId}:photo:${imageId}` before
-finalize and appends the assistant `photo_caption` timeline event separately/later
-with its ordinary sitting/sequence ID, so unresolved speech reservations cannot
-block photo filing. The fifth NON_BLOCKING Live tool,
+finalize and appends the assistant `photo_caption` timeline event separately/later,
+so unresolved speech reservations cannot block photo filing. The fifth NON_BLOCKING Live tool,
 `save_photo_caption(image_id, caption)`, requests that existing handoff, not another
 worker. Snapshot replay exposes an optional `filing` containing only `caption`,
 `caption_event_id` and `status` after checking owner/Soul/image/media identity;
