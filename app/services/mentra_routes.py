@@ -78,7 +78,6 @@ _TOKEN_SETUP_FIELD_MASK = ",".join(
         "inputAudioTranscription",
         "outputAudioTranscription",
         "contextWindowCompression",
-        "proactivity",
         "historyConfig",
     )
 )
@@ -666,7 +665,6 @@ async def _mint_gemini_token(
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
         "contextWindowCompression": {"slidingWindow": {}},
-        "proactivity": {"proactiveAudio": False},
         "historyConfig": {},
     }
     body = json.dumps(
@@ -1275,7 +1273,7 @@ def register_mentra_routes(
             "voice": voice,
             "ephemeral_token": token,
             "websocket": {
-                "api_version": "v1alpha",
+                "api_version": "v1beta",
                 "method": "BidiGenerateContentConstrained",
                 "input_audio_rate_hz": 16000,
                 "output_audio_rate_hz": 24000,

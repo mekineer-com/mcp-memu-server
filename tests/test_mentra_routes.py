@@ -870,7 +870,7 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
         "voice": "Kore",
         "ephemeral_token": "ephemeral-1",
         "websocket": {
-            "api_version": "v1alpha",
+            "api_version": "v1beta",
             "method": "BidiGenerateContentConstrained",
             "input_audio_rate_hz": 16000,
             "output_audio_rate_hz": 24000,
@@ -3200,7 +3200,7 @@ def test_token_mint_uses_measured_constrained_wire(
     token = asyncio.run(
         mentra_routes._mint_gemini_token(
             api_key="secret",
-            model="gemini-2.5-flash-native-audio-preview-12-2025",
+            model="gemini-3.8-live",
             voice="Kore",
             system_instruction="fictional context",
             mode=mode,
@@ -3213,13 +3213,14 @@ def test_token_mint_uses_measured_constrained_wire(
     setup = payload["bidiGenerateContentSetup"]
     assert captured["timeout"] == 10
     assert request.get_header("X-goog-api-key") == "secret"
+    assert request.full_url == "https://generativelanguage.googleapis.com/v1alpha/auth_tokens"
     assert payload["uses"] == 8
     assert payload["fieldMask"] == (
         "model,generationConfig,systemInstruction,tools,realtimeInputConfig,"
         "inputAudioTranscription,outputAudioTranscription,contextWindowCompression,"
-        "proactivity,historyConfig"
+        "historyConfig"
     )
-    assert setup["model"] == "models/gemini-2.5-flash-native-audio-preview-12-2025"
+    assert setup["model"] == "models/gemini-3.8-live"
     declarations = setup["tools"][0]["functionDeclarations"]
     assert [tool["name"] for tool in declarations] == [
         "recall_memory", "read_working_state", "save_working_thought", "annul_intention",
@@ -3241,7 +3242,7 @@ def test_token_mint_uses_measured_constrained_wire(
     assert setup["outputAudioTranscription"] == {}
     assert "sessionResumption" not in setup
     assert setup["contextWindowCompression"] == {"slidingWindow": {}}
-    assert setup["proactivity"] == {"proactiveAudio": False}
+    assert "proactivity" not in setup
     assert setup["historyConfig"] == {}
     assert set(payload["fieldMask"].split(",")) == set(setup)
     expires = datetime.fromisoformat(payload["expireTime"].replace("Z", "+00:00"))
