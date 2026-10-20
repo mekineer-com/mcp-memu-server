@@ -2865,12 +2865,35 @@ def test_snapshot_finalize_accepts_stored_original_without_caption_history(
     assert mentra_routes._image_finalize_tasks == {}
     assert calls["background_errors"] == []
     if history_state == "missing":
-        event = _photo_caption_event(sitting_id, 1, image_id, caption)
-        client.post(
-            f"/integration/mentra/session/{sitting_id}/transcripts/append",
-            json={**scope, "events": [event]},
-        ).raise_for_status()
+        image_event = {**_photo_caption_event(sitting_id, 1, image_id, caption),
+                       "event_kind": "image", "role": "user", "content": "Shared a photo."}
+        caption_event = _photo_caption_event(sitting_id, 2, image_id, caption)
+        append_url = f"/integration/mentra/session/{sitting_id}/transcripts/append"
+        for invalid_events in (
+            [{**image_event, "event_id": f"{sitting_id}:image:{image_id}"}],
+            [image_event, {**caption_event, "event_id": caption_id}],
+        ):
+            assert client.post(append_url, json={
+                **scope, "events": invalid_events,
+            }).status_code == 409
+        events = [image_event, caption_event]
+        appended = client.post(append_url, json={**scope, "events": events})
+        appended.raise_for_status()
+        assert appended.json()["accepted"] == 2
+        assert appended.json()["ack_sequence"] == 2
+        replayed = client.post(append_url, json={**scope, "events": events})
+        replayed.raise_for_status()
+        assert replayed.json()["duplicates"] == 2
+        assert client.post(
+            f"/integration/mentra/session/{sitting_id}/snapshot/finalize", json=payload,
+        ).json() == {"ok": True, "durable": True, "queued": False, "duplicate": True}
+        history = conversation_sources.load_mentra_history_snapshot(
+            storage_dir=tmp_path, **scope, conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
+        )
+        assert [row["event_id"] for row in history] == [f"{sitting_id}:1", f"{sitting_id}:2"]
+        assert receipt["caption_event_id"] not in {row["event_id"] for row in history}
         assert len(calls["image_memorize"]) == 1
+        assert len(calls["image_resources"]) == 1
         assert record_path.read_bytes() == accepted
 
 
