@@ -168,7 +168,7 @@ def _session_app(
                 await memorize_hook(kwargs)
             await asyncio.sleep(0)
             number = len(calls["image_memorize"])
-            resource = SimpleNamespace(
+            resource = next((row for row in resources.values() if row.url == kwargs["resource_url"]), None) or SimpleNamespace(
                 id="image-resource" if number == 1 else f"image-resource-{number}",
                 url=kwargs["resource_url"],
                 modality=kwargs["modality"],
@@ -2316,7 +2316,8 @@ def test_snapshot_is_atomic_idempotent_scoped_and_redacted(
     assert stored.status_code == duplicate.status_code == dotted.status_code == 200
     assert stored.json()["duplicate"] is False
     assert duplicate.json() == {**stored.json(), "duplicate": True}
-    assert replay.json() == {"mime_type": "image/jpeg", "data": base64.b64encode(image).decode()}
+    assert replay.json() == {"media_ref": stored.json()["media_ref"],
+                             "mime_type": "image/jpeg", "data": base64.b64encode(image).decode()}
     assert missing_replay.status_code == 404
     assert no_lease_replay.status_code == 404
     assert stored.json()["media_ref"].startswith("mentra_media/")
@@ -2516,7 +2517,7 @@ def test_snapshot_finalize_keeps_reply_publication_available_and_photos_fifo(
                                  "caption": captions[number - 1]["content"],
                                  "caption_event_id": captions[number - 1]["event_id"]})
                 response = await http.post(f"{base}/snapshot/finalize", json=payloads[-1])
-                assert response.json() == {"ok": True, "queued": True, "duplicate": False}
+                assert response.json() == {"ok": True, "durable": True, "queued": True, "duplicate": False}
                 if number == 1:
                     await asyncio.wait_for(started[0].wait(), 1)
             await asyncio.sleep(0)
@@ -2527,7 +2528,7 @@ def test_snapshot_finalize_keeps_reply_publication_available_and_photos_fifo(
             assert [row["caption"] for row in calls["image_memorize"]] == ["Fictional photo 1"]
             assert not started[1].is_set() and not started[2].is_set()
             duplicate = await http.post(f"{base}/snapshot/finalize", json=payloads[1])
-            assert duplicate.json() == {"ok": True, "queued": True, "duplicate": True}
+            assert duplicate.json() == {"ok": True, "durable": True, "queued": True, "duplicate": True}
             conflict = await http.post(f"{base}/snapshot/finalize", json={
                 **payloads[1], "caption": captions[3]["content"], "caption_event_id": captions[3]["event_id"],
             })
@@ -2668,7 +2669,7 @@ def test_snapshot_finalize_coalesces_completed_registered_future_until_cleanup(
             payload = {**scope, "image_id": "completed-photo", "caption": events[0]["content"],
                        "caption_event_id": events[0]["event_id"]}
             duplicate = await http.post(f"{base}/snapshot/finalize", json=payload)
-            assert duplicate.json() == {"ok": True, "queued": True, "duplicate": True}
+            assert duplicate.json() == {"ok": True, "durable": True, "queued": True, "duplicate": True}
             conflict = await http.post(f"{base}/snapshot/finalize", json={
                 **payload, "caption": events[1]["content"], "caption_event_id": events[1]["event_id"],
             })
@@ -2677,7 +2678,7 @@ def test_snapshot_finalize_coalesces_completed_registered_future_until_cleanup(
             assert calls["image_memorize"] == []
             mentra_routes._image_finalize_tasks.pop(key)  # expose the narrow callback-cleanup boundary
             response = await http.post(f"{base}/snapshot/finalize", json=payload)
-            assert response.json() == {"ok": True, "queued": True, "duplicate": False}
+            assert response.json() == {"ok": True, "durable": True, "queued": True, "duplicate": False}
             await asyncio.wait_for(mentra_routes._image_finalize_tasks[key][1], 1)
             await asyncio.sleep(0)
             assert mentra_routes._image_finalize_tasks == {}
@@ -2932,7 +2933,7 @@ def test_replacement_photo_check_observes_existing_worker_only_when_requested(mo
             error_key = (*key[:2], second)
             if observe:
                 response = await http.post(f"{base}/snapshot/finalize", json=payload)
-                assert response.json() == {"ok": True, "queued": True, "duplicate": True}
+                assert response.json() == {"ok": True, "durable": True, "queued": True, "duplicate": True}
                 assert mentra_routes._image_finalize_tasks[key][1] is task
                 assert mentra_routes._image_finalize_tasks[key][2] == second
                 if not fails:
@@ -3006,6 +3007,113 @@ def test_snapshot_finalize_failure_keeps_bytes_and_reports_error(
     assert client.post(
         f"/integration/mentra/session/{sitting_id}/heartbeat", json=scope
     ).json() == heartbeat.json()
+
+
+def _file_test_photo(client: TestClient, *, image_id: str = "durable-photo") -> tuple[dict[str, str], dict[str, str]]:
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    sitting = client.post("/integration/mentra/session/start", json=START).json()["session_id"]
+    base = f"/integration/mentra/session/{sitting}"
+    client.post(f"{base}/snapshot", json={**scope, "image_id": image_id,
+                "mime_type": "image/png", "data": base64.b64encode(b"fictional image").decode()}).raise_for_status()
+    event = {"event_id": f"{sitting}:1", "sequence": 1, "event_kind": "transcript",
+             "role": "assistant", "content": "A fictional blue notebook.", "status": "complete"}
+    client.post(f"{base}/transcripts/append", json={**scope, "events": [event]}).raise_for_status()
+    payload = {**scope, "image_id": image_id, "caption": event["content"], "caption_event_id": event["event_id"]}
+    client.post(f"{base}/snapshot/finalize", json=payload).raise_for_status()
+    return scope, payload
+
+
+def test_zero_item_photo_completion_survives_rediscovery(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    scope, payload = _file_test_photo(client)
+    calls["memory_items"].clear()
+    sitting = payload["caption_event_id"].split(":")[0]
+    reply = client.post(f"/integration/mentra/session/{sitting}/snapshot/finalize", json=payload)
+    assert reply.json()["queued"] is False
+    assert len(calls["image_memorize"]) == 1
+    assert client.get("/integration/mentra/status", params=scope).json()["failed_photos"] == []
+
+
+def test_photo_retry_clears_the_active_observers_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async def fail_once(_kwargs: dict[str, Any]) -> None:
+        if len(calls["image_memorize"]) == 1:
+            raise RuntimeError("fictional one-time failure")
+
+    client, calls, _ = _session_app(monkeypatch, tmp_path, memorize_hook=fail_once)
+    scope, payload = _file_test_photo(client)
+    sitting = payload["caption_event_id"].split(":")[0]
+    heartbeat = f"/integration/mentra/session/{sitting}/heartbeat"
+    assert "background_error" in client.post(heartbeat, json=scope).json()
+    client.post("/integration/mentra/photos/durable-photo/retry", json=scope).raise_for_status()
+    assert "background_error" not in client.post(heartbeat, json=scope).json()
+    assert len(calls["image_memorize"]) == 2
+
+
+def test_failed_photo_idle_retry_survives_restart(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client, calls, _ = _session_app(monkeypatch, tmp_path, memorize_error=RuntimeError("fictional failure"))
+    scope, payload = _file_test_photo(client)
+    sitting = payload["caption_event_id"].split(":")[0]
+    client.post(f"/integration/mentra/session/{sitting}/end", json=scope).raise_for_status()
+    mentra_routes._image_finalize_errors.clear()
+    restarted, restored, _ = _session_app(monkeypatch, tmp_path)
+    status = restarted.get("/integration/mentra/status", params=scope).json()
+    assert status["failed_photos"] == ["durable-photo"]
+    assert restored["image_memorize"] == []
+    assert restarted.get("/integration/mentra/status", params=scope).json()["failed_photos"] == ["durable-photo"]
+    assert restored["image_memorize"] == []
+    response = restarted.post("/integration/mentra/photos/durable-photo/retry", json=scope)
+    response.raise_for_status()
+    assert response.json()["ok"] is True
+    assert len(restored["image_memorize"]) == 1
+    assert restarted.get("/integration/mentra/status", params=scope).json()["failed_photos"] == []
+    assert calls["background_errors"]
+
+
+@pytest.mark.parametrize("resource_committed", [False, True])
+def test_interrupted_photo_filing_recovers_on_rediscovery(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, resource_committed: bool,
+) -> None:
+    async def interrupted(kwargs: dict[str, Any]) -> None:
+        if resource_committed:
+            calls["image_resources"]["early-resource"] = SimpleNamespace(
+                id="early-resource", url=kwargs["resource_url"], modality="image", caption=kwargs["caption"],
+            )
+        await asyncio.Event().wait()
+
+    client, calls, _ = _session_app(monkeypatch, tmp_path, memorize_hook=interrupted)
+    scope, _ = _file_test_photo(client)
+    record_path, = (tmp_path / "resources" / "mentra_media").glob("*/*.filing.json")
+    assert json.loads(record_path.read_text())["status"] in {"queued", "running"}
+    restarted, restored, _ = _session_app(monkeypatch, tmp_path)
+    restored["image_resources"].update(calls["image_resources"])
+    response = restarted.get("/integration/mentra/status", params=scope)
+    response.raise_for_status()
+    assert restored["image_memorize"] == []
+    mentra_routes._leases.clear()
+    restarted.post("/integration/mentra/session/start", json=START).raise_for_status()
+    assert len(restored["image_memorize"]) == 1
+    assert len(restored["image_resources"]) == 1
+    assert json.loads(record_path.read_text())["status"] == "complete"
+    restarted.get("/integration/mentra/status", params=scope).raise_for_status()
+    assert len(restored["image_memorize"]) == 1
+
+
+def test_failed_photo_discard_is_scoped_and_does_not_delete_original(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from app import main
+    client, calls, _ = _session_app(monkeypatch, tmp_path, memorize_error=RuntimeError("fictional failure"))
+    client.app.add_exception_handler(owner.OwnerIdentityError, main._owner_identity_error)
+    scope, _ = _file_test_photo(client)
+    for action in ("retry", "discard"):
+        assert client.post(f"/integration/mentra/photos/durable-photo/{action}",
+                           json={**scope, "soul_id": "Another Soul"}).status_code == 404
+        assert client.post(f"/integration/mentra/photos/durable-photo/{action}",
+                           json={**scope, "user_id": "Other Owner"}).status_code == 409
+    response = client.post("/integration/mentra/photos/durable-photo/discard", json=scope)
+    response.raise_for_status()
+    assert client.get("/integration/mentra/status", params=scope).json()["failed_photos"] == []
+    original, = (tmp_path / "resources" / "mentra_media").glob("*/*.png")
+    assert original.read_bytes() == b"fictional image"
+    assert len(calls["image_memorize"]) == 1
 
 
 def test_image_transcript_event_round_trips_media_reference(

@@ -393,18 +393,33 @@ even after photo failure. Completed-Memorize Retry reserves that same claim befo
 dispatching follow-on reflection. Claim release keeps waiting captures while
 durable Memorize/consolidation recovery remains required; it does not bypass Retry.
 `_finish_memorize_claim` clears stale active
-progress and Cancel before handing off a fresh job. These are process-local
-claims, not restart recovery; unfinished photo filing is not automatically resumed.
+progress and Cancel before handing off a fresh job. Claims remain process-local;
+photo filing ownership is persisted separately beside the scoped original as
+`{image_id}.filing.json`. Finalize acknowledges `durable: true` only after that
+record exists. Start reconciles queued/running filings through the same worker;
+status reads never launch paid work. Failed filings stay failed until explicit
+owner/Soul-scoped photo Retry or Discard, available without a sitting lease.
+Discard retains original bytes. A completed record includes successful zero-item
+extraction, so rediscovery or duplicate finalize does not repeat it.
+
 Photo finalization checks registered work before saved memory rows. An explicit
 re-finalize joins that worker and selects the latest validated sitting to receive
 its outcome; merely starting a replacement sitting does not subscribe it. Error
 delivery requires that observer's active lease, and success clears only that
 photo's warning. Saved extraction evidence includes merged/superseded items still
 linked to that Resource; engine results continue to contain active items only.
-A Resource without any saved item evidence remains eligible for extraction;
-zero-item runs and deletion of all lineage have no new completion marker.
-Queue acceptance and saved-item duplicate evidence do not assert
-that later dedupe/review completed; no full background-filing Retry is added.
+A Resource alone is not completion. Interrupted filing with saved item evidence
+uses native image `resume_image_filing` to reuse the existing dedupe/review
+recovery helper without another extraction. Without saved extraction evidence,
+native image Memorize reuses the Resource and completes extraction. Terminal
+filing state is written after the worker succeeds; legacy saved-item duplicate
+evidence without a filing record retains its prior completed interpretation.
+Iris journals upload identity before sending, keeps unconfirmed outcomes visible,
+and clears its pending photo only after durable handoff. Photo finalization no
+longer blocks later transcript appends. Model-specific caption generation, silent
+caption events and the bounded Stop drain remain separate migration work.
+These boundaries have fictional restart/failure, scope, zero-item, post-save
+recovery and slow-finalization checks; no live provider/phone acceptance is implied.
 
 Live `_MEMORIZE_PROGRESS`, busy claims and cancellation flags are process-local
 status, **not a durable job queue**. ST reads progress by owner/Soul without a

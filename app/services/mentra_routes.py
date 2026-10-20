@@ -5,6 +5,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -105,6 +106,14 @@ _installation_lock = asyncio.Lock()
 
 def image_finalize_pending(user_id: str, soul_id: str) -> bool:
     return any(key[:2] == (user_id, soul_id) for key in _image_finalize_tasks)
+
+
+def _clear_image_finalize_errors(user_id: str, soul_id: str, media_ref: str) -> None:
+    for key, errors in list(_image_finalize_errors.items()):
+        if key[:2] == (user_id, soul_id):
+            errors.discard(media_ref)
+            if not errors:
+                _image_finalize_errors.pop(key, None)
 
 
 class MentraSessionStart(BaseModel):
@@ -548,6 +557,30 @@ def _image_files(directory: Path, image_id: str) -> list[Path]:
     return [path for suffix in ("jpg", "png") if (path := directory / f"{image_id}.{suffix}").is_file()]
 
 
+def _read_photo_filing(path: Path) -> dict[str, Any]:
+    record = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(record, dict) or record.get("status") not in {
+        "queued", "running", "complete", "failed", "discarded",
+    }:
+        raise RuntimeError(f"Invalid photo filing: {path}")
+    return record
+
+
+def _write_photo_filing(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_name = ""
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as temp:
+            temp_name = temp.name
+            json.dump(record, temp, ensure_ascii=False)
+            temp.flush()
+            os.fsync(temp.fileno())
+        os.replace(temp_name, path)
+    finally:
+        if temp_name:
+            Path(temp_name).unlink(missing_ok=True)
+
+
 def _require_image_embedding_config(config: dict[str, Any]) -> None:
     embedding = (config.get("llm") or {}).get("embedding") or {}
     if not str(embedding.get("api_key") or "").strip():
@@ -989,6 +1022,9 @@ def register_mentra_routes(
             if _image_finalize_errors.get(conflict_key):
                 status_error = "Photo memory processing failed"
         history_soul = active_soul if active else soul_id
+        failed_photos = await photo_filings(user_id, history_soul) if user_id and history_soul else []
+        if failed_photos:
+            status_error = "Photo memory processing failed"
         if get_storage_dir is not None and user_id and history_soul:
             try:
                 history = await asyncio.to_thread(
@@ -1025,6 +1061,7 @@ def register_mentra_routes(
             "busy": busy,
             "sessions": sessions,
             "transcript_gap": transcript_gap,
+            "failed_photos": failed_photos,
             **installation,
             **(
                 {"mode": active.mode, "expires_in": max(0, int(active.expires_at - now))}
@@ -1049,6 +1086,7 @@ def register_mentra_routes(
         phase_started = started_at
         timings: dict[str, int] = {}
         scope = {"user_id": body.user_id, "soul_id": body.soul_id}
+        await photo_filings(body.user_id, body.soul_id, recover=True)
         reason = get_activity_pause(body.user_id, body.soul_id)
         if reason:
             raise HTTPException(status_code=409, detail={
@@ -1626,6 +1664,7 @@ def register_mentra_routes(
             raise HTTPException(status_code=404, detail="Mentra snapshot not found")
         path = matches[0]
         return {
+            "media_ref": str(path.relative_to(get_resource_storage_dir())),
             "mime_type": "image/jpeg" if path.suffix == ".jpg" else "image/png",
             "data": base64.b64encode(path.read_bytes()).decode(),
         }
@@ -1671,6 +1710,33 @@ def register_mentra_routes(
         if len(matches) != 1:
             raise HTTPException(status_code=404, detail="Mentra snapshot not found")
         media_ref = str(matches[0].relative_to(root))
+        record = {
+            "user_id": body.user_id, "soul_id": body.soul_id, "image_id": body.image_id,
+            "media_ref": media_ref, "caption": body.caption,
+            "caption_event_id": body.caption_event_id, "source_timestamp": caption_row["received_at"],
+            "status": "queued",
+        }
+        return await queue_photo_filing(media_dir / f"{body.image_id}.filing.json", record, sitting_id)
+
+    async def queue_photo_filing(
+        path: Path, record: dict[str, Any], sitting_id: str = "", *, retry: bool = False,
+    ) -> dict[str, Any]:
+        if any(value is None for value in (get_service_from_scope, background_tasks, memorize_lock_key,
+                                          memorize_inflight, consolidation_running, finish_memorize_claim)):
+            raise HTTPException(status_code=503, detail="Mentra snapshot finalization is not configured")
+        if path.exists():
+            saved = _read_photo_filing(path)
+            if any(saved[key] != record[key] for key in ("user_id", "soul_id", "image_id", "media_ref", "caption")):
+                raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
+            record = saved
+            if record["status"] in {"complete", "discarded"}:
+                return {"ok": True, "durable": True, "queued": False, "duplicate": True}
+            if record["status"] == "failed" and not retry:
+                return {"ok": True, "durable": True, "queued": False, "failed": True}
+        body = MentraSnapshotFinalizeRequest(**{key: record[key] for key in (
+            "user_id", "soul_id", "image_id", "caption", "caption_event_id",
+        )})
+        media_ref = record["media_ref"]
         scope = {
             "user_id": body.user_id,
             "soul_id": body.soul_id,
@@ -1684,8 +1750,11 @@ def register_mentra_routes(
             if pending[0] != body.caption:
                 raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
             # Only an explicit check transfers the worker's outcome to a replacement sitting.
-            _image_finalize_tasks[task_key] = (pending[0], pending[1], sitting_id)
-            return {"ok": True, "queued": True, "duplicate": True}
+            if sitting_id:
+                _image_finalize_tasks[task_key] = (pending[0], pending[1], sitting_id)
+            if not path.exists():
+                _write_photo_filing(path, record)
+            return {"ok": True, "durable": True, "queued": True, "duplicate": True}
 
         existing = next(
             (
@@ -1703,8 +1772,13 @@ def register_mentra_routes(
                 include_embeddings=False, include_merged=True, include_superseded=True,
             )
             if linked:
-                return {"ok": True, "queued": False, "duplicate": True}
+                if not path.exists():
+                    record["status"] = "complete"
+                    _write_photo_filing(path, record)
+                    return {"ok": True, "durable": True, "queued": False, "duplicate": True}
 
+        record["status"] = "queued"
+        _write_photo_filing(path, record)
         # Capture all predecessors so a cancelled middle photo cannot release later work early.
         predecessors = [entry[1] for key, entry in _image_finalize_tasks.items() if key[:2] == task_key[:2]]
 
@@ -1717,13 +1791,23 @@ def register_mentra_routes(
             # Check and reserve without yielding; never hold the reply lock over providers.
             memorize_inflight[marker] = None
             try:
-                return await service.memorize(
+                record["status"] = "running"
+                _write_photo_filing(path, record)
+                result = await service.memorize(
                     resource_url=media_ref,
                     modality="image",
                     user=scope,
                     caption=body.caption,
-                    source_timestamp=caption_row["received_at"],
+                    source_timestamp=record["source_timestamp"],
+                    resume_image_filing=True,
                 )
+                record["status"] = "complete"
+                _write_photo_filing(path, record)
+                return result
+            except Exception:
+                record["status"] = "failed"
+                _write_photo_filing(path, record)
+                raise
             finally:
                 # Photo failure does not pause Memorize or discard its waiting capture.
                 await finish_memorize_claim(marker, True)
@@ -1741,6 +1825,7 @@ def register_mentra_routes(
             except asyncio.CancelledError:
                 return
             except Exception as exc:
+                logging.getLogger(__name__).exception("Photo filing failed: %s", body.image_id)
                 active = _leases.get(body.soul_id)
                 if (
                     active
@@ -1758,14 +1843,54 @@ def register_mentra_routes(
                         detail=type(exc).__name__,
                     )
             else:
-                errors = _image_finalize_errors.get(error_key)
-                if errors is not None:
-                    errors.discard(media_ref)
-                    if not errors:
-                        _image_finalize_errors.pop(error_key, None)
+                _clear_image_finalize_errors(body.user_id, body.soul_id, media_ref)
 
         task.add_done_callback(finish)
-        return {"ok": True, "queued": True, "duplicate": False}
+        return {"ok": True, "durable": True, "queued": True, "duplicate": False}
+
+    async def photo_filings(user_id: str, soul_id: str, *, recover: bool = False) -> list[str]:
+        if get_resource_storage_dir is None:
+            return []
+        directory = _media_directory(get_resource_storage_dir(), user_id=user_id, soul_id=soul_id)
+        failures = []
+        for path in sorted(directory.glob("*.filing.json")):
+            require_owner(get_config(), user_id)
+            record = _read_photo_filing(path)
+            if (record["user_id"], record["soul_id"]) != (user_id, soul_id):
+                raise RuntimeError("Photo filing scope mismatch")
+            if recover and record["status"] in {"queued", "running"}:
+                await queue_photo_filing(path, record)
+            elif record["status"] == "failed":
+                failures.append(record["image_id"])
+        return failures
+
+    def scoped_photo_filing(image_id: str, body: MentraSessionScope) -> tuple[Path, dict[str, Any]]:
+        require_owner(get_config(), body.user_id)
+        if get_resource_storage_dir is None or not _IMAGE_ID_RE.fullmatch(image_id):
+            raise HTTPException(status_code=404, detail="Photo filing not found")
+        path = _media_directory(get_resource_storage_dir(), user_id=body.user_id,
+                                soul_id=body.soul_id) / f"{image_id}.filing.json"
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Photo filing not found")
+        record = _read_photo_filing(path)
+        if (record["user_id"], record["soul_id"], record["image_id"]) != (body.user_id, body.soul_id, image_id):
+            raise HTTPException(status_code=409, detail="Photo filing scope mismatch")
+        return path, record
+
+    @app.post("/integration/mentra/photos/{image_id}/retry", tags=["integration"])
+    async def retry_photo(image_id: str, body: MentraSessionScope) -> dict[str, Any]:
+        path, record = scoped_photo_filing(image_id, body)
+        return await queue_photo_filing(path, record, retry=True)
+
+    @app.post("/integration/mentra/photos/{image_id}/discard", tags=["integration"])
+    async def discard_photo(image_id: str, body: MentraSessionScope) -> dict[str, Any]:
+        path, record = scoped_photo_filing(image_id, body)
+        if record["status"] != "failed":
+            raise HTTPException(status_code=409, detail="Only a failed photo filing can be discarded")
+        record["status"] = "discarded"
+        _write_photo_filing(path, record)
+        _clear_image_finalize_errors(body.user_id, body.soul_id, record["media_ref"])
+        return {"ok": True}
 
     @app.post(
         "/integration/mentra/session/{session_id}/end",
