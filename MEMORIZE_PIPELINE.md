@@ -402,12 +402,15 @@ owner/Soul-scoped photo Retry or Discard, available without a sitting lease.
 Discard retains original bytes. A completed record includes successful zero-item
 extraction, so rediscovery or duplicate finalize does not repeat it.
 
-Photo finalization reads an existing scoped filing receipt before live history,
-so lost-ack replay survives removed/replaced history and conflicting later captions
-cannot overwrite accepted ownership. New handoffs require the referenced assistant
-`photo_caption` event's exact caption and original scoped `media_ref`, without
-transcript status; ordinary assistant dialogue is not a caption. Iris appends this
-event before calling finalize. The fifth NON_BLOCKING Live tool,
+Photo finalization accepts the scoped stored original, caption and stable
+`caption_event_id` directly under an active lease, without reading live history.
+The scoped filing receipt owns idempotency, so lost-ack replay survives
+removed/replaced history and conflicting later captions cannot overwrite accepted
+ownership. New receipts use server receipt time for `source_timestamp`; replay
+retains that time and caption. Iris journals `${sessionId}:photo:${imageId}` before
+finalize and appends the assistant `photo_caption` timeline event separately/later
+with its ordinary sitting/sequence ID, so unresolved speech reservations cannot
+block photo filing. The fifth NON_BLOCKING Live tool,
 `save_photo_caption(image_id, caption)`, requests that existing handoff, not another
 worker. Snapshot replay exposes an optional `filing` containing only `caption`,
 `caption_event_id` and `status` after checking owner/Soul/image/media identity;

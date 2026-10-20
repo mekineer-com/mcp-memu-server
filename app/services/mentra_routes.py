@@ -1702,7 +1702,6 @@ def register_mentra_routes(
         if (
             get_service_from_scope is None
             or get_resource_storage_dir is None
-            or get_storage_dir is None
             or background_tasks is None
             or memorize_lock_key is None
             or memorize_inflight is None
@@ -1726,27 +1725,15 @@ def register_mentra_routes(
             if any(record[key] != getattr(body, key) for key in ("user_id", "soul_id", "image_id", "caption")):
                 raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
             return await queue_photo_filing(filing_path, record, sitting_id)
-        history = conversation_sources.load_mentra_history_snapshot(
-            storage_dir=get_storage_dir(), user_id=body.user_id, soul_id=body.soul_id,
-            conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
-        )
-        caption_row = next((row for row in history if row.get("event_id") == body.caption_event_id
-                            and row.get("role") == "assistant" and row.get("event_kind") == "photo_caption"
-                            and row.get("transcript_status") is None
-                            and row.get("content") == body.caption), None)
-        if caption_row is None:
-            return {"ok": True, "queued": False, "discarded": True}
         matches = _image_files(media_dir, body.image_id)
         if len(matches) != 1:
             raise HTTPException(status_code=404, detail="Mentra snapshot not found")
         media_ref = str(matches[0].relative_to(root))
-        if caption_row.get("media_ref") != media_ref:
-            return {"ok": True, "queued": False, "discarded": True}
         _require_image_embedding_config(get_config())
         record = {
             "user_id": body.user_id, "soul_id": body.soul_id, "image_id": body.image_id,
             "media_ref": media_ref, "caption": body.caption,
-            "caption_event_id": body.caption_event_id, "source_timestamp": caption_row["received_at"],
+            "caption_event_id": body.caption_event_id, "source_timestamp": _rfc3339(datetime.now(UTC)),
             "status": "queued",
         }
         return await queue_photo_filing(filing_path, record, sitting_id)

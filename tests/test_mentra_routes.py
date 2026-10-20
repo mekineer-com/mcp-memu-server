@@ -2754,6 +2754,7 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
         f"{base}/finalize", json={key: value for key, value in payload.items()
                                   if key != "caption_event_id"},
     ).status_code == 422
+    before_finalize = datetime.now(UTC).replace(microsecond=0)
     finalized = client.post(
         f"{base}/finalize",
         json=payload,
@@ -2784,8 +2785,11 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
     saved_history = conversation_sources.load_mentra_history_snapshot(
         storage_dir=tmp_path, **scope, conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
     )
-    saved_caption = next(row for row in saved_history if row.get("event_id") == caption_event["event_id"])
-    assert calls["image_memorize"][0]["source_timestamp"] == saved_caption["received_at"]
+    record_path, = (tmp_path / "resources" / "mentra_media").glob("*/*.filing.json")
+    receipt = json.loads(record_path.read_text())
+    assert calls["image_memorize"][0]["source_timestamp"] == receipt["source_timestamp"]
+    assert before_finalize <= datetime.fromisoformat(receipt["source_timestamp"]) <= datetime.now(UTC)
+    assert any(row.get("event_id") == caption_event["event_id"] for row in saved_history)
     assert calls["image_memorize"][0]["user"] == {
         **scope, "conversation_id": conversation_sources.MENTRA_CONVERSATION_ID,
     }
@@ -2800,81 +2804,104 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
     }
 
 
-@pytest.mark.parametrize("mismatch", [
-    "missing", "event_id", "role", "event_kind", "transcript", "content", "soul", "owner",
-    "media_ref", "missing_media_ref", "transcript_status",
-])
-def test_snapshot_finalize_discards_caption_without_exact_scoped_history(
+@pytest.mark.parametrize("history_state", ["missing", "blocked", "unrelated"])
+def test_snapshot_finalize_accepts_stored_original_without_caption_history(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    mismatch: str,
+    history_state: str,
 ) -> None:
-    client, calls, config = _session_app(monkeypatch, tmp_path)
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
     sitting_id = client.post(
         "/integration/mentra/session/start", json=START,
     ).json()["session_id"]
     scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
-    caption = "A fictional discarded photo caption."
-    caption_id = f"{sitting_id}:1"
-    row = {**_photo_caption_event(sitting_id, 1, "discarded-image", caption),
-           "received_at": "2026-10-07T10:00:00.000Z"}
+    caption = "A fictional orange kite."
+    image_id = "direct-tool-image"
+    caption_id = f"{sitting_id}:photo:{image_id}"
     client.post(f"/integration/mentra/session/{sitting_id}/snapshot", json={
-        **scope, "image_id": "discarded-image", "mime_type": "image/png",
+        **scope, "image_id": image_id, "mime_type": "image/png",
         "data": base64.b64encode(b"fictional original").decode(),
     }).raise_for_status()
-    saved_scope = dict(scope)
-    if mismatch == "event_id":
-        row["event_id"] = f"{sitting_id}:2"
-    elif mismatch == "role":
-        row["role"] = "user"
-    elif mismatch == "event_kind":
-        row["event_kind"] = "sitting_summary"
-    elif mismatch == "transcript":
-        row["event_kind"] = "transcript"
-        row["transcript_status"] = "complete"
-    elif mismatch == "transcript_status":
-        row["transcript_status"] = "complete"
-    elif mismatch == "media_ref":
-        row["media_ref"] = _photo_caption_event(sitting_id, 1, "another-image", caption)["media_ref"]
-    elif mismatch == "missing_media_ref":
-        row.pop("media_ref")
-    elif mismatch == "content":
-        row["content"] = "A different fictional caption."
-    elif mismatch == "soul":
-        saved_scope["soul_id"] = "TestSoul"
-    elif mismatch == "owner":
-        saved_scope["user_id"] = "Another Fictional User"
-    if mismatch != "missing":
+    if history_state == "unrelated":
         conversation_sources.persist_mentra_history_snapshot(
-            storage_dir=tmp_path, **saved_scope,
-            conversation_id=conversation_sources.MENTRA_CONVERSATION_ID, history=[row],
+            storage_dir=tmp_path, **scope,
+            conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
+            history=[{**_photo_caption_event(sitting_id, 1, "another-image", "Another caption."),
+                      "received_at": "2026-10-07T10:00:00.000Z"}],
         )
-
-    service_calls = calls["service"]
-    config["llm"]["embedding"] = {}
-
-    def unexpected_work(*_args: Any, **_kwargs: Any) -> None:
-        raise AssertionError("discarded captions must not start config/media/model work")
-
-    monkeypatch.setattr(mentra_routes, "_require_image_embedding_config", unexpected_work)
+    if history_state == "blocked":
+        def unavailable_history(**_kwargs: Any) -> None:
+            raise RuntimeError("Speech reservation prevents timeline publication")
+        monkeypatch.setattr(conversation_sources, "load_mentra_history_snapshot", unavailable_history)
     payload = {
-        **scope, "image_id": "discarded-image", "caption": caption,
+        **scope, "image_id": image_id, "caption": caption,
         "caption_event_id": caption_id,
     }
     assert client.post(
         "/integration/mentra/session/wrong/snapshot/finalize", json=payload,
     ).status_code == 404
+    before_finalize = datetime.now(UTC).replace(microsecond=0)
     response = client.post(
         f"/integration/mentra/session/{sitting_id}/snapshot/finalize",
         json=payload,
     )
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "queued": False, "discarded": True}
+    assert response.json() == {"ok": True, "durable": True, "queued": True, "duplicate": False}
+    record_path, = (tmp_path / "resources" / "mentra_media").glob("*/*.filing.json")
+    accepted = record_path.read_bytes()
+    receipt = json.loads(accepted)
+    assert receipt["caption_event_id"] == caption_id
+    assert before_finalize <= datetime.fromisoformat(receipt["source_timestamp"]) <= datetime.now(UTC)
+    assert calls["image_memorize"][0]["source_timestamp"] == receipt["source_timestamp"]
+    assert client.post(
+        f"/integration/mentra/session/{sitting_id}/snapshot/finalize", json=payload,
+    ).json()["duplicate"] is True
+    assert client.post(
+        f"/integration/mentra/session/{sitting_id}/snapshot/finalize",
+        json={**payload, "caption": "A conflicting caption."},
+    ).status_code == 409
+    assert record_path.read_bytes() == accepted
+    assert len(calls["image_memorize"]) == 1
+    assert mentra_routes._image_finalize_tasks == {}
+    assert calls["background_errors"] == []
+    if history_state == "missing":
+        event = _photo_caption_event(sitting_id, 1, image_id, caption)
+        client.post(
+            f"/integration/mentra/session/{sitting_id}/transcripts/append",
+            json={**scope, "events": [event]},
+        ).raise_for_status()
+        assert len(calls["image_memorize"]) == 1
+        assert record_path.read_bytes() == accepted
+
+
+@pytest.mark.parametrize("original_state", ["missing", "owner", "soul", "ambiguous"])
+def test_snapshot_finalize_refuses_missing_or_wrong_scoped_original(monkeypatch, tmp_path, original_state):
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    sitting = client.post("/integration/mentra/session/start", json=START).json()["session_id"]
+    scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+    root = tmp_path / "resources"
+    saved_scope = dict(scope)
+    if original_state == "owner":
+        saved_scope["user_id"] = "Another Fictional User"
+    elif original_state == "soul":
+        saved_scope["soul_id"] = "Another Fictional Soul"
+    if original_state != "missing":
+        directory = mentra_routes._media_directory(root, **saved_scope)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "direct-tool-image.png").write_bytes(b"fictional original")
+        if original_state == "ambiguous":
+            (directory / "direct-tool-image.jpg").write_bytes(b"another fictional original")
+    service_calls = calls["service"]
+    response = client.post(f"/integration/mentra/session/{sitting}/snapshot/finalize", json={
+        **scope, "image_id": "direct-tool-image", "caption": "A fictional kite.",
+        "caption_event_id": f"{sitting}:photo:direct-tool-image",
+    })
+    assert response.status_code == 404
     assert calls["service"] == service_calls
     assert calls["image_memorize"] == []
     assert calls["image_resources"] == {}
+    assert list(root.glob("mentra_media/*/*.filing.json")) == []
     assert mentra_routes._image_finalize_tasks == {}
-    assert calls["background_errors"] == []
 
 
 def test_snapshot_finalize_rejects_non_multimodal_runtime(
