@@ -2529,6 +2529,11 @@ def test_snapshot_finalize_keeps_reply_publication_available_and_photos_fifo(
             assert not started[1].is_set() and not started[2].is_set()
             duplicate = await http.post(f"{base}/snapshot/finalize", json=payloads[1])
             assert duplicate.json() == {"ok": True, "durable": True, "queued": True, "duplicate": True}
+            for _ in range(2):
+                retry = await http.post("/integration/mentra/photos/fifo-2/retry", json=scope)
+                assert retry.json() == {"ok": True, "durable": True, "queued": True, "duplicate": True}
+                assert any(entry[1] is tasks[1] for entry in mentra_routes._image_finalize_tasks.values())
+            assert len(calls["image_memorize"]) == 1
             conflict = await http.post(f"{base}/snapshot/finalize", json={
                 **payloads[1], "caption": captions[3]["content"], "caption_event_id": captions[3]["event_id"],
             })
@@ -3093,6 +3098,7 @@ def test_interrupted_photo_filing_recovers_on_rediscovery(
     restarted.post("/integration/mentra/session/start", json=START).raise_for_status()
     assert len(restored["image_memorize"]) == 1
     assert len(restored["image_resources"]) == 1
+    assert restored["image_memorize"][0]["resume_image_filing"] is True
     assert json.loads(record_path.read_text())["status"] == "complete"
     restarted.get("/integration/mentra/status", params=scope).raise_for_status()
     assert len(restored["image_memorize"]) == 1
