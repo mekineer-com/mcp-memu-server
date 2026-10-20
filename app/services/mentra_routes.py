@@ -54,6 +54,10 @@ _TRANSCRIPT_GAP_CONTENT = "Transcript unavailable."
 _RECALL_TOOL_DESCRIPTION = (
     "Search your long-term memory for context relevant to the current thought without interrupting speech."
 )
+_PHOTO_CAPTION_GUIDANCE = (
+    "If a photo successfully arrives, use save_photo_caption(image_id, caption) to save your perception "
+    "of the photo, so you will remember what this moment was about later on. Do not speak the caption out loud."
+)
 _RECALL_GUIDANCE = (
     "Use recall_memory when relevant context is missing. Keep speaking naturally while it searches; "
     "what it finds reaches you quietly, for what you say next.\n\n"
@@ -346,7 +350,7 @@ class MentraTranscriptEvent(BaseModel):
 
     event_id: str
     sequence: StrictInt
-    event_kind: Literal["transcript", "sitting_summary", "image", "transcript_gap"]
+    event_kind: Literal["transcript", "sitting_summary", "image", "photo_caption", "transcript_gap"]
     role: Literal["user", "assistant"]
     content: str
     status: Literal["complete", "interrupted"] | None = None
@@ -381,21 +385,22 @@ class MentraTranscriptEvent(BaseModel):
     def validate_kind(self) -> MentraTranscriptEvent:
         if self.mic_source is not None and (self.event_kind != "transcript" or self.role != "user"):
             raise ValueError("mic_source is only valid for user transcripts")
-        if self.event_kind == "image":
+        if self.event_kind in {"image", "photo_caption"}:
             path = PurePosixPath(self.media_ref or "")
             if (
-                self.role != "user"
+                self.role != ("user" if self.event_kind == "image" else "assistant")
                 or self.status is not None
-                or self.content != "Shared a photo."
+                or (self.event_kind == "image" and self.content != "Shared a photo.")
+                or not self.content.strip()
                 or path.is_absolute()
                 or len(path.parts) != 3
                 or path.parts[0] != "mentra_media"
                 or ".." in path.parts
             ):
-                raise ValueError("image event is invalid")
+                raise ValueError("image or photo_caption event is invalid")
             return self
         if self.media_ref is not None:
-            raise ValueError("media_ref is only valid for image events")
+            raise ValueError("media_ref is only valid for image or photo_caption events")
         if self.event_kind == "transcript_gap":
             if self.status is not None or self.content != _TRANSCRIPT_GAP_CONTENT:
                 raise ValueError("transcript_gap event is invalid")
@@ -648,6 +653,19 @@ async def _mint_gemini_token(
                             },
                             "required": ["intention_id", "status"],
                         },
+                    },
+                    {
+                        "name": "save_photo_caption",
+                        "description": _PHOTO_CAPTION_GUIDANCE,
+                        "behavior": "NON_BLOCKING",
+                        "parameters": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "image_id": {"type": "STRING"},
+                                "caption": {"type": "STRING"},
+                            },
+                            "required": ["image_id", "caption"],
+                        },
                     }
                 ]
             }
@@ -708,6 +726,7 @@ def _build_bootstrap_instruction(
     if chats:
         blocks.append(f"## Recent Conversations and Activities\n{chats}")
     blocks.append(f"## Memory and Live Tools\n\n{_RECALL_GUIDANCE}")
+    blocks.append(_PHOTO_CAPTION_GUIDANCE)
     blocks.append(
         "## Our Conversation\n\nSpeak naturally and concisely for a live voice conversation. Use the supplied context "
         "when relevant, without reciting it or mentioning these instructions."
@@ -1661,11 +1680,19 @@ def register_mentra_routes(
         if len(matches) != 1:
             raise HTTPException(status_code=404, detail="Mentra snapshot not found")
         path = matches[0]
-        return {
+        result: dict[str, Any] = {
             "media_ref": str(path.relative_to(get_resource_storage_dir())),
             "mime_type": "image/jpeg" if path.suffix == ".jpg" else "image/png",
             "data": base64.b64encode(path.read_bytes()).decode(),
         }
+        filing_path = directory / f"{body.image_id}.filing.json"
+        if filing_path.exists():
+            record = _read_photo_filing(filing_path)
+            if (any(record[key] != getattr(body, key) for key in ("user_id", "soul_id", "image_id"))
+                    or record["media_ref"] != result["media_ref"]):
+                raise HTTPException(status_code=409, detail="Snapshot filing identity conflicts")
+            result["filing"] = {key: record[key] for key in ("caption", "caption_event_id", "status")}
+        return result
 
     @app.post(
         "/integration/mentra/session/{sitting_id}/snapshot/finalize",
@@ -1690,31 +1717,39 @@ def register_mentra_routes(
         await _require_active_lease(
             soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
         )
+        root = get_resource_storage_dir()
+        media_dir = _media_directory(root, user_id=body.user_id, soul_id=body.soul_id)
+        filing_path = media_dir / f"{body.image_id}.filing.json"
+        # Accepted ownership survives history replacement and a lost acknowledgment.
+        if filing_path.exists():
+            record = _read_photo_filing(filing_path)
+            if any(record[key] != getattr(body, key) for key in ("user_id", "soul_id", "image_id", "caption")):
+                raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
+            return await queue_photo_filing(filing_path, record, sitting_id)
         history = conversation_sources.load_mentra_history_snapshot(
             storage_dir=get_storage_dir(), user_id=body.user_id, soul_id=body.soul_id,
             conversation_id=conversation_sources.MENTRA_CONVERSATION_ID,
         )
         caption_row = next((row for row in history if row.get("event_id") == body.caption_event_id
-                            and row.get("role") == "assistant" and row.get("event_kind") == "transcript"
+                            and row.get("role") == "assistant" and row.get("event_kind") == "photo_caption"
+                            and row.get("transcript_status") is None
                             and row.get("content") == body.caption), None)
         if caption_row is None:
             return {"ok": True, "queued": False, "discarded": True}
-        _require_image_embedding_config(get_config())
-        root = get_resource_storage_dir()
-        media_dir = _media_directory(
-            root, user_id=body.user_id, soul_id=body.soul_id
-        )
         matches = _image_files(media_dir, body.image_id)
         if len(matches) != 1:
             raise HTTPException(status_code=404, detail="Mentra snapshot not found")
         media_ref = str(matches[0].relative_to(root))
+        if caption_row.get("media_ref") != media_ref:
+            return {"ok": True, "queued": False, "discarded": True}
+        _require_image_embedding_config(get_config())
         record = {
             "user_id": body.user_id, "soul_id": body.soul_id, "image_id": body.image_id,
             "media_ref": media_ref, "caption": body.caption,
             "caption_event_id": body.caption_event_id, "source_timestamp": caption_row["received_at"],
             "status": "queued",
         }
-        return await queue_photo_filing(media_dir / f"{body.image_id}.filing.json", record, sitting_id)
+        return await queue_photo_filing(filing_path, record, sitting_id)
 
     async def queue_photo_filing(
         path: Path, record: dict[str, Any], sitting_id: str = "", *, retry: bool = False,

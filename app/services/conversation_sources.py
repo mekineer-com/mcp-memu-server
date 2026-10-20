@@ -1266,6 +1266,8 @@ def load_chat_snapshot_tail(
             in_history = source_index < import_state["history_end_index"]
             if in_history != historical:
                 continue
+        if source_label == "mentra" and item.get("event_kind") == "photo_caption":
+            content = f"[Internal visual perception; not spoken aloud] {content}"
         row = {
             "role": role,
             "speaker": speaker,

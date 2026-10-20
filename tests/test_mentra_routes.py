@@ -5,6 +5,7 @@ import base64
 import copy
 import io
 import json
+from pathlib import Path
 from contextlib import contextmanager
 from concurrent.futures import CancelledError as FutureCancelledError, ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -27,6 +28,17 @@ START = {
     "device_session_id": "phone-1",
     "mode": "continuous",
 }
+
+
+def _photo_caption_event(sitting: str, sequence: int, image_id: str, caption: str) -> dict[str, Any]:
+    media_dir = mentra_routes._media_directory(
+        Path(), user_id=START["user_id"], soul_id=START["soul_id"],
+    )
+    return {
+        "event_id": f"{sitting}:{sequence}", "sequence": sequence,
+        "event_kind": "photo_caption", "role": "assistant", "content": caption,
+        "media_ref": str(media_dir / f"{image_id}.png"),
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -882,6 +894,7 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
     assert calls["state"][0][0] == conversation_sources.MENTRA_CONVERSATION_ID
     assert calls["cross"][0]["conversation_id"] == conversation_sources.MENTRA_CONVERSATION_ID
     prompt = calls["token"][0]["system_instruction"]
+    assert prompt.count(mentra_routes._PHOTO_CAPTION_GUIDANCE) == 1
     assert calls["prompts"] == [(prompt, body["model"])]
     headings = [
         "Today is server time.",
@@ -2409,8 +2422,7 @@ def test_snapshot_finalize_shares_memory_claim_and_preserves_waiting_auto_memori
         async with AsyncClient(transport=ASGITransport(app=client.app), base_url="http://test") as http:
             sitting = (await http.post("/integration/mentra/session/start", json=START)).json()["session_id"]
             base = f"/integration/mentra/session/{sitting}"
-            caption = {"event_id": f"{sitting}:1", "sequence": 1, "event_kind": "transcript",
-                       "role": "assistant", "content": "A fictional photo caption.", "status": "complete"}
+            caption = _photo_caption_event(sitting, 1, "shared-claim", "A fictional photo caption.")
             (await http.post(f"{base}/transcripts/append", json={**scope, "events": [caption]})).raise_for_status()
             stored = await http.post(f"{base}/snapshot", json={
                 **scope, "image_id": "shared-claim", "mime_type": "image/png", "data": "AQID",
@@ -2428,6 +2440,7 @@ def test_snapshot_finalize_shares_memory_claim_and_preserves_waiting_auto_memori
                 assert owners[owner_key] is (owner_kind == "import")
                 waiting_reply = await asyncio.wait_for(http.post(f"{base}/transcripts/append", json={
                     **scope, "events": [{**caption, "event_id": f"{sitting}:2", "sequence": 2,
+                                         "event_kind": "transcript", "status": "complete", "media_ref": None,
                                          "content": "A reply while the photo waits for memory work."}],
                 }), 1)
                 waiting_reply.raise_for_status()
@@ -2450,6 +2463,7 @@ def test_snapshot_finalize_shares_memory_claim_and_preserves_waiting_auto_memori
                     queue_auto = True
                     reply = await asyncio.wait_for(http.post(f"{base}/transcripts/append", json={
                         **scope, "events": [{**caption, "event_id": f"{sitting}:3", "sequence": 3,
+                                             "event_kind": "transcript", "status": "complete", "media_ref": None,
                                              "content": "A reply while photo filing holds the claim."}],
                     }), 1)
                     reply.raise_for_status()
@@ -2500,11 +2514,8 @@ def test_snapshot_finalize_keeps_reply_publication_available_and_photos_fifo(
         async with AsyncClient(transport=ASGITransport(app=client.app), base_url="http://test") as http:
             sitting = (await http.post("/integration/mentra/session/start", json=START)).json()["session_id"]
             base = f"/integration/mentra/session/{sitting}"
-            captions = [{
-                "event_id": f"{sitting}:{number}", "sequence": number,
-                "event_kind": "transcript", "role": "assistant",
-                "content": f"Fictional photo {number}", "status": "complete",
-            } for number in range(1, 5)]
+            captions = [_photo_caption_event(sitting, number, f"fifo-{number}", f"Fictional photo {number}")
+                        for number in range(1, 5)]
             (await http.post(f"{base}/transcripts/append", json={**scope, "events": captions})).raise_for_status()
             payloads = []
             for number in range(1, 4):
@@ -2543,6 +2554,7 @@ def test_snapshot_finalize_keeps_reply_publication_available_and_photos_fifo(
             before_reply = len(calls["state_writes"])
             reply = await asyncio.wait_for(http.post(f"{base}/transcripts/append", json={
                 **scope, "events": [{**captions[0], "event_id": f"{sitting}:5", "sequence": 5,
+                                    "event_kind": "transcript", "status": "complete", "media_ref": None,
                                     "content": "A reply while photo providers wait."}],
             }), 1)
             reply.raise_for_status()
@@ -2596,9 +2608,8 @@ def test_snapshot_finalize_predecessor_outcomes_do_not_poison_other_photos(
             sitting = (await http.post("/integration/mentra/session/start", json=START)).json()["session_id"]
             base = f"/integration/mentra/session/{sitting}"
             captions = ["Fictional predecessor", "Fictional successor", "Fictional last photo"]
-            events = [{"event_id": f"{sitting}:{number}", "sequence": number,
-                       "event_kind": "transcript", "role": "assistant", "content": caption,
-                       "status": "complete"} for number, caption in enumerate(captions, 1)]
+            events = [_photo_caption_event(sitting, number, f"isolation-{number}", caption)
+                      for number, caption in enumerate(captions, 1)]
             (await http.post(f"{base}/transcripts/append", json={**scope, "events": events})).raise_for_status()
             tasks = []
             for number, event in enumerate(events, 1):
@@ -2658,9 +2669,8 @@ def test_snapshot_finalize_coalesces_completed_registered_future_until_cleanup(
         async with AsyncClient(transport=ASGITransport(app=client.app), base_url="http://test") as http:
             sitting = (await http.post("/integration/mentra/session/start", json=START)).json()["session_id"]
             base = f"/integration/mentra/session/{sitting}"
-            events = [{"event_id": f"{sitting}:{number}", "sequence": number,
-                       "event_kind": "transcript", "role": "assistant", "content": caption,
-                       "status": "complete"} for number, caption in enumerate(["Fictional caption", "Different caption"], 1)]
+            events = [_photo_caption_event(sitting, number, "completed-photo", caption)
+                      for number, caption in enumerate(["Fictional caption", "Different caption"], 1)]
             (await http.post(f"{base}/transcripts/append", json={**scope, "events": events})).raise_for_status()
             stored = await http.post(f"{base}/snapshot", json={
                 **scope, "image_id": "completed-photo", "mime_type": "image/png",
@@ -2714,11 +2724,7 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
             "data": base64.b64encode(b"fictional-png").decode(),
         },
     )
-    caption_event = {
-        "event_id": f"{sitting_id}:1", "sequence": 1,
-        "event_kind": "transcript", "role": "assistant",
-        "content": "A fictional magenta square.", "status": "complete",
-    }
+    caption_event = _photo_caption_event(sitting_id, 1, "image-2", "A fictional magenta square.")
     client.post(
         f"/integration/mentra/session/{sitting_id}/transcripts/append",
         json={**scope, "events": [caption_event, {
@@ -2794,7 +2800,10 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
     }
 
 
-@pytest.mark.parametrize("mismatch", ["missing", "event_id", "role", "event_kind", "content", "soul", "owner"])
+@pytest.mark.parametrize("mismatch", [
+    "missing", "event_id", "role", "event_kind", "transcript", "content", "soul", "owner",
+    "media_ref", "missing_media_ref", "transcript_status",
+])
 def test_snapshot_finalize_discards_caption_without_exact_scoped_history(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2807,11 +2816,12 @@ def test_snapshot_finalize_discards_caption_without_exact_scoped_history(
     scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
     caption = "A fictional discarded photo caption."
     caption_id = f"{sitting_id}:1"
-    row = {
-        "event_id": caption_id, "sequence": 1,
-        "event_kind": "transcript", "role": "assistant", "content": caption,
-        "transcript_status": "complete", "received_at": "2026-10-07T10:00:00.000Z",
-    }
+    row = {**_photo_caption_event(sitting_id, 1, "discarded-image", caption),
+           "received_at": "2026-10-07T10:00:00.000Z"}
+    client.post(f"/integration/mentra/session/{sitting_id}/snapshot", json={
+        **scope, "image_id": "discarded-image", "mime_type": "image/png",
+        "data": base64.b64encode(b"fictional original").decode(),
+    }).raise_for_status()
     saved_scope = dict(scope)
     if mismatch == "event_id":
         row["event_id"] = f"{sitting_id}:2"
@@ -2819,6 +2829,15 @@ def test_snapshot_finalize_discards_caption_without_exact_scoped_history(
         row["role"] = "user"
     elif mismatch == "event_kind":
         row["event_kind"] = "sitting_summary"
+    elif mismatch == "transcript":
+        row["event_kind"] = "transcript"
+        row["transcript_status"] = "complete"
+    elif mismatch == "transcript_status":
+        row["transcript_status"] = "complete"
+    elif mismatch == "media_ref":
+        row["media_ref"] = _photo_caption_event(sitting_id, 1, "another-image", caption)["media_ref"]
+    elif mismatch == "missing_media_ref":
+        row.pop("media_ref")
     elif mismatch == "content":
         row["content"] = "A different fictional caption."
     elif mismatch == "soul":
@@ -2838,7 +2857,6 @@ def test_snapshot_finalize_discards_caption_without_exact_scoped_history(
         raise AssertionError("discarded captions must not start config/media/model work")
 
     monkeypatch.setattr(mentra_routes, "_require_image_embedding_config", unexpected_work)
-    monkeypatch.setattr(mentra_routes, "_media_directory", unexpected_work)
     payload = {
         **scope, "image_id": "discarded-image", "caption": caption,
         "caption_event_id": caption_id,
@@ -2880,11 +2898,7 @@ def test_snapshot_finalize_rejects_non_multimodal_runtime(
     )
     client.post(
         f"/integration/mentra/session/{sitting_id}/transcripts/append",
-        json={**scope, "events": [{
-            "event_id": f"{sitting_id}:1", "sequence": 1,
-            "event_kind": "transcript", "role": "assistant",
-            "content": "A fictional image.", "status": "complete",
-        }]},
+        json={**scope, "events": [_photo_caption_event(sitting_id, 1, "image-disabled", "A fictional image.")]},
     ).raise_for_status()
     config["llm"]["embedding"] = {}
 
@@ -2921,10 +2935,9 @@ def test_replacement_photo_check_observes_existing_worker_only_when_requested(mo
             base = f"/integration/mentra/session/{first}"
             caption = "A fictional lighthouse photograph."
             event_id = f"{first}:1"
-            (await http.post(f"{base}/transcripts/append", json={**scope, "events": [{
-                "event_id": event_id, "sequence": 1, "event_kind": "transcript", "role": "assistant",
-                "content": caption, "status": "complete",
-            }]})).raise_for_status()
+            (await http.post(f"{base}/transcripts/append", json={**scope, "events": [
+                _photo_caption_event(first, 1, "observed-photo", caption),
+            ]})).raise_for_status()
             stored = await http.post(f"{base}/snapshot", json={**scope, "image_id": "observed-photo",
                 "mime_type": "image/png", "data": base64.b64encode(b"fictional-photo").decode()})
             stored.raise_for_status()
@@ -2984,11 +2997,7 @@ def test_snapshot_finalize_failure_keeps_bytes_and_reports_error(
     )
     client.post(
         f"/integration/mentra/session/{sitting_id}/transcripts/append",
-        json={**scope, "events": [{
-            "event_id": f"{sitting_id}:1", "sequence": 1,
-            "event_kind": "transcript", "role": "assistant",
-            "content": "A fictional failed image.", "status": "complete",
-        }]},
+        json={**scope, "events": [_photo_caption_event(sitting_id, 1, "image-3", "A fictional failed image.")]},
     ).raise_for_status()
     finalized = client.post(
         f"{base}/finalize",
@@ -3020,23 +3029,76 @@ def _file_test_photo(client: TestClient, *, image_id: str = "durable-photo") -> 
     base = f"/integration/mentra/session/{sitting}"
     client.post(f"{base}/snapshot", json={**scope, "image_id": image_id,
                 "mime_type": "image/png", "data": base64.b64encode(b"fictional image").decode()}).raise_for_status()
-    event = {"event_id": f"{sitting}:1", "sequence": 1, "event_kind": "transcript",
-             "role": "assistant", "content": "A fictional blue notebook.", "status": "complete"}
+    event = _photo_caption_event(sitting, 1, image_id, "A fictional blue notebook.")
     client.post(f"{base}/transcripts/append", json={**scope, "events": [event]}).raise_for_status()
     payload = {**scope, "image_id": image_id, "caption": event["content"], "caption_event_id": event["event_id"]}
     client.post(f"{base}/snapshot/finalize", json=payload).raise_for_status()
     return scope, payload
 
 
-def test_zero_item_photo_completion_survives_rediscovery(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("history_state", ["missing", "newer_caption"])
+def test_zero_item_photo_completion_survives_rediscovery(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, history_state) -> None:
     client, calls, _ = _session_app(monkeypatch, tmp_path)
     scope, payload = _file_test_photo(client)
     calls["memory_items"].clear()
     sitting = payload["caption_event_id"].split(":")[0]
+    record_path, = (tmp_path / "resources" / "mentra_media").glob("*/*.filing.json")
+    accepted = record_path.read_bytes()
+    history_path, = (tmp_path / "transcripts").rglob("latest_history.json")
+    newer = _photo_caption_event(sitting, 2, "durable-photo", "A different fictional caption.")
+    if history_state == "missing":
+        history_path.unlink()
+    else:
+        conversation_sources.persist_mentra_history_snapshot(
+            storage_dir=tmp_path, **scope, conversation_id="mentra:iris",
+            history=[{**newer, "received_at": "2026-10-20T10:00:00Z"}],
+        )
     reply = client.post(f"/integration/mentra/session/{sitting}/snapshot/finalize", json=payload)
+    assert reply.json()["durable"] is True and reply.json()["duplicate"] is True
     assert reply.json()["queued"] is False
+    conflict = client.post(f"/integration/mentra/session/{sitting}/snapshot/finalize", json={
+        **payload, "caption": newer["content"], "caption_event_id": newer["event_id"],
+    })
+    assert conflict.status_code == 409
+    assert record_path.read_bytes() == accepted
     assert len(calls["image_memorize"]) == 1
-    assert client.get("/integration/mentra/status", params=scope).json()["failed_photos"] == []
+    if history_state != "missing":
+        assert client.get("/integration/mentra/status", params=scope).json()["failed_photos"] == []
+
+
+@pytest.mark.parametrize("status,mismatch", [
+    ("queued", None), ("running", None), ("complete", None), ("failed", None), ("discarded", None),
+    ("complete", "user_id"), ("complete", "soul_id"), ("complete", "image_id"), ("complete", "media_ref"),
+])
+def test_snapshot_replay_exposes_only_matching_receipt_after_reconnect(monkeypatch, tmp_path, status, mismatch):
+    client, _, _ = _session_app(monkeypatch, tmp_path)
+    scope, payload = _file_test_photo(client)
+    sitting = payload["caption_event_id"].split(":")[0]
+    client.post(f"/integration/mentra/session/{sitting}/end", json=scope).raise_for_status()
+    restarted, calls, _ = _session_app(monkeypatch, tmp_path)
+    new_sitting = restarted.post("/integration/mentra/session/start", json=START).json()["session_id"]
+    record_path, = (tmp_path / "resources" / "mentra_media").glob("*/*.filing.json")
+    record = json.loads(record_path.read_text())
+    record["status"] = status
+    if mismatch:
+        record[mismatch] = "unrelated-fictional-identity"
+    mentra_routes._write_photo_filing(record_path, record)
+    before = record_path.read_bytes()
+    replay = restarted.post(f"/integration/mentra/session/{new_sitting}/snapshot/replay", json={
+        **scope, "image_id": payload["image_id"],
+    })
+    if mismatch:
+        assert replay.status_code == 409
+        assert payload["caption"] not in replay.text
+    else:
+        replay.raise_for_status()
+        assert replay.json()["filing"] == {
+            "caption": payload["caption"], "caption_event_id": payload["caption_event_id"], "status": status,
+        }
+        assert base64.b64decode(replay.json()["data"]) == b"fictional image"
+    assert record_path.read_bytes() == before
+    assert calls["image_memorize"] == []
+    assert mentra_routes._image_finalize_tasks == {}
 
 
 def test_photo_retry_clears_the_active_observers_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -3049,6 +3111,13 @@ def test_photo_retry_clears_the_active_observers_error(monkeypatch: pytest.Monke
     sitting = payload["caption_event_id"].split(":")[0]
     heartbeat = f"/integration/mentra/session/{sitting}/heartbeat"
     assert "background_error" in client.post(heartbeat, json=scope).json()
+    with monkeypatch.context() as patch:
+        def unavailable_history(**_kwargs):
+            raise AssertionError("accepted receipts must precede live-history lookup")
+        patch.setattr(conversation_sources, "load_mentra_history_snapshot", unavailable_history)
+        response = client.post(f"/integration/mentra/session/{sitting}/snapshot/finalize", json=payload)
+        assert response.json() == {"ok": True, "durable": True, "queued": False, "failed": True}
+        assert len(calls["image_memorize"]) == 1
     client.post("/integration/mentra/photos/durable-photo/retry", json=scope).raise_for_status()
     assert "background_error" not in client.post(heartbeat, json=scope).json()
     assert len(calls["image_memorize"]) == 2
@@ -3122,9 +3191,11 @@ def test_failed_photo_discard_is_scoped_and_does_not_delete_original(monkeypatch
     assert len(calls["image_memorize"]) == 1
 
 
+@pytest.mark.parametrize("event_kind", ["image", "photo_caption"])
 def test_image_transcript_event_round_trips_media_reference(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    event_kind: str,
 ) -> None:
     client, _, _ = _session_app(monkeypatch, tmp_path)
     sitting_id = client.post(
@@ -3140,6 +3211,8 @@ def test_image_transcript_event_round_trips_media_reference(
         "content": "Shared a photo.",
         "media_ref": "mentra_media/fictional-scope/image-1.jpg",
     }
+    if event_kind == "photo_caption":
+        event.update(event_kind="photo_caption", role="assistant", content="A fictional orange kite.")
 
     accepted = client.post(endpoint, json={**scope, "events": [event]})
     duplicate = client.post(endpoint, json={**scope, "events": [event]})
@@ -3159,7 +3232,17 @@ def test_image_transcript_event_round_trips_media_reference(
     assert accepted.status_code == duplicate.status_code == 200
     assert duplicate.json()["duplicates"] == 1
     assert invalid.status_code == 422
-    assert history[0]["event_kind"] == "image"
+    if event_kind == "photo_caption":
+        for patch in ({"role": "user"}, {"status": "complete"}, {"media_ref": None},
+                      {"mic_source": "phone"}, {"content": " "}):
+            assert client.post(endpoint, json={**scope, "events": [{**event, **patch}]}).status_code == 422
+        assert history[0]["content"] == "[Internal visual perception; not spoken aloud] " + event["content"]
+        raw = conversation_sources.load_mentra_history_snapshot(
+            storage_dir=tmp_path, **scope, conversation_id="mentra:iris",
+        )
+        assert raw[0]["content"] == event["content"]
+        assert "transcript_status" not in raw[0]
+    assert history[0]["event_kind"] == event_kind
     assert history[0]["media_ref"] == event["media_ref"]
     assert history[0]["source_conversation_index"] == 1
 
@@ -3223,7 +3306,7 @@ def test_token_mint_uses_measured_constrained_wire(
     assert setup["model"] == "models/gemini-3.8-live"
     declarations = setup["tools"][0]["functionDeclarations"]
     assert [tool["name"] for tool in declarations] == [
-        "recall_memory", "read_working_state", "save_working_thought", "annul_intention",
+        "recall_memory", "read_working_state", "save_working_thought", "annul_intention", "save_photo_caption",
     ]
     assert all(tool["behavior"] == "NON_BLOCKING" for tool in declarations)
     assert declarations[0]["description"] == mentra_routes._RECALL_TOOL_DESCRIPTION
@@ -3234,6 +3317,14 @@ def test_token_mint_uses_measured_constrained_wire(
     assert declarations[2]["parameters"]["required"] == ["thought"]
     assert declarations[3]["parameters"]["required"] == ["intention_id", "status"]
     assert declarations[3]["parameters"]["properties"]["status"]["enum"] == ["completed", "deleted"]
+    assert declarations[4]["description"] == (
+        "If a photo successfully arrives, use save_photo_caption(image_id, caption) to save your perception "
+        "of the photo, so you will remember what this moment was about later on. Do not speak the caption out loud."
+    )
+    assert declarations[4]["parameters"] == {
+        "type": "OBJECT", "properties": {"image_id": {"type": "STRING"}, "caption": {"type": "STRING"}},
+        "required": ["image_id", "caption"],
+    }
     assert setup["realtimeInputConfig"] == {
         "automaticActivityDetection": activity_detection,
     }

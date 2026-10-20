@@ -402,6 +402,26 @@ owner/Soul-scoped photo Retry or Discard, available without a sitting lease.
 Discard retains original bytes. A completed record includes successful zero-item
 extraction, so rediscovery or duplicate finalize does not repeat it.
 
+Photo finalization reads an existing scoped filing receipt before live history,
+so lost-ack replay survives removed/replaced history and conflicting later captions
+cannot overwrite accepted ownership. New handoffs require the referenced assistant
+`photo_caption` event's exact caption and original scoped `media_ref`, without
+transcript status; ordinary assistant dialogue is not a caption. Iris appends this
+event before calling finalize. The fifth NON_BLOCKING Live tool,
+`save_photo_caption(image_id, caption)`, requests that existing handoff, not another
+worker. Snapshot replay exposes an optional `filing` containing only `caption`,
+`caption_event_id` and `status` after checking owner/Soul/image/media identity;
+the read neither queues work nor retries failures.
+
+`conversation_sources.load_chat_snapshot_tail` preserves caption event/media
+metadata and prefixes its display content with an internal, not-spoken label,
+without altering the stored caption. Downstream renderers must preserve that
+meaning: `event_kind=photo_caption`, `role=assistant`, `media_ref` identifying the
+original, and no `transcript_status`. The shared memU grouped renderer currently
+projects only role/speaker/content/time into `format_chat_messages`; the content
+label survives, but a distinct perception presentation would need event metadata
+retained through that projection rather than inferring speech from assistant role.
+
 Photo finalization checks registered work before saved memory rows. An explicit
 re-finalize joins that worker and selects the latest validated sitting to receive
 its outcome; merely starting a replacement sitting does not subscribe it. Error
@@ -416,8 +436,8 @@ filing state is written after the worker succeeds; legacy saved-item duplicate
 evidence without a filing record retains its prior completed interpretation.
 Iris journals upload identity before sending, keeps unconfirmed outcomes visible,
 and clears its pending photo only after durable handoff. Photo finalization no
-longer blocks later transcript appends. Model-specific caption generation, silent
-caption events and the bounded Stop drain remain separate migration work.
+longer blocks later transcript appends. Client-side caption generation, requested
+answer settlement and the bounded Stop drain remain separate migration work.
 These boundaries have fictional restart/failure, scope, zero-item, post-save
 recovery and slow-finalization checks; no live provider/phone acceptance is implied.
 
