@@ -833,6 +833,69 @@ def test_start_validation_precedes_bootstrap(
     assert calls["token"] == []
 
 
+@pytest.mark.parametrize("model", [
+    "", "custom-model", "models/gemini-3.8-live", " gemini-3.8-live",
+    "gemini-3.8-live-extended-thinking ", "GEMINI-3.8-LIVE", 38,
+])
+def test_start_rejects_invalid_model_before_side_effects(monkeypatch, tmp_path, model):
+    client, calls, config = _session_app(monkeypatch, tmp_path)
+    before = copy.deepcopy(config)
+    files = sorted(tmp_path.rglob("*"))
+
+    def unexpected_history(**_kwargs):
+        raise AssertionError("invalid model must not read or recover history")
+
+    monkeypatch.setattr(mentra_routes.conversation_sources, "load_mentra_history_snapshot", unexpected_history)
+    response = client.post("/integration/mentra/session/start", json={
+        **START, "model": model, "recovery": _recovered_transcripts(),
+    })
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Invalid session start"}
+    assert calls["service"] == 0
+    assert calls["token"] == calls["state_writes"] == calls["route_telemetry"] == []
+    assert not mentra_routes._leases and not mentra_routes._start_claims
+    assert config == before
+    assert sorted(tmp_path.rglob("*")) == files
+
+
+@pytest.mark.parametrize(("choice", "configured"), [
+    (None, "custom-live-model"),
+    ("gemini-3.8-live", "custom-live-model"),
+    ("gemini-3.8-live-extended-thinking", "custom-live-model"),
+    ("gemini-3.8-live", None),
+    ("gemini-3.8-live-extended-thinking", None),
+])
+def test_start_model_choice_and_renewal_remain_lease_pinned(monkeypatch, tmp_path, choice, configured):
+    client, calls, config = _session_app(monkeypatch, tmp_path)
+    if configured is None:
+        config["mentra"].pop("model")
+    else:
+        config["mentra"]["model"] = configured
+    before = copy.deepcopy(config)
+    scope = {key: START[key] for key in ("user_id", "soul_id", "device_session_id")}
+    status = client.get("/integration/mentra/status", params=scope).json()
+    assert status["configured_model"] == configured
+    assert status["active_model"] is None
+
+    response = client.post("/integration/mentra/session/start", json={
+        **START, **({"model": choice} if choice is not None else {}),
+    })
+    assert response.status_code == 200
+    resolved = choice or configured
+    assert response.json()["model"] == calls["token"][0]["model"] == resolved
+    assert config == before
+
+    config["mentra"]["model"] = "edited-server-model"
+    base = f"/integration/mentra/session/{response.json()['session_id']}"
+    assert client.post(f"{base}/token", json=scope).status_code == 200
+    assert calls["token"][1] == calls["token"][0]
+    status = client.get("/integration/mentra/status", params=scope).json()
+    assert status["configured_model"] == "edited-server-model"
+    assert status["active_model"] == resolved
+    assert client.post(f"{base}/end", json=scope).status_code == 200
+    assert client.get("/integration/mentra/status", params=scope).json()["active_model"] is None
+
+
 @pytest.mark.parametrize("marker", [None, "iris-photo-work-v0", "iris-photo-work-v1"])
 def test_start_rejects_incompatible_photo_protocol_before_mint_or_lease(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, marker: str | None,
@@ -3741,10 +3804,14 @@ def test_image_transcript_event_round_trips_media_reference(
         ("manual", {"disabled": True}),
     ],
 )
+@pytest.mark.parametrize("model", [
+    "gemini-3.8-live", "gemini-3.8-live-extended-thinking", "custom-live-model",
+])
 def test_token_mint_uses_measured_constrained_wire(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
     activity_detection: dict[str, Any],
+    model: str,
 ) -> None:
     captured: dict[str, Any] = {}
 
@@ -3764,7 +3831,7 @@ def test_token_mint_uses_measured_constrained_wire(
     token = asyncio.run(
         mentra_routes._mint_gemini_token(
             api_key="secret",
-            model="gemini-3.8-live",
+            model=model,
             voice="Kore",
             system_instruction="fictional context",
             mode=mode,
@@ -3784,7 +3851,15 @@ def test_token_mint_uses_measured_constrained_wire(
         "inputAudioTranscription,outputAudioTranscription,contextWindowCompression,"
         "historyConfig"
     )
-    assert setup["model"] == "models/gemini-3.8-live"
+    assert setup["model"] == f"models/{model}"
+    generation = {
+        "responseModalities": ["AUDIO"],
+        "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Kore"}}},
+    }
+    if model == "gemini-3.8-live-extended-thinking":
+        generation["thinkingConfig"] = {"thinkingLevel": "LOW"}
+    assert setup["generationConfig"] == generation
+    assert setup["systemInstruction"] == {"parts": [{"text": "fictional context"}]}
     declarations = setup["tools"][0]["functionDeclarations"]
     assert [tool["name"] for tool in declarations] == [
         "recall_memory", "read_working_state", "save_working_thought", "annul_intention", "save_photo_caption",
@@ -3834,11 +3909,12 @@ def test_token_mint_uses_measured_constrained_wire(
 
 
 @pytest.mark.parametrize("mode", ["continuous", "manual"])
+@pytest.mark.parametrize("model", ["gemini-3.8-live", "gemini-3.8-live-extended-thinking"])
 def test_start_and_renewal_mint_identical_six_tool_contract(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str, model: str,
 ) -> None:
     mint = mentra_routes._mint_gemini_token
-    client, _, _ = _session_app(monkeypatch, tmp_path)
+    client, _, config = _session_app(monkeypatch, tmp_path)
     payloads: list[dict[str, Any]] = []
 
     def urlopen(request: Any, timeout: int) -> io.BytesIO:
@@ -3847,9 +3923,10 @@ def test_start_and_renewal_mint_identical_six_tool_contract(
 
     monkeypatch.setattr(mentra_routes, "_mint_gemini_token", mint)
     monkeypatch.setattr(mentra_routes.urllib.request, "urlopen", urlopen)
-    started = client.post("/integration/mentra/session/start", json={**START, "mode": mode})
+    started = client.post("/integration/mentra/session/start", json={**START, "mode": mode, "model": model})
     assert started.status_code == 200
     assert started.json()["photo_work_protocol"] == "iris-photo-work-v2"
+    config["mentra"]["model"] = "edited-server-model"
     renewed = client.post(
         f"/integration/mentra/session/{started.json()['session_id']}/token",
         json={"user_id": START["user_id"], "soul_id": START["soul_id"]},

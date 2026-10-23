@@ -136,6 +136,7 @@ class MentraSessionStart(BaseModel):
     device_session_id: str
     mode: str
     photo_work_protocol: Literal["iris-photo-work-v2"]
+    model: Literal["gemini-3.8-live", "gemini-3.8-live-extended-thinking"] | None = None
     recovery: MentraTranscriptRecovery | None = None
 
     @field_validator("user_id", "soul_id")
@@ -742,6 +743,8 @@ async def _mint_gemini_token(
         "contextWindowCompression": {"slidingWindow": {}},
         "historyConfig": {},
     }
+    if model == "gemini-3.8-live-extended-thinking":
+        setup["generationConfig"]["thinkingConfig"] = {"thinkingLevel": "LOW"}
     body = json.dumps(
         {
             "uses": 8,
@@ -1132,6 +1135,8 @@ def register_mentra_routes(
             "state": state,
             "detail": detail,
             "active": active is not None,
+            "configured_model": str(config.get("model") or "").strip() or None,
+            "active_model": active.model if active else None,
             "starting": starting,
             "busy": busy,
             "sessions": sessions,
@@ -1301,7 +1306,7 @@ def register_mentra_routes(
         api_key = str(config.get("gemini_api_key") or "").strip()
         if not api_key:
             reject_start(503, "Mentra Gemini credential is not configured")
-        model = str(config.get("model") or "").strip()
+        model = body.model or str(config.get("model") or "").strip()
         voice = str(config.get("voice") or "").strip()
         warning_seconds = config.get("session_warning_seconds", 0)
         if not model:

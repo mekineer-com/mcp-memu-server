@@ -182,6 +182,14 @@ with the selected user/soul/device to retain gap visibility after the lease ends
 Unscoped status lists installations and owner-scoped live sittings; it does not
 guess a chat from the last reporting app.
 
+Mentra Start accepts optional `model`: exactly `gemini-3.8-live` or
+`gemini-3.8-live-extended-thinking`. Omission retains the configured model,
+including custom IDs; an explicit choice needs no configured model and never
+edits config. Start returns the resolved model; the lease pins token renewal.
+Only the exact Thinking model adds `generationConfig.thinkingConfig.thinkingLevel: LOW`.
+Status exposes nullable `configured_model` and scoped `active_model` as information;
+Start remains authoritative.
+
 ## Extracted Modules
 
 | Module | Purpose |
