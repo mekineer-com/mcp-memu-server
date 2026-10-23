@@ -124,6 +124,7 @@ class MentraSessionStart(BaseModel):
     soul_id: SoulId
     device_session_id: str
     mode: str
+    photo_work_protocol: Literal["iris-photo-work-v1"]
 
     @field_validator("user_id", "soul_id")
     @classmethod
@@ -666,6 +667,12 @@ async def _mint_gemini_token(
                             },
                             "required": ["image_id", "caption"],
                         },
+                    },
+                    {
+                        "name": "nothing_to_add",
+                        "description": "Choose not to speak when there is nothing worthwhile to add to the conversation.",
+                        "behavior": "NON_BLOCKING",
+                        "parameters": {"type": "OBJECT", "properties": {}},
                     }
                 ]
             }
@@ -1288,6 +1295,7 @@ def register_mentra_routes(
             "session_id": sitting_id,
             "conversation_id": conversation_id,
             "next_transcript_sequence": next_sequence,
+            "photo_work_protocol": body.photo_work_protocol,
             "model": model,
             "voice": voice,
             "ephemeral_token": token,

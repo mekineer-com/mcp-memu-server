@@ -27,6 +27,7 @@ START = {
     "soul_id": "Codexia",
     "device_session_id": "phone-1",
     "mode": "continuous",
+    "photo_work_protocol": "iris-photo-work-v1",
 }
 
 
@@ -824,6 +825,24 @@ def test_start_validation_precedes_bootstrap(
     assert calls["token"] == []
 
 
+@pytest.mark.parametrize("marker", [None, "iris-photo-work-v0"])
+def test_start_rejects_incompatible_photo_protocol_before_mint_or_lease(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, marker: str | None,
+) -> None:
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    body = {**START, "photo_work_protocol": marker}
+    if marker is None:
+        body.pop("photo_work_protocol")
+    response = client.post("/integration/mentra/session/start", json=body)
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "photo_work_protocol"]
+    assert calls["service"] == 0
+    assert calls["token"] == []
+    assert calls["state_writes"] == []
+    assert not mentra_routes._leases
+    assert not mentra_routes._start_claims
+
+
 def test_start_allows_same_user_and_soul_name(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     client, _, _ = _session_app(monkeypatch, tmp_path)
     assert client.post(
@@ -878,6 +897,7 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
         "session_id": "sitting-1",
         "conversation_id": conversation_sources.MENTRA_CONVERSATION_ID,
         "next_transcript_sequence": 1,
+        "photo_work_protocol": "iris-photo-work-v1",
         "model": "gemini-2.5-flash-native-audio-preview-12-2025",
         "voice": "Kore",
         "ephemeral_token": "ephemeral-1",
@@ -3426,6 +3446,7 @@ def test_token_mint_uses_measured_constrained_wire(
     declarations = setup["tools"][0]["functionDeclarations"]
     assert [tool["name"] for tool in declarations] == [
         "recall_memory", "read_working_state", "save_working_thought", "annul_intention", "save_photo_caption",
+        "nothing_to_add",
     ]
     assert all(tool["behavior"] == "NON_BLOCKING" for tool in declarations)
     assert declarations[0]["description"] == mentra_routes._RECALL_TOOL_DESCRIPTION
@@ -3443,6 +3464,12 @@ def test_token_mint_uses_measured_constrained_wire(
     assert declarations[4]["parameters"] == {
         "type": "OBJECT", "properties": {"image_id": {"type": "STRING"}, "caption": {"type": "STRING"}},
         "required": ["image_id", "caption"],
+    }
+    assert declarations[5] == {
+        "name": "nothing_to_add",
+        "description": "Choose not to speak when there is nothing worthwhile to add to the conversation.",
+        "behavior": "NON_BLOCKING",
+        "parameters": {"type": "OBJECT", "properties": {}},
     }
     assert setup["realtimeInputConfig"] == {
         "automaticActivityDetection": activity_detection,
@@ -3462,6 +3489,41 @@ def test_token_mint_uses_measured_constrained_wire(
     now = datetime.now(UTC)
     assert 29 * 60 < (expires - now).total_seconds() <= 30 * 60
     assert 29 * 60 < (new_session - now).total_seconds() <= 30 * 60
+
+
+@pytest.mark.parametrize("mode", ["continuous", "manual"])
+def test_start_and_renewal_mint_identical_six_tool_contract(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str,
+) -> None:
+    mint = mentra_routes._mint_gemini_token
+    client, _, _ = _session_app(monkeypatch, tmp_path)
+    payloads: list[dict[str, Any]] = []
+
+    def urlopen(request: Any, timeout: int) -> io.BytesIO:
+        payloads.append(json.loads(request.data))
+        return io.BytesIO(b'{"name":"ephemeral-offline"}')
+
+    monkeypatch.setattr(mentra_routes, "_mint_gemini_token", mint)
+    monkeypatch.setattr(mentra_routes.urllib.request, "urlopen", urlopen)
+    started = client.post("/integration/mentra/session/start", json={**START, "mode": mode})
+    assert started.status_code == 200
+    assert started.json()["photo_work_protocol"] == "iris-photo-work-v1"
+    renewed = client.post(
+        f"/integration/mentra/session/{started.json()['session_id']}/token",
+        json={"user_id": START["user_id"], "soul_id": START["soul_id"]},
+    )
+    assert renewed.status_code == 200
+    assert len(payloads) == 2
+    initial, renewal = payloads
+    assert initial["fieldMask"] == renewal["fieldMask"] == mentra_routes._TOKEN_SETUP_FIELD_MASK
+    assert initial["bidiGenerateContentSetup"] == renewal["bidiGenerateContentSetup"]
+    declarations = initial["bidiGenerateContentSetup"]["tools"][0]["functionDeclarations"]
+    assert [tool["name"] for tool in declarations] == [
+        "recall_memory", "read_working_state", "save_working_thought", "annul_intention",
+        "save_photo_caption", "nothing_to_add",
+    ]
+    assert all(tool["behavior"] == "NON_BLOCKING" for tool in declarations)
+    assert declarations[-1]["parameters"] == {"type": "OBJECT", "properties": {}}
 
 
 def test_partial_mentra_config_update_preserves_omitted_fields(
