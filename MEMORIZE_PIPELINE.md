@@ -90,6 +90,18 @@ without receipts remain outside this detection. After successful publication and
 state repair, non-gap transcript replay rechecks ordinary Memorize eligibility
 through the existing admission/coalescing path; gap-only replay does not trigger it.
 
+Start's optional phone recovery uses `mentra_routes._publish_transcript_events`,
+the same merge/publication/state/eligibility path as active-lease append. After
+anchor preparation, recovered original sitting/sequence IDs publish under the
+Soul lock before state/history rendering and token minting. That synchronous
+publication/context section has no provider await; ordinary Start retains its
+existing lock admission. Recovery acknowledgment names the submitted old sitting
+and last submitted sequence, not an unrelated global history maximum. Mint or
+response failure does not roll back published rows; exact replay repairs partial
+publication and state saves. Conflicting backups never overwrite stored rows.
+Phone journal preparation and acknowledgment consumption remain client-owned;
+server support alone does not mean that the phone already sends recovery.
+
 Do not confuse **source ownership** with **speaker identity**. The shared user
 and Soul scope alone do not establish a speaker. Generic Echo imports explicitly
 use `role: "user"` for the owner, as does native Replika `Customer`. See

@@ -204,6 +204,8 @@ def _session_app(
 
     def load_cross(**kwargs: str) -> str:
         calls["cross"].append(kwargs)
+        if loader := calls.get("cross_loader"):
+            return loader(**kwargs)
         return "[dm][Fictional Friend]\nFictional Friend: hello"
 
     def load_current(**kwargs: str) -> list[dict[str, Any]]:
@@ -835,7 +837,7 @@ def test_start_rejects_incompatible_photo_protocol_before_mint_or_lease(
         body.pop("photo_work_protocol")
     response = client.post("/integration/mentra/session/start", json=body)
     assert response.status_code == 422
-    assert response.json()["detail"][0]["loc"] == ["body", "photo_work_protocol"]
+    assert response.json() == {"detail": "Invalid session start"}
     assert calls["service"] == 0
     assert calls["token"] == []
     assert calls["state_writes"] == []
@@ -897,6 +899,7 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
         "session_id": "sitting-1",
         "conversation_id": conversation_sources.MENTRA_CONVERSATION_ID,
         "next_transcript_sequence": 1,
+        "recovery": None,
         "photo_work_protocol": "iris-photo-work-v2",
         "model": "gemini-2.5-flash-native-audio-preview-12-2025",
         "voice": "Kore",
@@ -1832,6 +1835,293 @@ def test_slow_recall_does_not_hold_lease_or_soul_lock(
         assert future.result(timeout=2).status_code == 200
 
 
+def _recovered_transcripts(count: int = 1) -> dict[str, Any]:
+    return {"sitting_id": "previous-sitting", "events": [
+        {"event_id": f"previous-sitting:{sequence}", "sequence": sequence,
+         "event_kind": "transcript", "role": "user", "status": "interrupted",
+         "content": f"Recovered fictional line {sequence}."}
+        for sequence in range(1, count + 1)
+    ]}
+
+
+def test_start_recovery_publishes_complete_tail_before_context_and_replays_exactly(monkeypatch, tmp_path):
+    from memu.utils.conversation import format_grouped_chat_history
+
+    client, calls, _ = _session_app(monkeypatch, tmp_path, token_results=["first", "replay", "prefix", "normal"])
+    recovery = _recovered_transcripts(20)
+
+    def context(**scope):
+        assert calls["soul_lock"].locked()
+        rows = conversation_sources.load_mentra_tail(
+            storage_dir=tmp_path, since_cursor=-1, recent_fallback_messages=0, **scope,
+        )
+        return format_grouped_chat_history(rows, soul_name=scope["soul_id"], mark_current_chat=False)
+
+    calls["cross_loader"] = context
+    first = client.post("/integration/mentra/session/start", json={**START, "recovery": recovery})
+    assert first.status_code == 200
+    assert first.json()["recovery"] == {"sitting_id": "previous-sitting", "ack_sequence": 20}
+    assert first.json()["next_transcript_sequence"] == 21
+    for event in recovery["events"]:
+        assert event["content"] in calls["token"][0]["system_instruction"]
+    scope = {"storage_dir": tmp_path, "user_id": START["user_id"],
+             "soul_id": START["soul_id"], "conversation_id": "mentra:iris"}
+    saved = conversation_sources.load_mentra_history_snapshot(**scope)
+    assert [row["event_id"] for row in saved] == [event["event_id"] for event in recovery["events"]]
+    assert len(calls["memorize_checks"]) == 1
+    replay = client.post("/integration/mentra/session/start", json={**START, "recovery": recovery})
+    assert replay.status_code == 200
+    assert replay.json()["recovery"] == first.json()["recovery"]
+    assert conversation_sources.load_mentra_history_snapshot(**scope) == saved
+    assert len(calls["memorize_checks"]) == 2
+    prefix = client.post("/integration/mentra/session/start", json={**START,
+        "recovery": {**recovery, "events": recovery["events"][:1]}})
+    assert prefix.json()["recovery"] == {"sitting_id": "previous-sitting", "ack_sequence": 1}
+    assert prefix.json()["next_transcript_sequence"] == 21
+    calls["cross_loader"] = None
+    normal = client.post("/integration/mentra/session/start", json=START)
+    assert normal.status_code == 200 and normal.json()["recovery"] is None
+    assert len(calls["memorize_checks"]) == 3
+
+
+def test_start_recovery_mint_failure_keeps_saved_rows_and_old_lease(monkeypatch, tmp_path):
+    client, calls, _ = _session_app(monkeypatch, tmp_path, token_results=["first", RuntimeError("fictional mint"), "retry"])
+    client.post("/integration/mentra/session/start", json=START).raise_for_status()
+    lease = mentra_routes._leases[START["soul_id"]]
+    recovery = _recovered_transcripts()
+    failed = client.post("/integration/mentra/session/start", json={**START, "recovery": recovery})
+    assert failed.status_code == 502
+    assert mentra_routes._leases[START["soul_id"]] is lease
+    assert not mentra_routes._start_claims
+    saved = conversation_sources.load_mentra_history_snapshot(storage_dir=tmp_path,
+        user_id=START["user_id"], soul_id=START["soul_id"], conversation_id="mentra:iris")
+    assert saved[0]["event_id"] == recovery["events"][0]["event_id"]
+    retry = client.post("/integration/mentra/session/start", json={**START, "recovery": recovery})
+    assert retry.status_code == 200
+    assert retry.json()["recovery"] == {"sitting_id": "previous-sitting", "ack_sequence": 1}
+    assert len(calls["memorize_checks"]) == 2
+
+
+@pytest.mark.parametrize("failure", ["receipt", "state"])
+def test_start_recovery_replay_repairs_partial_publication(monkeypatch, tmp_path, failure):
+    client, calls, _ = _session_app(monkeypatch, tmp_path, raise_server_exceptions=False,
+        state_results=[RuntimeError("fictional state write"), None] if failure == "state" else [])
+    writer = conversation_sources._write_chat_snapshot
+    refused = False
+
+    def write(path, data):
+        nonlocal refused
+        if failure == "receipt" and path.parent.name == ".published" and not refused:
+            refused = True
+            raise OSError("fictional publication write")
+        return writer(path, data)
+
+    monkeypatch.setattr(conversation_sources, "_write_chat_snapshot", write)
+    body = {**START, "recovery": _recovered_transcripts()}
+    failed = client.post("/integration/mentra/session/start", json=body)
+    assert failed.status_code == 500
+    assert calls["token"] == [] and not mentra_routes._leases and not mentra_routes._start_claims
+    repaired = client.post("/integration/mentra/session/start", json=body)
+    assert repaired.status_code == 200
+    assert repaired.json()["next_transcript_sequence"] == 2
+    assert repaired.json()["recovery"]["ack_sequence"] == 1
+    assert len(calls["memorize_checks"]) == 1
+    assert len(list((tmp_path / "transcripts" / ".published").glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize("conflict", ["content", "sitting", "hole", "prefix"])
+def test_start_recovery_conflict_does_not_replace_rows_or_publish_a_prefix(monkeypatch, tmp_path, conflict):
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    recovery = _recovered_transcripts()
+    client.post("/integration/mentra/session/start", json={**START, "recovery": recovery}).raise_for_status()
+    lease = mentra_routes._leases[START["soul_id"]]
+    scope = {"storage_dir": tmp_path, "user_id": START["user_id"], "soul_id": START["soul_id"], "conversation_id": "mentra:iris"}
+    before = conversation_sources.load_mentra_history_snapshot(**scope)
+    if conflict == "content":
+        recovery["events"][0]["content"] = "Conflicting fictional words."
+    elif conflict == "sitting":
+        recovery["sitting_id"] = "different-sitting"
+    elif conflict == "hole":
+        recovery["events"] = _recovered_transcripts(3)["events"][2:]
+    else:
+        recovery["events"] = _recovered_transcripts(3)["events"][1:]
+        recovery["events"][-1]["event_id"] = "different-sitting:3"
+    failed = client.post("/integration/mentra/session/start", json={**START, "recovery": recovery})
+    assert failed.status_code == 409
+    assert failed.json()["detail"] == {"code": "mentra_recovery_conflict", "expected_sequence": 3 if conflict == "prefix" else 2}
+    assert conversation_sources.load_mentra_history_snapshot(**scope) == before
+    assert mentra_routes._leases[START["soul_id"]] is lease
+    assert len(calls["token"]) == 1 and not mentra_routes._start_claims
+
+
+@pytest.mark.parametrize("invalid", ["event", "protocol", "json", "empty", "noncontiguous"])
+def test_start_recovery_validation_is_redacted_before_side_effects(monkeypatch, tmp_path, invalid):
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    body = {**START, "recovery": _recovered_transcripts()}
+    private = "PRIVATE-FICTIONAL-RECOVERY"
+    body["recovery"]["events"][0]["content"] = private
+    if invalid == "event":
+        body["recovery"]["events"][0]["unexpected"] = True
+    elif invalid == "protocol":
+        body.pop("photo_work_protocol")
+    elif invalid == "empty":
+        body["recovery"]["events"] = []
+    elif invalid == "noncontiguous":
+        body["recovery"]["events"] += _recovered_transcripts(3)["events"][2:]
+    response = (client.post("/integration/mentra/session/start", content=json.dumps(body)[:-1],
+                           headers={"Content-Type": "application/json"}) if invalid == "json"
+                else client.post("/integration/mentra/session/start", json=body))
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Invalid session start"}
+    assert private not in response.text
+    assert calls["service"] == 0 and calls["token"] == [] and calls["state_writes"] == []
+    assert not mentra_routes._leases and not mentra_routes._start_claims
+
+
+@pytest.mark.parametrize("gap", [False, True])
+def test_start_recovery_uses_ordinary_memorize_eligibility(monkeypatch, tmp_path, gap):
+    scheduled = []
+    client, calls, _ = _session_app(monkeypatch, tmp_path,
+        prepare_auto_memorize=lambda *_a, **_k: (9000, {"conversation": []}),
+        schedule_auto_memorize=lambda *args: scheduled.append(args) or "launched")
+    recovery = _recovered_transcripts()
+    if gap:
+        recovery["events"][0].update(event_kind="transcript_gap", content="Transcript unavailable.", status=None)
+    response = client.post("/integration/mentra/session/start", json={**START, "recovery": recovery})
+    assert response.status_code == 200
+    assert len(calls["memorize_checks"]) == len(scheduled) == (0 if gap else 1)
+
+
+@pytest.mark.parametrize("rejection", ["pause", "device", "config"])
+def test_start_recovery_does_not_publish_before_start_admission(monkeypatch, tmp_path, rejection):
+    client, calls, config = _session_app(monkeypatch, tmp_path)
+    body = {**START, "recovery": _recovered_transcripts()}
+    if rejection == "pause":
+        calls["pause_reason"] = "fictional recovery pending"
+    elif rejection == "device":
+        client.post("/integration/mentra/session/start", json=START).raise_for_status()
+        body["device_session_id"] = "another-phone"
+    else:
+        config["mentra"]["voice"] = ""
+    before = len(calls["token"])
+    response = client.post("/integration/mentra/session/start", json=body)
+    assert response.status_code == (503 if rejection == "config" else 409)
+    assert calls["state_writes"] == [] and calls["memorize_checks"] == []
+    assert len(calls["token"]) == before and not mentra_routes._start_claims
+    assert conversation_sources.load_mentra_history_snapshot(storage_dir=tmp_path,
+        user_id=START["user_id"], soul_id=START["soul_id"], conversation_id="mentra:iris") == []
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_start_recovery_preserves_published_source_errors(monkeypatch, tmp_path, missing):
+    client, calls, _ = _session_app(monkeypatch, tmp_path, raise_server_exceptions=False)
+    body = {**START, "recovery": _recovered_transcripts()}
+    client.post("/integration/mentra/session/start", json=body).raise_for_status()
+    path = conversation_sources._chat_snapshot_path(storage_dir=tmp_path, user_id=START["user_id"],
+        soul_id=START["soul_id"], conversation_id="mentra:iris", source_label="mentra")
+    if missing:
+        path.unlink()
+    else:
+        path.write_text("fictional corruption")
+    response = client.post("/integration/mentra/session/start", json=body)
+    assert response.status_code == 500
+    assert len(calls["token"]) == 1 and len(calls["state_writes"]) == 1
+    assert not path.exists() if missing else path.read_text() == "fictional corruption"
+
+
+def test_start_recovery_is_scoped_to_its_requested_soul(monkeypatch, tmp_path):
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    response = client.post("/integration/mentra/session/start", json={**START, "soul_id": "Quill",
+        "recovery": _recovered_transcripts()})
+    assert response.status_code == 200
+    assert calls["service_scope"] == {"user_id": START["user_id"], "soul_id": "Quill"}
+    for soul, length in [("Quill", 1), (START["soul_id"], 0)]:
+        rows = conversation_sources.load_mentra_history_snapshot(storage_dir=tmp_path,
+            user_id=START["user_id"], soul_id=soul, conversation_id="mentra:iris")
+        assert len(rows) == length
+
+
+def test_start_recovery_rechecks_pause_before_context_and_mint(monkeypatch, tmp_path):
+    def schedule(*_args):
+        calls["pause_reason"] = "fictional concurrent recovery"
+        return "launched"
+
+    client, calls, _ = _session_app(monkeypatch, tmp_path,
+        prepare_auto_memorize=lambda *_a, **_k: (9000, {"conversation": []}), schedule_auto_memorize=schedule)
+    response = client.post("/integration/mentra/session/start", json={**START, "recovery": _recovered_transcripts()})
+    assert response.status_code == 409 and response.json()["detail"]["code"] == "soul_paused"
+    assert calls["cross"] == [] and calls["token"] == []
+    assert len(calls["state_writes"]) == 1
+    assert not mentra_routes._leases and not mentra_routes._start_claims
+
+
+def test_start_recovery_rejects_context_changed_by_append_during_mint(monkeypatch, tmp_path):
+    client, calls, _ = _session_app(monkeypatch, tmp_path)
+    old = client.post("/integration/mentra/session/start", json=START).json()["session_id"]
+    old_lease = mentra_routes._leases[START["soul_id"]]
+    changed = False
+
+    async def mint(**_kwargs):
+        nonlocal changed
+        assert not calls["soul_lock"].locked()
+        if not changed:
+            changed = True
+            async with AsyncClient(transport=ASGITransport(app=client.app), base_url="http://test") as http:
+                response = await http.post(f"/integration/mentra/session/{old}/transcripts/append", json={
+                    "user_id": START["user_id"], "soul_id": START["soul_id"],
+                    "events": [{**_recovered_transcripts(2)["events"][-1], "event_id": f"{old}:2"}],
+                })
+                assert response.status_code == 200
+        return "fictional-token"
+
+    monkeypatch.setattr(mentra_routes, "_mint_gemini_token", mint)
+    body = {**START, "recovery": _recovered_transcripts()}
+    stale = client.post("/integration/mentra/session/start", json=body)
+    assert stale.status_code == 409 and stale.json()["detail"] == {"code": "mentra_history_changed"}
+    assert mentra_routes._leases[START["soul_id"]] is old_lease
+    assert not mentra_routes._start_claims
+    retry = client.post("/integration/mentra/session/start", json=body)
+    assert retry.status_code == 200 and retry.json()["next_transcript_sequence"] == 3
+    assert retry.json()["recovery"] == {"sitting_id": "previous-sitting", "ack_sequence": 1}
+
+
+def test_start_recovery_refuses_a_worker_failure_during_mint(monkeypatch, tmp_path):
+    paused = asyncio.Event()
+
+    async def failed_work():
+        assert len(calls["cross"]) == 2
+        calls["pause_reason"] = "Fictional background Memorize failed."
+        paused.set()
+
+    def schedule(*_args):
+        if not paused.is_set():
+            asyncio.create_task(failed_work())
+        return "launched"
+
+    client, calls, _ = _session_app(monkeypatch, tmp_path,
+        prepare_auto_memorize=lambda *_a, **_k: (9000, {"conversation": []}), schedule_auto_memorize=schedule)
+    client.post("/integration/mentra/session/start", json=START).raise_for_status()
+    old_lease = mentra_routes._leases[START["soul_id"]]
+
+    async def mint(**_kwargs):
+        await paused.wait()
+        return "fictional-token"
+
+    monkeypatch.setattr(mentra_routes, "_mint_gemini_token", mint)
+    response = client.post("/integration/mentra/session/start", json={**START, "recovery": _recovered_transcripts()})
+    assert response.status_code == 409 and response.json()["detail"]["code"] == "soul_paused"
+    assert mentra_routes._leases[START["soul_id"]] is old_lease
+    assert not mentra_routes._start_claims
+    scope = {"storage_dir": tmp_path, "user_id": START["user_id"], "soul_id": START["soul_id"], "conversation_id": "mentra:iris"}
+    saved = conversation_sources.load_mentra_history_snapshot(**scope)
+    assert saved[0]["event_id"] == "previous-sitting:1"
+    calls["pause_reason"] = None
+    retry = client.post("/integration/mentra/session/start", json={**START, "recovery": _recovered_transcripts()})
+    assert retry.status_code == 200
+    assert retry.json()["recovery"] == {"sitting_id": "previous-sitting", "ack_sequence": 1}
+    assert conversation_sources.load_mentra_history_snapshot(**scope) == saved
+
+
 def test_transcript_append_is_contiguous_idempotent_and_initializes_state(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2076,8 +2366,9 @@ def test_transcript_append_rechecks_due_auto_memorize_on_replay(
     assert projected[1]["content"].startswith("[End-of-sitting reflection]")
 
 
+@pytest.mark.parametrize("start_recovery", [False, True])
 def test_transcript_recovery_uses_real_scheduler_coalescing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, start_recovery: bool,
 ) -> None:
     from app import main
 
@@ -2107,6 +2398,8 @@ def test_transcript_recovery_uses_real_scheduler_coalescing(
         monkeypatch.setattr(main, "_sillytavern_source_deleted", lambda *_a: False)
 
         async def worker(payload):
+            if start_recovery and not runs:
+                assert len(calls["cross"]) == 2
             runs.append(payload)
             await release.wait()
 
@@ -2118,16 +2411,27 @@ def test_transcript_recovery_uses_real_scheduler_coalescing(
                 "event_id": f"{sitting}:1", "sequence": 1, "event_kind": "transcript",
                 "role": "user", "content": "A recovered fictional conversation.", "status": "complete",
             }]}
+            if start_recovery:
+                endpoint = "/integration/mentra/session/start"
+                body = {**START, "recovery": {"sitting_id": sitting, "events": body["events"]}}
             try:
                 assert (await http.post(endpoint, json=body)).status_code == 500
                 assert outcomes == []
                 repaired = await http.post(endpoint, json=body)
-                assert repaired.json()["accepted"] == 0
-                assert repaired.json()["duplicates"] == 1
-                assert repaired.json()["memorize_check_queued"] is True
+                assert repaired.status_code == 200
+                if start_recovery:
+                    assert repaired.json()["recovery"] == {"sitting_id": sitting, "ack_sequence": 1}
+                else:
+                    assert repaired.json()["accepted"] == 0
+                    assert repaired.json()["duplicates"] == 1
+                    assert repaired.json()["memorize_check_queued"] is True
                 await asyncio.sleep(0)
                 replay = await http.post(endpoint, json=body)
-                assert replay.json()["memorize_check_queued"] is True
+                assert replay.status_code == 200
+                if start_recovery:
+                    assert replay.json()["recovery"] == repaired.json()["recovery"]
+                else:
+                    assert replay.json()["memorize_check_queued"] is True
                 assert outcomes == ["launched", "coalesced"]
                 assert len(calls["memorize_checks"]) == 2
                 assert len(runs) == 1

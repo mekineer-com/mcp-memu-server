@@ -13,7 +13,7 @@ import tempfile
 import time
 import urllib.request
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal, NamedTuple
@@ -134,6 +134,7 @@ class MentraSessionStart(BaseModel):
     device_session_id: str
     mode: str
     photo_work_protocol: Literal["iris-photo-work-v2"]
+    recovery: MentraTranscriptRecovery | None = None
 
     @field_validator("user_id", "soul_id")
     @classmethod
@@ -453,12 +454,28 @@ class MentraTranscriptEvent(BaseModel):
         return self
 
 
-class MentraTranscriptBatch(BaseModel):
+class MentraTranscriptEvents(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    events: list[MentraTranscriptEvent] = Field(min_length=1)
+
+    @field_validator("events")
+    @classmethod
+    def validate_events(cls, value: list[MentraTranscriptEvent]) -> list[MentraTranscriptEvent]:
+        sequences = [event.sequence for event in value]
+        if any(right != left + 1 for left, right in zip(sequences, sequences[1:], strict=False)):
+            raise ValueError("event sequences must be contiguous and increasing")
+        return value
+
+
+class MentraTranscriptRecovery(MentraTranscriptEvents):
+    sitting_id: str = Field(min_length=1, max_length=256)
+
+
+class MentraTranscriptBatch(MentraTranscriptEvents):
     user_id: str
     soul_id: SoulId
-    events: list[MentraTranscriptEvent]
+    events: list[MentraTranscriptEvent] = Field(min_length=1, max_length=16)
 
     @field_validator("user_id", "soul_id")
     @classmethod
@@ -466,16 +483,6 @@ class MentraTranscriptBatch(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("must not be blank")
-        return value
-
-    @field_validator("events")
-    @classmethod
-    def validate_events(cls, value: list[MentraTranscriptEvent]) -> list[MentraTranscriptEvent]:
-        if not 1 <= len(value) <= 16:
-            raise ValueError("must contain 1-16 events")
-        sequences = [event.sequence for event in value]
-        if any(right != left + 1 for left, right in zip(sequences, sequences[1:], strict=False)):
-            raise ValueError("event sequences must be contiguous and increasing")
         return value
 
 
@@ -1146,19 +1153,116 @@ def register_mentra_routes(
     async def mentra_health() -> dict[str, bool]:
         return {"ok": True}
 
+    def _publish_transcript_events(
+        *, user_id: str, soul_id: str, sitting_id: str,
+        events: list[MentraTranscriptEvent], recovery: bool = False,
+    ) -> dict[str, Any]:
+        # Both callers hold the existing Soul lock through publication and state repair.
+        conversation_id = conversation_sources.MENTRA_CONVERSATION_ID
+        memorize_check_queued = False
+        storage_dir = get_storage_dir()
+        history = conversation_sources.load_mentra_history_snapshot(
+            storage_dir=storage_dir,
+            user_id=user_id,
+            soul_id=soul_id,
+            conversation_id=conversation_id,
+        )
+        try:
+            merged, accepted, duplicates = _merge_transcript_events(
+                history,
+                events,
+                sitting_id=sitting_id,
+            )
+        except _SequenceConflict as exc:
+            detail: dict[str, Any] = {"expected_sequence": exc.expected_sequence}
+            if recovery:
+                detail["code"] = "mentra_recovery_conflict"
+            else:
+                conflict_key = (user_id, soul_id, sitting_id)
+                _transcript_conflicts[conflict_key] = max(
+                    _transcript_conflicts.get(conflict_key, 0),
+                    max(event.sequence for event in events),
+                )
+            raise HTTPException(status_code=409, detail=detail) from None
+        conversation_sources.persist_mentra_history_snapshot(
+            storage_dir=storage_dir,
+            user_id=user_id,
+            soul_id=soul_id,
+            conversation_id=conversation_id,
+            history=merged,
+        )
+        conflict_key = (user_id, soul_id, sitting_id)
+        if _next_transcript_sequence(merged) - 1 >= _transcript_conflicts.get(conflict_key, 0):
+            _transcript_conflicts.pop(conflict_key, None)
+        write_conversation_state(
+            conversation_id,
+            soul_id=soul_id,
+            user_id=user_id,
+            updates={"memorize_chat": True},
+        )
+        if any(event.event_kind != "transcript_gap" for event in events):
+            projected_history = conversation_sources.load_mentra_tail(
+                storage_dir=storage_dir,
+                user_id=user_id,
+                soul_id=soul_id,
+                conversation_id=conversation_id,
+                since_cursor=-1,
+                recent_fallback_messages=0,
+            )
+            conversation_state, _soul_card, _db_path = load_turn_state_and_soul_card(
+                conversation_id,
+                user_id=user_id,
+                soul_id=soul_id,
+            )
+            safe = {"memorize_chat": True}
+            _tokens, payload = prepare_auto_memorize(
+                conversation_id,
+                user_id,
+                soul_id,
+                safe,
+                conversation_state,
+                projected_history,
+                dry_run=False,
+            )
+            if payload is not None:
+                schedule_auto_memorize(
+                    payload,
+                    conversation_id,
+                    user_id,
+                    soul_id,
+                    safe,
+                    projected_history,
+                )
+                memorize_check_queued = True
+
+        return {
+            "ok": True,
+            "conversation_id": conversation_id,
+            "ack_sequence": _next_transcript_sequence(merged) - 1,
+            "accepted": accepted,
+            "duplicates": duplicates,
+            "memorize_check_queued": memorize_check_queued,
+        }
+
     @app.post("/integration/mentra/session/start", tags=["integration"])
-    async def mentra_session_start(body: MentraSessionStart) -> dict[str, Any]:
+    async def mentra_session_start(request: Request) -> dict[str, Any]:
+        body = await _private_model(request, MentraSessionStart, "Invalid session start")
+        assert isinstance(body, MentraSessionStart)
         started_at = time.monotonic()
         phase_started = started_at
         timings: dict[str, int] = {}
         scope = {"user_id": body.user_id, "soul_id": body.soul_id}
+
+        def require_unpaused() -> None:
+            reason = get_activity_pause(body.user_id, body.soul_id)
+            if reason:
+                raise HTTPException(status_code=409, detail={
+                    "code": "soul_paused", "soul_id": body.soul_id,
+                    "message": f"{body.soul_id} is paused. Retry in OpenAlma launcher.", "reason": reason,
+                })
+
         await photo_filings(body.user_id, body.soul_id, recover=True)
-        reason = get_activity_pause(body.user_id, body.soul_id)
-        if reason:
-            raise HTTPException(status_code=409, detail={
-                "code": "soul_paused", "soul_id": body.soul_id,
-                "message": f"{body.soul_id} is paused. Retry in OpenAlma launcher.", "reason": reason,
-            })
+        require_unpaused()
 
         def record_failure(exc: Exception) -> None:
             if record_call is not None:
@@ -1184,6 +1288,12 @@ def register_mentra_routes(
             or get_soul_lock is None
         ):
             reject_start(503, "Mentra session bootstrap is not configured")
+        if body.recovery is not None and (
+            write_conversation_state is None
+            or prepare_auto_memorize is None
+            or schedule_auto_memorize is None
+        ):
+            reject_start(503, "Mentra transcript persistence is not configured")
 
         config = get_config().get("mentra") or {}
         api_key = str(config.get("gemini_api_key") or "").strip()
@@ -1217,6 +1327,7 @@ def register_mentra_routes(
                 reject_start(409, "Mentra session start is already in progress")
             _start_claims[lease_key] = (sitting_id, body.device_session_id)
         timings["setupMs"] = int((time.monotonic() - phase_started) * 1000)
+        recovery_ack = None
 
         try:
             phase_started = time.monotonic()
@@ -1228,47 +1339,59 @@ def register_mentra_routes(
             finally:
                 timings["anchorsMs"] = int((time.monotonic() - phase_started) * 1000)
 
-            phase_started = time.monotonic()
-            try:
-                _, narrative, _ = load_turn_state_and_soul_card(
-                    conversation_id, user_id=body.user_id, soul_id=body.soul_id
-                )
-            finally:
-                timings["stateMs"] = int((time.monotonic() - phase_started) * 1000)
+            async with (get_soul_lock(body.user_id, body.soul_id) if body.recovery is not None else nullcontext()):
+                if body.recovery is not None:
+                    _publish_transcript_events(
+                        user_id=body.user_id, soul_id=body.soul_id,
+                        sitting_id=body.recovery.sitting_id, events=body.recovery.events, recovery=True,
+                    )
+                    recovery_ack = {
+                        "sitting_id": body.recovery.sitting_id,
+                        "ack_sequence": body.recovery.events[-1].sequence,
+                    }
+                    require_unpaused()
 
-            phase_started = time.monotonic()
-            try:
-                history_before_context = conversation_sources.load_mentra_history_snapshot(
-                    storage_dir=storage_dir,
-                    user_id=body.user_id,
-                    soul_id=body.soul_id,
-                    conversation_id=conversation_id,
-                )
-                context_next_sequence = _next_transcript_sequence(history_before_context)
-                chats = load_cross_chat_context(
-                    user_id=body.user_id,
-                    soul_id=body.soul_id,
-                    conversation_id=conversation_id,
-                )
-                history_after_context = conversation_sources.load_mentra_history_snapshot(
-                    storage_dir=storage_dir,
-                    user_id=body.user_id,
-                    soul_id=body.soul_id,
-                    conversation_id=conversation_id,
-                )
-                if _next_transcript_sequence(history_after_context) != context_next_sequence:
-                    raise HTTPException(status_code=409, detail={"code": _HISTORY_CHANGED_CODE})
-                instruction = _build_bootstrap_instruction(
-                    identity=build_identity_context(body.soul_id),
-                    narrative=str(narrative or "").strip(),
-                    anchors=anchors,
-                    all_categories_summary=service.build_dossier_index(scope),
-                    chats=str(chats or "").strip(),
-                )
-                if log_prompt is not None:
-                    log_prompt(instruction, model)
-            finally:
-                timings["contextMs"] = int((time.monotonic() - phase_started) * 1000)
+                phase_started = time.monotonic()
+                try:
+                    _, narrative, _ = load_turn_state_and_soul_card(
+                        conversation_id, user_id=body.user_id, soul_id=body.soul_id
+                    )
+                finally:
+                    timings["stateMs"] = int((time.monotonic() - phase_started) * 1000)
+
+                phase_started = time.monotonic()
+                try:
+                    history_before_context = conversation_sources.load_mentra_history_snapshot(
+                        storage_dir=storage_dir,
+                        user_id=body.user_id,
+                        soul_id=body.soul_id,
+                        conversation_id=conversation_id,
+                    )
+                    context_next_sequence = _next_transcript_sequence(history_before_context)
+                    chats = load_cross_chat_context(
+                        user_id=body.user_id,
+                        soul_id=body.soul_id,
+                        conversation_id=conversation_id,
+                    )
+                    history_after_context = conversation_sources.load_mentra_history_snapshot(
+                        storage_dir=storage_dir,
+                        user_id=body.user_id,
+                        soul_id=body.soul_id,
+                        conversation_id=conversation_id,
+                    )
+                    if _next_transcript_sequence(history_after_context) != context_next_sequence:
+                        raise HTTPException(status_code=409, detail={"code": _HISTORY_CHANGED_CODE})
+                    instruction = _build_bootstrap_instruction(
+                        identity=build_identity_context(body.soul_id),
+                        narrative=str(narrative or "").strip(),
+                        anchors=anchors,
+                        all_categories_summary=service.build_dossier_index(scope),
+                        chats=str(chats or "").strip(),
+                    )
+                    if log_prompt is not None:
+                        log_prompt(instruction, model)
+                finally:
+                    timings["contextMs"] = int((time.monotonic() - phase_started) * 1000)
 
             phase_started = time.monotonic()
             try:
@@ -1307,6 +1430,7 @@ def register_mentra_routes(
                         raise HTTPException(
                             status_code=409, detail="Another Mentra session is active"
                         )
+                    require_unpaused()
                     _leases[lease_key] = _Lease(
                         sitting_id,
                         body.user_id,
@@ -1337,6 +1461,7 @@ def register_mentra_routes(
             "session_id": sitting_id,
             "conversation_id": conversation_id,
             "next_transcript_sequence": next_sequence,
+            "recovery": recovery_ack,
             "photo_work_protocol": body.photo_work_protocol,
             "model": model,
             "voice": voice,
@@ -2008,91 +2133,10 @@ def register_mentra_routes(
         except ValueError:
             raise HTTPException(status_code=422, detail="Invalid transcript batch") from None
 
-        conversation_id = conversation_sources.MENTRA_CONVERSATION_ID
-        memorize_check_queued = False
         async with get_soul_lock(body.user_id, body.soul_id):
             await _require_active_lease(
                 soul_id=body.soul_id, user_id=body.user_id, sitting_id=sitting_id
             )
-            storage_dir = get_storage_dir()
-            history = conversation_sources.load_mentra_history_snapshot(
-                storage_dir=storage_dir,
-                user_id=body.user_id,
-                soul_id=body.soul_id,
-                conversation_id=conversation_id,
+            return _publish_transcript_events(
+                user_id=body.user_id, soul_id=body.soul_id, sitting_id=sitting_id, events=body.events,
             )
-            try:
-                merged, accepted, duplicates = _merge_transcript_events(
-                    history,
-                    body.events,
-                    sitting_id=sitting_id,
-                )
-            except _SequenceConflict as exc:
-                conflict_key = (body.user_id, body.soul_id, sitting_id)
-                _transcript_conflicts[conflict_key] = max(
-                    _transcript_conflicts.get(conflict_key, 0),
-                    max(event.sequence for event in body.events),
-                )
-                raise HTTPException(
-                    status_code=409,
-                    detail={"expected_sequence": exc.expected_sequence},
-                ) from None
-            conversation_sources.persist_mentra_history_snapshot(
-                storage_dir=storage_dir,
-                user_id=body.user_id,
-                soul_id=body.soul_id,
-                conversation_id=conversation_id,
-                history=merged,
-            )
-            conflict_key = (body.user_id, body.soul_id, sitting_id)
-            if _next_transcript_sequence(merged) - 1 >= _transcript_conflicts.get(conflict_key, 0):
-                _transcript_conflicts.pop(conflict_key, None)
-            write_conversation_state(
-                conversation_id,
-                soul_id=body.soul_id,
-                user_id=body.user_id,
-                updates={"memorize_chat": True},
-            )
-            if any(event.event_kind != "transcript_gap" for event in body.events):
-                projected_history = conversation_sources.load_mentra_tail(
-                    storage_dir=storage_dir,
-                    user_id=body.user_id,
-                    soul_id=body.soul_id,
-                    conversation_id=conversation_id,
-                    since_cursor=-1,
-                    recent_fallback_messages=0,
-                )
-                conversation_state, _soul_card, _db_path = load_turn_state_and_soul_card(
-                    conversation_id,
-                    user_id=body.user_id,
-                    soul_id=body.soul_id,
-                )
-                safe = {"memorize_chat": True}
-                _tokens, payload = prepare_auto_memorize(
-                    conversation_id,
-                    body.user_id,
-                    body.soul_id,
-                    safe,
-                    conversation_state,
-                    projected_history,
-                    dry_run=False,
-                )
-                if payload is not None:
-                    schedule_auto_memorize(
-                        payload,
-                        conversation_id,
-                        body.user_id,
-                        body.soul_id,
-                        safe,
-                        projected_history,
-                    )
-                    memorize_check_queued = True
-
-        return {
-            "ok": True,
-            "conversation_id": conversation_id,
-            "ack_sequence": _next_transcript_sequence(merged) - 1,
-            "accepted": accepted,
-            "duplicates": duplicates,
-            "memorize_check_queued": memorize_check_queued,
-        }
