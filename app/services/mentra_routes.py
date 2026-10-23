@@ -1997,9 +1997,7 @@ def register_mentra_routes(
                 user_id=body.user_id,
                 updates={"memorize_chat": True},
             )
-            if accepted and any(
-                row.get("event_kind") != "transcript_gap" for row in merged[len(history) :]
-            ):
+            if any(event.event_kind != "transcript_gap" for event in body.events):
                 projected_history = conversation_sources.load_mentra_tail(
                     storage_dir=storage_dir,
                     user_id=body.user_id,

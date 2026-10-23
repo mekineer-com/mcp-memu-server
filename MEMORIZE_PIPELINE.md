@@ -86,8 +86,9 @@ are not evidence. Reads never create receipts or upgrade old snapshots.
 Snapshot and receipt saves are not one transaction: a failed receipt save leaves
 the snapshot unacknowledged, and duplicate replay can finish publication. The
 first-save crash interval, whole transcript-root loss and pre-repair history
-without receipts remain outside this detection; duplicate replay still does not
-rerun automatic Memorize eligibility.
+without receipts remain outside this detection. After successful publication and
+state repair, non-gap transcript replay rechecks ordinary Memorize eligibility
+through the existing admission/coalescing path; gap-only replay does not trigger it.
 
 Do not confuse **source ownership** with **speaker identity**. The shared user
 and Soul scope alone do not establish a speaker. Generic Echo imports explicitly

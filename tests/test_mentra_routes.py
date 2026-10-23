@@ -1988,16 +1988,17 @@ def test_transcript_publication_failure_replays_without_duplicating_history(monk
     assert len(calls["token"]) == 1
 
 
-def test_transcript_append_queues_shared_auto_memorize_only_for_new_rows(
+def test_transcript_append_rechecks_due_auto_memorize_on_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     scheduled: list[tuple[Any, ...]] = []
     payload = {"conversation": [{"content": "fictional", "memorize_chat": True}]}
+    eligibility = iter([(9000, payload), (0, None)])
     client, calls, _ = _session_app(
         monkeypatch,
         tmp_path,
-        prepare_auto_memorize=lambda *_a, **_k: (9000, payload),
+        prepare_auto_memorize=lambda *_a, **_k: next(eligibility),
         schedule_auto_memorize=lambda *args: scheduled.append(args) or "launched",
     )
     sitting_id = client.post(
@@ -2031,7 +2032,7 @@ def test_transcript_append_queues_shared_auto_memorize_only_for_new_rows(
 
     assert first.json()["memorize_check_queued"] is True
     assert replay.json()["memorize_check_queued"] is False
-    assert len(calls["memorize_checks"]) == 1
+    assert len(calls["memorize_checks"]) == 2
     assert len(scheduled) == 1
     assert scheduled[0][0] is payload
     assert scheduled[0][1:4] == (conversation_sources.MENTRA_CONVERSATION_ID, START["user_id"], START["soul_id"])
@@ -2041,6 +2042,70 @@ def test_transcript_append_queues_shared_auto_memorize_only_for_new_rows(
     assert [row["speaker"] for row in projected] == [START["user_id"], START["soul_id"]]
     assert projected[0]["content"].endswith("[interrupted]")
     assert projected[1]["content"].startswith("[End-of-sitting reflection]")
+
+
+def test_transcript_recovery_uses_real_scheduler_coalescing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from app import main
+
+    async def run() -> None:
+        release = asyncio.Event()
+        runs, outcomes = [], []
+        scope = {"user_id": START["user_id"], "soul_id": START["soul_id"]}
+        marker = main._memorize_lock_key(**scope)
+
+        def schedule(payload, cid, uid, sid, safe, history):
+            outcome = main._schedule_auto_memorize(
+                payload, main._auto_memorize_scope(cid, uid, sid, safe, history),
+            )
+            outcomes.append(outcome)
+            return outcome
+
+        client, calls, _ = _session_app(
+            monkeypatch, tmp_path,
+            state_results=[RuntimeError("Fictional publication failure"), None],
+            raise_server_exceptions=False,
+            prepare_auto_memorize=lambda *_a, **_k: (9000, {"conversation": []}),
+            schedule_auto_memorize=schedule,
+        )
+        monkeypatch.setattr(main, "_BACKGROUND_TASKS", set())
+        monkeypatch.setattr(main, "_soul_import_state", lambda *_a: ("", None))
+        monkeypatch.setattr(main, "_register_memorize_bounds", lambda *_a, **_k: None)
+        monkeypatch.setattr(main, "_sillytavern_source_deleted", lambda *_a: False)
+
+        async def worker(payload):
+            runs.append(payload)
+            await release.wait()
+
+        monkeypatch.setattr(main, "_run_forced_memorize_from_turn", worker)
+        async with AsyncClient(transport=ASGITransport(app=client.app, raise_app_exceptions=False), base_url="http://test") as http:
+            sitting = (await http.post("/integration/mentra/session/start", json=START)).json()["session_id"]
+            endpoint = f"/integration/mentra/session/{sitting}/transcripts/append"
+            body = {**scope, "events": [{
+                "event_id": f"{sitting}:1", "sequence": 1, "event_kind": "transcript",
+                "role": "user", "content": "A recovered fictional conversation.", "status": "complete",
+            }]}
+            try:
+                assert (await http.post(endpoint, json=body)).status_code == 500
+                assert outcomes == []
+                repaired = await http.post(endpoint, json=body)
+                assert repaired.json()["accepted"] == 0
+                assert repaired.json()["duplicates"] == 1
+                assert repaired.json()["memorize_check_queued"] is True
+                await asyncio.sleep(0)
+                replay = await http.post(endpoint, json=body)
+                assert replay.json()["memorize_check_queued"] is True
+                assert outcomes == ["launched", "coalesced"]
+                assert len(calls["memorize_checks"]) == 2
+                assert len(runs) == 1
+                assert marker in main._FORCED_MEMORIZE_RECHECK
+                assert len(main._BACKGROUND_TASKS) == 1
+            finally:
+                release.set()
+                await asyncio.gather(*main._BACKGROUND_TASKS, return_exceptions=True)
+
+    asyncio.run(asyncio.wait_for(run(), 5))
 
 
 def test_sequence_and_duplicate_lookup_tolerate_compacted_prefix() -> None:
@@ -2269,6 +2334,7 @@ def test_transcript_retry_repairs_state_after_snapshot_was_written(
     assert repaired.json()["accepted"] == 0
     assert repaired.json()["duplicates"] == 1
     assert len(calls["state_writes"]) == 2
+    assert len(calls["memorize_checks"]) == 1
 
 
 def test_snapshot_is_atomic_idempotent_scoped_and_redacted(
