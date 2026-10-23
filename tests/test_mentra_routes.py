@@ -27,7 +27,7 @@ START = {
     "soul_id": "Codexia",
     "device_session_id": "phone-1",
     "mode": "continuous",
-    "photo_work_protocol": "iris-photo-work-v1",
+    "photo_work_protocol": "iris-photo-work-v2",
 }
 
 
@@ -825,7 +825,7 @@ def test_start_validation_precedes_bootstrap(
     assert calls["token"] == []
 
 
-@pytest.mark.parametrize("marker", [None, "iris-photo-work-v0"])
+@pytest.mark.parametrize("marker", [None, "iris-photo-work-v0", "iris-photo-work-v1"])
 def test_start_rejects_incompatible_photo_protocol_before_mint_or_lease(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, marker: str | None,
 ) -> None:
@@ -897,7 +897,7 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
         "session_id": "sitting-1",
         "conversation_id": conversation_sources.MENTRA_CONVERSATION_ID,
         "next_transcript_sequence": 1,
-        "photo_work_protocol": "iris-photo-work-v1",
+        "photo_work_protocol": "iris-photo-work-v2",
         "model": "gemini-2.5-flash-native-audio-preview-12-2025",
         "voice": "Kore",
         "ephemeral_token": "ephemeral-1",
@@ -961,6 +961,15 @@ def test_bootstrap_omits_empty_sections_and_uses_shared_anchor_renderer():
         assert absent not in prompt
     assert 'If a write reports "busy, not saved", nothing was saved.' in prompt
     assert "If you never hear back, it may have been saved" in prompt
+    photo_guidance = (
+        "A task labeled please-caption-<image_id> asks you to caption the photo attached to that task. "
+        "Use save_photo_caption(image_id, caption) to save your perception of that photo, so you will "
+        "remember what this moment was about later on. Use the exact text after please-caption- as image_id. "
+        "After the caption is saved, call nothing_to_add to check for another task."
+    )
+    assert prompt.count(photo_guidance) == 1
+    assert "If a photo successfully arrives" not in prompt
+    assert prompt.index(photo_guidance) < prompt.index(mentra_routes._IRIS_INVITATION_GUIDANCE)
     assert prompt.count(mentra_routes._IRIS_INVITATION_GUIDANCE) == 1
     assert 'The text "nokoru" is an internal invitation from Iris' in prompt
     assert "Otherwise call nothing_to_add instead of speaking" in prompt
@@ -3481,8 +3490,8 @@ def test_token_mint_uses_measured_constrained_wire(
     assert declarations[3]["parameters"]["required"] == ["intention_id", "status"]
     assert declarations[3]["parameters"]["properties"]["status"]["enum"] == ["completed", "deleted"]
     assert declarations[4]["description"] == (
-        "If a photo successfully arrives, use save_photo_caption(image_id, caption) to save your perception "
-        "of the photo, so you will remember what this moment was about later on. Do not speak the caption out loud."
+        "Save your perception of the photo with its exact image_id, so you will remember "
+        "what this moment was about later on. Do not speak the caption out loud."
     )
     assert declarations[4]["parameters"] == {
         "type": "OBJECT", "properties": {"image_id": {"type": "STRING"}, "caption": {"type": "STRING"}},
@@ -3530,7 +3539,7 @@ def test_start_and_renewal_mint_identical_six_tool_contract(
     monkeypatch.setattr(mentra_routes.urllib.request, "urlopen", urlopen)
     started = client.post("/integration/mentra/session/start", json={**START, "mode": mode})
     assert started.status_code == 200
-    assert started.json()["photo_work_protocol"] == "iris-photo-work-v1"
+    assert started.json()["photo_work_protocol"] == "iris-photo-work-v2"
     renewed = client.post(
         f"/integration/mentra/session/{started.json()['session_id']}/token",
         json={"user_id": START["user_id"], "soul_id": START["soul_id"]},

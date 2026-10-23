@@ -55,8 +55,10 @@ _RECALL_TOOL_DESCRIPTION = (
     "Search your long-term memory for context relevant to the current thought without interrupting speech."
 )
 _PHOTO_CAPTION_GUIDANCE = (
-    "If a photo successfully arrives, use save_photo_caption(image_id, caption) to save your perception "
-    "of the photo, so you will remember what this moment was about later on. Do not speak the caption out loud."
+    "A task labeled please-caption-<image_id> asks you to caption the photo attached to that task. "
+    "Use save_photo_caption(image_id, caption) to save your perception of that photo, so you will "
+    "remember what this moment was about later on. Use the exact text after please-caption- as image_id. "
+    "After the caption is saved, call nothing_to_add to check for another task."
 )
 _IRIS_INVITATION_GUIDANCE = (
     'The text "nokoru" is an internal invitation from Iris to reconsider the conversation, not a request '
@@ -131,7 +133,7 @@ class MentraSessionStart(BaseModel):
     soul_id: SoulId
     device_session_id: str
     mode: str
-    photo_work_protocol: Literal["iris-photo-work-v1"]
+    photo_work_protocol: Literal["iris-photo-work-v2"]
 
     @field_validator("user_id", "soul_id")
     @classmethod
@@ -693,7 +695,10 @@ async def _mint_gemini_token(
                     },
                     {
                         "name": "save_photo_caption",
-                        "description": _PHOTO_CAPTION_GUIDANCE,
+                        "description": (
+                            "Save your perception of the photo with its exact image_id, so you will remember "
+                            "what this moment was about later on. Do not speak the caption out loud."
+                        ),
                         "behavior": "NON_BLOCKING",
                         "parameters": {
                             "type": "OBJECT",
