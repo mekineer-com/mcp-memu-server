@@ -1068,7 +1068,7 @@ def register_mentra_routes(
 
         missing = [
             field
-            for field in ("gemini_api_key", "model", "voice")
+            for field in ("gemini_api_key", "voice")
             if not str(config.get(field) or "").strip()
         ]
         now = time.monotonic()
@@ -1136,7 +1136,6 @@ def register_mentra_routes(
             "detail": detail,
             "active": active is not None,
             "configured_model": str(config.get("model") or "").strip() or None,
-            "active_model": active.model if active else None,
             "starting": starting,
             "busy": busy,
             "sessions": sessions,

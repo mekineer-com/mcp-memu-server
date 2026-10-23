@@ -361,7 +361,10 @@ def test_mentra_status_reports_configuration_and_lease_state(
 
     assert client.get(path).status_code == 200
     config["mentra"]["model"] = ""
+    assert client.get(path).json()["state"] == "ready"
+    key = config["mentra"].pop("gemini_api_key")
     assert client.get(path).json()["state"] == "degraded"
+    config["mentra"]["gemini_api_key"] = key
     config["mentra"]["model"] = "gemini-2.5-flash-native-audio-preview-12-2025"
     assert client.get(path).json()["state"] == "ready"
 
@@ -875,7 +878,7 @@ def test_start_model_choice_and_renewal_remain_lease_pinned(monkeypatch, tmp_pat
     scope = {key: START[key] for key in ("user_id", "soul_id", "device_session_id")}
     status = client.get("/integration/mentra/status", params=scope).json()
     assert status["configured_model"] == configured
-    assert status["active_model"] is None
+    assert status["state"] == "ready"
 
     response = client.post("/integration/mentra/session/start", json={
         **START, **({"model": choice} if choice is not None else {}),
@@ -891,9 +894,9 @@ def test_start_model_choice_and_renewal_remain_lease_pinned(monkeypatch, tmp_pat
     assert calls["token"][1] == calls["token"][0]
     status = client.get("/integration/mentra/status", params=scope).json()
     assert status["configured_model"] == "edited-server-model"
-    assert status["active_model"] == resolved
+    assert status["state"] == "active"
     assert client.post(f"{base}/end", json=scope).status_code == 200
-    assert client.get("/integration/mentra/status", params=scope).json()["active_model"] is None
+    assert client.get("/integration/mentra/status", params=scope).json()["state"] == "ready"
 
 
 @pytest.mark.parametrize("marker", [None, "iris-photo-work-v0", "iris-photo-work-v1"])

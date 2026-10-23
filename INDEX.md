@@ -187,8 +187,9 @@ Mentra Start accepts optional `model`: exactly `gemini-3.8-live` or
 including custom IDs; an explicit choice needs no configured model and never
 edits config. Start returns the resolved model; the lease pins token renewal.
 Only the exact Thinking model adds `generationConfig.thinkingConfig.thinkingLevel: LOW`.
-Status exposes nullable `configured_model` and scoped `active_model` as information;
-Start remains authoritative.
+Status exposes nullable `configured_model` as information; Start remains
+authoritative for the active model. A missing configured model alone does not
+degrade status, because the phone may supply its choice.
 
 ## Extracted Modules
 
