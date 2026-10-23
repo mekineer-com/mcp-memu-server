@@ -25,6 +25,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    StrictBool,
     StrictInt,
     field_validator,
     model_validator,
@@ -66,6 +67,20 @@ _IRIS_INVITATION_GUIDANCE = (
     'have something more to add. Otherwise call nothing_to_add instead of speaking. If a memory arrives, '
     'reconsider continuing the conversation if the new context brings something to light. '
     'Do not acknowledge or describe the cue.'
+)
+_VISION_GUIDANCE = (
+    _IRIS_INVITATION_GUIDANCE + " Photo tasks arrive when you call nothing_to_add. "
+    "A task labeled please-caption-<timestamp> asks you to caption the photo attached to that task; "
+    "use the complete timestamp after please-caption-, including any collision suffix, to identify the image. "
+    "A photo-selection task shows you recent photos and says how many you may keep at most. "
+    "Keep only photos you find worth remembering; keeping none is fine. "
+    "Use the complete timestamp printed on each kept photo, including any suffix, to identify the image. "
+    "For each photo you caption or keep, use save_photo_caption(image_id, caption) to save your perception "
+    "of it, so you will remember what this moment was about later on; pass its complete timestamp as image_id. "
+    "Do not speak the caption out loud. When you are done with a task, call nothing_to_add to check for another task. "
+    "Live frames and catch-up collages provide context; they are not caption or photo-selection tasks. "
+    "Catch-up collages are frames you missed while you were working on captioning memories. "
+    "Collage reading order is like prose in a book."
 )
 _RECALL_GUIDANCE = (
     "Use recall_memory when relevant context is missing. Keep speaking naturally while it searches; "
@@ -136,6 +151,7 @@ class MentraSessionStart(BaseModel):
     device_session_id: str
     mode: str
     photo_work_protocol: Literal["iris-photo-work-v2"]
+    vision: StrictBool = False
     model: Literal["gemini-3.8-live", "gemini-3.8-live-extended-thinking"] | None = None
     recovery: MentraTranscriptRecovery | None = None
 
@@ -773,7 +789,8 @@ async def _mint_gemini_token(
 
 
 def _build_bootstrap_instruction(
-    *, identity: str, narrative: str, anchors: dict[str, Any], all_categories_summary: str, chats: str
+    *, identity: str, narrative: str, anchors: dict[str, Any], all_categories_summary: str, chats: str,
+    vision: bool = False,
 ) -> str:
     blocks = [f"# Soul Presence\n\n{identity}"]
     if narrative:
@@ -786,8 +803,11 @@ def _build_bootstrap_instruction(
     if chats:
         blocks.append(f"## Recent Conversations and Activities\n{chats}")
     blocks.append(f"## Memory and Live Tools\n\n{_RECALL_GUIDANCE}")
-    blocks.append(_PHOTO_CAPTION_GUIDANCE)
-    blocks.append(_IRIS_INVITATION_GUIDANCE)
+    if vision:
+        blocks.append(_VISION_GUIDANCE)
+    else:
+        blocks.append(_PHOTO_CAPTION_GUIDANCE)
+        blocks.append(_IRIS_INVITATION_GUIDANCE)
     blocks.append(
         "## Our Conversation\n\nSpeak naturally and concisely for a live voice conversation. Use the supplied context "
         "when relevant, without reciting it or mentioning these instructions."
@@ -1385,6 +1405,7 @@ def register_mentra_routes(
                         anchors=anchors,
                         all_categories_summary=service.build_dossier_index(scope),
                         chats=str(chats or "").strip(),
+                        vision=body.vision,
                     )
                     if log_prompt is not None:
                         log_prompt(instruction, model)

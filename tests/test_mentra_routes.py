@@ -836,21 +836,24 @@ def test_start_validation_precedes_bootstrap(
     assert calls["token"] == []
 
 
-@pytest.mark.parametrize("model", [
-    "", "custom-model", "models/gemini-3.8-live", " gemini-3.8-live",
-    "gemini-3.8-live-extended-thinking ", "GEMINI-3.8-LIVE", 38,
+@pytest.mark.parametrize(("field", "value"), [
+    *[("model", model) for model in (
+        "", "custom-model", "models/gemini-3.8-live", " gemini-3.8-live",
+        "gemini-3.8-live-extended-thinking ", "GEMINI-3.8-LIVE", 38,
+    )],
+    *[("vision", vision) for vision in (None, 0, 1, "true", "false", "", [], {})],
 ])
-def test_start_rejects_invalid_model_before_side_effects(monkeypatch, tmp_path, model):
+def test_start_rejects_invalid_model_or_vision_before_side_effects(monkeypatch, tmp_path, field, value):
     client, calls, config = _session_app(monkeypatch, tmp_path)
     before = copy.deepcopy(config)
     files = sorted(tmp_path.rglob("*"))
 
     def unexpected_history(**_kwargs):
-        raise AssertionError("invalid model must not read or recover history")
+        raise AssertionError("invalid start flag must not read or recover history")
 
     monkeypatch.setattr(mentra_routes.conversation_sources, "load_mentra_history_snapshot", unexpected_history)
     response = client.post("/integration/mentra/session/start", json={
-        **START, "model": model, "recovery": _recovered_transcripts(),
+        **START, field: value, "recovery": _recovered_transcripts(),
     })
     assert response.status_code == 422
     assert response.json() == {"detail": "Invalid session start"}
@@ -1023,6 +1026,43 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
         "tokenMs",
         "totalMs",
     }
+
+
+def test_start_vision_replaces_only_photo_and_invitation_guidance(monkeypatch, tmp_path):
+    client, calls, config = _session_app(monkeypatch, tmp_path)
+    before = copy.deepcopy(config)
+    for flags in ({}, {"vision": False}, {"vision": True}):
+        response = client.post("/integration/mentra/session/start", json={**START, **flags})
+        assert response.status_code == 200
+        assert response.json()["recovery"] is None
+        assert response.json()["photo_work_protocol"] == "iris-photo-work-v2"
+
+    default, audio, vision = [call["system_instruction"] for call in calls["token"]]
+    approved = (
+        'The text "nokoru" is an internal invitation from Iris to reconsider the conversation, not a request '
+        'from your human. When you receive it, continue the conversation only if a reserved human would '
+        'have something more to add. Otherwise call nothing_to_add instead of speaking. If a memory arrives, '
+        'reconsider continuing the conversation if the new context brings something to light. '
+        'Do not acknowledge or describe the cue. Photo tasks arrive when you call nothing_to_add. '
+        'A task labeled please-caption-<timestamp> asks you to caption the photo attached to that task; '
+        'use the complete timestamp after please-caption-, including any collision suffix, to identify the image. '
+        'A photo-selection task shows you recent photos and says how many you may keep at most. '
+        'Keep only photos you find worth remembering; keeping none is fine. '
+        'Use the complete timestamp printed on each kept photo, including any suffix, to identify the image. '
+        'For each photo you caption or keep, use save_photo_caption(image_id, caption) to save your perception '
+        'of it, so you will remember what this moment was about later on; pass its complete timestamp as image_id. '
+        'Do not speak the caption out loud. When you are done with a task, call nothing_to_add to check for another task. '
+        'Live frames and catch-up collages provide context; they are not caption or photo-selection tasks. '
+        'Catch-up collages are frames you missed while you were working on captioning memories. '
+        'Collage reading order is like prose in a book.'
+    )
+    original = f"{mentra_routes._PHOTO_CAPTION_GUIDANCE}\n\n{mentra_routes._IRIS_INVITATION_GUIDANCE}"
+    assert default == audio
+    assert audio.count(original) == 1
+    assert vision == audio.replace(original, approved)
+    assert vision.count(approved) == 1
+    assert vision.count('The text "nokoru"') == 1
+    assert config == before
 
 
 def test_bootstrap_omits_empty_sections_and_uses_shared_anchor_renderer():
@@ -1916,7 +1956,8 @@ def _recovered_transcripts(count: int = 1) -> dict[str, Any]:
     ]}
 
 
-def test_start_recovery_publishes_complete_tail_before_context_and_replays_exactly(monkeypatch, tmp_path):
+@pytest.mark.parametrize("vision", [False, True])
+def test_start_recovery_publishes_complete_tail_before_context_and_replays_exactly(monkeypatch, tmp_path, vision):
     from memu.utils.conversation import format_grouped_chat_history
 
     client, calls, _ = _session_app(monkeypatch, tmp_path, token_results=["first", "replay", "prefix", "normal"])
@@ -1930,7 +1971,7 @@ def test_start_recovery_publishes_complete_tail_before_context_and_replays_exact
         return format_grouped_chat_history(rows, soul_name=scope["soul_id"], mark_current_chat=False)
 
     calls["cross_loader"] = context
-    first = client.post("/integration/mentra/session/start", json={**START, "recovery": recovery})
+    first = client.post("/integration/mentra/session/start", json={**START, "vision": vision, "recovery": recovery})
     assert first.status_code == 200
     assert first.json()["recovery"] == {"sitting_id": "previous-sitting", "ack_sequence": 20}
     assert first.json()["next_transcript_sequence"] == 21
@@ -3913,8 +3954,9 @@ def test_token_mint_uses_measured_constrained_wire(
 
 @pytest.mark.parametrize("mode", ["continuous", "manual"])
 @pytest.mark.parametrize("model", ["gemini-3.8-live", "gemini-3.8-live-extended-thinking"])
+@pytest.mark.parametrize("vision", [None, False, True])
 def test_start_and_renewal_mint_identical_six_tool_contract(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str, model: str,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str, model: str, vision: bool | None,
 ) -> None:
     mint = mentra_routes._mint_gemini_token
     client, _, config = _session_app(monkeypatch, tmp_path)
@@ -3926,7 +3968,9 @@ def test_start_and_renewal_mint_identical_six_tool_contract(
 
     monkeypatch.setattr(mentra_routes, "_mint_gemini_token", mint)
     monkeypatch.setattr(mentra_routes.urllib.request, "urlopen", urlopen)
-    started = client.post("/integration/mentra/session/start", json={**START, "mode": mode, "model": model})
+    started = client.post("/integration/mentra/session/start", json={
+        **START, "mode": mode, "model": model, **({"vision": vision} if vision is not None else {}),
+    })
     assert started.status_code == 200
     assert started.json()["photo_work_protocol"] == "iris-photo-work-v2"
     config["mentra"]["model"] = "edited-server-model"
@@ -3939,6 +3983,19 @@ def test_start_and_renewal_mint_identical_six_tool_contract(
     initial, renewal = payloads
     assert initial["fieldMask"] == renewal["fieldMask"] == mentra_routes._TOKEN_SETUP_FIELD_MASK
     assert initial["bidiGenerateContentSetup"] == renewal["bidiGenerateContentSetup"]
+    setup = initial["bidiGenerateContentSetup"]
+    prompt = setup["systemInstruction"]["parts"][0]["text"]
+    assert mentra_routes._leases[START["soul_id"]].system_instruction == prompt
+    if vision:
+        assert prompt.count(mentra_routes._VISION_GUIDANCE) == 1
+        assert mentra_routes._PHOTO_CAPTION_GUIDANCE not in prompt
+    else:
+        assert prompt.count(mentra_routes._PHOTO_CAPTION_GUIDANCE) == 1
+        assert mentra_routes._VISION_GUIDANCE not in prompt
+    assert setup["model"] == f"models/{model}"
+    assert setup["generationConfig"].get("thinkingConfig") == (
+        {"thinkingLevel": "LOW"} if model == "gemini-3.8-live-extended-thinking" else None
+    )
     declarations = initial["bidiGenerateContentSetup"]["tools"][0]["functionDeclarations"]
     assert [tool["name"] for tool in declarations] == [
         "recall_memory", "read_working_state", "save_working_thought", "annul_intention",

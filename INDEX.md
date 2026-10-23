@@ -190,6 +190,9 @@ Only the exact Thinking model adds `generationConfig.thinkingConfig.thinkingLeve
 Status exposes nullable `configured_model` as information; Start remains
 authoritative for the active model. A missing configured model alone does not
 degrade status, because the phone may supply its choice.
+Optional strict boolean `vision` selects the approved combined photo-selection/
+live-frame starter. Omission/false preserves Audio instructions. The lease pins
+the resulting instruction through token renewal; six tools and protocol stay unchanged.
 
 ## Extracted Modules
 
