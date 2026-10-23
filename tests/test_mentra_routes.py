@@ -961,6 +961,9 @@ def test_bootstrap_omits_empty_sections_and_uses_shared_anchor_renderer():
         assert absent not in prompt
     assert 'If a write reports "busy, not saved", nothing was saved.' in prompt
     assert "If you never hear back, it may have been saved" in prompt
+    assert prompt.count(mentra_routes._IRIS_INVITATION_GUIDANCE) == 1
+    assert 'The text "nokoru" is an internal invitation from Iris' in prompt
+    assert "Otherwise call nothing_to_add instead of speaking" in prompt
 
 
 def test_live_working_state_is_fresh_and_thought_write_is_bounded(monkeypatch, tmp_path):
@@ -2891,10 +2894,20 @@ def test_snapshot_finalize_queues_existing_workflow_and_conflicts(
 
 
 @pytest.mark.parametrize("history_state", ["missing", "blocked", "unrelated"])
+@pytest.mark.parametrize("photo_time,expected_time", [
+    (None, None),
+    ({"timestamp": "2026-01-08T10-17-23", "source": "DateTimeOriginal", "receivedAt": 0,
+      "originalTime": "2026:01:08 10:17:23", "offset": "+05:45"}, "2026-01-08T10:17:23+05:45"),
+    ({"timestamp": "2026-01-08T10-17-23", "source": "CreateDate", "receivedAt": 0,
+      "originalTime": "2026:01:08 10:17:23"}, "2026-01-08T10:17:23"),
+    ({"timestamp": "1970-01-01T00-00-00", "source": "receipt", "receivedAt": 0}, "1970-01-01T00:00:00.000Z"),
+])
 def test_snapshot_finalize_accepts_stored_original_without_caption_history(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     history_state: str,
+    photo_time: dict[str, Any] | None,
+    expected_time: str | None,
 ) -> None:
     client, calls, _ = _session_app(monkeypatch, tmp_path)
     sitting_id = client.post(
@@ -2922,6 +2935,7 @@ def test_snapshot_finalize_accepts_stored_original_without_caption_history(
     payload = {
         **scope, "image_id": image_id, "caption": caption,
         "caption_event_id": caption_id,
+        **({"time": photo_time} if photo_time else {}),
     }
     assert client.post(
         "/integration/mentra/session/wrong/snapshot/finalize", json=payload,
@@ -2937,7 +2951,16 @@ def test_snapshot_finalize_accepts_stored_original_without_caption_history(
     accepted = record_path.read_bytes()
     receipt = json.loads(accepted)
     assert receipt["caption_event_id"] == caption_id
-    assert before_finalize <= datetime.fromisoformat(receipt["source_timestamp"]) <= datetime.now(UTC)
+    if expected_time is None:
+        assert before_finalize <= datetime.fromisoformat(receipt["source_timestamp"]) <= datetime.now(UTC)
+    else:
+        assert receipt["source_timestamp"] == expected_time
+        assert receipt["time"] == photo_time
+        conflict = client.post(f"/integration/mentra/session/{sitting_id}/snapshot/finalize", json={
+            **payload, "time": {**photo_time, "receivedAt": photo_time["receivedAt"] + 1000},
+        })
+        assert conflict.status_code == 409
+        assert record_path.read_bytes() == accepted
     assert calls["image_memorize"][0]["source_timestamp"] == receipt["source_timestamp"]
     assert client.post(
         f"/integration/mentra/session/{sitting_id}/snapshot/finalize", json=payload,

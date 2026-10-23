@@ -58,6 +58,13 @@ _PHOTO_CAPTION_GUIDANCE = (
     "If a photo successfully arrives, use save_photo_caption(image_id, caption) to save your perception "
     "of the photo, so you will remember what this moment was about later on. Do not speak the caption out loud."
 )
+_IRIS_INVITATION_GUIDANCE = (
+    'The text "nokoru" is an internal invitation from Iris to reconsider the conversation, not a request '
+    'from your human. When you receive it, continue the conversation only if a reserved human would '
+    'have something more to add. Otherwise call nothing_to_add instead of speaking. If a memory arrives, '
+    'reconsider continuing the conversation if the new context brings something to light. '
+    'Do not acknowledge or describe the cue.'
+)
 _RECALL_GUIDANCE = (
     "Use recall_memory when relevant context is missing. Keep speaking naturally while it searches; "
     "what it finds reaches you quietly, for what you say next.\n\n"
@@ -333,9 +340,38 @@ class MentraSnapshotRequest(MentraImageRequest):
     data: str
 
 
+class MentraImageTime(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    timestamp: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$")
+    source: Literal["DateTimeOriginal", "CreateDate", "receipt"]
+    received_at: float = Field(alias="receivedAt", ge=0, allow_inf_nan=False)
+    original_time: str | None = Field(default=None, alias="originalTime", max_length=128)
+    offset: str | None = Field(default=None, pattern=r"^[+-](?:[01]\d|2[0-3]):[0-5]\d$")
+
+    @model_validator(mode="after")
+    def validate_time(self) -> MentraImageTime:
+        datetime.strptime(self.timestamp, "%Y-%m-%dT%H-%M-%S")
+        try:
+            datetime.fromtimestamp(self.received_at / 1000, UTC)
+        except (OverflowError, OSError, ValueError) as error:
+            raise ValueError("Invalid photo receipt time") from error
+        datetime.fromisoformat(self.source_timestamp())
+        return self
+
+    def source_timestamp(self) -> str:
+        if self.source == "receipt":
+            return _rfc3339(datetime.fromtimestamp(self.received_at / 1000, UTC))
+        # EXIF without a supplied zone stays local wall time, not an invented UTC instant.
+        wall_time = self.timestamp[:10] + "T" + self.timestamp[11:].replace("-", ":")
+        embedded = re.search(r"(Z|[+-]\d{2}:\d{2})$", self.original_time or "")
+        return wall_time + (self.offset or (embedded.group(1) if embedded else ""))
+
+
 class MentraSnapshotFinalizeRequest(MentraImageRequest):
     caption: str
     caption_event_id: str = Field(min_length=1, max_length=256)
+    time: MentraImageTime | None = None
 
     @field_validator("caption")
     @classmethod
@@ -734,6 +770,7 @@ def _build_bootstrap_instruction(
         blocks.append(f"## Recent Conversations and Activities\n{chats}")
     blocks.append(f"## Memory and Live Tools\n\n{_RECALL_GUIDANCE}")
     blocks.append(_PHOTO_CAPTION_GUIDANCE)
+    blocks.append(_IRIS_INVITATION_GUIDANCE)
     blocks.append(
         "## Our Conversation\n\nSpeak naturally and concisely for a live voice conversation. Use the supplied context "
         "when relevant, without reciting it or mentioning these instructions."
@@ -1732,6 +1769,8 @@ def register_mentra_routes(
             record = _read_photo_filing(filing_path)
             if any(record[key] != getattr(body, key) for key in ("user_id", "soul_id", "image_id", "caption")):
                 raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
+            if body.time and record.get("time") != body.time.model_dump(by_alias=True, exclude_none=True):
+                raise HTTPException(status_code=409, detail="Snapshot photo time conflicts")
             return await queue_photo_filing(filing_path, record, sitting_id)
         matches = _image_files(media_dir, body.image_id)
         if len(matches) != 1:
@@ -1741,7 +1780,9 @@ def register_mentra_routes(
         record = {
             "user_id": body.user_id, "soul_id": body.soul_id, "image_id": body.image_id,
             "media_ref": media_ref, "caption": body.caption,
-            "caption_event_id": body.caption_event_id, "source_timestamp": _rfc3339(datetime.now(UTC)),
+            "caption_event_id": body.caption_event_id,
+            "source_timestamp": body.time.source_timestamp() if body.time else _rfc3339(datetime.now(UTC)),
+            **({"time": body.time.model_dump(by_alias=True, exclude_none=True)} if body.time else {}),
             "status": "queued",
         }
         return await queue_photo_filing(filing_path, record, sitting_id)
@@ -1756,6 +1797,8 @@ def register_mentra_routes(
             saved = _read_photo_filing(path)
             if any(saved[key] != record[key] for key in ("user_id", "soul_id", "image_id", "media_ref", "caption")):
                 raise HTTPException(status_code=409, detail="Snapshot caption conflicts")
+            if "time" in record and saved.get("time") != record["time"]:
+                raise HTTPException(status_code=409, detail="Snapshot photo time conflicts")
             record = saved
             if record["status"] in {"complete", "discarded"}:
                 return {"ok": True, "durable": True, "queued": False, "duplicate": True}
