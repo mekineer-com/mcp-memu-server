@@ -823,6 +823,12 @@ def test_start_validation_precedes_bootstrap(
     assert client.post(
         "/integration/mentra/session/start", json=invalid_device
     ).status_code == 422
+    misspelled = client.post("/integration/mentra/session/start", json={
+        **START, "recovrey": _recovered_transcripts(),
+    })
+    assert misspelled.status_code == 422
+    assert misspelled.json() == {"detail": "Invalid session start"}
+    assert "Recovered fictional line" not in misspelled.text
     assert calls["service"] == 0
     assert calls["token"] == []
 

@@ -102,6 +102,13 @@ publication and state saves. Conflicting backups never overwrite stored rows.
 Phone journal preparation and acknowledgment consumption remain client-owned;
 server support alone does not mean that the phone already sends recovery.
 
+The shared grouped renderer presents Iris rows under **My Video Conversations**,
+with contiguous sitting blocks derived from the retained event-ID prefix.
+Recorded user microphone metadata selects Phone/Smartglasses headings and
+inline perspective-switch labels; legacy rows without that evidence remain
+Iris-neutral. Start leaves prior sittings unmarked as current and preserves
+source order. Display metadata does not change replay identity or source cursors.
+
 Do not confuse **source ownership** with **speaker identity**. The shared user
 and Soul scope alone do not establish a speaker. Generic Echo imports explicitly
 use `role: "user"` for the owner, as does native Replika `Customer`. See

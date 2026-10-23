@@ -129,6 +129,8 @@ def _clear_image_finalize_errors(user_id: str, soul_id: str, media_ref: str) -> 
 
 
 class MentraSessionStart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     user_id: str
     soul_id: SoulId
     device_session_id: str
@@ -1373,14 +1375,6 @@ def register_mentra_routes(
                         soul_id=body.soul_id,
                         conversation_id=conversation_id,
                     )
-                    history_after_context = conversation_sources.load_mentra_history_snapshot(
-                        storage_dir=storage_dir,
-                        user_id=body.user_id,
-                        soul_id=body.soul_id,
-                        conversation_id=conversation_id,
-                    )
-                    if _next_transcript_sequence(history_after_context) != context_next_sequence:
-                        raise HTTPException(status_code=409, detail={"code": _HISTORY_CHANGED_CODE})
                     instruction = _build_bootstrap_instruction(
                         identity=build_identity_context(body.soul_id),
                         narrative=str(narrative or "").strip(),

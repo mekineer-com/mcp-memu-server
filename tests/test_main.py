@@ -3829,6 +3829,70 @@ def test_mentra_bootstrap_does_not_mark_a_previous_sitting_as_current(
     assert rendered.index("A prior fictional question.") < rendered.index("A prior fictional reply.")
 
 
+def test_recovery_start_reaches_the_real_bootstrap_context_before_token_mint(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    scope = {"user_id": "Fictional User", "soul_id": "Quill"}
+    cid = conversation_sources.MENTRA_CONVERSATION_ID
+    storage = tmp_path / "mentra"
+    db_path = tmp_path / "Quill.db"
+    main._souls.publish_soul_db(db_path, scope["user_id"])
+    monkeypatch.setattr(main, "_sqlite_current_path", lambda *_args: db_path)
+    monkeypatch.setattr(conversation_sources, "mentra_storage_dir", lambda: storage)
+    monkeypatch.setattr(main, "_FORCED_MEMORIZE_INFLIGHT", {})
+    monkeypatch.setattr(main, "_CONSOLIDATION_RUNNING", {})
+    monkeypatch.setattr(main._mentra_routes, "_leases", {})
+    monkeypatch.setattr(main._mentra_routes, "_start_claims", {})
+    monkeypatch.setitem(main._CONFIG, "mentra", {"gemini_api_key": "fictional-key",
+        "model": "fictional-model", "voice": "fictional-voice"})
+
+    # The registered route and real source reader must both use disposable storage.
+    write = conversation_sources._write_chat_snapshot
+
+    def write_snapshot(path, data):
+        assert path.is_relative_to(tmp_path)
+        return write(path, data)
+
+    monkeypatch.setattr(conversation_sources, "_write_chat_snapshot", write_snapshot)
+
+    async def anchors(_scope):
+        return {"soul": SimpleNamespace(summary="I am Quill.", description="soul"),
+                "user": SimpleNamespace(summary="My human enjoys fictional coastlines.", description="user")}
+
+    service = SimpleNamespace(ensure_dossier_anchors=anchors, build_dossier_index=lambda _scope: "- Fictional Places")
+    monkeypatch.setattr(main, "_get_service_from_payload", lambda *_args, **_kwargs: service)
+    prompts = []
+
+    async def mint(**kwargs):
+        prompts.append(kwargs["system_instruction"])
+        return "fictional-token"
+
+    monkeypatch.setattr(main._mentra_routes, "_mint_gemini_token", mint)
+    content = "The fictional lighthouse glowed amber."
+    body = {**scope, "device_session_id": "fictional-phone", "mode": "continuous",
+        "photo_work_protocol": "iris-photo-work-v2", "recovery": {"sitting_id": "old-sitting", "events": [
+            {"event_id": "old-sitting:1", "sequence": 1, "event_kind": "transcript", "role": "user",
+             "content": content, "status": "interrupted", "mic_source": "phone"},
+        ]}}
+    client = TestClient(main.app)
+    try:
+        response = client.post("/integration/mentra/session/start", json=body)
+        assert response.status_code == 200, response.text
+        assert response.json()["recovery"] == {"sitting_id": "old-sitting", "ack_sequence": 1}
+        assert response.json()["next_transcript_sequence"] == 2
+        assert len(prompts) == 1 and content in prompts[0]
+        assert "My Video Conversations:" in prompts[0] and "[dm][Phone]" in prompts[0]
+        assert "current chat" not in prompts[0]
+        saved = conversation_sources.load_mentra_history_snapshot(storage_dir=storage,
+            **scope, conversation_id=cid)
+        assert saved[0]["event_id"] == "old-sitting:1"
+        state, _, _ = main._load_turn_state_and_soul_card(cid, **scope)
+        assert state["memorize_chat"] is True
+    finally:
+        main._mentra_routes._leases.clear()
+        main._mentra_routes._start_claims.clear()
+
+
 def test_cross_payload_preserves_projected_mentra_sequence_cursor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
