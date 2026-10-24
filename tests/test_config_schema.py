@@ -59,6 +59,39 @@ def test_example_is_valid_json_and_non_empty() -> None:
         assert required in example, f"config.example.json missing top-level '{required}'"
     assert "embed_model" not in example["llm"]["embedding"]
     assert example["storage"]["metadata_store"]["dsn"]
+    assert example["mentra"]["model"] == "gemini-3.8-live"
+
+
+@pytest.mark.parametrize("model", ["gemini-2.5-flash-native-audio-preview-12-2025",
+                                  "gemini-3.8-live", "gemini-3.8-live-extended-thinking", "custom-model", "", None])
+def test_iris_model_migration_preserves_other_settings_and_runs_once(monkeypatch, model) -> None:
+    cfg = app_config.normalize_model_mappings(default_config())
+    assert cfg["mentra"]["model"] == "gemini-3.8-live"
+    cfg["mentra"].update(model=model, voice="Puck", gemini_api_key="fictional-key")
+    cfg["custom"] = {"keep": True}
+    path = app_config.config_path()
+    path.parent.mkdir(parents=True)
+    original = json.dumps(cfg)
+    path.write_text(original)
+    backup = path.with_name(path.name + ".orig")
+    backup.write_text("previous backup")
+    monkeypatch.setattr(app_config, "ensure_storage_paths", lambda _cfg: None)
+    expected = copy.deepcopy(cfg)
+    if model == "gemini-2.5-flash-native-audio-preview-12-2025":
+        expected["mentra"]["model"] = "gemini-3.8-live"
+    assert app_config.load_config() == expected
+    assert json.loads(path.read_text()) == expected
+    assert backup.read_text() == "previous backup"
+    migration_backup = path.with_name(path.name + "_2.orig")
+    if expected != cfg:
+        assert migration_backup.read_text() == original
+        if os.name == "posix":
+            assert migration_backup.stat().st_mode & 0o777 == 0o600
+    else:
+        assert not migration_backup.exists()
+        assert path.read_text() == original
+    monkeypatch.setattr(app_config, "save_config", lambda _cfg: pytest.fail("Must not rewrite on later reads"))
+    assert app_config.load_config() == expected
 
 
 def test_mental_health_defaults_off_without_resetting_saved_choice() -> None:
@@ -70,6 +103,34 @@ def test_mental_health_defaults_off_without_resetting_saved_choice() -> None:
     cfg["retrieve"]["top_k"] = 7
     updated = app_config.merge_model_config(cfg, {"retrieve": {"mental_health_query": False}})
     assert updated["retrieve"] == {**cfg["retrieve"], "mental_health_query": False}
+
+
+def test_iris_migration_save_failure_keeps_original(monkeypatch) -> None:
+    cfg = app_config.normalize_model_mappings(default_config())
+    cfg["mentra"]["model"] = "gemini-2.5-flash-native-audio-preview-12-2025"
+    path = app_config.config_path()
+    path.parent.mkdir(parents=True)
+    original = json.dumps(cfg)
+    path.write_text(original)
+    monkeypatch.setattr(app_config, "save_config", lambda _cfg: (_ for _ in ()).throw(OSError("fictional failure")))
+    with pytest.raises(OSError, match="fictional failure"):
+        app_config.load_config()
+    assert path.read_text() == original
+    assert path.with_name(path.name + ".orig").read_text() == original
+
+
+def test_iris_migration_retains_first_and_three_latest_backups(monkeypatch) -> None:
+    cfg = app_config.normalize_model_mappings(default_config())
+    cfg["mentra"]["model"] = "gemini-2.5-flash-native-audio-preview-12-2025"
+    path = app_config.config_path()
+    path.parent.mkdir(parents=True)
+    monkeypatch.setattr(app_config, "ensure_storage_paths", lambda _cfg: None)
+    for generation in range(6):
+        cfg["custom"] = generation
+        path.write_text(json.dumps(cfg))
+        app_config.load_config()
+    backups = [json.loads(file.read_text())["custom"] for file in path.parent.glob("*.orig")]
+    assert sorted(backups) == [0, 3, 4, 5]
 
 
 def _mapping_config() -> dict:

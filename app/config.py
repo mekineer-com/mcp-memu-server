@@ -112,7 +112,7 @@ def default_config() -> dict[str, Any]:
         "mentra": {
             "public_base_url": "",
             "gemini_api_key": "",
-            "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+            "model": "gemini-3.8-live",
             "voice": "Kore",
             "session_warning_seconds": 0,
         },
@@ -280,8 +280,25 @@ def load_config() -> dict[str, Any]:
     if not isinstance(cfg, dict):
         raise ValueError(f"Config must be a JSON object: {p}")
     cleaned = normalize_model_mappings(cfg)
+    mentra = cleaned.get("mentra")
+    migrate_iris = isinstance(mentra, dict) and mentra.get("model") == "gemini-2.5-flash-native-audio-preview-12-2025"
+    if migrate_iris:
+        backup = p.with_name(p.name + ".orig")
+        number = 2
+        while backup.exists():
+            backup = p.with_name(f"{p.name}_{number}.orig")
+            number += 1
+        with os.fdopen(os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as saved:
+            saved.write(p.read_bytes())
+        mentra["model"] = "gemini-3.8-live"
     if cleaned != cfg:
         save_config(cleaned)
+        if migrate_iris:
+            backups = sorted((file for file in p.parent.glob(p.name + "_*.orig")
+                              if re.fullmatch(re.escape(p.name) + r"_\d+\.orig", file.name)),
+                             key=lambda file: file.stat().st_mtime)
+            for old in backups[:-3]:
+                old.unlink()
     cfg = cleaned
     ensure_storage_paths(cfg)
     return cfg

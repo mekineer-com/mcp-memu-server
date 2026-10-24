@@ -12,6 +12,12 @@
     }
   },
   "claude_code_context_window_tokens": null,
+  "mentra": {
+    "public_base_url": "",
+    "gemini_api_key": "",
+    "model": "gemini-3.8-live",
+    "voice": "Kore"
+  },
   "storage": {
     "resources_dir": "../memu/resources",
     "metadata_store": {
