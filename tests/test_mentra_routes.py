@@ -312,7 +312,7 @@ def _session_app(
         app,
         get_config=lambda: config,
         update_config=update_config,
-        read_config=read_config,
+        read_config=read_config or (lambda: config),
         get_activity_pause=lambda *_args: calls.get("pause_reason"),
         get_service_from_scope=get_service,
         load_turn_state_and_soul_card=load_state,
@@ -345,7 +345,7 @@ def _session_app(
 def test_mentra_health_and_earcons() -> None:
     config = {"mentra": {}}
     app = FastAPI()
-    register_mentra_routes(app, get_config=lambda: config, get_activity_pause=lambda *_args: None)
+    register_mentra_routes(app, get_config=lambda: config, read_config=lambda: config, get_activity_pause=lambda *_args: None)
     client = TestClient(app)
 
     assert client.get("/integration/mentra/unrelated").status_code == 404
@@ -1003,17 +1003,24 @@ def test_active_sitting_does_not_read_in_progress_config_edits(monkeypatch, tmp_
         reads.append(True)
         return json.loads(path.read_text())
 
-    client, _, config = _session_app(monkeypatch, tmp_path, read_config=read_config)
-    path.write_text(json.dumps(config))
+    client, calls, config = _session_app(monkeypatch, tmp_path, read_config=read_config)
+    disk_config = copy.deepcopy(config)
+    disk_config["mentra"]["gemini_api_key"] = "fictional-disk-key"
+    path.write_text(json.dumps(disk_config))
     assert client.get("/integration/mentra/status").status_code == 200
     response = client.post("/integration/mentra/session/start", json=START)
     assert response.status_code == 200
+    assert calls["token"][0]["api_key"] == "fictional-disk-key"
     assert len(reads) == 2
     base = f"/integration/mentra/session/{response.json()['session_id']}"
     scope = {key: START[key] for key in ("user_id", "soul_id")}
     path.write_text('{"mentra":')
     assert client.post(f"{base}/heartbeat", json=scope).status_code == 200
     assert client.post(f"{base}/token", json=scope).status_code == 200
+    assert calls["token"][1]["api_key"] == config["mentra"]["gemini_api_key"]
+    config["mentra"]["gemini_api_key"] = "fictional-reloaded-key"
+    assert client.post(f"{base}/token", json=scope).status_code == 200
+    assert calls["token"][2]["api_key"] == "fictional-reloaded-key"
     assert client.post(f"{base}/transcripts/append", json={**scope, "events": [{
         "event_id": f"{response.json()['session_id']}:1", "sequence": 1,
         "event_kind": "transcript", "role": "user", "status": "complete",
