@@ -143,6 +143,13 @@ def _clear_image_finalize_errors(user_id: str, soul_id: str, media_ref: str) -> 
                 _image_finalize_errors.pop(key, None)
 
 
+class MentraModelSetting(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
+    model: Literal["gemini-3.8-live", "gemini-3.8-live-extended-thinking"]
+
+
 class MentraSessionStart(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -896,6 +903,7 @@ def register_mentra_routes(
     *,
     get_config: Callable[[], dict[str, Any]],
     get_activity_pause: Callable[[str, str], str | None],
+    update_config: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     get_service_from_scope: Callable[[dict[str, str]], Any] | None = None,
     load_turn_state_and_soul_card: Callable[..., tuple[dict[str, Any], str | None, Any]] | None = None,
     build_identity_context: Callable[[str], str] | None = None,
@@ -927,6 +935,16 @@ def register_mentra_routes(
     @app.get("/integration/mentra/owner")
     def mentra_owner() -> dict[str, str | None]:
         return {"user_id": read_owner(get_config())}
+
+    @app.post("/integration/mentra/model", tags=["integration"])
+    async def set_mentra_model(request: Request) -> dict[str, Any]:
+        body = await _private_model(request, MentraModelSetting, "Invalid model setting")
+        assert isinstance(body, MentraModelSetting)
+        require_owner(get_config(), body.user_id)
+        if update_config is None:
+            raise HTTPException(status_code=503, detail="Config update is not configured")
+        config = update_config({"mentra": {"model": body.model}})
+        return {"ok": True, "configured_model": config["mentra"]["model"]}
 
     @app.post("/mentra/installations", dependencies=[Depends(require_local_owner_access)])
     async def reserve_installation(body: MentraInstallationTarget | None = None) -> dict[str, Any]:

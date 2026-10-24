@@ -300,11 +300,17 @@ def _session_app(
 
     monkeypatch.setattr(mentra_routes, "_mint_gemini_token", mint)
     monkeypatch.setattr(mentra_routes.secrets, "token_urlsafe", lambda _length: next(sitting_ids))
+
+    def update_config(body):
+        config.update(main._merge_model_config(config, body))
+        return config
+
     app = FastAPI()
     calls["background_tasks"] = set()
     register_mentra_routes(
         app,
         get_config=lambda: config,
+        update_config=update_config,
         get_activity_pause=lambda *_args: calls.get("pause_reason"),
         get_service_from_scope=get_service,
         load_turn_state_and_soul_card=load_state,
@@ -862,6 +868,150 @@ def test_start_rejects_invalid_model_or_vision_before_side_effects(monkeypatch, 
     assert not mentra_routes._leases and not mentra_routes._start_claims
     assert config == before
     assert sorted(tmp_path.rglob("*")) == files
+
+
+def _model_app(monkeypatch, tmp_path):
+    from app import config as app_config, main
+
+    config = _configured()
+    config["storage"].update(sqlite_dir=str(tmp_path), resources_dir=str(tmp_path / "resources"))
+    config["storage"]["metadata_store"]["dsn"] = f"sqlite:///{tmp_path / 'memu.db'}"
+    owner.create_owner(config, START["user_id"])
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    monkeypatch.setattr(app_config, "config_path", lambda: path)
+    monkeypatch.setattr(main, "_config_path", lambda: path)
+    monkeypatch.setattr(main, "_CONFIG", config)
+
+    async def forbidden_mint(**_kwargs):
+        pytest.fail("Model settings must not call the provider")
+
+    monkeypatch.setattr(mentra_routes, "_mint_gemini_token", forbidden_mint)
+    return TestClient(main.app), config
+
+
+def test_model_setting_reads_disk_and_preserves_unrelated_edits(monkeypatch, tmp_path):
+    from app import main
+
+    client, _ = _model_app(monkeypatch, tmp_path)
+    path = tmp_path / "config.json"
+    edited = json.loads(path.read_text())
+    edited["mentra"].update(model="hand-edited-live-model", voice="Aoede")
+    edited["retrieve"] = {"top_k": 17}
+    path.write_text(json.dumps(edited))
+    response = client.get("/integration/mentra/status")
+    assert response.status_code == 200
+    assert response.json()["configured_model"] == "hand-edited-live-model"
+
+    # Another writer changes unrelated settings after the phone's last read.
+    edited["mentra"]["session_warning_seconds"] = 90
+    edited["debug"] = {"log_prompts": False}
+    path.write_text(json.dumps(edited))
+    response = client.post("/integration/mentra/model", json={
+        "user_id": START["user_id"], "model": "gemini-3.8-live-extended-thinking",
+    })
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "configured_model": "gemini-3.8-live-extended-thinking"}
+    edited["mentra"]["model"] = "gemini-3.8-live-extended-thinking"
+    assert json.loads(path.read_text()) == main._CONFIG == edited
+
+
+def test_model_setting_save_failure_keeps_disk_and_runtime(monkeypatch, tmp_path):
+    from app import main
+
+    client, config = _model_app(monkeypatch, tmp_path)
+    path = tmp_path / "config.json"
+    original = path.read_bytes()
+    before = copy.deepcopy(config)
+
+    def fail_save(_config):
+        raise OSError("fictional save failure with permanent-secret")
+
+    monkeypatch.setattr(main, "_save_config", fail_save)
+
+    def forbidden(*_args):
+        pytest.fail("Failed save must not update runtime or close services")
+
+    for name in ("_refresh_runtime_limits", "_ensure_storage_paths", "_clear_cached_services"):
+        monkeypatch.setattr(main, name, forbidden)
+    response = client.post("/integration/mentra/model", json={
+        "user_id": START["user_id"], "model": "gemini-3.8-live",
+    })
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Internal Server Error. Check server logs."}
+    assert path.read_bytes() == original
+    assert main._CONFIG is config and config == before
+
+
+def test_generic_config_malformed_json_keeps_existing_error_contract(monkeypatch, tmp_path):
+    client, _ = _model_app(monkeypatch, tmp_path)
+    path = tmp_path / "config.json"
+    original = path.read_bytes()
+    response = client.post("/config", content="{", headers={"content-type": "application/json"})
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Internal Server Error. Check server logs."}
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("body", [
+    {"model": "gemini-3.8-live"},
+    {"user_id": START["user_id"]},
+    {"user_id": START["user_id"], "model": "custom-model"},
+    {"user_id": START["user_id"], "model": "gemini-3.8-live", "voice": "Aoede"},
+])
+def test_model_setting_rejects_invalid_body_without_writes(monkeypatch, tmp_path, body):
+    client, _ = _model_app(monkeypatch, tmp_path)
+    path = tmp_path / "config.json"
+    original = path.read_bytes()
+    response = client.post("/integration/mentra/model", json=body)
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Invalid model setting"}
+    assert path.read_bytes() == original
+
+
+def test_model_setting_requires_owner(monkeypatch, tmp_path):
+    client, _ = _model_app(monkeypatch, tmp_path)
+    path = tmp_path / "config.json"
+    original = path.read_bytes()
+    assert client.post("/integration/mentra/model", json={
+        "user_id": "Other User", "model": "gemini-3.8-live",
+    }).status_code == 409
+    assert path.read_bytes() == original
+
+
+def test_start_reloads_config_before_model_validation(monkeypatch, tmp_path):
+    from app import main
+
+    client, _ = _model_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "_soul_activity_pause", lambda *_args: None)
+    path = tmp_path / "config.json"
+    edited = json.loads(path.read_text())
+    edited["mentra"]["model"] = ""
+    path.write_text(json.dumps(edited))
+    response = client.post("/integration/mentra/session/start", json=START)
+    assert response.status_code == 503, response.json()
+    assert response.json() == {"detail": "Mentra Gemini model is not configured"}
+
+
+def test_model_setting_keeps_existing_sitting_pinned(monkeypatch, tmp_path):
+    client, calls, config = _session_app(monkeypatch, tmp_path)
+    config["mentra"]["model"] = "gemini-3.8-live"
+    response = client.post("/integration/mentra/session/start", json=START)
+    assert response.status_code == 200
+    assert response.json()["model"] == calls["token"][0]["model"] == "gemini-3.8-live"
+
+    response_model = client.post("/integration/mentra/model", json={
+        "user_id": START["user_id"], "model": "gemini-3.8-live-extended-thinking",
+    })
+    assert response_model.status_code == 200
+    scope = {key: START[key] for key in ("user_id", "soul_id", "device_session_id")}
+    base = f"/integration/mentra/session/{response.json()['session_id']}"
+    assert client.post(f"{base}/token", json=scope).status_code == 200
+    assert calls["token"][1] == calls["token"][0]
+    assert client.post(f"{base}/end", json=scope).status_code == 200
+    next_start = client.post("/integration/mentra/session/start", json=START)
+    assert next_start.status_code == 200
+    assert next_start.json()["model"] == calls["token"][2]["model"] == "gemini-3.8-live-extended-thinking"
 
 
 @pytest.mark.parametrize(("choice", "configured"), [

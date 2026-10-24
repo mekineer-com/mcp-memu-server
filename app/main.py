@@ -2110,7 +2110,8 @@ _owner.register_owner_routes(
 
 _mentra_routes.register_mentra_routes(
     app,
-    get_config=lambda: _CONFIG,
+    get_config=lambda: json.loads(_config_path().read_text(encoding="utf-8")),
+    update_config=lambda body: _update_config(body),
     get_activity_pause=lambda uid, sid: _soul_activity_pause(uid, sid),
     get_service_from_scope=lambda scope: _get_service_from_payload({"user": scope}),
     load_turn_state_and_soul_card=_load_turn_state_and_soul_card,
@@ -2167,29 +2168,28 @@ async def get_config(include_secrets: bool = False):
 
 @app.post("/config", operation_id="set_config")
 async def set_config(req: Request):
-    global _CONFIG
     try:
         body = await req.json()
+    except Exception as exc:
+        logger.exception("config.set failed")
+        raise HTTPException(status_code=400, detail="Internal Server Error. Check server logs.") from exc
+    config = _update_config(body)
+    return JSONResponse(content={"ok": True, "config": _mask_config(config)})
+
+
+def _update_config(body: dict[str, Any]) -> dict[str, Any]:
+    global _CONFIG
+    try:
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="Config must be a JSON object")
         current = json.loads(_config_path().read_text(encoding="utf-8"))
-        incoming_mentra = body.get("mentra")
-        if isinstance(incoming_mentra, dict):
-            current_mentra = current.get("mentra")
-            body = {
-                **body,
-                "mentra": {
-                    **(current_mentra if isinstance(current_mentra, dict) else {}),
-                    **incoming_mentra,
-                },
-            }
         merged = _merge_model_config(current, body)
         _save_config(merged)
         _CONFIG = merged
         _refresh_runtime_limits()
         _ensure_storage_paths(_CONFIG)
         _clear_cached_services()
-        return JSONResponse(content={"ok": True, "config": _mask_config(_CONFIG)})
+        return _CONFIG
     except HTTPException as he:
         logger.warning("config.set refused (HTTP %s)", he.status_code)
         _record_call(
