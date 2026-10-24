@@ -2110,7 +2110,8 @@ _owner.register_owner_routes(
 
 _mentra_routes.register_mentra_routes(
     app,
-    get_config=lambda: json.loads(_config_path().read_text(encoding="utf-8")),
+    get_config=lambda: _CONFIG,
+    read_config=lambda: json.loads(_config_path().read_text(encoding="utf-8")),
     update_config=lambda body: _update_config(body),
     get_activity_pause=lambda uid, sid: _soul_activity_pause(uid, sid),
     get_service_from_scope=lambda scope: _get_service_from_payload({"user": scope}),

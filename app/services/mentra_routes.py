@@ -904,6 +904,7 @@ def register_mentra_routes(
     get_config: Callable[[], dict[str, Any]],
     get_activity_pause: Callable[[str, str], str | None],
     update_config: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    read_config: Callable[[], dict[str, Any]] | None = None,
     get_service_from_scope: Callable[[dict[str, str]], Any] | None = None,
     load_turn_state_and_soul_card: Callable[..., tuple[dict[str, Any], str | None, Any]] | None = None,
     build_identity_context: Callable[[str], str] | None = None,
@@ -1099,7 +1100,7 @@ def register_mentra_routes(
                 "installations": [],
             }
         )
-        config = get_config().get("mentra") or {}
+        config = (read_config or get_config)().get("mentra") or {}
         unscoped = not user_id
         if unscoped:
             user_id = read_owner(get_config()) or ""
@@ -1339,7 +1340,7 @@ def register_mentra_routes(
         ):
             reject_start(503, "Mentra transcript persistence is not configured")
 
-        config = get_config().get("mentra") or {}
+        config = (read_config or get_config)().get("mentra") or {}
         api_key = str(config.get("gemini_api_key") or "").strip()
         if not api_key:
             reject_start(503, "Mentra Gemini credential is not configured")

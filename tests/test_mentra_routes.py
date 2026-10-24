@@ -88,6 +88,7 @@ def _session_app(
     retrieve_hook: Callable[[str, dict[str, Any]], Any] | None = None,
     memorize_error: Exception | None = None,
     memorize_hook: Callable[[dict[str, Any]], Any] | None = None,
+    read_config: Callable[[], dict[str, Any]] | None = None,
 ) -> tuple[TestClient, dict[str, Any], dict[str, Any]]:
     from app import main
 
@@ -311,6 +312,7 @@ def _session_app(
         app,
         get_config=lambda: config,
         update_config=update_config,
+        read_config=read_config,
         get_activity_pause=lambda *_args: calls.get("pause_reason"),
         get_service_from_scope=get_service,
         load_turn_state_and_soul_card=load_state,
@@ -991,6 +993,35 @@ def test_start_reloads_config_before_model_validation(monkeypatch, tmp_path):
     response = client.post("/integration/mentra/session/start", json=START)
     assert response.status_code == 503, response.json()
     assert response.json() == {"detail": "Mentra Gemini model is not configured"}
+
+
+def test_active_sitting_does_not_read_in_progress_config_edits(monkeypatch, tmp_path):
+    path = tmp_path / "config.json"
+    reads = []
+
+    def read_config():
+        reads.append(True)
+        return json.loads(path.read_text())
+
+    client, _, config = _session_app(monkeypatch, tmp_path, read_config=read_config)
+    path.write_text(json.dumps(config))
+    assert client.get("/integration/mentra/status").status_code == 200
+    response = client.post("/integration/mentra/session/start", json=START)
+    assert response.status_code == 200
+    assert len(reads) == 2
+    base = f"/integration/mentra/session/{response.json()['session_id']}"
+    scope = {key: START[key] for key in ("user_id", "soul_id")}
+    path.write_text('{"mentra":')
+    assert client.post(f"{base}/heartbeat", json=scope).status_code == 200
+    assert client.post(f"{base}/token", json=scope).status_code == 200
+    assert client.post(f"{base}/transcripts/append", json={**scope, "events": [{
+        "event_id": f"{response.json()['session_id']}:1", "sequence": 1,
+        "event_kind": "transcript", "role": "user", "status": "complete",
+        "content": "A fictional conversation during a settings edit.",
+    }]}).status_code == 200
+    assert client.post(f"{base}/end", json=scope).status_code == 200
+    assert len(reads) == 2
+    assert path.read_text() == '{"mentra":'
 
 
 def test_model_setting_keeps_existing_sitting_pinned(monkeypatch, tmp_path):
