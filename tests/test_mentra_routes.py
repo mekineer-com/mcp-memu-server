@@ -1070,6 +1070,10 @@ def test_start_model_choice_and_renewal_remain_lease_pinned(monkeypatch, tmp_pat
     assert response.status_code == 200
     resolved = choice or configured
     assert response.json()["model"] == calls["token"][0]["model"] == resolved
+    prompt = calls["token"][0]["system_instruction"]
+    assert prompt.count(mentra_routes._THINKING_COMPLETION_GUIDANCE) == (
+        1 if resolved == "gemini-3.8-live-extended-thinking" else 0
+    )
     assert config == before
 
     config["mentra"]["model"] = "edited-server-model"
@@ -1182,7 +1186,7 @@ def test_start_builds_bounded_instruction_and_returns_only_client_contract(
         "## The User's Identity and Lived Experience",
         "## My Categories",
         "## Recent Conversations and Activities",
-        "Use recall_memory when relevant context is missing.",
+        "Use recall_memory continuously during conversations so you have relevant memories for context.",
         "Speak naturally and concisely",
     ]
     assert [prompt.index(text) for text in headings] == sorted(prompt.index(text) for text in headings)
@@ -1240,7 +1244,14 @@ def test_start_vision_replaces_only_photo_and_invitation_guidance(monkeypatch, t
     original = f"{mentra_routes._PHOTO_CAPTION_GUIDANCE}\n\n{mentra_routes._IRIS_INVITATION_GUIDANCE}"
     assert default == audio
     assert audio.count(original) == 1
-    assert vision == audio.replace(original, approved)
+    frame_recall = "Also use recall_memory if you see something you want to talk about."
+    assert frame_recall not in audio
+    assert vision.count(frame_recall) == 1
+    assert vision == audio.replace(original, approved).replace(
+        "The memories will guide you going forward.\n\n",
+        f"The memories will guide you going forward.\n\n{frame_recall}\n\n",
+        1,
+    )
     assert vision.count(approved) == 1
     assert vision.count('The text "nokoru"') == 1
     assert config == before
@@ -4073,7 +4084,7 @@ def test_token_mint_uses_measured_constrained_wire(
     assert payload["uses"] == 8
     assert payload["fieldMask"] == (
         "model,generationConfig,systemInstruction,tools,realtimeInputConfig,"
-        "inputAudioTranscription,outputAudioTranscription,contextWindowCompression,"
+        "inputAudioTranscription,outputAudioTranscription,proactivity,contextWindowCompression,"
         "historyConfig"
     )
     assert setup["model"] == f"models/{model}"
@@ -4081,6 +4092,8 @@ def test_token_mint_uses_measured_constrained_wire(
         "responseModalities": ["AUDIO"],
         "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Kore"}}},
     }
+    if model not in ("gemini-3.8-live", "gemini-3.8-live-extended-thinking"):
+        generation["enableAffectiveDialog"] = True
     if model == "gemini-3.8-live-extended-thinking":
         generation["thinkingConfig"] = {"thinkingLevel": "LOW"}
     assert setup["generationConfig"] == generation
@@ -4121,7 +4134,7 @@ def test_token_mint_uses_measured_constrained_wire(
     assert setup["outputAudioTranscription"] == {}
     assert "sessionResumption" not in setup
     assert setup["contextWindowCompression"] == {"slidingWindow": {}}
-    assert "proactivity" not in setup
+    assert setup["proactivity"] == {"proactiveAudio": True}
     assert setup["historyConfig"] == {}
     assert set(payload["fieldMask"].split(",")) == set(setup)
     expires = datetime.fromisoformat(payload["expireTime"].replace("Z", "+00:00"))

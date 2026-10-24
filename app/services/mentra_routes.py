@@ -82,9 +82,15 @@ _VISION_GUIDANCE = (
     "Catch-up collages are frames you missed while you were working on captioning memories. "
     "Collage reading order is like prose in a book."
 )
+_THINKING_COMPLETION_GUIDANCE = (
+    'When nothing_to_add reports that no photo task is ready, that check is complete; do not call it again '
+    'merely to check again. Say "Done" once to complete the turn; Iris discards this private completion\'s '
+    'audio and transcript. A new human turn, task, memory result or Iris invitation can provide a new reason to respond.'
+)
 _RECALL_GUIDANCE = (
-    "Use recall_memory when relevant context is missing. Keep speaking naturally while it searches; "
-    "what it finds reaches you quietly, for what you say next.\n\n"
+    "Use recall_memory continuously during conversations so you have relevant memories for context. "
+    "Keep speaking naturally during the time the search is running. Seamless as the memories arrive. "
+    "The memories will guide you going forward.\n\n"
     "Use read_working_state to see your current working thoughts and intentions. Save a thought "
     "with save_working_thought when it is a conclusion, hypothesis, or pattern you would otherwise "
     "lose, rather than a recap of the chat. Each new thought evicts your oldest thought. "
@@ -105,6 +111,7 @@ _TOKEN_SETUP_FIELD_MASK = ",".join(
         "realtimeInputConfig",
         "inputAudioTranscription",
         "outputAudioTranscription",
+        "proactivity",
         "contextWindowCompression",
         "historyConfig",
     )
@@ -763,9 +770,13 @@ async def _mint_gemini_token(
         },
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
+        "proactivity": {"proactiveAudio": True},
         "contextWindowCompression": {"slidingWindow": {}},
         "historyConfig": {},
     }
+    # Gemini 3.8 removed this setting; sending it closes on the first audio input.
+    if model not in ("gemini-3.8-live", "gemini-3.8-live-extended-thinking"):
+        setup["generationConfig"]["enableAffectiveDialog"] = True
     if model == "gemini-3.8-live-extended-thinking":
         setup["generationConfig"]["thinkingConfig"] = {"thinkingLevel": "LOW"}
     body = json.dumps(
@@ -797,7 +808,7 @@ async def _mint_gemini_token(
 
 def _build_bootstrap_instruction(
     *, identity: str, narrative: str, anchors: dict[str, Any], all_categories_summary: str, chats: str,
-    vision: bool = False,
+    vision: bool = False, thinking: bool = False,
 ) -> str:
     blocks = [f"# Soul Presence\n\n{identity}"]
     if narrative:
@@ -809,12 +820,19 @@ def _build_bootstrap_instruction(
         blocks.append(f"## My Categories\n\n{all_categories_summary}")
     if chats:
         blocks.append(f"## Recent Conversations and Activities\n{chats}")
-    blocks.append(f"## Memory and Live Tools\n\n{_RECALL_GUIDANCE}")
+    recall_guidance = _RECALL_GUIDANCE
+    if vision:
+        recall_guidance = recall_guidance.replace(
+            "\n\n", "\n\nAlso use recall_memory if you see something you want to talk about.\n\n", 1,
+        )
+    blocks.append(f"## Memory and Live Tools\n\n{recall_guidance}")
     if vision:
         blocks.append(_VISION_GUIDANCE)
     else:
         blocks.append(_PHOTO_CAPTION_GUIDANCE)
         blocks.append(_IRIS_INVITATION_GUIDANCE)
+    if thinking:
+        blocks.append(_THINKING_COMPLETION_GUIDANCE)
     blocks.append(
         "## Our Conversation\n\nSpeak naturally and concisely for a live voice conversation. Use the supplied context "
         "when relevant, without reciting it or mentioning these instructions."
@@ -1425,6 +1443,7 @@ def register_mentra_routes(
                         all_categories_summary=service.build_dossier_index(scope),
                         chats=str(chats or "").strip(),
                         vision=body.vision,
+                        thinking=model == "gemini-3.8-live-extended-thinking",
                     )
                     if log_prompt is not None:
                         log_prompt(instruction, model)
