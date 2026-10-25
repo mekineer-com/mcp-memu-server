@@ -281,6 +281,7 @@ def load_config() -> dict[str, Any]:
         raise ValueError(f"Config must be a JSON object: {p}")
     cleaned = normalize_model_mappings(cfg)
     mentra = cleaned.get("mentra")
+    # Remove this migration when upgrades from pre-v0.1.26 configs are retired.
     migrate_iris = isinstance(mentra, dict) and mentra.get("model") == "gemini-2.5-flash-native-audio-preview-12-2025"
     if migrate_iris:
         backup = p.with_name(p.name + ".orig")
