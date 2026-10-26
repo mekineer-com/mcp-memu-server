@@ -5269,7 +5269,7 @@ def _atomic_chat_settings_from_config(cfg: dict[str, Any]) -> dict[str, str]:
     if type(capacity) is not int or capacity <= 20000:
         raise HTTPException(status_code=409, detail="Set llm.context_window_tokens above 20000 to the usable allowance")
     profile = _default_llm_profiles_from_server_config(
-        {**cfg, "claude_code": False}, operation="other_reply"
+        cfg, operation="other_reply"
     ).get("default", {})
     provider = str(profile.get("provider") or "").strip().lower()
     base_url = str(profile.get("base_url") or "").strip()

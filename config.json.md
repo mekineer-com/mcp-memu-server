@@ -17,7 +17,7 @@ The default chat-generation profile.
 | `api_key` | `""` | API credential for chat generation. |
 | `base_url` | `"https://api.openai.com/v1"` | Provider API base URL. |
 | `chat_model` | `""` | Chat model used unless a step-specific model overrides it. Required for normal operation. |
-| `context_window_tokens` | `null` | Actual model's total input/output context size. Required before paid Memorize and consolidation calls; set beside the model. Local metadata, not an API parameter. |
+| `context_window_tokens` | `null` | Conservative usable input/output context allowance for this provider/model. Required before paid Memorize and consolidation calls, and for integrated Atomic API chat (must exceed 20,000); set beside the model. Local metadata, not an API parameter. |
 | `temperature` | provider default | Default sampling temperature. Omit or use `null` to leave it to the provider. |
 | `max_tokens` | provider default | Default maximum generated tokens. Omit or use `null` to leave it to the provider. |
 | `endpoint_overrides` | `{}` | Nonstandard endpoint paths for an OpenAI-compatible provider. |
