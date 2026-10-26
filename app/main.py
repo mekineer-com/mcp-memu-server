@@ -2852,6 +2852,7 @@ def _memorize_targets_complete(user_id: str, soul_id: str, targets: dict[str, An
     con = _sqlite_connect(_sqlite_current_path(user_id, soul_id))
     try:
         con.row_factory = sqlite3.Row
+        _sqlite_ensure_conversation_state_schema(con)
         for cid, target in targets.items():
             if target.get("memory_producing") is False:
                 continue
@@ -5077,6 +5078,10 @@ async def atomic_session_start(req: AtomicSessionStartRequest):
     if raw_cid and not raw_cid.startswith("chat:"):
         conversation_id = f"chat:atomic-{raw_cid}"
     if conversation_id.startswith("chat:atomic-"):
+        _atomic_chat.require_sitting_idle(sys.modules[__name__], conversation_id, user_id=uid, soul_id=soul_id)
+        state_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=uid, soul_id=soul_id)
+        if state_row.get("atomic_native_session_id") and state_row.get("atomic_session_ended_at"):
+            raise HTTPException(status_code=409, detail="This Atomic sitting has ended; start a new sitting")
         now_iso = datetime.now(UTC).isoformat()
         _write_conversation_state(
             conversation_id,
@@ -5184,6 +5189,7 @@ async def atomic_session_end(req: AtomicSessionEndRequest):
     if not conversation_id.startswith("chat:atomic-"):
         raise HTTPException(status_code=400, detail="conversation_id must start with chat:atomic-")
 
+    _atomic_chat.require_sitting_idle(sys.modules[__name__], conversation_id, user_id=uid, soul_id=soul_id)
     rows = _atomic_transcript_rows(req.transcript, user_id=uid, soul_id=soul_id)
     state_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=uid, soul_id=soul_id)
     ended_at = parse_iso_datetime(state_row.get("atomic_session_ended_at"))

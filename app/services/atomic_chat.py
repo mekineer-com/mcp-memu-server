@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from copy import deepcopy
@@ -23,6 +24,16 @@ from app.services import owner, service_factory, state as conversation_state
 _DELIVERY_BUFFER_BYTES = 16 * 1024 * 1024
 
 
+def _task_name(conversation_id: str, user_id: str, soul_id: str) -> str:
+    return "atomic-chat:" + _hash([{"user_id": user_id, "soul_id": soul_id}, conversation_id])
+
+
+def require_sitting_idle(runtime: Any, conversation_id: str, *, user_id: str, soul_id: str) -> None:
+    marker = _task_name(conversation_id, user_id, soul_id)
+    if any(not task.done() and task.get_name() == marker for task in runtime._BACKGROUND_TASKS):
+        raise HTTPException(status_code=409, detail="This Atomic sitting is still running")
+
+
 class AtomicChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -40,6 +51,28 @@ class AtomicChatRequest(BaseModel):
 
 def _hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _wire_events(event: dict[str, Any]) -> list[dict[str, Any]]:
+    if event["type"] == "context_usage":
+        return [{"type": "usage", "message_id": event["message_id"], "usage": event["usage"]}]
+    if event["type"] not in {"assistant", "user"}:
+        return []
+    message = event["message"]
+    identity = {"record_id": event["uuid"], "message_id": message.get("id"),
+                "parent_call_id": event.get("parent_tool_use_id")}
+    events = []
+    for index, block in enumerate(message["content"]):
+        base = {**identity, "block_index": index}
+        if event["type"] == "assistant" and block["type"] == "text":
+            events.append({"type": "text", **base, "mode": "replace", "text": block["text"]})
+        elif event["type"] == "assistant" and block["type"] == "tool_use":
+            events.append({"type": "tool_call", **base, "call_id": block["id"],
+                           "name": block["name"].removeprefix("mcp__atomic__"), "input": block["input"]})
+        elif event["type"] == "user" and block["type"] == "tool_result":
+            events.append({"type": "tool_result", **base, "call_id": block["tool_use_id"],
+                           "content": block.get("content"), "is_error": block.get("is_error", False)})
+    return events
 
 
 def claude_chat_profile(config: dict[str, Any]) -> dict[str, Any]:
@@ -68,9 +101,12 @@ async def _bridge_tools(url: str, authorization: str) -> list[str]:
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 tools = await session.list_tools()
-                if tools.nextCursor:
-                    raise HTTPException(status_code=502, detail="Atomic chat tools must fit one tools/list response")
-                return [f"mcp__atomic__{tool.name}" for tool in tools.tools]
+    if tools.nextCursor:
+        raise HTTPException(status_code=502, detail="Atomic chat tools must fit one tools/list response")
+    names = [tool.name for tool in tools.tools]
+    if any(not re.fullmatch(r"[A-Za-z0-9_-]+", name) for name in names):
+        raise HTTPException(status_code=502, detail="Atomic bridge returned an invalid tool name")
+    return [f"mcp__atomic__{name}" for name in names]
 
 
 def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
@@ -90,6 +126,8 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
             raise HTTPException(status_code=409, detail="Atomic chat profile changed; reload it before sending")
         if body.operation == "new" and not body.system_prompt:
             raise HTTPException(status_code=422, detail="A new sitting requires its Soul Presence")
+        if body.operation == "new" and body.purpose == "recap":
+            raise HTTPException(status_code=422, detail="A recap must resume the sitting; one-shot close-out is a separate operation")
         if body.operation != "new" and body.system_prompt is not None:
             raise HTTPException(status_code=422, detail="Resume uses the original Soul Presence")
         cid = body.conversation_id.strip()
@@ -124,9 +162,8 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
             tools = {"mcp_servers": {"atomic": {"type": "http", "url": body.bridge_url,
                                                "headers": {"Authorization": authorization}}}, "allowed_tools": names}
         workspace = profile["workspace_root"] / "atomic" / _hash([scope["user_id"], scope["soul_id"]])
-        marker = "atomic-chat:" + _hash([scope, cid])
-        if any(not task.done() and task.get_name() == marker for task in runtime._BACKGROUND_TASKS):
-            raise HTTPException(status_code=409, detail="This Atomic sitting is still running")
+        marker = _task_name(cid, **scope)
+        require_sitting_idle(runtime, cid, **scope)
         con = runtime._sqlite_connect(db_path)
         try:
             con.row_factory = sqlite3.Row
@@ -137,9 +174,9 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
             if state.get("atomic_session_ended_at"):
                 raise HTTPException(status_code=409, detail="This Atomic sitting has ended")
             native_id = state.get("atomic_native_session_id")
-            if body.operation == "new":
-                if native_id:
-                    raise HTTPException(status_code=409, detail="This sitting already has a native session; do not replay its first turn")
+            if native_id and state.get("atomic_native_workspace") != str(workspace):
+                raise HTTPException(status_code=409, detail=f"The Claude workspace changed from {state.get('atomic_native_workspace')} to {workspace}; restore it before resuming")
+            if not native_id and body.operation == "new":
                 native_id = str(uuid.uuid4())
                 conversation_state.write_conversation_state(cid, **scope, connection=con,
                     sqlite_current_path=lambda *_args: db_path, updates={
@@ -148,12 +185,12 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 con.commit()
             elif not native_id:
                 raise HTTPException(status_code=409, detail="This sitting has no native session to resume")
-            elif state.get("atomic_native_workspace") != str(workspace):
-                raise HTTPException(status_code=409, detail="The Claude workspace changed; restore it before resuming")
+            # A failed pre-launch initialization retries its stored ID. Claude
+            # refuses --session-id reuse before a model call if it already exists.
         finally:
             con.close()
 
-        queue: asyncio.Queue[tuple[bytes, bool]] = asyncio.Queue(maxsize=256)
+        queue: asyncio.Queue[tuple[bytes, bool]] = asyncio.Queue()
         queued_bytes = 0
         handed_off = asyncio.Event()
         attached = True
@@ -170,7 +207,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
             nonlocal queued_bytes
             if attached:
                 frame = (json.dumps({**event, "terminal": terminal}, ensure_ascii=False) + "\n").encode("utf-8")
-                if queue.full() or queued_bytes + len(frame) > _DELIVERY_BUFFER_BYTES:
+                if queued_bytes + len(frame) > _DELIVERY_BUFFER_BYTES:
                     detach()
                     frame = (json.dumps({"type": "error", "code": "delivery_overflow", "terminal": True,
                         "error": "Atomic event delivery overflowed; native work may still be running. Do not replay this turn."}) + "\n").encode()
@@ -182,16 +219,22 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
 
         async def produce() -> None:
             candidate = None
+            public_profile = {key: value for key, value in profile.items() if key != "workspace_root"}
+            session = {"type": "session", "session_id": native_id, "turn_id": body.turn_id, "profile": public_profile}
             async def on_event(event):
                 nonlocal candidate
                 if event.get("type") == "result":
                     candidate = event
+                elif event.get("type") == "system" and event.get("subtype") == "init":
+                    if event["session_id"] != native_id:
+                        raise RuntimeError("Claude returned a different native session")
+                    publish({**session, "actual_model": event.get("model")})
                 else:
-                    publish(event)
+                    for frame in _wire_events(event):
+                        publish(frame)
                     # A buffered native burst must let the ready HTTP reader run.
                     await asyncio.sleep(0)
-            public_profile = {key: value for key, value in profile.items() if key != "workspace_root"}
-            publish({"type": "session", "session_id": native_id, "turn_id": body.turn_id, "profile": public_profile})
+            publish(session)
             try:
                 await service.chat(body.prompt, system_prompt=body.system_prompt, op="atomic_chat", trace_id=body.turn_id,
                     session_id=native_id if body.operation == "new" else None,
@@ -200,7 +243,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 if candidate is None:
                     raise RuntimeError("Claude completed without its terminal result")
                 runtime._record_call("atomic_chat", {"user": scope}, ok=True, info={"conversation_id": cid, "turn_id": body.turn_id})
-                publish(candidate, terminal=True)
+                publish({"type": "complete", "session_id": native_id, "text": candidate["result"]}, terminal=True)
             except asyncio.CancelledError:
                 publish({"type": "error", "error": "Atomic chat producer stopped"}, terminal=True)
                 raise
@@ -208,6 +251,9 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 message = str(exc).replace(token, "[redacted]") if token else str(exc)
                 runtime._record_call("atomic_chat", {"user": scope}, ok=False, error=message)
                 publish({"type": "error", "error": message}, terminal=True)
+            # Native work has settled; HTTP handoff still participates in drain,
+            # but must not keep the conversation's writer marked busy.
+            asyncio.current_task().set_name(marker + ":delivery")
             await handed_off.wait()
 
         task = asyncio.create_task(produce(), name=marker)
