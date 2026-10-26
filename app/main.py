@@ -103,6 +103,7 @@ from app.services.narrative_self import snapshot_previous_narrative_self
 from app.services import memorize_endpoint as _memorize_endpoint
 from app.services import service_factory as _service_factory
 from app.services import import_routes as _import_routes
+from app.services import atomic_chat as _atomic_chat
 from app.services.payload import (
     message_ts_ms as _message_ts_ms,
     _canonicalize_scope_where,
@@ -3627,6 +3628,7 @@ _review_routes.register_review_routes(
 )
 
 _import_routes.register_import_routes(app, runtime=sys.modules[__name__])
+_atomic_chat.register_atomic_chat_routes(app, runtime=sys.modules[__name__])
 
 
 @app.post("/conversation/{conversation_id}/retrieve", operation_id="conversation_retrieve")

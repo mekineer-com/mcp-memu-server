@@ -166,6 +166,8 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "last_background_error_at": row["last_background_error_at"] if "last_background_error_at" in row.keys() else None,
         "atomic_session_started_at": row["atomic_session_started_at"] if "atomic_session_started_at" in row.keys() else None,
         "atomic_session_ended_at": row["atomic_session_ended_at"] if "atomic_session_ended_at" in row.keys() else None,
+        "atomic_native_session_id": row["atomic_native_session_id"] if "atomic_native_session_id" in row.keys() else None,
+        "atomic_native_workspace": row["atomic_native_workspace"] if "atomic_native_workspace" in row.keys() else None,
     }
 
 
@@ -187,7 +189,8 @@ def conversation_state_row(
         "last_display_segment_start_index, last_display_segment_end_index, last_display_segment_at, "
         "updated_at, undo_snapshot, "
         "last_background_error, last_background_error_at, "
-        "atomic_session_started_at, atomic_session_ended_at "
+        "atomic_session_started_at, atomic_session_ended_at, "
+        "atomic_native_session_id, atomic_native_workspace "
         "FROM conversations WHERE conversation_id = ? LIMIT 1",
         (cid,),
     ).fetchone()
@@ -235,6 +238,8 @@ def conversation_state_empty(
         "last_background_error_at": None,
         "atomic_session_started_at": None,
         "atomic_session_ended_at": None,
+        "atomic_native_session_id": None,
+        "atomic_native_workspace": None,
     }
 
 
@@ -476,6 +481,8 @@ INSERT OR IGNORE INTO conversations (
                 "last_background_error_at",
                 "atomic_session_started_at",
                 "atomic_session_ended_at",
+                "atomic_native_session_id",
+                "atomic_native_workspace",
             }:
                 field_updates[key] = value
 
