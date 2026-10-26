@@ -1058,36 +1058,86 @@ async def test_reply_fallback_adds_anchors_but_prepared_prompt_is_unchanged(monk
 
 
 @pytest.mark.asyncio
-async def test_atomic_chat_profile_maps_openai_config(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("provider,prefix,model_key", [
+    ("openai", "openai_compat", "openai_compat_llm_model"),
+    ("openai_compat", "openai_compat", "openai_compat_llm_model"),
+    ("nanogpt", "openai_compat", "openai_compat_llm_model"),
+    ("ollama", "ollama", "ollama_llm_model"),
+    ("openrouter", "openrouter", "chat_model"),
+])
+async def test_atomic_chat_profile_maps_api_config(monkeypatch, provider, prefix, model_key) -> None:
     monkeypatch.setattr(
         main,
         "_CONFIG",
         {
             **main._CONFIG,
+            "claude_code": False,
             "turn_response_sentences": 4,
             "debug": {"log_prompts": True},
             "llm": {
-                "provider": "openai",
+                "provider": provider,
                 "base_url": "https://nano-gpt.example/v1",
                 "api_key": "secret-key",
                 "chat_model": "zai-org/glm-5.2",
+                "context_window_tokens": 120000,
             }
         },
     )
 
     out = await main.atomic_chat_profile("TestOwner", "TestSoul")
 
+    settings = {
+        "memu_response_sentences": "4", "memu_log_prompts": "1",
+        "provider": prefix, model_key: "zai-org/glm-5.2",
+        f"{prefix}_context_length": "120000",
+    }
+    if provider == "ollama":
+        settings["ollama_host"] = "https://nano-gpt.example/v1"
+    else:
+        settings[f"{prefix}_api_key"] = "secret-key"
+        if prefix == "openai_compat":
+            settings["openai_compat_base_url"] = "https://nano-gpt.example/v1"
+    assert out == {"ok": True, "backend": "api", "settings": settings}
+
+
+@pytest.mark.asyncio
+async def test_atomic_chat_profile_uses_cli_without_api_settings(monkeypatch, tmp_path):
+    config = {
+        "claude_code": True, "claude_code_context_window_tokens": 200000,
+        "claude_code_workspace": str(tmp_path), "claude_code_model": "test-cli",
+        "claude_code_timeout_seconds": 600, "claude_code_effort": "high",
+        "turn_response_sentences": 4, "debug": {"log_prompts": True},
+        "llm": {"api_key": "must-not-leak"},
+    }
+    monkeypatch.setattr(main, "_CONFIG", config)
+    monkeypatch.setattr(main, "_require_soul_active", lambda *_args: None)
+    expected = main._atomic_chat.claude_chat_profile(config)
+    out = await main.atomic_chat_profile("TestOwner", "TestSoul")
     assert out == {
-        "ok": True,
-        "settings": {
-            "memu_response_sentences": "4",
-            "memu_log_prompts": "1",
-            "provider": "openai_compat",
-            "openai_compat_base_url": "https://nano-gpt.example/v1",
-            "openai_compat_api_key": "secret-key",
-            "openai_compat_llm_model": "zai-org/glm-5.2",
+        "ok": True, "backend": "claude_code", "settings": {}, "cli": {
+            "model": "test-cli", "context_window_tokens": 200000,
+            "timeout_seconds": 600, "effort": "high", "fingerprint": expected["fingerprint"],
+            "memu_response_sentences": 4, "memu_log_prompts": True,
         },
     }
+    assert "must-not-leak" not in json.dumps(out)
+    assert str(tmp_path) not in json.dumps(out)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claude_code", [False, True])
+@pytest.mark.parametrize("capacity", [None, True, "200000", 0, -1, 20000, 20000.5])
+async def test_atomic_chat_profile_requires_usable_capacity(monkeypatch, claude_code, capacity):
+    key = "claude_code_context_window_tokens" if claude_code else "llm.context_window_tokens"
+    monkeypatch.setattr(main, "_CONFIG", {
+        "claude_code": claude_code, "claude_code_context_window_tokens": capacity,
+        "llm": {"context_window_tokens": capacity},
+    })
+    monkeypatch.setattr(main, "_require_soul_active", lambda *_args: None)
+    with pytest.raises(HTTPException) as error:
+        await main.atomic_chat_profile("TestOwner", "TestSoul")
+    assert error.value.status_code == 409
+    assert key in error.value.detail
 
 
 @pytest.mark.asyncio

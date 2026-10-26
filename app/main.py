@@ -5252,7 +5252,22 @@ async def atomic_session_end(req: AtomicSessionEndRequest):
     }
 
 
+def _atomic_chat_common_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    try:
+        response_sentences = max(1, int(cfg.get("turn_response_sentences", 3)))
+    except (TypeError, ValueError):
+        response_sentences = 3
+    debug_cfg = cfg.get("debug") if isinstance(cfg.get("debug"), dict) else {}
+    return {
+        "memu_response_sentences": response_sentences,
+        "memu_log_prompts": bool(debug_cfg.get("log_prompts", False)),
+    }
+
+
 def _atomic_chat_settings_from_config(cfg: dict[str, Any]) -> dict[str, str]:
+    capacity = (cfg.get("llm") or {}).get("context_window_tokens")
+    if type(capacity) is not int or capacity <= 20000:
+        raise HTTPException(status_code=409, detail="Set llm.context_window_tokens above 20000 to the usable allowance")
     profile = _default_llm_profiles_from_server_config(
         {**cfg, "claude_code": False}, operation="other_reply"
     ).get("default", {})
@@ -5260,34 +5275,32 @@ def _atomic_chat_settings_from_config(cfg: dict[str, Any]) -> dict[str, str]:
     base_url = str(profile.get("base_url") or "").strip()
     api_key = str(profile.get("api_key") or "")
     chat_model = str(profile.get("chat_model") or "").strip()
-    try:
-        response_sentences = max(1, int(cfg.get("turn_response_sentences", 3)))
-    except (TypeError, ValueError):
-        response_sentences = 3
-    debug_cfg = cfg.get("debug") if isinstance(cfg.get("debug"), dict) else {}
+    common_settings = _atomic_chat_common_settings(cfg)
     common = {
-        "memu_response_sentences": str(response_sentences),
-        "memu_log_prompts": "1" if bool(debug_cfg.get("log_prompts", False)) else "0",
+        "memu_response_sentences": str(common_settings["memu_response_sentences"]),
+        "memu_log_prompts": "1" if common_settings["memu_log_prompts"] else "0",
     }
-
     if provider in {"openai", "openai_compat", "nanogpt"}:
         return common | {
             "provider": "openai_compat",
             "openai_compat_base_url": base_url,
             "openai_compat_api_key": api_key,
             "openai_compat_llm_model": chat_model,
+            "openai_compat_context_length": str(capacity),
         }
     if provider == "ollama":
         return common | {
             "provider": "ollama",
             "ollama_host": base_url,
             "ollama_llm_model": chat_model,
+            "ollama_context_length": str(capacity),
         }
     if provider == "openrouter":
         return common | {
             "provider": "openrouter",
             "openrouter_api_key": api_key,
             "chat_model": chat_model,
+            "openrouter_context_length": str(capacity),
         }
     raise HTTPException(status_code=500, detail=f"Unsupported Atomic chat provider: {provider or '<empty>'}")
 
@@ -5299,7 +5312,13 @@ async def atomic_chat_profile(user_id: str, soul_id: str):
     if not uid or not sid:
         raise HTTPException(status_code=400, detail="user_id and soul_id are required")
     _require_soul_active(uid, sid)
-    return {"ok": True, "settings": _atomic_chat_settings_from_config(_CONFIG)}
+    if _CONFIG.get("claude_code") is True:
+        profile = _atomic_chat.claude_chat_profile(_CONFIG)
+        profile.pop("workspace_root")
+        profile.pop("backend")
+        return {"ok": True, "backend": "claude_code", "settings": {},
+                "cli": profile | _atomic_chat_common_settings(_CONFIG)}
+    return {"ok": True, "backend": "api", "settings": _atomic_chat_settings_from_config(_CONFIG)}
 
 
 @app.post("/integration/atomic/prompt_log", operation_id="atomic_prompt_log", tags=["integration"])

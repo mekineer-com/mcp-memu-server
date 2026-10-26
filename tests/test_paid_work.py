@@ -277,13 +277,18 @@ def test_pause_record_survives_restart_and_retry_without_pausing_other_soul():
     assert soul_state.activity_pause(state, memorize_running=False, consolidation_running=True) == "Reflection failed"
 
 
-def test_atomic_profile_gates_only_paused_soul_before_returning_credentials(monkeypatch):
+@pytest.mark.parametrize("claude_code", [False, True])
+def test_atomic_profile_gates_only_paused_soul_before_returning_credentials(monkeypatch, claude_code):
     from fastapi.testclient import TestClient
 
     main._write_conversation_state("chat:saved-chat", user_id="TestOwner", soul_id="TestSoul", updates={
         "memorize_failure": {"conversation_id": "chat:saved-chat", "error": "Failed", "paused": True, "targets": {}},
     })
     calls = []
+    monkeypatch.setitem(main._CONFIG, "claude_code", claude_code)
+    monkeypatch.setattr(main._atomic_chat, "claude_chat_profile", lambda _config: calls.append(True) or {
+        "backend": "claude_code", "workspace_root": Path("/fictional"), "model": "test-cli",
+    })
     monkeypatch.setattr(main, "_atomic_chat_settings_from_config", lambda _config: calls.append(True) or {"api_key": "fake"})
     client = TestClient(main.app)
     response = client.get("/integration/atomic/chat_profile", params={"user_id": "TestOwner", "soul_id": "TestSoul"})

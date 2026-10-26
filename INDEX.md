@@ -101,7 +101,7 @@ mcp-memu-server/
 | `/integration/atomic/session_start` | POST | Atomic session bootstrap: paused Souls refused before session/history writes; stripped retrieve snapshot → seeds `chat:atomic-<uuid>` |
 | `/integration/atomic/session_end` | POST | Atomic session close: persists transcript, then atomically records the activity recap and End marker |
 | `/integration/atomic/chat` | POST | Scoped Claude NDJSON transport; authoritative native-session binding in existing conversation state, per-Soul workspace, scoped bridge tools and detached/drained producer lifetime. Atomic frontend integration remains separate. |
-| `/integration/atomic/chat_profile` | GET | Scoped `user_id` + `soul_id` generation gate and LLM profile (includes API key — do not log); paused Soul returns 409 |
+| `/integration/atomic/chat_profile` | GET | Scoped generation gate and explicit `api`/`claude_code` profile with required usable context capacity; API settings include credentials (do not log), CLI returns empty settings plus typed metadata. Paused Soul returns 409. |
 | `/integration/atomic/prompt_log` | POST | Atomic prompt-log sink (writes to `mcp-memu-server.log` when `debug.log_prompts` enabled) |
 | `/integration/atomic/atoms` | GET | Paginated atom list with canonical dossier metadata; `category_id`/`tag_id` filter, `cursor` pagination |
 | `/integration/atomic/tags` | GET | Category/tag list with kind, activity state, and counts |
