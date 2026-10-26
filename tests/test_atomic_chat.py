@@ -210,6 +210,29 @@ async def test_disconnect_before_first_body_does_not_orphan_producer(chat_runtim
 
 
 @pytest.mark.asyncio
+async def test_delivery_overflow_is_bounded_without_cancelling_native_work(chat_runtime, monkeypatch):
+    monkeypatch.setattr(atomic_chat, "_DELIVERY_BUFFER_BYTES", 1024)
+    def held_factory(payload, *, operation):
+        service = chat_runtime.factory(payload, operation=operation)
+        service.release.clear()
+        return service
+    monkeypatch.setattr(main, "_get_service_from_payload", held_factory)
+    response = await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret")
+    await anext(response.body_iterator)
+    service = chat_runtime.services[0]
+    await service.started.wait()
+    await service.calls[0][1]["on_event"]({"type": "assistant", "message": {"content": "x" * 2048}})
+    event = json.loads(await anext(response.body_iterator))
+    assert event["terminal"] and event["code"] == "delivery_overflow"
+    assert main._BACKGROUND_TASKS and not service.release.is_set()
+    service.release.set()
+    await response.body_iterator.aclose()
+    await asyncio.wait_for(asyncio.gather(*main._BACKGROUND_TASKS), 2)
+    await asyncio.sleep(0)
+    assert not main._BACKGROUND_TASKS
+
+
+@pytest.mark.asyncio
 async def test_active_turn_keeps_captured_service_during_reload(chat_runtime, monkeypatch):
     def held_factory(payload, *, operation):
         service = chat_runtime.factory(payload, operation=operation)

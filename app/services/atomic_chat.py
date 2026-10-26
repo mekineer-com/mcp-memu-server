@@ -20,6 +20,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.services import owner, service_factory, state as conversation_state
 
+_DELIVERY_BUFFER_BYTES = 16 * 1024 * 1024
+
 
 class AtomicChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -151,20 +153,32 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
         finally:
             con.close()
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue: asyncio.Queue[tuple[bytes, bool]] = asyncio.Queue(maxsize=256)
+        queued_bytes = 0
         handed_off = asyncio.Event()
         attached = True
 
         def detach() -> None:
-            nonlocal attached
+            nonlocal attached, queued_bytes
             attached = False
             while not queue.empty():
                 queue.get_nowait()
+            queued_bytes = 0
             handed_off.set()
 
         def publish(event: dict[str, Any], *, terminal: bool = False) -> None:
+            nonlocal queued_bytes
             if attached:
-                queue.put_nowait({**event, "terminal": terminal})
+                frame = (json.dumps({**event, "terminal": terminal}, ensure_ascii=False) + "\n").encode("utf-8")
+                if queue.full() or queued_bytes + len(frame) > _DELIVERY_BUFFER_BYTES:
+                    detach()
+                    frame = (json.dumps({"type": "error", "code": "delivery_overflow", "terminal": True,
+                        "error": "Atomic event delivery overflowed; native work may still be running. Do not replay this turn."}) + "\n").encode()
+                    queued_bytes = len(frame)
+                    queue.put_nowait((frame, True))
+                    return
+                queued_bytes += len(frame)
+                queue.put_nowait((frame, terminal))
 
         async def produce() -> None:
             candidate = None
@@ -203,11 +217,13 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
         task.add_done_callback(finished)
 
         async def stream():
+            nonlocal queued_bytes
             try:
                 while True:
-                    event = await queue.get()
-                    yield json.dumps(event, ensure_ascii=False) + "\n"
-                    if event["terminal"]:
+                    frame, terminal = await queue.get()
+                    queued_bytes -= len(frame)
+                    yield frame
+                    if terminal:
                         handed_off.set()
                         return
             finally:
