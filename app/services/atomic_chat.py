@@ -59,7 +59,7 @@ def claude_chat_profile(config: dict[str, Any]) -> dict[str, Any]:
 async def _bridge_tools(url: str, authorization: str) -> list[str]:
     parsed = urlsplit(url)
     if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1", "localhost"}
-            or parsed.path != "/openalma/chat-tools/mcp" or parsed.query or parsed.fragment or parsed.username):
+            or parsed.path != "/openalma/chat-tools/mcp" or parsed.query or parsed.fragment or parsed.username is not None):
         raise HTTPException(status_code=422, detail="bridge_url must be the local Atomic scoped-tool endpoint")
     async with asyncio.timeout(10), httpx.AsyncClient(headers={"Authorization": authorization}, timeout=10, trust_env=False) as client:
         async with streamable_http_client(url, http_client=client) as (read, write, _session):

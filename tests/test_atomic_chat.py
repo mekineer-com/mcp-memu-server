@@ -309,7 +309,8 @@ def test_schema_upgrades_existing_conversation_without_replacing_it():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("url", ["https://example.test/openalma/chat-tools/mcp", "http://localhost/api/search",
-                                  "http://token@localhost/openalma/chat-tools/mcp"])
+                                  "http://token@localhost/openalma/chat-tools/mcp",
+                                  "http://:fictional-secret@localhost/openalma/chat-tools/mcp"])
 async def test_tool_discovery_refuses_non_bridge_urls(url):
     with pytest.raises(HTTPException) as error:
         await atomic_chat._bridge_tools(url, "Bearer fictional-secret")
