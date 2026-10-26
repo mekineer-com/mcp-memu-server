@@ -62,7 +62,10 @@ def _wire_events(event: dict[str, Any]) -> list[dict[str, Any]]:
     identity = {"record_id": event["uuid"], "message_id": message.get("id"),
                 "parent_call_id": event.get("parent_tool_use_id")}
     events = []
-    for index, block in enumerate(message["content"]):
+    content = message["content"]
+    if isinstance(content, str):
+        content = [{"type": "text", "text": content}]
+    for index, block in enumerate(content):
         base = {**identity, "block_index": index}
         if event["type"] == "assistant" and block["type"] == "text":
             events.append({"type": "text", **base, "mode": "replace", "text": block["text"]})

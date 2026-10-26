@@ -390,6 +390,17 @@ def test_normalized_events_preserve_records_calls_results_and_final_usage():
     assert events[-1]["usage"] == raw[4]["usage"]
 
 
+@pytest.mark.parametrize("kind", ["assistant", "user"])
+def test_normalized_plain_string_content(kind):
+    event = {"type": kind, "uuid": "plain-record", "message": {"id": "model-message", "content": "plain text"}}
+    frames = atomic_chat._wire_events(event)
+    if kind == "assistant":
+        assert frames == [{"type": "text", "record_id": "plain-record", "message_id": "model-message",
+                           "parent_call_id": None, "block_index": 0, "mode": "replace", "text": "plain text"}]
+    else:
+        assert frames == []  # Atomic already owns the user turn.
+
+
 @pytest.mark.asyncio
 async def test_active_turn_keeps_captured_service_during_reload(chat_runtime, monkeypatch):
     def held_factory(payload, *, operation):
