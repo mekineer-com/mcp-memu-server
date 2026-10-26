@@ -188,6 +188,8 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                     candidate = event
                 else:
                     publish(event)
+                    # A buffered native burst must let the ready HTTP reader run.
+                    await asyncio.sleep(0)
             public_profile = {key: value for key, value in profile.items() if key != "workspace_root"}
             publish({"type": "session", "session_id": native_id, "turn_id": body.turn_id, "profile": public_profile})
             try:

@@ -233,6 +233,22 @@ async def test_delivery_overflow_is_bounded_without_cancelling_native_work(chat_
 
 
 @pytest.mark.asyncio
+async def test_fast_consumer_is_not_starved_by_native_event_burst(chat_runtime, monkeypatch):
+    def burst_factory(payload, *, operation):
+        service = chat_runtime.factory(payload, operation=operation)
+        original = service.chat
+        async def burst(prompt, **kwargs):
+            for number in range(300):
+                await kwargs["on_event"]({"type": "assistant", "message": {"content": str(number)}})
+            return await original(prompt, **kwargs)
+        service.chat = burst
+        return service
+    monkeypatch.setattr(main, "_get_service_from_payload", burst_factory)
+    events = await read(await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret"))
+    assert len(events) == 303 and events[-1]["type"] == "result"
+
+
+@pytest.mark.asyncio
 async def test_active_turn_keeps_captured_service_during_reload(chat_runtime, monkeypatch):
     def held_factory(payload, *, operation):
         service = chat_runtime.factory(payload, operation=operation)
