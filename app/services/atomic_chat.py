@@ -82,7 +82,7 @@ def _writer_idle(receipt: dict[str, Any]) -> bool | None:
 def _reported_failure(receipt: dict[str, Any]) -> bool:
     result = receipt.get("native_result") or {}
     return (result.get("is_error") is True and isinstance(result.get("subtype"), str)
-            and result["subtype"].startswith("error_"))
+            and (result["subtype"] == "success" or result["subtype"].startswith("error_")))
 
 
 def _native_status(runtime: Any, cid: str, scope: dict[str, str]) -> dict[str, Any]:

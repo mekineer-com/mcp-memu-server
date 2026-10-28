@@ -348,14 +348,17 @@ async def test_uncertain_submission_only_admits_same_session_recap(chat_runtime,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("delayed_exit", [False, True])
-async def test_recorded_claude_error_is_retryable_without_reinitialization(chat_runtime, monkeypatch, delayed_exit):
+@pytest.mark.parametrize("api_error", [False, True])
+async def test_recorded_claude_error_is_retryable_without_reinitialization(chat_runtime, monkeypatch, delayed_exit, api_error):
     idle = atomic_chat._writer_idle
     exit_known = not delayed_exit
     monkeypatch.setattr(atomic_chat, "_writer_idle", lambda receipt: idle(receipt) if exit_known else None)
     def failed_once(payload, *, operation):
         service = chat_runtime.factory(payload, operation=operation)
         if len(chat_runtime.services) == 1:
-            service.error_result = {"type":"result", "subtype":"error_max_turns", "is_error":True, "errors":["fictional round limit"]}
+            service.error_result = ({"type":"result", "subtype":"success", "is_error":True,
+                                     "api_error_status":429, "result":"fictional rate limit"} if api_error else
+                                    {"type":"result", "subtype":"error_max_turns", "is_error":True, "errors":["fictional round limit"]})
         return service
     monkeypatch.setattr(main, "_get_service_from_payload", failed_once)
     await read(await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret"))
