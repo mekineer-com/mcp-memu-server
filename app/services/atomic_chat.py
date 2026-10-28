@@ -21,10 +21,88 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from pydantic import BaseModel, ConfigDict, Field
 from memu.llm.claude_cli import claude_session_path
+from memu.app.dossier_revision import estimate_prompt_tokens
 
 from app.services import owner, service_factory, state as conversation_state
 
 _DELIVERY_BUFFER_BYTES = 16 * 1024 * 1024
+
+
+def _input_context(context: dict[str, int] | None, prompt: int, overhead: int) -> dict[str, int] | None:
+    if context is None:
+        return None
+    return {**context, "estimated_tokens": context["estimated_tokens"] + prompt + max(0, overhead - context["overhead_tokens"]),
+            "overhead_tokens": max(overhead, context["overhead_tokens"])}
+
+
+def _block_tokens(block: dict[str, Any]) -> int | None:
+    kind = block["type"]
+    if kind == "thinking":
+        block = {"type": kind, "thinking": block.get("thinking", "")}
+    elif kind == "tool_result":
+        content = block.get("content", "")
+        if not isinstance(content, str) and not (isinstance(content, list)
+                and all(part.get("type") == "text" for part in content)):
+            return None
+    elif kind not in {"text", "tool_use"}:
+        return None
+    return 8 + estimate_prompt_tokens(json.dumps(block, ensure_ascii=False, separators=(",", ":")))
+
+
+class _Context:
+    """Ephemeral coverage boundary; only the receipt's current estimate is durable."""
+
+    def __init__(self, receipt: dict[str, Any], overhead: int):
+        self.receipt = receipt
+        self.overhead = overhead
+        self.message_id = None
+        self.results: dict[Any, int | None] = {}
+        self.outputs: dict[Any, int | None] = {}
+
+    def observe(self, event: dict[str, Any]) -> None:
+        kind = event["type"]
+        if kind == "context_start":
+            if self.message_id != event["message_id"]:
+                self.message_id = event["message_id"]
+                self.results.clear()
+                self.outputs.clear()
+            return
+        if kind == "context_usage":
+            if event["message_id"] != self.message_id:
+                raise RuntimeError("Native usage has no matching input coverage boundary")
+            self.receipt["usage"] = {"message_id": event["message_id"], "usage": event["usage"]}
+            # Results after message_start are not in that message's measured input,
+            # even if stdout delivered them before its finalized usage event.
+            self.receipt["context"] = (None if any(value is None for value in self.results.values()) else {
+                "estimated_tokens": sum(event["usage"][key] for key in (
+                    "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"
+                )) + sum(self.results.values()),
+                "overhead_tokens": self.overhead,
+                "system_tokens": (self.receipt.get("context") or {}).get("system_tokens", 0),
+            })
+            return
+        if kind not in {"assistant", "user"} or event.get("parent_tool_use_id") is not None:
+            return
+        message = event["message"]
+        if kind == "assistant" and self.receipt.get("usage") and message.get("id") == self.receipt["usage"]["message_id"]:
+            return
+        content = message["content"]
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}]
+        for index, block in enumerate(content):
+            if kind == "user" and block["type"] != "tool_result":
+                continue  # Original input/control is counted at input delivery, not its echo.
+            entries = self.results if kind == "user" else self.outputs
+            key = block["tool_use_id"] if kind == "user" else (message.get("id", event.get("uuid")), index)
+            value = _block_tokens(block)
+            old = entries.get(key, 0)
+            if value is None or old is None:
+                entries[key] = None
+                self.receipt["context"] = None
+            else:
+                entries[key] = max(old, value)
+                if self.receipt.get("context") is not None:
+                    self.receipt["context"]["estimated_tokens"] += max(0, value - old)
 
 
 def _task_name(conversation_id: str, user_id: str, soul_id: str) -> str:
@@ -90,7 +168,8 @@ def _native_status(runtime: Any, cid: str, scope: dict[str, str]) -> dict[str, A
     receipt = saved.get("atomic_native_turn")
     if receipt is None:
         bound = saved.get("atomic_native_session_id")
-        return {"session_id": bound, "turn": None, "writer_idle": None if bound else True}
+        return {"session_id": bound, "turn": None, "writer_idle": None if bound else True,
+                "context": None if bound else {"estimated_tokens": 0, "overhead_tokens": 0, "system_tokens": 0}}
     live = any(not task.done() and task.get_name() == _task_name(cid, **scope)
                for task in runtime._BACKGROUND_TASKS)
     idle = False if live else _writer_idle(receipt)
@@ -104,11 +183,14 @@ def _native_status(runtime: Any, cid: str, scope: dict[str, str]) -> dict[str, A
         if known_error:
             receipt["submission"] = "recorded"
             receipt["input_recorded"] = True
+    if not live and not unsubmitted and not receipt.get("native_result") and receipt["status"] != "complete":
+        receipt = {**receipt, "context": None}
     if idle is True and not receipt.get("writer_exited"):
         receipt = {**receipt, "writer_exited": True}
     if receipt != saved["atomic_native_turn"]:
         _save_receipt(runtime, cid, scope, receipt, runtime._sqlite_current_path(**scope))
-    return {"session_id": saved.get("atomic_native_session_id"), "turn": receipt, "writer_idle": idle}
+    return {"session_id": saved.get("atomic_native_session_id"), "turn": receipt, "writer_idle": idle,
+            "context": receipt.get("context")}
 
 
 def _save_receipt(runtime: Any, cid: str, scope: dict[str, str], receipt: dict[str, Any], path: Path) -> None:
@@ -161,6 +243,9 @@ class AtomicChatRequest(BaseModel):
     system_prompt: str | None = None
     bridge_url: str | None = None
     profile_fingerprint: str
+    prompt_tokens: int = Field(ge=0)
+    overhead_tokens: int = Field(ge=0)
+    system_tokens: int = Field(ge=0)
 
 
 def _hash(value: Any) -> str:
@@ -239,6 +324,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                     "error": "Latest native receipt belongs to a different turn; this request's submission cannot be inferred",
                     "session_id": status["session_id"], "turn": None,
                     "writer_idle": status["writer_idle"],
+                    "context": status["context"],
                 })
             status = {**status, "turn": earlier}
         return status
@@ -319,9 +405,15 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
             receipt = {"session_id": native_id, "turn_id": body.turn_id, "attempt_id": body.attempt_id, "purpose": body.purpose,
                        "status": "prepared", "writer_exited": False, "initialized": exists,
                        "submission": "not_submitted",
+                       "context": deepcopy(previous.get("context")) if previous else {
+                           "estimated_tokens": 0, "overhead_tokens": 0, "system_tokens": 0},
                        # Retry replaces the attempt, not the input's recorded history.
                        "input_recorded": bool(previous and previous["turn_id"] == body.turn_id
                            and (previous.get("input_recorded") or previous.get("submission") == "recorded"))}
+            # Presence is a native startup argument, installed independently of stdin.
+            if receipt["context"] is not None:
+                receipt["context"]["estimated_tokens"] += max(0, body.system_tokens - receipt["context"]["system_tokens"])
+                receipt["context"]["system_tokens"] = max(body.system_tokens, receipt["context"]["system_tokens"])
             if previous:
                 uncertain = (previous if previous["purpose"] == "reply" and previous["status"] == "uncertain"
                              else previous.get("uncertain_turn"))
@@ -364,6 +456,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 queue.put_nowait((frame, terminal))
 
         async def produce() -> None:
+            context = _Context(receipt, body.overhead_tokens)
             public_profile = {key: value for key, value in profile.items() if key != "workspace_root"}
             session = {"type": "session", "session_id": native_id, "turn_id": body.turn_id,
                        "attempt_id": body.attempt_id, "profile": public_profile}
@@ -379,8 +472,10 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                             # Early launch rejection may exit before identity lookup.
                             pass
                     elif event["state"] == "input_started":
-                        _save_receipt(runtime, cid, scope, {**receipt, "submission": "unknown"}, db_path)
+                        next_context = _input_context(receipt.get("context"), body.prompt_tokens, body.overhead_tokens)
+                        _save_receipt(runtime, cid, scope, {**receipt, "submission": "unknown", "context": next_context}, db_path)
                         receipt["submission"] = "unknown"
+                        receipt["context"] = next_context
                         return
                     elif event["state"] == "reaped":
                         receipt["parent_reaped"] = True
@@ -397,8 +492,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                     _save_receipt(runtime, cid, scope, receipt, db_path)
                     publish({**session, "actual_model": event.get("model")})
                 else:
-                    if event.get("type") == "context_usage":
-                        receipt["usage"] = {"message_id": event["message_id"], "usage": event["usage"]}
+                    context.observe(event)
                     for frame in _wire_events(event):
                         publish(frame)
                     # A buffered native burst must let the ready HTTP reader run.
@@ -427,7 +521,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
             except asyncio.CancelledError:
                 reason = ("Planned shutdown" if runtime._SHUTDOWN_STATE.get("draining")
                           else "Atomic chat producer cancelled")
-                receipt.update(status="uncertain", error=f"{reason}; native outcome unknown")
+                receipt.update(status="uncertain", error=f"{reason}; native outcome unknown", context=None)
                 try:
                     _save_receipt(runtime, cid, scope, receipt, db_path)
                 finally:
@@ -437,6 +531,8 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 message = str(exc).replace(token, "[redacted]") if token else str(exc)
                 if receipt["status"] == "prepared":
                     receipt["writer_exited"] = True
+                if receipt["submission"] != "not_submitted" and not receipt.get("native_result"):
+                    receipt["context"] = None
                 # Delivery/checkpoint errors must not erase a validated answer.
                 if receipt["status"] != "complete":
                     known_error = _reported_failure(receipt) and _writer_idle(receipt) is True

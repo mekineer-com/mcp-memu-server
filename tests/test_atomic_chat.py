@@ -73,8 +73,10 @@ def chat_runtime(monkeypatch, tmp_path):
                 raise
             self.inputs.append(prompt)
             self.started.set()
+            message_id = self.usage["message_id"] if self.usage else "model-message"
+            await kwargs["on_event"]({"type": "context_start", "message_id": message_id})
             await kwargs["on_event"]({"type": "assistant", "uuid": "record-reply", "message": {
-                "id": "model-message", "content": [{"type": "text", "text": "reply"}]}})
+                "id": message_id, "content": [{"type": "text", "text": "reply"}]}})
             await self.release.wait()
             if self.usage:
                 await kwargs["on_event"]({"type":"context_usage", **self.usage})
@@ -111,7 +113,9 @@ def request(**changes):
         "attempt_id": str(uuid.uuid4()),
         "operation": "new", "purpose": "reply", "prompt": "fictional question", "system_prompt": "fictional Presence",
         "bridge_url": "http://127.0.0.1:9999/openalma/chat-tools/mcp",
-        "profile_fingerprint": atomic_chat.claude_chat_profile(main._CONFIG)["fingerprint"], **changes,
+        "profile_fingerprint": atomic_chat.claude_chat_profile(main._CONFIG)["fingerprint"],
+        "prompt_tokens": 100, "overhead_tokens": 50,
+        "system_tokens": 0 if changes.get("system_prompt", "presence") is None else 25, **changes,
     })
 
 
@@ -119,6 +123,62 @@ async def read(response):
     events = [json.loads(line) async for line in response.body_iterator]
     await asyncio.gather(*main._BACKGROUND_TASKS)
     return events
+
+
+def test_context_coverage_rebases_at_input_boundary_not_usage_arrival():
+    receipt = {"context": {"estimated_tokens": 200, "overhead_tokens": 50, "system_tokens": 25}}
+    context = atomic_chat._Context(receipt, 60)
+    context.observe({"type":"context_start", "message_id":"m1"})
+    result = {"type":"tool_result", "tool_use_id":"call-1", "content":"native tool output"}
+    user = {"type":"user", "uuid":"result", "message":{"content":[result]}}
+    assistant = {"type":"assistant", "uuid":"assistant", "message":{
+        "id":"m1", "content":[{"type":"text", "text":"provisional answer"}]}}
+    context.observe(user)
+    context.observe(assistant)
+    usage = {"input_tokens":10, "cache_creation_input_tokens":20, "cache_read_input_tokens":30, "output_tokens":5}
+    context.observe({"type":"context_usage", "message_id":"m1", "usage":usage})
+    expected = 65 + atomic_chat._block_tokens(result)
+    assert receipt["context"] == {"estimated_tokens":expected, "overhead_tokens":60, "system_tokens":25}
+    context.observe(assistant)  # A late full snapshot is already covered by output_tokens.
+    context.observe(user)  # Replacement/duplicate result, not another model-facing message.
+    context.observe({**user, "parent_tool_use_id":"nested"})
+    assert receipt["context"]["estimated_tokens"] == expected
+    context.observe({"type":"context_start", "message_id":"m2"})
+    context.observe({**assistant, "message":{**assistant["message"], "id":"m2"}})
+    growing = receipt["context"]["estimated_tokens"]
+    assert growing > expected
+    context.observe({"type":"context_start", "message_id":"m3"})
+    assert receipt["context"]["estimated_tokens"] == growing  # m2 never had valid usage.
+    context.observe({"type":"context_usage", "message_id":"m3", "usage":usage})
+    assert receipt["context"]["estimated_tokens"] == 65
+
+
+def test_context_unknown_coverage_is_not_zero_and_requires_new_measurement():
+    receipt = {"context": None}
+    assert atomic_chat._input_context(None, 100, 50) is None
+    context = atomic_chat._Context(receipt, 50)
+    context.observe({"type":"context_start", "message_id":"m1"})
+    context.observe({"type":"user", "uuid":"opaque", "message":{"content":[{
+        "type":"tool_result", "tool_use_id":"call", "content":[{"type":"image", "source":{}}]}]}})
+    usage = {"input_tokens":10, "cache_creation_input_tokens":0, "cache_read_input_tokens":0, "output_tokens":5}
+    context.observe({"type":"context_usage", "message_id":"m1", "usage":usage})
+    assert receipt["context"] is None  # These post-input results are not covered yet.
+    context.observe({"type":"context_start", "message_id":"m2"})
+    context.observe({"type":"context_usage", "message_id":"m2", "usage":usage})
+    assert receipt["context"]["estimated_tokens"] == 15
+    with pytest.raises(RuntimeError, match="coverage boundary"):
+        context.observe({"type":"context_usage", "message_id":"wrong", "usage":usage})
+
+
+def test_context_overhead_growth_is_counted_once_without_reinjecting_presence():
+    original = {"estimated_tokens":1000, "overhead_tokens":100, "system_tokens":25}
+    same = atomic_chat._input_context(original, 10, 100)
+    assert original["estimated_tokens"] == 1000  # Input checkpoint prepares a copy.
+    assert same["estimated_tokens"] == 1010
+    larger = atomic_chat._input_context(same, 20, 150)
+    assert larger["estimated_tokens"] == 1080
+    smaller = atomic_chat._input_context(larger, 10, 50)
+    assert atomic_chat._input_context(smaller, 10, 150)["estimated_tokens"] == 1100
 
 
 @pytest.mark.asyncio
@@ -129,10 +189,18 @@ async def test_new_then_resume_uses_server_binding_and_tool_free_recap(chat_runt
     assert first[-1]["terminal"] is True and first[-1]["type"] == "complete"
     assert first[0]["profile"]["model"] == "fictional-model"
     assert "workspace_root" not in first[0]["profile"]
+    scope = {"user_id":"TestOwner", "soul_id":"Birch"}
+    first_receipt = atomic_chat._native_status(main, "chat:atomic-sitting", scope)["turn"]
+    assert "usage" not in first_receipt  # An estimate is not fabricated provider usage.
+    first_context = first_receipt["context"]["estimated_tokens"]
+    assert first_context > 150
     second = await read(await chat_runtime.endpoint(request(operation="continue", system_prompt=None,
         purpose="recap", bridge_url=None, turn_id="turn-2"), authorization=None))
     await asyncio.sleep(0)
     assert second[0]["session_id"] == native_id
+    second_receipt = atomic_chat._native_status(main, "chat:atomic-sitting", scope)["turn"]
+    assert second_receipt["context"]["estimated_tokens"] == first_context + 100 + atomic_chat._block_tokens({"type":"text", "text":"reply"})
+    assert second_receipt["context"]["overhead_tokens"] == 50
     kwargs = chat_runtime.services[-1].calls[0][1]
     assert kwargs["resume_session_id"] == native_id and kwargs["session_id"] is None
     assert kwargs["system_prompt"] is None
@@ -208,7 +276,8 @@ async def test_retry_discovery_exposes_old_attempt_but_cannot_checkpoint_over_ne
 async def test_status_recovers_exact_completed_turn_without_another_call(chat_runtime, monkeypatch):
     def with_usage(payload, *, operation):
         service = chat_runtime.factory(payload, operation=operation)
-        service.usage = {"message_id":"primary", "usage":{"input_tokens":10, "output_tokens":5}}
+        service.usage = {"message_id":"primary", "usage":{"input_tokens":10, "output_tokens":5,
+            "cache_creation_input_tokens":0, "cache_read_input_tokens":0}}
         return service
     monkeypatch.setattr(main, "_get_service_from_payload", with_usage)
     await read(await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret"))
@@ -256,6 +325,7 @@ async def test_status_missing_turn_preserves_writer_evidence(chat_runtime, monke
     assert detail["code"] == "atomic_native_turn_missing"
     assert detail["turn"] is None and detail["writer_idle"] is writer_idle
     assert detail["session_id"] == chat_runtime.services[0].calls[0][1]["session_id"]
+    assert detail["context"]["estimated_tokens"] > 0
 
 
 @pytest.mark.asyncio
@@ -292,6 +362,11 @@ async def test_failed_input_checkpoint_keeps_turn_unsubmitted(chat_runtime, monk
     assert chat_runtime.services[0].inputs == []
     saved = atomic_chat._native_state(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["atomic_native_turn"]
     assert saved["status"] == "failed" and saved["submission"] == "not_submitted"
+    assert saved["initialized"] is True
+    assert saved["context"]["estimated_tokens"] == 25  # Presence may be installed before stdin.
+    await read(await chat_runtime.endpoint(request(operation="retry", system_prompt=None), authorization="Bearer fictional-secret"))
+    resumed = atomic_chat._native_status(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})
+    assert resumed["context"]["estimated_tokens"] == 175 + atomic_chat._block_tokens({"type":"text", "text":"reply"})
 
 
 @pytest.mark.asyncio
@@ -302,10 +377,12 @@ async def test_restart_evidence_is_not_completion_or_permission_to_replay(chat_r
     saved = atomic_chat._native_state(main, cid, scope)["atomic_native_turn"]
     saved.update(status="running", writer_exited=False)
     saved.pop("text")
+    saved.pop("native_result")
     atomic_chat._save_receipt(main, cid, scope, saved, main._sqlite_current_path(**scope))
     assert not main._BACKGROUND_TASKS
     monkeypatch.setattr(atomic_chat, "_writer_idle", lambda _receipt: None)
     assert atomic_chat._native_status(main, cid, scope)["turn"]["status"] == "uncertain"
+    assert atomic_chat._native_status(main, cid, scope)["context"] is None
     with pytest.raises(HTTPException, match="exit is not established"):
         atomic_chat.require_sitting_idle(main, cid, **scope)
     monkeypatch.setattr(atomic_chat, "_writer_idle", lambda _receipt: True)
@@ -393,11 +470,15 @@ async def test_failed_initialization_retries_same_id_with_presence(chat_runtime,
     monkeypatch.setattr(main, "_get_service_from_payload", failed_once)
     first = await read(await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret"))
     assert first[-1]["type"] == "error" and not chat_runtime.native_ids
+    before_retry = atomic_chat._native_status(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})
+    assert before_retry["context"]["estimated_tokens"] == 25
     second = await read(await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret"))
     assert second[-1]["type"] == "complete"
     assert first[0]["session_id"] == second[0]["session_id"]
     kwargs = chat_runtime.services[-1].calls[0][1]
     assert kwargs["session_id"] == first[0]["session_id"] and kwargs["system_prompt"] == "fictional Presence"
+    after_retry = atomic_chat._native_status(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})
+    assert after_retry["context"]["estimated_tokens"] == 175 + atomic_chat._block_tokens({"type":"text", "text":"reply"})
 
 
 @pytest.mark.asyncio
@@ -456,6 +537,7 @@ async def test_recorded_claude_error_is_retryable_without_reinitialization(chat_
     saved = atomic_chat._native_state(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["atomic_native_turn"]
     assert saved["status"] == "failed" and saved["submission"] == "recorded"
     assert saved["input_recorded"] is True
+    original_context = saved["context"]["estimated_tokens"]
     await read(await chat_runtime.endpoint(request(operation="retry", system_prompt=None, prompt="Continue the recorded failed turn"), authorization="Bearer fictional-secret"))
     scope = {"user_id":"TestOwner", "soul_id":"Birch"}
     interrupted = atomic_chat._native_state(main, "chat:atomic-sitting", scope)["atomic_native_turn"]
@@ -464,8 +546,11 @@ async def test_recorded_claude_error_is_retryable_without_reinitialization(chat_
     refused = atomic_chat._native_status(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["turn"]
     assert refused["submission"] == "not_submitted" and refused["input_recorded"] is True
     assert refused["error"].startswith("This attempt was not submitted.")
+    assert refused["context"]["estimated_tokens"] == original_context
     await read(await chat_runtime.endpoint(request(operation="retry", system_prompt=None, prompt="Continue the recorded failed turn"), authorization="Bearer fictional-secret"))
     assert chat_runtime.services[-1].calls[0][1]["resume_session_id"] == saved["session_id"]
+    after_retry = atomic_chat._native_status(main, "chat:atomic-sitting", scope)["context"]["estimated_tokens"]
+    assert after_retry == original_context + 100 + atomic_chat._block_tokens({"type":"text", "text":"reply"})
     await read(await chat_runtime.endpoint(request(operation="continue", system_prompt=None,
         turn_id="turn-2", prompt="A different logical turn"), authorization="Bearer fictional-secret"))
     other = atomic_chat._native_status(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["turn"]
