@@ -1,7 +1,10 @@
 import asyncio
+import hashlib
 import json
 import os
 import sqlite3
+import sys
+import threading
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -130,6 +133,294 @@ async def read(response):
     events = [json.loads(line) async for line in response.body_iterator]
     await asyncio.gather(*main._BACKGROUND_TASKS)
     return events
+
+
+@pytest.fixture
+async def maintenance_runtime(chat_runtime, monkeypatch):
+    response = await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret")
+    chat_runtime.services[-1].usage = {"message_id":"model-message", "usage":{
+        "input_tokens":100, "cache_creation_input_tokens":0, "cache_read_input_tokens":150, "output_tokens":10}}
+    await read(response)
+    scope = {"user_id": "TestOwner", "soul_id": "Birch"}
+    cid = "chat:atomic-sitting"
+    saved = atomic_chat._native_state(main, cid, scope)
+    receipt = saved["atomic_native_turn"]
+    source = atomic_chat.claude_session_path(saved["atomic_native_workspace"], receipt["session_id"])
+    rows = [
+        {"type":"user", "uuid":"u0", "parentUuid":None, "message":{"role":"user", "content":"first"}},
+        {"type":"assistant", "uuid":"a0", "parentUuid":"u0", "message":{"role":"assistant",
+            "content":[{"type":"thinking", "thinking":"old bulk", "signature":"whole"}, {"type":"text", "text":"answer"}]}},
+        {"type":"user", "uuid":"u1", "parentUuid":"a0", "message":{"role":"user", "content":"latest"}},
+        {"type":"assistant", "uuid":"a1", "parentUuid":"u1", "message":{"role":"assistant", "content":"latest answer"}},
+    ]
+    encode = lambda data: b"".join((json.dumps(row, separators=(",", ":")) + "\n").encode() for row in data)
+    original = encode(rows)
+    source.write_bytes(original)
+    rows[1]["message"]["content"] = [{"type":"text", "text":"answer"}]
+    candidate = encode(rows)
+    preparations = []
+    # Lifecycle/fault tests use fixed candidate bytes, not a second cleaner.
+    def prepare(data):
+        assert data == original
+        preparations.append(data)
+        return SimpleNamespace(candidate_bytes=candidate, source_sha256=hashlib.sha256(data).hexdigest(),
+            candidate_sha256=hashlib.sha256(candidate).hexdigest(), changes={"thinking_blocks_removed":1})
+    module = SimpleNamespace(prepare_atomic_session=prepare)
+    monkeypatch.setitem(sys.modules, "atomic_claude_session", module)
+    endpoint = next(route.endpoint for route in chat_runtime.app.routes
+                    if route.path == "/integration/atomic/chat/maintenance")
+    return SimpleNamespace(chat=chat_runtime, scope=scope, cid=cid, receipt=receipt, source=source,
+        original=original, candidate=candidate, endpoint=endpoint, module=module, preparations=preparations)
+
+
+def maintenance_request(runtime, **changes):
+    return atomic_chat.AtomicMaintenanceRequest(**{**runtime.scope, "conversation_id":"sitting",
+        "turn_id":runtime.receipt["turn_id"], "native_attempt_id":runtime.receipt["attempt_id"],
+        "attempt_id":uuid.uuid4(), "action":"compact", **changes})
+
+
+@pytest.mark.asyncio
+async def test_maintenance_adopts_once_preserves_context_and_rejects_stale_claims(maintenance_runtime):
+    m = maintenance_runtime
+    body = maintenance_request(m)
+    result = await m.endpoint(body)
+    assert result["maintenance"]["status"] == "complete"
+    assert m.source.read_bytes() == m.candidate
+    assert result["context"] == m.receipt["context"]
+    assert atomic_chat._native_state(main, m.cid, m.scope)["atomic_native_turn"]["usage"] == m.receipt["usage"]
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=m.chat.app), base_url="http://test") as client:
+        params = {**m.scope, "conversation_id":"sitting"}
+        latest = await client.get("/integration/atomic/chat/status", params=params)
+        assert latest.status_code == 200
+        assert latest.json()["turn"]["attempt_id"] == m.receipt["attempt_id"]
+        missing = await client.get("/integration/atomic/chat/status", params={**params, "turn_id":"missing"})
+        assert missing.status_code == 409
+        assert missing.json()["detail"]["maintenance"] == result["maintenance"]
+    source, original, candidate = atomic_chat._maintenance_paths(
+        result["maintenance"]["workspace"], m.receipt["session_id"], str(body.attempt_id))
+    assert source == m.source and original.read_bytes() == m.original and not candidate.exists()
+    if os.name == "posix":
+        assert original.stat().st_mode & 0o777 == 0o600
+    assert await m.endpoint(body) == result
+    assert len(m.preparations) == 1
+    for changes in ({"previous_attempt_id":None}, {"native_attempt_id":uuid.uuid4()},
+                    {"soul_id":"OtherSoul"}, {"user_id":"OtherOwner"}):
+        with pytest.raises(HTTPException):
+            await m.endpoint(maintenance_request(m, **changes))
+    stale = atomic_chat._native_state(main, m.cid, m.scope)["atomic_native_turn"]
+    stale["maintenance"]["attempt_id"] = str(uuid.uuid4())
+    with pytest.raises(RuntimeError, match="binding changed"):
+        atomic_chat._save_receipt(main, m.cid, m.scope, stale, main._sqlite_current_path(**m.scope))
+    await read(await m.chat.endpoint(request(operation="continue", system_prompt=None, turn_id="turn-2"),
+                                    authorization="Bearer fictional-secret"))
+    current = atomic_chat._native_state(main, m.cid, m.scope)["atomic_native_turn"]
+    assert current["maintenance"] == result["maintenance"]
+    with pytest.raises(HTTPException, match="matching native"):
+        await m.endpoint(body)
+
+
+@pytest.mark.asyncio
+async def test_maintenance_survives_delivery_loss_and_blocks_admission(maintenance_runtime, monkeypatch):
+    m = maintenance_runtime
+    started, release = threading.Event(), threading.Event()
+    prepare = m.module.prepare_atomic_session
+    def held(data):
+        started.set()
+        assert release.wait(5)
+        return prepare(data)
+    monkeypatch.setattr(m.module, "prepare_atomic_session", held)
+    body = maintenance_request(m)
+    delivery = asyncio.create_task(m.endpoint(body))
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        assert (await m.endpoint(body))["maintenance"]["status"] == "running"
+        assert atomic_chat._native_status(main, m.cid, m.scope)["maintenance"]["status"] == "running"
+        with pytest.raises(HTTPException, match="maintenance"):
+            await m.chat.endpoint(request(operation="continue", system_prompt=None), authorization="Bearer fictional-secret")
+        delivery.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await delivery
+        assert any(task.get_name().endswith(":maintenance") and not task.done() for task in main._BACKGROUND_TASKS)
+    finally:
+        release.set()
+        await asyncio.gather(*main._BACKGROUND_TASKS)
+    assert atomic_chat._native_status(main, m.cid, m.scope)["maintenance"]["status"] == "complete"
+    assert m.source.read_bytes() == m.candidate
+
+
+@pytest.mark.asyncio
+async def test_maintenance_cancelled_preparation_cannot_adopt_from_its_thread(maintenance_runtime, monkeypatch):
+    m = maintenance_runtime
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+    prepare = m.module.prepare_atomic_session
+    def held(data):
+        started.set()
+        try:
+            assert release.wait(5)
+            return prepare(data)
+        finally:
+            finished.set()
+    monkeypatch.setattr(m.module, "prepare_atomic_session", held)
+    delivery = asyncio.create_task(m.endpoint(maintenance_request(m)))
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        worker = next(task for task in main._BACKGROUND_TASKS if task.get_name().endswith(":maintenance"))
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await delivery
+        assert atomic_chat._native_status(main, m.cid, m.scope)["maintenance"]["status"] == "failed"
+    finally:
+        release.set()
+    assert await asyncio.to_thread(finished.wait, 5)
+    assert m.source.read_bytes() == m.original
+
+
+@pytest.mark.asyncio
+async def test_maintenance_syncs_artifact_and_rename_directories_before_checkpoints(maintenance_runtime, monkeypatch):
+    m = maintenance_runtime
+    sync, save, replace = atomic_chat._sync_directory, atomic_chat._save_receipt, atomic_chat.os.replace
+    events = []
+    def synced(path):
+        events.append(("sync", path))
+        sync(path)
+    def checkpoint(*args):
+        events.append(("save", args[3]["maintenance"]["status"]))
+        save(*args)
+    def renamed(*args):
+        events.append(("replace", None))
+        replace(*args)
+    monkeypatch.setattr(atomic_chat, "_sync_directory", synced)
+    monkeypatch.setattr(atomic_chat, "_save_receipt", checkpoint)
+    monkeypatch.setattr(atomic_chat.os, "replace", renamed)
+    body = maintenance_request(m)
+    result = await m.endpoint(body)
+    _, original, _ = atomic_chat._maintenance_paths(result["maintenance"]["workspace"],
+                                                   m.receipt["session_id"], str(body.attempt_id))
+    prepared, replaced, complete = (events.index(event) for event in
+        (("save", "prepared"), ("replace", None), ("save", "complete")))
+    for directory in (original.parent, original.parent.parent, m.source.parent):
+        assert ("sync", directory) in events[:prepared]
+    assert ("sync", original.parent) in events[replaced + 1:complete]
+    assert ("sync", m.source.parent) in events[replaced + 1:complete]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("problem", ["writer", "malformed", "helper_missing"])
+async def test_maintenance_refuses_unsafe_or_unavailable_inputs(maintenance_runtime, monkeypatch, problem):
+    m = maintenance_runtime
+    if problem == "writer":
+        m.receipt.update(writer_exited=False, parent_reaped=False)
+        atomic_chat._save_receipt(main, m.cid, m.scope, m.receipt, main._sqlite_current_path(**m.scope))
+    elif problem == "helper_missing":
+        monkeypatch.setitem(sys.modules, "atomic_claude_session", None)
+    else:
+        def malformed(_):
+            raise ValueError("Malformed fictional JSONL")
+        monkeypatch.setattr(m.module, "prepare_atomic_session", malformed)
+    body = maintenance_request(m)
+    if problem == "malformed":
+        result = await m.endpoint(body)
+        assert result["maintenance"]["status"] == "failed"
+        assert "Malformed" in result["maintenance"]["error"]
+    else:
+        with pytest.raises(HTTPException):
+            await m.endpoint(body)
+        assert not atomic_chat._native_state(main, m.cid, m.scope)["atomic_native_turn"].get("maintenance")
+    assert m.source.read_bytes() == m.original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("crash", ["before_replace", "after_replace", "changed_source"])
+async def test_maintenance_hash_recovery_never_replays_or_rolls_back(maintenance_runtime, monkeypatch, crash):
+    m = maintenance_runtime
+    save, copy = atomic_chat._save_receipt, atomic_chat._private_copy
+    if crash == "after_replace":
+        def checkpoint(*args):
+            if args[3].get("maintenance", {}).get("status") == "complete":
+                raise RuntimeError("lost completion checkpoint")
+            return save(*args)
+        monkeypatch.setattr(atomic_chat, "_save_receipt", checkpoint)
+    elif crash == "before_replace":
+        monkeypatch.setattr(atomic_chat.os, "replace", lambda *_: (_ for _ in ()).throw(RuntimeError("interrupted replace")))
+    else:
+        def changed(path, data):
+            copy(path, data)
+            if path.name.endswith(".candidate"):
+                m.source.write_bytes(b"newer native history\n")
+        monkeypatch.setattr(atomic_chat, "_private_copy", changed)
+    body = maintenance_request(m)
+    with pytest.raises((RuntimeError, HTTPException)):
+        await m.endpoint(body)
+    monkeypatch.setattr(atomic_chat, "_save_receipt", save)
+    status = atomic_chat._native_status(main, m.cid, m.scope)
+    expected = {"before_replace":"failed", "after_replace":"complete", "changed_source":"blocked"}[crash]
+    assert status["maintenance"]["status"] == expected
+    assert status["context"] == m.receipt["context"]
+    expected_bytes = {"before_replace":m.original, "after_replace":m.candidate, "changed_source":b"newer native history\n"}[crash]
+    assert m.source.read_bytes() == expected_bytes
+    assert (await m.endpoint(body))["maintenance"]["status"] == expected
+    assert len(m.preparations) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["remove", "sync"])
+async def test_maintenance_purge_requires_publication_and_retries_storage_failure(maintenance_runtime, monkeypatch, failure):
+    m = maintenance_runtime
+    compact = await m.endpoint(maintenance_request(m))
+    purge = maintenance_request(m, action="purge", previous_attempt_id=compact["maintenance"]["attempt_id"])
+    with pytest.raises(HTTPException, match="successful publication"):
+        await m.endpoint(purge)
+    end = main.AtomicSessionEndRequest(**m.scope, conversation_id=m.cid)
+    await main.atomic_session_end(end)
+    support = m.source.with_suffix("")
+    support.mkdir()
+    (support / "fictional-artifact").write_text("support")
+    history = m.source.parents[2] / "file-history" / m.receipt["session_id"]
+    history.mkdir(parents=True)
+    (history / "fictional-backup").write_text("backup")
+    unrelated = m.source.parent / f"{uuid.uuid4()}.jsonl"
+    unrelated.write_bytes(b"unrelated sitting")
+    real_purge = atomic_chat._purge_native
+    def interrupted(source, native_id):
+        source.unlink()
+        raise PermissionError("fictional removal failure")
+    sync = atomic_chat._sync_directory
+    history_syncs = []
+    def interrupted_sync(path):
+        if path == history.parent:
+            history_syncs.append(path)
+            if len(history_syncs) == 1:
+                raise PermissionError("fictional directory sync failure")
+        sync(path)
+    if failure == "remove":
+        monkeypatch.setattr(atomic_chat, "_purge_native", interrupted)
+    else:
+        monkeypatch.setattr(atomic_chat, "_sync_directory", interrupted_sync)
+    result = await m.endpoint(purge)
+    assert result["maintenance"]["status"] == "failed"
+    assert support.exists() == (failure == "remove")
+    monkeypatch.setattr(atomic_chat, "_purge_native", real_purge)
+    assert atomic_chat._native_status(main, m.cid, m.scope)["maintenance"]["status"] == "complete"
+    assert not m.source.exists() and not support.exists()
+    assert not history.exists()
+    if failure == "sync":
+        assert len(history_syncs) == 2
+    assert unrelated.read_bytes() == b"unrelated sitting"
+    assert (await m.endpoint(purge))["maintenance"]["status"] == "complete"
+    assert (await main.atomic_session_end(end))["status"] == "already_ended"
+    assert len(m.chat.services) == 1
+
+
+@pytest.mark.asyncio
+async def test_maintenance_uses_atomic_owned_cleaner_when_checkout_available(maintenance_runtime, monkeypatch):
+    m = maintenance_runtime
+    helper = Path(__file__).resolve().parents[2] / "atomic/scripts/claude_session"
+    if not (helper / "atomic_claude_session.py").is_file():
+        pytest.skip("Optional Atomic checkout integration; lifecycle fixtures remain mandatory")
+    monkeypatch.delitem(sys.modules, "atomic_claude_session")
+    monkeypatch.syspath_prepend(str(helper))
+    assert (await m.endpoint(maintenance_request(m)))["maintenance"]["status"] == "complete"
+    assert m.source.read_bytes() == m.candidate
 
 
 def test_context_coverage_rebases_at_input_boundary_not_usage_arrival():

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import uuid
 from copy import deepcopy
@@ -121,6 +122,8 @@ def require_sitting_idle(runtime: Any, conversation_id: str, *, user_id: str, so
     if any(not task.done() and task.get_name() == marker for task in runtime._BACKGROUND_TASKS):
         raise HTTPException(status_code=409, detail="This Atomic sitting is still running")
     status = _native_status(runtime, conversation_id, {"user_id": user_id, "soul_id": soul_id})
+    if _maintenance_blocks(status.get("maintenance")):
+        raise HTTPException(status_code=409, detail="Atomic session maintenance must be reconciled first")
     if status["writer_idle"] is not True:
         raise HTTPException(status_code=409, detail="Native writer exit is not established. Keep this history; start a new sitting if necessary.")
 
@@ -196,8 +199,9 @@ def _native_status(runtime: Any, cid: str, scope: dict[str, str]) -> dict[str, A
         receipt = {**receipt, "writer_exited": True}
     if receipt != saved["atomic_native_turn"]:
         _save_receipt(runtime, cid, scope, receipt, runtime._sqlite_current_path(**scope))
+    receipt = _reconcile_maintenance(runtime, cid, scope, receipt, idle)
     return {"session_id": saved.get("atomic_native_session_id"), "turn": receipt, "writer_idle": idle,
-            "context": receipt.get("context")}
+            "context": receipt.get("context"), "maintenance": receipt.get("maintenance")}
 
 
 def _save_receipt(runtime: Any, cid: str, scope: dict[str, str], receipt: dict[str, Any], path: Path) -> None:
@@ -211,13 +215,151 @@ def _save_receipt(runtime: Any, cid: str, scope: dict[str, str], receipt: dict[s
         previous = saved.get("atomic_native_turn") or {}
         if (saved.get("atomic_native_session_id") != receipt["session_id"]
                 or previous.get("turn_id") != receipt["turn_id"]
-                or previous.get("attempt_id") != receipt.get("attempt_id")):
+                or previous.get("attempt_id") != receipt.get("attempt_id")
+                or (previous.get("maintenance") or {}).get("attempt_id")
+                    != (receipt.get("maintenance") or {}).get("attempt_id")):
             raise RuntimeError("Native turn binding changed before checkpoint")
         conversation_state.write_conversation_state(cid, **scope, connection=con,
             sqlite_current_path=lambda *_args: path, updates={"atomic_native_turn": receipt})
         con.commit()
     finally:
         con.close()
+
+
+def _maintenance_blocks(maintenance: dict[str, Any] | None) -> bool:
+    return bool(maintenance and maintenance["status"] not in {"complete", "failed"})
+
+
+def _maintenance_live(runtime: Any, cid: str, scope: dict[str, str]) -> bool:
+    marker = _task_name(cid, **scope) + ":maintenance"
+    return any(not task.done() and task.get_name() == marker for task in runtime._BACKGROUND_TASKS)
+
+
+def _maintenance_paths(workspace: str, native_id: str, attempt_id: str) -> tuple[Path, Path, Path]:
+    source = claude_session_path(workspace, native_id)
+    directory = source.parent / ".atomic-maintenance" / native_id
+    return source, directory / f"{attempt_id}.original", directory / f"{attempt_id}.candidate"
+
+
+def _file_hash(path: Path) -> str | None:
+    try:
+        with path.open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+def _private_copy(path: Path, data: bytes) -> None:
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _sync_directory(path: Path) -> None:
+    # Native Windows activation still needs writer-exit/durable-adoption proof.
+    if os.name == "posix" and path.exists():
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def _purge_native(source: Path, native_id: str) -> None:
+    source.unlink(missing_ok=True)
+    _sync_directory(source.parent)
+    for directory in (source.with_suffix(""), source.parents[2] / "file-history" / native_id,
+                      source.parent / ".atomic-maintenance" / native_id):
+        if directory.exists():
+            shutil.rmtree(directory)
+        _sync_directory(directory.parent)
+
+
+def _reconcile_maintenance(runtime: Any, cid: str, scope: dict[str, str], receipt: dict[str, Any],
+                           idle: bool | None) -> dict[str, Any]:
+    maintenance = receipt.get("maintenance")
+    if not maintenance or maintenance["status"] == "complete" or _maintenance_live(runtime, cid, scope):
+        return receipt
+    if idle is not True:
+        return receipt
+    before = deepcopy(maintenance)
+    source, original, _ = _maintenance_paths(maintenance["workspace"], receipt["session_id"], maintenance["attempt_id"])
+    if maintenance["action"] == "purge":
+        try:
+            _purge_native(source, receipt["session_id"])
+            maintenance.update(status="complete", error=None)
+        except OSError as exc:
+            maintenance.update(status="failed", error=str(exc))
+    elif maintenance["status"] != "failed":
+        current = _file_hash(source)
+        if maintenance.get("candidate_sha256") and current == maintenance["candidate_sha256"]:
+            _sync_directory(original.parent)
+            _sync_directory(source.parent)
+            maintenance.update(status="complete", error=None)
+        elif not maintenance.get("candidate_sha256") or current == maintenance["source_sha256"]:
+            maintenance.update(status="failed", error="Candidate was not adopted; the original was retained")
+        else:
+            maintenance.update(status="blocked", error="Native history changed during maintenance; keep it, do not overwrite or roll back")
+    if maintenance != before:
+        _save_receipt(runtime, cid, scope, receipt, runtime._sqlite_current_path(**scope))
+    return receipt
+
+
+class AtomicMaintenanceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: str = Field(min_length=1)
+    soul_id: str = Field(min_length=1)
+    conversation_id: str = Field(min_length=1)
+    turn_id: str = Field(min_length=1)
+    native_attempt_id: uuid.UUID
+    attempt_id: uuid.UUID
+    previous_attempt_id: uuid.UUID | None = None
+    action: Literal["compact", "purge"]
+
+
+async def _maintain_native(runtime: Any, cid: str, scope: dict[str, str], receipt: dict[str, Any],
+                           path: Path, prepare: Any) -> dict[str, Any]:
+    maintenance = receipt["maintenance"]
+    source, original, candidate = _maintenance_paths(maintenance["workspace"], receipt["session_id"], maintenance["attempt_id"])
+    try:
+        if maintenance["action"] == "purge":
+            _purge_native(source, receipt["session_id"])
+        else:
+            # The thread only reads and prepares bytes. Cancellation cannot leave
+            # an untracked thread replacing native history after this task exits.
+            def build():
+                data = source.read_bytes()
+                return data, prepare(data)
+            data, result = await asyncio.to_thread(build)
+            original.parent.parent.mkdir(mode=0o700, exist_ok=True)
+            original.parent.mkdir(mode=0o700, exist_ok=True)
+            _private_copy(original, data)
+            _private_copy(candidate, result.candidate_bytes)
+            for directory in (original.parent, original.parent.parent, source.parent):
+                _sync_directory(directory)
+            maintenance.update(status="prepared", source_sha256=result.source_sha256,
+                               candidate_sha256=result.candidate_sha256, changes=result.changes)
+            _save_receipt(runtime, cid, scope, receipt, path)
+            if _writer_idle(receipt) is not True or _file_hash(source) != result.source_sha256:
+                raise HTTPException(status_code=409, detail="Native writer/source changed before adoption; history was not replaced")
+            os.replace(candidate, source)
+            _sync_directory(candidate.parent)
+            _sync_directory(source.parent)
+        maintenance.update(status="complete", error=None)
+        _save_receipt(runtime, cid, scope, receipt, path)
+    except asyncio.CancelledError:
+        maintenance.update(status="failed", error="Maintenance stopped before adoption; original retained")
+        _save_receipt(runtime, cid, scope, receipt, path)
+        raise
+    except Exception as exc:
+        if maintenance["status"] in {"prepared", "complete"}:
+            # Keep the durable pre-replace journal. Status will distinguish
+            # adoption from an unchanged or unexpectedly changed original.
+            raise
+        maintenance.update(status="failed", error=str(exc))
+        _save_receipt(runtime, cid, scope, receipt, path)
+    return {"maintenance": maintenance, "context": receipt.get("context")}
 
 
 def _scope_and_id(runtime: Any, user_id: str, soul_id: str, cid: str, *, admit: bool = True) -> tuple[dict[str, str], str]:
@@ -319,11 +461,77 @@ async def _bridge_tools(url: str, authorization: str) -> list[str]:
 
 
 def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
+    @app.post("/integration/atomic/chat/maintenance", tags=["integration"])
+    async def atomic_chat_maintenance(body: AtomicMaintenanceRequest):
+        scope, cid = _scope_and_id(runtime, body.user_id, body.soul_id, body.conversation_id,
+                                   admit=body.action == "compact")
+        status = _native_status(runtime, cid, scope)
+        saved = _native_state(runtime, cid, scope)
+        receipt = saved.get("atomic_native_turn")
+        if (not receipt or not saved.get("atomic_native_session_id") or not saved.get("atomic_native_workspace")
+                or receipt["session_id"] != saved["atomic_native_session_id"]
+                or receipt["turn_id"] != body.turn_id
+                or receipt["attempt_id"] != str(body.native_attempt_id)):
+            raise HTTPException(status_code=409, detail="Maintenance requires the matching native sitting and turn")
+        previous = receipt.get("maintenance")
+        if previous and previous["attempt_id"] == str(body.attempt_id):
+            if previous["action"] != body.action:
+                raise HTTPException(status_code=409, detail="Maintenance attempt action changed")
+            return {"maintenance": previous, "context": receipt.get("context")}
+        previous_id = previous["attempt_id"] if previous else None
+        if (previous_id != (str(body.previous_attempt_id) if body.previous_attempt_id else None)
+                or _maintenance_blocks(previous)):
+            raise HTTPException(status_code=409, detail="Maintenance changed or is unresolved; reload its status")
+        if status["writer_idle"] is not True:
+            raise HTTPException(status_code=409, detail="Native writer exit is not established")
+        if bool(saved.get("atomic_session_ended_at")) != (body.action == "purge"):
+            raise HTTPException(status_code=409, detail="Compact requires an unpublished sitting; purge requires successful publication")
+        prepare = None
+        if body.action == "compact":
+            try:
+                from atomic_claude_session import prepare_atomic_session
+            except ImportError as exc:
+                raise HTTPException(status_code=409, detail="Install or repair Atomic's Claude session helper before cleanup") from exc
+            prepare = prepare_atomic_session
+        path = runtime._sqlite_current_path(**scope)
+        con = runtime._sqlite_connect(path)
+        try:
+            con.row_factory = sqlite3.Row
+            con.execute("BEGIN IMMEDIATE")
+            current = conversation_state.conversation_state_from_row(
+                conversation_state.conversation_state_row(con, cid, **scope)) or {}
+            latest = current.get("atomic_native_turn") or {}
+            if (latest.get("attempt_id") != receipt["attempt_id"]
+                    or current.get("atomic_native_session_id") != receipt["session_id"]
+                    or current.get("atomic_native_workspace") != saved["atomic_native_workspace"]
+                    or latest.get("maintenance") != previous
+                    or _writer_idle(latest) is not True
+                    or bool(current.get("atomic_session_ended_at")) != (body.action == "purge")):
+                raise HTTPException(status_code=409, detail="Native sitting changed before maintenance admission")
+            receipt = deepcopy(latest)
+            receipt["maintenance"] = {"attempt_id": str(body.attempt_id), "action": body.action,
+                "native_attempt_id": receipt["attempt_id"], "turn_id": receipt["turn_id"], "status": "running",
+                "workspace": current["atomic_native_workspace"]}
+            conversation_state.write_conversation_state(cid, **scope, connection=con,
+                sqlite_current_path=lambda *_args: path, updates={"atomic_native_turn": receipt})
+            con.commit()
+        finally:
+            con.close()
+        task = asyncio.create_task(_maintain_native(runtime, cid, scope, receipt, path, prepare),
+                                   name=_task_name(cid, **scope) + ":maintenance")
+        runtime._BACKGROUND_TASKS.add(task)
+        def finished(done):
+            runtime._BACKGROUND_TASKS.discard(done)
+            if not done.cancelled() and (error := done.exception()) is not None:
+                runtime.logger.error("Atomic maintenance checkpoint failed: %s", error)
+        task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
     @app.get("/integration/atomic/chat/status", tags=["integration"])
-    async def atomic_chat_status(user_id: str, soul_id: str, conversation_id: str, turn_id: str):
+    async def atomic_chat_status(user_id: str, soul_id: str, conversation_id: str, turn_id: str | None = None):
         scope, cid = _scope_and_id(runtime, user_id, soul_id, conversation_id, admit=False)
         status = _native_status(runtime, cid, scope)
-        if status["turn"] is not None and status["turn"]["turn_id"] != turn_id:
+        if turn_id is not None and status["turn"] is not None and status["turn"]["turn_id"] != turn_id:
             earlier = status["turn"].get("uncertain_turn")
             if earlier is None or earlier["turn_id"] != turn_id:
                 raise HTTPException(status_code=409, detail={
@@ -332,6 +540,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                     "session_id": status["session_id"], "turn": None,
                     "writer_idle": status["writer_idle"],
                     "context": status["context"],
+                    "maintenance": status.get("maintenance"),
                 })
             status = {**status, "turn": earlier}
         return status
@@ -383,6 +592,8 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
             con.execute("BEGIN IMMEDIATE")
             state = conversation_state.conversation_state_from_row(
                 conversation_state.conversation_state_row(con, cid, **scope)) or {}
+            if _maintenance_blocks((state.get("atomic_native_turn") or {}).get("maintenance")):
+                raise HTTPException(status_code=409, detail="Atomic maintenance must be reconciled before native admission")
             if state.get("atomic_session_ended_at"):
                 raise HTTPException(status_code=409, detail="This Atomic sitting has ended")
             native_id = state.get("atomic_native_session_id")
@@ -420,6 +631,8 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
             # Presence is a native startup argument, installed independently of stdin.
             receipt["context"] = _input_context(receipt["context"], 0, 0, body.system_tokens)
             if previous:
+                if previous.get("maintenance"):
+                    receipt["maintenance"] = deepcopy(previous["maintenance"])
                 uncertain = (previous if previous["purpose"] == "reply" and previous["status"] == "uncertain"
                              else previous.get("uncertain_turn"))
                 if uncertain:
