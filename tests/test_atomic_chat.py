@@ -457,8 +457,13 @@ async def test_recorded_claude_error_is_retryable_without_reinitialization(chat_
     assert saved["status"] == "failed" and saved["submission"] == "recorded"
     assert saved["input_recorded"] is True
     await read(await chat_runtime.endpoint(request(operation="retry", system_prompt=None, prompt="Continue the recorded failed turn"), authorization="Bearer fictional-secret"))
+    scope = {"user_id":"TestOwner", "soul_id":"Birch"}
+    interrupted = atomic_chat._native_state(main, "chat:atomic-sitting", scope)["atomic_native_turn"]
+    atomic_chat._save_receipt(main, "chat:atomic-sitting", scope,
+        {**interrupted, "status":"prepared"}, main._sqlite_current_path(**scope))
     refused = atomic_chat._native_status(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["turn"]
     assert refused["submission"] == "not_submitted" and refused["input_recorded"] is True
+    assert refused["error"].startswith("This attempt was not submitted.")
     await read(await chat_runtime.endpoint(request(operation="retry", system_prompt=None, prompt="Continue the recorded failed turn"), authorization="Bearer fictional-secret"))
     assert chat_runtime.services[-1].calls[0][1]["resume_session_id"] == saved["session_id"]
     await read(await chat_runtime.endpoint(request(operation="continue", system_prompt=None,

@@ -99,7 +99,7 @@ def _native_status(runtime: Any, cid: str, scope: dict[str, str]) -> dict[str, A
     if not live and (receipt["status"] in {"prepared", "running"}
                      or (receipt["status"] == "uncertain" and (unsubmitted or known_error))):
         receipt = {**receipt, "status": "failed" if unsubmitted or known_error else "uncertain",
-                   "error": ("Input was not submitted. " + str(receipt.get("error", ""))) if unsubmitted
+                   "error": ("This attempt was not submitted. " + str(receipt.get("error", ""))) if unsubmitted
                    else receipt.get("error") or "Native completion was not recorded; do not replay this turn."}
         if known_error:
             receipt["submission"] = "recorded"
