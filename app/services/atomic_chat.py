@@ -120,7 +120,8 @@ def _save_receipt(runtime: Any, cid: str, scope: dict[str, str], receipt: dict[s
             conversation_state.conversation_state_row(con, cid, **scope)) or {}
         previous = saved.get("atomic_native_turn") or {}
         if (saved.get("atomic_native_session_id") != receipt["session_id"]
-                or previous.get("turn_id") != receipt["turn_id"]):
+                or previous.get("turn_id") != receipt["turn_id"]
+                or previous.get("attempt_id") != receipt.get("attempt_id")):
             raise RuntimeError("Native turn binding changed before checkpoint")
         conversation_state.write_conversation_state(cid, **scope, connection=con,
             sqlite_current_path=lambda *_args: path, updates={"atomic_native_turn": receipt})
@@ -152,6 +153,7 @@ class AtomicChatRequest(BaseModel):
     soul_id: str = Field(min_length=1)
     conversation_id: str = Field(min_length=1)
     turn_id: str = Field(min_length=1)
+    attempt_id: str = Field(min_length=1)
     operation: Literal["new", "continue", "retry"]
     purpose: Literal["reply", "recap"] = "reply"
     prompt: str = Field(min_length=1)
@@ -293,6 +295,8 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 raise HTTPException(status_code=409, detail="This sitting has no native session to resume")
             previous = state.get("atomic_native_turn")
             if previous:
+                if previous.get("attempt_id") == body.attempt_id:
+                    raise HTTPException(status_code=409, detail="This attempt already exists; recover it through chat/status without another call")
                 if body.purpose == "reply" and previous.get("uncertain_turn"):
                     raise HTTPException(status_code=409, detail="The ordinary outcome remains unknown; only close-out may continue")
                 if previous["turn_id"] == body.turn_id and previous["purpose"] != body.purpose:
@@ -306,7 +310,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 raise HTTPException(status_code=409, detail="This native session is already initialized; reconcile and resume it, do not repeat initialization")
             if body.operation != "new" and not exists:
                 raise HTTPException(status_code=409, detail="The native session file is missing; do not initialize a replacement")
-            receipt = {"session_id": native_id, "turn_id": body.turn_id, "purpose": body.purpose,
+            receipt = {"session_id": native_id, "turn_id": body.turn_id, "attempt_id": body.attempt_id, "purpose": body.purpose,
                        "status": "prepared", "writer_exited": False, "initialized": exists,
                        "submission": "not_submitted"}
             if previous:
@@ -352,7 +356,8 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
 
         async def produce() -> None:
             public_profile = {key: value for key, value in profile.items() if key != "workspace_root"}
-            session = {"type": "session", "session_id": native_id, "turn_id": body.turn_id, "profile": public_profile}
+            session = {"type": "session", "session_id": native_id, "turn_id": body.turn_id,
+                       "attempt_id": body.attempt_id, "profile": public_profile}
             async def on_event(event):
                 if event.get("type") == "process":
                     if event["state"] == "started":
@@ -398,12 +403,17 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 candidate = receipt.get("native_result")
                 if candidate is None:
                     raise RuntimeError("Claude completed without its terminal result")
-                receipt.update(status="complete", text=candidate["result"])
+                empty_recap = body.purpose == "recap" and not candidate["result"].strip()
+                receipt.update(status="failed" if empty_recap else "complete", text=candidate["result"])
                 receipt["submission"] = "recorded"
                 receipt["initialized"] = True
+                if empty_recap:
+                    receipt["error"] = "The recap was empty. Retry close-out."
                 _save_receipt(runtime, cid, scope, receipt, db_path)
-                runtime._record_call("atomic_chat", {"user": scope}, ok=True, info={"conversation_id": cid, "turn_id": body.turn_id})
-                publish({"type": "complete", "session_id": native_id, "text": candidate["result"]}, terminal=True)
+                runtime._record_call("atomic_chat", {"user": scope}, ok=not empty_recap,
+                    error=receipt.get("error"), info={"conversation_id": cid, "turn_id": body.turn_id})
+                publish({"type": "error", "error": receipt["error"]} if empty_recap else
+                        {"type": "complete", "session_id": native_id, "text": candidate["result"]}, terminal=True)
             except asyncio.CancelledError:
                 reason = ("Planned shutdown" if runtime._SHUTDOWN_STATE.get("draining")
                           else "Atomic chat producer cancelled")

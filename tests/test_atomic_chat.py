@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import sqlite3
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -49,6 +50,7 @@ def chat_runtime(monkeypatch, tmp_path):
             self.error_result = None
             self.failure_before_create = None
             self.usage = None
+            self.result = "reply"
         async def chat(self, prompt, **kwargs):
             self.calls.append((prompt, kwargs))
             # The authoritative binding exists before native work can start.
@@ -77,12 +79,12 @@ def chat_runtime(monkeypatch, tmp_path):
             if self.usage:
                 await kwargs["on_event"]({"type":"context_usage", **self.usage})
             await kwargs["on_event"]({"type":"process", "state":"reaped", "pid":os.getpid()})
-            await kwargs["on_event"](self.error_result or {"type": "result", "subtype": "success", "is_error": False, "result": "reply"})
+            await kwargs["on_event"](self.error_result or {"type": "result", "subtype": "success", "is_error": False, "result": self.result})
             if self.error_result:
                 raise RuntimeError("fictional recorded Claude failure")
             if self.failure:
                 raise self.failure
-            return "reply"
+            return self.result
 
     def factory(payload, *, operation):
         assert operation == "other_reply" and set(payload) == {"user"}
@@ -106,6 +108,7 @@ def chat_runtime(monkeypatch, tmp_path):
 def request(**changes):
     return atomic_chat.AtomicChatRequest(**{
         "user_id": "TestOwner", "soul_id": "Birch", "conversation_id": "sitting", "turn_id": "turn-1",
+        "attempt_id": str(uuid.uuid4()),
         "operation": "new", "purpose": "reply", "prompt": "fictional question", "system_prompt": "fictional Presence",
         "bridge_url": "http://127.0.0.1:9999/openalma/chat-tools/mcp",
         "profile_fingerprint": atomic_chat.claude_chat_profile(main._CONFIG)["fingerprint"], **changes,
@@ -137,6 +140,68 @@ async def test_new_then_resume_uses_server_binding_and_tool_free_recap(chat_runt
     assert len(chat_runtime.discoveries) == 1
     assert not main._BACKGROUND_TASKS
     assert "fictional-secret" not in repr(chat_runtime.records)
+
+
+@pytest.mark.asyncio
+async def test_empty_recap_is_failed_and_retries_same_native_session(chat_runtime, monkeypatch):
+    await read(await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret"))
+    def blank_once(payload, *, operation):
+        service = chat_runtime.factory(payload, operation=operation)
+        if len(chat_runtime.services) == 2:
+            service.result = " \n\t"
+        return service
+    monkeypatch.setattr(main, "_get_service_from_payload", blank_once)
+    recap = request(operation="continue", system_prompt=None, bridge_url=None,
+                    purpose="recap", turn_id="recap-1")
+    events = await read(await chat_runtime.endpoint(recap, authorization=None))
+    scope = {"user_id":"TestOwner", "soul_id":"Birch"}
+    saved = atomic_chat._native_status(main, "chat:atomic-sitting", scope)
+    assert events[-1]["type"] == "error" and "empty" in events[-1]["error"]
+    assert saved["turn"]["status"] == "failed" and saved["writer_idle"] is True
+    assert saved["turn"]["submission"] == "recorded"
+    retried = await read(await chat_runtime.endpoint(request(operation="retry", system_prompt=None,
+        bridge_url=None, purpose="recap", turn_id="recap-1"), authorization=None))
+    assert retried[-1]["type"] == "complete"
+    assert retried[0]["session_id"] == saved["session_id"]
+    assert retried[0]["attempt_id"] != recap.attempt_id
+
+
+@pytest.mark.asyncio
+async def test_retry_discovery_exposes_old_attempt_but_cannot_checkpoint_over_new_one(chat_runtime, monkeypatch):
+    def error_once(payload, *, operation):
+        service = chat_runtime.factory(payload, operation=operation)
+        if len(chat_runtime.services) == 1:
+            service.error_result = {"type":"result", "subtype":"error_max_turns", "is_error":True}
+        return service
+    monkeypatch.setattr(main, "_get_service_from_payload", error_once)
+    await read(await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret"))
+    scope = {"user_id":"TestOwner", "soul_id":"Birch"}
+    cid = "chat:atomic-sitting"
+    old = atomic_chat._native_status(main, cid, scope)["turn"]
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def delayed_discovery(*_args):
+        entered.set()
+        await release.wait()
+        return ["mcp__atomic__search_atoms"]
+    monkeypatch.setattr(atomic_chat, "_bridge_tools", delayed_discovery)
+    retry = request(operation="retry", system_prompt=None)
+    pending = asyncio.create_task(chat_runtime.endpoint(retry, authorization="Bearer fictional-secret"))
+    await entered.wait()
+    status = atomic_chat._native_status(main, cid, scope)
+    assert status["writer_idle"] is True and status["turn"]["status"] == "failed"
+    assert status["turn"]["turn_id"] == retry.turn_id
+    assert status["turn"]["attempt_id"] != retry.attempt_id
+    release.set()
+    events = await read(await pending)
+    assert events[0]["attempt_id"] == retry.attempt_id
+    assert events[-1]["type"] == "complete"
+    with pytest.raises(RuntimeError, match="binding changed"):
+        atomic_chat._save_receipt(main, cid, scope, old, main._sqlite_current_path(**scope))
+    assert atomic_chat._native_status(main, cid, scope)["turn"]["attempt_id"] == retry.attempt_id
+    calls = sum(len(service.calls) for service in chat_runtime.services)
+    with pytest.raises(HTTPException, match="attempt already exists"):
+        await chat_runtime.endpoint(retry, authorization="Bearer fictional-secret")
+    assert sum(len(service.calls) for service in chat_runtime.services) == calls
 
 
 @pytest.mark.asyncio
