@@ -46,6 +46,7 @@ def chat_runtime(monkeypatch, tmp_path):
             self.release = asyncio.Event()
             self.release.set()
             self.failure = None
+            self.error_result = None
             self.failure_before_create = None
             self.usage = None
         async def chat(self, prompt, **kwargs):
@@ -76,7 +77,9 @@ def chat_runtime(monkeypatch, tmp_path):
             if self.usage:
                 await kwargs["on_event"]({"type":"context_usage", **self.usage})
             await kwargs["on_event"]({"type":"process", "state":"reaped", "pid":os.getpid()})
-            await kwargs["on_event"]({"type": "result", "subtype": "success", "is_error": False, "result": "reply"})
+            await kwargs["on_event"](self.error_result or {"type": "result", "subtype": "success", "is_error": False, "result": "reply"})
+            if self.error_result:
+                raise RuntimeError("fictional recorded Claude failure")
             if self.failure:
                 raise self.failure
             return "reply"
@@ -152,6 +155,7 @@ async def test_status_recovers_exact_completed_turn_without_another_call(chat_ru
         saved = response.json()
         assert saved["turn"]["text"] == "reply" and saved["turn"]["status"] == "complete"
         assert saved["writer_idle"] is True
+        assert saved["turn"]["writer_exited"] is True
         assert saved["turn"]["usage"] == chat_runtime.services[0].usage
         def paused(**_scope):
             raise HTTPException(status_code=409, detail={"code":"soul_paused"})
@@ -168,6 +172,24 @@ async def test_status_recovers_exact_completed_turn_without_another_call(chat_ru
     with pytest.raises(HTTPException, match="already initialized"):
         await chat_runtime.endpoint(request(turn_id="turn-2"), authorization="Bearer fictional-secret")
     assert sum(len(service.calls) for service in chat_runtime.services) == count
+
+
+@pytest.mark.asyncio
+async def test_writer_exit_is_latched_before_pid_can_be_reused(chat_runtime, monkeypatch):
+    await read(await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret"))
+    scope = {"user_id":"TestOwner", "soul_id":"Birch"}
+    cid = "chat:atomic-sitting"
+    receipt = atomic_chat._native_state(main, cid, scope)["atomic_native_turn"]
+    receipt["writer_exited"] = False
+    atomic_chat._save_receipt(main, cid, scope, receipt, main._sqlite_current_path(**scope))
+    reused = False
+    def proof(saved):
+        return True if saved.get("writer_exited") or not reused else None
+    monkeypatch.setattr(atomic_chat, "_writer_idle", proof)
+    assert atomic_chat._native_status(main, cid, scope)["writer_idle"] is True
+    reused = True
+    atomic_chat.require_sitting_idle(main, cid, **scope)
+    assert atomic_chat._native_state(main, cid, scope)["atomic_native_turn"]["writer_exited"] is True
 
 
 @pytest.mark.asyncio
@@ -224,6 +246,7 @@ def test_writer_exit_checks_identity_and_process_group(monkeypatch):
         assert atomic_chat._writer_idle(receipt) is None
         assert atomic_chat._writer_idle({**receipt, "parent_reaped":True}) is None
     assert atomic_chat._writer_idle({}) is None
+    assert atomic_chat._writer_idle({**receipt, "writer_exited":True}) is True
 
 
 @pytest.mark.asyncio
@@ -267,6 +290,9 @@ async def test_success_terminal_waits_for_wrapper_and_retains_binding_after_fail
     assert [event["type"] for event in events] == ["session", "text", "error"]
     assert events[-1]["error"] == "[redacted] wrapper failure"
     assert not main._BACKGROUND_TASKS
+    receipt = atomic_chat._native_state(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["atomic_native_turn"]
+    assert receipt["native_result"]["result"] == "reply"
+    assert receipt["status"] == "uncertain", "native text is evidence, not proof of wrapper success"
     with pytest.raises(HTTPException, match="outcome is unknown"):
         await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret")
     assert len(chat_runtime.native_ids) == 1
@@ -291,7 +317,7 @@ async def test_failed_initialization_retries_same_id_with_presence(chat_runtime,
 
 
 @pytest.mark.asyncio
-async def test_explicit_retry_refuses_uncertain_submission_without_replaying_input(chat_runtime, monkeypatch):
+async def test_uncertain_submission_only_admits_same_session_recap(chat_runtime, monkeypatch):
     def failed_once(payload, *, operation):
         service = chat_runtime.factory(payload, operation=operation)
         if len(chat_runtime.services) == 1:
@@ -303,9 +329,45 @@ async def test_explicit_retry_refuses_uncertain_submission_without_replaying_inp
     with pytest.raises(HTTPException, match="outcome is unknown"):
         await chat_runtime.endpoint(request(operation="retry", system_prompt=None, prompt=control),
                                     authorization="Bearer fictional-secret")
-    with pytest.raises(HTTPException, match="outcome is unknown"):
-        await chat_runtime.endpoint(request(operation="continue", system_prompt=None, purpose="recap", turn_id="recap-1"), authorization=None)
-    assert sum(len(service.calls) for service in chat_runtime.services) == 1
+    await read(await chat_runtime.endpoint(request(operation="continue", system_prompt=None,
+        purpose="recap", turn_id="recap-1"), authorization=None))
+    saved = atomic_chat._native_state(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["atomic_native_turn"]
+    assert saved["uncertain_turn"]["turn_id"] == "turn-1"
+    assert saved["uncertain_turn"]["status"] == "uncertain"
+    resumed = chat_runtime.services[-1].calls[0][1]
+    assert resumed["resume_session_id"] == saved["session_id"] and resumed["session_id"] is None
+    assert resumed["cli_tools"] == {"mcp_servers":{}, "allowed_tools":[]}
+    assert sum(len(service.calls) for service in chat_runtime.services) == 2
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=chat_runtime.app), base_url="http://test") as client:
+        earlier = await client.get("/integration/atomic/chat/status", params={"user_id":"TestOwner", "soul_id":"Birch", "conversation_id":"sitting", "turn_id":"turn-1"})
+        assert earlier.status_code == 200 and earlier.json()["turn"]["status"] == "uncertain"
+    with pytest.raises(HTTPException, match="ordinary outcome remains unknown"):
+        await chat_runtime.endpoint(request(operation="retry", system_prompt=None), authorization="Bearer fictional-secret")
+    assert sum(len(service.calls) for service in chat_runtime.services) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delayed_exit", [False, True])
+async def test_recorded_claude_error_is_retryable_without_reinitialization(chat_runtime, monkeypatch, delayed_exit):
+    idle = atomic_chat._writer_idle
+    exit_known = not delayed_exit
+    monkeypatch.setattr(atomic_chat, "_writer_idle", lambda receipt: idle(receipt) if exit_known else None)
+    def failed_once(payload, *, operation):
+        service = chat_runtime.factory(payload, operation=operation)
+        if len(chat_runtime.services) == 1:
+            service.error_result = {"type":"result", "subtype":"error_max_turns", "is_error":True, "errors":["fictional round limit"]}
+        return service
+    monkeypatch.setattr(main, "_get_service_from_payload", failed_once)
+    await read(await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret"))
+    if delayed_exit:
+        saved = atomic_chat._native_state(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["atomic_native_turn"]
+        assert saved["status"] == "uncertain"
+        exit_known = True
+        assert atomic_chat._native_status(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["turn"]["status"] == "failed"
+    saved = atomic_chat._native_state(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["atomic_native_turn"]
+    assert saved["status"] == "failed" and saved["submission"] == "recorded"
+    await read(await chat_runtime.endpoint(request(operation="retry", system_prompt=None, prompt="Continue the recorded failed turn"), authorization="Bearer fictional-secret"))
+    assert chat_runtime.services[-1].calls[0][1]["resume_session_id"] == saved["session_id"]
 
 
 @pytest.mark.asyncio

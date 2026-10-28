@@ -79,6 +79,12 @@ def _writer_idle(receipt: dict[str, Any]) -> bool | None:
     return None
 
 
+def _reported_failure(receipt: dict[str, Any]) -> bool:
+    result = receipt.get("native_result") or {}
+    return (result.get("is_error") is True and isinstance(result.get("subtype"), str)
+            and result["subtype"].startswith("error_"))
+
+
 def _native_status(runtime: Any, cid: str, scope: dict[str, str]) -> dict[str, Any]:
     saved = _native_state(runtime, cid, scope)
     receipt = saved.get("atomic_native_turn")
@@ -88,8 +94,19 @@ def _native_status(runtime: Any, cid: str, scope: dict[str, str]) -> dict[str, A
     live = any(not task.done() and task.get_name() == _task_name(cid, **scope)
                for task in runtime._BACKGROUND_TASKS)
     idle = False if live else _writer_idle(receipt)
-    if not live and receipt["status"] in {"prepared", "running"}:
-        receipt = {**receipt, "status": "uncertain", "error": "Native completion was not recorded; do not replay this turn."}
+    unsubmitted = idle is True and receipt.get("submission") == "not_submitted"
+    known_error = idle is True and _reported_failure(receipt)
+    if not live and (receipt["status"] in {"prepared", "running"}
+                     or (receipt["status"] == "uncertain" and (unsubmitted or known_error))):
+        receipt = {**receipt, "status": "failed" if unsubmitted or known_error else "uncertain",
+                   "error": ("Input was not submitted. " + str(receipt.get("error", ""))) if unsubmitted
+                   else receipt.get("error") or "Native completion was not recorded; do not replay this turn."}
+        if known_error:
+            receipt["submission"] = "recorded"
+    if idle is True and not receipt.get("writer_exited"):
+        receipt = {**receipt, "writer_exited": True}
+    if receipt != saved["atomic_native_turn"]:
+        _save_receipt(runtime, cid, scope, receipt, runtime._sqlite_current_path(**scope))
     return {"session_id": saved.get("atomic_native_session_id"), "turn": receipt, "writer_idle": idle}
 
 
@@ -212,7 +229,10 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
         scope, cid = _scope_and_id(runtime, user_id, soul_id, conversation_id, admit=False)
         status = _native_status(runtime, cid, scope)
         if status["turn"] is not None and status["turn"]["turn_id"] != turn_id:
-            raise HTTPException(status_code=409, detail="Status does not match the requested saved turn")
+            earlier = status["turn"].get("uncertain_turn")
+            if earlier is None or earlier["turn_id"] != turn_id:
+                raise HTTPException(status_code=409, detail="Latest native receipt belongs to a different turn; this request's submission cannot be inferred")
+            status = {**status, "turn": earlier}
         return status
 
     @app.post("/integration/atomic/chat", tags=["integration"])
@@ -273,11 +293,13 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 raise HTTPException(status_code=409, detail="This sitting has no native session to resume")
             previous = state.get("atomic_native_turn")
             if previous:
+                if body.purpose == "reply" and previous.get("uncertain_turn"):
+                    raise HTTPException(status_code=409, detail="The ordinary outcome remains unknown; only close-out may continue")
                 if previous["turn_id"] == body.turn_id and previous["purpose"] != body.purpose:
                     raise HTTPException(status_code=409, detail="Saved turn purpose does not match")
                 if previous["turn_id"] == body.turn_id and previous["status"] == "complete":
                     raise HTTPException(status_code=409, detail="This turn is complete; recover it through chat/status without another call")
-                if previous["status"] in {"prepared", "running", "uncertain"}:
+                if previous["status"] in {"prepared", "running", "uncertain"} and body.purpose != "recap":
                     raise HTTPException(status_code=409, detail="The previous outcome is unknown. Do not replay it; close out after writer exit.")
             exists = claude_session_path(workspace, native_id).exists()
             if body.operation == "new" and (exists or (previous and previous.get("initialized"))):
@@ -287,6 +309,11 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
             receipt = {"session_id": native_id, "turn_id": body.turn_id, "purpose": body.purpose,
                        "status": "prepared", "writer_exited": False, "initialized": exists,
                        "submission": "not_submitted"}
+            if previous:
+                uncertain = (previous if previous["purpose"] == "reply" and previous["status"] == "uncertain"
+                             else previous.get("uncertain_turn"))
+                if uncertain:
+                    receipt["uncertain_turn"] = uncertain
             conversation_state.write_conversation_state(cid, **scope, connection=con,
                 sqlite_current_path=lambda *_args: db_path, updates={
                     "atomic_native_session_id": native_id, "atomic_native_workspace": str(workspace),
@@ -324,11 +351,9 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 queue.put_nowait((frame, terminal))
 
         async def produce() -> None:
-            candidate = None
             public_profile = {key: value for key, value in profile.items() if key != "workspace_root"}
             session = {"type": "session", "session_id": native_id, "turn_id": body.turn_id, "profile": public_profile}
             async def on_event(event):
-                nonlocal candidate
                 if event.get("type") == "process":
                     if event["state"] == "started":
                         receipt["status"] = "running"
@@ -345,9 +370,12 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                         return
                     elif event["state"] == "reaped":
                         receipt["parent_reaped"] = True
+                        if _writer_idle(receipt) is True:
+                            receipt["writer_exited"] = True
                     _save_receipt(runtime, cid, scope, receipt, db_path)
                 elif event.get("type") == "result":
-                    candidate = event
+                    receipt["native_result"] = event
+                    _save_receipt(runtime, cid, scope, receipt, db_path)
                 elif event.get("type") == "system" and event.get("subtype") == "init":
                     if event["session_id"] != native_id:
                         raise RuntimeError("Claude returned a different native session")
@@ -357,7 +385,6 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 else:
                     if event.get("type") == "context_usage":
                         receipt["usage"] = {"message_id": event["message_id"], "usage": event["usage"]}
-                        _save_receipt(runtime, cid, scope, receipt, db_path)
                     for frame in _wire_events(event):
                         publish(frame)
                     # A buffered native burst must let the ready HTTP reader run.
@@ -368,6 +395,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                     session_id=native_id if body.operation == "new" else None,
                     resume_session_id=native_id if body.operation != "new" else None,
                     workspace=workspace, cli_tools=tools, on_event=on_event)
+                candidate = receipt.get("native_result")
                 if candidate is None:
                     raise RuntimeError("Claude completed without its terminal result")
                 receipt.update(status="complete", text=candidate["result"])
@@ -391,7 +419,11 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                     receipt["writer_exited"] = True
                 # Delivery/checkpoint errors must not erase a validated answer.
                 if receipt["status"] != "complete":
-                    receipt["status"] = "failed" if receipt["submission"] == "not_submitted" else "uncertain"
+                    known_error = _reported_failure(receipt) and _writer_idle(receipt) is True
+                    receipt["status"] = "failed" if receipt["submission"] == "not_submitted" or known_error else "uncertain"
+                    if known_error:
+                        receipt["submission"] = "recorded"
+                        receipt["writer_exited"] = True
                 receipt["error"] = message
                 receipt["initialized"] = receipt["initialized"] or claude_session_path(workspace, native_id).exists()
                 try:
