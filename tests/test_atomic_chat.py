@@ -135,6 +135,11 @@ def test_context_coverage_rebases_at_input_boundary_not_usage_arrival():
         "id":"m1", "content":[{"type":"text", "text":"provisional answer"}]}}
     context.observe(user)
     context.observe(assistant)
+    first_output = receipt["context"]["estimated_tokens"]
+    context.observe({**assistant, "uuid":"second-record"})
+    assert receipt["context"]["estimated_tokens"] == first_output + atomic_chat._block_tokens(assistant["message"]["content"][0])
+    context.observe({**assistant, "uuid":"second-record"})
+    assert receipt["context"]["estimated_tokens"] == first_output + atomic_chat._block_tokens(assistant["message"]["content"][0])
     usage = {"input_tokens":10, "cache_creation_input_tokens":20, "cache_read_input_tokens":30, "output_tokens":5}
     context.observe({"type":"context_usage", "message_id":"m1", "usage":usage})
     expected = 65 + atomic_chat._block_tokens(result)

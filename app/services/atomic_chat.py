@@ -93,7 +93,7 @@ class _Context:
             if kind == "user" and block["type"] != "tool_result":
                 continue  # Original input/control is counted at input delivery, not its echo.
             entries = self.results if kind == "user" else self.outputs
-            key = block["tool_use_id"] if kind == "user" else (message.get("id", event.get("uuid")), index)
+            key = block["tool_use_id"] if kind == "user" else (event["uuid"], index)
             value = _block_tokens(block)
             old = entries.get(key, 0)
             if value is None or old is None:
