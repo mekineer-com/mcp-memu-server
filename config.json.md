@@ -197,11 +197,11 @@ These are top-level keys rather than a nested object.
 | --- | --- | --- |
 | `claude_code` | `false` | Use Claude Code CLI instead of the HTTP chat backend. |
 | `claude_code_model` | `"claude-opus-4-7"` | Claude Code model. |
-| `claude_code_context_window_tokens` | `null` | Actual CLI model/account context size; required before paid CLI Memorize and consolidation calls. API capacities/output caps do not apply to CLI calls. |
+| `claude_code_context_window_tokens` | `null` | Actual CLI model/account context size; required before paid CLI Memorize and consolidation calls, and must be above 20000 for Atomic Claude Code chat. API capacities/output caps do not apply to CLI calls. |
 | `claude_code_effort` | `"medium"` | Claude Code effort level. |
 | `claude_code_permission_mode` | `"default"` | Claude Code permission mode. |
 | `claude_code_settings` | `""` | Optional Claude Code settings path or value. |
-| `claude_code_workspace` | `"~/.cache/memu-claude-workspace"` | Neutral workspace for calls that do not use a Soul session. |
+| `claude_code_workspace` | `"~/.cache/memu-claude-workspace"` | Neutral workspace for calls that do not use a Soul session; Atomic Claude Code chat keeps one workspace per Soul under `atomic/<hash>` inside it. |
 | `claude_code_timeout_seconds` | `3600` | CLI call timeout. |
 
 Attachment sending requires an explicit, nonblank `claude_code_workspace` in

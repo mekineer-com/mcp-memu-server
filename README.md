@@ -53,13 +53,12 @@ At minimum, set `llm.api_key`, `llm.chat_model`, `llm.embedding`, the storage pa
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/health` | GET | Health check |
-| `/conversation/{id}/memorize` | POST | Extract memories from conversation (async, returns 202) |
+| `/memorize` | POST | Extract memories from a conversation (runs in the background) |
 | `/retrieve` | POST | Query memories |
 | `/souls/{soul_id}/narrative_suggestion` | POST | Submit narrative_self revision suggestion |
 | `/souls/{soul_id}/relationships` | CRUD | Manage declared relationships |
 | `/conversation/{id}/retrieve` | POST | Retrieve + build turn prompt (RAG + prior context) |
 | `/conversation/{id}/turn` | POST | Soul turn loop: run LLM, optionally annul intentions, persist cache |
-| `/conversation/{id}/messages/append` | POST | Append messages (with `memorize_chat` flag) |
 | `/conversation/{id}/state` | GET/PATCH | Conversation working state (includes `memorize_chat`) |
 | `/conversation/{id}/consolidation/force` | POST | Force consolidation now (bypass interval gate) |
 | `/categories` | GET | List all categories |
@@ -90,4 +89,4 @@ tail -f mcp-memu-server.log
 
 ## License
 
-GPLv3. See `LICENSE` and `NOTICE`.
+GPLv3. See `LICENSE`.
