@@ -28,11 +28,18 @@ from app.services import owner, service_factory, state as conversation_state
 _DELIVERY_BUFFER_BYTES = 16 * 1024 * 1024
 
 
-def _input_context(context: dict[str, int] | None, prompt: int, overhead: int) -> dict[str, int] | None:
+def _input_context(context: dict[str, int] | None, prompt: int, overhead: int, system: int = 0) -> dict[str, int] | None:
     if context is None:
         return None
-    return {**context, "estimated_tokens": context["estimated_tokens"] + prompt + max(0, overhead - context["overhead_tokens"]),
-            "overhead_tokens": max(overhead, context["overhead_tokens"])}
+    return {**context, "estimated_tokens": context["estimated_tokens"] + prompt + max(0, overhead - context["overhead_tokens"])
+                + max(0, system - context["system_tokens"]),
+            "overhead_tokens": max(overhead, context["overhead_tokens"]),
+            "system_tokens": max(system, context["system_tokens"])}
+
+
+def _invalidate_unsettled_context(receipt: dict[str, Any]) -> None:
+    if receipt["submission"] != "not_submitted" and not receipt.get("native_result"):
+        receipt["context"] = None
 
 
 def _block_tokens(block: dict[str, Any]) -> int | None:
@@ -411,9 +418,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                        "input_recorded": bool(previous and previous["turn_id"] == body.turn_id
                            and (previous.get("input_recorded") or previous.get("submission") == "recorded"))}
             # Presence is a native startup argument, installed independently of stdin.
-            if receipt["context"] is not None:
-                receipt["context"]["estimated_tokens"] += max(0, body.system_tokens - receipt["context"]["system_tokens"])
-                receipt["context"]["system_tokens"] = max(body.system_tokens, receipt["context"]["system_tokens"])
+            receipt["context"] = _input_context(receipt["context"], 0, 0, body.system_tokens)
             if previous:
                 uncertain = (previous if previous["purpose"] == "reply" and previous["status"] == "uncertain"
                              else previous.get("uncertain_turn"))
@@ -521,7 +526,8 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
             except asyncio.CancelledError:
                 reason = ("Planned shutdown" if runtime._SHUTDOWN_STATE.get("draining")
                           else "Atomic chat producer cancelled")
-                receipt.update(status="uncertain", error=f"{reason}; native outcome unknown", context=None)
+                receipt.update(status="uncertain", error=f"{reason}; native outcome unknown")
+                _invalidate_unsettled_context(receipt)
                 try:
                     _save_receipt(runtime, cid, scope, receipt, db_path)
                 finally:
@@ -531,8 +537,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 message = str(exc).replace(token, "[redacted]") if token else str(exc)
                 if receipt["status"] == "prepared":
                     receipt["writer_exited"] = True
-                if receipt["submission"] != "not_submitted" and not receipt.get("native_result"):
-                    receipt["context"] = None
+                _invalidate_unsettled_context(receipt)
                 # Delivery/checkpoint errors must not erase a validated answer.
                 if receipt["status"] != "complete":
                     known_error = _reported_failure(receipt) and _writer_idle(receipt) is True

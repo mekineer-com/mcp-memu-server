@@ -49,6 +49,7 @@ def chat_runtime(monkeypatch, tmp_path):
             self.failure = None
             self.error_result = None
             self.failure_before_create = None
+            self.cancel_at = None
             self.usage = None
             self.result = "reply"
         async def chat(self, prompt, **kwargs):
@@ -67,6 +68,8 @@ def chat_runtime(monkeypatch, tmp_path):
                 path.write_text("fictional native transcript\n")
             await kwargs["on_event"]({"type":"process", "state":"started", "pid":os.getpid()})
             try:
+                if self.cancel_at == "before_input":
+                    raise asyncio.CancelledError()
                 await kwargs["on_event"]({"type":"process", "state":"input_started", "pid":os.getpid()})
             except BaseException:
                 await kwargs["on_event"]({"type":"process", "state":"reaped", "pid":os.getpid()})
@@ -81,7 +84,11 @@ def chat_runtime(monkeypatch, tmp_path):
             if self.usage:
                 await kwargs["on_event"]({"type":"context_usage", **self.usage})
             await kwargs["on_event"]({"type":"process", "state":"reaped", "pid":os.getpid()})
+            if self.cancel_at == "during":
+                raise asyncio.CancelledError()
             await kwargs["on_event"](self.error_result or {"type": "result", "subtype": "success", "is_error": False, "result": self.result})
+            if self.cancel_at == "after_result":
+                raise asyncio.CancelledError()
             if self.error_result:
                 raise RuntimeError("fictional recorded Claude failure")
             if self.failure:
@@ -184,6 +191,35 @@ def test_context_overhead_growth_is_counted_once_without_reinjecting_presence():
     assert larger["estimated_tokens"] == 1080
     smaller = atomic_chat._input_context(larger, 10, 50)
     assert atomic_chat._input_context(smaller, 10, 150)["estimated_tokens"] == 1100
+
+
+def test_context_growth_matches_optional_atomic_client_fixture():
+    fixture = Path(__file__).resolve().parents[2] / "atomic/crates/atomic-server/tests/fixtures/native_context.json"
+    if not fixture.is_file():
+        pytest.skip("Cross-client contract check requires the optional Atomic source checkout")
+    for case in json.loads(fixture.read_text(encoding="utf-8")):
+        context = atomic_chat._input_context(case["before"], case["prompt_tokens"], case["overhead_tokens"], case["system_tokens"])
+        assert (None if context is None else context["estimated_tokens"]) == case["projected"], case["name"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["before_input", "during", "after_result"])
+async def test_cancel_preserves_only_settled_context(chat_runtime, monkeypatch, stage):
+    def factory(payload, *, operation):
+        service = chat_runtime.factory(payload, operation=operation)
+        service.cancel_at = stage
+        return service
+    monkeypatch.setattr(main, "_get_service_from_payload", factory)
+    response = await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret")
+    frames = [json.loads(line) async for line in response.body_iterator]
+    await asyncio.gather(*main._BACKGROUND_TASKS, return_exceptions=True)
+    assert frames[-1]["type"] == "error"
+    saved = atomic_chat._native_state(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["atomic_native_turn"]
+    if stage == "during":
+        assert saved["context"] is None
+    else:
+        expected = 25 if stage == "before_input" else 175 + atomic_chat._block_tokens({"type":"text", "text":"reply"})
+        assert saved["context"]["estimated_tokens"] == expected
 
 
 @pytest.mark.asyncio
