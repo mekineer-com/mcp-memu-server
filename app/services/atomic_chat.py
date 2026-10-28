@@ -233,7 +233,12 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
         if status["turn"] is not None and status["turn"]["turn_id"] != turn_id:
             earlier = status["turn"].get("uncertain_turn")
             if earlier is None or earlier["turn_id"] != turn_id:
-                raise HTTPException(status_code=409, detail="Latest native receipt belongs to a different turn; this request's submission cannot be inferred")
+                raise HTTPException(status_code=409, detail={
+                    "code": "atomic_native_turn_missing",
+                    "error": "Latest native receipt belongs to a different turn; this request's submission cannot be inferred",
+                    "session_id": status["session_id"], "turn": None,
+                    "writer_idle": status["writer_idle"],
+                })
             status = {**status, "turn": earlier}
         return status
 

@@ -240,6 +240,25 @@ async def test_status_recovers_exact_completed_turn_without_another_call(chat_ru
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("writer_idle", [True, False, None])
+async def test_status_missing_turn_preserves_writer_evidence(chat_runtime, monkeypatch, writer_idle):
+    await read(await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret"))
+    original = atomic_chat._native_status
+    def status_with_exit_evidence(*args):
+        return {**original(*args), "writer_idle": writer_idle}
+    monkeypatch.setattr(atomic_chat, "_native_status", status_with_exit_evidence)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=chat_runtime.app), base_url="http://test") as client:
+        response = await client.get("/integration/atomic/chat/status", params={
+            "user_id":"TestOwner", "soul_id":"Birch", "conversation_id":"sitting", "turn_id":"refused-next-turn",
+        })
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "atomic_native_turn_missing"
+    assert detail["turn"] is None and detail["writer_idle"] is writer_idle
+    assert detail["session_id"] == chat_runtime.services[0].calls[0][1]["session_id"]
+
+
+@pytest.mark.asyncio
 async def test_writer_exit_is_latched_before_pid_can_be_reused(chat_runtime, monkeypatch):
     await read(await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret"))
     scope = {"user_id":"TestOwner", "soul_id":"Birch"}
