@@ -1565,10 +1565,10 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
             {"role": "assistant", "content": "hi", "created_at": "2026-07-03T00:00:01+00:00"},
             {
                 "role": "user",
-                "content": "This Atomic session is ending. Write a recap of your activity with u: hidden prompt",
+                "content": "This Atomic session is ending. Write a recap of your activity is wording I want to discuss.",
                 "created_at": "2026-07-03T00:00:02+00:00",
             },
-            {"role": "assistant", "content": "Hidden recap text.", "created_at": "2026-07-03T00:00:03+00:00"},
+            {"role": "assistant", "content": "We discussed that quoted wording.", "created_at": "2026-07-03T00:00:03+00:00"},
         ],
     )
 
@@ -1589,6 +1589,11 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
     assert state is not None
     assert state["memorize_chat"] is True
     assert state["atomic_session_ended_at"]
+    published = main._atomic_transcript_rows(req.transcript, user_id="u", soul_id="Echo")
+    assert [row["content"] for row in published] == [
+        "hello", "hi", "This Atomic session is ending. Write a recap of your activity is wording I want to discuss.",
+        "We discussed that quoted wording.",
+    ]
     assert [(row["conversation_id"], row["content"]) for row in activity_rows] == [
         ("activity:dm:Atomic", "We reviewed memory summaries.")
     ]
@@ -1601,9 +1606,7 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
             conversation_id="chat:atomic-c1",
             activity_recap="We reviewed one more memory.",
             transcript=[
-                {"role": "user", "content": "hello", "created_at": "2026-07-03T00:00:00+00:00"},
-                {"role": "tool", "content": "search_atoms complete", "created_at": "2026-07-03T00:00:00.500000+00:00"},
-                {"role": "assistant", "content": "hi", "created_at": "2026-07-03T00:00:01+00:00"},
+                *req.transcript,
                 {"role": "user", "content": "one more", "created_at": later_at},
                 {"role": "assistant", "content": "done", "created_at": later_at},
             ],
@@ -1631,7 +1634,7 @@ async def test_atomic_session_end_records_primary_transcript_and_is_idempotent(
         since_cursor=-1,
         recent_fallback_messages=0,
     )
-    assert [row["content"] for row in tail] == ["hello", "hi", "one more", "done"]
+    assert [row["content"] for row in tail] == [*[row["content"] for row in published], "one more", "done"]
     assert [row["speaker"] for row in tail[:2]] == ["u", "Echo"]
     assert {row["source_label"] for row in tail} == {"atomic"}
     con = main._sqlite_connect(db_path)
