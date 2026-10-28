@@ -443,6 +443,8 @@ async def test_recorded_claude_error_is_retryable_without_reinitialization(chat_
             service.error_result = ({"type":"result", "subtype":"success", "is_error":True,
                                      "api_error_status":429, "result":"fictional rate limit"} if api_error else
                                     {"type":"result", "subtype":"error_max_turns", "is_error":True, "errors":["fictional round limit"]})
+        elif len(chat_runtime.services) in {2, 4}:
+            service.failure_before_create = RuntimeError("fictional launch refusal")
         return service
     monkeypatch.setattr(main, "_get_service_from_payload", failed_once)
     await read(await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret"))
@@ -453,8 +455,16 @@ async def test_recorded_claude_error_is_retryable_without_reinitialization(chat_
         assert atomic_chat._native_status(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["turn"]["status"] == "failed"
     saved = atomic_chat._native_state(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["atomic_native_turn"]
     assert saved["status"] == "failed" and saved["submission"] == "recorded"
+    assert saved["input_recorded"] is True
+    await read(await chat_runtime.endpoint(request(operation="retry", system_prompt=None, prompt="Continue the recorded failed turn"), authorization="Bearer fictional-secret"))
+    refused = atomic_chat._native_status(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["turn"]
+    assert refused["submission"] == "not_submitted" and refused["input_recorded"] is True
     await read(await chat_runtime.endpoint(request(operation="retry", system_prompt=None, prompt="Continue the recorded failed turn"), authorization="Bearer fictional-secret"))
     assert chat_runtime.services[-1].calls[0][1]["resume_session_id"] == saved["session_id"]
+    await read(await chat_runtime.endpoint(request(operation="continue", system_prompt=None,
+        turn_id="turn-2", prompt="A different logical turn"), authorization="Bearer fictional-secret"))
+    other = atomic_chat._native_status(main, "chat:atomic-sitting", {"user_id":"TestOwner", "soul_id":"Birch"})["turn"]
+    assert other["submission"] == "not_submitted" and other["input_recorded"] is False
 
 
 @pytest.mark.asyncio

@@ -103,6 +103,7 @@ def _native_status(runtime: Any, cid: str, scope: dict[str, str]) -> dict[str, A
                    else receipt.get("error") or "Native completion was not recorded; do not replay this turn."}
         if known_error:
             receipt["submission"] = "recorded"
+            receipt["input_recorded"] = True
     if idle is True and not receipt.get("writer_exited"):
         receipt = {**receipt, "writer_exited": True}
     if receipt != saved["atomic_native_turn"]:
@@ -317,7 +318,10 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 raise HTTPException(status_code=409, detail="The native session file is missing; do not initialize a replacement")
             receipt = {"session_id": native_id, "turn_id": body.turn_id, "attempt_id": body.attempt_id, "purpose": body.purpose,
                        "status": "prepared", "writer_exited": False, "initialized": exists,
-                       "submission": "not_submitted"}
+                       "submission": "not_submitted",
+                       # Retry replaces the attempt, not the input's recorded history.
+                       "input_recorded": bool(previous and previous["turn_id"] == body.turn_id
+                           and (previous.get("input_recorded") or previous.get("submission") == "recorded"))}
             if previous:
                 uncertain = (previous if previous["purpose"] == "reply" and previous["status"] == "uncertain"
                              else previous.get("uncertain_turn"))
@@ -411,6 +415,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 empty_recap = body.purpose == "recap" and not candidate["result"].strip()
                 receipt.update(status="failed" if empty_recap else "complete", text=candidate["result"])
                 receipt["submission"] = "recorded"
+                receipt["input_recorded"] = True
                 receipt["initialized"] = True
                 if empty_recap:
                     receipt["error"] = "The recap was empty. Retry close-out."
@@ -438,6 +443,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                     receipt["status"] = "failed" if receipt["submission"] == "not_submitted" or known_error else "uncertain"
                     if known_error:
                         receipt["submission"] = "recorded"
+                        receipt["input_recorded"] = True
                         receipt["writer_exited"] = True
                 receipt["error"] = message
                 receipt["initialized"] = receipt["initialized"] or claude_session_path(workspace, native_id).exists()
