@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import uuid
@@ -13,11 +14,13 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import httpx
+import psutil
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from pydantic import BaseModel, ConfigDict, Field
+from memu.llm.claude_cli import claude_session_path
 
 from app.services import owner, service_factory, state as conversation_state
 
@@ -32,6 +35,97 @@ def require_sitting_idle(runtime: Any, conversation_id: str, *, user_id: str, so
     marker = _task_name(conversation_id, user_id, soul_id)
     if any(not task.done() and task.get_name() == marker for task in runtime._BACKGROUND_TASKS):
         raise HTTPException(status_code=409, detail="This Atomic sitting is still running")
+    status = _native_status(runtime, conversation_id, {"user_id": user_id, "soul_id": soul_id})
+    if status["writer_idle"] is not True:
+        raise HTTPException(status_code=409, detail="Native writer exit is not established. Keep this history; start a new sitting if necessary.")
+
+
+def _native_state(runtime: Any, cid: str, scope: dict[str, str]) -> dict[str, Any]:
+    path = runtime._sqlite_current_path(**scope)
+    if path is None:
+        raise HTTPException(status_code=409, detail="Atomic chat requires a scoped Soul database")
+    con = runtime._sqlite_connect(path)
+    try:
+        con.row_factory = sqlite3.Row
+        runtime._sqlite_ensure_conversation_state_schema(con)
+        return conversation_state.conversation_state_from_row(
+            conversation_state.conversation_state_row(con, cid, **scope)) or {}
+    finally:
+        con.close()
+
+
+def _writer_idle(receipt: dict[str, Any]) -> bool | None:
+    if receipt.get("writer_exited"):
+        return True
+    process = receipt.get("process")
+    if not process:
+        return None
+    if not receipt.get("parent_reaped"):
+        try:
+            if psutil.Process(process["pid"]).create_time() == process["created_at"]:
+                return False
+        except psutil.NoSuchProcess:
+            pass
+        except psutil.Error:
+            return None
+    # A dead parent alone is not evidence that its process group stopped writing.
+    if os.name == "posix":
+        try:
+            os.killpg(process["pid"], 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return None
+    return None
+
+
+def _native_status(runtime: Any, cid: str, scope: dict[str, str]) -> dict[str, Any]:
+    saved = _native_state(runtime, cid, scope)
+    receipt = saved.get("atomic_native_turn")
+    if receipt is None:
+        bound = saved.get("atomic_native_session_id")
+        return {"session_id": bound, "turn": None, "writer_idle": None if bound else True}
+    live = any(not task.done() and task.get_name() == _task_name(cid, **scope)
+               for task in runtime._BACKGROUND_TASKS)
+    idle = False if live else _writer_idle(receipt)
+    if not live and receipt["status"] in {"prepared", "running"}:
+        receipt = {**receipt, "status": "uncertain", "error": "Native completion was not recorded; do not replay this turn."}
+    return {"session_id": saved.get("atomic_native_session_id"), "turn": receipt, "writer_idle": idle}
+
+
+def _save_receipt(runtime: Any, cid: str, scope: dict[str, str], receipt: dict[str, Any], path: Path) -> None:
+    con = runtime._sqlite_connect(path)
+    try:
+        con.row_factory = sqlite3.Row
+        runtime._sqlite_ensure_conversation_state_schema(con)
+        con.execute("BEGIN IMMEDIATE")
+        saved = conversation_state.conversation_state_from_row(
+            conversation_state.conversation_state_row(con, cid, **scope)) or {}
+        previous = saved.get("atomic_native_turn") or {}
+        if (saved.get("atomic_native_session_id") != receipt["session_id"]
+                or previous.get("turn_id") != receipt["turn_id"]):
+            raise RuntimeError("Native turn binding changed before checkpoint")
+        conversation_state.write_conversation_state(cid, **scope, connection=con,
+            sqlite_current_path=lambda *_args: path, updates={"atomic_native_turn": receipt})
+        con.commit()
+    finally:
+        con.close()
+
+
+def _scope_and_id(runtime: Any, user_id: str, soul_id: str, cid: str, *, admit: bool = True) -> tuple[dict[str, str], str]:
+    scope = runtime._extract_scope({"user_id": user_id, "soul_id": soul_id})
+    if not scope.get("user_id") or not scope.get("soul_id"):
+        raise HTTPException(status_code=422, detail="Owner and Soul are required")
+    try:
+        scope["user_id"] = owner.require_owner(runtime._CONFIG, scope.get("user_id"))
+    except owner.OwnerIdentityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if admit:
+        runtime._require_soul_active(**scope)
+    cid = cid.strip()
+    if not cid or (cid.startswith("chat:") and not cid.startswith("chat:atomic-")):
+        raise HTTPException(status_code=422, detail="An Atomic conversation is required")
+    return scope, cid if cid.startswith("chat:atomic-") else f"chat:atomic-{cid}"
 
 
 class AtomicChatRequest(BaseModel):
@@ -113,17 +207,18 @@ async def _bridge_tools(url: str, authorization: str) -> list[str]:
 
 
 def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
+    @app.get("/integration/atomic/chat/status", tags=["integration"])
+    async def atomic_chat_status(user_id: str, soul_id: str, conversation_id: str, turn_id: str):
+        scope, cid = _scope_and_id(runtime, user_id, soul_id, conversation_id, admit=False)
+        status = _native_status(runtime, cid, scope)
+        if status["turn"] is not None and status["turn"]["turn_id"] != turn_id:
+            raise HTTPException(status_code=409, detail="Status does not match the requested saved turn")
+        return status
+
     @app.post("/integration/atomic/chat", tags=["integration"])
     async def atomic_chat(body: AtomicChatRequest, authorization: str | None = Header(default=None)):
         config = deepcopy(runtime._CONFIG)
-        scope = runtime._extract_scope({"user_id": body.user_id, "soul_id": body.soul_id})
-        if not scope.get("user_id") or not scope.get("soul_id"):
-            raise HTTPException(status_code=422, detail="Owner and Soul are required")
-        try:
-            scope["user_id"] = owner.require_owner(config, scope.get("user_id"))
-        except owner.OwnerIdentityError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        runtime._require_soul_active(**scope)
+        scope, cid = _scope_and_id(runtime, body.user_id, body.soul_id, body.conversation_id)
         profile = claude_chat_profile(config)
         if body.profile_fingerprint != profile["fingerprint"]:
             raise HTTPException(status_code=409, detail="Atomic chat profile changed; reload it before sending")
@@ -133,13 +228,6 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
             raise HTTPException(status_code=422, detail="A recap must resume the sitting; one-shot close-out is a separate operation")
         if body.operation != "new" and body.system_prompt is not None:
             raise HTTPException(status_code=422, detail="Resume uses the original Soul Presence")
-        cid = body.conversation_id.strip()
-        if not cid:
-            raise HTTPException(status_code=422, detail="conversation_id is required")
-        if not cid.startswith("chat:atomic-"):
-            if cid.startswith("chat:"):
-                raise HTTPException(status_code=422, detail="An Atomic conversation is required")
-            cid = f"chat:atomic-{cid}"
         service = runtime._get_service_from_payload({"user": scope}, operation="other_reply")
         db_path = runtime._sqlite_current_path(**scope)
         if db_path is None:
@@ -181,15 +269,30 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 raise HTTPException(status_code=409, detail=f"The Claude workspace changed from {state.get('atomic_native_workspace')} to {workspace}; restore it before resuming")
             if not native_id and body.operation == "new":
                 native_id = str(uuid.uuid4())
-                conversation_state.write_conversation_state(cid, **scope, connection=con,
-                    sqlite_current_path=lambda *_args: db_path, updates={
-                        "atomic_native_session_id": native_id, "atomic_native_workspace": str(workspace),
-                    })
-                con.commit()
             elif not native_id:
                 raise HTTPException(status_code=409, detail="This sitting has no native session to resume")
-            # A failed pre-launch initialization retries its stored ID. Claude
-            # refuses --session-id reuse before a model call if it already exists.
+            previous = state.get("atomic_native_turn")
+            if previous:
+                if previous["turn_id"] == body.turn_id and previous["purpose"] != body.purpose:
+                    raise HTTPException(status_code=409, detail="Saved turn purpose does not match")
+                if previous["turn_id"] == body.turn_id and previous["status"] == "complete":
+                    raise HTTPException(status_code=409, detail="This turn is complete; recover it through chat/status without another call")
+                if previous["status"] in {"prepared", "running", "uncertain"}:
+                    raise HTTPException(status_code=409, detail="The previous outcome is unknown. Do not replay it; close out after writer exit.")
+            exists = claude_session_path(workspace, native_id).exists()
+            if body.operation == "new" and (exists or (previous and previous.get("initialized"))):
+                raise HTTPException(status_code=409, detail="This native session is already initialized; reconcile and resume it, do not repeat initialization")
+            if body.operation != "new" and not exists:
+                raise HTTPException(status_code=409, detail="The native session file is missing; do not initialize a replacement")
+            receipt = {"session_id": native_id, "turn_id": body.turn_id, "purpose": body.purpose,
+                       "status": "prepared", "writer_exited": False, "initialized": exists,
+                       "submission": "not_submitted"}
+            conversation_state.write_conversation_state(cid, **scope, connection=con,
+                sqlite_current_path=lambda *_args: db_path, updates={
+                    "atomic_native_session_id": native_id, "atomic_native_workspace": str(workspace),
+                    "atomic_native_turn": receipt,
+                })
+            con.commit()
         finally:
             con.close()
 
@@ -226,13 +329,35 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
             session = {"type": "session", "session_id": native_id, "turn_id": body.turn_id, "profile": public_profile}
             async def on_event(event):
                 nonlocal candidate
-                if event.get("type") == "result":
+                if event.get("type") == "process":
+                    if event["state"] == "started":
+                        receipt["status"] = "running"
+                        receipt["process"] = {"pid": event["pid"], "created_at": None}
+                        try:
+                            child = psutil.Process(event["pid"])
+                            receipt["process"] = {"pid": child.pid, "created_at": child.create_time()}
+                        except psutil.NoSuchProcess:
+                            # Early launch rejection may exit before identity lookup.
+                            pass
+                    elif event["state"] == "input_started":
+                        _save_receipt(runtime, cid, scope, {**receipt, "submission": "unknown"}, db_path)
+                        receipt["submission"] = "unknown"
+                        return
+                    elif event["state"] == "reaped":
+                        receipt["parent_reaped"] = True
+                    _save_receipt(runtime, cid, scope, receipt, db_path)
+                elif event.get("type") == "result":
                     candidate = event
                 elif event.get("type") == "system" and event.get("subtype") == "init":
                     if event["session_id"] != native_id:
                         raise RuntimeError("Claude returned a different native session")
+                    receipt["initialized"] = True
+                    _save_receipt(runtime, cid, scope, receipt, db_path)
                     publish({**session, "actual_model": event.get("model")})
                 else:
+                    if event.get("type") == "context_usage":
+                        receipt["usage"] = {"message_id": event["message_id"], "usage": event["usage"]}
+                        _save_receipt(runtime, cid, scope, receipt, db_path)
                     for frame in _wire_events(event):
                         publish(frame)
                     # A buffered native burst must let the ready HTTP reader run.
@@ -245,13 +370,34 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                     workspace=workspace, cli_tools=tools, on_event=on_event)
                 if candidate is None:
                     raise RuntimeError("Claude completed without its terminal result")
+                receipt.update(status="complete", text=candidate["result"])
+                receipt["submission"] = "recorded"
+                receipt["initialized"] = True
+                _save_receipt(runtime, cid, scope, receipt, db_path)
                 runtime._record_call("atomic_chat", {"user": scope}, ok=True, info={"conversation_id": cid, "turn_id": body.turn_id})
                 publish({"type": "complete", "session_id": native_id, "text": candidate["result"]}, terminal=True)
             except asyncio.CancelledError:
-                publish({"type": "error", "error": "Atomic chat producer stopped"}, terminal=True)
+                reason = ("Planned shutdown" if runtime._SHUTDOWN_STATE.get("draining")
+                          else "Atomic chat producer cancelled")
+                receipt.update(status="uncertain", error=f"{reason}; native outcome unknown")
+                try:
+                    _save_receipt(runtime, cid, scope, receipt, db_path)
+                finally:
+                    publish({"type": "error", "error": receipt["error"]}, terminal=True)
                 raise
             except Exception as exc:
                 message = str(exc).replace(token, "[redacted]") if token else str(exc)
+                if receipt["status"] == "prepared":
+                    receipt["writer_exited"] = True
+                # Delivery/checkpoint errors must not erase a validated answer.
+                if receipt["status"] != "complete":
+                    receipt["status"] = "failed" if receipt["submission"] == "not_submitted" else "uncertain"
+                receipt["error"] = message
+                receipt["initialized"] = receipt["initialized"] or claude_session_path(workspace, native_id).exists()
+                try:
+                    _save_receipt(runtime, cid, scope, receipt, db_path)
+                except Exception:
+                    runtime.logger.exception("Could not checkpoint failed Atomic native turn")
                 runtime._record_call("atomic_chat", {"user": scope}, ok=False, error=message)
                 publish({"type": "error", "error": message}, terminal=True)
             # Native work has settled; HTTP handoff still participates in drain,

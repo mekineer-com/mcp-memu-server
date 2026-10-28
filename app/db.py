@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     atomic_session_ended_at DATETIME,
     atomic_native_session_id TEXT,
     atomic_native_workspace TEXT,
+    atomic_native_turn TEXT,
     prior_context TEXT,
     pending_segment_ids JSON DEFAULT '[]',
     import_state JSON,
@@ -133,7 +134,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 """
     )
     columns = sqlite_table_columns(con, "conversations")
-    for column in ("atomic_native_session_id", "atomic_native_workspace"):
+    for column in ("atomic_native_session_id", "atomic_native_workspace", "atomic_native_turn"):
         if column not in columns:
             con.execute(f"ALTER TABLE conversations ADD COLUMN {column} TEXT")
     sqlite_ensure_soul_tables(con)

@@ -168,6 +168,7 @@ def conversation_state_from_row(row: sqlite3.Row | None) -> dict[str, Any] | Non
         "atomic_session_ended_at": row["atomic_session_ended_at"] if "atomic_session_ended_at" in row.keys() else None,
         "atomic_native_session_id": row["atomic_native_session_id"] if "atomic_native_session_id" in row.keys() else None,
         "atomic_native_workspace": row["atomic_native_workspace"] if "atomic_native_workspace" in row.keys() else None,
+        "atomic_native_turn": json_from_db(row["atomic_native_turn"]) if "atomic_native_turn" in row.keys() else None,
     }
 
 
@@ -190,7 +191,7 @@ def conversation_state_row(
         "updated_at, undo_snapshot, "
         "last_background_error, last_background_error_at, "
         "atomic_session_started_at, atomic_session_ended_at, "
-        "atomic_native_session_id, atomic_native_workspace "
+        "atomic_native_session_id, atomic_native_workspace, atomic_native_turn "
         "FROM conversations WHERE conversation_id = ? LIMIT 1",
         (cid,),
     ).fetchone()
@@ -240,6 +241,7 @@ def conversation_state_empty(
         "atomic_session_ended_at": None,
         "atomic_native_session_id": None,
         "atomic_native_workspace": None,
+        "atomic_native_turn": None,
     }
 
 
@@ -483,6 +485,7 @@ INSERT OR IGNORE INTO conversations (
                 "atomic_session_ended_at",
                 "atomic_native_session_id",
                 "atomic_native_workspace",
+                "atomic_native_turn",
             }:
                 field_updates[key] = value
 
@@ -581,7 +584,7 @@ INSERT OR IGNORE INTO conversations (
             params: list[Any] = []
             for key, value in field_updates.items():
                 assignments.append(f"{key} = ?")
-                if key in {"pending_segment_ids", "undo_snapshot", "import_state", "prior_context"}:
+                if key in {"pending_segment_ids", "undo_snapshot", "import_state", "prior_context", "atomic_native_turn"}:
                     params.append(json_to_db(value))
                 elif key == "memorize_chat":
                     params.append(1 if bool(value) else 0)
