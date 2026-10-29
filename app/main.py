@@ -5309,8 +5309,9 @@ async def atomic_chat_profile(user_id: str, soul_id: str):
         profile = _atomic_chat.claude_chat_profile(_CONFIG)
         profile.pop("workspace_root")
         profile.pop("backend")
-        return {"ok": True, "backend": "claude_code", "settings": {},
-                "cli": profile | _atomic_chat_common_settings(_CONFIG)}
+        return {"ok": True, "backend": "claude_code",
+                "cli": profile | _atomic_chat_common_settings(_CONFIG)
+                    | {"admission_error": _atomic_chat.native_admission_error()}}
     return {"ok": True, "backend": "api", "settings": _atomic_chat_settings_from_config(_CONFIG)}
 
 

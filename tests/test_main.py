@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+import sys
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1066,6 +1067,7 @@ async def test_reply_fallback_adds_anchors_but_prepared_prompt_is_unchanged(monk
     ("openrouter", "openrouter", "chat_model"),
 ])
 async def test_atomic_chat_profile_maps_api_config(monkeypatch, provider, prefix, model_key) -> None:
+    monkeypatch.setitem(sys.modules, "atomic_claude_session", None)
     monkeypatch.setattr(
         main,
         "_CONFIG",
@@ -1102,6 +1104,7 @@ async def test_atomic_chat_profile_maps_api_config(monkeypatch, provider, prefix
 
 @pytest.mark.asyncio
 async def test_atomic_chat_profile_uses_cli_without_api_settings(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "atomic_claude_session", SimpleNamespace(prepare_atomic_session=lambda data: data))
     config = {
         "claude_code": True, "claude_code_context_window_tokens": 200000,
         "claude_code_workspace": str(tmp_path), "claude_code_model": "test-cli",
@@ -1114,14 +1117,19 @@ async def test_atomic_chat_profile_uses_cli_without_api_settings(monkeypatch, tm
     expected = main._atomic_chat.claude_chat_profile(config)
     out = await main.atomic_chat_profile("TestOwner", "TestSoul")
     assert out == {
-        "ok": True, "backend": "claude_code", "settings": {}, "cli": {
+        "ok": True, "backend": "claude_code", "cli": {
             "model": "test-cli", "context_window_tokens": 200000,
             "timeout_seconds": 600, "effort": "high", "fingerprint": expected["fingerprint"],
-            "memu_response_sentences": 4, "memu_log_prompts": True,
+            "memu_response_sentences": 4, "memu_log_prompts": True, "admission_error": "",
         },
     }
     assert "must-not-leak" not in json.dumps(out)
     assert str(tmp_path) not in json.dumps(out)
+    monkeypatch.setitem(sys.modules, "atomic_claude_session", None)
+    unavailable = await main.atomic_chat_profile("TestOwner", "TestSoul")
+    assert "Install or repair Atomic" in unavailable["cli"]["admission_error"]
+    assert unavailable["cli"]["fingerprint"] == out["cli"]["fingerprint"]
+    assert "settings" not in unavailable
 
 
 @pytest.mark.asyncio

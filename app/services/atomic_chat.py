@@ -29,6 +29,26 @@ from app.services import owner, service_factory, state as conversation_state
 _DELIVERY_BUFFER_BYTES = 16 * 1024 * 1024
 
 
+def require_session_helper():
+    try:
+        from atomic_claude_session import prepare_atomic_session
+    except ImportError as exc:
+        raise HTTPException(status_code=409, detail="Install or repair Atomic's Claude session helper before native chat or cleanup") from exc
+    if not callable(prepare_atomic_session):
+        raise HTTPException(status_code=409, detail="Repair Atomic's Claude session helper: preparation is unavailable")
+    return prepare_atomic_session
+
+
+def native_admission_error() -> str:
+    if os.name != "posix":
+        return "Native Claude chat requires POSIX writer-exit support on the memory server. Use API mode on this platform."
+    try:
+        require_session_helper()
+    except HTTPException as exc:
+        return str(exc.detail)
+    return ""
+
+
 def _input_context(context: dict[str, int] | None, prompt: int, overhead: int, system: int = 0) -> dict[str, int] | None:
     if context is None:
         return None
@@ -538,11 +558,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
             raise HTTPException(status_code=409, detail="Compact requires an unpublished sitting; purge requires successful publication")
         prepare = None
         if body.action == "compact":
-            try:
-                from atomic_claude_session import prepare_atomic_session
-            except ImportError as exc:
-                raise HTTPException(status_code=409, detail="Install or repair Atomic's Claude session helper before cleanup") from exc
-            prepare = prepare_atomic_session
+            prepare = require_session_helper()
         path = runtime._sqlite_current_path(**scope)
         con = runtime._sqlite_connect(path)
         try:
@@ -595,6 +611,8 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
         profile = claude_chat_profile(config)
         if body.profile_fingerprint != profile["fingerprint"]:
             raise HTTPException(status_code=409, detail="Atomic chat profile changed; reload it before sending")
+        if error := native_admission_error():
+            raise HTTPException(status_code=409, detail=error)
         if body.operation == "new" and not body.system_prompt:
             raise HTTPException(status_code=422, detail="A new sitting requires its Soul Presence")
         if body.operation == "new" and body.purpose == "recap":

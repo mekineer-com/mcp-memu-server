@@ -19,6 +19,7 @@ from app.services import atomic_chat, state
 
 @pytest.fixture
 def chat_runtime(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "atomic_claude_session", SimpleNamespace(prepare_atomic_session=lambda data: data))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "native-home"))
     monkeypatch.setitem(main._CONFIG, "claude_code", True)
     monkeypatch.setitem(main._CONFIG, "claude_code_model", "fictional-model")
@@ -127,6 +128,24 @@ def request(**changes):
         "prompt_tokens": 100, "overhead_tokens": 50,
         "system_tokens": 0 if changes.get("system_prompt", "presence") is None else 25, **changes,
     })
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("problem", ["missing", "not_callable", "platform"])
+async def test_native_admission_refuses_unready_without_binding_or_model_work(chat_runtime, monkeypatch, problem):
+    if problem == "missing":
+        monkeypatch.setitem(sys.modules, "atomic_claude_session", None)
+    elif problem == "not_callable":
+        monkeypatch.setitem(sys.modules, "atomic_claude_session", SimpleNamespace(prepare_atomic_session=None))
+    else:
+        monkeypatch.setattr(atomic_chat, "os", SimpleNamespace(name="nt"))
+    scope = {"user_id":"TestOwner", "soul_id":"Birch"}
+    before = atomic_chat._native_state(main, "chat:atomic-sitting", scope)
+    with pytest.raises(HTTPException) as error:
+        await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret")
+    assert error.value.status_code == 409
+    assert atomic_chat._native_state(main, "chat:atomic-sitting", scope) == before
+    assert not chat_runtime.services and not chat_runtime.discoveries
 
 
 async def read(response):
