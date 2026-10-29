@@ -1067,7 +1067,6 @@ async def test_reply_fallback_adds_anchors_but_prepared_prompt_is_unchanged(monk
     ("openrouter", "openrouter", "chat_model"),
 ])
 async def test_atomic_chat_profile_maps_api_config(monkeypatch, provider, prefix, model_key) -> None:
-    monkeypatch.setitem(sys.modules, "atomic_claude_session", None)
     monkeypatch.setattr(
         main,
         "_CONFIG",
