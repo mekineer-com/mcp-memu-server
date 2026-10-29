@@ -197,7 +197,8 @@ async def test_maintenance_adopts_once_preserves_context_and_rejects_stale_claim
         assert missing.status_code == 409
         assert missing.json()["detail"]["maintenance"] == result["maintenance"]
     source, original, candidate = atomic_chat._maintenance_paths(
-        result["maintenance"]["workspace"], m.receipt["session_id"], str(body.attempt_id))
+        atomic_chat._native_state(main, m.cid, m.scope)["atomic_native_workspace"],
+        m.receipt["session_id"], str(body.attempt_id))
     assert source == m.source and original.read_bytes() == m.original and not candidate.exists()
     if os.name == "posix":
         assert original.stat().st_mode & 0o777 == 0o600
@@ -215,8 +216,7 @@ async def test_maintenance_adopts_once_preserves_context_and_rejects_stale_claim
                                     authorization="Bearer fictional-secret"))
     current = atomic_chat._native_state(main, m.cid, m.scope)["atomic_native_turn"]
     assert current["maintenance"] == result["maintenance"]
-    with pytest.raises(HTTPException, match="matching native"):
-        await m.endpoint(body)
+    assert (await m.endpoint(body))["maintenance"] == result["maintenance"]
 
 
 @pytest.mark.asyncio
@@ -276,6 +276,60 @@ async def test_maintenance_cancelled_preparation_cannot_adopt_from_its_thread(ma
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("recover", [False, True])
+async def test_maintenance_file_io_keeps_loop_free_and_owns_cancelled_work(maintenance_runtime, monkeypatch, recover):
+    m = maintenance_runtime
+    started, release = threading.Event(), threading.Event()
+    loop_thread = threading.get_ident()
+    body = maintenance_request(m)
+    if recover:
+        receipt = atomic_chat._native_state(main, m.cid, m.scope)["atomic_native_turn"]
+        receipt["maintenance"] = {"attempt_id":str(body.attempt_id), "action":"compact", "status":"prepared",
+            "native_attempt_id":receipt["attempt_id"], "turn_id":receipt["turn_id"],
+            "source_sha256":hashlib.sha256(m.original).hexdigest(),
+            "candidate_sha256":hashlib.sha256(m.candidate).hexdigest()}
+        # Simulate a restart, not a conflicting claim through the CAS helper.
+        state.write_conversation_state(m.cid, **m.scope, sqlite_current_path=main._sqlite_current_path,
+                                       updates={"atomic_native_turn":receipt})
+    original_hash = atomic_chat._file_hash
+    def held(path):
+        assert threading.get_ident() != loop_thread
+        started.set()
+        assert release.wait(5)
+        return original_hash(path)
+    monkeypatch.setattr(atomic_chat, "_file_hash", held)
+    delivery = asyncio.create_task(atomic_chat._observe_native(main, m.cid, m.scope) if recover else m.endpoint(body))
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        worker = next(task for task in main._BACKGROUND_TASKS if task.get_name().endswith(":maintenance"))
+        worker.cancel()
+        await asyncio.sleep(0)
+        assert not worker.done()
+        with pytest.raises(HTTPException, match="maintenance"):
+            atomic_chat.require_sitting_idle(main, m.cid, **m.scope, closeout=True)
+        # A second observer is responsive and does not start competing recovery.
+        observed = await atomic_chat._observe_native(main, m.cid, m.scope)
+        assert observed["maintenance"]["status"] == "prepared"
+    finally:
+        release.set()
+    await delivery
+    assert atomic_chat._native_status(main, m.cid, m.scope)["maintenance"]["status"] == ("failed" if recover else "complete")
+    assert m.source.read_bytes() == (m.original if recover else m.candidate)
+
+
+@pytest.mark.asyncio
+async def test_maintenance_restart_during_preparation_retains_original(maintenance_runtime):
+    m = maintenance_runtime
+    receipt = atomic_chat._native_state(main, m.cid, m.scope)["atomic_native_turn"]
+    receipt["maintenance"] = {"attempt_id":str(uuid.uuid4()), "action":"compact", "status":"running",
+        "native_attempt_id":receipt["attempt_id"], "turn_id":receipt["turn_id"]}
+    state.write_conversation_state(m.cid, **m.scope, sqlite_current_path=main._sqlite_current_path,
+                                   updates={"atomic_native_turn":receipt})
+    assert (await atomic_chat._observe_native(main, m.cid, m.scope))["maintenance"]["status"] == "failed"
+    assert m.source.read_bytes() == m.original and not m.preparations
+
+
+@pytest.mark.asyncio
 async def test_maintenance_syncs_artifact_and_rename_directories_before_checkpoints(maintenance_runtime, monkeypatch):
     m = maintenance_runtime
     sync, save, replace = atomic_chat._sync_directory, atomic_chat._save_receipt, atomic_chat.os.replace
@@ -294,8 +348,9 @@ async def test_maintenance_syncs_artifact_and_rename_directories_before_checkpoi
     monkeypatch.setattr(atomic_chat.os, "replace", renamed)
     body = maintenance_request(m)
     result = await m.endpoint(body)
-    _, original, _ = atomic_chat._maintenance_paths(result["maintenance"]["workspace"],
-                                                   m.receipt["session_id"], str(body.attempt_id))
+    _, original, _ = atomic_chat._maintenance_paths(
+        atomic_chat._native_state(main, m.cid, m.scope)["atomic_native_workspace"],
+        m.receipt["session_id"], str(body.attempt_id))
     prepared, replaced, complete = (events.index(event) for event in
         (("save", "prepared"), ("replace", None), ("save", "complete")))
     for directory in (original.parent, original.parent.parent, m.source.parent):
@@ -330,18 +385,22 @@ async def test_maintenance_refuses_unsafe_or_unavailable_inputs(maintenance_runt
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("crash", ["before_replace", "after_replace", "changed_source"])
-async def test_maintenance_hash_recovery_never_replays_or_rolls_back(maintenance_runtime, monkeypatch, crash):
+@pytest.mark.parametrize("crash", ["before_replace", "after_replace", "changed_source", "ambiguous_source"])
+async def test_maintenance_hash_recovery_never_replays_or_rolls_back(maintenance_runtime, monkeypatch, caplog, crash):
     m = maintenance_runtime
-    save, copy = atomic_chat._save_receipt, atomic_chat._private_copy
+    save, copy, replace = atomic_chat._save_receipt, atomic_chat._private_copy, atomic_chat.os.replace
     if crash == "after_replace":
         def checkpoint(*args):
             if args[3].get("maintenance", {}).get("status") == "complete":
                 raise RuntimeError("lost completion checkpoint")
             return save(*args)
         monkeypatch.setattr(atomic_chat, "_save_receipt", checkpoint)
-    elif crash == "before_replace":
-        monkeypatch.setattr(atomic_chat.os, "replace", lambda *_: (_ for _ in ()).throw(RuntimeError("interrupted replace")))
+    elif crash in {"before_replace", "ambiguous_source"}:
+        def interrupted(*_):
+            if crash == "ambiguous_source":
+                m.source.write_bytes(b"newer native history\n")
+            raise RuntimeError("interrupted replace")
+        monkeypatch.setattr(atomic_chat.os, "replace", interrupted)
     else:
         def changed(path, data):
             copy(path, data)
@@ -349,17 +408,40 @@ async def test_maintenance_hash_recovery_never_replays_or_rolls_back(maintenance
                 m.source.write_bytes(b"newer native history\n")
         monkeypatch.setattr(atomic_chat, "_private_copy", changed)
     body = maintenance_request(m)
-    with pytest.raises((RuntimeError, HTTPException)):
-        await m.endpoint(body)
+    if crash == "changed_source":
+        assert (await m.endpoint(body))["maintenance"]["status"] == "failed"
+        assert not [record for record in caplog.records if record.levelno >= 40]
+    else:
+        with pytest.raises(RuntimeError):
+            await m.endpoint(body)
     monkeypatch.setattr(atomic_chat, "_save_receipt", save)
-    status = atomic_chat._native_status(main, m.cid, m.scope)
-    expected = {"before_replace":"failed", "after_replace":"complete", "changed_source":"blocked"}[crash]
+    monkeypatch.setattr(atomic_chat.os, "replace", replace)
+    status = await atomic_chat._observe_native(main, m.cid, m.scope)
+    expected = {"before_replace":"failed", "after_replace":"complete", "changed_source":"failed",
+                "ambiguous_source":"blocked"}[crash]
     assert status["maintenance"]["status"] == expected
-    assert status["context"] == m.receipt["context"]
-    expected_bytes = {"before_replace":m.original, "after_replace":m.candidate, "changed_source":b"newer native history\n"}[crash]
+    assert status["context"] == (None if crash.endswith("source") else m.receipt["context"])
+    expected_bytes = {"before_replace":m.original, "after_replace":m.candidate,
+                      "changed_source":b"newer native history\n", "ambiguous_source":b"newer native history\n"}[crash]
     assert m.source.read_bytes() == expected_bytes
     assert (await m.endpoint(body))["maintenance"]["status"] == expected
     assert len(m.preparations) == 1
+    if crash == "ambiguous_source":
+        with pytest.raises(HTTPException, match="maintenance"):
+            atomic_chat.require_sitting_idle(main, m.cid, **m.scope)
+        with pytest.raises(HTTPException, match="unresolved"):
+            await m.endpoint(maintenance_request(m, previous_attempt_id=body.attempt_id))
+        # Only a same-session, tool-free recap can cross the ambiguous boundary.
+        response = await m.chat.endpoint(request(operation="continue", purpose="recap", system_prompt=None,
+                                                 turn_id="recap-turn", bridge_url=None), authorization=None)
+        m.chat.services[-1].usage = m.receipt["usage"]
+        await read(response)
+        assert (await atomic_chat._observe_native(main, m.cid, m.scope))["context"] is not None
+        await main.atomic_session_end(main.AtomicSessionEndRequest(**m.scope, conversation_id=m.cid))
+        latest = atomic_chat._native_state(main, m.cid, m.scope)["atomic_native_turn"]
+        purge = maintenance_request(m, action="purge", previous_attempt_id=body.attempt_id,
+                                    turn_id=latest["turn_id"], native_attempt_id=latest["attempt_id"])
+        assert (await m.endpoint(purge))["maintenance"]["status"] == "complete"
 
 
 @pytest.mark.asyncio
@@ -381,12 +463,15 @@ async def test_maintenance_purge_requires_publication_and_retries_storage_failur
     unrelated = m.source.parent / f"{uuid.uuid4()}.jsonl"
     unrelated.write_bytes(b"unrelated sitting")
     real_purge = atomic_chat._purge_native
+    loop_thread = threading.get_ident()
     def interrupted(source, native_id):
+        assert threading.get_ident() != loop_thread
         source.unlink()
         raise PermissionError("fictional removal failure")
     sync = atomic_chat._sync_directory
     history_syncs = []
     def interrupted_sync(path):
+        assert threading.get_ident() != loop_thread
         if path == history.parent:
             history_syncs.append(path)
             if len(history_syncs) == 1:
@@ -400,7 +485,7 @@ async def test_maintenance_purge_requires_publication_and_retries_storage_failur
     assert result["maintenance"]["status"] == "failed"
     assert support.exists() == (failure == "remove")
     monkeypatch.setattr(atomic_chat, "_purge_native", real_purge)
-    assert atomic_chat._native_status(main, m.cid, m.scope)["maintenance"]["status"] == "complete"
+    assert (await atomic_chat._observe_native(main, m.cid, m.scope))["maintenance"]["status"] == "complete"
     assert not m.source.exists() and not support.exists()
     assert not history.exists()
     if failure == "sync":

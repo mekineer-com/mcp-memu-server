@@ -5182,7 +5182,7 @@ async def atomic_session_end(req: AtomicSessionEndRequest):
     if not conversation_id.startswith("chat:atomic-"):
         raise HTTPException(status_code=400, detail="conversation_id must start with chat:atomic-")
 
-    _atomic_chat.require_sitting_idle(sys.modules[__name__], conversation_id, user_id=uid, soul_id=soul_id)
+    _atomic_chat.require_sitting_idle(sys.modules[__name__], conversation_id, user_id=uid, soul_id=soul_id, closeout=True)
     rows = _atomic_transcript_rows(req.transcript, user_id=uid, soul_id=soul_id)
     state_row, _, _ = _load_turn_state_and_soul_card(conversation_id, user_id=uid, soul_id=soul_id)
     ended_at = parse_iso_datetime(state_row.get("atomic_session_ended_at"))

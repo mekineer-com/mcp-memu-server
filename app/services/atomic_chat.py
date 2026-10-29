@@ -117,12 +117,14 @@ def _task_name(conversation_id: str, user_id: str, soul_id: str) -> str:
     return "atomic-chat:" + _hash([{"user_id": user_id, "soul_id": soul_id}, conversation_id])
 
 
-def require_sitting_idle(runtime: Any, conversation_id: str, *, user_id: str, soul_id: str) -> None:
+def require_sitting_idle(runtime: Any, conversation_id: str, *, user_id: str, soul_id: str,
+                         closeout: bool = False) -> None:
     marker = _task_name(conversation_id, user_id, soul_id)
     if any(not task.done() and task.get_name() == marker for task in runtime._BACKGROUND_TASKS):
         raise HTTPException(status_code=409, detail="This Atomic sitting is still running")
     status = _native_status(runtime, conversation_id, {"user_id": user_id, "soul_id": soul_id})
-    if _maintenance_blocks(status.get("maintenance")):
+    if (_maintenance_live(runtime, conversation_id, {"user_id": user_id, "soul_id": soul_id})
+            or _maintenance_blocks(status.get("maintenance"), closeout=closeout)):
         raise HTTPException(status_code=409, detail="Atomic session maintenance must be reconciled first")
     if status["writer_idle"] is not True:
         raise HTTPException(status_code=409, detail="Native writer exit is not established. Keep this history; start a new sitting if necessary.")
@@ -173,8 +175,9 @@ def _reported_failure(receipt: dict[str, Any]) -> bool:
             and (result["subtype"] == "success" or result["subtype"].startswith("error_")))
 
 
-def _native_status(runtime: Any, cid: str, scope: dict[str, str]) -> dict[str, Any]:
-    saved = _native_state(runtime, cid, scope)
+def _native_status(runtime: Any, cid: str, scope: dict[str, str],
+                   saved: dict[str, Any] | None = None) -> dict[str, Any]:
+    saved = _native_state(runtime, cid, scope) if saved is None else saved
     receipt = saved.get("atomic_native_turn")
     if receipt is None:
         bound = saved.get("atomic_native_session_id")
@@ -199,7 +202,6 @@ def _native_status(runtime: Any, cid: str, scope: dict[str, str]) -> dict[str, A
         receipt = {**receipt, "writer_exited": True}
     if receipt != saved["atomic_native_turn"]:
         _save_receipt(runtime, cid, scope, receipt, runtime._sqlite_current_path(**scope))
-    receipt = _reconcile_maintenance(runtime, cid, scope, receipt, idle)
     return {"session_id": saved.get("atomic_native_session_id"), "turn": receipt, "writer_idle": idle,
             "context": receipt.get("context"), "maintenance": receipt.get("maintenance")}
 
@@ -226,8 +228,9 @@ def _save_receipt(runtime: Any, cid: str, scope: dict[str, str], receipt: dict[s
         con.close()
 
 
-def _maintenance_blocks(maintenance: dict[str, Any] | None) -> bool:
-    return bool(maintenance and maintenance["status"] not in {"complete", "failed"})
+def _maintenance_blocks(maintenance: dict[str, Any] | None, *, closeout: bool = False) -> bool:
+    return bool(maintenance and maintenance["status"] not in {"complete", "failed"}
+                and not (closeout and maintenance["status"] == "blocked"))
 
 
 def _maintenance_live(runtime: Any, cid: str, scope: dict[str, str]) -> bool:
@@ -277,21 +280,17 @@ def _purge_native(source: Path, native_id: str) -> None:
 
 
 def _reconcile_maintenance(runtime: Any, cid: str, scope: dict[str, str], receipt: dict[str, Any],
-                           idle: bool | None) -> dict[str, Any]:
+                           workspace: str, path: Path) -> dict[str, Any]:
     maintenance = receipt.get("maintenance")
-    if not maintenance or maintenance["status"] == "complete" or _maintenance_live(runtime, cid, scope):
-        return receipt
-    if idle is not True:
-        return receipt
     before = deepcopy(maintenance)
-    source, original, _ = _maintenance_paths(maintenance["workspace"], receipt["session_id"], maintenance["attempt_id"])
+    source, original, _ = _maintenance_paths(workspace, receipt["session_id"], maintenance["attempt_id"])
     if maintenance["action"] == "purge":
         try:
             _purge_native(source, receipt["session_id"])
             maintenance.update(status="complete", error=None)
         except OSError as exc:
             maintenance.update(status="failed", error=str(exc))
-    elif maintenance["status"] != "failed":
+    else:
         current = _file_hash(source)
         if maintenance.get("candidate_sha256") and current == maintenance["candidate_sha256"]:
             _sync_directory(original.parent)
@@ -301,9 +300,48 @@ def _reconcile_maintenance(runtime: Any, cid: str, scope: dict[str, str], receip
             maintenance.update(status="failed", error="Candidate was not adopted; the original was retained")
         else:
             maintenance.update(status="blocked", error="Native history changed during maintenance; keep it, do not overwrite or roll back")
+            receipt["context"] = None
     if maintenance != before:
-        _save_receipt(runtime, cid, scope, receipt, runtime._sqlite_current_path(**scope))
+        _save_receipt(runtime, cid, scope, receipt, path)
     return receipt
+
+
+async def _owned_io(function: Any, *args: Any) -> Any:
+    # Once filesystem effects start, retain ownership until the thread exits,
+    # including during shutdown cancellation. Pure preparation remains cancellable.
+    task = asyncio.get_running_loop().run_in_executor(None, lambda: function(*args))
+    while True:
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                raise
+
+
+def _maintenance_task(runtime: Any, cid: str, scope: dict[str, str], work: Any) -> asyncio.Task:
+    task = asyncio.create_task(work, name=_task_name(cid, **scope) + ":maintenance")
+    runtime._BACKGROUND_TASKS.add(task)
+    def finished(done):
+        runtime._BACKGROUND_TASKS.discard(done)
+        if not done.cancelled() and (error := done.exception()) is not None:
+            runtime.logger.error("Atomic maintenance checkpoint failed: %s", error)
+    task.add_done_callback(finished)
+    return task
+
+
+async def _observe_native(runtime: Any, cid: str, scope: dict[str, str],
+                          saved: dict[str, Any] | None = None) -> dict[str, Any]:
+    saved = _native_state(runtime, cid, scope) if saved is None else saved
+    status = _native_status(runtime, cid, scope, saved)
+    receipt, maintenance = status["turn"], status.get("maintenance")
+    needs_recovery = maintenance and (maintenance["status"] in {"running", "prepared"}
+        or (maintenance["action"] == "purge" and maintenance["status"] == "failed"))
+    if needs_recovery and status["writer_idle"] is True and not _maintenance_live(runtime, cid, scope):
+        receipt = await asyncio.shield(_maintenance_task(runtime, cid, scope,
+            _owned_io(_reconcile_maintenance, runtime, cid, scope, receipt,
+                      saved["atomic_native_workspace"], runtime._sqlite_current_path(**scope))))
+        status.update(turn=receipt, maintenance=receipt["maintenance"], context=receipt.get("context"))
+    return status
 
 
 class AtomicMaintenanceRequest(BaseModel):
@@ -319,19 +357,13 @@ class AtomicMaintenanceRequest(BaseModel):
 
 
 async def _maintain_native(runtime: Any, cid: str, scope: dict[str, str], receipt: dict[str, Any],
-                           path: Path, prepare: Any) -> dict[str, Any]:
+                           path: Path, workspace: str, prepare: Any) -> dict[str, Any]:
     maintenance = receipt["maintenance"]
-    source, original, candidate = _maintenance_paths(maintenance["workspace"], receipt["session_id"], maintenance["attempt_id"])
-    try:
+    source, original, candidate = _maintenance_paths(workspace, receipt["session_id"], maintenance["attempt_id"])
+    def apply(data=None, result=None):
         if maintenance["action"] == "purge":
             _purge_native(source, receipt["session_id"])
         else:
-            # The thread only reads and prepares bytes. Cancellation cannot leave
-            # an untracked thread replacing native history after this task exits.
-            def build():
-                data = source.read_bytes()
-                return data, prepare(data)
-            data, result = await asyncio.to_thread(build)
             original.parent.parent.mkdir(mode=0o700, exist_ok=True)
             original.parent.mkdir(mode=0o700, exist_ok=True)
             _private_copy(original, data)
@@ -341,13 +373,29 @@ async def _maintain_native(runtime: Any, cid: str, scope: dict[str, str], receip
             maintenance.update(status="prepared", source_sha256=result.source_sha256,
                                candidate_sha256=result.candidate_sha256, changes=result.changes)
             _save_receipt(runtime, cid, scope, receipt, path)
-            if _writer_idle(receipt) is not True or _file_hash(source) != result.source_sha256:
-                raise HTTPException(status_code=409, detail="Native writer/source changed before adoption; history was not replaced")
+            if _file_hash(source) != result.source_sha256:
+                maintenance.update(status="failed", error="Native source changed before adoption; history was not replaced")
+                receipt["context"] = None
+                _save_receipt(runtime, cid, scope, receipt, path)
+                return
             os.replace(candidate, source)
             _sync_directory(candidate.parent)
             _sync_directory(source.parent)
         maintenance.update(status="complete", error=None)
         _save_receipt(runtime, cid, scope, receipt, path)
+    try:
+        if maintenance["action"] == "purge":
+            await _owned_io(apply)
+        else:
+            # The thread only reads and prepares bytes. Cancellation cannot leave
+            # an untracked thread replacing native history after this task exits.
+            # Preparation holds original bytes, parsed rows and candidate together;
+            # native large-file acceptance must measure this peak before activation.
+            def build():
+                data = source.read_bytes()
+                return data, prepare(data)
+            data, result = await asyncio.to_thread(build)
+            await _owned_io(apply, data, result)
     except asyncio.CancelledError:
         maintenance.update(status="failed", error="Maintenance stopped before adoption; original retained")
         _save_receipt(runtime, cid, scope, receipt, path)
@@ -465,22 +513,24 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
     async def atomic_chat_maintenance(body: AtomicMaintenanceRequest):
         scope, cid = _scope_and_id(runtime, body.user_id, body.soul_id, body.conversation_id,
                                    admit=body.action == "compact")
-        status = _native_status(runtime, cid, scope)
         saved = _native_state(runtime, cid, scope)
-        receipt = saved.get("atomic_native_turn")
+        status = await _observe_native(runtime, cid, scope, saved)
+        receipt = status["turn"]
+        previous = status.get("maintenance")
+        if previous and previous["attempt_id"] == str(body.attempt_id):
+            if (previous["action"] != body.action or previous["native_attempt_id"] != str(body.native_attempt_id)
+                    or previous["turn_id"] != body.turn_id):
+                raise HTTPException(status_code=409, detail="Maintenance attempt binding changed")
+            return {"maintenance": previous, "context": receipt.get("context")}
         if (not receipt or not saved.get("atomic_native_session_id") or not saved.get("atomic_native_workspace")
                 or receipt["session_id"] != saved["atomic_native_session_id"]
                 or receipt["turn_id"] != body.turn_id
                 or receipt["attempt_id"] != str(body.native_attempt_id)):
             raise HTTPException(status_code=409, detail="Maintenance requires the matching native sitting and turn")
-        previous = receipt.get("maintenance")
-        if previous and previous["attempt_id"] == str(body.attempt_id):
-            if previous["action"] != body.action:
-                raise HTTPException(status_code=409, detail="Maintenance attempt action changed")
-            return {"maintenance": previous, "context": receipt.get("context")}
         previous_id = previous["attempt_id"] if previous else None
         if (previous_id != (str(body.previous_attempt_id) if body.previous_attempt_id else None)
-                or _maintenance_blocks(previous)):
+                or _maintenance_live(runtime, cid, scope)
+                or _maintenance_blocks(previous, closeout=body.action == "purge")):
             raise HTTPException(status_code=409, detail="Maintenance changed or is unresolved; reload its status")
         if status["writer_idle"] is not True:
             raise HTTPException(status_code=409, detail="Native writer exit is not established")
@@ -510,27 +560,20 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                 raise HTTPException(status_code=409, detail="Native sitting changed before maintenance admission")
             receipt = deepcopy(latest)
             receipt["maintenance"] = {"attempt_id": str(body.attempt_id), "action": body.action,
-                "native_attempt_id": receipt["attempt_id"], "turn_id": receipt["turn_id"], "status": "running",
-                "workspace": current["atomic_native_workspace"]}
+                "native_attempt_id": receipt["attempt_id"], "turn_id": receipt["turn_id"], "status": "running"}
             conversation_state.write_conversation_state(cid, **scope, connection=con,
                 sqlite_current_path=lambda *_args: path, updates={"atomic_native_turn": receipt})
             con.commit()
         finally:
             con.close()
-        task = asyncio.create_task(_maintain_native(runtime, cid, scope, receipt, path, prepare),
-                                   name=_task_name(cid, **scope) + ":maintenance")
-        runtime._BACKGROUND_TASKS.add(task)
-        def finished(done):
-            runtime._BACKGROUND_TASKS.discard(done)
-            if not done.cancelled() and (error := done.exception()) is not None:
-                runtime.logger.error("Atomic maintenance checkpoint failed: %s", error)
-        task.add_done_callback(finished)
+        task = _maintenance_task(runtime, cid, scope,
+            _maintain_native(runtime, cid, scope, receipt, path, saved["atomic_native_workspace"], prepare))
         return await asyncio.shield(task)
 
     @app.get("/integration/atomic/chat/status", tags=["integration"])
     async def atomic_chat_status(user_id: str, soul_id: str, conversation_id: str, turn_id: str | None = None):
         scope, cid = _scope_and_id(runtime, user_id, soul_id, conversation_id, admit=False)
-        status = _native_status(runtime, cid, scope)
+        status = await _observe_native(runtime, cid, scope)
         if turn_id is not None and status["turn"] is not None and status["turn"]["turn_id"] != turn_id:
             earlier = status["turn"].get("uncertain_turn")
             if earlier is None or earlier["turn_id"] != turn_id:
@@ -584,7 +627,7 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                                                "headers": {"Authorization": authorization}}}, "allowed_tools": names}
         workspace = profile["workspace_root"] / "atomic" / _hash([scope["user_id"], scope["soul_id"]])
         marker = _task_name(cid, **scope)
-        require_sitting_idle(runtime, cid, **scope)
+        require_sitting_idle(runtime, cid, **scope, closeout=body.purpose == "recap")
         con = runtime._sqlite_connect(db_path)
         try:
             con.row_factory = sqlite3.Row
@@ -592,7 +635,8 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
             con.execute("BEGIN IMMEDIATE")
             state = conversation_state.conversation_state_from_row(
                 conversation_state.conversation_state_row(con, cid, **scope)) or {}
-            if _maintenance_blocks((state.get("atomic_native_turn") or {}).get("maintenance")):
+            if _maintenance_blocks((state.get("atomic_native_turn") or {}).get("maintenance"),
+                                   closeout=body.purpose == "recap"):
                 raise HTTPException(status_code=409, detail="Atomic maintenance must be reconciled before native admission")
             if state.get("atomic_session_ended_at"):
                 raise HTTPException(status_code=409, detail="This Atomic sitting has ended")
