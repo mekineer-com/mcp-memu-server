@@ -1130,6 +1130,12 @@ async def test_atomic_chat_profile_uses_cli_without_api_settings(monkeypatch, tm
     assert "Install or repair Atomic" in unavailable["cli"]["admission_error"]
     assert unavailable["cli"]["fingerprint"] == out["cli"]["fingerprint"]
     assert "settings" not in unavailable
+    (tmp_path / "atomic_claude_session.py").write_text("def prepare_atomic_session(:\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "atomic_claude_session")
+    broken = await main.atomic_chat_profile("TestOwner", "TestSoul")
+    assert "Install or repair Atomic" in broken["cli"]["admission_error"]
+    assert broken["cli"]["fingerprint"] == out["cli"]["fingerprint"]
 
 
 @pytest.mark.asyncio

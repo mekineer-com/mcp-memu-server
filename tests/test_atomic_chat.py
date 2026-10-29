@@ -131,12 +131,16 @@ def request(**changes):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("problem", ["missing", "not_callable", "platform"])
-async def test_native_admission_refuses_unready_without_binding_or_model_work(chat_runtime, monkeypatch, problem):
+@pytest.mark.parametrize("problem", ["missing", "not_callable", "syntax", "platform"])
+async def test_native_admission_refuses_unready_without_binding_or_model_work(chat_runtime, monkeypatch, tmp_path, problem):
     if problem == "missing":
         monkeypatch.setitem(sys.modules, "atomic_claude_session", None)
     elif problem == "not_callable":
         monkeypatch.setitem(sys.modules, "atomic_claude_session", SimpleNamespace(prepare_atomic_session=None))
+    elif problem == "syntax":
+        (tmp_path / "atomic_claude_session.py").write_text("def prepare_atomic_session(:\n")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.delitem(sys.modules, "atomic_claude_session")
     else:
         monkeypatch.setattr(atomic_chat, "os", SimpleNamespace(name="nt"))
     scope = {"user_id":"TestOwner", "soul_id":"Birch"}

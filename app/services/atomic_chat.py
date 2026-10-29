@@ -32,7 +32,7 @@ _DELIVERY_BUFFER_BYTES = 16 * 1024 * 1024
 def require_session_helper():
     try:
         from atomic_claude_session import prepare_atomic_session
-    except ImportError as exc:
+    except (ImportError, SyntaxError) as exc:
         raise HTTPException(status_code=409, detail="Install or repair Atomic's Claude session helper before native chat or cleanup") from exc
     if not callable(prepare_atomic_session):
         raise HTTPException(status_code=409, detail="Repair Atomic's Claude session helper: preparation is unavailable")
