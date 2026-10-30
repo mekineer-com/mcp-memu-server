@@ -380,7 +380,7 @@ async def _maintain_native(runtime: Any, cid: str, scope: dict[str, str], receip
                            path: Path, workspace: str, prepare: Any) -> dict[str, Any]:
     maintenance = receipt["maintenance"]
     source, original, candidate = _maintenance_paths(workspace, receipt["session_id"], maintenance["attempt_id"])
-    def apply(data=None, result=None):
+    def apply(data=None, result=None, retry_changed=False):
         if maintenance["action"] == "purge":
             _purge_native(source, receipt["session_id"])
         else:
@@ -394,15 +394,24 @@ async def _maintain_native(runtime: Any, cid: str, scope: dict[str, str], receip
                                candidate_sha256=result.candidate_sha256, changes=result.changes)
             _save_receipt(runtime, cid, scope, receipt, path)
             if _file_hash(source) != result.source_sha256:
-                maintenance.update(status="failed", error="Native source changed before adoption; history was not replaced")
                 receipt["context"] = None
+                if retry_changed:
+                    # No adoption occurred. Reset the journal before discarding
+                    # stale scratch copies and preparing once from current bytes.
+                    maintenance.update(status="running", source_sha256=None, candidate_sha256=None)
+                    _save_receipt(runtime, cid, scope, receipt, path)
+                    original.unlink()
+                    candidate.unlink()
+                    return False
+                maintenance.update(status="failed", error="Native source changed before adoption; history was not replaced")
                 _save_receipt(runtime, cid, scope, receipt, path)
-                return
+                return True
             os.replace(candidate, source)
             _sync_directory(candidate.parent)
             _sync_directory(source.parent)
         maintenance.update(status="complete", error=None)
         _save_receipt(runtime, cid, scope, receipt, path)
+        return True
     try:
         if maintenance["action"] == "purge":
             await _owned_io(apply)
@@ -414,8 +423,10 @@ async def _maintain_native(runtime: Any, cid: str, scope: dict[str, str], receip
             def build():
                 data = source.read_bytes()
                 return data, prepare(data)
-            data, result = await asyncio.to_thread(build)
-            await _owned_io(apply, data, result)
+            for retry_changed in (True, False):
+                data, result = await asyncio.to_thread(build)
+                if await _owned_io(apply, data, result, retry_changed):
+                    break
     except asyncio.CancelledError:
         maintenance.update(status="failed", error="Maintenance stopped before adoption; original retained")
         _save_receipt(runtime, cid, scope, receipt, path)
@@ -759,7 +770,8 @@ def register_atomic_chat_routes(app: FastAPI, *, runtime: Any) -> None:
                         return
                     elif event["state"] == "reaped":
                         receipt["parent_reaped"] = True
-                        if _writer_idle(receipt) is True:
+                        # Windows reaped follows successful job termination and root wait.
+                        if os.name == "nt" or _writer_idle(receipt) is True:
                             receipt["writer_exited"] = True
                     _save_receipt(runtime, cid, scope, receipt, db_path)
                 elif event.get("type") == "result":

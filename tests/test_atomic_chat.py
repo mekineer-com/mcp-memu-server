@@ -408,10 +408,49 @@ async def test_maintenance_refuses_unsafe_or_unavailable_inputs(maintenance_runt
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("crash", ["before_replace", "after_replace", "changed_source", "ambiguous_source"])
-async def test_maintenance_hash_recovery_never_replays_or_rolls_back(maintenance_runtime, monkeypatch, caplog, crash):
+@pytest.mark.parametrize("conflicts", [1, 2])
+async def test_maintenance_reprepares_once_after_source_change(maintenance_runtime, monkeypatch, conflicts):
     m = maintenance_runtime
-    save, copy, replace = atomic_chat._save_receipt, atomic_chat._private_copy, atomic_chat.os.replace
+    sources = [m.original.replace(b"latest answer", text) for text in
+               (b"latest answer", b"late answer one", b"late answer two")]
+    candidates = [m.candidate.replace(b"latest answer", text) for text in
+                  (b"latest answer", b"late answer one", b"late answer two")]
+    def prepare(data):
+        m.preparations.append(data)
+        candidate = candidates[sources.index(data)]
+        return SimpleNamespace(candidate_bytes=candidate, source_sha256=hashlib.sha256(data).hexdigest(),
+            candidate_sha256=hashlib.sha256(candidate).hexdigest(), changes={"thinking_blocks_removed":1})
+    monkeypatch.setattr(m.module, "prepare_atomic_session", prepare)
+    copy = atomic_chat._private_copy
+    attempts = []
+    def changed(path, data):
+        copy(path, data)
+        if path.name.endswith(".candidate"):
+            attempts.append(path)
+            if len(attempts) <= conflicts:
+                m.source.write_bytes(sources[len(attempts)])
+    monkeypatch.setattr(atomic_chat, "_private_copy", changed)
+    body = maintenance_request(m)
+    result = await m.endpoint(body)
+    expected = "complete" if conflicts == 1 else "failed"
+    assert result["maintenance"]["status"] == expected
+    assert result["context"] is None
+    assert m.preparations == sources[:2] and len(attempts) == 2
+    assert m.source.read_bytes() == (candidates[1] if conflicts == 1 else sources[2])
+    _, original, _ = atomic_chat._maintenance_paths(
+        atomic_chat._native_state(main, m.cid, m.scope)["atomic_native_workspace"], m.receipt["session_id"], str(body.attempt_id))
+    assert original.read_bytes() == sources[1]
+    if conflicts == 2:
+        assert "Native source changed before adoption; history was not replaced" == result["maintenance"]["error"]
+    assert (await m.endpoint(body))["maintenance"]["status"] == expected
+    assert m.preparations == sources[:2], "Idempotent status must not start another retry"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("crash", ["before_replace", "after_replace", "ambiguous_source"])
+async def test_maintenance_hash_recovery_never_replays_or_rolls_back(maintenance_runtime, monkeypatch, crash):
+    m = maintenance_runtime
+    save, replace = atomic_chat._save_receipt, atomic_chat.os.replace
     if crash == "after_replace":
         def checkpoint(*args):
             if args[3].get("maintenance", {}).get("status") == "complete":
@@ -424,28 +463,18 @@ async def test_maintenance_hash_recovery_never_replays_or_rolls_back(maintenance
                 m.source.write_bytes(b"newer native history\n")
             raise RuntimeError("interrupted replace")
         monkeypatch.setattr(atomic_chat.os, "replace", interrupted)
-    else:
-        def changed(path, data):
-            copy(path, data)
-            if path.name.endswith(".candidate"):
-                m.source.write_bytes(b"newer native history\n")
-        monkeypatch.setattr(atomic_chat, "_private_copy", changed)
     body = maintenance_request(m)
-    if crash == "changed_source":
-        assert (await m.endpoint(body))["maintenance"]["status"] == "failed"
-        assert not [record for record in caplog.records if record.levelno >= 40]
-    else:
-        with pytest.raises(RuntimeError):
-            await m.endpoint(body)
+    with pytest.raises(RuntimeError):
+        await m.endpoint(body)
     monkeypatch.setattr(atomic_chat, "_save_receipt", save)
     monkeypatch.setattr(atomic_chat.os, "replace", replace)
     status = await atomic_chat._observe_native(main, m.cid, m.scope)
-    expected = {"before_replace":"failed", "after_replace":"complete", "changed_source":"failed",
+    expected = {"before_replace":"failed", "after_replace":"complete",
                 "ambiguous_source":"blocked"}[crash]
     assert status["maintenance"]["status"] == expected
     assert status["context"] == (None if crash.endswith("source") else m.receipt["context"])
     expected_bytes = {"before_replace":m.original, "after_replace":m.candidate,
-                      "changed_source":b"newer native history\n", "ambiguous_source":b"newer native history\n"}[crash]
+                      "ambiguous_source":b"newer native history\n"}[crash]
     assert m.source.read_bytes() == expected_bytes
     assert (await m.endpoint(body))["maintenance"]["status"] == expected
     assert len(m.preparations) == 1
@@ -710,6 +739,36 @@ async def test_retry_discovery_exposes_old_attempt_but_cannot_checkpoint_over_ne
     with pytest.raises(HTTPException, match="attempt already exists"):
         await chat_runtime.endpoint(retry, authorization="Bearer fictional-secret")
     assert sum(len(service.calls) for service in chat_runtime.services) == calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved_reap", [False, True])
+async def test_windows_completion_requires_reap_checkpoint(chat_runtime, monkeypatch, saved_reap):
+    monkeypatch.setattr(atomic_chat, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(atomic_chat, "native_admission_error", lambda: None)  # Activation is a separate gate.
+    monkeypatch.setattr(atomic_chat, "_writer_idle", lambda receipt: True if receipt.get("writer_exited") else None)
+    if not saved_reap:
+        def without_reap(payload, *, operation):
+            service = chat_runtime.factory(payload, operation=operation)
+            chat = service.chat
+            async def run(prompt, **kwargs):
+                capture = kwargs["on_event"]
+                async def filtered(event):
+                    if event.get("state") != "reaped":
+                        await capture(event)
+                return await chat(prompt, **{**kwargs, "on_event": filtered})
+            service.chat = run
+            return service
+        monkeypatch.setattr(main, "_get_service_from_payload", without_reap)
+    await read(await chat_runtime.endpoint(request(), authorization="Bearer fictional-secret"))
+    scope = {"user_id":"TestOwner", "soul_id":"Birch"}
+    status = atomic_chat._native_status(main, "chat:atomic-sitting", scope)
+    assert status["turn"]["writer_exited"] is saved_reap
+    assert status["writer_idle"] is (True if saved_reap else None)
+    assert bool(status["turn"].get("parent_reaped")) is saved_reap
+    if not saved_reap:
+        with pytest.raises(HTTPException, match="writer exit"):
+            atomic_chat.require_sitting_idle(main, "chat:atomic-sitting", **scope)
 
 
 @pytest.mark.asyncio
