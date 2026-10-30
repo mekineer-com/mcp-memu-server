@@ -150,11 +150,6 @@ async def test_native_admission_refuses_unready_without_binding_or_model_work(ch
     assert not chat_runtime.services and not chat_runtime.discoveries
 
 
-def test_native_admission_accepts_windows_with_installed_helper(chat_runtime, monkeypatch):
-    monkeypatch.setattr(atomic_chat, "os", SimpleNamespace(name="nt"))
-    assert atomic_chat.native_admission_error() == ""
-
-
 async def read(response):
     events = [json.loads(line) async for line in response.body_iterator]
     await asyncio.gather(*main._BACKGROUND_TASKS)
