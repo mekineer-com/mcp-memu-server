@@ -204,10 +204,19 @@ These are top-level keys rather than a nested object.
 | `claude_code_workspace` | `"~/.cache/memu-claude-workspace"` | Neutral workspace for calls that do not use a Soul session; Atomic Claude Code chat keeps one workspace per Soul under `atomic/<hash>` inside it. |
 | `claude_code_timeout_seconds` | `3600` | CLI call timeout. |
 
-Atomic Claude Code chat also needs a POSIX (Linux/macOS) memory server and
-Atomic's Claude session helper, which OpenAlma setup installs. When either is
-missing, the Atomic chat profile reports `admission_error` and native chat is
-refused; use API mode instead.
+Atomic Claude Code chat requires Claude Code installed and signed in under the
+account running the memory server, on Linux, macOS or native Windows. It also needs
+Atomic's Claude session helper, which OpenAlma setup installs. A missing or broken
+helper reports `admission_error` and refuses new native work; install or repair it.
+There is no silent API fallback.
+
+On Windows with long-path support disabled, a long user-profile path can prevent
+native cleanup from saving its backup. Before starting new sittings, set
+`claude_code_workspace` to a short writable path such as `C:\\OpenAlma-workspace`.
+This workaround passed with a 21-character username; arbitrary longer/custom
+paths are not certified. For existing sittings, enable Windows long-path support
+and restart the memory server instead: changing the workspace does not relocate
+their bound native sessions.
 
 Attachment sending requires an explicit, nonblank `claude_code_workspace` in
 server configuration. Turn prompts and attachment validation use that configured

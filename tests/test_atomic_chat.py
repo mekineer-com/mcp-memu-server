@@ -131,7 +131,7 @@ def request(**changes):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("problem", ["missing", "not_callable", "syntax", "platform"])
+@pytest.mark.parametrize("problem", ["missing", "not_callable", "syntax"])
 async def test_native_admission_refuses_unready_without_binding_or_model_work(chat_runtime, monkeypatch, tmp_path, problem):
     if problem == "missing":
         monkeypatch.setitem(sys.modules, "atomic_claude_session", None)
@@ -141,8 +141,6 @@ async def test_native_admission_refuses_unready_without_binding_or_model_work(ch
         (tmp_path / "atomic_claude_session.py").write_text("def prepare_atomic_session(:\n")
         monkeypatch.syspath_prepend(str(tmp_path))
         monkeypatch.delitem(sys.modules, "atomic_claude_session")
-    else:
-        monkeypatch.setattr(atomic_chat, "os", SimpleNamespace(name="nt"))
     scope = {"user_id":"TestOwner", "soul_id":"Birch"}
     before = atomic_chat._native_state(main, "chat:atomic-sitting", scope)
     with pytest.raises(HTTPException) as error:
@@ -150,6 +148,11 @@ async def test_native_admission_refuses_unready_without_binding_or_model_work(ch
     assert error.value.status_code == 409
     assert atomic_chat._native_state(main, "chat:atomic-sitting", scope) == before
     assert not chat_runtime.services and not chat_runtime.discoveries
+
+
+def test_native_admission_accepts_windows_with_installed_helper(chat_runtime, monkeypatch):
+    monkeypatch.setattr(atomic_chat, "os", SimpleNamespace(name="nt"))
+    assert atomic_chat.native_admission_error() == ""
 
 
 async def read(response):

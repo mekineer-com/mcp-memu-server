@@ -40,8 +40,6 @@ def require_session_helper():
 
 
 def native_admission_error() -> str:
-    if os.name != "posix":
-        return "Native Claude chat requires POSIX writer-exit support on the memory server. Use API mode on this platform."
     try:
         require_session_helper()
     except HTTPException as exc:
