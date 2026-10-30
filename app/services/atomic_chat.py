@@ -280,7 +280,7 @@ def _private_copy(path: Path, data: bytes) -> None:
 
 
 def _sync_directory(path: Path) -> None:
-    # Native Windows activation still needs writer-exit/durable-adoption proof.
+    # Windows keeps flushed files and hash/journal recovery; no directory fsync.
     if os.name == "posix" and path.exists():
         descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
         try:
@@ -402,6 +402,7 @@ async def _maintain_native(runtime: Any, cid: str, scope: dict[str, str], receip
                     _save_receipt(runtime, cid, scope, receipt, path)
                     original.unlink()
                     candidate.unlink()
+                    runtime.logger.warning("Native source changed before adoption; preparing once more")
                     return False
                 maintenance.update(status="failed", error="Native source changed before adoption; history was not replaced")
                 _save_receipt(runtime, cid, scope, receipt, path)

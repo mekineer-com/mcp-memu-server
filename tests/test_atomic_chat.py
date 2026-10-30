@@ -409,7 +409,7 @@ async def test_maintenance_refuses_unsafe_or_unavailable_inputs(maintenance_runt
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("conflicts", [1, 2])
-async def test_maintenance_reprepares_once_after_source_change(maintenance_runtime, monkeypatch, conflicts):
+async def test_maintenance_reprepares_once_after_source_change(maintenance_runtime, monkeypatch, caplog, conflicts):
     m = maintenance_runtime
     sources = [m.original.replace(b"latest answer", text) for text in
                (b"latest answer", b"late answer one", b"late answer two")]
@@ -436,6 +436,8 @@ async def test_maintenance_reprepares_once_after_source_change(maintenance_runti
     assert result["maintenance"]["status"] == expected
     assert result["context"] is None
     assert m.preparations == sources[:2] and len(attempts) == 2
+    assert sum(record.getMessage() == "Native source changed before adoption; preparing once more"
+               for record in caplog.records if record.levelname == "WARNING") == 1
     assert m.source.read_bytes() == (candidates[1] if conflicts == 1 else sources[2])
     _, original, _ = atomic_chat._maintenance_paths(
         atomic_chat._native_state(main, m.cid, m.scope)["atomic_native_workspace"], m.receipt["session_id"], str(body.attempt_id))
