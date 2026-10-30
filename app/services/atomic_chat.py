@@ -258,6 +258,10 @@ def _maintenance_live(runtime: Any, cid: str, scope: dict[str, str]) -> bool:
 
 def _maintenance_paths(workspace: str, native_id: str, attempt_id: str) -> tuple[Path, Path, Path]:
     source = claude_session_path(workspace, native_id)
+    if os.name == "nt":
+        path = str(source)
+        if not path.startswith("\\\\?\\"):
+            source = Path("\\\\?\\" + ("UNC\\" + path[2:] if path.startswith("\\\\") else path))
     directory = source.parent / ".atomic-maintenance" / native_id
     return source, directory / f"{attempt_id}.original", directory / f"{attempt_id}.candidate"
 

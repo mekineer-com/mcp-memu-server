@@ -210,14 +210,6 @@ Atomic's Claude session helper, which OpenAlma setup installs. A missing or brok
 helper reports `admission_error` and refuses new native work; install or repair it.
 There is no silent API fallback.
 
-On Windows with long-path support disabled, a long user-profile path can prevent
-native cleanup from saving its backup. Before starting new sittings, set
-`claude_code_workspace` to a short writable path such as `C:\\OpenAlma-workspace`.
-This workaround passed with a 21-character username; arbitrary longer/custom
-paths are not certified. For existing sittings, enable Windows long-path support
-and restart the memory server instead: changing the workspace does not relocate
-their bound native sessions.
-
 Attachment sending requires an explicit, nonblank `claude_code_workspace` in
 server configuration. Turn prompts and attachment validation use that configured
 directory; only readable files resolving inside it may be attached. The neutral

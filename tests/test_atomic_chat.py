@@ -6,7 +6,7 @@ import sqlite3
 import sys
 import threading
 import uuid
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
 import httpx
@@ -148,6 +148,22 @@ async def test_native_admission_refuses_unready_without_binding_or_model_work(ch
     assert error.value.status_code == 409
     assert atomic_chat._native_state(main, "chat:atomic-sitting", scope) == before
     assert not chat_runtime.services and not chat_runtime.discoveries
+
+
+@pytest.mark.parametrize("source,expected", [
+    (r"C:\Users\FictionalOwner\.claude\projects\project\session.jsonl", r"\\?\C:\Users\FictionalOwner\.claude\projects\project\session.jsonl"),
+    (r"\\server\share\projects\project\session.jsonl", r"\\?\UNC\server\share\projects\project\session.jsonl"),
+    (r"\\?\C:\projects\project\session.jsonl", r"\\?\C:\projects\project\session.jsonl"),
+    (r"\\?\UNC\server\share\projects\project\session.jsonl", r"\\?\UNC\server\share\projects\project\session.jsonl"),
+])
+def test_maintenance_paths_use_windows_extended_roots(monkeypatch, source, expected):
+    monkeypatch.setattr(atomic_chat, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(atomic_chat, "Path", PureWindowsPath)
+    monkeypatch.setattr(atomic_chat, "claude_session_path", lambda *_: PureWindowsPath(source))
+    actual, original, candidate = atomic_chat._maintenance_paths("workspace", "session", "attempt")
+    assert actual == PureWindowsPath(expected)
+    assert original == actual.parent / ".atomic-maintenance/session/attempt.original"
+    assert candidate == original.with_suffix(".candidate")
 
 
 async def read(response):
